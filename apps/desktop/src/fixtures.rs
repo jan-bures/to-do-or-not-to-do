@@ -47,6 +47,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
         "long-sidebar" => Some(long_sidebar()),
+        "long-names" => Some(long_names()),
         "empty" => Some(empty()),
         "finished" => Some(finished()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
@@ -719,6 +720,41 @@ fn long_sidebar() -> Fixture {
     fixture(b, ui, MORNING)
 }
 
+/// The name of the long list in `long-names`.
+pub const LONG_LIST: &str = "Planning the quarterly roadmap and every review meeting";
+
+/// My Day with a long list name and more tags than a row has room for: the row's chip ends in an ellipsis,
+/// the tags that don't fit are counted, and the detail pane's breadcrumb gives way to its actions.
+fn long_names() -> Fixture {
+    let (mut b, l) = sample();
+    b.run(
+        &owner(),
+        "2026-01-11T09:00:00Z",
+        Command::UpdateList {
+            id: l.planning,
+            name: Some(LONG_LIST.into()),
+            color: None,
+        },
+    );
+    for name in ["roadmap", "leadership", "quarterly-review"] {
+        let tag = b.tag(name);
+        b.run(
+            &owner(),
+            "2026-11-21T09:20:00Z",
+            Command::AddTag { task: l.q4, tag },
+        );
+    }
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
 /// A list with nothing open: scenery only, no sun.
 pub fn empty() -> Fixture {
     let (b, l) = sample();
@@ -856,6 +892,20 @@ mod tests {
             }
         }
         assert!(by_name("inbox").is_none());
+    }
+
+    #[test]
+    fn long_names_has_a_long_list_and_more_tags_than_fit() {
+        let shell = long_names().shell();
+        let q4 = shell
+            .selected_task
+            .and_then(|i| shell.row(i))
+            .expect("selected");
+        assert_eq!(q4.list.name.as_ref(), LONG_LIST);
+        assert_eq!(q4.tags.len(), 5);
+        assert!(q4.from_mail && q4.steps.is_some());
+        let detail = shell.detail.expect("detail");
+        assert_eq!(detail.list.name.as_ref(), LONG_LIST);
     }
 
     #[test]

@@ -486,28 +486,39 @@ impl ShellView {
                 .pb(px(space::S2))
                 .child(kit::label(&p, label))
         };
+        // The breadcrumb takes what the actions leave and ends in an ellipsis; the actions never move.
+        let crumbs = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(space::S2));
         let crumbs = match &d.list.collection {
-            Some(c) => div()
-                .flex()
-                .items_center()
-                .gap(px(space::S2))
-                .child(kit::chip(
-                    t,
-                    &model::ListRef {
-                        collection: None,
-                        name: c.clone(),
-                        hue: d.list.hue,
-                    },
-                    false,
-                ))
-                .child(div().text_color(p.ink_4).child("/"))
+            // The collection's chip keeps its width (up to its cap), so the list's name gives way first.
+            Some(c) => crumbs
+                .child(
+                    kit::chip(
+                        t,
+                        &model::ListRef {
+                            collection: None,
+                            name: c.clone(),
+                            hue: d.list.hue,
+                        },
+                        false,
+                    )
+                    .flex_none(),
+                )
+                .child(div().flex_none().text_color(p.ink_4).child("/"))
                 .child(
                     div()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .text_color(p.ink)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(d.list.name.clone()),
                 ),
-            None => div().child(kit::chip(t, &d.list, false)),
+            None => crumbs.child(kit::chip(t, &d.list, false)),
         };
         let toggle = |id: &'static str, icon: Icon, on: bool| {
             div()
@@ -677,6 +688,7 @@ impl ShellView {
                     .child(
                         div()
                             .w(px(space::S10 * 2.))
+                            .flex_none()
                             .style(ty::NAV_COLLECTION.with_weight(400))
                             .text_color(p.ink_3)
                             .child(f.label),
@@ -701,14 +713,16 @@ impl ShellView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap(px(space::S3))
                     .pl(px(desktop::DETAIL_PAD_X))
                     .pr(px(space::S3))
                     .border_b_1()
                     .border_color(p.line)
                     .child(crumbs.style(ty::SUMMARY).text_color(p.ink_2))
                     .child(
+                        // My Day, Important, Close: the same order on every client.
                         div()
+                            .flex_none()
                             .flex()
                             .gap(px(space::S1))
                             .child(toggle("detail-my-day", Icon::Sun, d.my_day).on_click(
@@ -885,9 +899,14 @@ impl ShellView {
     }
 }
 
-/// A detail field's value: dates and times in mono, tags in quieter mono, words in the UI face.
+/// A detail field's value: dates and times in mono, tags in quieter mono, words in the UI face. A value
+/// longer than its row (many tags) ends in an ellipsis.
 fn field_value(p: &Palette, kind: FieldKind, value: SharedString) -> Div {
-    let v = div().child(value);
+    let v = div()
+        .min_w_0()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .child(value);
     match kind {
         FieldKind::Tags => v.style(ty::TAG).text_color(p.ink_2),
         FieldKind::Date => v.style(ty::DUE.with_weight(600)).text_color(p.ink),

@@ -1,15 +1,15 @@
 //! Small building blocks shared by the views. Every value comes from `theme` (that is, `todo_design`).
 
 use gpui::{
-    Div, Hsla, IntoElement, PathBuilder, SharedString, Styled, Svg, canvas, div, point, prelude::*,
-    px, svg,
+    Div, Hsla, IntoElement, PathBuilder, SharedString, Styled, Svg, Window, canvas, div, point,
+    prelude::*, px, svg,
 };
 
 use crate::assets::{glyph_path, icon_path};
 use crate::model::ListRef;
 use crate::theme::{
-    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, elevation, motion, radius,
-    space, ty,
+    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, desktop, elevation, motion,
+    radius, space, ty,
 };
 
 /// A Lucide icon, tinted like text. `size` is `component::ICON` (18) in toolbars and rows and
@@ -143,18 +143,78 @@ fn pill(bg: Hsla) -> Div {
         .bg(bg)
 }
 
-/// A list chip: dot plus "Collection · List" (smart lists) or just the list name.
-pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
-    let c = theme::list_colors(theme, list.hue);
-    let label: SharedString = match (&list.collection, with_collection) {
+/// What a list chip says: "Collection · List" (smart lists) or just the list name.
+pub fn chip_label(list: &ListRef, with_collection: bool) -> SharedString {
+    match (&list.collection, with_collection) {
         (Some(c), true) => format!("{c} · {}", list.name).into(),
         _ => list.name.clone(),
-    };
+    }
+}
+
+/// A list chip: dot plus [`chip_label`]. It is at most `desktop::CHIP_MAX` wide and gives way when its row
+/// is short of room; a label that doesn't fit ends in an ellipsis inside the pill (laid out short, never
+/// clipped).
+pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
+    let c = theme::list_colors(theme, list.hue);
     pill(c.tint)
+        .flex_shrink(1.)
+        .min_w_0()
+        .max_w(px(desktop::CHIP_MAX))
         .text_color(c.ink)
         .style(ty::CHIP)
-        .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(c.dot))
-        .child(label)
+        .child(
+            div()
+                .flex_none()
+                .size(px(component::CHIP_DOT))
+                .rounded_full()
+                .bg(c.dot),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(chip_label(list, with_collection)),
+        )
+}
+
+/// How wide [`chip`] draws: its measured label plus the dot and padding, up to `desktop::CHIP_MAX`.
+pub fn chip_width(window: &Window, list: &ListRef, with_collection: bool) -> f32 {
+    let label = text_width(window, ty::CHIP, &chip_label(list, with_collection));
+    (2. * component::CHIP_PAD_X + component::CHIP_DOT + component::CHIP_GAP + label)
+        .min(desktop::CHIP_MAX)
+}
+
+/// The width `text` takes on one line in `style`, as GPUI lays it out (`TextStyled::style` sets the same
+/// family, size, weight and slant).
+pub fn text_width(window: &Window, style: ty::TextStyle, text: &str) -> f32 {
+    if text.is_empty() {
+        return 0.;
+    }
+    let font = gpui::Font {
+        weight: gpui::FontWeight(f32::from(style.weight)),
+        style: if style.italic {
+            gpui::FontStyle::Italic
+        } else {
+            gpui::FontStyle::Normal
+        },
+        ..gpui::font(style.family)
+    };
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(
+        SharedString::from(text.to_string()),
+        px(style.size),
+        &[run],
+        None,
+    );
+    f32::from(line.width)
 }
 
 /// A filled diamond, `size` across (the overdue badge's mark).
@@ -237,6 +297,13 @@ pub fn meter_bars(done: u32, total: u32) -> (u32, u32) {
         (done.min(total) * bars).div_ceil(total)
     };
     (bars, lit)
+}
+
+/// How wide [`meter`] draws for `total` steps.
+pub fn meter_width(total: u32) -> f32 {
+    let (bars, _) = meter_bars(0, total);
+    let bars = bars as f32;
+    bars * elevation::SELECTION_BAR + (bars - 1.) * space::S1 / 2.
 }
 
 /// Step progress: one bar per step (up to five), the done ones in the accent. Each bar is a 3 × 10 tick

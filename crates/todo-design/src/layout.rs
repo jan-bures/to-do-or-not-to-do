@@ -182,6 +182,8 @@ pub mod desktop {
     pub const COL_PRIORITY: f32 = 24.0;
     /// Due column, right-aligned.
     pub const COL_DUE: f32 = 104.0;
+    /// The widest a list chip gets in a row's metadata line; a longer list name ends in an ellipsis inside it.
+    pub const CHIP_MAX: f32 = 180.0;
     /// The reserved strip at the bottom of the list for "Completed n" and the undo toast; it never covers a row.
     pub const TOAST_INSET: f32 = 56.0;
     /// Toast height.
@@ -202,7 +204,7 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 28] = [
+    pub const ALL: [(&str, f32); 29] = [
         ("sidebar", SIDEBAR),
         ("list", LIST),
         ("detail", DETAIL),
@@ -222,6 +224,7 @@ pub mod desktop {
         ("col-agent", COL_AGENT),
         ("col-priority", COL_PRIORITY),
         ("col-due", COL_DUE),
+        ("chip-max", CHIP_MAX),
         ("toast-inset", TOAST_INSET),
         ("toast", TOAST),
         ("nav-row", NAV_ROW),

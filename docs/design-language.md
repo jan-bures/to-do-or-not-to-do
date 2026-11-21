@@ -134,6 +134,9 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
 - The agent, priority and due columns are always there, even when they're empty, so every row lines up.
 - A long title truncates with an ellipsis before the agent column. Test this with a long Czech title, for example
   *Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení*.
+- The metadata line reads list chip, steps, source mark (mail), then tags, so the compact indicators are never the
+  ones pushed out. A list chip is at most **180** wide (`desktop::CHIP_MAX`) and ends in an ellipsis inside the
+  pill. Tags that don't fit whole collapse into a mono `+N`; nothing is ever cut mid-glyph.
 
 **Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. On a dated row the due date comes first, in a 100 dp slot, so
 the list chips of dated rows start at the same x. An undated row has no slot: its chips start flush with the
@@ -148,6 +151,10 @@ Scrolling back to the top brings them back. While the keyboard is open, or when 
 **Every phone target is at least 48 dp** (`touch`), even where the visual is smaller. A drawer row's highlight is
 40 dp (`nav-row`) and a room pill is 32 dp, but each sits in a 48 dp target, and the press ripple stays on the
 visual.
+
+**The detail pane's top bar** holds the breadcrumb on the left and three actions on the right, in this order on
+every client: **My Day** (sun), **Important** (star), **Close** (×). The breadcrumb takes what's left and ends in an
+ellipsis; the actions never move, however long the list's name.
 
 **Undo never covers a row.**
 

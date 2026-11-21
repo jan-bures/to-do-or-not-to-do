@@ -18,8 +18,8 @@ Options:
   --screenshot      Render one hidden fixture window, save its PNG and exit.
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
-  --fixture         Fixture to render: my-day, work, collapsed-collection, long-sidebar, empty, finished,
-                    quick-add, pairing, pairing-code, open-failed or open-failed-confirm.
+  --fixture         Fixture to render: my-day, work, collapsed-collection, long-sidebar, long-names, empty,
+                    finished, quick-add, pairing, pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -35,6 +35,7 @@ pub const FIXTURES: &[&str] = &[
     "work",
     "collapsed-collection",
     "long-sidebar",
+    "long-names",
     "empty",
     "finished",
     "quick-add",

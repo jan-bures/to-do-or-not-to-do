@@ -215,7 +215,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
         } else {
             let store = Rc::new(Store::fixture(&fixture));
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
-                cx.new(|cx| {
+                let view = cx.new(|cx| {
                     ShellView::new(
                         store,
                         fixture.ui.clone(),
@@ -224,7 +224,11 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                         window,
                         cx,
                     )
-                })
+                });
+                // GPUI's own focus, inside the window: nothing is activated or shown.
+                let focus = view.read(cx).fixture_focus(cx);
+                window.focus(&focus, cx);
+                view
             })
             .map(Into::into)
         }

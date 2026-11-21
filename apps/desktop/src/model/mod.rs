@@ -11,6 +11,8 @@ pub mod commands;
 mod derive;
 pub mod draft;
 pub mod files;
+pub mod fit;
+pub mod hints;
 pub mod labels;
 pub mod lists;
 pub mod quick_add;
@@ -345,6 +347,8 @@ pub struct Room {
     /// For the empty header: tasks finished this month.
     pub finished_this_month: u32,
     pub empty_line: SharedString,
+    /// The quieter line under `empty_line`: how to add a task here.
+    pub empty_hint: SharedString,
     pub quick_add_placeholder: SharedString,
     /// My Day: finishing every task turns the header into the dusk scene.
     pub finishes_day: bool,

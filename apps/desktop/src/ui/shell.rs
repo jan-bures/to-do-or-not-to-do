@@ -22,7 +22,8 @@ use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape};
 use crate::model::{
-    self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, quick_add,
+    self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
+    quick_add,
 };
 use crate::store::Store;
 use crate::theme::{
@@ -124,7 +125,6 @@ pub struct ShellView {
     palette: Palette,
     landscape: LandscapeCache,
     quick_add: Entity<TextInput>,
-    focus: FocusHandle,
     list_focus: FocusHandle,
     rows: UniformListScrollHandle,
     menu: Option<Menu>,
@@ -210,7 +210,6 @@ impl ShellView {
             palette,
             landscape: LandscapeCache::default(),
             quick_add,
-            focus: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
             menu: None,
@@ -306,6 +305,17 @@ impl ShellView {
         self.shell = shell;
         self.load_detail(cx);
         cx.notify();
+    }
+
+    /// Where a screenshot fixture puts the keyboard: the quick-add when it has typed text, else the list,
+    /// as in the running app.
+    pub fn fixture_focus(&self, cx: &App) -> FocusHandle {
+        let quick_add = self.quick_add.read(cx);
+        if quick_add.content.is_empty() {
+            self.list_focus.clone()
+        } else {
+            quick_add.focus_handle.clone()
+        }
     }
 
     pub fn store(&self) -> &Rc<Store> {
@@ -772,6 +782,9 @@ impl ShellView {
         let focused = input.focus_handle.is_focused(window);
         let text = input.content.clone();
         let typed = !text.is_empty();
+        // On the finished day the field stays, but quietly: on the pane with a hairline, so the hand-over
+        // to tomorrow leads. Ctrl+N or a click wakes it up.
+        let quiet = self.shell.room.finished_day() && !focused && !typed;
         let field = div()
             .h(px(desktop::QUICK_ADD))
             .flex()
@@ -783,12 +796,18 @@ impl ShellView {
             .border(px(elevation::HAIRLINE))
             .border_color(if focused || typed {
                 p.accent
+            } else if quiet {
+                p.line
             } else {
                 p.control
             })
-            .bg(p.raised)
+            .bg(if quiet { p.pane } else { p.raised })
             .style(ty::QUICK_ADD)
-            .child(kit::icon(Icon::Plus, component::ICON, p.accent_strong))
+            .child(kit::icon(
+                Icon::Plus,
+                component::ICON,
+                if quiet { p.ink_3 } else { p.accent_strong },
+            ))
             .child(div().flex_1().min_w_0().child(self.quick_add.clone()));
         let field = if typed {
             // What the typed words will set: the parsed due date as a chip.
@@ -815,6 +834,8 @@ impl ShellView {
                         .child(model::labels::short_date(d, now.today()))
                 }))
                 .child(kit::kbd(p, "Enter"))
+        } else if quiet {
+            field.child(kit::kbd(p, "Ctrl N"))
         } else {
             field
                 .child(kit::icon(Icon::Calendar, component::GLYPH, p.ink_3))
@@ -858,8 +879,14 @@ impl ShellView {
     }
 
     /// A row, fading out while it leaves after completion.
-    fn row_element(&self, i: usize, task: &TaskRow, cx: &mut Context<Self>) -> AnyElement {
-        let row = self.row(i, task, cx);
+    fn row_element(
+        &self,
+        i: usize,
+        task: &TaskRow,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = self.row(i, task, window, cx);
         if self.leaving.contains(&task.id) {
             let fade = Animation::new(Duration::from_millis(u64::from(motion::ROW_COLLAPSE)))
                 .with_easing(|t| motion::EXIT.ease(t));
@@ -870,41 +897,134 @@ impl ShellView {
         }
     }
 
-    fn row(&self, i: usize, task: &TaskRow, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// Whether the detail pane shows. On the finished day, with nothing selected, it would only be an empty
+    /// placeholder beside the dusk scene, so the room takes its width instead.
+    fn detail_visible(&self) -> bool {
+        self.shell.detail.is_some() || !self.shell.room.finished_day()
+    }
+
+    /// The room pane's width (and so a row's): the window less the sidebar and, when it shows, the detail
+    /// pane, each with its hairline border.
+    fn room_width(&self, window: &Window) -> f32 {
+        let mut width =
+            f32::from(window.viewport_size().width) - desktop::SIDEBAR - elevation::HAIRLINE;
+        if self.detail_visible() {
+            width -= desktop::DETAIL + elevation::HAIRLINE;
+        }
+        width
+    }
+
+    /// A row's metadata line: the list chip, steps, the mail mark, then tags. Every item is measured
+    /// against the title column's width (`room`); tags that don't fit whole are counted as "+N" rather
+    /// than cut, and the chip, the only item that gives way, ends in an ellipsis. Nothing is clipped, so
+    /// no descender is either.
+    fn meta(&self, task: &TaskRow, room: f32, window: &Window) -> Div {
+        let p = &self.palette;
+        let t = self.theme;
+        let gap = space::S2;
+        let mut meta = div()
+            .flex()
+            .items_center()
+            .gap(px(gap))
+            .h(px(component::CHIP))
+            .mt(px(desktop::ROW_LINE_GAP));
+        // What the items before the tags take, each but the first after a gap.
+        let mut used = -gap;
+        let chip = match self.shell.room.chips {
+            Chips::None => None,
+            Chips::List => Some(false),
+            Chips::CollectionAndList => Some(true),
+        };
+        if let Some(with_collection) = chip {
+            used += gap + kit::chip_width(window, &task.list, with_collection);
+            meta = meta.child(kit::chip(t, &task.list, with_collection));
+        }
+        if let Some((d, n)) = task.steps {
+            let count = format!("{d}/{n}");
+            let style = ty::COUNT.with_weight(500);
+            used += gap
+                + kit::meter_width(n)
+                + component::CHIP_GAP
+                + kit::text_width(window, style, &count);
+            meta = meta.child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(component::CHIP_GAP))
+                    .text_color(p.ink_3)
+                    .style(style)
+                    .child(kit::meter(p, d, n))
+                    .child(count),
+            );
+        }
+        if task.from_mail {
+            used += gap + component::ICON_SMALL;
+            meta = meta.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3));
+        }
+        if task.tags.is_empty() {
+            return meta;
+        }
+        // The fit counts a gap before every tag. With nothing before them the first needs none, which
+        // `used` (starting at minus one gap) gives back. A pixel of slack keeps rounding from pushing the
+        // last tag over.
+        let left = room - used - 1.;
+        let widths: Vec<f32> = task
+            .tags
+            .iter()
+            .map(|tag| kit::text_width(window, ty::TAG, tag))
+            .collect();
+        let fit = fit::fit_tags(left, &widths, gap, |n| {
+            kit::text_width(window, ty::TAG, &fit::more_label(n))
+        });
+        let tag = |s: SharedString| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .style(ty::TAG)
+                .text_color(p.ink_3)
+                .child(s)
+        };
+        meta = meta.children(task.tags[..fit.shown].iter().cloned().map(tag));
+        if fit.more > 0 {
+            meta = meta.child(tag(fit::more_label(fit.more).into()));
+        }
+        meta
+    }
+
+    fn row(
+        &self,
+        i: usize,
+        task: &TaskRow,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let p = &self.palette;
         let t = self.theme;
         let selected = self.shell.selected_task == Some(i);
         let overdue = matches!(task.due, Due::Overdue(_));
-        let mut meta = div()
-            .flex()
-            .items_center()
-            .gap(px(space::S2))
-            .h(px(component::CHIP))
-            .mt(px(desktop::ROW_LINE_GAP))
-            .overflow_hidden();
-        match self.shell.room.chips {
-            Chips::None => {}
-            Chips::List => meta = meta.child(kit::chip(t, &task.list, false)),
-            Chips::CollectionAndList => meta = meta.child(kit::chip(t, &task.list, true)),
+        // The trailing columns keep their places from the right edge, but empty ones to the left of every
+        // filled one are left out, so the title runs on into their room instead of stopping short.
+        let show_agent = task.agent.is_some();
+        let show_priority = show_agent || task.priority > 0;
+        let full_due = show_priority || !matches!(task.due, Due::None);
+        // The title column's width: the row less its padding, the checkbox and the trailing columns.
+        let mut title_width =
+            self.room_width(window) - 2. * desktop::LIST_PAD_X - desktop::COL_CHECK;
+        title_width -= desktop::ROW_GAP
+            + if full_due {
+                desktop::COL_DUE
+            } else {
+                kit::text_width(window, ty::DUE, "–")
+            };
+        if show_priority {
+            title_width -= desktop::ROW_GAP + desktop::COL_PRIORITY;
         }
-        if let Some((d, n)) = task.steps {
-            meta = meta.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(component::CHIP_GAP))
-                    .text_color(p.ink_3)
-                    .style(ty::COUNT.with_weight(500))
-                    .child(kit::meter(p, d, n))
-                    .child(format!("{d}/{n}")),
-            );
+        if show_agent {
+            title_width -= desktop::ROW_GAP + desktop::COL_AGENT;
         }
-        for tag in &task.tags {
-            meta = meta.child(div().style(ty::TAG).text_color(p.ink_3).child(tag.clone()));
-        }
-        if task.from_mail {
-            meta = meta.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3));
-        }
+        title_width -= desktop::ROW_GAP;
+        let meta = self.meta(task, title_width, window);
         let id = task.id;
         let check = if task.done && self.ui.holding.contains(&id) {
             kit::checking(p, selected, desktop::COL_CHECK, ("checking", i)).into_any_element()
@@ -930,11 +1050,6 @@ impl ShellView {
         } else {
             title.text_color(p.ink)
         };
-        // The trailing columns keep their places from the right edge, but empty ones to the left of every
-        // filled one are left out, so the title runs on into their room instead of stopping short.
-        let show_agent = task.agent.is_some();
-        let show_priority = show_agent || task.priority > 0;
-        let full_due = show_priority || !matches!(task.due, Due::None);
         let row = div()
             .id(SharedString::from(format!("task-{id}")))
             .relative()
@@ -1012,9 +1127,11 @@ impl ShellView {
     fn list(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let room = &self.shell.room;
-        let body: AnyElement = if let (true, Some(next)) = (room.finished_day(), &room.tomorrow) {
+        // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
+        let handing_over = room.finished_day() && room.completed.is_empty();
+        let body: AnyElement = if let (true, Some(next)) = (handing_over, &room.tomorrow) {
             self.tomorrow(next, cx).into_any_element()
-        } else if room.finished_day() {
+        } else if handing_over {
             div()
                 .px(px(desktop::LIST_PAD_X))
                 .pt(px(space::S6 + space::S1))
@@ -1040,7 +1157,7 @@ impl ShellView {
                         .mt(px(space::S2 + 2.))
                         .style(ty::BODY)
                         .text_color(p.ink_3)
-                        .child("Add one above, or press Ctrl+Alt+Space from anywhere."),
+                        .child(room.empty_hint.clone()),
                 )
                 .into_any_element()
         } else {
@@ -1048,14 +1165,14 @@ impl ShellView {
             uniform_list(
                 "rows",
                 count,
-                cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                     let rows: Vec<TaskRow> = range
                         .clone()
                         .filter_map(|i| this.shell.row(i).cloned())
                         .collect();
                     range
                         .zip(rows.iter())
-                        .map(|(i, r)| this.row_element(i, r, cx))
+                        .map(|(i, r)| this.row_element(i, r, window, cx))
                         .collect::<Vec<_>>()
                 }),
             )
@@ -1157,9 +1274,21 @@ impl ShellView {
                 .style(ty::CAPS_LABEL)
                 .child(label.to_uppercase())
         };
+        // Picking a task opens it in the detail pane, like a row.
+        let selected = self.ui.task;
+        let pick = |id: TaskId| {
+            cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
+                window.focus(&this.list_focus, cx);
+                this.select_task(Some(id), cx);
+            })
+        };
         let compact = |task: &TaskRow| {
             let when = task.due.text().cloned().unwrap_or_default();
             div()
+                .id(SharedString::from(format!("next-{}", task.id)))
+                .when(selected == Some(task.id), |d| d.bg(p.wash))
+                .hover(|s| s.bg(p.hover))
+                .on_click(pick(task.id))
                 .mx(px(desktop::LIST_PAD_X))
                 .h(px(component::ICON_BUTTON + space::S1))
                 .flex()
@@ -1199,7 +1328,11 @@ impl ShellView {
                 p.accent_strong,
             ));
         let card = div()
+            .id("next-first")
+            .when(selected == Some(first.id), |d| d.bg(p.wash))
+            .on_click(pick(first.id))
             .mx(px(desktop::LIST_PAD_X))
+            .rounded(px(radius::LG))
             .flex()
             .items_center()
             .gap(px(space::S4))
@@ -1238,6 +1371,7 @@ impl ShellView {
                     .id("plan-next")
                     .child(kit::button(p, format!("Plan {}", next.weekday)))
                     .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
                         this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
                     })),
             );
@@ -1266,9 +1400,49 @@ impl ShellView {
             })
     }
 
-    fn status_bar(&self) -> Div {
+    /// Where the keyboard is, for the status bar's hints.
+    fn focus_now(&self, window: &Window, cx: &App) -> hints::Focus {
+        use hints::Focus;
+        let on = |h: &FocusHandle| h.is_focused(window);
+        if on(&self.list_focus) {
+            Focus::List
+        } else if on(&self.quick_add.read(cx).focus_handle) {
+            Focus::QuickAdd
+        } else if on(&self.filter.read(cx).focus_handle) {
+            Focus::Filter
+        } else if on(&self.edit.title.read(cx).focus_handle) {
+            Focus::Title
+        } else if on(&self.edit.notes.read(cx).focus_handle) {
+            Focus::Notes
+        } else if on(&self.edit.step.read(cx).focus_handle) {
+            Focus::Step
+        } else if self
+            .edit
+            .due
+            .as_ref()
+            .is_some_and(|(i, _)| on(&i.read(cx).focus_handle))
+        {
+            Focus::Due
+        } else if self
+            .inline
+            .as_ref()
+            .is_some_and(|i| on(&i.input.read(cx).focus_handle))
+        {
+            Focus::Rename
+        } else {
+            Focus::Elsewhere
+        }
+    }
+
+    fn status_bar(&self, window: &Window, cx: &App) -> Div {
         let p = &self.palette;
         let (done, _, open) = self.shell.room.summary();
+        let keys = hints::key_hints(hints::HintState {
+            focus: self.focus_now(window, cx),
+            rows: self.shell.row_count() > 0,
+            selected: self.ui.task.is_some(),
+            reorder: matches!(self.ui.room, RoomKey::List(_)),
+        });
         let hint = |key: &'static str, what: &'static str| {
             div()
                 .flex()
@@ -1317,8 +1491,9 @@ impl ShellView {
                         div()
                             .flex()
                             .gap(px(component::CHIP_GAP))
-                            .child(strong(format!("{done:02}")))
-                            .child("done"),
+                            // The header's count, today's; "Completed n" above holds every finished task.
+                            .child(strong(done.to_string()))
+                            .child("done today"),
                     ),
             )
             .child(
@@ -1326,11 +1501,7 @@ impl ShellView {
                     .flex()
                     .gap(px(space::S4 + 2.))
                     .style(ty::META)
-                    .child(hint("J K", "move"))
-                    .child(hint("Space", "complete"))
-                    .child(hint("E", "edit"))
-                    .child(hint("D", "due"))
-                    .child(hint("P", "priority")),
+                    .children(keys.into_iter().map(|(key, what)| hint(key, what))),
             )
             .child(
                 div()
@@ -1354,21 +1525,23 @@ impl ShellView {
     }
 }
 
+/// The window's focus starts on the task list, where the single-letter keys work.
 impl Focusable for ShellView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
+        self.list_focus.clone()
     }
 }
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        let finished = self.shell.room.finished_day();
-        let quick_add = (!finished).then(|| self.quick_add_field(window, cx));
+        let quick_add = self.quick_add_field(window, cx);
+        let detail = self
+            .detail_visible()
+            .then(|| self.detail_pane(window, cx).into_any_element());
         div()
             .id("shell")
             .key_context("Shell")
-            .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 let handle = this.filter.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
@@ -1379,7 +1552,16 @@ impl Render for ShellView {
                 window.focus(&handle, cx);
                 cx.notify();
             }))
-            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+            // A click that no field takes (the sidebar, the header, a button) leaves the keyboard on the
+            // task list, so its keys keep working.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !window.default_prevented() {
+                        window.focus(&this.list_focus, cx);
+                    }
+                }),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -1404,13 +1586,12 @@ impl Render for ShellView {
                             .flex_col()
                             .bg(p.pane)
                             .child(self.header())
-                            // The finished day hands over to tomorrow instead of taking new tasks.
-                            .children(quick_add)
+                            .child(quick_add)
                             .child(self.list(cx)),
                     )
-                    .child(self.detail_pane(window, cx)),
+                    .children(detail),
             )
-            .child(self.status_bar())
+            .child(self.status_bar(window, cx))
             .children(self.menu(cx))
     }
 }

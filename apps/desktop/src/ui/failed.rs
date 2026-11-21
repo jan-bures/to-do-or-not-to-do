@@ -1,7 +1,7 @@
-//! The screen shown when the paired data couldn't be opened: what happened and **Try again**. When a
-//! recovery of damaged data couldn't finish, it also offers to start fresh from the server, keeping the
-//! damaged copy, after asking: that gives up on the changes that hadn't been sent. A start fresh that was
-//! interrupted can only be finished.
+//! The screen shown when the paired data couldn't be opened: what happened and what to do in plain words,
+//! the technical detail after it, and **Try again**. When a recovery of damaged data couldn't finish, it
+//! also offers to start fresh from the server, keeping the damaged copy, after asking: that gives up on the
+//! changes that hadn't been sent. A start fresh that was interrupted can only be finished.
 
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, prelude::*, px,
@@ -106,8 +106,14 @@ impl Render for FailedView {
                 )
             })
             .when(!finishing, |d| {
-                d.child(
+                // While starting fresh is being confirmed, the card below leads and Try again steps back.
+                let retry = if self.confirming {
+                    kit::button_quiet(&p, "Try again")
+                } else {
                     kit::button(&p, "Try again")
+                };
+                d.child(
+                    retry
                         .id("retry")
                         .cursor_pointer()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(FailedEvent::Retry))),
@@ -192,8 +198,14 @@ impl Render for FailedView {
                             .style(ty::ROOM_TITLE)
                             .child("Your tasks couldn't be opened"),
                     )
-                    .child(div().text_color(p.ink_2).child(self.why.clone()))
-                    .child(div().text_color(p.ink_3).child(hint))
+                    // What to do first, in plain words; the technical detail after it, quieter.
+                    .child(div().text_color(p.ink).child(hint))
+                    .child(
+                        div()
+                            .style(ty::COUNT)
+                            .text_color(p.ink_3)
+                            .child(self.why.clone()),
+                    )
                     .child(actions)
                     .children(confirm),
             )

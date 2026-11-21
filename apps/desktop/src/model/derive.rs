@@ -330,7 +330,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
                 },
                 lists::hue(col.color.as_deref(), c.as_uuid().as_bytes()),
                 Chips::List,
-                "Nothing here yet.".into(),
+                "Nothing on the shelf yet.".into(),
                 format!("Add a task to {}…", col.name).into(),
             )
         }
@@ -345,7 +345,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
                 },
                 list.hue,
                 Chips::None,
-                "Nothing here yet.".into(),
+                "Nothing on the shelf yet.".into(),
                 format!("Add a task to {}…", list.name).into(),
             )
         }
@@ -379,10 +379,23 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         } else {
             empty_line
         },
+        empty_hint: empty_hint(key, filtered).into(),
         quick_add_placeholder: placeholder,
         finishes_day,
         tomorrow,
         filtered,
+    }
+}
+
+/// How to fill an empty room. The global quick-add (Ctrl+Alt+Space) always adds to My Day, so only My Day
+/// mentions it; rooms that only collect tasks say where they come from instead.
+fn empty_hint(key: RoomKey, filtered: bool) -> &'static str {
+    match key {
+        _ if filtered => "Clear the filter to see every task.",
+        RoomKey::Smart(Smart::MyDay) => "Add one above, or press Ctrl+Alt+Space from anywhere.",
+        RoomKey::Smart(Smart::Completed) => "Tasks show up here when you finish them.",
+        RoomKey::Smart(Smart::AgentActivity) => "Tasks your agents add or change show up here.",
+        _ => "Add one above; Ctrl+N takes you there.",
     }
 }
 

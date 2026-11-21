@@ -124,6 +124,10 @@ fn the_filter_narrows_rows_with_the_query_language_or_plain_words() {
     let none = f.shell();
     assert!(none.room.tasks.is_empty());
     assert_eq!(none.room.empty_line.as_ref(), "Nothing matches the filter.");
+    assert_eq!(
+        none.room.empty_hint.as_ref(),
+        "Clear the filter to see every task."
+    );
     // The header still counts the whole room.
     assert_eq!(none.room.summary(), (3, 12, 9));
 }
@@ -370,4 +374,17 @@ fn only_web_links_are_clickable() {
             assert_eq!(url, None, "{detail} must not be clickable");
         }
     }
+}
+
+#[test]
+fn only_my_day_mentions_the_global_quick_add() {
+    // Ctrl+Alt+Space always adds to My Day, so an empty list points at its own quick-add instead.
+    let empty = fixtures::empty().shell();
+    assert_eq!(empty.room.empty_line.as_ref(), "Nothing on the shelf yet.");
+    assert!(!empty.room.empty_hint.contains("Ctrl+Alt+Space"));
+    assert!(empty.room.empty_hint.contains("Ctrl+N"));
+    let mut f = fixtures::my_day();
+    assert!(f.shell().room.empty_hint.contains("Ctrl+Alt+Space"));
+    f.ui.room = RoomKey::Smart(Smart::Completed);
+    assert!(!f.shell().room.empty_hint.contains("Ctrl+Alt+Space"));
 }
