@@ -404,6 +404,9 @@ pub async fn upload(
     );
     let plan = blocking(&app, Work::Read, move || -> Result<Plan, ApiError> {
         let dry_run = |state: &todo_core::State| -> Result<Plan, ApiError> {
+            // On the same snapshot as the decision below. Only a pre-check: the write re-checks
+            // inside the writer.
+            hidden::check_command(state, &actor, &probe)?;
             // A retry of an upload this caller completed: same attachment, same task, stored content.
             if let Some(existing) = state.attachments.get(&id)
                 && existing.task == task
@@ -420,7 +423,6 @@ pub async fn upload(
                 .map_err(|e| hidden::domain_write_error(&actor, &e))?;
             Ok(Plan::Upload(None))
         };
-        hidden::check_command(&engine.state(), &actor, &probe)?;
         let first = dry_run(&engine.state())?;
         if let Plan::Replay(..) = first {
             return Ok(first);
@@ -528,7 +530,13 @@ pub async fn upload(
         let _slot = slot;
         hidden::check_command(&engine.state(), &actor, &cmd)?;
         let o = engine
-            .execute_cancellable(&actor, upload_command_id(id), &cmd, &cancel)
+            .execute_checked(
+                &actor,
+                upload_command_id(id),
+                &cmd,
+                &cancel,
+                hidden::command_check(&actor, &cmd),
+            )
             .map_err(|e| hidden::write_error(&actor, e))?;
         let a = engine.state().attachments.get(&id).cloned();
         Ok::<_, ApiError>((o, a))

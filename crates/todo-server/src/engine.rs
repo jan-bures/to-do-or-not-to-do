@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use todo_core::command::Command;
 use todo_core::error::{DomainError, UndoError};
@@ -217,16 +217,61 @@ pub struct Engine {
     poisoned: AtomicBool,
     /// Test hook: milliseconds to sleep between claiming a commit and committing.
     commit_delay_ms: AtomicU64,
+    /// Writes waiting for the writer (see [`Engine::waiting_writes`]).
+    waiting: AtomicUsize,
     /// See [`Engine::set_commit_check`].
     commit_check: RwLock<Option<CommitCheck>>,
 }
 
 /// Holds the writer lock (see [`Engine::hold_writer`]).
-pub struct WriterHold<'a>(#[allow(dead_code)] MutexGuard<'a, Writer>);
+pub struct WriterHold<'a> {
+    _guard: MutexGuard<'a, Writer>,
+    engine: &'a Engine,
+}
 
 impl std::fmt::Debug for WriterHold<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("WriterHold")
+    }
+}
+
+impl WriterHold<'_> {
+    /// Replaces the agents' grants like [`Engine::set_grants`], while the writer stays held. For tests
+    /// that change access between a write's pre-checks and its turn at the writer.
+    #[doc(hidden)]
+    pub fn set_grants(&self, grants: BTreeMap<AgentId, Grants>) {
+        self.engine.replace_grants(grants);
+    }
+}
+
+/// What a write's check sees inside the writer (see [`Engine::execute_checked`]): the state the write
+/// is decided against and the matching whereabouts, neither of which can change until the write is
+/// done, and the log through the writer's connection.
+pub struct Locked<'a> {
+    /// The state the idempotency lookup and `decide` use.
+    pub state: &'a State,
+    /// The last known locations of entities no longer in `state`.
+    pub gone: &'a Whereabouts,
+    conn: &'a Connection,
+}
+
+impl std::fmt::Debug for Locked<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Locked")
+    }
+}
+
+impl Locked<'_> {
+    /// The event at `seq` with its recorded scope (see [`crate::scope`]).
+    pub fn event_with_scope(
+        &self,
+        seq: u64,
+    ) -> Result<Option<(Event, Option<EventScope>)>, StoreError> {
+        let Some(event) = db::event_by_seq(self.conn, seq)? else {
+            return Ok(None);
+        };
+        let scope = db::scopes_between(self.conn, seq, seq)?.remove(&seq);
+        Ok(Some((event, scope)))
     }
 }
 
@@ -378,6 +423,7 @@ impl Engine {
             clock,
             poisoned: AtomicBool::new(false),
             commit_delay_ms: AtomicU64::new(0),
+            waiting: AtomicUsize::new(0),
             commit_check: RwLock::new(None),
         })
     }
@@ -458,6 +504,11 @@ impl Engine {
     /// event-sourced). Takes the writer lock, so no write in progress can put back the old grants.
     pub fn set_grants(&self, grants: BTreeMap<AgentId, Grants>) {
         let _w = lock(&self.writer);
+        self.replace_grants(grants);
+    }
+
+    /// [`set_grants`](Self::set_grants) without the lock: the caller holds the writer.
+    fn replace_grants(&self, grants: BTreeMap<AgentId, Grants>) {
         let mut next = (*self.state()).clone();
         next.grants = grants;
         *self.state.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
@@ -514,14 +565,27 @@ impl Engine {
     /// Blocks every write until the returned guard is dropped. For tests that need a slow writer.
     #[doc(hidden)]
     pub fn hold_writer(&self) -> WriterHold<'_> {
-        WriterHold(lock(&self.writer))
+        WriterHold {
+            _guard: lock(&self.writer),
+            engine: self,
+        }
+    }
+
+    /// How many writes are waiting for the writer right now. For tests that must know a write got past
+    /// its pre-checks before they change something under a [`hold_writer`](Self::hold_writer).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn waiting_writes(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
     }
 
     fn writer(&self, cancel: &Cancel) -> Result<MutexGuard<'_, Writer>, EngineError> {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
+        self.waiting.fetch_add(1, Ordering::AcqRel);
         let w = lock(&self.writer);
+        self.waiting.fetch_sub(1, Ordering::AcqRel);
         if w.closed || w.conn.is_none() || !self.is_healthy() {
             return Err(EngineError::Unavailable);
         }
@@ -650,13 +714,29 @@ impl Engine {
         command: &Command,
         cancel: &Cancel,
     ) -> Result<Outcome, EngineError> {
+        self.execute_checked(actor, command_id, command, cancel, |_| Ok(()))
+    }
+
+    /// [`execute_cancellable`](Self::execute_cancellable) that first runs `check` inside the writer,
+    /// against the exact state the idempotency lookup and `decide` then use, so nothing can change
+    /// between the check and the write. An error from `check` is returned as is and nothing is stored;
+    /// it runs before the idempotency lookup, so it also refuses a retry.
+    pub fn execute_checked(
+        &self,
+        actor: &Actor,
+        command_id: Uuid,
+        command: &Command,
+        cancel: &Cancel,
+        check: impl FnOnce(&Locked<'_>) -> Result<(), EngineError>,
+    ) -> Result<Outcome, EngineError> {
         let mut w = self.writer(cancel)?;
+        let base = self.state();
+        self.check_locked(&w, &base, check)?;
         let hash = request_hash("command", actor, command)?;
         if let Some(o) = self.replay(w.conn()?, command_id, "command", &hash)? {
             return Ok(o);
         }
         let now = self.next_now(&mut w);
-        let base = self.state();
         let events = decide(&base, actor, command, now)?;
         self.commit(
             &mut w,
@@ -800,7 +880,25 @@ impl Engine {
         expect: Option<UndoExpect>,
         cancel: &Cancel,
     ) -> Result<Outcome, EngineError> {
+        self.undo_checked(actor, seq, force, command_id, expect, cancel, |_| Ok(()))
+    }
+
+    /// [`undo_expecting`](Self::undo_expecting) that first runs `check` inside the writer, before the
+    /// idempotency lookup and the expected-event check (see [`execute_checked`](Self::execute_checked)).
+    #[allow(clippy::too_many_arguments)] // `undo_expecting`'s arguments and the check.
+    pub fn undo_checked(
+        &self,
+        actor: &Actor,
+        seq: u64,
+        force: bool,
+        command_id: Option<Uuid>,
+        expect: Option<UndoExpect>,
+        cancel: &Cancel,
+        check: impl FnOnce(&Locked<'_>) -> Result<(), EngineError>,
+    ) -> Result<Outcome, EngineError> {
         let mut w = self.writer(cancel)?;
+        let base = self.state();
+        self.check_locked(&w, &base, check)?;
         let body = UndoRequestBody {
             seq,
             force,
@@ -837,7 +935,6 @@ impl Engine {
         }
         let group = db::events_in_group(w.conn()?, target.group)?;
         let now = self.next_now(&mut w);
-        let base = self.state();
         let comp = match undo_batch(&base, &group, actor, now, UndoOptions { force }) {
             Ok(c) => c,
             Err(error) => {
@@ -860,6 +957,22 @@ impl Engine {
             summary::undo,
             |_| Ok(()),
         )
+    }
+
+    /// Runs a write's `check` against `base`, the state read under the writer `w`.
+    fn check_locked(
+        &self,
+        w: &Writer,
+        base: &State,
+        check: impl FnOnce(&Locked<'_>) -> Result<(), EngineError>,
+    ) -> Result<(), EngineError> {
+        // `state` before `whereabouts`, as `whereabouts` asks; under the writer neither changes.
+        let gone = self.whereabouts();
+        check(&Locked {
+            state: base,
+            gone: &gone,
+            conn: w.conn()?,
+        })
     }
 
     fn seqs_for(

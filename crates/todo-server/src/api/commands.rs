@@ -63,10 +63,17 @@ pub async fn post_command(
     // The deadline middleware owns `cancel`: it either cancels the write before it commits (408) or
     // waits for the commit (see `crate::app`).
     let outcome = blocking(&app, Work::Write, move || {
-        // Hidden and missing targets look the same (see `hidden`), also for a retry.
+        // Hidden and missing targets look the same (see `hidden`), also for a retry. The snapshot
+        // check refuses early; the one inside the writer decides.
         hidden::check_command(&engine.state(), &auth.actor, &req.command)?;
         engine
-            .execute_cancellable(&auth.actor, req.command_id, &req.command, &cancel)
+            .execute_checked(
+                &auth.actor,
+                req.command_id,
+                &req.command,
+                &cancel,
+                hidden::command_check(&auth.actor, &req.command),
+            )
             .map_err(|e| hidden::write_error(&auth.actor, e))
     })
     .await??;
@@ -127,15 +134,16 @@ pub async fn post_undo(
     let agent = matches!(auth.actor, todo_core::Actor::Agent { .. });
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
-        // Invisible and missing events look the same (see `hidden`), also for a retry.
-        hidden::check_undo(&engine, &auth.actor, seq)?;
-        let done = engine.undo_expecting(
+        // Invisible and missing events look the same (see `hidden`), also for a retry: checked inside
+        // the writer, before the idempotency lookup and the expected-event check.
+        let done = engine.undo_checked(
             &auth.actor,
             seq,
             req.force,
             Some(command_id),
             Some(expect),
             &cancel,
+            hidden::undo_check(&auth.actor, seq),
         );
         done.map_err(|e| match e {
             EngineError::UndoTargetMismatch { seq, .. } if agent => ApiError::new(

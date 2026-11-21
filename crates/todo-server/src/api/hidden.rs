@@ -4,8 +4,8 @@
 //! list the agent cannot read would get `forbidden` while one on a missing task gets `not_found`, which
 //! tells the agent the hidden task exists. Likewise for undo, by sequence number.
 //!
-//! So the shared write path (`POST /commands` and `POST /events/{seq}/undo`, which MCP goes through
-//! too) runs these checks first, against the current state:
+//! So the shared write paths (`POST /commands` and `POST /events/{seq}/undo`, which MCP goes through
+//! too, and the attachment upload) run these checks first:
 //!
 //! - every entity a command refers to (not the ones it creates) must exist and be readable by the
 //!   caller, or the response is exactly what core gives for a missing entity: 404 `not_found` with that
@@ -20,8 +20,19 @@
 //! so a retry whose targets have since become hidden gets the same `not_found` instead of the stored
 //! result; the record is kept and the write never runs twice.
 //!
-//! They read a snapshot taken just before the engine takes the writer, so a grant change that lands in
-//! between is not seen by this one request.
+//! **Inside the writer.** Core checks the level only on the entity a command changes, not on every
+//! entity it refers to (`add_tag` checks the task, and only that the tag exists), so visibility decided
+//! here must not go stale before the write. The authoritative checks ([`command_check`],
+//! [`undo_check`]) run inside the engine's writer ([`Engine::execute_checked`],
+//! [`Engine::undo_checked`]), against the exact state the idempotency lookup and `decide` use; grant
+//! changes take the writer too ([`Engine::set_grants`]). A target that became hidden while the request
+//! waited for the writer (its grant was revoked, its list deleted or moved) gets the same answer as a
+//! missing one and nothing is stored. For commands, [`check_command`] also runs before the writer on a
+//! snapshot, as a fast path that refuses without waiting; it is cheap (in memory) and never the last
+//! word. Undo is checked only inside the writer, as its check reads the log.
+//!
+//! Email ingest writes as `email-ingest`, which is not an agent (it sees everything), and picks its list
+//! inside the writer, so it needs none of this.
 //!
 //! Imports (`import_entity`, owner-only) are refused for agents here with one fixed `forbidden`,
 //! whatever list they name.
@@ -36,7 +47,9 @@
 
 use super::error::{ApiError, domain_error};
 use super::visibility;
-use crate::engine::{Engine, EngineError};
+#[cfg(doc)]
+use crate::engine::Engine;
+use crate::engine::{EngineError, Locked};
 use axum::http::StatusCode;
 use todo_core::AccessLevel;
 use todo_core::access::entity_target;
@@ -186,53 +199,61 @@ pub fn write_error(actor: &Actor, e: EngineError) -> ApiError {
     }
 }
 
-/// `not_found` for the first entity `cmd` refers to that is missing or that `actor` cannot read, and
-/// `forbidden` for an import.
-pub fn check_command(state: &State, actor: &Actor, cmd: &Command) -> Result<(), ApiError> {
+/// The error core would give if `cmd` referred to a missing entity, for the first entity it refers to
+/// that is missing or that `actor` cannot read; `Denied` for an import by an agent.
+fn hidden_reference(state: &State, actor: &Actor, cmd: &Command) -> Option<DomainError> {
     if visibility::sees_all(actor) {
-        return Ok(());
+        return None;
     }
     if matches!(cmd, Command::ImportEntity { .. }) {
         // Core would refuse it too, but with the caller's level on the import's target list, which
         // tells a hidden list from a missing one. No agent may import anywhere: one fixed answer.
-        return Err(domain_error(&DomainError::Denied(AccessDenied {
+        return Some(DomainError::Denied(AccessDenied {
             needed: AccessLevel::Plan,
             have: AccessLevel::None,
             owner_only: true,
-        })));
+        }));
     }
-    match referenced(cmd)
+    referenced(cmd)
         .into_iter()
         .find(|id| !exists(state, *id) || !readable(state, actor, *id))
-    {
-        Some(id) => Err(domain_error(&DomainError::NotFound(id))),
-        None => Ok(()),
-    }
+        .map(DomainError::NotFound)
 }
 
-/// `event_not_found` (as for a missing sequence number) unless the event at `seq` exists and `actor`
-/// can see it. Blocking: reads the event from the log.
-pub fn check_undo(engine: &Engine, actor: &Actor, seq: u64) -> Result<(), ApiError> {
-    if visibility::sees_all(actor) {
-        return Ok(());
-    }
-    // One event, with the scope recorded when it was written; no byte budget, as nothing is sent.
-    let page = engine.events_since_capped(seq.saturating_sub(1), 1, usize::MAX)?;
-    let visible = page
-        .events
-        .iter()
-        .find(|e| e.event.seq == Some(seq))
-        .is_some_and(|e| {
-            let scope = page.scopes.get(&seq);
-            // `state` before `whereabouts`, as `Engine::whereabouts` asks.
-            let state = engine.state();
-            let gone = engine.whereabouts();
-            visibility::event_visible(&state, &gone, actor, &e.event, scope)
+/// `not_found` for the first entity `cmd` refers to that is missing or that `actor` cannot read, and
+/// `forbidden` for an import. The fast path before the writer; [`command_check`] decides.
+pub fn check_command(state: &State, actor: &Actor, cmd: &Command) -> Result<(), ApiError> {
+    hidden_reference(state, actor, cmd).map_or(Ok(()), |e| Err(domain_error(&e)))
+}
+
+/// [`check_command`] as a check inside the writer, for [`Engine::execute_checked`]. Its error, mapped
+/// by [`write_error`], is exactly the one [`check_command`] gives.
+pub fn command_check<'a>(
+    actor: &'a Actor,
+    cmd: &'a Command,
+) -> impl FnOnce(&Locked<'_>) -> Result<(), EngineError> + 'a {
+    move |locked| hidden_reference(locked.state, actor, cmd).map_or(Ok(()), |e| Err(e.into()))
+}
+
+/// A check inside the writer, for [`Engine::undo_checked`]: `event_not_found` (as for a missing
+/// sequence number) unless the event at `seq` exists and `actor` can see it.
+pub fn undo_check(
+    actor: &Actor,
+    seq: u64,
+) -> impl FnOnce(&Locked<'_>) -> Result<(), EngineError> + '_ {
+    move |locked| {
+        if visibility::sees_all(actor) {
+            return Ok(());
+        }
+        // The event with the scope recorded when it was written.
+        let visible = locked.event_with_scope(seq)?.is_some_and(|(event, scope)| {
+            visibility::event_visible(locked.state, locked.gone, actor, &event, scope.as_ref())
         });
-    if visible {
-        Ok(())
-    } else {
-        Err(EngineError::EventNotFound(seq).into())
+        if visible {
+            Ok(())
+        } else {
+            Err(EngineError::EventNotFound(seq))
+        }
     }
 }
 
