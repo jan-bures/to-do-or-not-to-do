@@ -1,0 +1,750 @@
+//! SQLite storage for authentication: owner passkeys, ceremony state, browser sessions, paired
+//! devices, agent tokens, share links and the audit log (tables from migration 2 in [`crate::db`]).
+//!
+//! The store has its own connection to the engine's database file (WAL mode lets it write alongside
+//! the engine's writer). Every method blocks: call them from the blocking pool. Secrets are passed in
+//! and stored only as hex SHA-256 hashes; times are Unix milliseconds.
+
+use crate::db::StoreError;
+use rusqlite::{Connection, OptionalExtension, params};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+use todo_core::{AgentId, DeviceId, Grants};
+use webauthn_rs::prelude::Passkey;
+
+/// Result alias.
+pub type Result<T, E = StoreError> = std::result::Result<T, E>;
+
+/// Most audit rows kept; older ones are dropped.
+pub const AUDIT_KEEP: i64 = 20_000;
+
+/// A stored owner passkey.
+#[derive(Debug, Clone)]
+pub struct PasskeyRow {
+    /// Row ID.
+    pub id: i64,
+    /// A label.
+    pub name: String,
+    /// The credential (public key, sign counter and flags).
+    pub passkey: Passkey,
+    /// Registration time.
+    pub created_at: i64,
+    /// Last successful use.
+    pub last_used_at: Option<i64>,
+}
+
+/// A browser session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRow {
+    /// Hex SHA-256 of the cookie value.
+    pub id_hash: String,
+    /// The CSRF synchronizer token.
+    pub csrf: String,
+    /// Sign-in time.
+    pub created_at: i64,
+    /// Last request.
+    pub last_seen_at: i64,
+    /// Last passkey verification (sign-in or step-up).
+    pub verified_at: i64,
+}
+
+/// A paired device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRow {
+    /// The device ID (the actor of its events).
+    pub id: DeviceId,
+    /// The name the client gave at pairing.
+    pub name: String,
+    /// Hex SHA-256 of the device token.
+    pub token_hash: String,
+    /// Pairing time.
+    pub created_at: i64,
+    /// Last authenticated request (updated at most once a minute).
+    pub last_used_at: Option<i64>,
+    /// Revocation time.
+    pub revoked_at: Option<i64>,
+}
+
+/// An agent token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRow {
+    /// Row ID.
+    pub id: i64,
+    /// The agent.
+    pub agent: AgentId,
+    /// Hex SHA-256 of the token.
+    pub token_hash: String,
+    /// Access levels.
+    pub grants: Grants,
+    /// Write quota.
+    pub writes_per_hour: u32,
+    /// Creation time.
+    pub created_at: i64,
+    /// Expiry, if any.
+    pub expires_at: Option<i64>,
+    /// Last authenticated request (updated at most once a minute).
+    pub last_used_at: Option<i64>,
+    /// Revocation time.
+    pub revoked_at: Option<i64>,
+}
+
+/// What a share link shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareTarget {
+    /// One list.
+    List(todo_core::ids::ListId),
+    /// The lists of a collection.
+    Collection(todo_core::ids::CollectionId),
+}
+
+impl ShareTarget {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::List(_) => "list",
+            Self::Collection(_) => "collection",
+        }
+    }
+
+    fn id(self) -> String {
+        match self {
+            Self::List(l) => l.to_string(),
+            Self::Collection(c) => c.to_string(),
+        }
+    }
+
+    fn parse(kind: &str, id: &str) -> Result<Self> {
+        let bad = |e: String| StoreError::Corrupt(format!("share target: {e}"));
+        match kind {
+            "list" => Ok(Self::List(id.parse().map_err(|e| bad(format!("{e}")))?)),
+            "collection" => Ok(Self::Collection(
+                id.parse().map_err(|e| bad(format!("{e}")))?,
+            )),
+            other => Err(bad(format!("unknown kind {other}"))),
+        }
+    }
+}
+
+/// A share link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareRow {
+    /// Row ID.
+    pub id: i64,
+    /// What it shows.
+    pub target: ShareTarget,
+    /// Creation time.
+    pub created_at: i64,
+    /// Last rotation.
+    pub rotated_at: Option<i64>,
+    /// Revocation time.
+    pub revoked_at: Option<i64>,
+}
+
+/// An audit entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRow {
+    /// Row ID.
+    pub id: i64,
+    /// Time.
+    pub at: i64,
+    /// What happened (see [`super::audit`]).
+    pub kind: String,
+    /// Client IP, if known.
+    pub ip: Option<String>,
+    /// JSON details (never secrets).
+    pub detail: String,
+}
+
+/// The authentication store.
+pub struct AuthStore {
+    conn: Mutex<Connection>,
+}
+
+impl std::fmt::Debug for AuthStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthStore")
+    }
+}
+
+fn corrupt(what: &str) -> impl FnOnce(String) -> StoreError + '_ {
+    move |e| StoreError::Corrupt(format!("{what}: {e}"))
+}
+
+type RawDevice = (String, String, String, i64, Option<i64>, Option<i64>);
+
+fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawDevice> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+    ))
+}
+
+type RawAgent = (
+    i64,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
+
+fn agent_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawAgent> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+    ))
+}
+
+fn decode_agent(raw: RawAgent) -> Result<AgentRow> {
+    let (id, agent, token_hash, grants, wph, created_at, expires_at, last_used_at, revoked_at) =
+        raw;
+    Ok(AgentRow {
+        id,
+        agent: AgentId::new(agent).map_err(|e| corrupt("agent id")(e.to_string()))?,
+        token_hash,
+        grants: serde_json::from_str(&grants)?,
+        writes_per_hour: u32::try_from(wph).unwrap_or(u32::MAX),
+        created_at,
+        expires_at,
+        last_used_at,
+        revoked_at,
+    })
+}
+
+const AGENT_COLUMNS: &str = "id, agent_id, token_hash, grants, writes_per_hour, created_at, expires_at, last_used_at, revoked_at";
+
+impl AuthStore {
+    /// Opens a connection to the (already migrated) database at `path`.
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // ---- meta -------------------------------------------------------------------------------------
+
+    /// A meta value.
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT value FROM auth_meta WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Sets a meta value.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO auth_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    // ---- passkeys ---------------------------------------------------------------------------------
+
+    /// All owner passkeys.
+    pub fn passkeys(&self) -> Result<Vec<PasskeyRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, passkey, created_at, last_used_at FROM passkeys ORDER BY id",
+        )?;
+        let raws = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raws.into_iter()
+            .map(|(id, name, pk, created_at, last_used_at)| {
+                Ok(PasskeyRow {
+                    id,
+                    name,
+                    passkey: serde_json::from_str(&pk)?,
+                    created_at,
+                    last_used_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Stores a new passkey. Returns false if the credential ID is already registered.
+    pub fn add_passkey(&self, name: &str, passkey: &Passkey, now: i64) -> Result<bool> {
+        let cred_id = hex::encode(passkey.cred_id());
+        let n = self.conn().execute(
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (cred_id) DO NOTHING",
+            params![cred_id, name, serde_json::to_string(passkey)?, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Saves a passkey after use (new sign counter) and records the use.
+    pub fn update_passkey(&self, id: i64, passkey: &Passkey, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE passkeys SET passkey = ?2, last_used_at = ?3 WHERE id = ?1",
+            params![id, serde_json::to_string(passkey)?, now],
+        )?;
+        Ok(())
+    }
+
+    // ---- ceremonies -------------------------------------------------------------------------------
+
+    /// Stores the server half of a WebAuthn ceremony. `session` binds it to a browser session.
+    pub fn put_ceremony(
+        &self,
+        id_hash: &str,
+        kind: &str,
+        session: Option<&str>,
+        state: &str,
+        expires_at: i64,
+        now: i64,
+    ) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM ceremonies WHERE expires_at <= ?1", [now])?;
+        conn.execute(
+            "INSERT INTO ceremonies (id, kind, session, state, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id_hash, kind, session, state, expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Takes (deletes and returns) a ceremony's state if it exists, has this kind and session and has
+    /// not expired. A ceremony can be finished at most once.
+    pub fn take_ceremony(
+        &self,
+        id_hash: &str,
+        kind: &str,
+        session: Option<&str>,
+        now: i64,
+    ) -> Result<Option<String>> {
+        let conn = self.conn();
+        let row: Option<(String, Option<String>, String, i64)> = conn
+            .query_row(
+                "DELETE FROM ceremonies WHERE id = ?1 RETURNING kind, session, state, expires_at",
+                [id_hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(k, s, state, exp)| {
+            (k == kind && s.as_deref() == session && exp > now).then_some(state)
+        }))
+    }
+
+    // ---- sessions ---------------------------------------------------------------------------------
+
+    /// Creates a session.
+    pub fn create_session(&self, id_hash: &str, csrf: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at)
+             VALUES (?1, ?2, ?3, ?3, ?3)",
+            params![id_hash, csrf, now],
+        )?;
+        Ok(())
+    }
+
+    /// A session by its hash.
+    pub fn session(&self, id_hash: &str) -> Result<Option<SessionRow>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id_hash, csrf, created_at, last_seen_at, verified_at FROM sessions WHERE id_hash = ?1",
+                [id_hash],
+                |r| {
+                    Ok(SessionRow {
+                        id_hash: r.get(0)?,
+                        csrf: r.get(1)?,
+                        created_at: r.get(2)?,
+                        last_seen_at: r.get(3)?,
+                        verified_at: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Records activity on a session.
+    pub fn touch_session(&self, id_hash: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+            params![id_hash, now],
+        )?;
+        Ok(())
+    }
+
+    /// Records a fresh passkey verification (step-up) on a session.
+    pub fn set_verified(&self, id_hash: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE sessions SET verified_at = ?2, last_seen_at = ?2 WHERE id_hash = ?1",
+            params![id_hash, now],
+        )?;
+        Ok(())
+    }
+
+    /// Ends a session.
+    pub fn delete_session(&self, id_hash: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM sessions WHERE id_hash = ?1", [id_hash])?;
+        Ok(())
+    }
+
+    /// Deletes sessions idle since `idle_before` or created before `created_before`.
+    pub fn purge_sessions(&self, idle_before: i64, created_before: i64) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM sessions WHERE last_seen_at < ?1 OR created_at < ?2",
+            params![idle_before, created_before],
+        )?;
+        Ok(())
+    }
+
+    // ---- devices ----------------------------------------------------------------------------------
+
+    /// Stores a newly paired device.
+    pub fn add_device(&self, id: &DeviceId, name: &str, token_hash: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id.as_str(), name, token_hash, now],
+        )?;
+        Ok(())
+    }
+
+    /// All devices, newest first.
+    pub fn devices(&self) -> Result<Vec<DeviceRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, token_hash, created_at, last_used_at, revoked_at FROM devices
+             ORDER BY created_at DESC, id",
+        )?;
+        let raws = stmt
+            .query_map([], device_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raws.into_iter()
+            .map(
+                |(id, name, token_hash, created_at, last_used_at, revoked_at)| {
+                    Ok(DeviceRow {
+                        id: DeviceId::new(id).map_err(|e| corrupt("device id")(e.to_string()))?,
+                        name,
+                        token_hash,
+                        created_at,
+                        last_used_at,
+                        revoked_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Revokes a device. Returns false if there is no such active device.
+    pub fn revoke_device(&self, id: &str, now: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE devices SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Records use of a device token.
+    pub fn touch_device(&self, id: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE devices SET last_used_at = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        Ok(())
+    }
+
+    // ---- agent tokens -----------------------------------------------------------------------------
+
+    /// Stores a new agent token. Returns `None` if the agent already has an active token.
+    pub fn add_agent(
+        &self,
+        agent: &AgentId,
+        token_hash: &str,
+        grants: &Grants,
+        writes_per_hour: u32,
+        expires_at: Option<i64>,
+        now: i64,
+    ) -> Result<Option<i64>> {
+        let conn = self.conn();
+        let r = conn.execute(
+            "INSERT INTO agent_tokens (agent_id, token_hash, grants, writes_per_hour, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                agent.as_str(),
+                token_hash,
+                serde_json::to_string(grants)?,
+                i64::from(writes_per_hour),
+                now,
+                expires_at
+            ],
+        );
+        match r {
+            Ok(_) => Ok(Some(conn.last_insert_rowid())),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// All agent tokens, newest first.
+    pub fn agents(&self) -> Result<Vec<AgentRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {AGENT_COLUMNS} FROM agent_tokens ORDER BY id DESC"
+        ))?;
+        let raws = stmt
+            .query_map([], agent_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raws.into_iter().map(decode_agent).collect()
+    }
+
+    /// One agent token.
+    pub fn agent(&self, id: i64) -> Result<Option<AgentRow>> {
+        let raw = self
+            .conn()
+            .query_row(
+                &format!("SELECT {AGENT_COLUMNS} FROM agent_tokens WHERE id = ?1"),
+                [id],
+                agent_row,
+            )
+            .optional()?;
+        raw.map(decode_agent).transpose()
+    }
+
+    /// Revokes an agent token. Returns false if it is not active.
+    pub fn revoke_agent(&self, id: i64, now: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE agent_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Replaces an active agent token's grants. Returns false if it is not active.
+    pub fn set_agent_grants(&self, id: i64, grants: &Grants) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE agent_tokens SET grants = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, serde_json::to_string(grants)?],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Records use of an agent token.
+    pub fn touch_agent(&self, id: i64, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE agent_tokens SET last_used_at = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        Ok(())
+    }
+
+    // ---- share links ------------------------------------------------------------------------------
+
+    /// Stores a new share link.
+    pub fn add_share(&self, token_hash: &str, target: ShareTarget, now: i64) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO share_links (token_hash, target_kind, target_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![token_hash, target.kind(), target.id(), now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn shares_where(&self, clause: &str, p: impl rusqlite::Params) -> Result<Vec<ShareRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT id, target_kind, target_id, created_at, rotated_at, revoked_at FROM share_links {clause}"
+        ))?;
+        let raws = stmt
+            .query_map(p, |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raws.into_iter()
+            .map(|(id, kind, target, created_at, rotated_at, revoked_at)| {
+                Ok(ShareRow {
+                    id,
+                    target: ShareTarget::parse(&kind, &target)?,
+                    created_at,
+                    rotated_at,
+                    revoked_at,
+                })
+            })
+            .collect()
+    }
+
+    /// All share links, newest first.
+    pub fn shares(&self) -> Result<Vec<ShareRow>> {
+        self.shares_where("ORDER BY id DESC", [])
+    }
+
+    /// The active share link with this token hash.
+    pub fn share_by_hash(&self, token_hash: &str) -> Result<Option<ShareRow>> {
+        Ok(self
+            .shares_where("WHERE token_hash = ?1 AND revoked_at IS NULL", [token_hash])?
+            .into_iter()
+            .next())
+    }
+
+    /// Revokes a share link. Returns false if it is not active.
+    pub fn revoke_share(&self, id: i64, now: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE share_links SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Gives an active share link a new token. Returns false if it is not active.
+    pub fn rotate_share(&self, id: i64, token_hash: &str, now: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE share_links SET token_hash = ?2, rotated_at = ?3 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, token_hash, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    // ---- audit ------------------------------------------------------------------------------------
+
+    /// Appends an audit entry and drops the oldest beyond [`AUDIT_KEEP`].
+    pub fn audit(&self, at: i64, kind: &str, ip: Option<&str>, detail: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO audit (at, kind, ip, detail) VALUES (?1, ?2, ?3, ?4)",
+            params![at, kind, ip, detail],
+        )?;
+        let id = conn.last_insert_rowid();
+        if id % 512 == 0 {
+            conn.execute("DELETE FROM audit WHERE id <= ?1", [id - AUDIT_KEEP])?;
+        }
+        Ok(())
+    }
+
+    /// The newest audit entries, newest first.
+    pub fn audit_page(&self, limit: usize) -> Result<Vec<AuditRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, at, kind, ip, detail FROM audit ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+                Ok(AuditRow {
+                    id: r.get(0)?,
+                    at: r.get(1)?,
+                    kind: r.get(2)?,
+                    ip: r.get(3)?,
+                    detail: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, AuthStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite3");
+        drop(crate::db::open_writer(&path).unwrap());
+        let s = AuthStore::open(&path).unwrap();
+        (dir, s)
+    }
+
+    #[test]
+    fn ceremonies_are_single_use_bound_and_expire() {
+        let (_d, s) = store();
+        s.put_ceremony("a", "login", None, "{}", 100, 0).unwrap();
+        assert_eq!(
+            s.take_ceremony("a", "login", None, 50).unwrap().as_deref(),
+            Some("{}")
+        );
+        assert_eq!(
+            s.take_ceremony("a", "login", None, 50).unwrap(),
+            None,
+            "used"
+        );
+        s.put_ceremony("b", "login", None, "{}", 100, 0).unwrap();
+        assert_eq!(
+            s.take_ceremony("b", "login", None, 100).unwrap(),
+            None,
+            "expired"
+        );
+        s.put_ceremony("c", "step_up", Some("s1"), "{}", 100, 0)
+            .unwrap();
+        assert_eq!(
+            s.take_ceremony("c", "step_up", Some("s2"), 1).unwrap(),
+            None,
+            "other session"
+        );
+        s.put_ceremony("d", "step_up", Some("s1"), "{}", 100, 0)
+            .unwrap();
+        assert_eq!(
+            s.take_ceremony("d", "login", Some("s1"), 1).unwrap(),
+            None,
+            "other kind"
+        );
+    }
+
+    #[test]
+    fn one_active_token_per_agent() {
+        let (_d, s) = store();
+        let a = AgentId::new("bot").unwrap();
+        let g = Grants::default();
+        let id = s.add_agent(&a, "h1", &g, 10, None, 0).unwrap().unwrap();
+        assert_eq!(s.add_agent(&a, "h2", &g, 10, None, 0).unwrap(), None);
+        assert!(s.revoke_agent(id, 1).unwrap());
+        assert!(!s.revoke_agent(id, 1).unwrap());
+        assert!(s.add_agent(&a, "h3", &g, 10, None, 2).unwrap().is_some());
+        assert_eq!(s.agents().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn audit_rows_are_kept_newest_first() {
+        let (_d, s) = store();
+        s.audit(1, "sign_in", Some("127.0.0.1"), "{}").unwrap();
+        s.audit(2, "sign_out", None, "{}").unwrap();
+        let rows = s.audit_page(10).unwrap();
+        assert_eq!(rows[0].kind, "sign_out");
+        assert_eq!(rows[1].ip.as_deref(), Some("127.0.0.1"));
+    }
+}

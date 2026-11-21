@@ -471,7 +471,9 @@ async fn protected_route_list_covers_the_openapi_document() {
             (m.to_string(), p)
         })
         .collect();
-    for d in &documented {
+    let public: BTreeSet<(String, String)> =
+        todo_server::app::public_routes().into_iter().collect();
+    for d in documented.iter().filter(|d| !public.contains(*d)) {
         assert!(
             tested.contains(d),
             "route {d:?} is not covered by protected_routes()"

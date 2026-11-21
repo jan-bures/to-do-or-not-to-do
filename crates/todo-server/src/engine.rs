@@ -27,6 +27,7 @@
 
 pub use crate::cancel::{Cancel, CancelOnDrop};
 use crate::db::{self, CommandRecord, LogEvent, StoreError};
+use crate::scope::{EventScope, ScopeBuilder};
 use crate::summary;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ use todo_core::event::Event;
 use todo_core::ids::{EntityId, EventId};
 use todo_core::time::Timestamp;
 use todo_core::undo::{UndoOptions, undo_batch};
-use todo_core::{Actor, State, apply, decide};
+use todo_core::{Actor, AgentId, Grants, State, apply, decide};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -53,6 +54,15 @@ pub type Clock = Arc<dyn Fn() -> Timestamp + Send + Sync>;
 #[must_use]
 pub fn system_clock() -> Clock {
     Arc::new(Timestamp::now)
+}
+
+/// A committed event and its scope, as broadcast to live subscribers.
+#[derive(Debug, Clone)]
+pub struct LiveEvent {
+    /// The event.
+    pub event: LogEvent,
+    /// Where it happened (see [`crate::scope`]).
+    pub scope: EventScope,
 }
 
 /// Capacity of the live event broadcast channel. Slower subscribers lag and re-read from the database.
@@ -151,7 +161,7 @@ pub struct Engine {
     state: RwLock<Arc<State>>,
     writer: Mutex<Writer>,
     readers: Mutex<Vec<Connection>>,
-    live: broadcast::Sender<Arc<LogEvent>>,
+    live: broadcast::Sender<Arc<LiveEvent>>,
     head: AtomicU64,
     /// The log epoch (see [`db::log_epoch`]).
     epoch: Uuid,
@@ -266,6 +276,10 @@ impl Engine {
     pub fn open(path: &Path, clock: Clock) -> Result<Self, StoreError> {
         let owner_lock = db::lock_database(path)?;
         let mut conn = db::open_writer(path)?;
+        let backfilled = db::backfill_scopes(&mut conn)?;
+        if backfilled > 0 {
+            tracing::info!(events = backfilled, "recorded the scopes of earlier events");
+        }
         let state = db::fold_log(&conn)?;
         let head = db::head_seq(&conn)?;
         let projected = db::load_projections(&conn)?;
@@ -359,7 +373,7 @@ impl Engine {
 
     /// Subscribes to events committed from now on.
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<Arc<LogEvent>> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<LiveEvent>> {
         self.live.subscribe()
     }
 
@@ -370,6 +384,15 @@ impl Engine {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Replaces the agents' access grants in the state (they are managed by the auth service, not
+    /// event-sourced). Takes the writer lock, so no write in progress can put back the old grants.
+    pub fn set_grants(&self, grants: BTreeMap<AgentId, Grants>) {
+        let _w = lock(&self.writer);
+        let mut next = (*self.state()).clone();
+        next.grants = grants;
+        *self.state.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
     }
 
     /// False once a failed write could not be rolled back; every request then gets 503.
@@ -680,6 +703,7 @@ impl Engine {
         summarize: impl FnOnce(&State, &[Event]) -> String,
     ) -> Result<Outcome, EngineError> {
         let mut next = base.clone();
+        let mut scopes = Vec::with_capacity(events.len());
         let command_id = p.command_id;
         let cid = command_id.to_string();
         let head_before = self.head_seq();
@@ -692,10 +716,17 @@ impl Engine {
                 .map_err(StoreError::from)?;
             let mut touched = BTreeSet::<EntityId>::new();
             for (i, e) in events.iter_mut().enumerate() {
-                e.seq = Some(db::insert_event(&tx, e, &cid, i)?);
+                let seq = db::insert_event(&tx, e, &cid, i)?;
+                e.seq = Some(seq);
+                let mut scope = ScopeBuilder::default();
+                scope.observe(&next, &e.payload);
                 apply(&mut next, e).map_err(|err| {
                     StoreError::Corrupt(format!("decided event does not apply: {err}"))
                 })?;
+                scope.observe(&next, &e.payload);
+                let scope = scope.finish();
+                db::insert_scope(&tx, seq, &scope)?;
+                scopes.push(scope);
                 touched.insert(e.payload.target());
             }
             db::sync_entities(&tx, &next, touched.iter().copied())?;
@@ -745,13 +776,14 @@ impl Engine {
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);
         }
-        for (i, event) in events.into_iter().enumerate() {
+        for (i, (event, scope)) in events.into_iter().zip(scopes).enumerate() {
             // No receivers is fine.
-            let _ = self.live.send(Arc::new(LogEvent {
+            let event = LogEvent {
                 event,
                 command_id,
                 command_idx: u32::try_from(i).unwrap_or(u32::MAX),
-            }));
+            };
+            let _ = self.live.send(Arc::new(LiveEvent { event, scope }));
         }
         Ok(Outcome {
             result,

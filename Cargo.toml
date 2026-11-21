@@ -6,6 +6,7 @@ members = [
     "crates/todo-server",
     "crates/todo-import",
     "crates/todo-backup",
+    "crates/todo-fs",
 ]
 # Spikes are standalone throwaway projects and are not part of the workspace.
 exclude = ["spikes"]
@@ -22,6 +23,7 @@ publish = false
 todo-core = { path = "crates/todo-core" }
 todo-client = { path = "crates/todo-client" }
 todo-server = { path = "crates/todo-server" }
+todo-fs = { path = "crates/todo-fs" }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
@@ -33,7 +35,7 @@ uuid = { version = "1", default-features = false, features = ["serde"] }
 proptest = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Server-only dependencies (never used by todo-core or todo-client).
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "macros", "matched-path"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "macros", "matched-path", "form"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["server", "http1"] }
@@ -50,7 +52,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream"] }
 tempfile = "3"
-# todo-backup only.
+# todo-backup and todo-fs only.
 age = "0.12"
 rusty-s3 = "0.12"
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
@@ -60,6 +62,11 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # Client-only dependencies (`todo-client` features `native` and `sqlite`).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# Passkeys (server only). RustCrypto backend, no OpenSSL.
+webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation"] }
+# Software authenticator for driving passkey ceremonies in tests.
+webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
+getrandom = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

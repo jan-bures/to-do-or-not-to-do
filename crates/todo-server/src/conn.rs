@@ -22,6 +22,7 @@ use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +32,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::JoinSet;
+use tower::ServiceExt as _;
 
 /// When a connection's writes last stopped making progress.
 #[derive(Debug)]
@@ -149,6 +151,7 @@ impl AsyncWrite for Watched {
 
 async fn serve_connection(
     stream: TcpStream,
+    peer: SocketAddr,
     router: Router,
     limits: Limits,
     mut stop: watch::Receiver<bool>,
@@ -165,7 +168,13 @@ async fn serve_connection(
         .timer(TokioTimer::new())
         .header_read_timeout(limits.header_read_timeout())
         .keep_alive(true);
-    let conn = builder.serve_connection(io, TowerToHyperService::new(router));
+    // Handlers learn the peer address through `ConnectInfo` (rate limits, the audit log).
+    let service = router.map_request(move |mut req: hyper::Request<hyper::body::Incoming>| {
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        req
+    });
+    let conn = builder.serve_connection(io, TowerToHyperService::new(service));
     tokio::pin!(conn);
     let mut stopping = *stop.borrow_and_update();
     if stopping {
@@ -209,7 +218,7 @@ pub async fn serve(
             () = &mut signal => break,
             Some(_) = conns.join_next(), if !conns.is_empty() => {}
             accepted = listener.accept() => match accepted {
-                Ok((stream, _peer)) => {
+                Ok((stream, peer)) => {
                     let Ok(permit) = slots.clone().try_acquire_owned() else {
                         tracing::debug!("connection limit reached; closing a new connection");
                         drop(stream);
@@ -217,6 +226,7 @@ pub async fn serve(
                     };
                     conns.spawn(serve_connection(
                         stream,
+                        peer,
                         router.clone(),
                         limits.clone(),
                         stop.subscribe(),

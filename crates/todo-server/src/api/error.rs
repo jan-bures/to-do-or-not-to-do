@@ -234,6 +234,28 @@ impl ApiError {
         .with_retry_after(retry_after)
     }
 
+    /// 429 when a token sends API requests too fast, or a client IP hits the sign-in routes too often.
+    #[must_use]
+    pub fn too_many_requests(retry_after: u32) -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many requests; retry later",
+        )
+        .with_retry_after(retry_after)
+    }
+
+    /// 429 when an agent has used up its write quota for the rolling hour.
+    #[must_use]
+    pub fn quota_exceeded(retry_after: u32) -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "quota_exceeded",
+            "this agent token has used its write quota for the past hour",
+        )
+        .with_retry_after(retry_after)
+    }
+
     /// 400 for a malformed or unknown pagination cursor.
     #[must_use]
     pub fn invalid_cursor() -> Self {

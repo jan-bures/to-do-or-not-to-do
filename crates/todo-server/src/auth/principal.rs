@@ -1,26 +1,40 @@
 //! Who is calling, and what they may do.
 //!
 //! This is the seam between authentication and the rest of the server. Handlers only ever see an
-//! [`Authenticated`](super::Authenticated) carrying a [`Principal`]; how it was established (owner
-//! token today; sessions, agent tokens and passkeys in step 4a) stays inside the `auth` module.
+//! [`Authenticated`](super::Authenticated) carrying a [`Principal`]; how it was established (a paired
+//! device token, an agent token, or the development owner tokens) stays inside the `auth` module.
 
-use todo_core::{Actor, DeviceId};
+use todo_core::{Actor, AgentId, DeviceId};
 
-/// An authenticated caller.
+/// An authenticated API caller.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Principal {
     /// The owner, on one of their devices.
     Owner {
-        /// The device (from the token's configuration).
+        /// The device (paired, or from the development owner-token configuration).
         device: DeviceId,
+    },
+    /// An AI agent, through one agent token.
+    Agent {
+        /// The agent; its events are recorded as `Actor::agent(agent)`.
+        agent: AgentId,
+        /// The token's row ID (quotas, rate limits and revocation are per token).
+        token: i64,
     },
 }
 
-/// What a principal may do. Command-level checks still happen in `todo-core` against the [`Actor`].
+/// What a principal may do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Access {
-    /// Everything: reads, writes, undo of any event, the OpenAPI document.
+    /// Everything the API offers: reads, writes, undo of any event, the OpenAPI document.
     Full,
+    /// Only what the agent's grants allow. Reads are filtered by `todo-core`'s access levels (see
+    /// [`crate::api::visibility`]); commands and undo are checked by `todo-core` against the actor;
+    /// writes count against the token's quota.
+    Agent {
+        /// Writes (commands and undos) allowed per rolling hour.
+        writes_per_hour: u32,
+    },
 }
 
 impl Principal {
@@ -31,14 +45,15 @@ impl Principal {
             Self::Owner { device } => Actor::Owner {
                 device: device.clone(),
             },
+            Self::Agent { agent, .. } => Actor::Agent {
+                agent_id: agent.clone(),
+            },
         }
     }
 
-    /// The principal's access.
+    /// True for an agent.
     #[must_use]
-    pub fn access(&self) -> Access {
-        match self {
-            Self::Owner { .. } => Access::Full,
-        }
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent { .. })
     }
 }

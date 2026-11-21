@@ -1,12 +1,19 @@
 //! Application wiring: shared state, the router with its middleware, and the server lifecycle.
 //!
-//! Middleware, outermost first: access log, sensitive-header marking, JSON 413s, body limits, the
-//! request deadline; then per route: the route label, authentication, the handler.
+//! Middleware, outermost first: access log, security headers, sensitive-header marking, JSON 413s,
+//! body limits, the request deadline; then per route: the route label, authentication (bearer tokens
+//! for `/api/v1`, sessions for the admin pages), the handler.
+//!
+//! # Routes reachable without authentication
+//!
+//! Exactly [`public_routes`]; the integration tests check that list and that every other route
+//! rejects anonymous requests.
 
 use crate::api;
 use crate::api::RouteLabel;
 use crate::api::error::ApiError;
-use crate::auth::{Authenticator, OwnerTokens};
+use crate::auth::Authenticator;
+use crate::auth::service::{AuthInitError, AuthService, SetupCodeSink};
 use crate::cancel::Cancel;
 use crate::config::{Config, ConfigError, Limits};
 use crate::db::StoreError;
@@ -36,8 +43,10 @@ use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 pub struct AppState {
     /// The single writer and the in-memory state.
     pub engine: Arc<Engine>,
-    /// Request authentication.
+    /// Bearer authentication for the API.
     pub auth: Arc<dyn Authenticator>,
+    /// Passkeys, sessions, tokens, pairing, share links, rate limits and the audit log.
+    pub authsvc: Arc<AuthService>,
     /// The owner's time zone.
     pub zone: TimeZone,
     /// Limits.
@@ -75,6 +84,9 @@ pub enum ServerError {
     /// Storage failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// Authentication could not be set up.
+    #[error(transparent)]
+    Auth(#[from] AuthInitError),
     /// I/O failed (binding, creating the data directory).
     #[error("{context}: {source}")]
     Io {
@@ -172,11 +184,34 @@ async fn access_log(req: Request, next: Next) -> Response {
     res
 }
 
+/// Every route reachable without credentials: `(method, path template)`. Everything else needs a
+/// bearer token (`/api/v1`) or an owner session (the web pages).
+#[must_use]
+pub fn public_routes() -> Vec<(String, String)> {
+    let mut v = vec![
+        ("GET".to_owned(), "/health".to_owned()),
+        ("POST".to_owned(), "/api/v1/pair/start".to_owned()),
+        ("POST".to_owned(), "/api/v1/pair/poll".to_owned()),
+    ];
+    v.extend(
+        crate::web::routes()
+            .into_iter()
+            .filter(|(_, _, g)| *g == crate::web::Gate::Public)
+            .map(|(m, p, _)| (m.to_string(), p.to_owned())),
+    );
+    v
+}
+
 /// Builds the router with all middleware.
 pub fn router(state: AppState) -> Router {
     let limits = state.limits.clone();
+    let https = state
+        .authsvc
+        .origin()
+        .is_some_and(crate::config::PublicOrigin::is_https);
     Router::new()
         .route("/health", get(health))
+        .merge(crate::web::router(state.clone()))
         .route_layer(from_fn(api::tag_route))
         .nest("/api/v1", api::router(state.clone()))
         .layer(from_fn_with_state(limits.request_timeout(), deadline))
@@ -188,6 +223,7 @@ pub fn router(state: AppState) -> Router {
             PROXY_AUTHORIZATION,
             COOKIE,
         ]))
+        .layer(from_fn_with_state(https, crate::web::security_headers))
         .layer(from_fn(access_log))
         .with_state(state)
 }
@@ -195,10 +231,14 @@ pub fn router(state: AppState) -> Router {
 /// Extra knobs for embedding the server (tests).
 #[derive(Clone)]
 pub struct Options {
-    /// The clock for event times and "today".
+    /// The clock for event times, "today", and every authentication expiry.
     pub clock: Clock,
-    /// Authentication; defaults to the owner tokens from the config.
+    /// API authentication; defaults to the auth service (paired devices, agent tokens, and the
+    /// config owner tokens when allowed).
     pub auth: Option<Arc<dyn Authenticator>>,
+    /// Also receives the one-time setup code (which is otherwise only in the owner-only setup code
+    /// file, never in the log).
+    pub setup_code: Option<SetupCodeSink>,
 }
 
 impl std::fmt::Debug for Options {
@@ -214,6 +254,7 @@ impl Default for Options {
         Self {
             clock: system_clock(),
             auth: None,
+            setup_code: None,
         }
     }
 }
@@ -245,15 +286,20 @@ impl Server {
                 context: "opening the database".into(),
                 source: std::io::Error::other(e.to_string()),
             })??;
+        let engine = Arc::new(engine);
+        let authsvc = {
+            let (config, engine, sink) = (config.clone(), engine.clone(), options.setup_code);
+            tokio::task::spawn_blocking(move || AuthService::new(&config, engine, sink))
+                .await
+                .map_err(|e| ServerError::Io {
+                    context: "starting authentication".into(),
+                    source: std::io::Error::other(e.to_string()),
+                })??
+        };
+        let authsvc = Arc::new(authsvc);
         let auth: Arc<dyn Authenticator> = match options.auth {
             Some(a) => a,
-            None => {
-                let tokens = OwnerTokens::new(&config.auth.owner_tokens);
-                if tokens.is_empty() {
-                    tracing::warn!("no owner tokens configured; every API request will get 401");
-                }
-                Arc::new(tokens)
-            }
+            None => authsvc.clone(),
         };
         let listener = TcpListener::bind(config.bind)
             .await
@@ -262,10 +308,10 @@ impl Server {
                 source,
             })?;
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let engine = Arc::new(engine);
         let state = AppState {
             engine: engine.clone(),
             auth,
+            authsvc,
             zone,
             limits: config.limits.clone(),
             sse_slots: Arc::new(Semaphore::new(config.limits.max_sse_connections)),

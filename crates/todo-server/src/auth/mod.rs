@@ -1,26 +1,44 @@
-//! Authentication.
+//! Authentication and authorization.
 //!
-//! Every route except `GET /health` requires an [`Authenticated`] caller. The API router runs
-//! [`require_auth`] as a layer, so unknown paths and handlers that do not take the extractor are
-//! protected too; handlers take [`Authenticated`] to learn who is calling.
+//! Two kinds of callers reach the server:
 //!
-//! Step 3a accepts only owner bearer tokens ([`OwnerTokens`]). New schemes implement
-//! [`Authenticator`] and add a [`Principal`] variant.
+//! - **API clients** send `Authorization: Bearer <token>` to `/api/v1`: a paired device token
+//!   ([`Principal::Owner`]), an agent token ([`Principal::Agent`]), or, only with
+//!   `auth.allow_config_owner_tokens`, a static owner token from the config ([`OwnerTokens`]). The API
+//!   router runs [`require_auth`] as a layer, so unknown paths and handlers that do not take the
+//!   extractor are protected too; handlers take [`Authenticated`] to learn who is calling.
+//! - **The owner's browser** signs in with a passkey and gets a session cookie for the admin pages
+//!   ([`session`]). Sessions never authenticate the API, and bearer tokens never open the admin pages,
+//!   so agents cannot manage tokens, share links, devices or grants.
+//!
+//! [`service::AuthService`] holds the state; [`store`] persists it.
 
 mod owner_token;
 mod principal;
+
+pub mod limits;
+pub mod pairing;
+pub mod secret;
+pub mod service;
+pub mod session;
+pub mod store;
 
 pub use owner_token::{OwnerTokens, hash_token};
 pub use principal::{Access, Principal};
 
 use crate::api::error::ApiError;
 use crate::app::AppState;
-use axum::extract::{FromRequestParts, Request, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::HeaderMap;
+use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use todo_core::Actor;
+use std::net::SocketAddr;
+use todo_core::{Actor, DeviceId};
+
+/// Longest bearer token accepted; anything longer is rejected before hashing.
+pub const MAX_TOKEN_LEN: usize = 512;
 
 /// Why a request could not be authenticated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -28,47 +46,86 @@ pub enum AuthError {
     /// No credentials were sent.
     #[error("missing credentials")]
     Missing,
-    /// The credentials are malformed or unknown.
+    /// The credentials are malformed, unknown, revoked or expired.
     #[error("invalid credentials")]
     Invalid,
 }
 
-/// Turns request credentials into a principal.
+/// Turns request credentials into an authenticated caller.
 pub trait Authenticator: Send + Sync + std::fmt::Debug + 'static {
     /// Authenticates a request from its headers.
-    fn authenticate(&self, headers: &HeaderMap) -> Result<Principal, AuthError>;
+    fn authenticate(&self, headers: &HeaderMap) -> Result<Authenticated, AuthError>;
 }
 
-/// An authenticated caller: the principal, the actor its events are recorded under, and its access.
+/// The bearer token of a request.
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<&str, AuthError> {
+    let value = headers.get(AUTHORIZATION).ok_or(AuthError::Missing)?;
+    let value = value.to_str().map_err(|_| AuthError::Invalid)?;
+    let (scheme, token) = value.split_once(' ').ok_or(AuthError::Invalid)?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(AuthError::Invalid);
+    }
+    let token = token.trim();
+    if token.is_empty() || token.len() > MAX_TOKEN_LEN {
+        return Err(AuthError::Invalid);
+    }
+    Ok(token)
+}
+
+/// An authenticated API caller: the principal, the actor its events are recorded under, and its
+/// access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Authenticated {
     /// Who is calling.
     pub principal: Principal,
-    /// The `todo-core` actor for commands and undo.
+    /// The `todo-core` actor for commands, undo and read filtering.
     pub actor: Actor,
     /// What the caller may do.
     pub access: Access,
 }
 
-impl From<Principal> for Authenticated {
-    fn from(principal: Principal) -> Self {
+impl Authenticated {
+    /// The owner on `device`, with full access.
+    #[must_use]
+    pub fn owner(device: DeviceId) -> Self {
+        let principal = Principal::Owner { device };
         Self {
             actor: principal.actor(),
-            access: principal.access(),
             principal,
+            access: Access::Full,
+        }
+    }
+
+    /// True for an agent.
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        self.principal.is_agent()
+    }
+
+    /// Counts a write against an agent's quota (owners are not limited). 429 when exhausted.
+    pub fn take_write(&self, app: &AppState) -> Result<(), ApiError> {
+        match (&self.principal, &self.access) {
+            (Principal::Agent { token, .. }, Access::Agent { writes_per_hour }) => app
+                .authsvc
+                .quotas
+                .take(*token, *writes_per_hour)
+                .map_err(ApiError::quota_exceeded),
+            _ => Ok(()),
         }
     }
 }
 
+/// The TCP peer of a request (set by [`crate::conn`]).
+#[must_use]
+pub fn peer_ip(parts_ext: &axum::http::Extensions) -> Option<std::net::IpAddr> {
+    parts_ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip())
+}
+
 fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Authenticated, ApiError> {
-    state
-        .auth
-        .authenticate(headers)
-        .map(Authenticated::from)
-        .map_err(|e| {
-            tracing::debug!(reason = %e, "rejected request");
-            ApiError::unauthorized()
-        })
+    state.auth.authenticate(headers).map_err(|e| {
+        tracing::debug!(reason = %e, "rejected request");
+        ApiError::unauthorized()
+    })
 }
 
 impl FromRequestParts<AppState> for Authenticated {
@@ -87,13 +144,28 @@ impl FromRequestParts<AppState> for Authenticated {
     }
 }
 
-/// Middleware that rejects unauthenticated requests with 401 and caches the caller for the extractor.
+/// Middleware that turns away addresses that failed authentication too often (429, before looking
+/// at the token), rejects unauthenticated requests with 401, applies the per-token request limit, and
+/// caches the caller for the extractor.
 pub async fn require_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    let ip = state
+        .authsvc
+        .client_ip(req.headers(), peer_ip(req.extensions()));
+    if let Err(wait) = state.authsvc.bearer_admission(ip) {
+        return ApiError::too_many_requests(wait).into_response();
+    }
     match authenticate(&state, req.headers()) {
         Ok(a) => {
+            if let Err(wait) = state.authsvc.api_limiter.check(&a.principal) {
+                return ApiError::too_many_requests(wait).into_response();
+            }
+            state.authsvc.note_use(&a.principal);
             req.extensions_mut().insert(a);
             next.run(req).await
         }
-        Err(e) => e.into_response(),
+        Err(e) => {
+            state.authsvc.bearer_failed(ip);
+            e.into_response()
+        }
     }
 }

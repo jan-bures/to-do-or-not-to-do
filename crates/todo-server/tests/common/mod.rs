@@ -25,6 +25,7 @@ pub struct TestServer {
     pub server: RunningServer,
     pub dir: TempDir,
     pub config: Config,
+    pub options: Options,
     pub client: reqwest::Client,
     pub url: String,
 }
@@ -35,6 +36,13 @@ fn config_for(dir: &TempDir) -> Config {
         data_dir: dir.path().to_owned(),
         ..Config::default()
     };
+    // The static owner tokens are the development fallback; these tests use them throughout.
+    cfg.auth.allow_config_owner_tokens = true;
+    // Bursty tests; tests/auth.rs checks the per-token limit with small values.
+    cfg.auth.api_requests_per_minute = 100_000;
+    cfg.auth.api_request_burst = 10_000;
+    cfg.auth.bearer_failures_per_minute = 100_000;
+    cfg.auth.bearer_failure_burst = 10_000;
     cfg.auth.owner_tokens = vec![
         OwnerToken {
             device: DeviceId::new("alpha").unwrap(),
@@ -54,15 +62,23 @@ impl TestServer {
     }
 
     pub async fn start_with(f: impl FnOnce(&mut Config)) -> Self {
+        Self::start_with_options(f, Options::default()).await
+    }
+
+    pub async fn start_with_options(f: impl FnOnce(&mut Config), options: Options) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut config = config_for(&dir);
         f(&mut config);
-        Self::boot(dir, config).await
+        Self::boot_with(dir, config, options).await
     }
 
     /// Starts a server on an existing data directory (see [`stop`](Self::stop)).
     pub async fn boot(dir: TempDir, config: Config) -> Self {
-        let server = Server::bind(&config, Options::default())
+        Self::boot_with(dir, config, Options::default()).await
+    }
+
+    async fn boot_with(dir: TempDir, config: Config, options: Options) -> Self {
+        let server = Server::bind(&config, options.clone())
             .await
             .unwrap()
             .spawn()
@@ -72,9 +88,24 @@ impl TestServer {
             server,
             dir,
             config,
+            options,
             client: reqwest::Client::new(),
             url,
         }
+    }
+
+    /// Stops the server, runs `f` on the database file, and starts a new one on the same directory.
+    pub async fn restart_with(self, f: impl FnOnce(&std::path::Path)) -> Self {
+        let Self {
+            server,
+            dir,
+            config,
+            options,
+            ..
+        } = self;
+        server.shutdown().await.unwrap();
+        f(&config.database_path());
+        Self::boot_with(dir, config, options).await
     }
 
     /// Stops the server and starts a new one on the same data directory.
@@ -83,10 +114,11 @@ impl TestServer {
             server,
             dir,
             config,
+            options,
             ..
         } = self;
         server.shutdown().await.unwrap();
-        Self::boot(dir, config).await
+        Self::boot_with(dir, config, options).await
     }
 
     pub async fn stop(self) -> (TempDir, Config) {
@@ -342,6 +374,18 @@ impl SseReader {
             let f = self.next_frame(left).await?;
             if f.id.is_some() || f.event.is_some() {
                 return Some(f);
+            }
+        }
+    }
+
+    /// True if the server ends the stream within `within` (frames before the end are skipped).
+    pub async fn ended(&mut self, within: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            match tokio::time::timeout_at(deadline, self.res.chunk()).await {
+                Ok(Ok(Some(_))) => {}
+                Ok(Ok(None) | Err(_)) => return true,
+                Err(_) => return false,
             }
         }
     }

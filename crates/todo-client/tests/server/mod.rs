@@ -48,6 +48,8 @@ impl TestServer {
             data_dir: dir.path().to_owned(),
             ..Config::default()
         };
+        // The static owner tokens are the server's development fallback, off by default.
+        config.auth.allow_config_owner_tokens = true;
         config.auth.owner_tokens = vec![
             OwnerToken {
                 device: DeviceId::new("alpha").unwrap(),
@@ -62,6 +64,9 @@ impl TestServer {
         config.limits.sse_connects_per_minute = 100_000;
         config.limits.sse_connect_burst = 100_000;
         config.limits.sse_heartbeat_ms = 200;
+        // And send many requests: keep the per-token API rate limit out of the way.
+        config.auth.api_requests_per_minute = 1_000_000;
+        config.auth.api_request_burst = 100_000;
         f(&mut config);
         Self::boot(dir, config).await
     }

@@ -1,0 +1,1489 @@
+//! The authentication service: owner bootstrap, passkey ceremonies, browser sessions, bearer tokens
+//! (paired devices and agents), share links, rate limits and the audit log.
+//!
+//! Bearer tokens are checked against an in-memory map from token hash to principal, loaded from the
+//! store at start and updated on every change, so authenticating an API request never touches the
+//! database and a revocation takes effect on the next request. Everything else goes through the
+//! [`AuthStore`] and blocks: call those methods from the blocking pool.
+
+use super::limits::{BurstCounter, FailureTracker, KeyedLimiter, WriteQuotas};
+use super::pairing::Pairings;
+use super::secret::{self, AGENT_TOKEN_PREFIX, DEVICE_TOKEN_PREFIX, RandomError};
+use super::store::{AgentRow, AuthStore, SessionRow, ShareRow, ShareTarget};
+use super::{Access, AuthError, Authenticated, Authenticator, OwnerTokens, Principal, bearer};
+use crate::api::error::ApiError;
+use crate::config::{AuthConfig, Config, PublicOrigin};
+use crate::db::StoreError;
+use crate::engine::Engine;
+use axum::http::{HeaderMap, StatusCode};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::time::Duration;
+use todo_core::{AccessLevel, AgentId, DeviceId, Grants};
+use tokio::sync::watch;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
+    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Uuid, Webauthn,
+    WebauthnBuilder,
+};
+
+/// How long a setup code is valid.
+pub const SETUP_CODE_TTL_MS: i64 = 15 * 60 * 1000;
+/// Letters in a setup code (about 99 bits).
+pub const SETUP_CODE_LEN: usize = 20;
+/// The file in the data directory that holds a pending setup code (owner-only; removed once setup
+/// is done).
+pub const SETUP_CODE_FILE: &str = "setup-code.txt";
+/// How long a WebAuthn ceremony may take.
+pub const CEREMONY_TTL_MS: i64 = 5 * 60 * 1000;
+/// How recent a passkey verification must be for owner-only admin actions.
+pub const STEP_UP_MS: i64 = 5 * 60 * 1000;
+/// Last-used timestamps and session activity are written at most this often.
+pub const TOUCH_INTERVAL_MS: i64 = 60 * 1000;
+/// Wrong pairing codes one session may look up.
+pub const MAX_CODE_LOOKUPS: u32 = 10;
+
+const META_OWNER_READY: &str = "owner_ready";
+const META_OWNER_USER: &str = "owner_user_id";
+
+/// Audit event kinds.
+pub mod audit {
+    /// The first passkey was registered.
+    pub const SETUP_COMPLETED: &str = "setup_completed";
+    /// A wrong setup code was entered.
+    pub const SETUP_CODE_REJECTED: &str = "setup_code_rejected";
+    /// The owner signed in.
+    pub const SIGN_IN: &str = "sign_in";
+    /// A sign-in failed.
+    pub const SIGN_IN_FAILED: &str = "sign_in_failed";
+    /// The owner signed out.
+    pub const SIGN_OUT: &str = "sign_out";
+    /// The owner re-verified with a passkey.
+    pub const STEP_UP: &str = "step_up";
+    /// A step-up failed.
+    pub const STEP_UP_FAILED: &str = "step_up_failed";
+    /// Another passkey was registered.
+    pub const PASSKEY_ADDED: &str = "passkey_added";
+    /// A client IP was locked out after failed sign-ins.
+    pub const LOCKOUT: &str = "lockout";
+    /// Many authentication failures in a short time.
+    pub const AUTH_FAILURE_BURST: &str = "auth_failure_burst";
+    /// A pairing request was approved.
+    pub const PAIRING_APPROVED: &str = "pairing_approved";
+    /// A pairing request was denied.
+    pub const PAIRING_DENIED: &str = "pairing_denied";
+    /// An approved device fetched its token.
+    pub const DEVICE_PAIRED: &str = "device_paired";
+    /// A device was revoked.
+    pub const DEVICE_REVOKED: &str = "device_revoked";
+    /// An agent token was created.
+    pub const AGENT_TOKEN_CREATED: &str = "agent_token_created";
+    /// An agent token was revoked.
+    pub const AGENT_TOKEN_REVOKED: &str = "agent_token_revoked";
+    /// An agent's grants changed.
+    pub const GRANTS_CHANGED: &str = "grants_changed";
+    /// A share link was created.
+    pub const SHARE_CREATED: &str = "share_created";
+    /// A share link was revoked.
+    pub const SHARE_REVOKED: &str = "share_revoked";
+    /// A share link got a new token.
+    pub const SHARE_ROTATED: &str = "share_rotated";
+}
+
+/// Receives the setup code instead of the log (for embedding and tests).
+pub type SetupCodeSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Debug)]
+enum BearerKind {
+    Device(DeviceId),
+    Agent {
+        token: i64,
+        agent: AgentId,
+        writes_per_hour: u32,
+        expires_at: Option<i64>,
+    },
+}
+
+#[derive(Debug)]
+struct BearerEntry {
+    kind: BearerKind,
+    last_touch: AtomicI64,
+}
+
+/// What bearer authentication reads: the valid device and agent tokens and the agents' grants,
+/// published together as one value ([`AuthService::publish`]).
+#[derive(Debug, Default)]
+struct Snapshot {
+    bearers: HashMap<[u8; 32], BearerEntry>,
+    grants: BTreeMap<AgentId, Grants>,
+}
+
+#[derive(Debug)]
+struct SetupCode {
+    hash: [u8; 32],
+    expires_at: i64,
+    used: bool,
+}
+
+/// A new browser session: the cookie value (secret) and the row.
+#[derive(Debug, Clone)]
+pub struct NewSession {
+    /// The cookie value.
+    pub cookie: String,
+    /// The stored row.
+    pub row: SessionRow,
+}
+
+/// The authentication service. See the module docs.
+pub struct AuthService {
+    store: AuthStore,
+    engine: Arc<Engine>,
+    origin: Option<PublicOrigin>,
+    webauthn: Option<Webauthn>,
+    cfg: AuthConfig,
+    trust_cloudflare: bool,
+    owner_tokens: Option<OwnerTokens>,
+    snapshot: RwLock<Arc<Snapshot>>,
+    /// Held by every change to devices, agent tokens or grants, from the database write until the new
+    /// snapshot is published, so a slower reload can never publish rows older than a newer change.
+    mutations: Mutex<()>,
+    /// Test hook: the next publish waits this long between reading the store and publishing.
+    pause_next_publish: Mutex<Option<Duration>>,
+    setup: Mutex<Option<SetupCode>>,
+    /// Where a pending setup code is written.
+    setup_file: std::path::PathBuf,
+    code_lookups: Mutex<HashMap<String, u32>>,
+    /// Pending device pairings.
+    pub pairings: Pairings,
+    /// Agent write quotas.
+    pub quotas: WriteQuotas,
+    /// Per-token API request limits.
+    pub api_limiter: KeyedLimiter<Principal>,
+    /// Per-IP limits on sign-in, setup and pairing routes.
+    pub ip_limiter: KeyedLimiter<IpAddr>,
+    /// Per-IP limits on pairing polls (clients poll every few seconds).
+    pub poll_limiter: KeyedLimiter<IpAddr>,
+    /// Per-IP limits on share pages (checked before the token is looked up).
+    pub share_limiter: KeyedLimiter<IpAddr>,
+    /// Sign-in failures per IP.
+    pub failures: FailureTracker<IpAddr>,
+    /// Failed bearer authentications allowed per IP. Checked (without spending) before
+    /// authenticating, and spent by each failure: an address that used it up gets 429 until it
+    /// refills, before its token is even looked at.
+    pub bearer_failures: KeyedLimiter<IpAddr>,
+    /// Bursts of failed bearer authentications across all addresses (audited).
+    pub bearer_failure_bursts: BurstCounter,
+    revocations: watch::Sender<u64>,
+}
+
+impl std::fmt::Debug for AuthService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthService")
+            .field("origin", &self.origin.as_ref().map(PublicOrigin::as_str))
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why the service could not start.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthInitError {
+    /// Storage failed.
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    /// The WebAuthn configuration was rejected.
+    #[error("cannot configure passkeys for {origin}: {reason}")]
+    Webauthn {
+        /// The origin.
+        origin: String,
+        /// Why.
+        reason: String,
+    },
+    /// The setup code file could not be written.
+    #[error("cannot write the setup code to {}: {source}", path.display())]
+    SetupFile {
+        /// The file.
+        path: std::path::PathBuf,
+        /// Why.
+        source: std::io::Error,
+    },
+    /// No randomness.
+    #[error(transparent)]
+    Random(#[from] RandomError),
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn internal<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> ApiError {
+    move |e| {
+        tracing::error!(error = %e, "{what}");
+        ApiError::internal()
+    }
+}
+
+impl From<RandomError> for ApiError {
+    fn from(e: RandomError) -> Self {
+        tracing::error!(error = %e, "no randomness");
+        Self::internal()
+    }
+}
+
+/// The error for a ceremony that failed verification (generic on purpose).
+fn ceremony_failed() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "verification_failed",
+        "the passkey could not be verified; try again",
+    )
+}
+
+fn locked_out(secs: u32) -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "locked_out",
+        "too many failed attempts; try again later",
+    )
+    .with_retry_after(secs)
+}
+
+/// 503 when passkeys are not configured.
+#[must_use]
+pub fn no_origin() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "not_configured",
+        "sign-in is not configured on this server (set public_origin)",
+    )
+}
+
+/// A device ID from a client-supplied name: a slug of the name and a random suffix.
+fn device_id_for(name: &str) -> Result<DeviceId, ApiError> {
+    let mut slug = String::new();
+    for c in name.chars() {
+        if slug.len() >= 40 {
+            break;
+        }
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    let slug = if slug.is_empty() { "device" } else { slug };
+    let suffix = hex::encode(secret::random_bytes::<3>()?);
+    DeviceId::new(format!("{slug}-{suffix}")).map_err(internal("device id"))
+}
+
+impl AuthService {
+    /// Opens the store next to the engine's database, loads bearer tokens and grants, and creates the
+    /// setup code if no owner passkey exists yet.
+    pub fn new(
+        config: &Config,
+        engine: Arc<Engine>,
+        setup_sink: Option<SetupCodeSink>,
+    ) -> Result<Self, AuthInitError> {
+        let store = AuthStore::open(engine.path())?;
+        let origin = config.origin().map_err(|e| AuthInitError::Webauthn {
+            origin: config.public_origin.clone().unwrap_or_default(),
+            reason: e.to_string(),
+        })?;
+        let webauthn = origin
+            .as_ref()
+            .map(|o| {
+                WebauthnBuilder::new(o.host(), o.url())
+                    .and_then(|b| b.rp_name("To-do").build())
+                    .map_err(|e| AuthInitError::Webauthn {
+                        origin: o.as_str().to_owned(),
+                        reason: e.to_string(),
+                    })
+            })
+            .transpose()?;
+        let a = &config.auth;
+        let owner_tokens = if a.allow_config_owner_tokens {
+            let t = OwnerTokens::new(&a.owner_tokens);
+            tracing::warn!(
+                count = t.len(),
+                "static owner tokens from the config are accepted (development fallback)"
+            );
+            Some(t)
+        } else {
+            if !a.owner_tokens.is_empty() {
+                tracing::warn!(
+                    "auth.owner_tokens are configured but ignored; set auth.allow_config_owner_tokens to use them"
+                );
+            }
+            None
+        };
+        let lockout = Duration::from_secs(a.lockout_mins.saturating_mul(60));
+        let (revocations, _) = watch::channel(0);
+        let svc = Self {
+            store,
+            engine,
+            origin,
+            webauthn,
+            cfg: a.clone(),
+            trust_cloudflare: config.trust_cloudflare_headers,
+            owner_tokens,
+            snapshot: RwLock::new(Arc::new(Snapshot::default())),
+            mutations: Mutex::new(()),
+            pause_next_publish: Mutex::new(None),
+            setup: Mutex::new(None),
+            setup_file: config.data_dir.join(SETUP_CODE_FILE),
+            code_lookups: Mutex::new(HashMap::new()),
+            pairings: Pairings::default(),
+            quotas: WriteQuotas::default(),
+            api_limiter: KeyedLimiter::new(a.api_requests_per_minute, a.api_request_burst),
+            ip_limiter: KeyedLimiter::new(a.auth_requests_per_minute, a.auth_request_burst),
+            poll_limiter: KeyedLimiter::new(
+                a.auth_requests_per_minute.saturating_mul(4),
+                a.auth_request_burst.saturating_mul(2),
+            ),
+            share_limiter: KeyedLimiter::new(a.share_requests_per_minute, a.share_request_burst),
+            failures: FailureTracker::new(a.sign_in_failures_before_lockout, lockout),
+            bearer_failures: KeyedLimiter::new(
+                a.bearer_failures_per_minute,
+                a.bearer_failure_burst,
+            ),
+            bearer_failure_bursts: BurstCounter::default(),
+            revocations,
+        };
+        svc.reload_bearers()?;
+        svc.init_setup(setup_sink)?;
+        Ok(svc)
+    }
+
+    /// The current time (the engine's clock), in Unix milliseconds.
+    #[must_use]
+    pub fn now(&self) -> i64 {
+        self.engine.now().as_millisecond()
+    }
+
+    /// The public origin, if configured.
+    #[must_use]
+    pub fn origin(&self) -> Option<&PublicOrigin> {
+        self.origin.as_ref()
+    }
+
+    /// The config.
+    #[must_use]
+    pub fn config(&self) -> &AuthConfig {
+        &self.cfg
+    }
+
+    /// The store (blocking).
+    #[must_use]
+    pub fn store(&self) -> &AuthStore {
+        &self.store
+    }
+
+    fn webauthn(&self) -> Result<&Webauthn, ApiError> {
+        self.webauthn.as_ref().ok_or_else(no_origin)
+    }
+
+    /// The client IP: `CF-Connecting-IP` when trusted, else the TCP peer.
+    #[must_use]
+    pub fn client_ip(&self, headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
+        if self.trust_cloudflare
+            && let Some(ip) = headers
+                .get("cf-connecting-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse().ok())
+        {
+            return Some(ip);
+        }
+        peer
+    }
+
+    /// Writes an audit entry (failures are logged, never propagated). Blocking.
+    pub fn audit(&self, kind: &str, ip: Option<IpAddr>, detail: Value) {
+        let ip = ip.map(|i| i.to_string());
+        if let Err(e) = self
+            .store
+            .audit(self.now(), kind, ip.as_deref(), &detail.to_string())
+        {
+            tracing::error!(error = %e, kind, "cannot write an audit entry");
+        }
+    }
+
+    /// Records a failed sign-in-like attempt from `ip` (locking it out at the threshold) and audits
+    /// it. Blocking.
+    pub fn record_failure(&self, kind: &str, ip: Option<IpAddr>, detail: Value) {
+        self.audit(kind, ip, detail);
+        let Some(ip) = ip else { return };
+        let f = self.failures.fail(&ip);
+        if f.locked_out {
+            tracing::warn!("a client was locked out after repeated sign-in failures");
+            self.audit(
+                audit::LOCKOUT,
+                Some(ip),
+                json!({ "minutes": self.cfg.lockout_mins }),
+            );
+        }
+        if let Some(n) = f.burst {
+            tracing::warn!(failures = n, "burst of failed sign-ins");
+            self.audit(
+                audit::AUTH_FAILURE_BURST,
+                None,
+                json!({ "failures_last_minute": n, "source": "sign_in" }),
+            );
+        }
+    }
+
+    /// Fails if `ip` is locked out.
+    pub fn check_lockout(&self, ip: Option<IpAddr>) -> Result<(), ApiError> {
+        match ip.and_then(|ip| self.failures.locked(&ip)) {
+            Some(secs) => Err(locked_out(secs)),
+            None => Ok(()),
+        }
+    }
+
+    // ---- bearer tokens ----------------------------------------------------------------------------
+
+    fn snapshot(&self) -> Arc<Snapshot> {
+        self.snapshot
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Takes the mutation lock (see [`AuthService::publish`]).
+    fn begin_mutation(&self) -> MutexGuard<'_, ()> {
+        lock(&self.mutations)
+    }
+
+    /// Test hook: makes the next publish pause for `d` after reading the store.
+    #[doc(hidden)]
+    pub fn pause_next_publish(&self, d: Duration) {
+        *lock(&self.pause_next_publish) = Some(d);
+    }
+
+    /// Reloads device and agent tokens from the store and publishes them with the grants.
+    pub fn reload_bearers(&self) -> Result<(), StoreError> {
+        let guard = self.begin_mutation();
+        self.publish(&guard)
+    }
+
+    /// Reads the valid tokens and grants from the store and publishes them: one swap of the snapshot
+    /// that authentication reads, then the same grants to the engine (whose state decides commands
+    /// and visibility). Runs only under the mutation lock (`_held`), which every change to devices,
+    /// agents and grants holds from its write until here; so publishes happen in write order and none
+    /// can bring back a token revoked after it read the store.
+    fn publish(&self, _held: &MutexGuard<'_, ()>) -> Result<(), StoreError> {
+        let mut map = HashMap::new();
+        for d in self.store.devices()? {
+            if d.revoked_at.is_some() {
+                continue;
+            }
+            if let Some(h) = crate::config::decode_hash(&d.token_hash) {
+                map.insert(
+                    h,
+                    BearerEntry {
+                        kind: BearerKind::Device(d.id),
+                        last_touch: AtomicI64::new(d.last_used_at.unwrap_or(0)),
+                    },
+                );
+            }
+        }
+        let mut grants = BTreeMap::new();
+        for a in self.store.agents()? {
+            if a.revoked_at.is_some() {
+                continue;
+            }
+            if let Some(h) = crate::config::decode_hash(&a.token_hash) {
+                grants.insert(a.agent.clone(), a.grants.clone());
+                map.insert(
+                    h,
+                    BearerEntry {
+                        kind: BearerKind::Agent {
+                            token: a.id,
+                            agent: a.agent,
+                            writes_per_hour: a.writes_per_hour,
+                            expires_at: a.expires_at,
+                        },
+                        last_touch: AtomicI64::new(a.last_used_at.unwrap_or(0)),
+                    },
+                );
+            }
+        }
+        let pause = lock(&self.pause_next_publish).take();
+        if let Some(d) = pause {
+            std::thread::sleep(d);
+        }
+        let next = Arc::new(Snapshot {
+            bearers: map,
+            grants,
+        });
+        *self
+            .snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = next.clone();
+        self.engine.set_grants(next.grants.clone());
+        Ok(())
+    }
+
+    fn revoked(&self) {
+        self.revocations.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// Changes whenever a token is revoked or grants change; event streams re-check their caller.
+    #[must_use]
+    pub fn revocations(&self) -> watch::Receiver<u64> {
+        self.revocations.subscribe()
+    }
+
+    /// True while `principal` may still use the API (its token is neither revoked nor expired).
+    #[must_use]
+    pub fn is_active(&self, principal: &Principal) -> bool {
+        let now = self.now();
+        let found = self
+            .snapshot()
+            .bearers
+            .values()
+            .any(|e| match (&e.kind, principal) {
+                (BearerKind::Device(d), Principal::Owner { device }) => d == device,
+                (
+                    BearerKind::Agent {
+                        token, expires_at, ..
+                    },
+                    Principal::Agent { token: t, .. },
+                ) => token == t && expires_at.is_none_or(|x| x > now),
+                _ => false,
+            });
+        found
+            || matches!((principal, &self.owner_tokens), (Principal::Owner { device }, Some(t)) if t.has_device(device))
+    }
+
+    /// Records that `principal` used its token (written at most once a minute, off the request path).
+    pub fn note_use(self: &Arc<Self>, principal: &Principal) {
+        let now = self.now();
+        let snapshot = self.snapshot();
+        let due = snapshot.bearers.values().find_map(|e| {
+            let matches = match (&e.kind, principal) {
+                (BearerKind::Device(d), Principal::Owner { device }) => d == device,
+                (BearerKind::Agent { token, .. }, Principal::Agent { token: t, .. }) => token == t,
+                _ => false,
+            };
+            (matches && now - e.last_touch.load(Ordering::Relaxed) >= TOUCH_INTERVAL_MS).then(
+                || {
+                    e.last_touch.store(now, Ordering::Relaxed);
+                },
+            )
+        });
+        if due.is_none() {
+            return;
+        }
+        let svc = self.clone();
+        let principal = principal.clone();
+        tokio::task::spawn_blocking(move || {
+            let r = match &principal {
+                Principal::Owner { device } => svc.store.touch_device(device.as_str(), now),
+                Principal::Agent { token, .. } => svc.store.touch_agent(*token, now),
+            };
+            if let Err(e) = r {
+                tracing::warn!(error = %e, "cannot record token use");
+            }
+        });
+    }
+
+    /// Whether `ip` may still try bearer authentication (see `bearer_failures`); `Err` carries the
+    /// seconds to wait.
+    pub fn bearer_admission(&self, ip: Option<IpAddr>) -> Result<(), u32> {
+        ip.map_or(Ok(()), |ip| self.bearer_failures.peek(&ip))
+    }
+
+    /// Records a failed bearer authentication from `ip`, auditing bursts.
+    pub fn bearer_failed(self: &Arc<Self>, ip: Option<IpAddr>) {
+        if let Some(ip) = ip {
+            // Spending fails once the budget is empty; the next request is turned away earlier.
+            let _ = self.bearer_failures.check(&ip);
+        }
+        if let Some(n) = self.bearer_failure_bursts.hit() {
+            tracing::warn!(failures = n, "burst of failed API authentications");
+            let svc = self.clone();
+            tokio::task::spawn_blocking(move || {
+                svc.audit(
+                    audit::AUTH_FAILURE_BURST,
+                    None,
+                    json!({ "failures_last_minute": n, "source": "bearer" }),
+                );
+            });
+        }
+    }
+
+    // ---- setup ------------------------------------------------------------------------------------
+
+    /// True once the owner has registered a passkey.
+    pub fn owner_ready(&self) -> Result<bool, StoreError> {
+        Ok(self.store.meta(META_OWNER_READY)?.is_some())
+    }
+
+    /// Removes the setup code file, if any.
+    fn remove_setup_file(&self) {
+        match std::fs::remove_file(&self.setup_file) {
+            Ok(()) => tracing::info!("removed the setup code file"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(error = %e, path = %self.setup_file.display(), "cannot remove the setup code file")
+            }
+        }
+    }
+
+    /// Writes the code to the setup file, readable only by the account running the server.
+    fn write_setup_file(&self, code: &str, origin: &PublicOrigin) -> std::io::Result<()> {
+        use std::io::Write as _;
+        self.remove_setup_file();
+        let mut f = todo_fs::create_private_file(&self.setup_file)?;
+        writeln!(
+            f,
+            "{code}\n\nOne-time owner setup code: open {}/setup and enter it within 15 minutes of the \
+             server start. It works once; this file is deleted when setup is done. Restart the server \
+             for a new code.",
+            origin.as_str()
+        )?;
+        f.sync_all()
+    }
+
+    fn init_setup(&self, sink: Option<SetupCodeSink>) -> Result<(), AuthInitError> {
+        if self.owner_ready()? {
+            self.remove_setup_file();
+            return Ok(());
+        }
+        let Some(origin) = &self.origin else {
+            tracing::warn!(
+                "no owner passkey yet and no public_origin configured; set public_origin to enable /setup"
+            );
+            return Ok(());
+        };
+        let code = secret::random_code(SETUP_CODE_LEN)?;
+        *lock(&self.setup) = Some(SetupCode {
+            hash: secret::digest(&code),
+            expires_at: self.now() + SETUP_CODE_TTL_MS,
+            used: false,
+        });
+        let shown = code
+            .as_bytes()
+            .chunks(5)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join("-");
+        // Never logged: whoever reads a forwarded log could enrol their own passkey first.
+        self.write_setup_file(&shown, origin)
+            .map_err(|source| AuthInitError::SetupFile {
+                path: self.setup_file.clone(),
+                source,
+            })?;
+        tracing::warn!(
+            path = %self.setup_file.display(),
+            "owner setup: a one-time setup code is waiting in this file (readable only by the server's account; valid for 15 minutes); open {}/setup and enter it",
+            origin.as_str()
+        );
+        if let Some(s) = sink {
+            s(&shown);
+        }
+        Ok(())
+    }
+
+    /// True while `/setup` exists: no owner passkey yet and passkeys are configured.
+    pub fn setup_open(&self) -> Result<bool, StoreError> {
+        Ok(self.webauthn.is_some() && !self.owner_ready()?)
+    }
+
+    fn check_setup_code(&self, code: &str, now: i64) -> Result<(), &'static str> {
+        let guard = lock(&self.setup);
+        let Some(s) = guard.as_ref() else {
+            return Err("no_code");
+        };
+        if s.used || s.expires_at <= now {
+            return Err("expired");
+        }
+        // Wrong guesses never invalidate the code (that would let anyone block setup); they count
+        // as sign-in failures of their address, which is locked out after a few (see `setup_start`).
+        // With about 99 bits, guessing is hopeless anyway.
+        let typed = secret::normalize_code(code);
+        if secret::ct_eq(&secret::digest(&typed), &s.hash) {
+            Ok(())
+        } else {
+            Err("wrong")
+        }
+    }
+
+    fn owner_user_id(&self) -> Result<Uuid, ApiError> {
+        if let Some(v) = self.store.meta(META_OWNER_USER)?
+            && let Ok(u) = v.parse()
+        {
+            return Ok(u);
+        }
+        let u = Uuid::new_v4();
+        self.store.set_meta(META_OWNER_USER, &u.to_string())?;
+        Ok(u)
+    }
+
+    fn registration_options(&self) -> Result<(Value, PasskeyRegistration), ApiError> {
+        let exclude: Vec<_> = self
+            .store
+            .passkeys()?
+            .iter()
+            .map(|p| p.passkey.cred_id().clone())
+            .collect();
+        let user = self.owner_user_id()?;
+        let (ccr, reg) = self
+            .webauthn()?
+            .start_passkey_registration(
+                user,
+                "owner",
+                "Owner",
+                (!exclude.is_empty()).then_some(exclude),
+            )
+            .map_err(internal("cannot start passkey registration"))?;
+        Ok((resident_key_preferred(&ccr)?, reg))
+    }
+
+    fn put_ceremony(
+        &self,
+        kind: &str,
+        session: Option<&str>,
+        state: &impl serde::Serialize,
+    ) -> Result<String, ApiError> {
+        let handle = secret::random_token::<16>()?;
+        let now = self.now();
+        let state = serde_json::to_string(state).map_err(internal("cannot encode ceremony"))?;
+        self.store.put_ceremony(
+            &secret::digest_hex(&handle),
+            kind,
+            session,
+            &state,
+            now + CEREMONY_TTL_MS,
+            now,
+        )?;
+        Ok(handle)
+    }
+
+    fn take_ceremony<T: serde::de::DeserializeOwned>(
+        &self,
+        handle: &str,
+        kind: &str,
+        session: Option<&str>,
+    ) -> Result<Option<T>, ApiError> {
+        let Some(state) =
+            self.store
+                .take_ceremony(&secret::digest_hex(handle), kind, session, self.now())?
+        else {
+            return Ok(None);
+        };
+        serde_json::from_str(&state)
+            .map(Some)
+            .map_err(internal("cannot decode ceremony"))
+    }
+
+    /// Checks the setup code and starts registering the first passkey. Blocking.
+    pub fn setup_start(&self, code: &str, ip: Option<IpAddr>) -> Result<(String, Value), ApiError> {
+        if !self.setup_open()? {
+            return Err(ApiError::not_found("no such page"));
+        }
+        self.check_lockout(ip)?;
+        if let Err(why) = self.check_setup_code(code, self.now()) {
+            self.record_failure(audit::SETUP_CODE_REJECTED, ip, json!({ "reason": why }));
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid_setup_code",
+                "the setup code is wrong, expired or used; restart the server for a new one if needed",
+            ));
+        }
+        let (options, reg) = self.registration_options()?;
+        let handle = self.put_ceremony("setup", None, &reg)?;
+        Ok((handle, options))
+    }
+
+    /// Finishes registering the first passkey, consumes the setup code and signs the owner in.
+    /// Blocking.
+    pub fn setup_finish(
+        &self,
+        handle: &str,
+        credential: &RegisterPublicKeyCredential,
+        ip: Option<IpAddr>,
+    ) -> Result<NewSession, ApiError> {
+        if !self.setup_open()? {
+            return Err(ApiError::not_found("no such page"));
+        }
+        let Some(reg) = self.take_ceremony::<PasskeyRegistration>(handle, "setup", None)? else {
+            return Err(ceremony_expired());
+        };
+        let passkey = match self
+            .webauthn()?
+            .finish_passkey_registration(credential, &reg)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!(error = %e, "setup registration failed");
+                self.record_failure(audit::SIGN_IN_FAILED, ip, json!({ "stage": "setup" }));
+                return Err(ceremony_failed());
+            }
+        };
+        {
+            // Consume the code; a second ceremony started with the same code fails here.
+            let mut guard = lock(&self.setup);
+            match guard.as_mut() {
+                Some(s) if !s.used && s.expires_at > self.now() => s.used = true,
+                _ => return Err(ceremony_expired()),
+            }
+        }
+        let now = self.now();
+        self.store.add_passkey("First passkey", &passkey, now)?;
+        self.store.set_meta(META_OWNER_READY, "1")?;
+        self.remove_setup_file();
+        self.audit(audit::SETUP_COMPLETED, ip, json!({}));
+        tracing::info!("owner passkey registered; /setup is now closed");
+        self.new_session()
+    }
+
+    // ---- sign-in, step-up, more passkeys ----------------------------------------------------------
+
+    fn authentication_options(
+        &self,
+    ) -> Result<(RequestChallengeResponse, PasskeyAuthentication), ApiError> {
+        let creds: Vec<Passkey> = self
+            .store
+            .passkeys()?
+            .into_iter()
+            .map(|p| p.passkey)
+            .collect();
+        if creds.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "not_set_up",
+                "no passkey is registered yet; finish /setup first",
+            ));
+        }
+        self.webauthn()?
+            .start_passkey_authentication(&creds)
+            .map_err(internal("cannot start passkey authentication"))
+    }
+
+    /// Verifies an assertion and saves the passkey's new counter. Returns false on any failure.
+    fn verify_assertion(
+        &self,
+        state: &PasskeyAuthentication,
+        credential: &PublicKeyCredential,
+    ) -> Result<bool, ApiError> {
+        let result = match self
+            .webauthn()?
+            .finish_passkey_authentication(credential, state)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, "passkey assertion rejected");
+                return Ok(false);
+            }
+        };
+        if !result.user_verified() {
+            return Ok(false);
+        }
+        let now = self.now();
+        for mut row in self.store.passkeys()? {
+            if row.passkey.cred_id() == result.cred_id() {
+                // Counter and backup flags (webauthn-rs already rejected a counter that went back).
+                row.passkey.update_credential(&result);
+                self.store.update_passkey(row.id, &row.passkey, now)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Starts a sign-in. Blocking.
+    pub fn login_start(
+        &self,
+        ip: Option<IpAddr>,
+    ) -> Result<(String, RequestChallengeResponse), ApiError> {
+        self.webauthn()?;
+        self.check_lockout(ip)?;
+        let (rcr, state) = self.authentication_options()?;
+        let handle = self.put_ceremony("login", None, &state)?;
+        Ok((handle, rcr))
+    }
+
+    /// Finishes a sign-in and creates a session. Blocking.
+    pub fn login_finish(
+        &self,
+        handle: &str,
+        credential: &PublicKeyCredential,
+        ip: Option<IpAddr>,
+    ) -> Result<NewSession, ApiError> {
+        self.check_lockout(ip)?;
+        let Some(state) = self.take_ceremony::<PasskeyAuthentication>(handle, "login", None)?
+        else {
+            self.record_failure(
+                audit::SIGN_IN_FAILED,
+                ip,
+                json!({ "reason": "unknown_ceremony" }),
+            );
+            return Err(ceremony_expired());
+        };
+        if !self.verify_assertion(&state, credential)? {
+            self.record_failure(audit::SIGN_IN_FAILED, ip, json!({ "reason": "assertion" }));
+            return Err(ceremony_failed());
+        }
+        if let Some(ip) = ip {
+            self.failures.succeed(&ip);
+        }
+        self.audit(audit::SIGN_IN, ip, json!({}));
+        self.new_session()
+    }
+
+    /// Starts a step-up for a session. Blocking.
+    pub fn step_up_start(
+        &self,
+        session: &SessionRow,
+    ) -> Result<(String, RequestChallengeResponse), ApiError> {
+        let (rcr, state) = self.authentication_options()?;
+        let handle = self.put_ceremony("step_up", Some(&session.id_hash), &state)?;
+        Ok((handle, rcr))
+    }
+
+    /// Finishes a step-up: the session counts as freshly verified. Blocking.
+    pub fn step_up_finish(
+        &self,
+        session: &SessionRow,
+        handle: &str,
+        credential: &PublicKeyCredential,
+        ip: Option<IpAddr>,
+    ) -> Result<(), ApiError> {
+        let Some(state) =
+            self.take_ceremony::<PasskeyAuthentication>(handle, "step_up", Some(&session.id_hash))?
+        else {
+            return Err(ceremony_expired());
+        };
+        if !self.verify_assertion(&state, credential)? {
+            self.record_failure(audit::STEP_UP_FAILED, ip, json!({}));
+            return Err(ceremony_failed());
+        }
+        self.store.set_verified(&session.id_hash, self.now())?;
+        self.audit(audit::STEP_UP, ip, json!({}));
+        Ok(())
+    }
+
+    /// Starts registering another passkey (needs a fresh step-up). Blocking.
+    pub fn passkey_add_start(&self, session: &SessionRow) -> Result<(String, Value), ApiError> {
+        self.require_step_up(session)?;
+        let (options, reg) = self.registration_options()?;
+        let handle = self.put_ceremony("add_passkey", Some(&session.id_hash), &reg)?;
+        Ok((handle, options))
+    }
+
+    /// Finishes registering another passkey. Blocking.
+    pub fn passkey_add_finish(
+        &self,
+        session: &SessionRow,
+        handle: &str,
+        credential: &RegisterPublicKeyCredential,
+        name: &str,
+        ip: Option<IpAddr>,
+    ) -> Result<(), ApiError> {
+        self.require_step_up(session)?;
+        let Some(reg) = self.take_ceremony::<PasskeyRegistration>(
+            handle,
+            "add_passkey",
+            Some(&session.id_hash),
+        )?
+        else {
+            return Err(ceremony_expired());
+        };
+        let passkey = self
+            .webauthn()?
+            .finish_passkey_registration(credential, &reg)
+            .map_err(|e| {
+                tracing::debug!(error = %e, "passkey registration failed");
+                ceremony_failed()
+            })?;
+        let name = clean_label(name, "Passkey");
+        if !self.store.add_passkey(&name, &passkey, self.now())? {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "already_registered",
+                "this passkey is already registered",
+            ));
+        }
+        self.audit(audit::PASSKEY_ADDED, ip, json!({ "name": name }));
+        Ok(())
+    }
+
+    // ---- sessions ---------------------------------------------------------------------------------
+
+    fn new_session(&self) -> Result<NewSession, ApiError> {
+        let cookie = secret::random_token::<32>()?;
+        let csrf = secret::random_token::<32>()?;
+        let id_hash = secret::digest_hex(&cookie);
+        let now = self.now();
+        self.store.create_session(&id_hash, &csrf, now)?;
+        Ok(NewSession {
+            cookie,
+            row: SessionRow {
+                id_hash,
+                csrf,
+                created_at: now,
+                last_seen_at: now,
+                verified_at: now,
+            },
+        })
+    }
+
+    fn idle_ms(&self) -> i64 {
+        i64::try_from(self.cfg.session_idle_timeout_mins.saturating_mul(60_000)).unwrap_or(i64::MAX)
+    }
+
+    fn absolute_ms(&self) -> i64 {
+        i64::try_from(
+            self.cfg
+                .session_absolute_timeout_hours
+                .saturating_mul(3_600_000),
+        )
+        .unwrap_or(i64::MAX)
+    }
+
+    /// Seconds until a new session's absolute timeout (the cookie's `Max-Age`).
+    #[must_use]
+    pub fn session_max_age_secs(&self) -> i64 {
+        self.absolute_ms() / 1000
+    }
+
+    /// The live session for a cookie value, recording the activity. Expired sessions are deleted.
+    /// Blocking.
+    pub fn session(&self, cookie: &str) -> Result<Option<SessionRow>, StoreError> {
+        let id_hash = secret::digest_hex(cookie);
+        let Some(row) = self.store.session(&id_hash)? else {
+            return Ok(None);
+        };
+        let now = self.now();
+        if now - row.last_seen_at >= self.idle_ms() || now - row.created_at >= self.absolute_ms() {
+            self.store.delete_session(&id_hash)?;
+            return Ok(None);
+        }
+        if now - row.last_seen_at >= TOUCH_INTERVAL_MS {
+            self.store.touch_session(&id_hash, now)?;
+        }
+        Ok(Some(row))
+    }
+
+    /// Ends a session. Blocking.
+    pub fn end_session(&self, session: &SessionRow, ip: Option<IpAddr>) -> Result<(), StoreError> {
+        self.store.delete_session(&session.id_hash)?;
+        self.audit(audit::SIGN_OUT, ip, json!({}));
+        let now = self.now();
+        self.store
+            .purge_sessions(now - self.idle_ms(), now - self.absolute_ms())
+    }
+
+    /// True if the session verified a passkey within [`STEP_UP_MS`].
+    #[must_use]
+    pub fn is_fresh(&self, session: &SessionRow) -> bool {
+        self.now() - session.verified_at < STEP_UP_MS
+    }
+
+    /// Fails with 403 `step_up_required` unless the session is fresh.
+    pub fn require_step_up(&self, session: &SessionRow) -> Result<(), ApiError> {
+        if self.is_fresh(session) {
+            Ok(())
+        } else {
+            Err(step_up_required())
+        }
+    }
+
+    /// Counts a failed pairing-code lookup by a session. False once it has used up its attempts.
+    pub fn code_lookup_failed(&self, session: &SessionRow) -> bool {
+        let mut m = lock(&self.code_lookups);
+        let n = m.entry(session.id_hash.clone()).or_insert(0);
+        *n += 1;
+        *n <= MAX_CODE_LOOKUPS
+    }
+
+    /// True if the session may still look up pairing codes.
+    #[must_use]
+    pub fn may_look_up_codes(&self, session: &SessionRow) -> bool {
+        lock(&self.code_lookups)
+            .get(&session.id_hash)
+            .is_none_or(|n| *n < MAX_CODE_LOOKUPS)
+    }
+
+    // ---- devices ----------------------------------------------------------------------------------
+
+    /// Creates the device of an approved pairing and returns its ID and token (the only time the token
+    /// exists outside the client). Blocking.
+    pub fn create_device(
+        &self,
+        name: &str,
+        ip: Option<IpAddr>,
+    ) -> Result<(DeviceId, String), ApiError> {
+        let id = device_id_for(name)?;
+        let token = format!("{DEVICE_TOKEN_PREFIX}{}", secret::random_token::<32>()?);
+        let guard = self.begin_mutation();
+        self.store
+            .add_device(&id, name, &secret::digest_hex(&token), self.now())?;
+        self.publish(&guard)?;
+        drop(guard);
+        self.audit(
+            audit::DEVICE_PAIRED,
+            ip,
+            json!({ "device": id, "name": name }),
+        );
+        Ok((id, token))
+    }
+
+    /// Revokes a device: its token stops working at once and its event streams close. Blocking.
+    pub fn revoke_device(&self, id: &str, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+        let guard = self.begin_mutation();
+        if !self.store.revoke_device(id, self.now())? {
+            return Ok(false);
+        }
+        self.publish(&guard)?;
+        drop(guard);
+        self.revoked();
+        self.audit(audit::DEVICE_REVOKED, ip, json!({ "device": id }));
+        Ok(true)
+    }
+
+    // ---- agents -----------------------------------------------------------------------------------
+
+    /// Creates an agent token and returns its row ID and the token (shown once). Blocking.
+    pub fn create_agent(
+        &self,
+        agent: &AgentId,
+        default: AccessLevel,
+        writes_per_hour: Option<u32>,
+        expires_in_days: Option<u32>,
+        ip: Option<IpAddr>,
+    ) -> Result<(i64, String), ApiError> {
+        let token = format!("{AGENT_TOKEN_PREFIX}{}", secret::random_token::<32>()?);
+        let wph = writes_per_hour
+            .unwrap_or(self.cfg.agent_writes_per_hour)
+            .max(1);
+        let now = self.now();
+        let expires_at = expires_in_days.map(|d| now + i64::from(d) * 86_400_000);
+        let grants = Grants::with_default(default);
+        let guard = self.begin_mutation();
+        let Some(id) = self.store.add_agent(
+            agent,
+            &secret::digest_hex(&token),
+            &grants,
+            wph,
+            expires_at,
+            now,
+        )?
+        else {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "agent_exists",
+                "this agent already has an active token; revoke it first",
+            ));
+        };
+        self.publish(&guard)?;
+        drop(guard);
+        self.audit(
+            audit::AGENT_TOKEN_CREATED,
+            ip,
+            json!({ "agent": agent, "token_id": id, "default": default, "writes_per_hour": wph, "expires_at": expires_at }),
+        );
+        Ok((id, token))
+    }
+
+    /// Revokes an agent token, immediately. Blocking.
+    pub fn revoke_agent(&self, id: i64, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+        let guard = self.begin_mutation();
+        let row = self.store.agent(id)?;
+        if !self.store.revoke_agent(id, self.now())? {
+            return Ok(false);
+        }
+        self.quotas.forget(id);
+        self.publish(&guard)?;
+        drop(guard);
+        self.revoked();
+        self.audit(
+            audit::AGENT_TOKEN_REVOKED,
+            ip,
+            json!({ "agent": row.map(|r| r.agent), "token_id": id }),
+        );
+        Ok(true)
+    }
+
+    /// Replaces an agent's grants. Blocking.
+    pub fn set_grants(
+        &self,
+        id: i64,
+        grants: &Grants,
+        ip: Option<IpAddr>,
+    ) -> Result<bool, ApiError> {
+        let guard = self.begin_mutation();
+        let Some(before) = self.store.agent(id)? else {
+            return Ok(false);
+        };
+        if !self.store.set_agent_grants(id, grants)? {
+            return Ok(false);
+        }
+        self.publish(&guard)?;
+        drop(guard);
+        self.revoked();
+        self.audit(
+            audit::GRANTS_CHANGED,
+            ip,
+            json!({ "agent": before.agent, "token_id": id, "before": before.grants, "after": grants }),
+        );
+        Ok(true)
+    }
+
+    /// All agent tokens. Blocking.
+    pub fn agents(&self) -> Result<Vec<AgentRow>, StoreError> {
+        self.store.agents()
+    }
+
+    // ---- share links ------------------------------------------------------------------------------
+
+    /// Creates a share link and returns its token (shown once). Blocking.
+    pub fn create_share(
+        &self,
+        target: ShareTarget,
+        ip: Option<IpAddr>,
+    ) -> Result<String, ApiError> {
+        let token = secret::random_token::<16>()?;
+        let id = self
+            .store
+            .add_share(&secret::digest_hex(&token), target, self.now())?;
+        self.audit(audit::SHARE_CREATED, ip, share_detail(id, target));
+        Ok(token)
+    }
+
+    /// Gives a share link a new token; the old one stops working. Blocking.
+    pub fn rotate_share(&self, id: i64, ip: Option<IpAddr>) -> Result<Option<String>, ApiError> {
+        let token = secret::random_token::<16>()?;
+        if !self
+            .store
+            .rotate_share(id, &secret::digest_hex(&token), self.now())?
+        {
+            return Ok(None);
+        }
+        self.audit(audit::SHARE_ROTATED, ip, json!({ "share_id": id }));
+        Ok(Some(token))
+    }
+
+    /// Revokes a share link. Blocking.
+    pub fn revoke_share(&self, id: i64, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+        if !self.store.revoke_share(id, self.now())? {
+            return Ok(false);
+        }
+        self.audit(audit::SHARE_REVOKED, ip, json!({ "share_id": id }));
+        Ok(true)
+    }
+
+    /// The active share link for a token. Blocking.
+    pub fn share(&self, token: &str) -> Result<Option<ShareRow>, StoreError> {
+        if token.len() > 64 {
+            return Ok(None);
+        }
+        self.store.share_by_hash(&secret::digest_hex(token))
+    }
+
+    /// The URL of a share token.
+    #[must_use]
+    pub fn share_url(&self, token: &str) -> String {
+        let base = self.origin.as_ref().map_or("", PublicOrigin::as_str);
+        format!("{base}/s/{token}")
+    }
+}
+
+fn share_detail(id: i64, target: ShareTarget) -> Value {
+    match target {
+        ShareTarget::List(l) => json!({ "share_id": id, "list": l }),
+        ShareTarget::Collection(c) => json!({ "share_id": id, "collection": c }),
+    }
+}
+
+/// 403 when an owner-only action needs a fresh passkey verification.
+#[must_use]
+pub fn step_up_required() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "step_up_required",
+        "verify with your passkey again (within the last 5 minutes) to do this",
+    )
+}
+
+fn ceremony_expired() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "ceremony_expired",
+        "this sign-in attempt expired or was already used; start again",
+    )
+}
+
+/// A short printable label.
+#[must_use]
+pub fn clean_label(s: &str, fallback: &str) -> String {
+    let s: String = s
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect();
+    if s.is_empty() { fallback.to_owned() } else { s }
+}
+
+/// The registration options as JSON, asking for a discoverable credential where the authenticator
+/// can make one (`residentKey: "preferred"`). The server does not depend on it: sign-in always sends
+/// the allowed credential IDs.
+fn resident_key_preferred(ccr: &CreationChallengeResponse) -> Result<Value, ApiError> {
+    let mut v = serde_json::to_value(ccr).map_err(internal("cannot encode options"))?;
+    if let Some(sel) = v
+        .pointer_mut("/publicKey/authenticatorSelection")
+        .and_then(Value::as_object_mut)
+    {
+        sel.insert("residentKey".into(), json!("preferred"));
+        sel.insert("requireResidentKey".into(), json!(false));
+    }
+    Ok(v)
+}
+
+impl Authenticator for AuthService {
+    fn authenticate(&self, headers: &HeaderMap) -> Result<Authenticated, AuthError> {
+        let token = bearer(headers)?;
+        let hash = secret::digest(token);
+        if let Some(e) = self.snapshot().bearers.get(&hash) {
+            return match &e.kind {
+                BearerKind::Device(device) => Ok(Authenticated::owner(device.clone())),
+                BearerKind::Agent {
+                    token,
+                    agent,
+                    writes_per_hour,
+                    expires_at,
+                } => {
+                    if expires_at.is_some_and(|x| x <= self.now()) {
+                        return Err(AuthError::Invalid);
+                    }
+                    let principal = Principal::Agent {
+                        agent: agent.clone(),
+                        token: *token,
+                    };
+                    Ok(Authenticated {
+                        actor: principal.actor(),
+                        principal,
+                        access: Access::Agent {
+                            writes_per_hour: *writes_per_hour,
+                        },
+                    })
+                }
+            };
+        }
+        match &self.owner_tokens {
+            Some(t) => t.authenticate(headers),
+            None => Err(AuthError::Invalid),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::system_clock;
+    use axum::http::HeaderValue;
+    use axum::http::header::AUTHORIZATION;
+
+    fn service() -> (tempfile::TempDir, Arc<AuthService>) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            data_dir: dir.path().to_owned(),
+            ..Config::default()
+        };
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        let engine = Arc::new(Engine::open(&config.database_path(), system_clock()).unwrap());
+        let svc = AuthService::new(&config, engine, None).unwrap();
+        (dir, Arc::new(svc))
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        h
+    }
+
+    /// A reload that read the store before a revocation must not publish after it.
+    #[test]
+    fn a_slow_reload_cannot_bring_back_a_revoked_token() {
+        let (_dir, svc) = service();
+        let (a, token_a) = svc.create_device("A", None).unwrap();
+        assert!(svc.authenticate(&bearer_headers(&token_a)).is_ok());
+
+        // Pairing B reads the store (A still active), then stalls before publishing.
+        svc.pause_next_publish(Duration::from_millis(400));
+        let slow = svc.clone();
+        let pairing = std::thread::spawn(move || slow.create_device("B", None).unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        // Meanwhile A is revoked.
+        assert!(svc.revoke_device(a.as_str(), None).unwrap());
+        assert!(
+            svc.authenticate(&bearer_headers(&token_a)).is_err(),
+            "revoked as soon as revoke_device returns"
+        );
+        let (_, token_b) = pairing.join().unwrap();
+        assert!(
+            svc.authenticate(&bearer_headers(&token_a)).is_err(),
+            "the slow reload did not bring A back"
+        );
+        assert!(svc.authenticate(&bearer_headers(&token_b)).is_ok());
+    }
+
+    /// Grants and token validity change together, and a grant change is never undone by a reload
+    /// that read older rows.
+    #[test]
+    fn grants_and_tokens_are_published_together() {
+        let (_dir, svc) = service();
+        let agent = AgentId::new("bot").unwrap();
+        let (id, token) = svc
+            .create_agent(&agent, AccessLevel::Read, None, None, None)
+            .unwrap();
+        assert_eq!(
+            svc.engine.state().grants.get(&agent).map(|g| g.default),
+            Some(AccessLevel::Read)
+        );
+        svc.pause_next_publish(Duration::from_millis(400));
+        let slow = svc.clone();
+        let pairing = std::thread::spawn(move || slow.create_device("B", None).unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            svc.set_grants(id, &Grants::with_default(AccessLevel::None), None)
+                .unwrap()
+        );
+        pairing.join().unwrap();
+        assert_eq!(
+            svc.engine.state().grants.get(&agent).map(|g| g.default),
+            Some(AccessLevel::None)
+        );
+        assert_eq!(
+            svc.snapshot().grants.get(&agent).map(|g| g.default),
+            Some(AccessLevel::None)
+        );
+        assert!(svc.revoke_agent(id, None).unwrap());
+        assert!(svc.authenticate(&bearer_headers(&token)).is_err());
+        assert!(!svc.engine.state().grants.contains_key(&agent));
+    }
+
+    #[test]
+    fn device_ids_are_slugs_with_a_random_suffix() {
+        let id = device_id_for("Owner's Laptop (work)").unwrap();
+        assert!(id.as_str().starts_with("owner-s-laptop-work-"), "{id}");
+        assert_eq!(id.as_str().len(), "owner-s-laptop-work-".len() + 6);
+        assert!(device_id_for("💻").unwrap().as_str().starts_with("device-"));
+        assert!(device_id_for(&"x".repeat(64)).unwrap().as_str().len() <= 64);
+    }
+
+    #[test]
+    fn labels_are_trimmed() {
+        assert_eq!(clean_label("  a\u{7}b ", "x"), "ab");
+        assert_eq!(clean_label("", "x"), "x");
+    }
+}

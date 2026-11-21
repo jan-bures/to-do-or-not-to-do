@@ -8,6 +8,16 @@
 //! bind = "127.0.0.1:47320"
 //! data_dir = "/var/lib/todo"
 //! time_zone = "UTC"
+//! # The public URL clients and browsers use. Passkeys (RP ID and origin), pairing links and share
+//! # links are derived from it; without it, sign-in, pairing and share links are disabled.
+//! public_origin = "https://todo.example.com"
+//! # Trusted proxy. Per-address limits (sign-in, setup, pairing, share pages, failed API tokens) key on
+//! # the client IP. By default that is the TCP peer address and every forwarding header
+//! # (`CF-Connecting-IP`, `X-Forwarded-For`, ...) is ignored, so clients cannot choose their address.
+//! # Set this to true only when the server is reachable solely through a Cloudflare Tunnel (cloudflared
+//! # connects from the same host and the server binds to loopback): then the peer is always cloudflared,
+//! # and `CF-Connecting-IP`, which Cloudflare sets, is the real client. `X-Forwarded-For` is never used.
+//! trust_cloudflare_headers = false
 //!
 //! [limits]
 //! max_body_bytes = 1048576
@@ -25,6 +35,29 @@
 //! header_read_timeout_ms = 5000
 //! write_stall_timeout_ms = 30000
 //! shutdown_drain_ms = 10000
+//!
+//! [auth]
+//! session_idle_timeout_mins = 60
+//! session_absolute_timeout_hours = 12
+//! agent_writes_per_hour = 120
+//! api_requests_per_minute = 600
+//! api_request_burst = 120
+//! auth_requests_per_minute = 30
+//! auth_request_burst = 15
+//! # Failed API token checks allowed per client IP; past it, the address gets 429 before its token
+//! # is looked at, until the budget refills.
+//! bearer_failures_per_minute = 30
+//! bearer_failure_burst = 30
+//! # Pending device pairings per client IP (at most 64 in all).
+//! pairings_per_ip = 3
+//! # Share page requests per client IP.
+//! share_requests_per_minute = 60
+//! share_request_burst = 30
+//! sign_in_failures_before_lockout = 5
+//! lockout_mins = 15
+//! # Development and test fallback: accept the static owner tokens below. Off by default; devices
+//! # normally pair (`POST /api/v1/pair/start`) and get revocable tokens.
+//! allow_config_owner_tokens = false
 //!
 //! [[auth.owner_tokens]]
 //! device = "desktop"
@@ -190,11 +223,64 @@ pub struct OwnerToken {
 }
 
 /// Authentication settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthConfig {
-    /// Accepted owner tokens.
+    /// Accept [`owner_tokens`](Self::owner_tokens). A development and test fallback; off by default.
+    pub allow_config_owner_tokens: bool,
+    /// Static owner tokens (only with `allow_config_owner_tokens`).
     pub owner_tokens: Vec<OwnerToken>,
+    /// A browser session ends after this long without a request.
+    pub session_idle_timeout_mins: u64,
+    /// A browser session ends this long after sign-in, however active.
+    pub session_absolute_timeout_hours: u64,
+    /// Default write quota of an agent token (commands and undos per rolling hour).
+    pub agent_writes_per_hour: u32,
+    /// Sustained API requests per minute per bearer token.
+    pub api_requests_per_minute: u32,
+    /// API request burst per bearer token.
+    pub api_request_burst: u32,
+    /// Sustained requests per minute per client IP to the sign-in, setup and pairing routes.
+    pub auth_requests_per_minute: u32,
+    /// Burst per client IP on those routes.
+    pub auth_request_burst: u32,
+    /// Sustained failed bearer authentications per minute per client IP.
+    pub bearer_failures_per_minute: u32,
+    /// Burst of failed bearer authentications per client IP.
+    pub bearer_failure_burst: u32,
+    /// Pending device pairings per client IP.
+    pub pairings_per_ip: u32,
+    /// Sustained share page requests per minute per client IP.
+    pub share_requests_per_minute: u32,
+    /// Share page request burst per client IP.
+    pub share_request_burst: u32,
+    /// Failed sign-ins (or setup codes) from one IP before it is locked out.
+    pub sign_in_failures_before_lockout: u32,
+    /// How long a lockout lasts, and the window failures are counted in.
+    pub lockout_mins: u64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            allow_config_owner_tokens: false,
+            owner_tokens: Vec::new(),
+            session_idle_timeout_mins: 60,
+            session_absolute_timeout_hours: 12,
+            agent_writes_per_hour: 120,
+            api_requests_per_minute: 600,
+            api_request_burst: 120,
+            auth_requests_per_minute: 30,
+            auth_request_burst: 15,
+            bearer_failures_per_minute: 30,
+            bearer_failure_burst: 30,
+            pairings_per_ip: 3,
+            share_requests_per_minute: 60,
+            share_request_burst: 30,
+            sign_in_failures_before_lockout: 5,
+            lockout_mins: 15,
+        }
+    }
 }
 
 /// The server configuration.
@@ -207,6 +293,11 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// The owner's IANA time zone, used for "today" in smart lists.
     pub time_zone: String,
+    /// The public origin (`https://host[:port]`) browsers and clients use; see the module docs.
+    pub public_origin: Option<String>,
+    /// Trust `CF-Connecting-IP` for the client IP (only behind a Cloudflare Tunnel; see the module
+    /// docs). Off: the TCP peer address, and forwarding headers are ignored.
+    pub trust_cloudflare_headers: bool,
     /// Limits.
     pub limits: Limits,
     /// Authentication.
@@ -219,6 +310,8 @@ impl Default for Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 47320)),
             data_dir: PathBuf::from("data"),
             time_zone: "UTC".to_owned(),
+            public_origin: None,
+            trust_cloudflare_headers: false,
             limits: Limits::default(),
             auth: AuthConfig::default(),
         }
@@ -276,6 +369,17 @@ impl Config {
         if let Some(v) = get("TODO_SERVER_TIME_ZONE") {
             self.time_zone = v.trim().to_owned();
         }
+        if let Some(v) = get("TODO_SERVER_PUBLIC_ORIGIN") {
+            let v = v.trim();
+            self.public_origin = (!v.is_empty()).then(|| v.to_owned());
+        }
+        if let Some(v) = get("TODO_SERVER_TRUST_CLOUDFLARE_HEADERS") {
+            self.trust_cloudflare_headers = parse_env("TODO_SERVER_TRUST_CLOUDFLARE_HEADERS", &v)?;
+        }
+        if let Some(v) = get("TODO_SERVER_ALLOW_CONFIG_OWNER_TOKENS") {
+            self.auth.allow_config_owner_tokens =
+                parse_env("TODO_SERVER_ALLOW_CONFIG_OWNER_TOKENS", &v)?;
+        }
         if let Some(v) = get("TODO_SERVER_MAX_BODY_BYTES") {
             self.limits.max_body_bytes = parse_env("TODO_SERVER_MAX_BODY_BYTES", &v)?;
         }
@@ -325,6 +429,46 @@ impl Config {
     /// Checks values that the type system cannot.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.zone()?;
+        self.origin()?;
+        let a = &self.auth;
+        for (name, value) in [
+            ("session_idle_timeout_mins", a.session_idle_timeout_mins),
+            (
+                "session_absolute_timeout_hours",
+                a.session_absolute_timeout_hours,
+            ),
+            ("agent_writes_per_hour", u64::from(a.agent_writes_per_hour)),
+            (
+                "api_requests_per_minute",
+                u64::from(a.api_requests_per_minute),
+            ),
+            ("api_request_burst", u64::from(a.api_request_burst)),
+            (
+                "auth_requests_per_minute",
+                u64::from(a.auth_requests_per_minute),
+            ),
+            ("auth_request_burst", u64::from(a.auth_request_burst)),
+            (
+                "bearer_failures_per_minute",
+                u64::from(a.bearer_failures_per_minute),
+            ),
+            ("bearer_failure_burst", u64::from(a.bearer_failure_burst)),
+            ("pairings_per_ip", u64::from(a.pairings_per_ip)),
+            (
+                "share_requests_per_minute",
+                u64::from(a.share_requests_per_minute),
+            ),
+            ("share_request_burst", u64::from(a.share_request_burst)),
+            (
+                "sign_in_failures_before_lockout",
+                u64::from(a.sign_in_failures_before_lockout),
+            ),
+            ("lockout_mins", a.lockout_mins),
+        ] {
+            if value == 0 {
+                return Err(ConfigError::Invalid(format!("auth.{name} must be > 0")));
+            }
+        }
         for t in &self.auth.owner_tokens {
             decode_hash(&t.sha256).ok_or_else(|| {
                 ConfigError::Invalid(format!(
@@ -382,10 +526,76 @@ impl Config {
         })
     }
 
+    /// The validated public origin, if configured.
+    pub fn origin(&self) -> Result<Option<PublicOrigin>, ConfigError> {
+        self.public_origin
+            .as_deref()
+            .map(PublicOrigin::parse)
+            .transpose()
+    }
+
     /// Path of the SQLite database file.
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.data_dir.join("todo.sqlite3")
+    }
+}
+
+/// The public origin: `https://host[:port]`, or `http://` for loopback development hosts only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicOrigin {
+    url: webauthn_rs::prelude::Url,
+    origin: String,
+    host: String,
+}
+
+impl PublicOrigin {
+    /// Parses and checks an origin.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let bad = |why: &str| ConfigError::Invalid(format!("public_origin `{text}`: {why}"));
+        let url = webauthn_rs::prelude::Url::parse(text.trim()).map_err(|e| bad(&e.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| bad("no host"))?
+            .to_ascii_lowercase();
+        let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
+        match url.scheme() {
+            "https" => {}
+            "http" if loopback => {}
+            _ => return Err(bad("must be https (http only for localhost)")),
+        }
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err(bad("must be an origin, without a path, query or fragment"));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(bad("must not contain credentials"));
+        }
+        let origin = url.origin().ascii_serialization();
+        Ok(Self { url, origin, host })
+    }
+
+    /// The origin as browsers send it in the `Origin` header (no trailing slash).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.origin
+    }
+
+    /// The origin as a URL.
+    #[must_use]
+    pub fn url(&self) -> &webauthn_rs::prelude::Url {
+        &self.url
+    }
+
+    /// The host: the WebAuthn relying-party ID.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// True if the origin is served over HTTPS.
+    #[must_use]
+    pub fn is_https(&self) -> bool {
+        self.url.scheme() == "https"
     }
 }
 
@@ -399,6 +609,29 @@ pub fn decode_hash(hex_digest: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_origins() {
+        let o = PublicOrigin::parse("https://Todo.Example.com:8443/").unwrap();
+        assert_eq!(o.as_str(), "https://todo.example.com:8443");
+        assert_eq!(o.host(), "todo.example.com");
+        assert!(o.is_https());
+        let dev = PublicOrigin::parse("http://localhost:47320").unwrap();
+        assert!(!dev.is_https());
+        for bad in [
+            "ftp://todo.example.com",
+            "https://u:p@todo.example.com",
+            "nope",
+        ] {
+            assert!(PublicOrigin::parse(bad).is_err(), "{bad}");
+        }
+        let c = Config::default();
+        assert!(
+            !c.auth.allow_config_owner_tokens,
+            "static owner tokens are off by default"
+        );
+        assert!(!c.trust_cloudflare_headers);
+    }
 
     #[test]
     fn defaults_bind_to_loopback() {
@@ -451,6 +684,15 @@ mod tests {
         };
         assert!(c.validate().is_err());
         c.time_zone = "UTC".into();
+        c.public_origin = Some("http://todo.example.com".into());
+        assert!(c.validate().is_err(), "plain http off loopback");
+        c.public_origin = Some("https://todo.example.com/app".into());
+        assert!(c.validate().is_err(), "a path");
+        c.public_origin = Some("https://todo.example.com".into());
+        c.validate().unwrap();
+        c.auth.agent_writes_per_hour = 0;
+        assert!(c.validate().is_err());
+        c.auth.agent_writes_per_hour = 1;
         c.auth.owner_tokens.push(OwnerToken {
             device: DeviceId::new("x").unwrap(),
             sha256: "abc".into(),

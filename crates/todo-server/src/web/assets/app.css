@@ -1,0 +1,42 @@
+/* Minimal, neutral styling for the server's own pages. The app's visual design is not chosen yet. */
+:root {
+  color-scheme: light dark;
+  --fg: #1d1d1f;
+  --muted: #6b6b70;
+  --bg: #ffffff;
+  --line: #d9d9de;
+  --accent: #2f5bd3;
+  --danger: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #ececf0; --muted: #a0a0a8; --bg: #16161a; --line: #34343c; --accent: #8aa8ff; --danger: #ff8a80; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--line); }
+header nav { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+header p { margin: 0; width: 100%; font-size: 0.9rem; color: var(--muted); }
+main { max-width: 60rem; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
+a { color: var(--accent); }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.15rem; margin-top: 2rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); }
+label { display: block; margin: 0.5rem 0; }
+input, select, button { font: inherit; }
+input, select { padding: 0.3rem 0.4rem; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: inherit; }
+button { padding: 0.35rem 0.9rem; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: var(--bg); cursor: pointer; }
+button.secondary, button.link { background: transparent; color: var(--accent); }
+button.link { border: none; padding: 0; text-decoration: underline; }
+button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+form.inline { display: inline; }
+.secret { width: 100%; font-family: ui-monospace, monospace; }
+.error { color: var(--danger); }
+.hint, .verified, .verify { color: var(--muted); }
+code { font-family: ui-monospace, monospace; font-size: 0.9em; word-break: break-all; }
+.share ul { list-style: none; padding-left: 0; }
+.share ul.steps { padding-left: 1.75rem; font-size: 0.95rem; }
+.share li { padding: 0.2rem 0; }
+.share li.done { color: var(--muted); text-decoration: line-through; }
+.share .due { font-size: 0.85rem; color: var(--muted); }

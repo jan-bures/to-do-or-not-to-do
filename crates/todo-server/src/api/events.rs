@@ -34,6 +34,18 @@
 //!    up at; streams from later points may connect meanwhile, and a JSON page reaching past the mark
 //!    clears it.
 //!
+//! # Access
+//!
+//! Agents receive only the events they may read ([`visibility::event_visible`]), in JSON pages and on
+//! the stream alike. Hidden events still advance `next_since` (and the stream's position), so a
+//! client never re-reads them. Visibility follows grant changes at once.
+//!
+//! A stream closes as soon as its token is revoked, and at the next heartbeat after it expires. It
+//! subscribes to revocations before it checks its caller one last time, so a revocation between
+//! authentication and the start of the stream is not missed. Replay reads, sends blocked on a slow
+//! client, and the live loop all stop on a revocation, and frames already queued for the client but
+//! not yet written are dropped.
+//!
 //! # Bounds
 //!
 //! - **Connects.** Each principal may (re)connect `limits.sse_connects_per_minute` times per minute
@@ -49,12 +61,12 @@
 
 use super::dto::{EventPage, EventsParams};
 use super::error::{ApiError, ErrorBody};
-use super::{ApiQuery, Work, blocking};
+use super::{ApiQuery, Work, blocking, visibility};
 use crate::app::AppState;
+use crate::auth::service::AuthService;
 use crate::auth::{Authenticated, Principal};
 use crate::db::CappedEvents;
-use crate::db::LogEvent;
-use crate::engine::Engine;
+use crate::engine::{Engine, LiveEvent};
 use crate::ratelimit::CatchUpMarks;
 use axum::Json;
 use axum::extract::State;
@@ -68,8 +80,10 @@ use serde_json::json;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
+use todo_core::Actor;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -192,7 +206,7 @@ pub async fn get_events(
             .clone()
             .try_acquire_owned()
             .map_err(|_| ApiError::too_many_streams())?;
-        return Ok(stream(&app, auth.principal, since, permit).into_response());
+        return Ok(stream(&app, auth.principal, auth.actor, since, permit).into_response());
     }
     check_epoch(&app.engine, q.epoch)?;
     let since = q.since.unwrap_or(0);
@@ -202,22 +216,35 @@ pub async fn get_events(
     if since > head_seq {
         return Err(ApiError::invalid_since(since, head_seq));
     }
-    let page = blocking(&app, Work::Read, move || {
-        engine.events_since_capped(since, limit, MAX_EVENTS_PAGE_BYTES - PAGE_ENVELOPE)
+    let actor = auth.actor.clone();
+    let (page, next_since, scanned) = blocking(&app, Work::Read, move || {
+        let mut page =
+            engine.events_since_capped(since, limit, MAX_EVENTS_PAGE_BYTES - PAGE_ENVELOPE)?;
+        // Where the next page starts: after the last event read, visible or not.
+        let next_since = page
+            .events
+            .last()
+            .and_then(|e| e.event.seq)
+            .unwrap_or(since);
+        let scanned = page.events.len();
+        if !visibility::sees_all(&actor) {
+            let state = engine.state();
+            let scopes = std::mem::take(&mut page.scopes);
+            page.events.retain(|e| {
+                let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
+                visibility::event_visible(&state, &actor, &e.event, scope)
+            });
+        }
+        Ok::<_, crate::db::StoreError>((page, next_since, scanned))
     })
     .await??;
     if let Some(seq) = page.oversized {
         tracing::warn!(seq, "an event is larger than the page limit");
         return Err(ApiError::item_too_large("next_since", json!(seq)));
     }
-    let next_since = page
-        .events
-        .last()
-        .and_then(|e| e.event.seq)
-        .unwrap_or(since);
     app.catch_up_marks.paged(&auth.principal, next_since);
     Ok(Json(EventPage {
-        has_more: page.truncated || page.events.len() == limit,
+        has_more: page.truncated || scanned == limit,
         events: page.events,
         next_since,
         head_seq: head_seq.max(next_since),
@@ -237,9 +264,10 @@ fn check_epoch(engine: &Engine, epoch: Option<uuid::Uuid>) -> Result<(), ApiErro
 type Tx = mpsc::Sender<Result<SseEvent, Infallible>>;
 
 /// The SSE response body. It owns the stream slot, so the slot is freed exactly when the body is
-/// dropped, however the connection ends.
+/// dropped, however the connection ends. Once `revoked` is set it ends, dropping any queued frames.
 struct Body {
     rx: ReceiverStream<Result<SseEvent, Infallible>>,
+    revoked: Arc<AtomicBool>,
     _slot: OwnedSemaphorePermit,
 }
 
@@ -247,7 +275,25 @@ impl Stream for Body {
     type Item = Result<SseEvent, Infallible>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.get_mut().rx).poll_next(cx)
+        let this = self.get_mut();
+        if this.revoked.load(Ordering::Acquire) {
+            return Poll::Ready(None);
+        }
+        Pin::new(&mut this.rx).poll_next(cx)
+    }
+}
+
+/// Resolves once `principal` loses access (its token is revoked; checked at every revocation
+/// notice), or if notices stop.
+async fn until_revoked(
+    notices: &mut watch::Receiver<u64>,
+    authsvc: &AuthService,
+    principal: &Principal,
+) {
+    loop {
+        if notices.changed().await.is_err() || !authsvc.is_active(principal) {
+            return;
+        }
     }
 }
 
@@ -281,6 +327,11 @@ struct Pump {
     reads: Arc<Semaphore>,
     marks: Arc<CatchUpMarks>,
     principal: Principal,
+    actor: Actor,
+    authsvc: Arc<AuthService>,
+    revocations: watch::Receiver<u64>,
+    /// Set when the caller lost access: the body drops what is queued.
+    revoked: Arc<AtomicBool>,
     shutdown: watch::Receiver<bool>,
     tx: Tx,
     /// The last sequence number delivered (or the starting point).
@@ -291,8 +342,21 @@ struct Pump {
 }
 
 impl Pump {
+    /// Ends the stream for a caller that lost access, dropping queued frames.
+    fn revoke(&self) {
+        tracing::debug!("event stream closed: the caller's access changed");
+        self.revoked.store(true, Ordering::Release);
+    }
+
     async fn send(&mut self, frame: SseEvent) -> bool {
-        match send_frame(&self.tx, &mut self.shutdown, self.stall, frame).await {
+        let sent = tokio::select! {
+            r = send_frame(&self.tx, &mut self.shutdown, self.stall, frame) => r,
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+                self.revoke();
+                return false;
+            }
+        };
+        match sent {
             Ok(()) => true,
             Err(SendError::Stalled) => {
                 tracing::debug!("event stream stalled; closing it");
@@ -315,6 +379,10 @@ impl Pump {
             p = self.reads.clone().acquire_owned() => p.ok()?,
             () = self.tx.closed() => return None,
             _ = self.shutdown.changed() => return None,
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+                self.revoke();
+                return None;
+            }
             () = tokio::time::sleep(self.stall) => {
                 tracing::debug!("event stream: no read permit; closing it");
                 return None;
@@ -336,6 +404,10 @@ impl Pump {
             },
             () = self.tx.closed() => None,
             _ = self.shutdown.changed() => None,
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+                self.revoke();
+                None
+            }
             () = tokio::time::sleep(self.stall) => {
                 tracing::debug!("event stream: a read took too long; closing it");
                 None
@@ -379,8 +451,15 @@ impl Pump {
                 return false;
             };
             let full = page.events.len() == want;
+            let state = self.engine.state();
             for ev in &page.events {
                 let Some(seq) = ev.event.seq else { continue };
+                if !visibility::event_visible(&state, &self.actor, &ev.event, page.scopes.get(&seq))
+                {
+                    events += 1;
+                    self.last = seq;
+                    continue;
+                }
                 let data = match serde_json::to_string(ev) {
                     Ok(d) => d,
                     Err(err) => {
@@ -413,7 +492,14 @@ impl Pump {
         }
     }
 
-    async fn run(mut self, mut live: broadcast::Receiver<Arc<LogEvent>>, heartbeat: Duration) {
+    async fn run(mut self, mut live: broadcast::Receiver<Arc<LiveEvent>>, heartbeat: Duration) {
+        // Revocation notices are subscribed already (in `stream`): a revocation since the caller was
+        // authenticated shows here, and any later one wakes the waits below. Nothing, not even the
+        // hello frame, is sent before this check.
+        if !self.authsvc.is_active(&self.principal) {
+            self.revoke();
+            return;
+        }
         let hello = Hello {
             epoch: self.engine.epoch(),
             head_seq: self.engine.head_seq(),
@@ -433,13 +519,25 @@ impl Pump {
             tokio::select! {
                 () = self.tx.closed() => return,
                 _ = self.shutdown.changed() => return,
+                r = self.revocations.changed() => {
+                    if r.is_err() || !self.authsvc.is_active(&self.principal) {
+                        self.revoke();
+                        return;
+                    }
+                }
                 _ = beat.tick() => {
+                    // Expiry is not announced: check it with every heartbeat.
+                    if !self.authsvc.is_active(&self.principal) {
+                        self.revoke();
+                        return;
+                    }
                     if !self.send(SseEvent::default().comment(HEARTBEAT)).await {
                         return;
                     }
                 }
                 msg = live.recv() => match msg {
-                    Ok(ev) => {
+                    Ok(live_event) => {
+                        let ev = &live_event.event;
                         let Some(seq) = ev.event.seq else { continue };
                         if seq <= self.last {
                             continue;
@@ -451,7 +549,16 @@ impl Pump {
                             }
                             continue;
                         }
-                        let data = match serde_json::to_string(&*ev) {
+                        if !visibility::event_visible(
+                            &self.engine.state(),
+                            &self.actor,
+                            &ev.event,
+                            Some(&live_event.scope),
+                        ) {
+                            self.last = seq;
+                            continue;
+                        }
+                        let data = match serde_json::to_string(ev) {
                             Ok(d) => d,
                             Err(err) => {
                                 tracing::error!(error = %err, seq, "cannot encode event");
@@ -490,12 +597,16 @@ fn frame(seq: u64, data: String) -> SseEvent {
 fn stream(
     app: &AppState,
     principal: Principal,
+    actor: Actor,
     since: u64,
     slot: OwnedSemaphorePermit,
 ) -> impl IntoResponse + use<> {
     let (tx, rx) = mpsc::channel(CLIENT_BUFFER);
-    // Subscribe before replaying so nothing committed in between is missed.
+    // Subscribe before replaying so nothing committed in between is missed, and to revocations before
+    // the pump's first access check.
     let live = app.engine.subscribe();
+    let revocations = app.authsvc.revocations();
+    let revoked = Arc::new(AtomicBool::new(false));
     let mut shutdown = app.shutdown.clone();
     shutdown.mark_unchanged();
     let pump = Pump {
@@ -503,6 +614,10 @@ fn stream(
         reads: app.reads.clone(),
         marks: app.catch_up_marks.clone(),
         principal,
+        actor,
+        authsvc: app.authsvc.clone(),
+        revocations,
+        revoked: revoked.clone(),
         shutdown,
         tx,
         last: since,
@@ -521,6 +636,7 @@ fn stream(
             .collect::<HeaderMap>(),
         Sse::new(Body {
             rx: ReceiverStream::new(rx),
+            revoked,
             _slot: slot,
         }),
     )
@@ -542,6 +658,140 @@ mod tests {
         let r = send_frame(&tx, &mut shutdown, stall, SseEvent::default().data("2")).await;
         assert_eq!(r, Err(SendError::Stalled));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    struct Rig {
+        _dir: tempfile::TempDir,
+        engine: Arc<Engine>,
+        svc: Arc<AuthService>,
+        token_id: i64,
+        principal: Principal,
+        shutdown: watch::Sender<bool>,
+    }
+
+    /// An engine with `n` tasks in a list, and an agent that can read everything.
+    fn rig(n: usize) -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: dir.path().to_owned(),
+            ..crate::Config::default()
+        };
+        let engine =
+            Arc::new(Engine::open(&config.database_path(), crate::engine::system_clock()).unwrap());
+        let svc = Arc::new(AuthService::new(&config, engine.clone(), None).unwrap());
+        let agent = todo_core::AgentId::new("bot").unwrap();
+        let (token_id, _) = svc
+            .create_agent(&agent, todo_core::AccessLevel::Read, None, None, None)
+            .unwrap();
+        let owner = Actor::owner("pc").unwrap();
+        let list = uuid::Uuid::new_v4();
+        let run = |cmd: serde_json::Value| {
+            let cmd = serde_json::from_value(cmd).unwrap();
+            engine.execute(&owner, uuid::Uuid::new_v4(), &cmd).unwrap();
+        };
+        run(json!({ "cmd": "create_list", "id": list, "name": "l" }));
+        for i in 0..n {
+            run(
+                json!({ "cmd": "create_task", "id": uuid::Uuid::new_v4(), "list": list, "title": format!("t{i}") }),
+            );
+        }
+        Rig {
+            _dir: dir,
+            engine,
+            svc,
+            token_id,
+            principal: Principal::Agent {
+                agent,
+                token: token_id,
+            },
+            shutdown: watch::channel(false).0,
+        }
+    }
+
+    /// A pump for the rig's agent, subscribed as `stream` does.
+    fn pump(
+        r: &Rig,
+        tx: Tx,
+        stall: Duration,
+    ) -> (Pump, Arc<AtomicBool>, broadcast::Receiver<Arc<LiveEvent>>) {
+        let live = r.engine.subscribe();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let shutdown = r.shutdown.subscribe();
+        let pump = Pump {
+            engine: r.engine.clone(),
+            reads: Arc::new(Semaphore::new(4)),
+            marks: Arc::new(CatchUpMarks::default()),
+            principal: r.principal.clone(),
+            actor: Actor::agent("bot").unwrap(),
+            authsvc: r.svc.clone(),
+            revocations: r.svc.revocations(),
+            revoked: revoked.clone(),
+            shutdown,
+            tx,
+            last: 0,
+            stall,
+            max_events: 1000,
+            max_bytes: 64 * 1024 * 1024,
+        };
+        (pump, revoked, live)
+    }
+
+    #[tokio::test]
+    async fn a_revocation_before_the_stream_starts_is_not_missed() {
+        let r = rig(3);
+        let (tx, mut rx) = mpsc::channel(64);
+        let (pump, revoked, live) = pump(&r, tx, Duration::from_secs(3600));
+        // Revoked after the request was authenticated, before the pump runs.
+        assert!(r.svc.revoke_agent(r.token_id, None).unwrap());
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            pump.run(live, Duration::from_secs(3600)),
+        )
+        .await
+        .unwrap();
+        assert!(revoked.load(Ordering::Acquire));
+        assert!(rx.try_recv().is_err(), "nothing was sent, not even hello");
+    }
+
+    #[tokio::test]
+    async fn a_replay_blocked_on_a_slow_client_stops_at_revocation() {
+        let r = rig(20);
+        // Room for one frame, and nobody reading: the replay blocks on its second send.
+        let (tx, _rx) = mpsc::channel(1);
+        let (pump, revoked, live) = pump(&r, tx, Duration::from_secs(3600));
+        let task = tokio::spawn(pump.run(live, Duration::from_secs(3600)));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!task.is_finished());
+        assert!(r.svc.revoke_agent(r.token_id, None).unwrap());
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the pump stopped at the revocation")
+            .unwrap();
+        assert!(
+            revoked.load(Ordering::Acquire),
+            "queued frames will be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revoked_body_drops_queued_frames() {
+        use futures_util::StreamExt as _;
+        let (tx, rx) = mpsc::channel(4);
+        for i in 0..3 {
+            tx.send(Ok(SseEvent::default().data(i.to_string())))
+                .await
+                .unwrap();
+        }
+        let revoked = Arc::new(AtomicBool::new(false));
+        let slot = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let mut body = Body {
+            rx: ReceiverStream::new(rx),
+            revoked: revoked.clone(),
+            _slot: slot,
+        };
+        assert!(body.next().await.is_some());
+        revoked.store(true, Ordering::Release);
+        assert!(body.next().await.is_none(), "queued frames are dropped");
     }
 
     #[tokio::test]

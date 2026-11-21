@@ -1,15 +1,13 @@
-//! Owner bearer tokens: the configuration stores only SHA-256 hashes, compared in constant time.
+//! Static owner bearer tokens from the config: a development and test fallback, accepted only with
+//! `auth.allow_config_owner_tokens`. The configuration stores only SHA-256 hashes, compared in
+//! constant time.
 
-use super::{AuthError, Authenticator, Principal};
+use super::{AuthError, Authenticated, Authenticator, bearer};
 use crate::config::{OwnerToken, decode_hash};
 use axum::http::HeaderMap;
-use axum::http::header::AUTHORIZATION;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use todo_core::DeviceId;
-
-/// Longest bearer token accepted; anything longer is rejected before hashing.
-const MAX_TOKEN_LEN: usize = 512;
 
 /// Authenticates `Authorization: Bearer <token>` against configured owner token hashes.
 #[derive(Clone)]
@@ -49,6 +47,12 @@ impl OwnerTokens {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// True if a token is configured for `device`.
+    #[must_use]
+    pub fn has_device(&self, device: &DeviceId) -> bool {
+        self.entries.iter().any(|(_, d)| d == device)
+    }
 }
 
 /// Hex SHA-256 of a token, as stored in the config.
@@ -57,22 +61,8 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-fn bearer(headers: &HeaderMap) -> Result<&str, AuthError> {
-    let value = headers.get(AUTHORIZATION).ok_or(AuthError::Missing)?;
-    let value = value.to_str().map_err(|_| AuthError::Invalid)?;
-    let (scheme, token) = value.split_once(' ').ok_or(AuthError::Invalid)?;
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return Err(AuthError::Invalid);
-    }
-    let token = token.trim();
-    if token.is_empty() || token.len() > MAX_TOKEN_LEN {
-        return Err(AuthError::Invalid);
-    }
-    Ok(token)
-}
-
 impl Authenticator for OwnerTokens {
-    fn authenticate(&self, headers: &HeaderMap) -> Result<Principal, AuthError> {
+    fn authenticate(&self, headers: &HeaderMap) -> Result<Authenticated, AuthError> {
         let token = bearer(headers)?;
         let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         // Compare against every entry without stopping early.
@@ -84,17 +74,17 @@ impl Authenticator for OwnerTokens {
             }
         }
         found
-            .map(|device| Principal::Owner {
-                device: device.clone(),
-            })
+            .map(|device| Authenticated::owner(device.clone()))
             .ok_or(AuthError::Invalid)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{MAX_TOKEN_LEN, Principal};
     use super::*;
     use axum::http::HeaderValue;
+    use axum::http::header::AUTHORIZATION;
 
     fn tokens() -> OwnerTokens {
         OwnerTokens::new(&[OwnerToken {
@@ -111,7 +101,10 @@ mod tests {
 
     #[test]
     fn accepts_the_configured_token() {
-        let p = tokens().authenticate(&headers("Bearer s3cret")).unwrap();
+        let p = tokens()
+            .authenticate(&headers("Bearer s3cret"))
+            .unwrap()
+            .principal;
         assert_eq!(
             p,
             Principal::Owner {

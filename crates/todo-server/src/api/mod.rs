@@ -5,7 +5,9 @@ pub mod dto;
 pub mod error;
 pub mod events;
 pub mod openapi;
+pub mod pair;
 pub mod read;
+pub mod visibility;
 
 use crate::app::AppState;
 use crate::auth;
@@ -116,8 +118,12 @@ async fn not_found() -> ApiError {
     ApiError::not_found("no such endpoint")
 }
 
-/// The authenticated API router, to be nested at `/api/v1`.
+/// The API router, to be nested at `/api/v1`. Everything needs a bearer token except the two pairing
+/// endpoints.
 pub fn router(state: AppState) -> Router<AppState> {
+    let public = Router::new()
+        .route("/pair/start", post(pair::start))
+        .route("/pair/poll", post(pair::poll));
     Router::new()
         .route("/openapi.json", get(openapi::document))
         .route("/commands", post(commands::post_command))
@@ -134,6 +140,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/smart-lists/{id}/tasks", get(read::smart_list_tasks))
         .fallback(not_found)
         .layer(from_fn_with_state(state, auth::require_auth))
+        .merge(public)
         // Outside auth, so rejected requests are labelled too; routes only, so the fallback is not.
         .route_layer(from_fn(tag_route))
 }

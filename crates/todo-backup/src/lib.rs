@@ -15,12 +15,13 @@ pub mod config;
 pub mod crypto;
 mod error;
 pub mod ops;
-pub mod secure;
 pub mod snapshot;
 pub mod state;
 pub mod store;
 
 pub use error::{Error, Result};
+/// Owner-only files and durable replacement (the shared `todo-fs` crate).
+pub use todo_fs as secure;
 
 use std::fmt;
 use std::str::FromStr;

@@ -6,6 +6,7 @@
 //! in the same transaction as the events that changed them, and can always be rebuilt by folding the
 //! log with [`todo_core::apply`].
 
+use crate::scope::{EventScope, ScopeBuilder};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -65,7 +66,8 @@ pub enum StoreError {
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 
 /// Migrations, applied in order. `PRAGMA user_version` records how many have run.
-const MIGRATIONS: &[&str] = &[r"
+const MIGRATIONS: &[&str] = &[
+    r"
 CREATE TABLE events (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     id          TEXT    NOT NULL UNIQUE,
@@ -140,7 +142,82 @@ CREATE TABLE reminders (
     deleted_at TEXT, data TEXT NOT NULL
 );
 CREATE INDEX reminders_task ON reminders (task_id);
-"];
+",
+    r"
+-- Authentication (step 4a). Times are Unix milliseconds. Secrets are stored only as SHA-256 hashes.
+CREATE TABLE auth_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE passkeys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    cred_id      TEXT    NOT NULL UNIQUE,
+    name         TEXT    NOT NULL,
+    passkey      TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER
+);
+CREATE TABLE ceremonies (
+    id         TEXT    PRIMARY KEY,
+    kind       TEXT    NOT NULL,
+    session    TEXT,
+    state      TEXT    NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE sessions (
+    id_hash      TEXT    PRIMARY KEY,
+    csrf         TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    verified_at  INTEGER NOT NULL
+);
+CREATE TABLE devices (
+    id           TEXT    PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    token_hash   TEXT    NOT NULL UNIQUE,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER,
+    revoked_at   INTEGER
+);
+CREATE TABLE agent_tokens (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        TEXT    NOT NULL,
+    token_hash      TEXT    NOT NULL UNIQUE,
+    grants          TEXT    NOT NULL,
+    writes_per_hour INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER,
+    last_used_at    INTEGER,
+    revoked_at      INTEGER
+);
+CREATE UNIQUE INDEX agent_tokens_active ON agent_tokens (agent_id) WHERE revoked_at IS NULL;
+CREATE TABLE share_links (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash  TEXT    NOT NULL UNIQUE,
+    target_kind TEXT    NOT NULL,
+    target_id   TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    rotated_at  INTEGER,
+    revoked_at  INTEGER
+);
+CREATE TABLE audit (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    at     INTEGER NOT NULL,
+    kind   TEXT    NOT NULL,
+    ip     TEXT,
+    detail TEXT    NOT NULL
+);
+",
+    // Event scopes (see `crate::scope`): one row per event, written with it. Rows for events stored
+    // before this migration are backfilled at startup by `backfill_scopes`.
+    r"
+CREATE TABLE event_scopes (
+    seq   INTEGER PRIMARY KEY REFERENCES events (seq),
+    scope TEXT    NOT NULL
+);
+CREATE TRIGGER event_scopes_append_only_update BEFORE UPDATE ON event_scopes
+    BEGIN SELECT RAISE(ABORT, 'event scopes are append-only'); END;
+CREATE TRIGGER event_scopes_append_only_delete BEFORE DELETE ON event_scopes
+    BEGIN SELECT RAISE(ABORT, 'event scopes are append-only'); END;
+",
+];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).
 pub const PROJECTION_TABLES: &[&str] = &[
@@ -394,6 +471,67 @@ pub fn insert_event(
     to_seq(tx.last_insert_rowid())
 }
 
+/// Stores an event's scope.
+pub fn insert_scope(tx: &Connection, seq: u64, scope: &EventScope) -> Result<()> {
+    tx.prepare_cached("INSERT INTO event_scopes (seq, scope) VALUES (?1, ?2)")?
+        .execute(params![from_seq(seq), serde_json::to_string(scope)?])?;
+    Ok(())
+}
+
+/// The scopes of the events with `lo <= seq <= hi`. Events without a stored scope are missing from
+/// the map (callers treat them as unreadable for agents).
+pub fn scopes_between(conn: &Connection, lo: u64, hi: u64) -> Result<BTreeMap<u64, EventScope>> {
+    let rows = conn
+        .prepare_cached("SELECT seq, scope FROM event_scopes WHERE seq >= ?1 AND seq <= ?2")?
+        .query_map(params![from_seq(lo), from_seq(hi)], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(seq, json)| Ok((to_seq(seq)?, serde_json::from_str(&json)?)))
+        .collect()
+}
+
+/// Records the scope of every event that has none, by folding the whole log (once, after the
+/// migration that added scopes). Returns how many were added.
+pub fn backfill_scopes(conn: &mut Connection) -> Result<u64> {
+    let missing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE seq NOT IN (SELECT seq FROM event_scopes)",
+        [],
+        |r| r.get(0),
+    )?;
+    if missing == 0 {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    let mut state = State::new();
+    let mut after = 0;
+    let mut added = 0;
+    loop {
+        let page = events_after(&tx, after, 1000)?;
+        let Some(last) = page.last().and_then(|e| e.seq) else {
+            break;
+        };
+        let have = scopes_between(&tx, after + 1, last)?;
+        for e in &page {
+            let seq = e.seq.unwrap_or_default();
+            let mut b = ScopeBuilder::default();
+            b.observe(&state, &e.payload);
+            apply(&mut state, e).map_err(|err| {
+                StoreError::Corrupt(format!("event seq {seq} does not apply: {err}"))
+            })?;
+            if !have.contains_key(&seq) {
+                b.observe(&state, &e.payload);
+                insert_scope(&tx, seq, &b.finish())?;
+                added += 1;
+            }
+        }
+        after = last;
+    }
+    tx.commit()?;
+    Ok(added)
+}
+
 /// Events with `seq > after`, oldest first, at most `limit`.
 pub fn events_after(conn: &Connection, after: u64, limit: usize) -> Result<Vec<Event>> {
     query_events(
@@ -411,6 +549,8 @@ const EVENT_OVERHEAD: u64 = 256;
 pub struct CappedEvents {
     /// The events, in the order asked for.
     pub events: Vec<LogEvent>,
+    /// Their scopes, by seq (see [`crate::scope`]).
+    pub scopes: BTreeMap<u64, EventScope>,
     /// True if the page stopped early because of the byte budget.
     pub truncated: bool,
     /// The seq of the first event in range when that event alone exceeds the budget. It was neither
@@ -455,16 +595,22 @@ pub fn events_after_capped(
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
-    let events = match last {
-        None => Vec::new(),
-        Some(last) => query_log_events(
-            conn,
-            &format!("SELECT {LOG_COLUMNS} FROM events WHERE seq > ?1 AND seq <= ?2 ORDER BY seq"),
-            params![from_seq(after), from_seq(last)],
-        )?,
+    let (events, scopes) = match last {
+        None => (Vec::new(), BTreeMap::new()),
+        Some(last) => (
+            query_log_events(
+                conn,
+                &format!(
+                    "SELECT {LOG_COLUMNS} FROM events WHERE seq > ?1 AND seq <= ?2 ORDER BY seq"
+                ),
+                params![from_seq(after), from_seq(last)],
+            )?,
+            scopes_between(conn, after + 1, last)?,
+        ),
     };
     Ok(CappedEvents {
         events,
+        scopes,
         truncated,
         oversized,
     })
@@ -490,18 +636,26 @@ pub fn events_before_capped(
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
-    let events = match last {
-        None => Vec::new(),
-        Some(last) => query_log_events(
-            conn,
-            &format!(
-                "SELECT {LOG_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
-            ),
-            params![before.map_or(i64::MAX, from_seq), from_seq(last)],
-        )?,
+    let (events, scopes) = match last {
+        None => (Vec::new(), BTreeMap::new()),
+        Some(last) => (
+            query_log_events(
+                conn,
+                &format!(
+                    "SELECT {LOG_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
+                ),
+                params![before.map_or(i64::MAX, from_seq), from_seq(last)],
+            )?,
+            scopes_between(
+                conn,
+                last,
+                before.map_or(u64::MAX >> 1, |b| b.saturating_sub(1)),
+            )?,
+        ),
     };
     Ok(CappedEvents {
         events,
+        scopes,
         truncated,
         oversized,
     })

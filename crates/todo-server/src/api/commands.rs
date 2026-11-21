@@ -5,7 +5,7 @@ use super::error::{ApiError, ErrorBody};
 use super::{ApiJson, ApiPath, RequestCancel, Work, blocking};
 use crate::app::AppState;
 use crate::auth::Authenticated;
-use crate::engine::{Outcome, UndoExpect};
+use crate::engine::{EngineError, Outcome, UndoExpect};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -43,6 +43,7 @@ fn outcome_response(o: Outcome, epoch: uuid::Uuid) -> Response {
         (status = 408, description = "The deadline passed before the write began committing; nothing was stored", body = ErrorBody),
         (status = 413, description = "Body too large", body = ErrorBody),
         (status = 422, description = "Invalid command", body = ErrorBody),
+        (status = 429, description = "Agent write quota used up (`quota_exceeded`) or too many requests; see `Retry-After`", body = ErrorBody),
         (status = 503, description = "Too many writes in flight (`overloaded`), or the deadline passed while the write was committing (`outcome_unknown`: retry with the same `command_id`); see `Retry-After`", body = ErrorBody),
     ),
     security(("bearer" = []))
@@ -53,6 +54,7 @@ pub async fn post_command(
     RequestCancel(cancel): RequestCancel,
     ApiJson(req): ApiJson<CommandRequest>,
 ) -> Result<Response, ApiError> {
+    auth.take_write(&app)?;
     let engine = app.engine.clone();
     // The deadline middleware owns `cancel`: it either cancels the write before it commits (408) or
     // waits for the commit (see `crate::app`).
@@ -76,6 +78,7 @@ pub async fn post_command(
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "No such event", body = ErrorBody),
         (status = 409, description = "Later changes conflict (`undo_conflict`), or already undone; another event is at `seq` (`event_mismatch`); the log has another epoch (`epoch_mismatch`)", body = ErrorBody),
+        (status = 429, description = "Agent write quota used up (`quota_exceeded`) or too many requests; see `Retry-After`", body = ErrorBody),
         (status = 408, description = "The deadline passed before the undo began committing; nothing was stored", body = ErrorBody),
         (status = 503, description = "Too many writes in flight (`overloaded`), or the outcome is unknown (`outcome_unknown`: retry with the same `command_id`); see `Retry-After`", body = ErrorBody),
     ),
@@ -110,6 +113,10 @@ pub async fn post_undo(
             .ok_or_else(ApiError::expected_event_id_required)?,
         epoch: req.epoch,
     };
+    auth.take_write(&app)?;
+    // The event ID found at `seq` is checked before access is: an agent must not learn it (it would
+    // date events in lists the agent cannot read).
+    let agent = matches!(auth.actor, todo_core::Actor::Agent { .. });
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
         engine.undo_expecting(
@@ -121,6 +128,15 @@ pub async fn post_undo(
             &cancel,
         )
     })
-    .await??;
+    .await?
+    .map_err(|e| match e {
+        EngineError::UndoTargetMismatch { seq, .. } if agent => ApiError::new(
+            StatusCode::CONFLICT,
+            "event_mismatch",
+            format!("event {seq} is not the expected event"),
+        )
+        .with_details(serde_json::json!({ "seq": seq })),
+        e => e.into(),
+    })?;
     Ok(outcome_response(outcome, app.engine.epoch()))
 }

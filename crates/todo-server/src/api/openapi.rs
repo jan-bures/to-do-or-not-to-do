@@ -1,6 +1,6 @@
 //! The OpenAPI document, generated with `utoipa` and served at `/api/v1/openapi.json`.
 
-use super::{commands, dto, error, events, read};
+use super::{commands, dto, error, events, pair, read};
 use crate::auth::Authenticated;
 use crate::engine::{CommandResult, EventRef};
 use axum::Json;
@@ -41,6 +41,8 @@ impl Modify for BearerAuth {
         read::tags,
         read::smart_lists,
         read::smart_list_tasks,
+        pair::start,
+        pair::poll,
         document,
     ),
     components(schemas(
@@ -61,6 +63,10 @@ impl Modify for BearerAuth {
         events::CatchUp,
         events::Hello,
         crate::db::LogEvent,
+        pair::PairStart,
+        pair::PairStarted,
+        pair::PairPoll,
+        pair::PairStatus,
         error::ErrorBody,
         error::ErrorDetail,
     )),

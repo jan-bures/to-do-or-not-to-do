@@ -27,6 +27,11 @@
 //! envelope, whichever comes first. Items are measured while they are serialized, against the bytes
 //! still left. If the first item alone is too large, the response is 500 `item_too_large` with the
 //! `next_cursor` that skips it.
+//!
+//! # Access
+//!
+//! Agents only see what their grants let them read ([`visibility`]): other items are left out of
+//! pages, and a list or task they cannot read is 404, exactly like one that does not exist.
 
 use super::dto::{
     ActivityItem, ActivityPage, ActivityParams, CollectionPage, DEFAULT_PAGE, IncludeDeleted,
@@ -34,7 +39,7 @@ use super::dto::{
     TaskPage, TaskQueryParams,
 };
 use super::error::{ApiError, ErrorBody};
-use super::{ApiPath, ApiQuery, RequestCancel, Work, blocking};
+use super::{ApiPath, ApiQuery, RequestCancel, Work, blocking, visibility};
 use crate::app::AppState;
 use crate::auth::Authenticated;
 use crate::cancel::Cancel;
@@ -52,6 +57,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::io;
+use todo_core::Actor;
 use todo_core::ids::ListId;
 use todo_core::model::{Collection, List, Tag, Task};
 use todo_core::query::{BUILTIN_LISTS, EvalContext, Expr, OrderKey, Query, fold};
@@ -295,7 +301,7 @@ fn collection_key(c: &Collection) -> OrderKey {
     security(("bearer" = []))
 )]
 pub async fn collections(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiQuery(q): ApiQuery<ReadParams>,
@@ -304,9 +310,13 @@ pub async fn collections(
     let after = decode_cursor(q.cursor.as_deref(), &binding)?;
     let limit = page_limit(q.limit);
     read(&app, cancel, move |s, cancel| {
+        let visible = visibility::visible_collections(s, &auth.actor);
         let sel = select(
             s.collections.values(),
-            |c| live_or(s, q.include_deleted, c.id.into()),
+            |c| {
+                live_or(s, q.include_deleted, c.id.into())
+                    && visibility::collection_in(visible.as_ref(), c)
+            },
             collection_key,
             after.as_ref(),
             limit + 1,
@@ -330,7 +340,7 @@ pub async fn collections(
     security(("bearer" = []))
 )]
 pub async fn lists(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiQuery(q): ApiQuery<ReadParams>,
@@ -355,7 +365,10 @@ pub async fn lists(
         };
         let sel = select(
             s.lists.values(),
-            |l| live_or(s, q.include_deleted, l.id.into()),
+            |l| {
+                live_or(s, q.include_deleted, l.id.into())
+                    && visibility::list_entity_visible(s, &auth.actor, l)
+            },
             key,
             after.as_ref(),
             limit + 1,
@@ -388,7 +401,7 @@ fn task_key(t: &Task) -> OrderKey {
     security(("bearer" = []))
 )]
 pub async fn list_tasks(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiPath(id): ApiPath<ListId>,
@@ -408,7 +421,7 @@ pub async fn list_tasks(
     let after = decode_cursor(q.cursor.as_deref(), &binding)?;
     let limit = page_limit(q.limit);
     read(&app, cancel, move |s, cancel| {
-        if !s.lists.contains_key(&id) {
+        if !s.lists.contains_key(&id) || !visibility::list_visible(s, &auth.actor, id) {
             return Err(ApiError::not_found(format!("list {id} not found")));
         }
         let sel = select(
@@ -472,6 +485,7 @@ fn parse_query(text: &str) -> Result<Query, ApiError> {
 
 async fn run_query(
     app: &AppState,
+    actor: Actor,
     cancel: Cancel,
     route: &str,
     text: &str,
@@ -497,7 +511,7 @@ async fn run_query(
             .ok_or_else(ApiError::timeout)?;
         let sel = select(
             s.tasks.values(),
-            |t| m.matches(t),
+            |t| m.matches(t) && visibility::task_visible(s, &actor, t),
             |t| query.order_key(s, t),
             after.as_ref(),
             limit + 1,
@@ -522,13 +536,14 @@ async fn run_query(
     security(("bearer" = []))
 )]
 pub async fn query_tasks(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiQuery(q): ApiQuery<TaskQueryParams>,
 ) -> Result<Json<TaskPage>, ApiError> {
     run_query(
         &app,
+        auth.actor,
         cancel,
         "tasks",
         q.query.as_deref().unwrap_or_default(),
@@ -690,13 +705,19 @@ fn detail_bytes(
     security(("bearer" = []))
 )]
 pub async fn task_detail(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiPath(id): ApiPath<todo_core::ids::TaskId>,
     ApiQuery(q): ApiQuery<IncludeDeleted>,
 ) -> Result<Response, ApiError> {
     let body = read(&app, cancel, move |s, cancel| {
+        if s.tasks
+            .get(&id)
+            .is_some_and(|t| !visibility::task_visible(s, &auth.actor, t))
+        {
+            return Err(ApiError::not_found(format!("task {id} not found")));
+        }
         detail_bytes(s, id, q.include_deleted, cancel, MAX_PAGE_BYTES)
     })
     .await?;
@@ -726,7 +747,7 @@ fn tag_key(t: &Tag) -> OrderKey {
     security(("bearer" = []))
 )]
 pub async fn tags(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiQuery(q): ApiQuery<ReadParams>,
@@ -735,9 +756,13 @@ pub async fn tags(
     let after = decode_cursor(q.cursor.as_deref(), &binding)?;
     let limit = page_limit(q.limit);
     read(&app, cancel, move |s, cancel| {
+        let visible = visibility::visible_tags(s, &auth.actor);
         let sel = select(
             s.tags.values(),
-            |t| q.include_deleted || t.deleted.is_none(),
+            |t| {
+                (q.include_deleted || t.deleted.is_none())
+                    && visibility::tag_in(visible.as_ref(), t)
+            },
             tag_key,
             after.as_ref(),
             limit + 1,
@@ -782,7 +807,7 @@ pub async fn smart_lists(_auth: Authenticated) -> Json<Vec<SmartList>> {
     security(("bearer" = []))
 )]
 pub async fn smart_list_tasks(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     ApiPath(id): ApiPath<String>,
@@ -794,6 +819,7 @@ pub async fn smart_list_tasks(
         .ok_or_else(|| ApiError::not_found(format!("smart list `{id}` not found")))?;
     run_query(
         &app,
+        auth.actor,
         cancel,
         &format!("smart-lists/{}", list.id),
         list.query,
@@ -821,7 +847,7 @@ const ACTIVITY_ITEM_RESERVE: usize = 2 * 1024;
     security(("bearer" = []))
 )]
 pub async fn activity(
-    _auth: Authenticated,
+    auth: Authenticated,
     State(app): State<AppState>,
     ApiQuery(q): ApiQuery<ActivityParams>,
 ) -> Result<Json<ActivityPage>, ApiError> {
@@ -839,9 +865,16 @@ pub async fn activity(
         let s = engine.state();
         let j = &s.journal;
         let more = page.truncated || page.events.len() == limit;
+        // The oldest event read (visible or not) is where the next page continues.
+        let scanned = page.events.last().and_then(|e| e.event.seq);
+        let scopes = page.scopes;
         let items: Vec<ActivityItem> = page
             .events
             .into_iter()
+            .filter(|e| {
+                let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
+                visibility::event_visible(&s, &auth.actor, &e.event, scope)
+            })
             .map(|event| {
                 let root = j.root_of(event.event.id);
                 let head = j.head_of(root);
@@ -858,9 +891,7 @@ pub async fn activity(
                 }
             })
             .collect();
-        let next_before = more
-            .then(|| items.last().and_then(|i| i.event.event.seq))
-            .flatten();
+        let next_before = more.then_some(scanned).flatten();
         Ok(Json(ActivityPage { items, next_before }))
     })
     .await?
