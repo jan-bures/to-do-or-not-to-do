@@ -9,18 +9,24 @@
 //! |---|---|---|
 //! | `list_collections` | `GET /collections` | read |
 //! | `list_lists` | `GET /lists` | read |
+//! | `list_tags` | `GET /tags` | read (tags on tasks you can read, or all with a default of read) |
 //! | `get_task` | `GET /tasks/{id}` | read |
 //! | `query_tasks` | `GET /tasks?query=` | read |
-//! | `create_task` | `create_task` | capture |
+//! | `create_task` | `create_task` | capture; plan to set `recurrence` |
 //! | `add_note` | `add_note` | capture |
+//! | `add_link` | `add_link` (web links only) | capture |
 //! | `update_task` | `update_task` | plan |
 //! | `complete_task` | `complete_task` / `uncomplete_task` | plan |
 //! | `move_task` | `move_task` | plan, on both lists |
 //! | `add_step` | `create_step` | plan |
 //! | `update_step` | `update_step` or `complete_step` / `uncomplete_step` (one per call) | plan |
 //! | `set_my_day` | `set_my_day` | plan |
+//! | `tag_task` / `untag_task` | `add_tag` / `remove_tag` | plan |
+//! | `create_tag` | `create_tag` | plan on at least one list |
+//! | `add_reminder` | `add_reminder` | plan |
+//! | `update_reminder` | `update_reminder` | plan |
 //! | `merge_tasks` | `merge_tasks` | plan, on both tasks |
-//! | `archive_task` | `delete` (a tombstone; undo restores it) | plan |
+//! | `archive_task` | `delete` (a soft delete: a tombstone, which `undo_event` reverses) | plan |
 //! | `get_activity` | `GET /activity` | read (events filtered) |
 //! | `undo_event` | `POST /events/{seq}/undo` | the level of the change; own events only |
 //!
@@ -88,8 +94,8 @@ use uuid::Uuid;
 /// What the server tells agents when they connect (the full guide is `docs/agents/`).
 pub const INSTRUCTIONS: &str = "\
 A personal to-do list. You act with the levels the owner granted your token, per list: read, capture \
-(create tasks, add notes) or plan (change, complete, move, merge and archive tasks, steps, My Day). \
-Lists you cannot read do not exist for you. Create tasks in the Inbox unless told otherwise. Before \
+(create tasks, add notes and links) or plan (change, complete, move, merge and archive tasks; steps, \
+My Day, tags, reminders and repeat rules). Lists you cannot read do not exist for you. Create tasks in the Inbox unless told otherwise. Before \
 creating a task, query for an existing one (query_tasks) to avoid duplicates. Pass the same command_id \
 when retrying a write, so it is not applied twice. Every write is attributed to you, shows in the \
 owner's activity feed and can be undone.";
@@ -173,6 +179,79 @@ impl PositionArg {
     }
 }
 
+/// Day of the week.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WeekdayArg {
+    /// Monday.
+    Mon,
+    /// Tuesday.
+    Tue,
+    /// Wednesday.
+    Wed,
+    /// Thursday.
+    Thu,
+    /// Friday.
+    Fri,
+    /// Saturday.
+    Sat,
+    /// Sunday.
+    Sun,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// How often a task repeats. `interval` is 1–999 (default 1): `{"freq": "weekly", "interval": 2,
+/// "days": ["mon"]}` is every other Monday.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "freq", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuleArg {
+    /// Every `interval` days.
+    Daily {
+        /// Days between occurrences (default 1).
+        #[serde(default = "one")]
+        interval: u32,
+    },
+    /// Every `interval` weeks, on the given weekdays (weeks start on Monday).
+    Weekly {
+        /// Weeks between occurrences (default 1).
+        #[serde(default = "one")]
+        interval: u32,
+        /// The weekdays it falls on; at least one.
+        days: Vec<WeekdayArg>,
+    },
+    /// Every `interval` months on a day of the month (1–31; shorter months use their last day).
+    Monthly {
+        /// Months between occurrences (default 1).
+        #[serde(default = "one")]
+        interval: u32,
+        /// Day of the month, 1–31.
+        day: u8,
+    },
+    /// Every `interval` years on the due date's month and day (29 February becomes 28 February).
+    Yearly {
+        /// Years between occurrences (default 1).
+        #[serde(default = "one")]
+        interval: u32,
+    },
+}
+
+/// A repeat rule, the same shape `get_task` returns as `recurrence`. The task must have a due date:
+/// completing it creates the next occurrence, due on the next date the rule gives after the completed
+/// task's due date. Example: `{"rule": {"freq": "monthly", "day": 1}, "until": "2031-12-31"}`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecurrenceArg {
+    /// The repeat pattern, tagged by `freq`: `daily`, `weekly` (needs `days`), `monthly` (needs
+    /// `day`) or `yearly`.
+    pub rule: RuleArg,
+    /// Last date, `YYYY-MM-DD` (inclusive), on which an occurrence may fall. Omit to repeat forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
 /// A new task.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +271,9 @@ pub struct CreateTaskArgs {
     /// Priority. Default none.
     #[serde(default)]
     pub priority: Option<PriorityArg>,
+    /// Make it repeat (needs `due`, and plan level on the list). Default: it doesn't repeat.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceArg>,
     /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
     #[serde(default)]
     pub command_id: Option<Uuid>,
@@ -236,6 +318,10 @@ pub struct UpdateTaskArgs {
     /// New priority.
     #[serde(default)]
     pub priority: Option<PriorityArg>,
+    /// New repeat rule, replacing the old one, or `null` to stop repeating. The task must have a due
+    /// date (its current one, or `due` in the same call).
+    #[serde(default, deserialize_with = "double_option")]
+    pub recurrence: Option<Option<RecurrenceArg>>,
     /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
     #[serde(default)]
     pub command_id: Option<Uuid>,
@@ -345,6 +431,77 @@ pub struct MergeTasksArgs {
 pub struct ArchiveTaskArgs {
     /// The task.
     pub task_id: Uuid,
+    /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+}
+
+/// A tag and a task.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TagTaskArgs {
+    /// The task.
+    pub task_id: Uuid,
+    /// The tag (from `list_tags` or `create_tag`).
+    pub tag_id: Uuid,
+    /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+}
+
+/// A new tag.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTagArgs {
+    /// Name, unique among tags (case-insensitively), for example `work`.
+    pub name: String,
+    /// Colour, for example `#336699`. Default none.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+}
+
+/// A new reminder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddReminderArgs {
+    /// The task.
+    pub task_id: Uuid,
+    /// When to remind: an RFC 3339 time with an offset (`2030-01-02T09:00:00Z`,
+    /// `2030-01-02T09:00:00+01:00`), or a local time without one (`2030-01-02T09:00`), read in the
+    /// owner's time zone.
+    pub at: String,
+    /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+}
+
+/// A new time for a reminder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateReminderArgs {
+    /// The reminder (`reminders[].id` in `get_task`, or `reminder_id` from `add_reminder`).
+    pub reminder_id: Uuid,
+    /// The new time, in the same forms as `add_reminder`'s `at`.
+    pub at: String,
+    /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+}
+
+/// A web link to add to a task.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddLinkArgs {
+    /// The task.
+    pub task_id: Uuid,
+    /// An `http` or `https` URL.
+    pub url: String,
+    /// Display title. Default: none (the URL is shown).
+    #[serde(default)]
+    pub title: Option<String>,
     /// Idempotency key (UUID). Reuse it, with the same arguments, only to retry this exact write.
     #[serde(default)]
     pub command_id: Option<Uuid>,
@@ -460,6 +617,19 @@ async fn body_json(res: Response) -> Result<Value, ApiError> {
         tracing::error!(error = %e, "a handler response is not JSON");
         ApiError::internal()
     })
+}
+
+/// A reminder time: an RFC 3339 timestamp, or a civil date-time in the owner's time zone.
+fn reminder_time(app: &AppState, at: &str) -> Result<Timestamp, ApiError> {
+    if let Ok(t) = at.parse::<Timestamp>() {
+        return Ok(t);
+    }
+    at.parse::<jiff::civil::DateTime>()
+        .ok()
+        .and_then(|dt| app.zone.to_timestamp(dt).ok())
+        .ok_or_else(|| {
+            invalid("at must be an RFC 3339 time such as 2030-01-02T09:00:00Z, or a local time such as 2030-01-02T09:00")
+        })
 }
 
 /// An ID derived from a command ID, so a retry recreates the same entity.
@@ -700,6 +870,32 @@ impl TodoMcp {
     }
 
     #[tool(
+        description = "List the tags you can see (with their IDs, names and colours). Without a default level of read you see only the tags on tasks you can read. Paginated: pass next_cursor back as cursor.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn list_tags(
+        &self,
+        Parameters(a): Parameters<PageArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("list_tags", &ctx, |app, auth, cancel| async move {
+            let page = read::tags(
+                auth,
+                State(app),
+                RequestCancel(cancel),
+                ApiQuery(ReadParams {
+                    include_deleted: a.include_deleted,
+                    limit: a.limit,
+                    cursor: a.cursor,
+                }),
+            )
+            .await?;
+            to_value(&page.0)
+        })
+        .await
+    }
+
+    #[tool(
         description = "Get one task with its steps, links, attachments, reminders and tags.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -751,7 +947,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Create a task (capture level). Goes to the Inbox unless list_id is given. Returns task_id and the event. Query first to avoid duplicates; retry with the same command_id.",
+        description = "Create a task (capture level; plan level to make it repeat). Goes to the Inbox unless list_id is given. Optional due date, priority and repeat rule (recurrence, which needs a due date). Returns task_id and the event. Query first to avoid duplicates; retry with the same command_id.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -789,6 +985,9 @@ impl TodoMcp {
             if let Some(p) = a.priority {
                 cmd["priority"] = json!(p);
             }
+            if let Some(r) = a.recurrence {
+                cmd["recurrence"] = json!(r);
+            }
             let extra = json!({ "task_id": task, "list_id": list });
             command(&app, auth, cancel, command_id, cmd, extra).await
         })
@@ -817,7 +1016,40 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Change a task's title, notes, due date or priority (plan level). Omitted fields stay as they are; due: null clears the due date.",
+        description = "Add a web link (http or https URL, optional title) to a task (capture level). Returns link_id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn add_link(
+        &self,
+        Parameters(a): Parameters<AddLinkArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("add_link", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let link = derived_id(command_id, "link");
+            let cmd = json!({
+                "cmd": "add_link", "id": link, "task": a.task_id,
+                "kind": { "type": "web", "url": a.url, "title": a.title },
+            });
+            command(
+                &app,
+                auth,
+                cancel,
+                command_id,
+                cmd,
+                json!({ "link_id": link }),
+            )
+            .await
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Change a task's title, notes, due date, priority or repeat rule (plan level). Omitted fields stay as they are; due: null clears the due date, recurrence: null stops it repeating. A repeat rule needs a due date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -844,9 +1076,12 @@ impl TodoMcp {
             if let Some(p) = a.priority {
                 patch.insert("priority".into(), json!(p));
             }
+            if let Some(r) = a.recurrence {
+                patch.insert("recurrence".into(), json!(r));
+            }
             if patch.is_empty() {
                 return Err(invalid(
-                    "nothing to change: give title, notes, due or priority",
+                    "nothing to change: give title, notes, due, priority or recurrence",
                 ));
             }
             let cmd = json!({ "cmd": "update_task", "id": a.task_id, "patch": patch });
@@ -856,7 +1091,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Complete a task, or reopen it with completed: false (plan level). Completing a repeating task creates its next occurrence.",
+        description = "Complete a task, or reopen (uncomplete) it with completed: false (plan level). Completing a repeating task creates its next occurrence.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1008,6 +1243,133 @@ impl TodoMcp {
     }
 
     #[tool(
+        description = "Put a tag on a task (plan level). Get tag IDs from list_tags. Tagging a task that already has the tag changes nothing.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn tag_task(
+        &self,
+        Parameters(a): Parameters<TagTaskArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("tag_task", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let cmd = json!({ "cmd": "add_tag", "task": a.task_id, "tag": a.tag_id });
+            command(&app, auth, cancel, command_id, cmd, json!({})).await
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Take a tag off a task (plan level). The tag itself stays. Untagging a task that doesn't have the tag changes nothing.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn untag_task(
+        &self,
+        Parameters(a): Parameters<TagTaskArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("untag_task", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let cmd = json!({ "cmd": "remove_tag", "task": a.task_id, "tag": a.tag_id });
+            command(&app, auth, cancel, command_id, cmd, json!({})).await
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Create a tag (needs plan level on at least one list). Returns tag_id. Check list_tags first: names are unique. Renaming and deleting tags is the owner's.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn create_tag(
+        &self,
+        Parameters(a): Parameters<CreateTagArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("create_tag", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let tag = derived_id(command_id, "tag");
+            let cmd = json!({ "cmd": "create_tag", "id": tag, "name": a.name, "color": a.color });
+            command(
+                &app,
+                auth,
+                cancel,
+                command_id,
+                cmd,
+                json!({ "tag_id": tag }),
+            )
+            .await
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a reminder to a task at a given time (plan level). at is an RFC 3339 time with an offset, or a local time (2030-01-02T09:00) in the owner's time zone. Returns reminder_id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn add_reminder(
+        &self,
+        Parameters(a): Parameters<AddReminderArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("add_reminder", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let at = reminder_time(&app, &a.at)?;
+            let reminder = derived_id(command_id, "reminder");
+            let cmd = json!({
+                "cmd": "add_reminder", "id": reminder, "task": a.task_id, "at": at,
+            });
+            command(
+                &app,
+                auth,
+                cancel,
+                command_id,
+                cmd,
+                json!({ "reminder_id": reminder, "at": at }),
+            )
+            .await
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Move a reminder to another time (plan level). at takes the same forms as in add_reminder.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn update_reminder(
+        &self,
+        Parameters(a): Parameters<UpdateReminderArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("update_reminder", &ctx, |app, auth, cancel| async move {
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let at = reminder_time(&app, &a.at)?;
+            let cmd = json!({ "cmd": "update_reminder", "id": a.reminder_id, "at": at });
+            command(&app, auth, cancel, command_id, cmd, json!({ "at": at })).await
+        })
+        .await
+    }
+
+    #[tool(
         description = "Merge a duplicate task (source) into the one to keep (target) (plan level on both). The source's steps, links, attachments, tags and notes move over and the source is deleted.",
         annotations(
             read_only_hint = false,
@@ -1031,7 +1393,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Archive a task (plan level): it leaves its list and all queries but is kept, and undo_event brings it back.",
+        description = "Delete a task, softly (plan level). There is no separate archived state: this is the same delete as in the app. The task, its steps, links and reminders leave every list and query; get_task still finds it with include_deleted: true, and nothing is erased. The only way back is undo_event on this result's event (or the owner restoring it).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -1143,9 +1505,53 @@ mod tests {
     }
 
     #[test]
+    fn recurrence_args_are_the_domain_shape() {
+        use todo_core::recurrence::Recurrence;
+        for (arg, rrule) in [
+            (
+                json!({ "rule": { "freq": "daily" } }),
+                "FREQ=DAILY;INTERVAL=1",
+            ),
+            (
+                json!({ "rule": { "freq": "weekly", "interval": 2, "days": ["mon", "fri"] } }),
+                "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,FR",
+            ),
+            (
+                json!({ "rule": { "freq": "monthly", "day": 31 }, "until": "2031-12-31" }),
+                "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=31;UNTIL=20311231",
+            ),
+            (
+                json!({ "rule": { "freq": "yearly", "interval": 3 } }),
+                "FREQ=YEARLY;INTERVAL=3",
+            ),
+        ] {
+            let a: RecurrenceArg = serde_json::from_value(arg.clone()).unwrap();
+            let r: Recurrence = serde_json::from_value(json!(a)).unwrap();
+            r.validate().unwrap();
+            assert_eq!(r.to_rrule(), rrule, "{arg}");
+        }
+        // Validation is the domain's: the tool passes out-of-range values through.
+        let a: RecurrenceArg =
+            serde_json::from_value(json!({ "rule": { "freq": "weekly", "days": [] } })).unwrap();
+        let r: Recurrence = serde_json::from_value(json!(a)).unwrap();
+        assert!(r.validate().is_err());
+        // Misspelt parts are refused rather than dropped.
+        for bad in [
+            json!({ "rule": { "freq": "weekly", "byday": ["mon"] } }),
+            json!({ "rule": { "freq": "daily" }, "count": 3 }),
+            json!({ "rule": { "freq": "hourly" } }),
+        ] {
+            assert!(
+                serde_json::from_value::<RecurrenceArg>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn every_tool_has_a_description_and_an_object_schema() {
         let names = TodoMcp::tool_names();
-        assert_eq!(names.len(), 16, "{names:?}");
+        assert_eq!(names.len(), 23, "{names:?}");
         for t in TodoMcp::tool_router().list_all() {
             assert!(
                 t.description.as_deref().is_some_and(|d| d.len() > 20),

@@ -13,21 +13,28 @@ use todo_core::{AccessLevel, AgentId, Grants};
 pub type Client = RunningService<RoleClient, ()>;
 
 /// Every tool the server offers.
-pub const ALL_TOOLS: [&str; 16] = [
+pub const ALL_TOOLS: [&str; 23] = [
+    "add_link",
     "add_note",
+    "add_reminder",
     "add_step",
     "archive_task",
     "complete_task",
+    "create_tag",
     "create_task",
     "get_activity",
     "get_task",
     "list_collections",
     "list_lists",
+    "list_tags",
     "merge_tasks",
     "move_task",
     "query_tasks",
     "set_my_day",
+    "tag_task",
     "undo_event",
+    "untag_task",
+    "update_reminder",
     "update_step",
     "update_task",
 ];

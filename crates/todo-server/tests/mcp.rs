@@ -318,6 +318,298 @@ async fn a_plan_level_agent_organises_tasks() {
 }
 
 #[tokio::test]
+async fn a_plan_level_agent_tags_links_reminds_and_repeats() {
+    // A zone without daylight saving time, so local reminder times convert the same all year.
+    let env = Env::start_with(|c| c.time_zone = "Asia/Tokyo".into()).await;
+    env.t.create_list("Inbox").await;
+    let (_, token) = env.agent("planner", &Grants::with_default(AccessLevel::Plan), None);
+    let c = env.connect(&token).await;
+    // Every write names its event and says what it did.
+    let wrote = |r: &Value| {
+        assert_eq!(r["events"].as_array().unwrap().len(), 1, "{r}");
+        assert!(!r["summary"].as_str().unwrap().is_empty(), "{r}");
+    };
+
+    // Tags: create, list, put on a task, find by, take off.
+    let tag = ok(
+        &c,
+        "create_tag",
+        json!({ "name": "work", "color": "#336699" }),
+    )
+    .await;
+    wrote(&tag);
+    let tag_id = tag["tag_id"].clone();
+    let dup = fails(&c, "create_tag", json!({ "name": "Work" })).await;
+    assert_eq!(dup["code"], "duplicate_name", "{dup}");
+    let tags = ok(&c, "list_tags", json!({})).await;
+    assert_eq!(names(&tags), ["work"]);
+    assert_eq!(tags["items"][0]["id"], tag_id);
+    let task = ok(&c, "create_task", json!({ "title": "Report" })).await["task_id"].clone();
+    let tagged = ok(&c, "tag_task", json!({ "task_id": task, "tag_id": tag_id })).await;
+    wrote(&tagged);
+    let again = ok(&c, "tag_task", json!({ "task_id": task, "tag_id": tag_id })).await;
+    assert!(again["events"].as_array().unwrap().is_empty(), "{again}");
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["tags"][0]["name"], "work");
+    assert_eq!(
+        titles(&ok(&c, "query_tasks", json!({ "query": "tag:work" })).await),
+        ["Report"]
+    );
+    wrote(
+        &ok(
+            &c,
+            "untag_task",
+            json!({ "task_id": task, "tag_id": tag_id }),
+        )
+        .await,
+    );
+    assert!(titles(&ok(&c, "query_tasks", json!({ "query": "tag:work" })).await).is_empty());
+    let e = fails(&c, "tag_task", json!({ "task_id": task, "tag_id": id() })).await;
+    assert_eq!(e["code"], "not_found");
+
+    // Links: web only, validated by the domain.
+    let link = ok(
+        &c,
+        "add_link",
+        json!({ "task_id": task, "url": "https://todo.example.com/spec", "title": "Spec" }),
+    )
+    .await;
+    wrote(&link);
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["links"][0]["id"], link["link_id"]);
+    assert_eq!(
+        detail["links"][0]["kind"]["url"],
+        "https://todo.example.com/spec"
+    );
+    assert_eq!(detail["links"][0]["kind"]["title"], "Spec");
+    let e = fails(&c, "add_link", json!({ "task_id": task, "url": "ftp://x" })).await;
+    assert_eq!(e["code"], "invalid", "{e}");
+
+    // Reminders: an RFC 3339 time, or a local one in the owner's zone.
+    let r = ok(
+        &c,
+        "add_reminder",
+        json!({ "task_id": task, "at": "2030-01-02T09:00:00+01:00" }),
+    )
+    .await;
+    wrote(&r);
+    assert_eq!(r["at"], "2030-01-02T08:00:00Z");
+    let reminder = r["reminder_id"].clone();
+    let local = ok(
+        &c,
+        "add_reminder",
+        json!({ "task_id": task, "at": "2030-01-03T09:00" }),
+    )
+    .await;
+    assert_eq!(local["at"], "2030-01-03T00:00:00Z", "09:00 in Tokyo");
+    let moved = ok(
+        &c,
+        "update_reminder",
+        json!({ "reminder_id": reminder, "at": "2030-01-04T12:30" }),
+    )
+    .await;
+    wrote(&moved);
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    let ats: Vec<&str> = detail["reminders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["at"].as_str().unwrap())
+        .collect();
+    assert_eq!(ats, ["2030-01-03T00:00:00Z", "2030-01-04T03:30:00Z"]);
+    for bad in ["tomorrow", "2030-13-01T09:00", ""] {
+        let e = fails(&c, "add_reminder", json!({ "task_id": task, "at": bad })).await;
+        assert_eq!(e["code"], "invalid_body", "{bad}: {e}");
+    }
+    let e = fails(
+        &c,
+        "update_reminder",
+        json!({ "reminder_id": id(), "at": "2030-01-04T12:30" }),
+    )
+    .await;
+    assert_eq!(e["code"], "not_found");
+    // A retry replays, with the same reminder.
+    let cid = id();
+    let first = ok(
+        &c,
+        "add_reminder",
+        json!({ "task_id": task, "at": "2030-02-01T08:00", "command_id": cid }),
+    )
+    .await;
+    let retry = ok(
+        &c,
+        "add_reminder",
+        json!({ "task_id": task, "at": "2030-02-01T08:00", "command_id": cid }),
+    )
+    .await;
+    assert_eq!(retry["replayed"], true);
+    assert_eq!(retry["reminder_id"], first["reminder_id"]);
+    assert_eq!(retry["events"], first["events"]);
+
+    // Repeat rules: on create, changed and cleared by update, checked by the domain.
+    let weekly =
+        json!({ "rule": { "freq": "weekly", "days": ["mon", "thu"] }, "until": "2030-12-31" });
+    let gym = ok(
+        &c,
+        "create_task",
+        json!({ "title": "Gym", "due": "2030-01-07", "recurrence": weekly }),
+    )
+    .await["task_id"]
+        .clone();
+    let detail = ok(&c, "get_task", json!({ "task_id": gym })).await;
+    assert_eq!(detail["task"]["recurrence"]["rule"]["freq"], "weekly");
+    assert_eq!(detail["task"]["recurrence"]["rule"]["interval"], 1);
+    assert_eq!(detail["task"]["recurrence"]["until"], "2030-12-31");
+    // Completing it creates the next occurrence, on the next rule date after the due date.
+    ok(&c, "complete_task", json!({ "task_id": gym })).await;
+    let next = ok(&c, "query_tasks", json!({ "query": "gym and not done" })).await;
+    assert_eq!(next["items"][0]["due"], "2030-01-10", "{next}");
+    let next = next["items"][0]["id"].clone();
+    for (bad, why) in [
+        (
+            json!({ "rule": { "freq": "weekly", "days": [] } }),
+            "no weekdays",
+        ),
+        (
+            json!({ "rule": { "freq": "daily", "interval": 0 } }),
+            "interval 0",
+        ),
+        (
+            json!({ "rule": { "freq": "monthly", "day": 32 } }),
+            "day 32",
+        ),
+    ] {
+        let e = fails(
+            &c,
+            "update_task",
+            json!({ "task_id": next, "recurrence": bad }),
+        )
+        .await;
+        assert_eq!(e["code"], "invalid_recurrence", "{why}: {e}");
+    }
+    let e = fails(
+        &c,
+        "update_task",
+        json!({ "task_id": next, "recurrence": { "rule": { "freq": "daily" } }, "due": null }),
+    )
+    .await;
+    assert_eq!(e["code"], "invalid", "a repeat rule needs a due date: {e}");
+    let e = fails(
+        &c,
+        "create_task",
+        json!({ "title": "x", "recurrence": { "rule": { "freq": "daily" } } }),
+    )
+    .await;
+    assert_eq!(e["code"], "invalid", "{e}");
+    let bad = common::mcp::call(
+        &c,
+        "update_task",
+        json!({ "task_id": next, "recurrence": { "rule": { "freq": "weekly", "byday": ["mon"] } } }),
+    )
+    .await;
+    // Arguments that don't fit the schema never reach the server's handlers.
+    assert_eq!(bad.is_error, Some(true));
+    assert!(
+        format!("{:?}", bad.content).contains("unknown field `byday`"),
+        "{bad:?}"
+    );
+    ok(
+        &c,
+        "update_task",
+        json!({ "task_id": next, "recurrence": { "rule": { "freq": "monthly", "interval": 2, "day": 31 } } }),
+    )
+    .await;
+    let detail = ok(&c, "get_task", json!({ "task_id": next })).await;
+    assert_eq!(detail["task"]["recurrence"]["rule"]["day"], 31);
+    ok(
+        &c,
+        "update_task",
+        json!({ "task_id": next, "recurrence": null }),
+    )
+    .await;
+    let detail = ok(&c, "get_task", json!({ "task_id": next })).await;
+    assert!(detail["task"]["recurrence"].is_null(), "{detail}");
+    // A task gets a rule and a due date in one call.
+    ok(
+        &c,
+        "update_task",
+        json!({ "task_id": task, "due": "2030-03-01", "recurrence": { "rule": { "freq": "yearly" } } }),
+    )
+    .await;
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["task"]["recurrence"]["rule"]["freq"], "yearly");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn read_and_capture_agents_cannot_tag_remind_or_repeat() {
+    let env = Env::start().await;
+    let inbox = env.t.create_list("Inbox").await;
+    let task = env.t.create_task(&inbox, "Open task", json!({})).await;
+    let tag = id();
+    env.t
+        .ok(json!({ "cmd": "create_tag", "id": tag, "name": "home" }))
+        .await;
+    env.t
+        .ok(json!({ "cmd": "add_tag", "task": task, "tag": tag }))
+        .await;
+    let reminder = id();
+    env.t
+        .ok(json!({ "cmd": "add_reminder", "id": reminder, "task": task, "at": "2030-01-01T09:00:00Z" }))
+        .await;
+    let head = env.t.server.engine.head_seq();
+    let plan_tools = [
+        ("tag_task", json!({ "task_id": task, "tag_id": tag })),
+        ("untag_task", json!({ "task_id": task, "tag_id": tag })),
+        (
+            "add_reminder",
+            json!({ "task_id": task, "at": "2030-01-01T10:00:00Z" }),
+        ),
+        (
+            "update_reminder",
+            json!({ "reminder_id": reminder, "at": "2030-01-01T10:00:00Z" }),
+        ),
+        (
+            "update_task",
+            json!({ "task_id": task, "due": "2030-01-01", "recurrence": { "rule": { "freq": "daily" } } }),
+        ),
+        (
+            "create_task",
+            json!({ "title": "Daily", "list_id": inbox, "due": "2030-01-01", "recurrence": { "rule": { "freq": "daily" } } }),
+        ),
+        ("create_tag", json!({ "name": "agent-tag" })),
+    ];
+    for level in [AccessLevel::Read, AccessLevel::Capture] {
+        let label = format!("{level:?}");
+        let (_, token) = env.agent(&label.to_lowercase(), &Grants::with_default(level), None);
+        let c = env.connect(&token).await;
+        // Reading tags is fine.
+        assert_eq!(names(&ok(&c, "list_tags", json!({})).await), ["home"]);
+        for (tool, a) in &plan_tools {
+            let e = fails(&c, tool, a.clone()).await;
+            assert_eq!(e["code"], "forbidden", "{label} {tool}: {e}");
+            // Creating a task needs capture first, and plan on top to make it repeat.
+            let needed = if *tool == "create_task" && level == AccessLevel::Read {
+                "capture"
+            } else {
+                "plan"
+            };
+            assert_eq!(e["details"]["needed"], needed, "{label} {tool}: {e}");
+        }
+        let link = json!({ "task_id": task, "url": "https://todo.example.com/" });
+        if level == AccessLevel::Read {
+            let e = fails(&c, "add_link", link).await;
+            assert_eq!(e["code"], "forbidden", "{e}");
+            assert_eq!(e["details"]["needed"], "capture", "{e}");
+            assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+        } else {
+            ok(&c, "add_link", link).await;
+        }
+        c.cancel().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn a_capture_agent_cannot_plan_or_see_outside_its_lists() {
     let env = Env::start().await;
     let inbox = env.t.create_list("Inbox").await;
@@ -643,6 +935,14 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
         .t
         .ok(json!({ "cmd": "update_task", "id": secret, "patch": { "title": "Secret!" } }))
         .await;
+    let tag = id();
+    env.t
+        .ok(json!({ "cmd": "create_tag", "id": tag, "name": "visible" }))
+        .await;
+    let secret_reminder = id();
+    env.t
+        .ok(json!({ "cmd": "add_reminder", "id": secret_reminder, "task": secret, "at": "2030-01-01T09:00:00Z" }))
+        .await;
     // Plan everywhere except the diary.
     let (_, token) = env.agent(
         "planner",
@@ -662,6 +962,10 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
         ("add_note", json!({ "text": "x" })),
         ("add_step", json!({ "title": "x" })),
         ("move_task", json!({ "list_id": open })),
+        ("tag_task", json!({ "tag_id": tag })),
+        ("untag_task", json!({ "tag_id": tag })),
+        ("add_reminder", json!({ "at": "2030-01-01T09:00:00Z" })),
+        ("add_link", json!({ "url": "https://todo.example.com/" })),
     ] {
         let with = |task: &str| {
             let mut a = a.clone();
@@ -700,6 +1004,22 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
     )
     .await;
     assert_eq!(same_shape(&h, &secret), same_shape(&m, &missing));
+    // A reminder on a hidden task.
+    let at = "2030-01-02T09:00:00Z";
+    let h = fails(
+        &c,
+        "update_reminder",
+        json!({ "reminder_id": secret_reminder, "at": at }),
+    )
+    .await;
+    let m = fails(
+        &c,
+        "update_reminder",
+        json!({ "reminder_id": missing, "at": at }),
+    )
+    .await;
+    assert_eq!(h["code"], "not_found", "{h}");
+    assert_eq!(same_shape(&h, &secret_reminder), same_shape(&m, &missing));
 
     // REST goes through the same path.
     let cmd = |task: &str| json!({ "command_id": id(), "command": { "cmd": "complete_task", "id": task } });

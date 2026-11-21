@@ -102,19 +102,25 @@ A JSON-RPC `result` means it works. `401` means the token is missing, wrong, rev
 |---|---|---|
 | `list_collections` | read | Collections you can see |
 | `list_lists` | read | Lists you can see, with their IDs |
+| `list_tags` | read | Tags you can see, with their IDs |
 | `get_task` | read | One task with steps, links, attachments, reminders and tags |
 | `query_tasks` | read | Tasks matching a smart-list query |
 | `get_activity` | read | Recent changes in lists you can see, newest first |
-| `create_task` | capture | New task (in the Inbox unless `list_id` is given) |
+| `create_task` | capture (plan with `recurrence`) | New task (in the Inbox unless `list_id` is given), optionally with a due date, priority and repeat rule |
 | `add_note` | capture | Append to a task's notes |
-| `update_task` | plan | Title, notes, due date, priority |
-| `complete_task` | plan | Complete or reopen |
+| `add_link` | capture | Add a web link to a task |
+| `update_task` | plan | Title, notes, due date, priority, repeat rule |
+| `complete_task` | plan | Complete or reopen (`completed: false`) |
 | `move_task` | plan (both lists) | Move to another list |
 | `add_step` | plan | New checklist step |
 | `update_step` | plan | Retitle, tick off or reopen a step (one change per call) |
 | `set_my_day` | plan | Add to or remove from My Day |
+| `tag_task` / `untag_task` | plan | Put a tag on a task, or take it off |
+| `create_tag` | plan on at least one list | New tag |
+| `add_reminder` | plan | Remind about a task at a time |
+| `update_reminder` | plan | Move a reminder to another time |
 | `merge_tasks` | plan (both tasks) | Merge a duplicate into another task |
-| `archive_task` | plan | Hide a task. It's kept, and undo brings it back |
+| `archive_task` | plan | Soft-delete a task. Nothing is erased, and `undo_event` brings it back |
 | `undo_event` | that of the change | Undo one of your own changes, by an event's `seq` and `id` |
 
 Lists you have no level on are invisible: they never appear in results, and reading or writing them by

@@ -558,12 +558,15 @@ struct Scope {
     t: TestServer,
     granted: String,
     granted_task: String,
+    /// A tag on the granted task, so agents that can read the granted list see it.
+    granted_tag: String,
     granted_event: (u64, String),
     hidden: String,
     vault: String,
     hidden_task: String,
     hidden_step: String,
     hidden_tag: String,
+    hidden_reminder: String,
     hidden_event: (u64, String),
 }
 
@@ -595,6 +598,12 @@ impl Scope {
             .await;
         t.ok(json!({ "cmd": "add_tag", "task": hidden_task, "tag": hidden_tag }))
             .await;
+        let hidden_reminder = id();
+        t.ok(
+            json!({ "cmd": "add_reminder", "id": hidden_reminder, "task": hidden_task,
+                    "at": "2030-01-01T09:00:00Z" }),
+        )
+        .await;
         let r = t
             .ok(json!({ "cmd": "update_task", "id": hidden_task,
                         "patch": { "title": "zzhiddentask!", "priority": "high", "due": "2030-01-01" } }))
@@ -602,6 +611,11 @@ impl Scope {
         let hidden_event = event_of(&r);
         let granted_task = t
             .create_task(&granted, "Visible", json!({ "priority": "high" }))
+            .await;
+        let granted_tag = id();
+        t.ok(json!({ "cmd": "create_tag", "id": granted_tag, "name": "Granted tag" }))
+            .await;
+        t.ok(json!({ "cmd": "add_tag", "task": granted_task, "tag": granted_tag }))
             .await;
         let r = t
             .ok(json!({ "cmd": "update_task", "id": granted_task, "patch": { "title": "Visible!" } }))
@@ -611,23 +625,26 @@ impl Scope {
             t,
             granted,
             granted_task,
+            granted_tag,
             granted_event,
             hidden,
             vault,
             hidden_task,
             hidden_step,
             hidden_tag,
+            hidden_reminder,
             hidden_event,
         }
     }
 
-    fn hidden_ids(&self) -> [&str; 5] {
+    fn hidden_ids(&self) -> [&str; 6] {
         [
             &self.hidden,
             &self.vault,
             &self.hidden_task,
             &self.hidden_step,
             &self.hidden_tag,
+            &self.hidden_reminder,
         ]
     }
 
@@ -648,14 +665,20 @@ impl Scope {
         }
     }
 
-    /// A fresh task (with a step) in the granted list, made by the owner: `(task, step)`.
-    async fn fresh(&self) -> (String, String) {
+    /// A fresh task (with a step and a reminder) in the granted list, made by the owner:
+    /// `(task, step, reminder)`.
+    async fn fresh(&self) -> (String, String, String) {
         let task = self.t.create_task(&self.granted, "Fresh", json!({})).await;
         let step = id();
         self.t
             .ok(json!({ "cmd": "create_step", "id": step, "task": task, "title": "Fresh step" }))
             .await;
-        (task, step)
+        let reminder = id();
+        self.t
+            .ok(json!({ "cmd": "add_reminder", "id": reminder, "task": task,
+                        "at": "2030-01-01T09:00:00Z" }))
+            .await;
+        (task, step, reminder)
     }
 
     /// What the owner sees of the hidden list, to show that nothing an agent did changed it.
@@ -713,8 +736,11 @@ struct Ids {
     task: String,
     step: String,
     list: String,
-    /// A second task in the granted list (merge source or target, move subject).
+    /// A second task in the granted list (merge source or target, move subject, the task a tag is
+    /// put on or taken off when the tag is the target).
     other: String,
+    tag: String,
+    reminder: String,
 }
 
 /// One case per MCP tool that targets something (the read-only listing tools are checked for leaks).
@@ -732,9 +758,17 @@ const TARGETED: &[(&str, &str, AccessLevel)] = &[
     ("update_step", "step", AccessLevel::Plan),
     ("merge_tasks", "source", AccessLevel::Plan),
     ("merge_tasks", "target", AccessLevel::Plan),
+    ("add_link", "task", AccessLevel::Capture),
+    ("tag_task", "task", AccessLevel::Plan),
+    ("tag_task", "tag", AccessLevel::Plan),
+    ("untag_task", "task", AccessLevel::Plan),
+    ("untag_task", "tag", AccessLevel::Plan),
+    ("add_reminder", "task", AccessLevel::Plan),
+    ("update_reminder", "reminder", AccessLevel::Plan),
 ];
 
-fn tool_args(tool: &str, aim: &str, ids: &Ids, granted: &str) -> Value {
+fn tool_args(tool: &str, aim: &str, ids: &Ids, s: &Scope) -> Value {
+    let granted = &s.granted;
     match (tool, aim) {
         ("get_task", _) => json!({ "task_id": ids.task }),
         ("create_task", _) => json!({ "title": "From the agent", "list_id": ids.list }),
@@ -751,6 +785,15 @@ fn tool_args(tool: &str, aim: &str, ids: &Ids, granted: &str) -> Value {
             json!({ "source_task_id": ids.task, "target_task_id": ids.other })
         }
         ("merge_tasks", _) => json!({ "source_task_id": ids.other, "target_task_id": ids.task }),
+        ("add_link", _) => json!({ "task_id": ids.task, "url": "https://todo.example.com/" }),
+        ("tag_task" | "untag_task", "task") => {
+            json!({ "task_id": ids.task, "tag_id": s.granted_tag })
+        }
+        ("tag_task" | "untag_task", _) => json!({ "task_id": ids.other, "tag_id": ids.tag }),
+        ("add_reminder", _) => json!({ "task_id": ids.task, "at": "2030-01-02T09:00:00Z" }),
+        ("update_reminder", _) => {
+            json!({ "reminder_id": ids.reminder, "at": "2030-01-02T09:00:00Z" })
+        }
         _ => unreachable!("{tool} {aim}"),
     }
 }
@@ -925,7 +968,7 @@ async fn check_level(s: &Scope, level: AccessLevel) {
 
     // ---- REST commands.
     let cmd = |c: Value| json!({ "command_id": id(), "command": c });
-    let (task, _) = s.fresh().await;
+    let (task, _, _) = s.fresh().await;
     let rest_cases = [
         ("create_task", AccessLevel::Capture),
         ("add_note", AccessLevel::Capture),
@@ -1031,7 +1074,12 @@ async fn check_level(s: &Scope, level: AccessLevel) {
     // ---- MCP: every tool.
     let c = connect(&s.t, &token).await;
     let mut exercised: BTreeSet<&str> = BTreeSet::new();
-    for tool_name in ["list_lists", "list_collections", "get_activity"] {
+    for tool_name in [
+        "list_lists",
+        "list_collections",
+        "list_tags",
+        "get_activity",
+    ] {
         let v = ok(&c, tool_name, json!({})).await;
         s.assert_clean(&format!("{label} {tool_name}"), &v);
         exercised.insert(tool_name);
@@ -1044,58 +1092,53 @@ async fn check_level(s: &Scope, level: AccessLevel) {
     for (tool_name, aim, need) in TARGETED {
         exercised.insert(tool_name);
         let what = format!("{label} {tool_name} ({aim})");
-        let (other, _) = s.fresh().await;
+        let (other, _, _) = s.fresh().await;
         let hidden_ids = Ids {
             task: s.hidden_task.clone(),
             step: s.hidden_step.clone(),
             list: s.hidden.clone(),
             other: other.clone(),
+            tag: s.hidden_tag.clone(),
+            reminder: s.hidden_reminder.clone(),
         };
-        let (m1, m2, m3) = (id(), id(), id());
+        let (m1, m2, m3, m4, m5) = (id(), id(), id(), id(), id());
         let missing_ids = Ids {
             task: m1.clone(),
             step: m2.clone(),
             list: m3.clone(),
             other: other.clone(),
+            tag: m4.clone(),
+            reminder: m5.clone(),
         };
-        let h = tool(
-            &c,
-            tool_name,
-            tool_args(tool_name, aim, &hidden_ids, &s.granted),
-        )
-        .await;
-        let m = tool(
-            &c,
-            tool_name,
-            tool_args(tool_name, aim, &missing_ids, &s.granted),
-        )
-        .await;
+        let h_sent = [
+            &s.hidden_task,
+            &s.hidden_step,
+            &s.hidden,
+            &s.hidden_tag,
+            &s.hidden_reminder,
+        ]
+        .map(String::as_str);
+        let m_sent = [&m1, &m2, &m3, &m4, &m5].map(String::as_str);
+        let h = tool(&c, tool_name, tool_args(tool_name, aim, &hidden_ids, s)).await;
+        let m = tool(&c, tool_name, tool_args(tool_name, aim, &missing_ids, s)).await;
         assert_ne!(h.0, StatusCode::OK, "{what} on hidden: {}", h.1);
         assert!(
-            same_answer(
-                &h,
-                &[&s.hidden_task, &s.hidden_step, &s.hidden],
-                &m,
-                &[&m1, &m2, &m3]
-            ),
+            same_answer(&h, &h_sent, &m, &m_sent),
             "{what}: {h:?} vs {m:?}"
         );
         // The error may quote the IDs the agent sent itself, but nothing else that is hidden.
-        s.assert_clean_except(&what, &h.1, &[&s.hidden_task, &s.hidden_step, &s.hidden]);
-        let (task, step) = s.fresh().await;
-        let (other2, _) = s.fresh().await;
+        s.assert_clean_except(&what, &h.1, &h_sent);
+        let (task, step, reminder) = s.fresh().await;
+        let (other2, _, _) = s.fresh().await;
         let granted_ids = Ids {
             task: task.clone(),
             step: step.clone(),
             list: s.granted.clone(),
             other: other2.clone(),
+            tag: s.granted_tag.clone(),
+            reminder: reminder.clone(),
         };
-        let g = tool(
-            &c,
-            tool_name,
-            tool_args(tool_name, aim, &granted_ids, &s.granted),
-        )
-        .await;
+        let g = tool(&c, tool_name, tool_args(tool_name, aim, &granted_ids, s)).await;
         match expected(level, *need) {
             Outcome::Allowed => assert_eq!(g.0, StatusCode::OK, "{what}: {}", g.1),
             Outcome::Forbidden => assert_eq!(g.1["code"], "forbidden", "{what}: {}", g.1),
@@ -1105,15 +1148,17 @@ async fn check_level(s: &Scope, level: AccessLevel) {
                     step: m2.clone(),
                     list: m3.clone(),
                     other: m1.clone(),
+                    tag: m4.clone(),
+                    reminder: m5.clone(),
                 };
-                let m = tool(&c, tool_name, tool_args(tool_name, aim, &mg, &s.granted)).await;
+                let m = tool(&c, tool_name, tool_args(tool_name, aim, &mg, s)).await;
                 assert_ne!(g.0, StatusCode::OK, "{what}: {}", g.1);
                 assert!(
                     same_answer(
                         &g,
-                        &[&task, &step, &s.granted, &other2],
+                        &[&task, &step, &s.granted, &other2, &s.granted_tag, &reminder],
                         &m,
-                        &[&m1, &m2, &m3]
+                        &m_sent
                     ),
                     "{what}: {g:?} vs {m:?}"
                 );
@@ -1121,6 +1166,20 @@ async fn check_level(s: &Scope, level: AccessLevel) {
         }
         s.assert_clean(&what, &g.1);
     }
+    // create_tag: aimed at nothing, it needs plan level on some list.
+    exercised.insert("create_tag");
+    let t = tool(
+        &c,
+        "create_tag",
+        json!({ "name": format!("Agent tag {label}") }),
+    )
+    .await;
+    if level == AccessLevel::Plan {
+        assert_eq!(t.0, StatusCode::OK, "{label} create_tag: {}", t.1);
+    } else {
+        assert_eq!(t.1["code"], "forbidden", "{label} create_tag: {}", t.1);
+    }
+    s.assert_clean(&format!("{label} create_tag"), &t.1);
     // undo_event: hidden and missing events answer alike; someone else's visible event is refused;
     // the agent's own write can be undone.
     exercised.insert("undo_event");

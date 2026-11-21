@@ -12,11 +12,14 @@ your default):
 | Level | You may |
 |---|---|
 | none | Nothing. The list and its tasks don't exist for you: they never appear in results, and reading or changing them by ID gets `not_found`, exactly as for an ID that doesn't exist. |
-| read | Read the list and its tasks (`list_lists`, `query_tasks`, `get_task`, `get_activity`). |
-| capture | Also create tasks (`create_task`) and append notes (`add_note`). |
-| plan | Also change, complete, reopen, move, merge and archive tasks; add and change steps; put tasks in My Day (`update_task`, `complete_task`, `move_task`, `merge_tasks`, `archive_task`, `add_step`, `update_step`, `set_my_day`). Moving or merging needs plan level on both ends. |
+| read | Read the list and its tasks (`list_lists`, `list_tags`, `query_tasks`, `get_task`, `get_activity`). |
+| capture | Also create tasks (`create_task`), append notes (`add_note`) and add web links (`add_link`). |
+| plan | Also change, complete, reopen, move, merge and archive tasks; make tasks repeat; add and change steps; put tasks in My Day; tag tasks; add and move reminders (`update_task`, `complete_task`, `move_task`, `merge_tasks`, `archive_task`, `add_step`, `update_step`, `set_my_day`, `tag_task`, `untag_task`, `add_reminder`, `update_reminder`, and `create_task` with `recurrence`). Moving or merging needs plan level on both ends. |
 
-You can never change the structure: collections, lists and tags are the owner's. When a tool needs a
+You can never change the structure: collections and lists are the owner's, and so is renaming or deleting
+tags. With plan level on at least one list you may create a tag (`create_tag`), but you only see tags if
+your default level is at least read, or once they're on a task you can read. So with grants on single
+lists only, a tag you create is one you can't use: ask the owner to tag the task instead. When a tool needs a
 higher level than you have, it fails with `forbidden` and `details.needed` / `details.have`. Don't retry
 it; tell the owner what you wanted to do instead.
 
@@ -27,7 +30,9 @@ it; tell the owner what you wanted to do instead.
 - Use another list only when the owner named it, or the task obviously belongs to one they pointed you at.
 - Keep titles short and actionable (`Renew passport`, not `I think you should maybe renew…`). Put context,
   links and reasoning in `notes`.
-- Don't set priority, due dates or My Day unless asked to or it's clearly implied ("by Friday").
+- Don't set priority, due dates, repeat rules, reminders or My Day unless asked to or it's clearly implied
+  ("by Friday", "every Monday", "remind me at 9").
+- Use existing tags (`list_tags`). Create one only when the owner asked for it.
 
 ## Avoiding duplicates
 
@@ -55,7 +60,24 @@ it; tell the owner what you wanted to do instead.
   `get_activity`.
 - If later changes touched the same fields, undo fails with `undo_conflict` and lists them. Only pass
   `force: true` once you've checked that overwriting them is what the owner wants.
-- `archive_task` hides a task from every list and query, but nothing is lost: `undo_event` brings it back.
+- `archive_task` is a soft delete, the same as deleting in the app: there's no separate archived state and
+  no unarchive tool. The task leaves every list and query (`get_task` with `include_deleted: true` still
+  finds it), nothing is erased, and `undo_event` on its event brings it back.
+
+## Repeating tasks, due dates and reminders
+
+- A due date is a day, `YYYY-MM-DD`; there's no due time. Use a reminder for a time of day.
+- A repeat rule (`recurrence` on `create_task` and `update_task`) needs a due date. It has the shape
+  `get_task` shows: `{"rule": {"freq": ..., "interval": 1}, "until": "YYYY-MM-DD"}`, where `freq` is
+  `daily`, `weekly` (with `days`, such as `["mon", "thu"]`), `monthly` (with `day`, 1–31) or `yearly`.
+  `interval` (1–999) defaults to 1 and `until` (inclusive) is optional. For example, every other Friday:
+  `{"rule": {"freq": "weekly", "interval": 2, "days": ["fri"]}}`.
+- Completing a repeating task creates the next one, due on the rule's next date after the completed
+  task's due date. `recurrence: null` stops a task repeating.
+- A bad rule fails with `invalid_recurrence`, and a rule without a due date with `invalid`.
+- `add_reminder` and `update_reminder` take `at` as an RFC 3339 time with an offset
+  (`2030-01-02T09:00:00+01:00`), or as a local time (`2030-01-02T09:00`) in the owner's time zone. The
+  result gives the time in UTC.
 
 ## Limits
 
@@ -77,7 +99,8 @@ the REST API. The ones you'll meet:
 |---|---|---|
 | `forbidden` | Your level is too low | Don't retry; tell the owner |
 | `not_found` | No such item, or not visible to you | Check the ID with `list_lists` / `query_tasks` |
-| `invalid_body`, `invalid_query`, `invalid` | Bad arguments | Fix them and retry |
+| `invalid_body`, `invalid_query`, `invalid`, `invalid_recurrence` | Bad arguments | Fix them and retry |
+| `duplicate_name` | A tag with that name exists | Use it (`list_tags`) |
 | `undo_conflict` | Later changes touched the same fields | Inspect, then maybe `force: true` |
 | `event_mismatch`, `epoch_mismatch` | The list was restored since you saw the event | Find the change again with `get_activity` |
 | `quota_exceeded`, `rate_limited`, `too_many_mcp_requests` | Slow down | Wait `retry_after` seconds |
