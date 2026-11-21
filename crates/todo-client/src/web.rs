@@ -10,6 +10,14 @@
 //! every session request (see `todo_server::auth::require_auth_or_session`). The browser adds
 //! `Origin` to writes itself.
 //!
+//! **A stale token.** The session behind the cookie can change while a tab is open (the owner signs
+//! in again in another tab, which replaces the cookie). The tab's token then no longer matches, and
+//! the server answers `403 csrf`. The transport asks for the session's current token
+//! ([`CSRF_PATH`]) and, if it is a new one, sends the same request again (same body, so the same
+//! command ID: the server applies it once). If the token is unchanged, the refusal was about
+//! something else (the `Origin`), and the `403` stands. If the refresh itself fails, the request
+//! counts as a network failure and is retried later; a signed-out session is a `401`.
+//!
 //! The event stream is a streaming `fetch` read through [`SseParser`], not `EventSource`:
 //! `EventSource` can send no custom header (so no CSRF token), hides the status of a refused stream
 //! (the engine needs `409 catch_up_required`, `epoch_mismatch` and `Retry-After`), and reconnects on
@@ -20,8 +28,13 @@
 //! [`open_storage`] reads the IndexedDB database into a [`MirrorStorage`] and returns an
 //! [`IdbFlusher`] whose [`run`](IdbFlusher::run) persists every write, one IndexedDB transaction per
 //! batch, in order. The app spawns it next to the sync client.
+//!
+//! The database has one object store per part of [`Persisted`]: `kv` (snapshot and epoch), `events`,
+//! `outbox` and `failed` (one record per command, so tabs never overwrite each other's), and
+//! `damaged` (records that could not be read, set aside). Nothing here ever deletes the database on
+//! its own: [`delete_storage`] is for an explicit "reset local data" by the user.
 
-use crate::mirror::{Batch, Change, Key, MirrorStorage, Persisted};
+use crate::mirror::{Area, Batch, Change, Key, MirrorStorage, Persisted, Recovery};
 use crate::platform::{
     Clock, Entropy, EventStream, Method, Request, Response, SseFrame, StreamOpen, Transport,
     TransportError,
@@ -49,6 +62,58 @@ use web_sys::{
 /// The header carrying the session's CSRF token.
 pub const CSRF_HEADER: &str = "X-CSRF-Token";
 
+/// Where the session's current CSRF token is read (`GET`, the cookie only: `{"csrf": "..."}`).
+pub const CSRF_PATH: &str = "/auth/session";
+
+/// The session's CSRF token, shared by the transport and the page (which needs it for its own
+/// requests, such as the sign-out form). Clones share the value.
+#[derive(Clone, Default)]
+pub struct CsrfToken(Rc<RefCell<String>>);
+
+impl fmt::Debug for CsrfToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the token.
+        f.debug_struct("CsrfToken").finish_non_exhaustive()
+    }
+}
+
+impl CsrfToken {
+    /// A token with this value.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(Rc::new(RefCell::new(value.into())))
+    }
+
+    /// The current value.
+    #[must_use]
+    pub fn get(&self) -> String {
+        self.0.borrow().clone()
+    }
+
+    fn set(&self, value: String) {
+        *self.0.borrow_mut() = value;
+    }
+}
+
+/// What asking for the session's current token found.
+enum Refresh {
+    /// A new token, now in use: send the request again.
+    New,
+    /// The same token: the refusal was not about it.
+    Same,
+    /// The session is gone (this `401` is the answer).
+    SignedOut(Response),
+}
+
+/// True if a response is the server's `403 csrf`.
+fn is_csrf_refusal(res: &Response) -> bool {
+    res.status == 403
+        && serde_json::from_slice::<serde_json::Value>(&res.body)
+            .ok()
+            .and_then(|v| v.get("error")?.get("code")?.as_str().map(str::to_owned))
+            .is_some_and(|c| c == "csrf")
+}
+
 fn js_err(e: &JsValue) -> String {
     e.as_string()
         .or_else(|| {
@@ -67,7 +132,7 @@ fn window() -> Result<web_sys::Window, TransportError> {
 /// `fetch` with the session cookie and the CSRF token.
 #[derive(Clone)]
 pub struct FetchTransport {
-    csrf: String,
+    csrf: CsrfToken,
     max_frame_bytes: usize,
 }
 
@@ -79,12 +144,44 @@ impl fmt::Debug for FetchTransport {
 }
 
 impl FetchTransport {
-    /// A transport for this page's origin, sending `csrf` with every request.
+    /// A transport for this page's origin, sending `csrf` with every request (and updating it when
+    /// the session's token changes).
     #[must_use]
-    pub fn new(csrf: impl Into<String>) -> Self {
+    pub fn new(csrf: CsrfToken) -> Self {
         Self {
-            csrf: csrf.into(),
+            csrf,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+        }
+    }
+
+    /// Asks the server for the session's current token (see the module docs).
+    async fn refresh(&self) -> Result<Refresh, TransportError> {
+        let abort = new_abort()?;
+        let req = Request {
+            method: Method::Get,
+            path: CSRF_PATH.to_owned(),
+            body: None,
+        };
+        let res = read(&self.fetch(&req, "application/json", &abort.0).await?).await?;
+        match res.status {
+            200 => {
+                let token = serde_json::from_slice::<serde_json::Value>(&res.body)
+                    .ok()
+                    .and_then(|v| v.get("csrf")?.as_str().map(str::to_owned))
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| TransportError::Protocol("unreadable session token".into()))?;
+                if token == self.csrf.get() {
+                    Ok(Refresh::Same)
+                } else {
+                    tracing::debug!("the session's CSRF token changed; retrying with the new one");
+                    self.csrf.set(token);
+                    Ok(Refresh::New)
+                }
+            }
+            401 => Ok(Refresh::SignedOut(res)),
+            s => Err(TransportError::Network(format!(
+                "could not refresh the session token ({s})"
+            ))),
         }
     }
 
@@ -100,7 +197,7 @@ impl FetchTransport {
                 .set(k, v)
                 .map_err(|e| TransportError::Network(js_err(&e)))
         };
-        set(CSRF_HEADER, &self.csrf)?;
+        set(CSRF_HEADER, &self.csrf.get())?;
         set("Accept", accept)?;
         let init = RequestInit::new();
         init.set_credentials(RequestCredentials::SameOrigin);
@@ -217,16 +314,40 @@ impl Transport for FetchTransport {
 
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
         let abort = new_abort()?;
-        let res = self.fetch(&request, "application/json", &abort.0).await?;
-        read(&res).await
+        let res = read(&self.fetch(&request, "application/json", &abort.0).await?).await?;
+        if !is_csrf_refusal(&res) {
+            return Ok(res);
+        }
+        match self.refresh().await? {
+            Refresh::Same => Ok(res),
+            Refresh::SignedOut(r) => Ok(r),
+            Refresh::New => {
+                let abort = new_abort()?;
+                read(&self.fetch(&request, "application/json", &abort.0).await?).await
+            }
+        }
     }
 
     async fn open_stream(
         &self,
         request: Request,
     ) -> Result<StreamOpen<FetchEventStream>, TransportError> {
-        let abort = new_abort()?;
-        let res = self.fetch(&request, "text/event-stream", &abort.0).await?;
+        let mut abort = new_abort()?;
+        let mut res = self.fetch(&request, "text/event-stream", &abort.0).await?;
+        if res.status() == 403 {
+            let refused = read(&res).await?;
+            if !is_csrf_refusal(&refused) {
+                return Ok(StreamOpen::Refused(refused));
+            }
+            match self.refresh().await? {
+                Refresh::Same => return Ok(StreamOpen::Refused(refused)),
+                Refresh::SignedOut(r) => return Ok(StreamOpen::Refused(r)),
+                Refresh::New => {
+                    abort = new_abort()?;
+                    res = self.fetch(&request, "text/event-stream", &abort.0).await?;
+                }
+            }
+        }
         if res.status() != 200 {
             return Ok(StreamOpen::Refused(read(&res).await?));
         }
@@ -366,10 +487,19 @@ impl Entropy for BrowserEntropy {
 
 // ---- IndexedDB -----------------------------------------------------------------------------------
 
-/// The IndexedDB database's version.
-const DB_VERSION: u32 = 1;
+/// The IndexedDB database's version. 2: the outbox and failed list one record per command, and the
+/// damaged area (version 1 kept each list as one array in `kv`; it is split on the first start).
+const DB_VERSION: u32 = 2;
 const KV: &str = "kv";
 const EVENTS: &str = "events";
+const OUTBOX: &str = Area::Outbox.name();
+const FAILED: &str = Area::Failed.name();
+const DAMAGED: &str = "damaged";
+const STORES: [&str; 5] = [KV, EVENTS, OUTBOX, FAILED, DAMAGED];
+
+fn store_names() -> Array {
+    STORES.iter().map(|s| JsValue::from_str(s)).collect()
+}
 
 /// A storage problem in the browser.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -437,7 +567,7 @@ async fn open_db(name: &str) -> Result<IdbDatabase, IdbError> {
     let upgrade = Closure::once_into_js(move || {
         if let Ok(db) = o.result().and_then(|r| r.dyn_into::<IdbDatabase>()) {
             let names = db.object_store_names();
-            for store in [KV, EVENTS] {
+            for store in STORES {
                 if !names.contains(store) {
                     let _ = db.create_object_store(store);
                 }
@@ -454,44 +584,70 @@ fn store(tx: &IdbTransaction, name: &str) -> Result<IdbObjectStore, IdbError> {
     tx.object_store(name).map_err(|e| idb_err(&e))
 }
 
+/// Every `(key, value)` of a store, in key order.
+async fn entries(tx: &IdbTransaction, name: &str) -> Result<Vec<(JsValue, JsValue)>, IdbError> {
+    let s = store(tx, name)?;
+    let keys = request_done(&s.get_all_keys().map_err(|e| idb_err(&e))?).await?;
+    let values = request_done(&s.get_all().map_err(|e| idb_err(&e))?).await?;
+    Ok(Array::from(&keys)
+        .iter()
+        .zip(Array::from(&values).iter())
+        .collect())
+}
+
+/// A record's value as the string it was stored as (anything else, as JSON, so it can be set aside).
+fn value_text(v: &JsValue) -> String {
+    v.as_string().unwrap_or_else(|| {
+        js_sys::JSON::stringify(v)
+            .ok()
+            .and_then(|s| s.as_string())
+            .unwrap_or_default()
+    })
+}
+
 async fn read_all(db: &IdbDatabase) -> Result<Persisted, IdbError> {
-    let names = Array::of2(&JsValue::from_str(KV), &JsValue::from_str(EVENTS));
     let tx = db
-        .transaction_with_str_sequence(&names)
+        .transaction_with_str_sequence(&store_names())
         .map_err(|e| idb_err(&e))?;
     let mut p = Persisted::default();
-    let kv = store(&tx, KV)?;
-    let keys = request_done(&kv.get_all_keys().map_err(|e| idb_err(&e))?).await?;
-    let values = request_done(&kv.get_all().map_err(|e| idb_err(&e))?).await?;
-    let (keys, values) = (Array::from(&keys), Array::from(&values));
-    for (k, v) in keys.iter().zip(values.iter()) {
-        if let (Some(k), Some(v)) = (
-            k.as_string().and_then(|k| Key::from_name(&k)),
-            v.as_string(),
-        ) {
-            p.kv.insert(k, v);
+    for (k, v) in entries(&tx, KV).await? {
+        if let Some(k) = k.as_string().and_then(|k| Key::from_name(&k)) {
+            p.kv.insert(k, value_text(&v));
         }
     }
-    let events = store(&tx, EVENTS)?;
-    let keys = request_done(&events.get_all_keys().map_err(|e| idb_err(&e))?).await?;
-    let values = request_done(&events.get_all().map_err(|e| idb_err(&e))?).await?;
-    let (keys, values) = (Array::from(&keys), Array::from(&values));
-    for (k, v) in keys.iter().zip(values.iter()) {
-        if let (Some(k), Some(v)) = (k.as_f64(), v.as_string()) {
+    for (k, v) in entries(&tx, EVENTS).await? {
+        if let Some(k) = k.as_f64() {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            p.events.insert(k as u64, v);
+            p.events.insert(k as u64, value_text(&v));
+        }
+    }
+    for (name, into) in [
+        (OUTBOX, &mut p.outbox),
+        (FAILED, &mut p.failed),
+        (DAMAGED, &mut p.damaged),
+    ] {
+        for (k, v) in entries(&tx, name).await? {
+            // Keys are strings; anything else is kept under its text, and set aside by recovery.
+            let key = k.as_string().unwrap_or_else(|| value_text(&k));
+            into.insert(key, value_text(&v));
         }
     }
     Ok(p)
 }
 
 async fn write_batch(db: &IdbDatabase, batch: &Batch) -> Result<(), IdbError> {
-    let names = Array::of2(&JsValue::from_str(KV), &JsValue::from_str(EVENTS));
     let tx = db
-        .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+        .transaction_with_str_sequence_and_mode(&store_names(), IdbTransactionMode::Readwrite)
         .map_err(|e| idb_err(&e))?;
     let kv = store(&tx, KV)?;
     let events = store(&tx, EVENTS)?;
+    let outbox = store(&tx, OUTBOX)?;
+    let failed = store(&tx, FAILED)?;
+    let damaged = store(&tx, DAMAGED)?;
+    let area = |a: Area| match a {
+        Area::Outbox => &outbox,
+        Area::Failed => &failed,
+    };
     for change in batch {
         let r = match change {
             Change::Put(k, v) => kv
@@ -503,6 +659,13 @@ async fn write_batch(db: &IdbDatabase, batch: &Batch) -> Result<(), IdbError> {
                 .put_with_key(&JsValue::from_str(v), &JsValue::from_f64(*seq as f64))
                 .map(drop),
             Change::ClearEvents => events.clear().map(drop),
+            Change::PutEntry(a, k, v) => area(*a)
+                .put_with_key(&JsValue::from_str(v), &JsValue::from_str(k))
+                .map(drop),
+            Change::DeleteEntry(a, k) => area(*a).delete(&JsValue::from_str(k)).map(drop),
+            Change::PutDamaged(k, v) => damaged
+                .put_with_key(&JsValue::from_str(v), &JsValue::from_str(k))
+                .map(drop),
         };
         if let Err(e) = r {
             let _ = tx.abort();
@@ -510,20 +673,6 @@ async fn write_batch(db: &IdbDatabase, batch: &Batch) -> Result<(), IdbError> {
         }
     }
     transaction_done(&tx).await
-}
-
-async fn clear_all(db: &IdbDatabase) -> Result<(), IdbError> {
-    write_batch(
-        db,
-        &vec![
-            Change::Delete(Key::Snapshot),
-            Change::Delete(Key::Epoch),
-            Change::Delete(Key::Outbox),
-            Change::Delete(Key::Failed),
-            Change::ClearEvents,
-        ],
-    )
-    .await
 }
 
 /// Persists a [`MirrorStorage`]'s journal to IndexedDB.
@@ -572,24 +721,28 @@ impl IdbFlusher {
     }
 }
 
-/// Opens (or creates) the IndexedDB database `name` and loads it into a [`MirrorStorage`]. A stored
-/// image that cannot be decoded (from an incompatible version) is cleared: the server holds
-/// everything but unsent changes.
-pub async fn open_storage(name: &str) -> Result<(MirrorStorage, IdbFlusher), IdbError> {
+/// Opens (or creates) the IndexedDB database `name` and loads it into a [`MirrorStorage`], with what
+/// had to be repaired ([`MirrorStorage::recover`]): an unreadable confirmed state is fetched from the
+/// server again, and unreadable outbox entries are set aside in the `damaged` store. Unsent work is
+/// never deleted. The repairs are written first, as soon as the flusher runs.
+///
+/// Fails only if IndexedDB itself fails (unavailable, blocked, or out of space).
+pub async fn open_storage(name: &str) -> Result<(MirrorStorage, IdbFlusher, Recovery), IdbError> {
     let db = open_db(name).await?;
     let persisted = read_all(&db).await?;
-    let storage = match MirrorStorage::from_persisted(persisted) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "the stored replica is unreadable; starting over");
-            clear_all(&db).await?;
-            MirrorStorage::new()
-        }
-    };
-    Ok((storage.clone(), IdbFlusher { db, storage }))
+    let (storage, recovery) = MirrorStorage::recover(persisted);
+    if recovery != Recovery::default() {
+        tracing::warn!(
+            dropped_confirmed = recovery.dropped_confirmed,
+            dropped_events = recovery.dropped_events,
+            damaged = recovery.damaged.len(),
+            "repaired the stored replica"
+        );
+    }
+    Ok((storage.clone(), IdbFlusher { db, storage }, recovery))
 }
 
-/// Deletes the database (sign-out).
+/// Deletes the database, unsent changes included: only for the user's explicit "reset local data".
 pub async fn delete_storage(name: &str) -> Result<(), IdbError> {
     let factory = web_sys::window()
         .and_then(|w| w.indexed_db().ok().flatten())

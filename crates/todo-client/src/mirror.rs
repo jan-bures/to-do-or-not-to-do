@@ -5,27 +5,47 @@
 //! every [`write`](Storage::write) at once, and records it as one [`Batch`] of [`Change`]s in a
 //! journal. The platform drains the journal ([`MirrorStorage::take_batches`]) and writes each batch
 //! atomically, in order (one IndexedDB transaction per batch). On start it reads the persisted
-//! [`Persisted`] image back and opens [`MirrorStorage::from_persisted`] on it.
+//! [`Persisted`] image back and opens [`MirrorStorage::recover`] on it.
 //!
-//! The persisted form is a small key-value image plus the events by sequence number:
+//! # The persisted image
 //!
-//! | Key | Value |
+//! | Part | Holds |
 //! |---|---|
 //! | [`Key::Snapshot`] | `{"cursor": n, "state": <State>}` |
 //! | [`Key::Epoch`] | the log epoch |
-//! | [`Key::Outbox`] | the outbox entries, oldest first (a JSON array) |
-//! | [`Key::Failed`] | the "couldn't sync" entries, oldest first |
 //! | events | each [`LogEvent`](crate::protocol::LogEvent) under its `seq` |
+//! | outbox | each [`OutboxEntry`] under its command ID |
+//! | failed | each [`FailedEntry`] ("couldn't sync") under its command ID |
+//! | damaged | records that could not be read, set aside (never deleted automatically) |
 //!
-//! The outbox and the failed list are small, so they are rewritten whole; events are appended one by
-//! one and cleared together. What is lost if the page closes before a batch lands is described on
-//! [`crate::storage`]: confirmed events are fetched again, and a lost outbox removal only leads to an
-//! idempotent resend. Lost outbox *additions* are the exception, so a platform should flush promptly
-//! (the browser flushes on every write, and again when the page is hidden).
+//! # Several tabs
+//!
+//! Every tab of the app has its own `MirrorStorage` over the same database, and none of them knows
+//! what the others wrote. So outbox and failed entries are stored **one record per command**, and a
+//! write only puts or deletes the records of the commands it touches: a tab never overwrites another
+//! tab's unsent work. On start the entries of every tab are read back, ordered by submission time.
+//! The confirmed part (snapshot, events, epoch) is a function of the server's log, so whichever tab
+//! wrote it last is right; the replica skips stored events it already has and refetches after a gap.
+//!
+//! # Recovery
+//!
+//! [`MirrorStorage::recover`] never fails. What cannot be read is handled by what it holds:
+//!
+//! - an unreadable snapshot or epoch drops the confirmed part (snapshot, events, epoch), which is
+//!   fetched from the server again; an unreadable event drops the stored events after the snapshot;
+//! - an unreadable outbox or failed entry is moved to the damaged area, with its original key, so
+//!   unsent work is never deleted.
+//!
+//! The repairs are the first batch in the journal. What is lost if the page closes before a batch
+//! lands is described on [`crate::storage`]: confirmed events are fetched again, and a lost outbox
+//! removal only leads to an idempotent resend. Lost outbox *additions* are the exception, so a
+//! platform should flush promptly (the browser flushes on every write, and again when the page is
+//! hidden).
 
 use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry};
 
 use crate::notify::Notify;
+use crate::protocol::LogEvent;
 use crate::storage::{Loaded, Storage, StorageError, StorageOp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -33,22 +53,28 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use todo_core::state::State;
 
-/// A key of the persisted key-value image.
+/// A key of the persisted key-value part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Key {
     /// The snapshot of the confirmed state and its cursor.
     Snapshot,
     /// The log epoch.
     Epoch,
-    /// The outbox.
-    Outbox,
-    /// The "couldn't sync" list.
-    Failed,
+    /// The whole outbox as one JSON array, as the first version of the web app stored it. Read
+    /// (and split into entries) on start, never written.
+    LegacyOutbox,
+    /// The whole "couldn't sync" list as one JSON array (first version). Read on start, never written.
+    LegacyFailed,
 }
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 4] = [Key::Snapshot, Key::Epoch, Key::Outbox, Key::Failed];
+    pub const ALL: [Key; 4] = [
+        Key::Snapshot,
+        Key::Epoch,
+        Key::LegacyOutbox,
+        Key::LegacyFailed,
+    ];
 
     /// The key's name in the backend.
     #[must_use]
@@ -56,8 +82,8 @@ impl Key {
         match self {
             Key::Snapshot => "snapshot",
             Key::Epoch => "epoch",
-            Key::Outbox => "outbox",
-            Key::Failed => "failed",
+            Key::LegacyOutbox => "outbox",
+            Key::LegacyFailed => "failed",
         }
     }
 
@@ -65,6 +91,26 @@ impl Key {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Key> {
         Key::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// Which per-command store a record belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Area {
+    /// The outbox.
+    Outbox,
+    /// The "couldn't sync" list.
+    Failed,
+}
+
+impl Area {
+    /// The store's name in the backend.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Area::Outbox => "outbox",
+            Area::Failed => "failed",
+        }
     }
 }
 
@@ -79,10 +125,22 @@ pub enum Change {
     PutEvent(u64, String),
     /// Remove every event.
     ClearEvents,
+    /// Store an outbox or failed entry (JSON) under its key (the command ID).
+    PutEntry(Area, String, String),
+    /// Remove an outbox or failed entry (no-op if absent).
+    DeleteEntry(Area, String),
+    /// Set a record aside under a key (see [`damaged_key`]).
+    PutDamaged(String, String),
 }
 
 /// The changes of one [`Storage::write`], to be applied atomically.
 pub type Batch = Vec<Change>;
+
+/// The key a damaged record is set aside under: where it was, and its key there.
+#[must_use]
+pub fn damaged_key(from: &str, key: &str) -> String {
+    format!("{from}/{key}")
+}
 
 /// The persisted image: what a backend holds, and what it reads back on start.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -91,6 +149,12 @@ pub struct Persisted {
     pub kv: BTreeMap<Key, String>,
     /// Events by sequence number.
     pub events: BTreeMap<u64, String>,
+    /// Outbox entries by key (the command ID).
+    pub outbox: BTreeMap<String, String>,
+    /// "Couldn't sync" entries by key (the command ID).
+    pub failed: BTreeMap<String, String>,
+    /// Records set aside because they could not be read.
+    pub damaged: BTreeMap<String, String>,
 }
 
 impl Persisted {
@@ -107,7 +171,44 @@ impl Persisted {
                 self.events.insert(*seq, v.clone());
             }
             Change::ClearEvents => self.events.clear(),
+            Change::PutEntry(a, k, v) => {
+                self.area(*a).insert(k.clone(), v.clone());
+            }
+            Change::DeleteEntry(a, k) => {
+                self.area(*a).remove(k);
+            }
+            Change::PutDamaged(k, v) => {
+                self.damaged.insert(k.clone(), v.clone());
+            }
         }
+    }
+
+    fn area(&mut self, a: Area) -> &mut BTreeMap<String, String> {
+        match a {
+            Area::Outbox => &mut self.outbox,
+            Area::Failed => &mut self.failed,
+        }
+    }
+}
+
+/// What [`MirrorStorage::recover`] had to repair.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recovery {
+    /// The confirmed state could not be read and is fetched from the server again.
+    pub dropped_confirmed: bool,
+    /// Stored events could not be read and are fetched again.
+    pub dropped_events: bool,
+    /// Keys of the records set aside (see [`damaged_key`]) by this start.
+    pub damaged: Vec<String>,
+    /// Records already set aside by an earlier start.
+    pub damaged_before: usize,
+}
+
+impl Recovery {
+    /// True if unsent work could not be read (it was set aside, now or earlier).
+    #[must_use]
+    pub fn has_damaged(&self) -> bool {
+        !self.damaged.is_empty() || self.damaged_before > 0
     }
 }
 
@@ -157,48 +258,83 @@ impl Default for MirrorStorage {
     }
 }
 
-fn ids_of(list: &str) -> Result<Vec<(CommandId, String)>, StorageError> {
-    #[derive(Deserialize)]
-    struct WithId {
-        command_id: CommandId,
-    }
-    #[derive(Deserialize)]
-    struct FailedWithEntry {
-        entry: WithId,
-    }
-    let raw: Vec<Box<serde_json::value::RawValue>> = serde_json::from_str(list)?;
-    raw.into_iter()
-        .map(|r| {
-            let id = match serde_json::from_str::<WithId>(r.get()) {
-                Ok(w) => w.command_id,
-                Err(_) => {
-                    serde_json::from_str::<FailedWithEntry>(r.get())?
-                        .entry
-                        .command_id
-                }
-            };
-            Ok((id, r.get().to_owned()))
-        })
-        .collect()
-}
-
-fn join(list: &[(CommandId, String)]) -> String {
-    let mut out = String::from("[");
-    for (i, (_, json)) in list.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(json);
-    }
-    out.push(']');
-    out
-}
-
 fn put(list: &mut Vec<(CommandId, String)>, id: CommandId, json: String) {
     match list.iter_mut().find(|(k, _)| *k == id) {
         Some(slot) => slot.1 = json,
         None => list.push((id, json)),
     }
+}
+
+/// The record key of a command.
+fn entry_key(id: CommandId) -> String {
+    id.hyphenated().to_string()
+}
+
+/// Reads the per-command records of one area (plus the legacy array, if any). What cannot be read is
+/// set aside; legacy entries are rewritten as records. Returns the entries in submission order.
+fn recover_entries<T: serde::de::DeserializeOwned>(
+    area: Area,
+    records: BTreeMap<String, String>,
+    legacy: Option<(Key, String)>,
+    id_of: impl Fn(&T) -> CommandId,
+    order: impl Fn(&T) -> i64,
+    repairs: &mut Batch,
+    damaged: &mut Vec<String>,
+) -> Vec<(CommandId, String)> {
+    let mut found: BTreeMap<CommandId, (T, String)> = BTreeMap::new();
+    for (key, json) in records {
+        match serde_json::from_str::<T>(&json) {
+            Ok(v) if entry_key(id_of(&v)) == key => {
+                found.insert(id_of(&v), (v, json));
+            }
+            _ => {
+                let to = damaged_key(area.name(), &key);
+                repairs.push(Change::PutDamaged(to.clone(), json));
+                repairs.push(Change::DeleteEntry(area, key));
+                damaged.push(to);
+            }
+        }
+    }
+    if let Some((key, list)) = legacy {
+        match serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(&list) {
+            Ok(items) => {
+                for (i, raw) in items.into_iter().enumerate() {
+                    let json = raw.get().to_owned();
+                    match serde_json::from_str::<T>(&json) {
+                        Ok(v) => {
+                            if let std::collections::btree_map::Entry::Vacant(slot) =
+                                found.entry(id_of(&v))
+                            {
+                                repairs.push(Change::PutEntry(
+                                    area,
+                                    entry_key(*slot.key()),
+                                    json.clone(),
+                                ));
+                                slot.insert((v, json));
+                            }
+                        }
+                        Err(_) => {
+                            let to = damaged_key(key.name(), &i.to_string());
+                            repairs.push(Change::PutDamaged(to.clone(), json));
+                            damaged.push(to);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                let to = damaged_key(key.name(), "all");
+                repairs.push(Change::PutDamaged(to.clone(), list));
+                damaged.push(to);
+            }
+        }
+        repairs.push(Change::Delete(key));
+    }
+    let mut out: Vec<_> = found
+        .into_iter()
+        .map(|(id, (v, json))| (order(&v), id, json))
+        .collect();
+    out.sort_by_key(|(at, id, _)| (*at, *id));
+    out.into_iter().map(|(_, id, json)| (id, json)).collect()
 }
 
 impl MirrorStorage {
@@ -214,27 +350,81 @@ impl MirrorStorage {
         }
     }
 
-    /// Storage holding what a backend read back. Fails if the image cannot be decoded (the caller
-    /// should then clear the backend and start empty: the server has everything but the outbox).
-    pub fn from_persisted(p: Persisted) -> Result<Self, StorageError> {
+    /// Storage holding what a backend read back, with what had to be repaired. Never fails: see the
+    /// module docs. The repairs are the first batch of the journal, so the backend applies them
+    /// before anything newer.
+    #[must_use]
+    pub fn recover(p: Persisted) -> (Self, Recovery) {
         let mut image = Image::default();
-        if let Some(s) = p.kv.get(&Key::Snapshot) {
-            let rec: SnapshotRecord<'_> = serde_json::from_str(s)?;
-            image.snapshot = Some((rec.state.get().to_owned(), rec.cursor));
+        let mut repairs = Batch::new();
+        let mut rec = Recovery {
+            damaged_before: p.damaged.len(),
+            ..Recovery::default()
+        };
+        let mut kv = p.kv;
+
+        // The confirmed part: snapshot and epoch, then the events after the snapshot.
+        let snapshot = kv.remove(&Key::Snapshot).map(|s| {
+            serde_json::from_str::<SnapshotRecord<'_>>(&s)
+                .ok()
+                .filter(|r| serde_json::from_str::<State>(r.state.get()).is_ok())
+                .map(|r| (r.state.get().to_owned(), r.cursor))
+        });
+        let epoch = kv
+            .remove(&Key::Epoch)
+            .map(|e| serde_json::from_str::<Epoch>(&e).ok());
+        if matches!(snapshot, Some(None)) || matches!(epoch, Some(None)) {
+            rec.dropped_confirmed = true;
+            repairs.extend([
+                Change::Delete(Key::Snapshot),
+                Change::ClearEvents,
+                Change::Delete(Key::Epoch),
+            ]);
+        } else {
+            image.snapshot = snapshot.flatten();
+            image.epoch = epoch.flatten();
+            if p.events
+                .values()
+                .all(|e| serde_json::from_str::<LogEvent>(e).is_ok())
+            {
+                image.events = p.events;
+            } else {
+                rec.dropped_events = true;
+                repairs.push(Change::ClearEvents);
+            }
         }
-        if let Some(e) = p.kv.get(&Key::Epoch) {
-            image.epoch = Some(serde_json::from_str(e)?);
-        }
-        if let Some(o) = p.kv.get(&Key::Outbox) {
-            image.outbox = ids_of(o)?;
-        }
-        if let Some(f) = p.kv.get(&Key::Failed) {
-            image.failed = ids_of(f)?;
-        }
-        image.events = p.events;
+
+        // Unsent work: never dropped.
+        image.outbox = recover_entries::<OutboxEntry>(
+            Area::Outbox,
+            p.outbox,
+            kv.remove(&Key::LegacyOutbox)
+                .map(|v| (Key::LegacyOutbox, v)),
+            |e| e.command_id,
+            |e| e.submitted_at.as_millisecond(),
+            &mut repairs,
+            &mut rec.damaged,
+        );
+        image.failed = recover_entries::<FailedEntry>(
+            Area::Failed,
+            p.failed,
+            kv.remove(&Key::LegacyFailed)
+                .map(|v| (Key::LegacyFailed, v)),
+            |f| f.entry.command_id,
+            |f| f.failed_at.as_millisecond(),
+            &mut repairs,
+            &mut rec.damaged,
+        );
+
         let s = Self::new();
-        s.lock().image = image;
-        Ok(s)
+        {
+            let mut g = s.lock();
+            g.image = image;
+            if !repairs.is_empty() {
+                g.journal.push_back(repairs);
+            }
+        }
+        (s, rec)
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -268,7 +458,8 @@ impl MirrorStorage {
         self.written.clone()
     }
 
-    /// The whole image as a backend would hold it once every batch has landed.
+    /// The whole image as a backend would hold it once every batch has landed (without the damaged
+    /// area, which only the backend holds).
     #[must_use]
     pub fn persisted(&self) -> Persisted {
         let g = self.lock();
@@ -284,11 +475,11 @@ impl MirrorStorage {
         {
             p.kv.insert(Key::Epoch, json);
         }
-        if !g.image.outbox.is_empty() {
-            p.kv.insert(Key::Outbox, join(&g.image.outbox));
+        for (id, json) in &g.image.outbox {
+            p.outbox.insert(entry_key(*id), json.clone());
         }
-        if !g.image.failed.is_empty() {
-            p.kv.insert(Key::Failed, join(&g.image.failed));
+        for (id, json) in &g.image.failed {
+            p.failed.insert(entry_key(*id), json.clone());
         }
         p
     }
@@ -338,7 +529,6 @@ impl Storage for MirrorStorage {
             failed: g.image.failed.clone(),
         };
         let mut batch = Batch::new();
-        let (mut outbox_changed, mut failed_changed) = (false, false);
         for op in ops {
             match op {
                 StorageOp::AppendEvents(events) => {
@@ -374,37 +564,31 @@ impl Storage for MirrorStorage {
                     batch.push(Change::Put(Key::Epoch, serde_json::to_string(e)?));
                 }
                 StorageOp::PutOutbox(e) => {
-                    put(&mut next.outbox, e.command_id, serde_json::to_string(e)?);
-                    outbox_changed = true;
+                    let json = serde_json::to_string(e)?;
+                    put(&mut next.outbox, e.command_id, json.clone());
+                    batch.push(Change::PutEntry(
+                        Area::Outbox,
+                        entry_key(e.command_id),
+                        json,
+                    ));
                 }
                 StorageOp::RemoveOutbox(id) => {
                     next.outbox.retain(|(k, _)| k != id);
-                    outbox_changed = true;
+                    batch.push(Change::DeleteEntry(Area::Outbox, entry_key(*id)));
                 }
                 StorageOp::PutFailed(f) => {
-                    put(
-                        &mut next.failed,
-                        f.entry.command_id,
-                        serde_json::to_string(f)?,
-                    );
-                    failed_changed = true;
+                    let json = serde_json::to_string(f)?;
+                    put(&mut next.failed, f.entry.command_id, json.clone());
+                    batch.push(Change::PutEntry(
+                        Area::Failed,
+                        entry_key(f.entry.command_id),
+                        json,
+                    ));
                 }
                 StorageOp::RemoveFailed(id) => {
                     next.failed.retain(|(k, _)| k != id);
-                    failed_changed = true;
+                    batch.push(Change::DeleteEntry(Area::Failed, entry_key(*id)));
                 }
-            }
-        }
-        for (changed, key, list) in [
-            (outbox_changed, Key::Outbox, &next.outbox),
-            (failed_changed, Key::Failed, &next.failed),
-        ] {
-            if changed {
-                batch.push(if list.is_empty() {
-                    Change::Delete(key)
-                } else {
-                    Change::Put(key, join(list))
-                });
             }
         }
         g.image = next;
@@ -431,15 +615,9 @@ mod tests {
 
     #[test]
     fn an_empty_image_loads_empty() {
-        let mut s = MirrorStorage::from_persisted(Persisted::default()).unwrap();
+        let (mut s, rec) = MirrorStorage::recover(Persisted::default());
         assert_eq!(s.load().unwrap(), Loaded::default());
         assert!(!s.has_pending());
-    }
-
-    #[test]
-    fn a_corrupt_image_is_refused() {
-        let mut p = Persisted::default();
-        p.kv.insert(Key::Outbox, "{".into());
-        assert!(MirrorStorage::from_persisted(p).is_err());
+        assert_eq!(rec, Recovery::default());
     }
 }
