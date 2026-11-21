@@ -60,16 +60,16 @@ export function parseAllowlist(value) {
 const RECIPIENT_SECRET_RE = new RegExp(`^[a-z0-9]{${MIN_RECIPIENT_SECRET_CHARS},64}$`);
 
 /**
- * Validates RECIPIENT_SECRET. Unset means the feature is off; set but invalid is a configuration error
- * (the Worker then rejects all mail rather than fall back to the plain address).
+ * Validates RECIPIENT_SECRET exactly as configured: no trimming and no case folding. Only an absent
+ * binding turns the feature off. Any value that is set but malformed (including empty or whitespace)
+ * is a configuration error, and the Worker then rejects all mail rather than fall back to the plain
+ * address.
  * @param {unknown} value
  * @returns {{ secret: string | null } | { error: true }}
  */
 export function recipientSecret(value) {
-  if (value === undefined || value === null || value === '') return { secret: null };
-  if (typeof value !== 'string') return { error: true };
-  const s = value.trim().toLowerCase();
-  return RECIPIENT_SECRET_RE.test(s) ? { secret: s } : { error: true };
+  if (value === undefined) return { secret: null };
+  return typeof value === 'string' && RECIPIENT_SECRET_RE.test(value) ? { secret: value } : { error: true };
 }
 
 /**
@@ -105,8 +105,8 @@ export function parseRecipient(to, localPart, secret = null) {
   const expected = secret ? `${localPart.toLowerCase()}-${secret}` : localPart.toLowerCase();
   if (!constantTimeEqual(base, expected)) return { ok: false, reason: 'wrong_recipient' };
   if (plus < 0) return { ok: true, list: null };
+  // An empty suffix (`todo+@`) is rejected, not read as the Inbox.
   const detail = local.slice(plus + 1);
-  if (detail === '') return { ok: true, list: null };
   if (!LIST_KEY_RE.test(detail)) return { ok: false, reason: 'bad_list' };
   return { ok: true, list: detail };
 }

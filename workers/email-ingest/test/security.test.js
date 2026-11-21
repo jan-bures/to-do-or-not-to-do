@@ -20,6 +20,7 @@ function deps(fetch, now = T0) {
     nonce: () => (n += 1).toString(16).padStart(32, '0'),
     log: mockLog(),
     admission: createAdmission(),
+    archiveAdmission: createAdmission(),
     clock,
   };
 }
@@ -28,15 +29,18 @@ const evts = (d) => d.log.lines.map((l) => JSON.parse(l));
 
 describe('recipient secret', () => {
   it('validates the configured value', () => {
-    assert.deepEqual(recipientSecret(undefined), { secret: null });
-    assert.deepEqual(recipientSecret(''), { secret: null });
-    assert.deepEqual(recipientSecret(` ${RSECRET.toUpperCase()} `), { secret: RSECRET });
-    for (const bad of ['short', 'has-dash-0123456789', 'x'.repeat(65), 42]) assert.deepEqual(recipientSecret(bad), { error: true }, String(bad));
+    assert.deepEqual(recipientSecret(undefined), { secret: null }, 'only an absent binding disables it');
+    assert.deepEqual(recipientSecret(RSECRET), { secret: RSECRET });
+    // Validated exactly as given: no trimming, no case folding.
+    const bad = ['', ' ', '	', ` ${RSECRET}`, `${RSECRET} `, `${RSECRET}
+`, RSECRET.toUpperCase(), 'short', 'has-dash-0123456789', 'x'.repeat(65), 42, null];
+    for (const v of bad) assert.deepEqual(recipientSecret(v), { error: true }, JSON.stringify(v));
   });
 
   it('accepts only todo-<secret>@ and todo-<secret>+<list>@', () => {
     assert.deepEqual(parseRecipient(`todo-${RSECRET}@in.example.com`, 'todo', RSECRET), { ok: true, list: null });
     assert.deepEqual(parseRecipient(`TODO-${RSECRET.toUpperCase()}+Shopping@in.example.com`, 'todo', RSECRET), { ok: true, list: 'shopping' });
+    assert.deepEqual(parseRecipient(`todo-${RSECRET}+@in.example.com`, 'todo', RSECRET), { ok: false, reason: 'bad_list' });
     for (const to of ['todo@in.example.com', 'todo+shopping@in.example.com', `todo-${RSECRET.slice(1)}@in.example.com`, `todo-${RSECRET}x@in.example.com`, `todo${RSECRET}@in.example.com`]) {
       assert.deepEqual(parseRecipient(to, 'todo', RSECRET), { ok: false, reason: 'wrong_recipient' }, to);
     }
@@ -63,8 +67,15 @@ describe('recipient secret', () => {
   });
 
   it('a malformed secret rejects everything instead of falling back to todo@', async () => {
-    const d = deps(mockFetch([201]));
-    assert.equal(await handleEmail(emailMessage(), baseEnv({ RECIPIENT_SECRET: 'tooshort' }), d), 'rejected:config_recipient_secret');
+    for (const value of ['tooshort', '', '   ', ` ${RSECRET}`, RSECRET.toUpperCase()]) {
+      const d = deps(mockFetch([201]));
+      for (const to of ['todo@in.example.com', `todo-${RSECRET}@in.example.com`]) {
+        const msg = emailMessage({ to });
+        assert.equal(await handleEmail(msg, baseEnv({ RECIPIENT_SECRET: value }), d), 'rejected:config_recipient_secret', JSON.stringify(value));
+        assert.ok(!msg.rejected.includes(RSECRET));
+      }
+      for (const line of d.log.lines) assert.ok(!line.includes(RSECRET), line);
+    }
   });
 });
 
@@ -161,6 +172,108 @@ describe('dead-letter queue', () => {
     await handleQueue({ queue: DEFAULT_DEAD_LETTER_QUEUE, messages: [msg] }, notifyEnv(async (m) => sent.push(m)), deps(mockFetch([201])));
     assert.match(sent[0].text, /Reference: unknown/);
     assert.ok(msg.acked);
+  });
+
+  describe('R2 archive, the last resort', () => {
+    const bucket = ({ fail = false } = {}) => ({
+      puts: /** @type {any[]} */ ([]),
+      async put(key, value, opts) {
+        if (fail) throw new Error('r2 down');
+        this.puts.push({ key, value: JSON.parse(value), opts });
+      },
+    });
+    const failingNotice = async () => {
+      throw new Error('send failed');
+    };
+    const lastAttempt = (body = envelope, attempts = 10) => ({ ...queueMessage(body), attempts });
+    const dlqBatch = (msg) => ({ queue: DEFAULT_DEAD_LETTER_QUEUE, messages: [msg] });
+
+    it('on the last attempt, a failed notice is archived to R2 before the ack', async () => {
+      const b = bucket();
+      const msg = lastAttempt();
+      const put = b.put.bind(b);
+      b.put = async (...args) => {
+        assert.equal(msg.acked, false, 'written before the ack');
+        return put(...args);
+      };
+      const d = deps(mockFetch([201]));
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(failingNotice), DEAD_LETTERS: b }, d);
+      assert.ok(msg.acked);
+      assert.equal(msg.retried, null);
+      assert.equal(b.puts.length, 1);
+      assert.equal(b.puts[0].key, 'dead-letters/2025-11-21/abcdef012345.json');
+      assert.equal(b.puts[0].opts.httpMetadata.contentType, 'application/json');
+      assert.deepEqual(b.puts[0].value, { version: 1, archived_at: new Date(T0).toISOString(), reason: 'dead_letter', envelope });
+      assert.deepEqual(evts(d).map((e) => e.evt), ['dead_letter', 'notify_failed', 'dead_letter_archived']);
+      for (const line of d.log.lines) assert.ok(!line.includes('Quarterly') && !line.includes('@'), line);
+    });
+
+    it('before the last attempt, a failed notice is retried and nothing is written', async () => {
+      const b = bucket();
+      const msg = lastAttempt(envelope, 9);
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(failingNotice), DEAD_LETTERS: b }, deps(mockFetch([201])));
+      assert.equal(b.puts.length, 0);
+      assert.deepEqual(msg.retried, { delaySeconds: 300 });
+    });
+
+    it('a sent notice writes nothing', async () => {
+      const b = bucket();
+      const msg = lastAttempt();
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(async () => {}), DEAD_LETTERS: b }, deps(mockFetch([201])));
+      assert.equal(b.puts.length, 0);
+      assert.ok(msg.acked);
+    });
+
+    it('if the R2 write fails too, logs dead_letter_lost without content and leaves it to the platform', async () => {
+      const msg = lastAttempt(envelope, 11);
+      const d = deps(mockFetch([201]));
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(failingNotice), DEAD_LETTERS: bucket({ fail: true }) }, d);
+      assert.equal(msg.acked, false);
+      assert.deepEqual(msg.retried, { delaySeconds: 300 });
+      assert.deepEqual(evts(d).at(-1), { evt: 'dead_letter_lost', mid: 'abcdef012345', reason: 'dead_letter', via: 'failed' });
+    });
+
+    it('without a notice binding, archives right away (even from the retry queue)', async () => {
+      const b = bucket();
+      const msg = queueMessage(envelope);
+      const d = deps(mockFetch([201]), T0 + 24 * 60 * 60 * 1000);
+      await handleQueue({ queue: 'todo-email-ingest-retry', messages: [msg] }, baseEnv({ DEAD_LETTERS: b }), d);
+      assert.equal(b.puts.length, 1);
+      assert.equal(b.puts[0].value.reason, 'expired');
+      assert.match(b.puts[0].key, /^dead-letters\/2025-11-22\/abcdef012345\.json$/);
+      assert.ok(msg.acked);
+      assert.deepEqual(evts(d).map((e) => e.evt), ['final_failure', 'notify_unconfigured', 'dead_letter_archived']);
+    });
+
+    it('archive writes are bounded by the admission brake', async () => {
+      const b = bucket();
+      const env = { ...notifyEnv(failingNotice), DEAD_LETTERS: b, MAX_ACCEPTED_PER_DAY: '1' };
+      const d = deps(mockFetch([201]));
+      const first = lastAttempt();
+      const second = lastAttempt({ ...envelope, mid: 'abcdef999999' });
+      await handleQueue({ queue: DEFAULT_DEAD_LETTER_QUEUE, messages: [first, second] }, env, d);
+      assert.equal(b.puts.length, 1);
+      assert.ok(first.acked);
+      assert.equal(second.acked, false);
+      assert.deepEqual(evts(d).at(-1), { evt: 'dead_letter_lost', mid: 'abcdef999999', reason: 'dead_letter', via: 'limited' });
+    });
+
+    it('archives a malformed dead letter under an unknown- key', async () => {
+      const b = bucket();
+      const msg = lastAttempt({ junk: true });
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(failingNotice), DEAD_LETTERS: b }, deps(mockFetch([201])));
+      assert.match(b.puts[0].key, /^dead-letters\/2025-11-21\/unknown-[0-9a-f]{12}\.json$/);
+      assert.deepEqual(b.puts[0].value.envelope, { junk: true });
+      assert.ok(msg.acked);
+    });
+
+    it('honours DEAD_LETTER_MAX_RETRIES', async () => {
+      const b = bucket();
+      const msg = lastAttempt(envelope, 3);
+      await handleQueue(dlqBatch(msg), { ...notifyEnv(failingNotice), DEAD_LETTERS: b, DEAD_LETTER_MAX_RETRIES: '3' }, deps(mockFetch([201])));
+      assert.equal(b.puts.length, 1);
+      assert.ok(msg.acked);
+    });
   });
 
   it('honours a configured dead-letter queue name', async () => {

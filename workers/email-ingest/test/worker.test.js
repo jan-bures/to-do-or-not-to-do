@@ -18,6 +18,7 @@ function deps(fetch, { now = T0 } = {}) {
     nonce: () => (n += 1).toString(16).padStart(32, '0'),
     log: mockLog(),
     admission: createAdmission(),
+    archiveAdmission: createAdmission(),
     clock,
   };
 }
@@ -356,14 +357,17 @@ describe('queue consumer', () => {
     await handleQueue({ messages: [msg] }, baseEnv(), d);
     assert.equal(f.calls.length, 1);
     assert.ok(msg.acked);
-    assert.deepEqual(d.log.lines.map((l) => JSON.parse(l).evt), ['final_failure', 'notify_unconfigured']);
+    assert.deepEqual(d.log.lines.map((l) => JSON.parse(l).evt), ['final_failure', 'notify_unconfigured', 'dead_letter_lost']);
   });
 
-  it('acks when no notice is configured, and retries when the notice fails', async () => {
+  it('acks when neither a notice nor an archive is configured, and retries when the notice fails', async () => {
     const d = deps(mockFetch([500]), { now: T0 + RETRY_WINDOW_MS + 1 });
     const m1 = queueMessage(envelope(5));
     await handleQueue({ messages: [m1] }, baseEnv(), d);
-    assert.equal(JSON.parse(d.log.lines.at(-1)).evt, 'notify_unconfigured');
+    assert.deepEqual(d.log.lines.slice(-2).map((l) => JSON.parse(l)), [
+      { evt: 'notify_unconfigured', mid: 'abcdef012345', reason: 'expired' },
+      { evt: 'dead_letter_lost', mid: 'abcdef012345', reason: 'expired', via: 'unconfigured' },
+    ]);
     assert.ok(m1.acked);
 
     const d2 = deps(mockFetch([500]), { now: T0 + RETRY_WINDOW_MS + 1 });

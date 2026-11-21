@@ -28,12 +28,15 @@ NOTIFY_FROM = "todo-notify@in.example.com"
 # DEBUG_AUTH_SHAPE = "false"
 # Only if you rename the dead-letter queue below.
 # DEAD_LETTER_QUEUE = "todo-email-ingest-dlq"
+# Only if you change the dead-letter consumer's max_retries below; keep the two equal.
+# DEAD_LETTER_MAX_RETRIES = "10"
 
 # Secrets, set with `wrangler secret put <NAME>` or `cf deploy --secrets-file <file>`, never here:
 #   INGEST_HMAC_SECRET  at least 32 characters; the server is configured with the same value
 #   ALLOWED_SENDERS     comma-separated sender addresses, such as "you@example.com, work@example.org"
-#   RECIPIENT_SECRET    optional, 16 to 64 random lowercase letters and digits. When set, only
-#                       todo-<secret>@ and todo-<secret>+<list>@ are accepted; see docs/ingest-email.md.
+#   RECIPIENT_SECRET    optional, 16 to 64 random lowercase letters and digits, exactly (no spaces).
+#                       When set, only todo-<secret>@ and todo-<secret>+<list>@ are accepted; any other
+#                       value, even an empty one, rejects all mail. See docs/ingest-email.md.
 
 # Retry queue: this Worker both produces to it and consumes from it.
 [[queues.producers]]
@@ -50,12 +53,20 @@ max_retries = 30
 # Messages that run out of retries land here, and this same Worker sends the failure notice.
 dead_letter_queue = "todo-email-ingest-dlq"
 
-# Dead-letter consumer: sends the notice, then acks. A failed notice is retried every 5 minutes.
+# Dead-letter consumer: sends the notice, then acks. A failed notice is retried every 5 minutes; from
+# attempt max_retries on, it is archived to DEAD_LETTERS (below) instead, and only then acked.
 [[queues.consumers]]
 queue = "todo-email-ingest-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 10
+
+# Last-resort archive: when no failure notice can be sent, the metadata-only envelope is written to
+# dead-letters/<YYYY-MM-DD>/<hash>.json. Add a 30-day lifecycle rule for that prefix (README.md).
+# Remove this block to go without; mail is then lost if the notice keeps failing.
+[[r2_buckets]]
+binding = "DEAD_LETTERS"
+bucket_name = "todo-email-dead-letters"
 
 # Failure notices. Restricted to one verified destination address, which keeps them free on the
 # Workers Free plan. Remove this block (and the NOTIFY_* vars) to log failures only.

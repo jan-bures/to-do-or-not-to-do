@@ -13,6 +13,8 @@
 //   NOTIFY                send_email binding, optional: restricted to NOTIFY_ADDRESS
 //   NOTIFY_ADDRESS        var, optional: verified destination address for failure notices
 //   NOTIFY_FROM           var, optional: sender address on the Email Routing domain
+//   DEAD_LETTERS          R2 bucket, optional: last-resort archive when no notice can be sent
+//   DEAD_LETTER_MAX_RETRIES  var, optional: the dead-letter consumer's max_retries (default 10)
 
 import { domainOf, parseAllowlist, parseRecipient, parseSingleMailbox, recipientSecret } from './address.js';
 import { authShape, checkAuth, CLOUDFLARE_AUTHSERV_ID } from './auth.js';
@@ -21,9 +23,16 @@ import { DEFAULT_MAX_ACCEPTED_PER_DAY, MAX_RAW_BYTES, RETRY_WINDOW_MS } from './
 import { log as defaultLog, midHash } from './log.js';
 import { buildPayload, fitPayload, hasHeaderEnd, headersOnly, messageIdFor, parseMime, readCapped } from './payload.js';
 import { randomNonce } from './sign.js';
+import { sha256Hex } from './text.js';
 
 /** Default dead-letter queue name; matches wrangler.example.toml. */
 export const DEFAULT_DEAD_LETTER_QUEUE = 'todo-email-ingest-dlq';
+
+/** The dead-letter consumer's max_retries in wrangler.example.toml. */
+export const DEFAULT_DEAD_LETTER_MAX_RETRIES = 10;
+
+/** Key prefix of archived dead letters in the DEAD_LETTERS bucket. A 30-day lifecycle rule expires it. */
+export const DEAD_LETTER_PREFIX = 'dead-letters/';
 
 /** Delay before a failed failure notice is retried, in seconds. */
 const NOTIFY_RETRY_DELAY_S = 300;
@@ -37,7 +46,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * @property {() => number} now Milliseconds since the epoch.
  * @property {() => string} nonce
  * @property {import('./log.js').Logger} log
- * @property {Admission} admission
+ * @property {Admission} admission Accepted emails.
+ * @property {Admission} archiveAdmission Dead-letter writes to R2.
  */
 
 /** SMTP rejection texts. They name no address, no secret and no content. */
@@ -233,17 +243,77 @@ export async function handleEmail(message, env, deps) {
 /**
  * Ends a queued delivery: sends the failure notice first, and only then acks. If the notice fails, the
  * message is retried (and, after max_retries, moved to the dead-letter queue, whose consumer tries the
- * notice again). Without a configured notice there is nothing more to do, so it acks.
+ * notice again). When no notice will be sent (none configured, or the dead-letter queue's last attempt
+ * failed), the metadata goes to R2 first. Only if that also fails is the message left to the platform.
  * @param {any} msg
  * @param {Record<string, any>} env
  * @param {Deps} deps
  * @param {{ mid: string | undefined, title: unknown, receivedAt: unknown, status: number }} info
  * @param {keyof typeof NOTICE_TEXT} reason
+ * @param {boolean} [final] The dead-letter queue's last attempt: archive instead of retrying the notice.
  */
-async function finish(msg, env, deps, info, reason) {
+async function finish(msg, env, deps, info, reason, final = false) {
   const notice = await notifyFailure(env, { ...info, reason }, deps);
-  if (notice === 'failed') msg.retry({ delaySeconds: NOTIFY_RETRY_DELAY_S });
-  else msg.ack();
+  if (notice === 'sent') {
+    msg.ack();
+    return;
+  }
+  // A failed notice is retried. From the retry queue that ends in the dead-letter queue, whose consumer
+  // keeps trying until its last attempt (`final`).
+  if (notice === 'failed' && !final) {
+    msg.retry({ delaySeconds: NOTIFY_RETRY_DELAY_S });
+    return;
+  }
+  // No notice will reach the owner (none is configured, or the last attempt failed): keep the metadata
+  // in R2 before acking.
+  const archived = await archiveDeadLetter(env, deps, msg.body, reason, info.mid);
+  if (archived === 'written') {
+    deps.log('dead_letter_archived', { mid: info.mid, reason });
+    msg.ack();
+    return;
+  }
+  deps.log('dead_letter_lost', { mid: info.mid, reason, via: archived });
+  // With neither a notice nor an archive configured, retrying can't help. Otherwise let the platform
+  // retry, which after the dead-letter queue's last attempt means it deletes the message.
+  if (notice === 'unconfigured' && archived === 'unconfigured') msg.ack();
+  else msg.retry({ delaySeconds: NOTIFY_RETRY_DELAY_S });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number}
+ */
+function deadLetterMaxRetries(value) {
+  const n = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(n) && n >= 0 && n <= 100 ? n : DEFAULT_DEAD_LETTER_MAX_RETRIES;
+}
+
+/**
+ * The last resort for a message no notice can be sent for: writes the metadata-only envelope to the
+ * `DEAD_LETTERS` R2 bucket at `dead-letters/<YYYY-MM-DD>/<mid>.json`. Writes are bounded by their own
+ * admission counter, with the same per-isolate limit as accepted emails.
+ * @param {Record<string, any>} env
+ * @param {Deps} deps
+ * @param {unknown} body The queue message body, as produced by this Worker.
+ * @param {string} reason
+ * @param {string | undefined} mid
+ * @returns {Promise<'written' | 'unconfigured' | 'limited' | 'failed'>}
+ */
+export async function archiveDeadLetter(env, deps, body, reason, mid) {
+  const bucket = env.DEAD_LETTERS;
+  if (!bucket || typeof bucket.put !== 'function') return 'unconfigured';
+  const nowMs = deps.now();
+  if (!deps.archiveAdmission.admit(nowMs, maxAcceptedPerDay(env.MAX_ACCEPTED_PER_DAY))) return 'limited';
+  try {
+    const archivedAt = new Date(nowMs).toISOString();
+    const json = JSON.stringify({ version: 1, archived_at: archivedAt, reason, envelope: body });
+    const id = mid ?? `unknown-${(await sha256Hex(json)).slice(0, 12)}`;
+    const key = `${DEAD_LETTER_PREFIX}${archivedAt.slice(0, 10)}/${id}.json`;
+    await bucket.put(key, json, { httpMetadata: { contentType: 'application/json' } });
+    return 'written';
+  } catch {
+    return 'failed';
+  }
 }
 
 /**
@@ -329,7 +399,11 @@ async function handleDeadLetters(batch, env, deps) {
       ? { mid: envelope.mid, title: envelope.payload.title, receivedAt: envelope.payload.received_at, status: 0 }
       : { mid: undefined, title: undefined, receivedAt: undefined, status: 0 };
     deps.log('dead_letter', { mid: info.mid, attempt: envelope?.attempt });
-    await finish(msg, env, deps, info, 'dead_letter');
+    // From this attempt on, a failed notice is archived instead of retried. It is checked from the
+    // configured max_retries itself (one attempt early), so an off-by-one in how the platform counts
+    // can't skip the archive; a failed archive write still gets the last attempt.
+    const final = Number.isInteger(msg.attempts) && msg.attempts >= deadLetterMaxRetries(env.DEAD_LETTER_MAX_RETRIES);
+    await finish(msg, env, deps, info, 'dead_letter', final);
   }
 }
 
@@ -344,6 +418,7 @@ export function createWorker(overrides = {}) {
     nonce: randomNonce,
     log: defaultLog,
     admission: createAdmission(),
+    archiveAdmission: createAdmission(),
     ...overrides,
   };
   return {

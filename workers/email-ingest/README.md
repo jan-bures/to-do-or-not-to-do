@@ -9,7 +9,8 @@ A Cloudflare Email Worker that turns forwarded emails into tasks.
 - **What it sends.** Metadata only (and a capped text body with `#keep`), POSTed to the server with an HMAC
   signature.
 - **Failures.** If the server is unreachable, it retries through a Cloudflare Queue for up to 23 h. When it
-  gives up, a dead-letter queue and a failure notice to the owner make sure nothing disappears silently.
+  gives up, a dead-letter queue and a failure notice tell the owner. If no notice can be sent, the
+  metadata goes to an R2 bucket for 30 days, to be re-ingested with `scripts/reingest.js`.
 
 **The contract, the auth research and every limit are in [`docs/ingest-email.md`](../../docs/ingest-email.md).**
 
@@ -25,6 +26,7 @@ A Cloudflare Email Worker that turns forwarded emails into tasks.
 | `src/sign.js`, `src/deliver.js` | Signing, POST, failure classification, retry schedule |
 | `src/log.js` | Log lines with an allowlist of fields |
 | `src/limits.js` | Every bound in one place |
+| `scripts/reingest.js` | Re-ingests dead letters archived in R2 (run by hand, not deployed) |
 | `wrangler.example.toml` | Config template (placeholders only) |
 
 The code is plain JavaScript ES modules with JSDoc types. It has no build step. The only runtime dependency is
@@ -49,11 +51,13 @@ npm test
 | `INGEST_HMAC_SECRET` | secret | Shared with the server, at least 32 characters, such as `openssl rand -hex 32` |
 | `ALLOWED_SENDERS` | secret | Comma-separated allowed sender addresses |
 | `INGEST_URL` | var | `https://todo.example.com/api/v1/ingest/email` |
-| `RECIPIENT_SECRET` | secret | Optional, 16 to 64 random lowercase letters and digits (`openssl rand -hex 12`). When set, only `todo-<secret>@` and `todo-<secret>+<list>@` are accepted. See "Allowlist and exact alignment, or a recipient secret too" in the contract doc. |
+| `RECIPIENT_SECRET` | secret | Optional, exactly 16 to 64 random lowercase letters and digits (`openssl rand -hex 12`), with no spaces. Any other value, even an empty one, rejects all mail. When set, only `todo-<secret>@` and `todo-<secret>+<list>@` are accepted. See "Allowlist and exact alignment, or a recipient secret too" in the contract doc. |
 | `INGEST_LOCAL_PART` | var | Optional, default `todo` |
 | `MAX_ACCEPTED_PER_DAY` | var | Optional, default 50: accepted emails per isolate in any 24 h window, sized to the Queues free quota |
 | `DEBUG_AUTH_SHAPE` | var | Optional. `"true"` logs which parts of `Authentication-Results` passed and aligned, as booleans only |
 | `DEAD_LETTER_QUEUE` | var | Optional, default `todo-email-ingest-dlq`; only if you rename that queue |
+| `DEAD_LETTER_MAX_RETRIES` | var | Optional, default 10; keep it equal to the dead-letter consumer's `max_retries` |
+| `DEAD_LETTERS` | R2 bucket binding | Optional but recommended: the last-resort archive when no notice can be sent |
 | `NOTIFY_ADDRESS`, `NOTIFY_FROM` | vars | Optional. Failure notices go to a verified destination address and are sent from the routing domain. |
 | `INGEST_QUEUE` | queue producer | Retry queue, consumed by this same Worker |
 | (consumers) | queue consumers | The retry queue (`max_retries = 30`, `dead_letter_queue` set) and the dead-letter queue, both handled by this Worker |
@@ -95,6 +99,19 @@ cf email-routing addresses create --email you@example.com
 # The retry queue and its dead-letter queue.
 cf queues create --queue-name todo-email-ingest-retry
 cf queues create --queue-name todo-email-ingest-dlq
+
+# The dead-letter archive, with a rule that deletes its objects after 30 days. R2 must be enabled on
+# the account; this stays far inside its free tier.
+cf r2 buckets create --name todo-email-dead-letters
+npx wrangler@4.158.0 r2 bucket lifecycle add todo-email-dead-letters expire-dead-letters dead-letters/ --expire-days 30
+```
+
+The lifecycle rule can also be set with `cf`. Note that `update` **replaces** all of the bucket's rules, and
+`maxAge` is in seconds:
+
+```sh
+cf r2 buckets lifecycle update todo-email-dead-letters --rules '[{"id":"expire-dead-letters","enabled":true,"conditions":{"prefix":"dead-letters/"},"deleteObjectsTransition":{"condition":{"type":"Age","maxAge":2592000}}}]'
+cf r2 buckets lifecycle get todo-email-dead-letters
 ```
 
 ### 2. Deploy the Worker
@@ -178,3 +195,39 @@ You can also do this in the dashboard: Email Service → Email Routing → Routi
 such as `"dkim_pass":true,"header_d_aligned":true`, and never the header itself. If a legitimate forward is
 rejected with `auth_unaligned`, this shows which part didn't match. Turn it off again afterwards. See
 "What Cloudflare provides" in the contract doc.
+
+## Re-ingest dead letters
+
+If the logs show `dead_letter_archived`, the server didn't get that email and no notice reached you. The
+metadata is in R2 for 30 days.
+
+1. **List the archive.** Keys are `dead-letters/<YYYY-MM-DD>/<hash>.json`, where the hash is the `mid` in
+   the log line:
+
+   ```sh
+   cf r2 objects list --bucket-name todo-email-dead-letters --prefix dead-letters/
+   ```
+
+2. **Download what you need.** Use the dashboard (R2 → the bucket → Objects), or:
+
+   ```sh
+   mkdir -p dead-letters
+   npx wrangler@4.158.0 r2 object get todo-email-dead-letters/dead-letters/2025-11-21/abcdef012345.json \
+     --file dead-letters/abcdef012345.json --remote
+   ```
+
+3. **Re-ingest, once the server is reachable.** Run this from `workers/email-ingest`. It needs Node 22 or
+   later and no `npm ci`. `read -s` keeps the secret out of your shell history:
+
+   ```sh
+   read -rs INGEST_HMAC_SECRET && export INGEST_HMAC_SECRET
+   INGEST_URL=https://todo.example.com/api/v1/ingest/email node scripts/reingest.js dead-letters/*.json
+   ```
+
+   It prints one line per file, such as `dead-letters/abcdef012345.json: ok (HTTP 201)`, and exits with
+   a non-zero code if any file failed.
+   - The server dedupes on `message_id`, so re-running it is safe.
+   - A file that is already in, or arrived after all, comes back `ok (HTTP 200)`.
+4. **Delete the local copies.** They hold the task title, subject and senders.
+
+The lifecycle rule removes the archived objects after 30 days.

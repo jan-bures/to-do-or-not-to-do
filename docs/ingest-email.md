@@ -17,6 +17,9 @@ mail client ──► Cloudflare Email Routing ──► Email Worker (workers/e
                          │ out of retries
                          ▼
                     dead-letter queue ──► failure notice to the owner
+                         │ notice impossible or failing on the last attempt
+                         ▼
+                    R2: dead-letters/<date>/<hash>.json (30 days) ──► owner re-ingests
 ```
 
 This document is the contract between the Worker (this repo, `workers/email-ingest`) and the server
@@ -179,8 +182,9 @@ lone `From: …` sentence in someone's text is ignored.
 The Worker rejects the email at SMTP time (`message.setReject(...)`) unless all of these hold:
 
 1. **Recipient.** The envelope recipient's local part is `todo`, optionally with `+<list>`, and the list
-   key is valid. With `RECIPIENT_SECRET` set it must be `todo-<secret>` instead, again optionally with
-   `+<list>`, and plain `todo@` is rejected. The local part can be changed with `INGEST_LOCAL_PART`.
+   key is valid. An empty suffix (`todo+@`) is rejected. With `RECIPIENT_SECRET` set it must be
+   `todo-<secret>` instead, again optionally with `+<list>`, and plain `todo@` is rejected. The local
+   part can be changed with `INGEST_LOCAL_PART`.
 2. **One sender.** The `From` header holds exactly one mailbox.
 3. **Allowlist.** That address is in `ALLOWED_SENDERS`. If `ALLOWED_SENDERS` is empty, everything is
    rejected.
@@ -218,10 +222,17 @@ These are the two ways to run it. **The owner decides.**
   - A sender now also needs the secret, so a forged or misattributed pass alone isn't enough.
   - The cost is a long address, which you save as a contact. Anyone who sees a message you forwarded
     (with its envelope) learns it, so rotate it if it leaks.
+  - **Cloudflare can see it.** Email Routing's activity log shows the full recipient address of every
+    message. So does the routing rule. Anyone with access to the Cloudflare account can therefore read
+    the secret. Today that is only the owner, which is acceptable, but if account access is ever shared
+    (another member, an API token with Email Routing read access), rotate the secret.
   - Rules for the secret:
-    - 16 to 64 random lowercase letters and digits, such as `openssl rand -hex 12`;
+    - exactly 16 to 64 random lowercase letters and digits, such as `openssl rand -hex 12`;
+    - validated exactly as configured, with no trimming or case folding;
+    - only an absent binding turns the feature off. Any value that is set but malformed, including an
+      empty or whitespace-only one, rejects all mail (`config_recipient_secret`) rather than falling
+      back to `todo@`;
     - set it as a Worker secret and change the routing rule to the new address;
-    - a malformed value rejects all mail (`config_recipient_secret`) rather than falling back to `todo@`;
     - the comparison is constant-time;
     - the secret never appears in logs or in the rejection text.
 
@@ -286,7 +297,8 @@ These are the two ways to run it. **The owner decides.**
   letter), it sends the notice **first** and acks only once the notice is sent.
   - If sending fails, it calls `msg.retry({ delaySeconds: 300 })` instead, so the message isn't lost.
     In the main queue that eventually moves it to the dead-letter queue, which tries again.
-  - If no notice is configured, there is nothing to wait for, so it acks.
+  - If no notice can reach the owner, the metadata goes to R2 before the ack (next section). That
+    covers two cases: no notice is configured, or the dead-letter queue's last attempt failed too.
 - **The server is restarting.** Mail accepted while the server restarts is never lost. If neither the
   POST nor the queue succeeds, the email handler throws instead of accepting the message. Cloudflare
   doesn't document what happens to the incoming message then. Either way, it isn't silently accepted.
@@ -304,8 +316,48 @@ These are the two ways to run it. **The owner decides.**
     Sources: [Email Service pricing](https://developers.cloudflare.com/email-service/platform/pricing/)
     and [limits](https://developers.cloudflare.com/email-service/platform/limits/#verified-destination-addresses).
   - The sender (`NOTIFY_FROM`) must be on the Email Routing domain.
-  - Without the binding the Worker logs `notify_unconfigured` and acks. A failed send logs
+  - Without the binding the Worker logs `notify_unconfigured` and archives to R2. A failed send logs
     `notify_failed` and is retried as above.
+
+### Dead-letter archive (R2), the last resort
+
+The dead-letter queue has no further destination. If its consumer runs out of retries, Cloudflare deletes
+the message. So when no notice can reach the owner, the Worker writes the message to the `DEAD_LETTERS`
+R2 bucket before it acks. That happens when:
+
+- no notice is configured, from either queue; or
+- the notice fails on the dead-letter queue's last attempt. That is checked as `msg.attempts ≥
+  DEAD_LETTER_MAX_RETRIES` (default 10, equal to the consumer's `max_retries`), one attempt early, so
+  how the platform counts can't make it skip the archive.
+
+What gets written:
+
+- **Key.** `dead-letters/<YYYY-MM-DD>/<mid>.json`: the archive date and the 12-hex Message-ID hash. A
+  malformed envelope uses `unknown-<hash>` instead.
+- **Content.** `{"version":1,"archived_at":"…","reason":"…","envelope":{v, accepted_at, attempt, mid,
+  payload}}`. That is the same metadata-only payload the server would have received (title, subject,
+  senders, list, and the `#keep` body if any). No raw message and no attachments.
+- **Bound.** Writes are limited by their own admission counter, with the same per-isolate limit as
+  accepted emails (`MAX_ACCEPTED_PER_DAY`). R2's free tier (10 GB-month of storage and 1 million Class A
+  operations per month) is far above that.
+
+**Only if that write fails too** (R2 error, over the brake, or no bucket bound) does the Worker give up.
+It logs `{"evt":"dead_letter_lost","mid":"…","reason":"…","via":"failed|limited|unconfigured"}`, with
+no content, and calls `msg.retry()`, so the platform retries the message or, after its last attempt,
+deletes it. With neither a notice nor a bucket configured, retrying can't help, so it acks after that
+log line.
+
+A successful write logs `dead_letter_archived`. Watch for both events in the Worker logs.
+
+**Lifecycle.** Add a rule that deletes `dead-letters/` objects after **30 days**, so the archive can't
+grow without bound (see the README for the commands). Thirty days is long enough to notice a
+`dead_letter_archived` line and re-ingest.
+
+**Re-ingesting.** Download the objects, then run `node scripts/reingest.js <files…>` with `INGEST_URL`
+and `INGEST_HMAC_SECRET` set. It POSTs each payload, signed exactly as the Worker signs it, and prints
+only the file name, the outcome and the HTTP status. Because the server dedupes on `message_id`, running
+it twice, or on a message that did arrive, creates nothing new. The README has the step-by-step
+commands.
 
 ## Bounds (Workers Free plan)
 
@@ -324,6 +376,7 @@ These are the two ways to run it. **The owner decides.**
 | POST timeout | 15 s | |
 | Retries | Until 23 h after acceptance, at most 40 | |
 | Accepted emails | 50 per isolate in any 24 h window (`MAX_ACCEPTED_PER_DAY`) | See below. |
+| Dead-letter archive writes | The same limit, counted separately | Bounds R2 writes in a failure storm. |
 
 ### Quota: nothing can be billed, but the quota can run out
 

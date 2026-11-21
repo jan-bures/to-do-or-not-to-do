@@ -12,8 +12,8 @@ describe('parseRecipient', () => {
     assert.deepEqual(parseRecipient('<TODO+Work_2025-q4@in.example.com>', 'todo'), { ok: true, list: 'work_2025-q4' });
   });
 
-  it('an empty detail carries no list', () => {
-    assert.deepEqual(parseRecipient('todo+@in.example.com', 'todo'), { ok: true, list: null });
+  it('rejects an empty list suffix', () => {
+    assert.deepEqual(parseRecipient('todo+@in.example.com', 'todo'), { ok: false, reason: 'bad_list' });
   });
 
   it('only the first + splits', () => {
