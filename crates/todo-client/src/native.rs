@@ -5,7 +5,7 @@ use crate::platform::{
     Clock, Entropy, EventStream, Method, Request, Response, SseFrame, StreamOpen, Transport,
     TransportError,
 };
-use crate::sse::SseParser;
+use crate::sse::{DEFAULT_MAX_FRAME_BYTES, SseParser};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, RETRY_AFTER};
 use std::collections::VecDeque;
 use std::fmt;
@@ -32,6 +32,7 @@ pub struct HttpTransport {
     client: reqwest::Client,
     base: String,
     auth: HeaderValue,
+    max_frame_bytes: usize,
 }
 
 impl fmt::Debug for HttpTransport {
@@ -61,7 +62,20 @@ impl HttpTransport {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| BuildError::Client(e.to_string()))?;
-        Ok(Self { client, base, auth })
+        Ok(Self {
+            client,
+            base,
+            auth,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+        })
+    }
+
+    /// Caps one event stream frame at `bytes` (default [`DEFAULT_MAX_FRAME_BYTES`]). A larger frame
+    /// ends the stream with [`TransportError::Protocol`].
+    #[must_use]
+    pub fn with_max_frame_bytes(mut self, bytes: usize) -> Self {
+        self.max_frame_bytes = bytes;
+        self
     }
 
     fn builder(&self, request: &Request) -> reqwest::RequestBuilder {
@@ -133,7 +147,10 @@ impl EventStream for HttpEventStream {
                 return Some(Ok(frame));
             }
             match self.response.chunk().await {
-                Ok(Some(chunk)) => self.queue.extend(self.parser.push(&chunk)),
+                Ok(Some(chunk)) => match self.parser.push(&chunk) {
+                    Ok(frames) => self.queue.extend(frames),
+                    Err(e) => return Some(Err(TransportError::Protocol(e.to_string()))),
+                },
                 Ok(None) => return None,
                 Err(e) => return Some(Err(network(e))),
             }
@@ -164,7 +181,7 @@ impl Transport for HttpTransport {
         }
         Ok(StreamOpen::Open(HttpEventStream {
             response: res,
-            parser: SseParser::new(),
+            parser: SseParser::with_max_frame_bytes(self.max_frame_bytes),
             queue: VecDeque::new(),
         }))
     }

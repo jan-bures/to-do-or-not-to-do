@@ -26,7 +26,7 @@
 //! All methods block: call them from the blocking pool (see [`crate::api::blocking`]).
 
 pub use crate::cancel::{Cancel, CancelOnDrop};
-use crate::db::{self, CommandRecord, StoreError};
+use crate::db::{self, CommandRecord, LogEvent, StoreError};
 use crate::summary;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,22 @@ pub enum EngineError {
     /// No event has this sequence number.
     #[error("event {0} not found")]
     EventNotFound(u64),
+    /// The request was made against another event log (see [`Engine::epoch`]).
+    #[error("the request refers to another event log")]
+    EpochMismatch {
+        /// This log's epoch.
+        current: Uuid,
+    },
+    /// The event at the undo's sequence number is not the one the client meant.
+    #[error("event {seq} is not the expected event")]
+    UndoTargetMismatch {
+        /// The sequence number.
+        seq: u64,
+        /// The event the client expected there.
+        expected: EventId,
+        /// The event that is there.
+        found: EventId,
+    },
     /// The command ID was used before for a different request.
     #[error("command id {0} was already used for a different request")]
     CommandIdReused(Uuid),
@@ -135,8 +151,10 @@ pub struct Engine {
     state: RwLock<Arc<State>>,
     writer: Mutex<Writer>,
     readers: Mutex<Vec<Connection>>,
-    live: broadcast::Sender<Arc<Event>>,
+    live: broadcast::Sender<Arc<LogEvent>>,
     head: AtomicU64,
+    /// The log epoch (see [`db::log_epoch`]).
+    epoch: Uuid,
     clock: Clock,
     /// Set when a failed write could not be rolled back.
     poisoned: AtomicBool,
@@ -221,6 +239,18 @@ struct Pending<'a> {
 struct UndoRequestBody {
     seq: u64,
     force: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_event_id: Option<EventId>,
+}
+
+/// What the client expects an undo's target to be. Checked inside the writer, so nothing can change
+/// between the check and the undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UndoExpect {
+    /// The ID of the event at the given sequence number.
+    pub event_id: EventId,
+    /// The log epoch the client saw it in.
+    pub epoch: Option<Uuid>,
 }
 
 fn millis(ts: Timestamp) -> i64 {
@@ -248,6 +278,14 @@ impl Engine {
             );
             db::write_all_projections(&mut conn, &state, head)?;
         }
+        let epoch = match db::log_epoch(&conn)? {
+            Some(e) => e,
+            None => {
+                let e = Uuid::new_v4();
+                db::set_log_epoch(&conn, e)?;
+                e
+            }
+        };
         let last_ms = match db::events_before(&conn, None, 1)?.first() {
             Some(e) => millis(e.at),
             None => 0,
@@ -266,6 +304,7 @@ impl Engine {
             readers: Mutex::new(Vec::new()),
             live,
             head: AtomicU64::new(head),
+            epoch,
             clock,
             poisoned: AtomicBool::new(false),
             commit_delay_ms: AtomicU64::new(0),
@@ -280,6 +319,24 @@ impl Engine {
         let mut conn = db::open_writer(path)?;
         db::rebuild_projections(&mut conn)?;
         db::head_seq(&conn)
+    }
+
+    /// Gives the database at `path` a new log epoch and returns it. Run it after restoring a backup
+    /// (with the server stopped): clients that followed the old log then resync from scratch instead
+    /// of mixing two histories. Takes the ownership lock, like [`open`](Self::open).
+    pub fn rotate_log_epoch(path: &Path) -> Result<Uuid, StoreError> {
+        let _owner_lock = db::lock_database(path)?;
+        let conn = db::open_writer(path)?;
+        let epoch = Uuid::new_v4();
+        db::set_log_epoch(&conn, epoch)?;
+        Ok(epoch)
+    }
+
+    /// The log epoch: a random ID created with the database and rotated after a restore. A client
+    /// whose cursor belongs to another epoch must resync from 0.
+    #[must_use]
+    pub fn epoch(&self) -> Uuid {
+        self.epoch
     }
 
     /// The database file.
@@ -302,7 +359,7 @@ impl Engine {
 
     /// Subscribes to events committed from now on.
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<Arc<Event>> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<LogEvent>> {
         self.live.subscribe()
     }
 
@@ -498,8 +555,27 @@ impl Engine {
         command_id: Option<Uuid>,
         cancel: &Cancel,
     ) -> Result<Outcome, EngineError> {
+        self.undo_expecting(actor, seq, force, command_id, None, cancel)
+    }
+
+    /// [`undo_cancellable`](Self::undo_cancellable) that first checks, inside the writer, that the
+    /// log has the expected epoch and the event at `seq` is the expected one. A retry with the same
+    /// `command_id` returns the stored result before checking.
+    pub fn undo_expecting(
+        &self,
+        actor: &Actor,
+        seq: u64,
+        force: bool,
+        command_id: Option<Uuid>,
+        expect: Option<UndoExpect>,
+        cancel: &Cancel,
+    ) -> Result<Outcome, EngineError> {
         let mut w = self.writer(cancel)?;
-        let body = UndoRequestBody { seq, force };
+        let body = UndoRequestBody {
+            seq,
+            force,
+            expected_event_id: expect.map(|e| e.event_id),
+        };
         let hash = request_hash("undo", actor, &body)?;
         let command_id = match command_id {
             Some(id) => {
@@ -510,7 +586,25 @@ impl Engine {
             }
             None => Uuid::new_v4(),
         };
+        if let Some(UndoExpect {
+            epoch: Some(epoch), ..
+        }) = expect
+            && epoch != self.epoch
+        {
+            return Err(EngineError::EpochMismatch {
+                current: self.epoch,
+            });
+        }
         let target = db::event_by_seq(w.conn()?, seq)?.ok_or(EngineError::EventNotFound(seq))?;
+        if let Some(e) = expect
+            && e.event_id != target.id
+        {
+            return Err(EngineError::UndoTargetMismatch {
+                seq,
+                expected: e.event_id,
+                found: target.id,
+            });
+        }
         let group = db::events_in_group(w.conn()?, target.group)?;
         let now = self.next_now(&mut w);
         let base = self.state();
@@ -586,7 +680,8 @@ impl Engine {
         summarize: impl FnOnce(&State, &[Event]) -> String,
     ) -> Result<Outcome, EngineError> {
         let mut next = base.clone();
-        let cid = p.command_id.to_string();
+        let command_id = p.command_id;
+        let cid = command_id.to_string();
         let head_before = self.head_seq();
         let stored = (|| -> Result<CommandResult, EngineError> {
             let tx = w
@@ -650,9 +745,13 @@ impl Engine {
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);
         }
-        for e in events {
+        for (i, event) in events.into_iter().enumerate() {
             // No receivers is fine.
-            let _ = self.live.send(Arc::new(e));
+            let _ = self.live.send(Arc::new(LogEvent {
+                event,
+                command_id,
+                command_idx: u32::try_from(i).unwrap_or(u32::MAX),
+            }));
         }
         Ok(Outcome {
             result,

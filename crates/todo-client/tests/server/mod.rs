@@ -3,6 +3,7 @@
 #![allow(dead_code, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,6 +13,7 @@ use todo_client::platform::{
     EventStream, Request, Response, SseFrame, StreamOpen, Transport, TransportError,
 };
 use todo_client::{Backoff, ClientConfig, Storage, SyncClient};
+use todo_core::ids::EventId;
 use todo_core::{Actor, DeviceId, State};
 use todo_server::auth::hash_token;
 use todo_server::config::OwnerToken;
@@ -61,6 +63,11 @@ impl TestServer {
         config.limits.sse_connect_burst = 100_000;
         config.limits.sse_heartbeat_ms = 200;
         f(&mut config);
+        Self::boot(dir, config).await
+    }
+
+    /// Starts a server on the data of one that was [`halt`](Self::halt)ed (on another port).
+    pub async fn boot(dir: TempDir, config: Config) -> Self {
         let running = Server::bind(&config, Options::default())
             .await
             .unwrap()
@@ -108,6 +115,42 @@ impl TestServer {
     pub async fn stop(self) {
         self.running.shutdown().await.unwrap();
     }
+
+    /// Stops the server, keeping its data.
+    pub async fn halt(self) -> (TempDir, Config) {
+        self.running.shutdown().await.unwrap();
+        (self.dir, self.config)
+    }
+
+    /// The ID of the event at `seq`.
+    pub fn event_id_at(&self, seq: u64) -> EventId {
+        let events = self.running.engine.events_since(seq - 1, 1).unwrap();
+        assert_eq!(events[0].seq, Some(seq));
+        events[0].id
+    }
+
+    /// The server's log epoch.
+    pub fn epoch(&self) -> uuid::Uuid {
+        self.running.engine.epoch()
+    }
+}
+
+/// Copies a stopped server's database with its WAL sidecar files (removing stale ones at `to`).
+pub fn copy_db(from: &Path, to: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let (f, t) = (sidecar(from, suffix), sidecar(to, suffix));
+        if f.exists() {
+            std::fs::copy(&f, &t).unwrap();
+        } else if t.exists() {
+            std::fs::remove_file(&t).unwrap();
+        }
+    }
+}
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
 }
 
 pub type Client<T> = SyncClient<T, TokioClock>;

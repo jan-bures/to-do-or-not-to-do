@@ -1,5 +1,5 @@
-//! The local replica: confirmed state, event cursor, outbox and the optimistic view. No I/O besides the
-//! [`Storage`] it owns, so every rule here is unit-testable without a network.
+//! The local replica: confirmed state, event cursor, log epoch, outbox and the optimistic view. No I/O
+//! besides the [`Storage`] it owns, so every rule here is unit-testable without a network.
 //!
 //! # The view
 //!
@@ -13,27 +13,33 @@
 //!
 //! # Leaving the outbox
 //!
-//! Server events do not carry the command ID. An entry leaves the outbox when the first of *its*
-//! events reaches the confirmed state, because from then on the confirmed state includes its effect
-//! and deciding it again on top would apply it twice. The engine learns an entry's events in two ways:
+//! Every server event carries the ID of the command that produced it. An entry leaves the outbox in
+//! the same storage write that confirms the first event carrying its command ID: from then on the
+//! confirmed state includes its effect, and deciding it again on top would apply it twice. An
+//! acknowledgement (the 200 response) only marks the entry as not to be sent again, except for a
+//! command that changed nothing, which leaves at once. Nothing else confirms an entry: an identical
+//! command from another session has another command ID.
 //!
-//! - **Acknowledgement.** The 200 response lists the stored events. A command that changed nothing
-//!   leaves at once.
-//! - **Recognition.** The response can be lost, or arrive after the stream delivered the events. Event
-//!   IDs are derived from the actor, the command and the server's `now`, and the server decides against
-//!   exactly the state the confirmed state has just before the event. So for a command that was sent
-//!   but not yet acknowledged, deciding it against the confirmed state as this client's actor at the
-//!   event's time reproduces the event's ID exactly when the event is that command's. (The one
-//!   ambiguity: two sessions sharing a device ID that send byte-identical commands at about the same
-//!   time. One of them may then take the other's event for its own.)
+//! # Storage failures
+//!
+//! Every change is written to storage before it is made in memory, so memory is never ahead of disk.
+//! Confirming events applies them in place and writes them (with the outbox entries they confirm) in
+//! one batch; if that write fails, the replica reloads itself from storage, and if even that fails it
+//! refuses further changes until a reload succeeds.
+//!
+//! # The log epoch
+//!
+//! The confirmed state belongs to one server log, named by its epoch (see
+//! [`crate::protocol::EventPage::epoch`]). Events from another epoch are refused with
+//! [`ConfirmError::EpochChanged`]; the client then resyncs from 0, keeping the outbox.
 
-use crate::outbox::{CommandId, FailedEntry, OutboxEntry, Rejection};
-use crate::protocol::CommandResult;
-use crate::storage::{Storage, StorageError, StorageOp};
+use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry, Rejection};
+use crate::protocol::{CommandResult, LogEvent};
+use crate::storage::{Loaded, Storage, StorageError, StorageOp};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use todo_core::error::{ApplyError, DomainError};
-use todo_core::event::Event;
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply, decide};
 
@@ -75,9 +81,18 @@ pub enum ConfirmError {
     },
     /// The event does not apply to the confirmed state: the replica no longer matches the server and
     /// needs a full resync.
-    #[error("confirmed state diverged from the server: {0}")]
-    Diverged(#[from] ApplyError),
-    /// Applied in memory, but storing failed. The next batch writes a full snapshot.
+    #[error("confirmed state diverged from the server at event {seq}: {error}")]
+    Diverged {
+        /// The event's sequence number.
+        seq: u64,
+        /// Why it does not apply.
+        error: ApplyError,
+    },
+    /// The events belong to another log than the confirmed state (it was restored from a backup):
+    /// resync from 0. Nothing was applied.
+    #[error("the server's event log was replaced")]
+    EpochChanged,
+    /// Storing failed. Nothing was applied.
     #[error(transparent)]
     Storage(#[from] StorageError),
 }
@@ -87,16 +102,19 @@ pub enum ConfirmError {
 pub enum Ack {
     /// Recorded (or the entry was already gone).
     Recorded,
-    /// The server's log differs from the confirmed state: resync. Nothing was recorded.
+    /// The server reports an event at or below the cursor for a command that is still pending, so
+    /// the confirmed state has another event there: the server's log is not the one this replica
+    /// followed. Resync, then send the entry again. Nothing was recorded.
     Diverged,
 }
 
-/// Confirmed state, cursor, outbox and "couldn't sync" list, persisted in a [`Storage`].
+/// Confirmed state, cursor, epoch, outbox and "couldn't sync" list, persisted in a [`Storage`].
 pub struct Replica {
     actor: Actor,
     storage: Box<dyn Storage>,
     confirmed: State,
     cursor: u64,
+    epoch: Option<Epoch>,
     outbox: Vec<OutboxEntry>,
     failed: Vec<FailedEntry>,
     /// The cached view; `None` when it must be rebuilt.
@@ -104,8 +122,70 @@ pub struct Replica {
     /// Confirmed events stored since the last snapshot.
     unsnapshotted: usize,
     snapshot_every: usize,
-    /// A write of confirmed events failed: the next write stores a full snapshot instead.
+    /// The stored events could not all be replayed: the next write stores a full snapshot (which
+    /// drops them).
     needs_snapshot: bool,
+    /// A write failed and reloading from storage failed too: memory may be ahead of disk, so every
+    /// change first reloads.
+    stale: bool,
+}
+
+/// What [`Replica::open`] rebuilt from storage.
+struct Restored {
+    confirmed: State,
+    cursor: u64,
+    epoch: Option<Epoch>,
+    outbox: Vec<OutboxEntry>,
+    failed: Vec<FailedEntry>,
+    replayed: usize,
+    needs_snapshot: bool,
+    /// Outbox entries whose events the confirmed state already has.
+    settled: Vec<CommandId>,
+}
+
+/// Replays the stored events onto the snapshot and finds the outbox entries they settle.
+fn restore(loaded: Loaded) -> Restored {
+    let (mut confirmed, mut cursor) = loaded.snapshot.unwrap_or_default();
+    let mut replayed = 0;
+    let mut needs_snapshot = false;
+    let mut seen_commands = BTreeSet::new();
+    for e in &loaded.events {
+        let Some(seq) = e.event.seq else { continue };
+        if seq <= cursor {
+            continue;
+        }
+        if seq != cursor + 1 {
+            tracing::warn!(cursor, seq, "stored events have a gap; refetching the rest");
+            needs_snapshot = true;
+            break;
+        }
+        if let Err(err) = apply(&mut confirmed, &e.event) {
+            tracing::warn!(seq, error = %err, "a stored event does not apply; refetching from it");
+            needs_snapshot = true;
+            break;
+        }
+        seen_commands.insert(e.command_id);
+        cursor = seq;
+        replayed += 1;
+    }
+    // Writes are atomic, so an entry leaves storage with the events that confirm it. Check anyway:
+    // an entry whose events are confirmed must not be applied (or sent) again.
+    let (settled, outbox): (Vec<_>, Vec<_>) = loaded.outbox.into_iter().partition(|e| {
+        seen_commands.contains(&e.command_id)
+            || e.acked
+                .as_ref()
+                .is_some_and(|ids| ids.iter().any(|id| confirmed.journal.has_seen(*id)))
+    });
+    Restored {
+        confirmed,
+        cursor,
+        epoch: loaded.epoch,
+        outbox,
+        failed: loaded.failed,
+        replayed,
+        needs_snapshot,
+        settled: settled.into_iter().map(|e| e.command_id).collect(),
+    }
 }
 
 impl fmt::Debug for Replica {
@@ -124,49 +204,72 @@ impl Replica {
     ///
     /// Replay stops at the first event that does not follow on or does not apply; the rest is fetched
     /// from the server again.
-    pub fn open(actor: Actor, mut storage: Box<dyn Storage>) -> Result<Self, OpenError> {
-        let loaded = storage.load()?;
-        let (mut confirmed, mut cursor) = loaded.snapshot.unwrap_or_default();
-        let mut replayed = 0;
-        let mut needs_snapshot = false;
-        for e in &loaded.events {
-            let Some(seq) = e.seq else { continue };
-            if seq <= cursor {
-                continue;
-            }
-            if seq != cursor + 1 {
-                tracing::warn!(cursor, seq, "stored events have a gap; refetching the rest");
-                needs_snapshot = true;
-                break;
-            }
-            let mut next = confirmed.clone();
-            if let Err(err) = apply(&mut next, e) {
-                tracing::warn!(seq, error = %err, "a stored event does not apply; refetching from it");
-                needs_snapshot = true;
-                break;
-            }
-            confirmed = next;
-            cursor = seq;
-            replayed += 1;
-        }
-        tracing::debug!(
-            cursor,
-            replayed,
-            outbox = loaded.outbox.len(),
-            "replica loaded"
-        );
-        Ok(Self {
+    ///
+    /// Outbox entries whose events are already confirmed (by command ID, or by an acknowledged event
+    /// ID) are removed.
+    pub fn open(actor: Actor, storage: Box<dyn Storage>) -> Result<Self, OpenError> {
+        let mut r = Self {
             actor,
             storage,
-            confirmed,
-            cursor,
-            outbox: loaded.outbox,
-            failed: loaded.failed,
+            confirmed: State::new(),
+            cursor: 0,
+            epoch: None,
+            outbox: Vec::new(),
+            failed: Vec::new(),
             view: None,
-            unsnapshotted: replayed,
+            unsnapshotted: 0,
             snapshot_every: SNAPSHOT_EVERY,
-            needs_snapshot,
-        })
+            needs_snapshot: false,
+            stale: true,
+        };
+        r.reload()?;
+        Ok(r)
+    }
+
+    /// Rebuilds everything from storage.
+    fn reload(&mut self) -> Result<(), StorageError> {
+        let r = restore(self.storage.load()?);
+        if !r.settled.is_empty() {
+            tracing::info!(
+                entries = r.settled.len(),
+                "removing outbox entries whose events are confirmed"
+            );
+            let ops: Vec<StorageOp<'_>> = r
+                .settled
+                .iter()
+                .map(|id| StorageOp::RemoveOutbox(*id))
+                .collect();
+            self.storage.write(&ops)?;
+        }
+        tracing::debug!(
+            cursor = r.cursor,
+            replayed = r.replayed,
+            outbox = r.outbox.len(),
+            "replica loaded"
+        );
+        self.confirmed = r.confirmed;
+        self.cursor = r.cursor;
+        self.epoch = r.epoch;
+        self.outbox = r.outbox;
+        self.failed = r.failed;
+        self.view = None;
+        self.unsnapshotted = r.replayed;
+        self.needs_snapshot = r.needs_snapshot;
+        self.stale = false;
+        Ok(())
+    }
+
+    /// Reloads from storage if an earlier failure left memory possibly ahead of it.
+    pub fn refresh(&mut self) -> Result<(), StorageError> {
+        if self.stale { self.reload() } else { Ok(()) }
+    }
+
+    /// After a failed write of an in-place change: go back to what storage has.
+    fn roll_back(&mut self) {
+        self.stale = true;
+        if let Err(err) = self.reload() {
+            tracing::warn!(error = %err, "cannot reload the replica after a failed write");
+        }
     }
 
     /// Changes how many confirmed events are stored between snapshots.
@@ -184,6 +287,12 @@ impl Replica {
     #[must_use]
     pub fn cursor(&self) -> u64 {
         self.cursor
+    }
+
+    /// The log epoch the confirmed state belongs to (`None` before the first page or stream).
+    #[must_use]
+    pub fn epoch(&self) -> Option<Epoch> {
+        self.epoch
     }
 
     /// The confirmed state.
@@ -229,6 +338,7 @@ impl Replica {
     /// A command is first decided against the view; one that is already invalid there is refused
     /// with the domain error and not queued.
     pub fn submit(&mut self, entry: OutboxEntry) -> Result<(), SubmitError> {
+        self.refresh()?;
         let mut decided = None;
         if let Some(command) = entry.command() {
             let view = self.view();
@@ -253,6 +363,7 @@ impl Replica {
     /// The oldest entry the server has not acknowledged yet, with its attempt counted (and stored, so
     /// after a crash the replica knows the server may have applied it).
     pub fn next_to_send(&mut self) -> Result<Option<OutboxEntry>, StorageError> {
+        self.refresh()?;
         let Some(entry) = self.outbox.iter_mut().find(|e| e.acked.is_none()) else {
             return Ok(None);
         };
@@ -263,33 +374,26 @@ impl Replica {
         Ok(Some(next))
     }
 
-    /// Records the server's acknowledgement. The entry leaves the outbox now if it changed nothing or
-    /// its events are already confirmed; otherwise when they arrive.
+    /// Records the server's acknowledgement: the entry is not sent again, and leaves the outbox when
+    /// its events are confirmed (at once if it changed nothing).
     ///
-    /// Returns [`Ack::Diverged`] if the server reports an event at or below the cursor that the
-    /// confirmed state does not have: the server's log is not the one this replica followed (it was
-    /// restored from a backup and has grown past the old cursor again), so a full resync is needed.
+    /// Returns [`Ack::Diverged`] if the entry is still pending but the server reports one of its
+    /// events at or below the cursor: had the confirmed state that event, it would have confirmed the
+    /// entry, so the server's log is not the one this replica followed (it was restored from a backup
+    /// and grew past the old cursor again).
     pub fn acknowledge(
         &mut self,
         command_id: CommandId,
         result: &CommandResult,
     ) -> Result<Ack, StorageError> {
-        if result
-            .events
-            .iter()
-            .any(|r| r.seq <= self.cursor && !self.confirmed.journal.has_seen(r.id))
-        {
-            return Ok(Ack::Diverged);
-        }
+        self.refresh()?;
         let Some(pos) = self.position(command_id) else {
             return Ok(Ack::Recorded);
         };
-        let confirmed = result.events.is_empty()
-            || result
-                .events
-                .iter()
-                .any(|r| self.confirmed.journal.has_seen(r.id));
-        if confirmed {
+        if result.events.iter().any(|r| r.seq <= self.cursor) {
+            return Ok(Ack::Diverged);
+        }
+        if result.events.is_empty() {
             self.storage.write(&[StorageOp::RemoveOutbox(command_id)])?;
             self.outbox.remove(pos);
             self.view = None;
@@ -309,6 +413,7 @@ impl Replica {
         rejection: Rejection,
         now: Timestamp,
     ) -> Result<(), StorageError> {
+        self.refresh()?;
         let Some(pos) = self.position(command_id) else {
             return Ok(());
         };
@@ -329,6 +434,7 @@ impl Replica {
 
     /// Removes an entry from the "couldn't sync" list. Returns false if there was none.
     pub fn dismiss(&mut self, command_id: CommandId) -> Result<bool, StorageError> {
+        self.refresh()?;
         let Some(pos) = self
             .failed
             .iter()
@@ -345,34 +451,29 @@ impl Replica {
         self.outbox.iter().position(|e| e.command_id == command_id)
     }
 
-    /// True if `event` is the first event of `entry`'s command: deciding the command against the
-    /// confirmed state with the event's actor and time reproduces its ID.
-    fn recognises(&self, entry: &OutboxEntry, event: &Event) -> bool {
-        if entry.acked.is_some()
-            || entry.attempts == 0
-            || event.group != event.id
-            || event.actor != self.actor
-        {
-            return false;
-        }
-        let Some(command) = entry.command() else {
-            return false;
-        };
-        decide(&self.confirmed, &self.actor, command, event.at)
-            .ok()
-            .and_then(|events| events.first().map(|e| e.id))
-            == Some(event.id)
-    }
-
-    /// Applies confirmed events in sequence order. Events at or below the cursor are skipped.
+    /// Applies confirmed events from the log with `epoch`, in sequence order, and removes the outbox
+    /// entries they confirm, in one storage write. Events at or below the cursor are skipped. An empty
+    /// slice only checks (or records) the epoch.
     ///
-    /// On an error the events before the failing one stay applied. Returns how many were applied.
-    pub fn apply_confirmed(&mut self, events: &[Event]) -> Result<usize, ConfirmError> {
-        let mut applied: Vec<Event> = Vec::new();
-        let mut done: Vec<CommandId> = Vec::new();
+    /// The first epoch is adopted while the replica is empty; another one is refused with
+    /// [`ConfirmError::EpochChanged`]. On a gap or a divergence the events before it stay applied (and
+    /// stored). If the write fails, nothing is applied.
+    pub fn apply_confirmed(
+        &mut self,
+        epoch: Epoch,
+        events: &[LogEvent],
+    ) -> Result<usize, ConfirmError> {
+        self.refresh()?;
+        let adopt = match self.epoch {
+            Some(e) if e == epoch => false,
+            None if self.cursor == 0 => true,
+            _ => return Err(ConfirmError::EpochChanged),
+        };
+        let mut applied: Vec<LogEvent> = Vec::new();
         let mut failure = None;
+        let cursor_before = self.cursor;
         for e in events {
-            let Some(seq) = e.seq else {
+            let Some(seq) = e.event.seq else {
                 failure = Some(ConfirmError::MissingSeq);
                 break;
             };
@@ -386,55 +487,56 @@ impl Replica {
                 });
                 break;
             }
-            let recognised: Vec<CommandId> = self
-                .outbox
-                .iter()
-                .filter(|entry| !done.contains(&entry.command_id) && self.recognises(entry, e))
-                .map(|entry| entry.command_id)
-                .collect();
-            if let Err(err) = apply(&mut self.confirmed, e) {
-                failure = Some(ConfirmError::Diverged(err));
+            // `apply` leaves the state untouched when it fails.
+            if let Err(error) = apply(&mut self.confirmed, &e.event) {
+                failure = Some(ConfirmError::Diverged { seq, error });
                 break;
             }
             self.cursor = seq;
-            done.extend(recognised);
-            done.extend(
-                self.outbox
-                    .iter()
-                    .filter(|entry| entry.acked.as_ref().is_some_and(|ids| ids.contains(&e.id)))
-                    .map(|entry| entry.command_id),
-            );
             applied.push(e.clone());
         }
-        if applied.is_empty() {
+        if applied.is_empty() && !adopt {
             return failure.map_or(Ok(0), Err);
         }
-        self.view = None;
-        self.outbox
-            .retain(|entry| !done.contains(&entry.command_id));
-        self.unsnapshotted += applied.len();
-        let snapshot = self.needs_snapshot || self.unsnapshotted >= self.snapshot_every;
-        let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(done.len() + 1);
+        let done: BTreeSet<CommandId> = applied.iter().map(|e| e.command_id).collect();
+        let settled: Vec<CommandId> = self
+            .outbox
+            .iter()
+            .map(|e| e.command_id)
+            .filter(|id| done.contains(id))
+            .collect();
+        let snapshot = !applied.is_empty()
+            && (self.needs_snapshot || self.unsnapshotted + applied.len() >= self.snapshot_every);
+        let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(settled.len() + 2);
+        if adopt {
+            ops.push(StorageOp::SetEpoch(epoch));
+        }
         if snapshot {
             ops.push(StorageOp::Snapshot {
                 state: &self.confirmed,
                 cursor: self.cursor,
             });
-        } else {
+        } else if !applied.is_empty() {
             ops.push(StorageOp::AppendEvents(&applied));
         }
-        ops.extend(done.iter().map(|id| StorageOp::RemoveOutbox(*id)));
-        match self.storage.write(&ops) {
-            Ok(()) => {
-                if snapshot {
-                    self.unsnapshotted = 0;
-                    self.needs_snapshot = false;
-                }
-            }
-            Err(err) => {
-                self.needs_snapshot = true;
-                return Err(err.into());
-            }
+        ops.extend(settled.iter().map(|id| StorageOp::RemoveOutbox(*id)));
+        if let Err(err) = self.storage.write(&ops) {
+            tracing::warn!(error = %err, cursor = cursor_before, "cannot store confirmed events");
+            self.roll_back();
+            return Err(err.into());
+        }
+        if adopt {
+            self.epoch = Some(epoch);
+        }
+        if snapshot {
+            self.unsnapshotted = 0;
+            self.needs_snapshot = false;
+        } else {
+            self.unsnapshotted += applied.len();
+        }
+        if !applied.is_empty() {
+            self.view = None;
+            self.outbox.retain(|e| !done.contains(&e.command_id));
         }
         match failure {
             Some(f) => Err(f),
@@ -446,6 +548,7 @@ impl Replica {
     /// "couldn't sync" list. Acknowledged entries are sent again: the server they were acknowledged by
     /// may no longer have them (a restore from backup), and if it does, the retry is idempotent.
     pub fn reset(&mut self) -> Result<(), StorageError> {
+        self.refresh()?;
         let reacked: Vec<OutboxEntry> = self
             .outbox
             .iter()
@@ -463,6 +566,7 @@ impl Replica {
         }
         self.confirmed = State::new();
         self.cursor = 0;
+        self.epoch = None;
         self.unsnapshotted = 0;
         self.needs_snapshot = false;
         self.view = None;

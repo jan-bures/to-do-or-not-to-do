@@ -5,7 +5,7 @@ use super::error::{ApiError, ErrorBody};
 use super::{ApiJson, ApiPath, RequestCancel, Work, blocking};
 use crate::app::AppState;
 use crate::auth::Authenticated;
-use crate::engine::{CommandResult, Outcome};
+use crate::engine::{CommandResult, Outcome, UndoExpect};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -65,13 +65,13 @@ pub async fn post_command(
     path = "/api/v1/events/{seq}/undo",
     tag = "commands",
     params(("seq" = u64, Path, description = "Sequence number of any event of the command to undo")),
-    request_body(content = UndoRequest, description = "`command_id` is required; `force` defaults to false"),
+    request_body(content = UndoRequest, description = "`command_id` and `expected_event_id` are required; `force` defaults to false"),
     responses(
         (status = 200, description = "Compensating events stored (or replayed: see the `idempotent-replayed` header)", body = CommandResult),
-        (status = 400, description = "No `command_id` (`command_id_required`)", body = ErrorBody),
+        (status = 400, description = "No `command_id` (`command_id_required`) or `expected_event_id` (`expected_event_id_required`)", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "No such event", body = ErrorBody),
-        (status = 409, description = "Later changes conflict (`undo_conflict`), or already undone", body = ErrorBody),
+        (status = 409, description = "Later changes conflict (`undo_conflict`), or already undone; another event is at `seq` (`event_mismatch`); the log has another epoch (`epoch_mismatch`)", body = ErrorBody),
         (status = 408, description = "The deadline passed before the undo began committing; nothing was stored", body = ErrorBody),
         (status = 503, description = "Too many writes in flight (`overloaded`), or the outcome is unknown (`outcome_unknown`: retry with the same `command_id`); see `Retry-After`", body = ErrorBody),
     ),
@@ -98,9 +98,24 @@ pub async fn post_undo(
     // Without a client-chosen ID, a lost response (time-out, `outcome_unknown`) could not be retried
     // without risking a second undo.
     let command_id = req.command_id.ok_or_else(ApiError::command_id_required)?;
+    // Without the expected event, an undo queued before a restore could undo whatever event now has
+    // that sequence number.
+    let expect = UndoExpect {
+        event_id: req
+            .expected_event_id
+            .ok_or_else(ApiError::expected_event_id_required)?,
+        epoch: req.epoch,
+    };
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
-        engine.undo_cancellable(&auth.actor, seq, req.force, Some(command_id), &cancel)
+        engine.undo_expecting(
+            &auth.actor,
+            seq,
+            req.force,
+            Some(command_id),
+            Some(expect),
+            &cancel,
+        )
     })
     .await??;
     Ok(outcome_response(outcome))

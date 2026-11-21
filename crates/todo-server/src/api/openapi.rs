@@ -58,6 +58,8 @@ impl Modify for BearerAuth {
         dto::TaskPage,
         dto::TagPage,
         events::CatchUp,
+        events::Hello,
+        crate::db::LogEvent,
         error::ErrorBody,
         error::ErrorDetail,
     )),

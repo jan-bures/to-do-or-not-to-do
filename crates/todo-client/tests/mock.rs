@@ -9,7 +9,9 @@ use futures_executor::block_on;
 use futures_util::future::join;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use todo_client::{Backoff, ClientConfig, Connection, MemoryStorage, Replica, SyncClient};
+use todo_client::{
+    Backoff, ClientConfig, Connection, ErrorKind, MemoryStorage, Replica, SyncClient,
+};
 use todo_core::Command;
 use uuid::Uuid;
 
@@ -185,4 +187,63 @@ fn a_cursor_ahead_of_the_server_triggers_a_full_resync_that_keeps_the_outbox() {
     // Storage was rewritten too.
     let again = Replica::open(owner(), Box::new(storage.clone())).unwrap();
     assert!(again.confirmed().data_eq(&s.state));
+}
+
+#[test]
+fn a_restored_log_that_regrew_past_the_cursor_is_detected_by_its_epoch() {
+    let server = seeded_server();
+    server
+        .lock()
+        .unwrap()
+        .execute(&owner(), Uuid::from_u128(3), &add_note(task_id(1), "lost"))
+        .unwrap();
+    let t = MockTransport::new(server.clone(), owner());
+    let storage = MemoryStorage::new();
+    let c = client(&t, &storage, 1);
+    run_until(&c, |c| synced(c, &t));
+    assert_eq!((c.cursor(), c.epoch()), (3, Some(EPOCH)));
+
+    // Restored from a backup without the third event, then other events took its place: the cursor
+    // is valid on the new log, but means another history.
+    let new_epoch = Uuid::from_u128(0xe1);
+    {
+        let mut s = server.lock().unwrap();
+        s.restore(2, new_epoch);
+        let phone = todo_core::Actor::owner("phone").unwrap();
+        s.execute(&phone, Uuid::from_u128(4), &add_note(task_id(1), "other a"))
+            .unwrap();
+        s.execute(&phone, Uuid::from_u128(5), &add_note(task_id(1), "other b"))
+            .unwrap();
+    }
+    let c = client(&t, &storage, 2);
+    c.submit(add_note(task_id(1), "queued")).unwrap();
+    run_until(&c, |c| synced(c, &t) && c.epoch() == Some(new_epoch));
+    let notes = c.view().tasks[&task_id(1)].notes.clone();
+    assert!(!notes.contains("lost"), "{notes}");
+    for n in ["other a", "other b", "queued"] {
+        assert_eq!(notes.matches(n).count(), 1, "{notes}");
+    }
+    let again = Replica::open(owner(), Box::new(storage.clone())).unwrap();
+    assert_eq!(again.epoch(), Some(new_epoch));
+    assert!(again.confirmed().data_eq(&server.lock().unwrap().state));
+}
+
+#[test]
+fn an_event_that_never_applies_is_a_backed_off_protocol_error_not_a_resync_loop() {
+    let server = seeded_server();
+    {
+        // A broken log: event 3 repeats event 1.
+        let mut s = server.lock().unwrap();
+        let mut dup = s.log[0].clone();
+        dup.event.seq = Some(3);
+        s.log.push(dup);
+    }
+    let t = MockTransport::new(server.clone(), owner());
+    let c = client(&t, &MemoryStorage::new(), 1);
+    run_until(&c, |c| {
+        c.status().last_error.as_ref().is_some_and(|e| {
+            e.kind == ErrorKind::Protocol && e.message.contains("even after a full resync")
+        })
+    });
+    assert_eq!(c.cursor(), 2, "everything before the broken event is kept");
 }

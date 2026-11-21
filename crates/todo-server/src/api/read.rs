@@ -843,23 +843,23 @@ pub async fn activity(
             .events
             .into_iter()
             .map(|event| {
-                let root = j.root_of(event.id);
+                let root = j.root_of(event.event.id);
                 let head = j.head_of(root);
-                let undone = if event.undoes.is_none() {
-                    j.is_undone(event.id)
+                let undone = if event.event.undoes.is_none() {
+                    j.is_undone(event.event.id)
                 } else {
-                    head != event.id
+                    head != event.event.id
                 };
                 ActivityItem {
-                    summary: summary::event(&s, &event),
+                    summary: summary::event(&s, &event.event),
                     undone,
-                    can_undo: head == event.id,
+                    can_undo: head == event.event.id,
                     event,
                 }
             })
             .collect();
         let next_before = more
-            .then(|| items.last().and_then(|i| i.event.seq))
+            .then(|| items.last().and_then(|i| i.event.event.seq))
             .flatten();
         Ok(Json(ActivityPage { items, next_before }))
     })

@@ -1,5 +1,5 @@
-//! The replica's rules, without a network: optimistic view, acknowledgement, recognition of a
-//! command's events, rejection, persistence and resync.
+//! The replica's rules, without a network: optimistic view, acknowledgement, confirmation by command
+//! ID, the log epoch, storage failures, rejection, persistence and resync.
 #![allow(clippy::unwrap_used)]
 
 mod fake;
@@ -7,7 +7,8 @@ mod fake;
 use fake::*;
 use proptest::prelude::*;
 use todo_client::outbox::{Operation, OutboxEntry, Rejection};
-use todo_client::replica::{ConfirmError, SubmitError};
+use todo_client::replica::{Ack, ConfirmError, SubmitError};
+use todo_client::storage::{Storage, StorageOp};
 use todo_client::{MemoryStorage, Replica};
 use todo_core::Command;
 use uuid::Uuid;
@@ -49,7 +50,7 @@ fn seeded() -> (Replica, FakeServer, MemoryStorage) {
             &create_task(task_id(1), list_id(1), "Task"),
         )
         .unwrap();
-    r.apply_confirmed(&server.log).unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
     (r, server, storage)
 }
 
@@ -100,13 +101,13 @@ fn an_acknowledged_command_leaves_when_its_events_arrive_and_is_never_applied_tw
     assert_eq!(r.outbox().len(), 1);
     assert!(r.next_to_send().unwrap().is_none());
     assert_eq!(notes(&mut r, task_id(1)), "once");
-    r.apply_confirmed(&server.log).unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
     assert!(r.outbox().is_empty());
     assert_eq!(notes(&mut r, task_id(1)), "once");
 }
 
 #[test]
-fn events_arriving_before_the_acknowledgement_are_recognised() {
+fn events_arriving_before_the_acknowledgement_confirm_the_entry_by_its_command_id() {
     let (mut r, mut server, _) = seeded();
     let e = entry(1, add_note(task_id(1), "once"), 1);
     r.submit(e.clone()).unwrap();
@@ -115,27 +116,169 @@ fn events_arriving_before_the_acknowledgement_are_recognised() {
         .execute(&owner(), e.command_id, e.command().unwrap())
         .unwrap();
     // The stream is faster than the response.
-    r.apply_confirmed(&server.log).unwrap();
-    assert!(r.outbox().is_empty(), "recognised by its event IDs");
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert!(r.outbox().is_empty(), "confirmed by the event's command ID");
     assert_eq!(notes(&mut r, task_id(1)), "once");
     // The late acknowledgement is harmless.
-    r.acknowledge(e.command_id, &result).unwrap();
+    assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Recorded);
     assert!(r.outbox().is_empty());
 }
 
 #[test]
-fn a_command_that_was_never_sent_is_not_mistaken_for_someone_elses() {
+fn an_identical_command_from_another_session_does_not_confirm_a_pending_one() {
+    // Another session of the same actor (same device ID) makes exactly the same change, and its
+    // event reaches this replica first, before this replica's own command was even executed.
     let (mut r, mut server, _) = seeded();
-    // Another device makes the same change: different actor, so different event IDs.
-    let other = todo_core::Actor::owner("phone").unwrap();
-    r.submit(entry(1, add_note(task_id(1), "same"), 1)).unwrap();
+    let mine = entry(1, add_note(task_id(1), "same"), 1);
+    r.submit(mine.clone()).unwrap();
     r.next_to_send().unwrap();
     server
-        .execute(&other, Uuid::from_u128(5), &add_note(task_id(1), "same"))
+        .execute(&owner(), Uuid::from_u128(5), &add_note(task_id(1), "same"))
         .unwrap();
-    r.apply_confirmed(&server.log).unwrap();
-    assert_eq!(r.outbox().len(), 1);
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert_eq!(r.outbox().len(), 1, "still pending");
     assert_eq!(notes(&mut r, task_id(1)).matches("same").count(), 2);
+    // Its own events confirm it.
+    let result = server
+        .execute(&owner(), mine.command_id, mine.command().unwrap())
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert!(r.outbox().is_empty());
+    assert_eq!(
+        r.acknowledge(mine.command_id, &result).unwrap(),
+        Ack::Recorded
+    );
+    assert_eq!(notes(&mut r, task_id(1)).matches("same").count(), 2);
+    assert!(r.view().data_eq(&server.state));
+}
+
+#[test]
+fn a_failed_confirmation_write_applies_nothing_and_the_entry_survives_it() {
+    let (mut r, mut server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "once"), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap();
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    r.acknowledge(e.command_id, &result).unwrap();
+    let cursor = r.cursor();
+
+    storage.set_fail_writes(true);
+    assert!(matches!(
+        r.apply_confirmed(EPOCH, &server.log),
+        Err(ConfirmError::Storage(_))
+    ));
+    // Memory is not ahead of disk: nothing applied, the entry still pending (and not resent).
+    assert_eq!(r.cursor(), cursor);
+    assert_eq!(r.outbox().len(), 1);
+    assert!(
+        r.next_to_send().unwrap().is_none(),
+        "acknowledged: not resent"
+    );
+    assert_eq!(notes(&mut r, task_id(1)), "once");
+    storage.set_fail_writes(false);
+
+    // A crash here, then the events arrive again.
+    drop(r);
+    let mut again = open(&storage);
+    assert_eq!(again.cursor(), cursor);
+    assert_eq!(again.outbox().len(), 1);
+    assert_eq!(notes(&mut again, task_id(1)), "once");
+    again.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert!(again.outbox().is_empty());
+    assert_eq!(notes(&mut again, task_id(1)), "once");
+    assert!(open(&storage).outbox().is_empty());
+}
+
+#[test]
+fn opening_removes_acknowledged_entries_whose_events_are_confirmed() {
+    // Storage as a lossy backend might leave it: the snapshot has the command's event, the outbox
+    // still has the acknowledged entry.
+    let (mut r, mut server, _) = seeded();
+    let e = entry(1, add_note(task_id(1), "once"), 1);
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    let mut storage = MemoryStorage::new();
+    let acked = OutboxEntry {
+        attempts: 1,
+        acked: Some(result.events.iter().map(|r| r.id).collect()),
+        ..e
+    };
+    storage
+        .write(&[
+            StorageOp::SetEpoch(EPOCH),
+            StorageOp::Snapshot {
+                state: r.confirmed(),
+                cursor: r.cursor(),
+            },
+            StorageOp::PutOutbox(&acked),
+        ])
+        .unwrap();
+    let mut again = open(&storage);
+    assert!(again.outbox().is_empty());
+    assert_eq!(notes(&mut again, task_id(1)), "once");
+    assert!(
+        open(&storage).outbox().is_empty(),
+        "and the removal is stored"
+    );
+}
+
+#[test]
+fn events_from_another_epoch_are_refused() {
+    let storage = MemoryStorage::new();
+    let mut r = open(&storage);
+    let mut server = FakeServer::default();
+    server
+        .execute(&owner(), Uuid::from_u128(1), &create_list(list_id(1), "A"))
+        .unwrap();
+    assert_eq!(r.epoch(), None);
+    // An empty replica adopts the first epoch it sees, even from an empty page.
+    r.apply_confirmed(EPOCH, &[]).unwrap();
+    assert_eq!(r.epoch(), Some(EPOCH));
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert_eq!(open(&storage).epoch(), Some(EPOCH), "stored");
+    let other = Uuid::from_u128(0xe1);
+    server
+        .execute(&owner(), Uuid::from_u128(2), &create_list(list_id(2), "B"))
+        .unwrap();
+    assert!(matches!(
+        r.apply_confirmed(other, &server.log),
+        Err(ConfirmError::EpochChanged)
+    ));
+    assert!(matches!(
+        r.apply_confirmed(other, &[]),
+        Err(ConfirmError::EpochChanged)
+    ));
+    assert_eq!(r.cursor(), 1, "nothing applied");
+    r.reset().unwrap();
+    assert_eq!(r.epoch(), None);
+    assert_eq!(open(&storage).epoch(), None);
+    r.apply_confirmed(other, &server.log).unwrap();
+    assert_eq!(r.epoch(), Some(other));
+}
+
+#[test]
+fn an_acknowledgement_below_the_cursor_for_a_pending_entry_means_divergence() {
+    // The server was restored and regrew: its event at seq 3 is this entry's, but the replica's
+    // seq 3 is another (lost) event.
+    let (mut r, mut server, _) = seeded();
+    server
+        .execute(&owner(), Uuid::from_u128(1), &add_note(task_id(1), "lost"))
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    server.restore(2, Uuid::from_u128(0xe1));
+    let e = entry(7, add_note(task_id(1), "mine"), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap();
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    assert_eq!(result.events[0].seq, 3);
+    assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Diverged);
+    assert_eq!(r.outbox()[0].acked, None, "nothing recorded");
 }
 
 #[test]
@@ -145,7 +288,7 @@ fn a_command_that_changed_nothing_leaves_on_acknowledgement() {
     server
         .execute(&owner(), Uuid::from_u128(7), &complete)
         .unwrap();
-    r.apply_confirmed(&server.log).unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
     let e = entry(1, complete.clone(), 1);
     r.submit(e.clone()).unwrap();
     r.next_to_send().unwrap();
@@ -201,7 +344,7 @@ fn a_restart_resumes_from_the_cursor_and_keeps_the_outbox() {
         server
             .execute(&owner(), Uuid::from_u128(3), &add_note(task_id(1), "n"))
             .unwrap();
-        r.apply_confirmed(&server.log).unwrap();
+        r.apply_confirmed(EPOCH, &server.log).unwrap();
         r.submit(entry(10, add_note(task_id(1), "pending"), 1))
             .unwrap();
         r.next_to_send().unwrap();
@@ -229,7 +372,7 @@ fn a_gap_and_a_divergence_are_reported() {
         .unwrap();
     let last = server.log.last().unwrap().clone();
     assert!(matches!(
-        r.apply_confirmed(std::slice::from_ref(&last)),
+        r.apply_confirmed(EPOCH, std::slice::from_ref(&last)),
         Err(ConfirmError::Gap {
             expected: 3,
             got: 4
@@ -237,10 +380,10 @@ fn a_gap_and_a_divergence_are_reported() {
     ));
     // An event that does not apply (here: the same event under a new sequence number).
     let mut dup = server.log[0].clone();
-    dup.seq = Some(3);
+    dup.event.seq = Some(3);
     assert!(matches!(
-        r.apply_confirmed(&[dup]),
-        Err(ConfirmError::Diverged(_))
+        r.apply_confirmed(EPOCH, &[dup]),
+        Err(ConfirmError::Diverged { seq: 3, .. })
     ));
     assert_eq!(r.cursor(), 2);
 }
@@ -292,7 +435,7 @@ proptest! {
                 }
             }
             let upto = (delivered + deliver).min(server.log.len());
-            r.apply_confirmed(&server.log[delivered..upto]).unwrap();
+            r.apply_confirmed(EPOCH, &server.log[delivered..upto]).unwrap();
             delivered = upto;
             let view = r.view();
             for j in 0..=i {
@@ -304,7 +447,7 @@ proptest! {
             let result = server.execute(&owner(), sent.command_id, sent.command().unwrap()).unwrap();
             r.acknowledge(sent.command_id, &result).unwrap();
         }
-        r.apply_confirmed(&server.log[delivered..]).unwrap();
+        r.apply_confirmed(EPOCH, &server.log[delivered..]).unwrap();
         prop_assert!(r.outbox().is_empty());
         prop_assert_eq!(server.stored_commands(), 2 + plan.len());
         prop_assert!(r.confirmed().data_eq(&server.state));

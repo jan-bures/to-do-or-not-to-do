@@ -6,6 +6,10 @@ use todo_core::ids::EventId;
 use todo_core::time::Timestamp;
 use uuid::Uuid;
 
+/// The server's log epoch: a random ID that changes when the log is replaced (restored from a
+/// backup). Sequence numbers belong to one epoch.
+pub type Epoch = Uuid;
+
 /// The client-generated idempotency key of a command or undo (a UUIDv7).
 pub type CommandId = Uuid;
 
@@ -24,6 +28,13 @@ pub enum Operation {
         seq: u64,
         /// Undo even if later events changed the same fields.
         force: bool,
+        /// The ID of the event at `seq` the user meant. If the server has another event there (its
+        /// log was restored and grew again), it refuses the undo with `event_mismatch`.
+        expected_event_id: EventId,
+        /// The log epoch the event was seen in; the server refuses the undo with `epoch_mismatch` if
+        /// its log has another one.
+        #[serde(default)]
+        epoch: Option<Epoch>,
     },
 }
 
@@ -40,8 +51,8 @@ pub struct OutboxEntry {
     /// How often it was sent. Non-zero means the server may already have applied it.
     #[serde(default)]
     pub attempts: u32,
-    /// The events the server reported for it, once acknowledged. The entry leaves the outbox when the
-    /// first of them reaches the confirmed state.
+    /// The events the server reported for it, once acknowledged: it is not sent again. The entry leaves
+    /// the outbox when an event carrying its command ID reaches the confirmed state.
     #[serde(default)]
     pub acked: Option<Vec<EventId>>,
 }

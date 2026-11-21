@@ -1,8 +1,9 @@
 //! Request and response bodies that are not `todo-core` types.
 
+use crate::db::LogEvent;
 use serde::{Deserialize, Serialize};
 use todo_core::command::Command;
-use todo_core::event::Event;
+use todo_core::ids::EventId;
 use todo_core::model::{AttachmentRef, Collection, Link, List, Reminder, Step, Tag, Task};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -30,6 +31,16 @@ pub struct UndoRequest {
     #[serde(default)]
     #[schema(required = true, value_type = Uuid)]
     pub command_id: Option<Uuid>,
+    /// Required. The ID of the event at `seq` the client means to undo. If another event is there
+    /// (the log was restored and regrew), the undo gets 409 `event_mismatch`. Missing gets 400
+    /// `expected_event_id_required`.
+    #[serde(default)]
+    #[schema(required = true, value_type = String)]
+    pub expected_event_id: Option<EventId>,
+    /// The log epoch the client saw the event in (see `GET /api/v1/events`). If the log has
+    /// another one, the undo gets 409 `epoch_mismatch`.
+    #[serde(default)]
+    pub epoch: Option<Uuid>,
 }
 
 /// A task with everything attached to it.
@@ -55,20 +66,23 @@ pub struct TaskDetail {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EventPage {
     /// Events with `seq > since`, oldest first.
-    pub events: Vec<Event>,
+    pub events: Vec<LogEvent>,
     /// Pass as `since` to get the next page.
     pub next_since: u64,
     /// The newest sequence number when the page was read.
     pub head_seq: u64,
     /// True if more events follow.
     pub has_more: bool,
+    /// The log epoch the sequence numbers belong to. If it is not the one the client's cursor
+    /// belongs to, the client must resync from 0.
+    pub epoch: Uuid,
 }
 
 /// One activity feed entry.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ActivityItem {
     /// The event.
-    pub event: Event,
+    pub event: LogEvent,
     /// One-line description.
     pub summary: String,
     /// True if this event's effect is currently undone.
@@ -202,6 +216,10 @@ pub struct EventsParams {
     /// Page size for JSON (1–1000, default 500). A page also stops before 4 MiB of event JSON.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// The log epoch the client's cursor belongs to. If the log has another one, the request gets
+    /// 409 `epoch_mismatch` and the client must resync from 0.
+    #[serde(default)]
+    pub epoch: Option<Uuid>,
 }
 
 /// Paging for the activity feed.

@@ -165,7 +165,8 @@ async fn scenario(seed: u64, plan: Vec<(bool, Op, u8)>) {
                 if cursor <= *back {
                     None
                 } else {
-                    c.undo(cursor - back, false)
+                    let seq = cursor - back;
+                    c.undo(seq, server.event_id_at(seq), false)
                         .ok()
                         .map(|id| (id, "undo", None))
                 }

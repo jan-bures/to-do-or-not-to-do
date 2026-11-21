@@ -1,8 +1,9 @@
 //! Durable client storage.
 //!
-//! A [`Storage`] keeps four things: confirmed events after the last snapshot, an optional snapshot of the
-//! confirmed state with its cursor, the outbox in submission order, and the "couldn't sync" list.
-//! Every [`write`](Storage::write) is one atomic batch.
+//! A [`Storage`] keeps five things: confirmed events after the last snapshot (with the command each
+//! came from), an optional snapshot of the confirmed state with its cursor, the log epoch they belong
+//! to, the outbox in submission order, and the "couldn't sync" list. Every [`write`](Storage::write)
+//! is one atomic batch.
 //!
 //! The trait is synchronous: the engine calls it while holding its state lock and never across an
 //! `await`. A backend whose platform API is asynchronous (IndexedDB) keeps an in-memory copy and
@@ -11,10 +12,10 @@
 //! idempotent resend. Lost outbox *additions* are the exception, so such a backend should flush
 //! submissions promptly.
 
-use crate::outbox::{CommandId, FailedEntry, OutboxEntry};
+use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry};
+use crate::protocol::LogEvent;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
-use todo_core::event::Event;
 use todo_core::state::State;
 
 /// A storage backend failed.
@@ -38,16 +39,19 @@ impl From<serde_json::Error> for StorageError {
 #[derive(Debug)]
 pub enum StorageOp<'a> {
     /// Append confirmed events (in sequence order, after every stored one).
-    AppendEvents(&'a [Event]),
-    /// Replace the snapshot and drop the stored events it covers (`seq <= cursor`).
+    AppendEvents(&'a [LogEvent]),
+    /// Replace the snapshot and drop every stored event (the snapshot is the whole confirmed state;
+    /// stored events past its cursor could not be replayed and are fetched again).
     Snapshot {
         /// The confirmed state.
         state: &'a State,
         /// The sequence number it includes events up to.
         cursor: u64,
     },
-    /// Forget the confirmed state: the snapshot and all events (full resync).
+    /// Forget the confirmed state: the snapshot, all events and the epoch (full resync).
     ClearConfirmed,
+    /// Record the log epoch the confirmed state belongs to.
+    SetEpoch(Epoch),
     /// Insert an outbox entry at the end, or replace the one with the same command ID in place.
     PutOutbox(&'a OutboxEntry),
     /// Remove an outbox entry (no-op if absent).
@@ -64,7 +68,9 @@ pub struct Loaded {
     /// The last snapshot and its cursor.
     pub snapshot: Option<(State, u64)>,
     /// Confirmed events after the snapshot, in sequence order.
-    pub events: Vec<Event>,
+    pub events: Vec<LogEvent>,
+    /// The log epoch the snapshot and events belong to.
+    pub epoch: Option<Epoch>,
     /// The outbox, oldest first.
     pub outbox: Vec<OutboxEntry>,
     /// The "couldn't sync" list, oldest first.
@@ -84,6 +90,7 @@ pub trait Storage: crate::platform::MaybeSend {
 struct MemoryData {
     snapshot: Option<(String, u64)>,
     events: Vec<(u64, String)>,
+    epoch: Option<Epoch>,
     outbox: Vec<(CommandId, String)>,
     failed: Vec<(CommandId, String)>,
     fail_writes: bool,
@@ -147,6 +154,7 @@ impl Storage for MemoryStorage {
                 .iter()
                 .map(|(_, e)| serde_json::from_str(e))
                 .collect::<Result<_, _>>()?,
+            epoch: d.epoch,
             outbox: d
                 .outbox
                 .iter()
@@ -169,6 +177,7 @@ impl Storage for MemoryStorage {
         let mut next = MemoryData {
             snapshot: d.snapshot.clone(),
             events: d.events.clone(),
+            epoch: d.epoch,
             outbox: d.outbox.clone(),
             failed: d.failed.clone(),
             fail_writes: false,
@@ -178,6 +187,7 @@ impl Storage for MemoryStorage {
                 StorageOp::AppendEvents(events) => {
                     for e in *events {
                         let seq = e
+                            .event
                             .seq
                             .ok_or_else(|| StorageError::Backend("event without seq".into()))?;
                         next.events.push((seq, serde_json::to_string(e)?));
@@ -185,12 +195,14 @@ impl Storage for MemoryStorage {
                 }
                 StorageOp::Snapshot { state, cursor } => {
                     next.snapshot = Some((serde_json::to_string(state)?, *cursor));
-                    next.events.retain(|(seq, _)| seq > cursor);
+                    next.events.clear();
                 }
                 StorageOp::ClearConfirmed => {
                     next.snapshot = None;
                     next.events.clear();
+                    next.epoch = None;
                 }
+                StorageOp::SetEpoch(e) => next.epoch = Some(*e),
                 StorageOp::PutOutbox(e) => {
                     put(&mut next.outbox, e.command_id, serde_json::to_string(e)?);
                 }

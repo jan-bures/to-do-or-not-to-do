@@ -1,6 +1,6 @@
 //! The server's HTTP API as the sync engine uses it: paths, bodies, and how responses are classified.
 
-use crate::outbox::{CommandId, Operation, Rejection};
+use crate::outbox::{CommandId, Epoch, Operation, Rejection};
 use crate::platform::{Request, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +16,13 @@ pub const COMMANDS_PATH: &str = "/api/v1/commands";
 pub const EVENT_FRAME: &str = "event";
 /// The SSE event name of the "too far behind" notice.
 pub const CATCH_UP_FRAME: &str = "catch_up";
+/// The SSE event name of the first frame of every stream.
+pub const HELLO_FRAME: &str = "hello";
+
+/// Error code: the request named another log epoch than the server's (409).
+pub const EPOCH_MISMATCH: &str = "epoch_mismatch";
+/// Error code: an undo's `expected_event_id` is not the event at its `seq` (409).
+pub const EVENT_MISMATCH: &str = "event_mismatch";
 
 #[derive(Serialize)]
 struct CommandRequest<'a> {
@@ -27,6 +34,22 @@ struct CommandRequest<'a> {
 struct UndoRequest {
     force: bool,
     command_id: CommandId,
+    expected_event_id: EventId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<Epoch>,
+}
+
+/// An event of the server's log with the command that produced it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogEvent {
+    /// The event.
+    #[serde(flatten)]
+    pub event: Event,
+    /// The command (or undo) that produced it.
+    pub command_id: CommandId,
+    /// Its index among that command's events.
+    #[serde(default)]
+    pub command_idx: u32,
 }
 
 /// Reference to a stored event.
@@ -54,13 +77,24 @@ pub struct CommandResult {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct EventPage {
     /// Events after `since`, oldest first.
-    pub events: Vec<Event>,
+    pub events: Vec<LogEvent>,
     /// Pass as `since` for the next page.
     pub next_since: u64,
     /// The newest sequence number when the page was read.
     pub head_seq: u64,
     /// True if more events follow.
     pub has_more: bool,
+    /// The log epoch the sequence numbers belong to.
+    pub epoch: Epoch,
+}
+
+/// Data of the `hello` SSE frame.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Hello {
+    /// The log epoch the stream's sequence numbers belong to.
+    pub epoch: Epoch,
+    /// The newest sequence number when the stream opened.
+    pub head_seq: u64,
 }
 
 /// Data of the `catch_up` SSE frame.
@@ -110,26 +144,44 @@ pub fn entry_request(command_id: CommandId, op: &Operation) -> Result<Request, s
                 command,
             })?,
         ),
-        Operation::Undo { seq, force } => Request::post(
+        Operation::Undo {
+            seq,
+            force,
+            expected_event_id,
+            epoch,
+        } => Request::post(
             format!("/api/v1/events/{seq}/undo"),
             serde_json::to_vec(&UndoRequest {
                 force: *force,
                 command_id,
+                expected_event_id: *expected_event_id,
+                epoch: *epoch,
             })?,
         ),
     })
 }
 
-/// A JSON page of the event log.
-#[must_use]
-pub fn events_page_request(since: u64, limit: usize) -> Request {
-    Request::get(format!("/api/v1/events?since={since}&limit={limit}"))
+fn epoch_param(epoch: Option<Epoch>) -> String {
+    epoch.map(|e| format!("&epoch={e}")).unwrap_or_default()
 }
 
-/// The event stream from `since`.
+/// A JSON page of the event log. With `epoch`, the server answers 409 `epoch_mismatch` if its log has
+/// another one.
 #[must_use]
-pub fn stream_request(since: u64) -> Request {
-    Request::get(format!("/api/v1/events?since={since}"))
+pub fn events_page_request(since: u64, limit: usize, epoch: Option<Epoch>) -> Request {
+    Request::get(format!(
+        "/api/v1/events?since={since}&limit={limit}{}",
+        epoch_param(epoch)
+    ))
+}
+
+/// The event stream from `since` (see [`events_page_request`] for `epoch`).
+#[must_use]
+pub fn stream_request(since: u64, epoch: Option<Epoch>) -> Request {
+    Request::get(format!(
+        "/api/v1/events?since={since}{}",
+        epoch_param(epoch)
+    ))
 }
 
 /// How a response to a command or undo is handled.
@@ -271,13 +323,17 @@ mod tests {
     }
 
     #[test]
-    fn undo_always_carries_a_command_id() {
+    fn undo_carries_its_command_id_expected_event_and_epoch() {
         let id = uuid::Uuid::from_u128(7);
+        let event = EventId::from_uuid(uuid::Uuid::from_u128(8));
+        let epoch = uuid::Uuid::from_u128(9);
         let req = entry_request(
             id,
             &Operation::Undo {
                 seq: 3,
                 force: true,
+                expected_event_id: event,
+                epoch: Some(epoch),
             },
         )
         .unwrap();
@@ -285,5 +341,35 @@ mod tests {
         let body: Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["command_id"], id.to_string());
         assert_eq!(body["force"], true);
+        assert_eq!(
+            body["expected_event_id"],
+            serde_json::to_value(event).unwrap()
+        );
+        assert_eq!(body["epoch"], epoch.to_string());
+    }
+
+    #[test]
+    fn requests_name_the_epoch_when_known() {
+        let e = uuid::Uuid::from_u128(5);
+        assert_eq!(stream_request(4, None).path, "/api/v1/events?since=4");
+        assert_eq!(
+            stream_request(4, Some(e)).path,
+            format!("/api/v1/events?since=4&epoch={e}")
+        );
+        assert_eq!(
+            events_page_request(4, 10, Some(e)).path,
+            format!("/api/v1/events?since=4&limit=10&epoch={e}")
+        );
+    }
+
+    #[test]
+    fn a_stale_undo_is_rejected_for_good() {
+        for code in [EPOCH_MISMATCH, EVENT_MISMATCH] {
+            let body = format!(r#"{{"error":{{"code":"{code}","message":"x","details":{{}}}}}}"#);
+            assert!(matches!(
+                classify_send(&res(409, &body)),
+                SendOutcome::Rejected(r) if r.code == code
+            ));
+        }
     }
 }

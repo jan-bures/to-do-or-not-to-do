@@ -4,6 +4,18 @@
 //! committed in between is lost. Live events at or below the last sent sequence number are skipped;
 //! a lagged receiver or a gap in sequence numbers is repaired by re-reading from the database.
 //!
+//! Every event carries the `command_id` (and `command_idx`, its index among that command's events)
+//! that produced it, so a client recognises its own commands by ID.
+//!
+//! # Log epoch
+//!
+//! The log has an *epoch*: a random ID created with the database and rotated when a backup is
+//! restored (`todo-server rotate-log-epoch`). Sequence numbers only mean something within one epoch.
+//! Every JSON page carries `epoch`; a stream sends it in the [`LOG_EPOCH_HEADER`] response header and
+//! in a first [`HELLO`] frame (data: [`Hello`], no `id`). A client passes the epoch its cursor belongs
+//! to as `epoch`; if the log has another one, the request gets 409 `epoch_mismatch` (`details.epoch`:
+//! the current one) before anything else is checked, and the client must resync from 0.
+//!
 //! # Catching up
 //!
 //! A stream replays at most `limits.max_replay_events` events and `limits.max_replay_bytes` bytes. A
@@ -41,12 +53,13 @@ use super::{ApiQuery, Work, blocking};
 use crate::app::AppState;
 use crate::auth::{Authenticated, Principal};
 use crate::db::CappedEvents;
+use crate::db::LogEvent;
 use crate::engine::Engine;
 use crate::ratelimit::CatchUpMarks;
 use axum::Json;
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::http::header::ACCEPT;
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
@@ -57,7 +70,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use todo_core::event::Event;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -76,6 +88,19 @@ const CLIENT_BUFFER: usize = 64;
 pub const HEARTBEAT: &str = "heartbeat";
 /// The SSE event name of the "too far behind" notice. Its data is a [`CatchUp`].
 pub const CATCH_UP: &str = "catch_up";
+/// The SSE event name of the first frame of every stream. Its data is a [`Hello`].
+pub const HELLO: &str = "hello";
+/// The response header that carries the log epoch of a stream.
+pub const LOG_EPOCH_HEADER: &str = "log-epoch";
+
+/// Data of the [`HELLO`] SSE event, the first frame of every stream.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct Hello {
+    /// The log epoch (see the module documentation). Sequence numbers belong to it.
+    pub epoch: uuid::Uuid,
+    /// The newest sequence number when the stream opened.
+    pub head_seq: u64,
+}
 
 /// True if the client asked for an event stream.
 #[must_use]
@@ -109,16 +134,17 @@ pub struct CatchUp {
 
 /// The event log since a sequence number, as JSON or as an SSE stream (`Accept: text/event-stream`).
 ///
-/// SSE frames carry `id: <seq>`, `event: event` and the event JSON as `data`. A `:heartbeat` comment is
-/// sent periodically. On reconnect, `Last-Event-ID` takes precedence over `since`. See the module
-/// documentation for the catch-up protocol (409 `catch_up_required`, the `catch_up` frame).
+/// SSE frames carry `id: <seq>`, `event: event` and the event JSON as `data`; the first frame is
+/// `event: hello` with the log epoch. A `:heartbeat` comment is sent periodically. On reconnect,
+/// `Last-Event-ID` takes precedence over `since`. See the module documentation for the log epoch
+/// (409 `epoch_mismatch`) and the catch-up protocol (409 `catch_up_required`, the `catch_up` frame).
 #[utoipa::path(
     get, path = "/api/v1/events", tag = "events", params(EventsParams),
     responses(
         (status = 200, description = "A page of events, or an SSE stream when `Accept: text/event-stream`", body = EventPage),
         (status = 400, description = "`since` is ahead of the log (`invalid_since`)", body = ErrorBody),
         (status = 401, body = ErrorBody),
-        (status = 409, description = "Stream only: too far behind to replay, or reconnecting to where the last stream sent `catch_up` (`catch_up_required`); page the JSON form first", body = ErrorBody),
+        (status = 409, description = "`epoch` is not this log's epoch (`epoch_mismatch`; resync from 0). Stream only: too far behind to replay, or reconnecting to where the last stream sent `catch_up` (`catch_up_required`); page the JSON form first", body = ErrorBody),
         (status = 429, description = "Too many stream (re)connects; see `Retry-After`", body = ErrorBody),
         (status = 500, description = "One event is larger than the page limit (`item_too_large`, with `next_since` to skip it)", body = ErrorBody),
         (status = 503, description = "Too many open streams, or the server is busy", body = ErrorBody),
@@ -139,6 +165,7 @@ pub async fn get_events(
         if !app.engine.is_healthy() {
             return Err(ApiError::unavailable());
         }
+        check_epoch(&app.engine, q.epoch)?;
         // A reconnecting browser keeps the original URL (with its `since`) and adds Last-Event-ID,
         // which is the newer position.
         let since = last_event_id(&headers).or(q.since).unwrap_or(0);
@@ -167,6 +194,7 @@ pub async fn get_events(
             .map_err(|_| ApiError::too_many_streams())?;
         return Ok(stream(&app, auth.principal, since, permit).into_response());
     }
+    check_epoch(&app.engine, q.epoch)?;
     let since = q.since.unwrap_or(0);
     let limit = q.limit.unwrap_or(REPLAY_PAGE).clamp(1, MAX_EVENTS_PAGE);
     let engine = app.engine.clone();
@@ -182,15 +210,28 @@ pub async fn get_events(
         tracing::warn!(seq, "an event is larger than the page limit");
         return Err(ApiError::item_too_large("next_since", json!(seq)));
     }
-    let next_since = page.events.last().and_then(|e| e.seq).unwrap_or(since);
+    let next_since = page
+        .events
+        .last()
+        .and_then(|e| e.event.seq)
+        .unwrap_or(since);
     app.catch_up_marks.paged(&auth.principal, next_since);
     Ok(Json(EventPage {
         has_more: page.truncated || page.events.len() == limit,
         events: page.events,
         next_since,
         head_seq: head_seq.max(next_since),
+        epoch: app.engine.epoch(),
     })
     .into_response())
+}
+
+/// 409 `epoch_mismatch` unless `epoch` is absent or this log's epoch.
+fn check_epoch(engine: &Engine, epoch: Option<uuid::Uuid>) -> Result<(), ApiError> {
+    match epoch {
+        Some(e) if e != engine.epoch() => Err(ApiError::epoch_mismatch(engine.epoch())),
+        _ => Ok(()),
+    }
 }
 
 type Tx = mpsc::Sender<Result<SseEvent, Infallible>>;
@@ -339,7 +380,7 @@ impl Pump {
             };
             let full = page.events.len() == want;
             for ev in &page.events {
-                let Some(seq) = ev.seq else { continue };
+                let Some(seq) = ev.event.seq else { continue };
                 let data = match serde_json::to_string(ev) {
                     Ok(d) => d,
                     Err(err) => {
@@ -372,7 +413,17 @@ impl Pump {
         }
     }
 
-    async fn run(mut self, mut live: broadcast::Receiver<Arc<Event>>, heartbeat: Duration) {
+    async fn run(mut self, mut live: broadcast::Receiver<Arc<LogEvent>>, heartbeat: Duration) {
+        let hello = Hello {
+            epoch: self.engine.epoch(),
+            head_seq: self.engine.head_seq(),
+        };
+        let Ok(data) = serde_json::to_string(&hello) else {
+            return;
+        };
+        if !self.send(SseEvent::default().event(HELLO).data(data)).await {
+            return;
+        }
         if !self.catch_up().await {
             return;
         }
@@ -389,7 +440,7 @@ impl Pump {
                 }
                 msg = live.recv() => match msg {
                     Ok(ev) => {
-                        let Some(seq) = ev.seq else { continue };
+                        let Some(seq) = ev.event.seq else { continue };
                         if seq <= self.last {
                             continue;
                         }
@@ -459,11 +510,20 @@ fn stream(
         max_events: app.limits.max_replay_events,
         max_bytes: app.limits.max_replay_bytes,
     };
+    let epoch = app.engine.epoch();
     tokio::spawn(pump.run(live, app.limits.sse_heartbeat()));
-    Sse::new(Body {
-        rx: ReceiverStream::new(rx),
-        _slot: slot,
-    })
+    let epoch = HeaderValue::from_str(&epoch.to_string()).ok();
+    (
+        epoch
+            .map(|v| [(HeaderName::from_static(LOG_EPOCH_HEADER), v)])
+            .into_iter()
+            .flatten()
+            .collect::<HeaderMap>(),
+        Sse::new(Body {
+            rx: ReceiverStream::new(rx),
+            _slot: slot,
+        }),
+    )
 }
 
 #[cfg(test)]

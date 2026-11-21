@@ -253,7 +253,10 @@ async fn restart_resumes(storage: impl todo_client::Storage + Clone + 'static) {
         .find(|p| p.starts_with("/api/v1/events?since=") && !p.contains("limit"))
         .cloned()
         .unwrap();
-    assert_eq!(first_stream, format!("/api/v1/events?since={cursor}"));
+    assert_eq!(
+        first_stream,
+        format!("/api/v1/events?since={cursor}&epoch={}", server.epoch())
+    );
     stop(&a, h).await;
     server.stop().await;
 }
@@ -373,7 +376,7 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     })
     .await;
     let seq = server.head();
-    let undo_id = a.undo(seq, false).unwrap();
+    let undo_id = a.undo(seq, server.event_id_at(seq), false).unwrap();
     eventually("b sees the undo", WAIT, || {
         b.view().tasks[&task].title == "rename me"
     })
@@ -388,9 +391,145 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
             .contains(&(undo_id.to_string(), "undo".to_owned()))
     );
     // Undoing the same event again is refused for good: it is already undone.
-    a.undo(seq, false).unwrap();
+    a.undo(seq, server.event_id_at(seq), false).unwrap();
     eventually("refused", WAIT, || a.failed().len() == 1).await;
     assert_eq!(a.failed()[0].rejection.code, "already_undone");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_that_regrew_is_detected_by_the_epoch_and_a_stale_undo_is_refused() {
+    let storage = MemoryStorage::new();
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), storage.clone(), alpha());
+    let h = spawn(&a);
+    let (list, cmd) = new_list(&a, "L");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "before");
+    a.submit(cmd).unwrap();
+    eventually("synced", WAIT, || converged(&a, &server)).await;
+    stop(&a, h).await;
+    let (dir, config) = server.halt().await;
+    let backup = dir.path().join("backup.sqlite");
+    copy_db(&config.database_path(), &backup);
+    let server = TestServer::boot(dir, config).await;
+    let old_epoch = server.epoch();
+
+    // A rename the restore will lose; the client follows it.
+    let a = client(server.transport(TOKEN_A), storage.clone(), alpha());
+    let h = spawn(&a);
+    a.submit(rename(task, "lost")).unwrap();
+    eventually("followed the rename", WAIT, || converged(&a, &server)).await;
+    let lost_seq = server.head();
+    let lost_id = server.event_id_at(lost_seq);
+    stop(&a, h).await;
+
+    // Restore the backup and rotate the epoch, as the restore procedure does; then another rename
+    // takes the lost one's sequence number, so the client's cursor is valid but means another history.
+    let (dir, config) = server.halt().await;
+    copy_db(&backup, &config.database_path());
+    let new_epoch = todo_server::Engine::rotate_log_epoch(&config.database_path()).unwrap();
+    let server = TestServer::boot(dir, config).await;
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let hb = spawn(&b);
+    eventually("b synced", WAIT, || converged(&b, &server)).await;
+    b.submit(rename(task, "other")).unwrap();
+    eventually("regrown", WAIT, || converged(&b, &server)).await;
+    stop(&b, hb).await;
+    assert_eq!(server.head(), lost_seq);
+    assert_ne!(server.event_id_at(lost_seq), lost_id);
+
+    // Before reconnecting, the user undoes the lost rename (as this client still sees it) and adds a
+    // note.
+    let a = client(server.transport(TOKEN_A), storage.clone(), alpha());
+    assert_eq!((a.cursor(), a.epoch()), (lost_seq, Some(old_epoch)));
+    assert_eq!(a.view().tasks[&task].title, "lost");
+    let undo_id = a.undo(lost_seq, lost_id, false).unwrap();
+    a.submit(Command::AddNote {
+        task,
+        text: "queued".into(),
+    })
+    .unwrap();
+    let h = spawn(&a);
+    eventually("resynced onto the new log", WAIT, || {
+        converged(&a, &server) && a.failed().len() == 1
+    })
+    .await;
+    assert_eq!(a.epoch(), Some(new_epoch));
+    let view = a.view();
+    assert_eq!(
+        view.tasks[&task].title, "other",
+        "the other rename was not undone"
+    );
+    assert_eq!(view.tasks[&task].notes.matches("queued").count(), 1);
+    let failed = &a.failed()[0];
+    assert_eq!(failed.entry.command_id, undo_id);
+    assert_eq!(failed.rejection.code, "epoch_mismatch");
+    assert!(
+        failed.rejection.message.contains("restored"),
+        "{}",
+        failed.rejection.message
+    );
+    stop(&a, h).await;
+    let again = Replica::open(alpha(), Box::new(storage)).unwrap();
+    assert_eq!(again.epoch(), Some(new_epoch));
+    assert!(again.confirmed().data_eq(&server.state()));
+    server.stop().await;
+}
+
+fn rename(task: TaskId, title: &str) -> Command {
+    Command::UpdateTask {
+        id: task,
+        patch: todo_core::command::TaskPatch {
+            title: Some(title.into()),
+            ..Default::default()
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_frame_over_the_cap_ends_the_stream_and_the_event_is_paged() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let ha = spawn(&a);
+    let tb = Switch::new(server.transport(TOKEN_B).with_max_frame_bytes(2048));
+    let b = client(tb.clone(), MemoryStorage::new(), beta());
+    let hb = spawn(&b);
+    let (list, cmd) = new_list(&a, "L");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "big");
+    a.submit(cmd).unwrap();
+    eventually("b live", WAIT, || {
+        converged(&b, &server) && b.status().connection == Connection::Online
+    })
+    .await;
+    let pages = || {
+        tb.paths
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.contains("limit="))
+            .count()
+    };
+    let before = pages();
+    a.submit(Command::AddNote {
+        task,
+        text: "z".repeat(4000),
+    })
+    .unwrap();
+    // And a small one after it, which the reopened stream delivers.
+    a.submit(Command::AddNote {
+        task,
+        text: "small".into(),
+    })
+    .unwrap();
+    eventually("b got both", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    assert!(pages() > before, "the big event came through a page");
     stop(&a, ha).await;
     stop(&b, hb).await;
     server.stop().await;

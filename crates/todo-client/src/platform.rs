@@ -98,6 +98,9 @@ pub enum TransportError {
     /// No response in time.
     #[error("request timed out")]
     Timeout,
+    /// The server's answer broke the protocol (for example an oversized event stream frame).
+    #[error("protocol error: {0}")]
+    Protocol(String),
 }
 
 /// One frame of a Server-Sent Events stream.

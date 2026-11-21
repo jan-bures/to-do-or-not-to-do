@@ -11,10 +11,9 @@ use todo_client::notify::Notify;
 use todo_client::platform::{
     Clock, Entropy, EventStream, Request, Response, SseFrame, StreamOpen, Transport, TransportError,
 };
-use todo_client::protocol::{CommandResult, EventRef};
+use todo_client::protocol::{CommandResult, EventRef, LogEvent};
 use todo_core::command::{Command, NewTask};
 use todo_core::error::DomainError;
-use todo_core::event::Event;
 use todo_core::ids::{ListId, TaskId};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply, decide};
@@ -57,13 +56,28 @@ pub fn add_note(task: TaskId, text: &str) -> Command {
     }
 }
 
+/// The log epoch of a [`FakeServer`] (until [`FakeServer::restore`]).
+pub const EPOCH: Uuid = Uuid::from_u128(0xe0);
+
 /// The authoritative side: state, log, idempotency records and a clock of its own.
-#[derive(Default)]
 pub struct FakeServer {
     pub state: State,
-    pub log: Vec<Event>,
+    pub log: Vec<LogEvent>,
+    pub epoch: Uuid,
     results: HashMap<Uuid, (String, CommandResult)>,
     clock_ms: i64,
+}
+
+impl Default for FakeServer {
+    fn default() -> Self {
+        Self {
+            state: State::new(),
+            log: Vec::new(),
+            epoch: EPOCH,
+            results: HashMap::new(),
+            clock_ms: 0,
+        }
+    }
 }
 
 impl FakeServer {
@@ -91,12 +105,16 @@ impl FakeServer {
             _ => (409, "conflict"),
         })?;
         let mut refs = Vec::new();
-        for mut e in events {
+        for (i, mut e) in events.into_iter().enumerate() {
             let seq = self.log.len() as u64 + 1;
             e.seq = Some(seq);
             apply(&mut self.state, &e).unwrap();
             refs.push(EventRef { seq, id: e.id });
-            self.log.push(e);
+            self.log.push(LogEvent {
+                event: e,
+                command_id,
+                command_idx: i as u32,
+            });
         }
         let result = CommandResult {
             command_id,
@@ -109,6 +127,25 @@ impl FakeServer {
 
     pub fn head(&self) -> u64 {
         self.log.len() as u64
+    }
+
+    /// Restores a "backup" of the first `len` events under a new epoch (forgetting the idempotency
+    /// records of the lost commands).
+    pub fn restore(&mut self, len: usize, epoch: Uuid) {
+        let kept: Vec<LogEvent> = self.log[..len].to_vec();
+        let lost: Vec<Uuid> = self.log[len..].iter().map(|e| e.command_id).collect();
+        self.results.retain(|id, _| !lost.contains(id));
+        self.state = State::new();
+        for e in &kept {
+            apply(&mut self.state, &e.event).unwrap();
+        }
+        self.log = kept;
+        self.epoch = epoch;
+    }
+
+    /// The plain events, for applying to a state.
+    pub fn events(&self) -> Vec<todo_core::event::Event> {
+        self.log.iter().map(|e| e.event.clone()).collect()
     }
 
     /// How many distinct command IDs were stored.
@@ -132,11 +169,16 @@ fn error(status: u16, code: &str, details: Value) -> Response {
     )
 }
 
-fn query(path: &str, key: &str) -> Option<u64> {
+fn query<T: std::str::FromStr>(path: &str, key: &str) -> Option<T> {
     let q = path.split_once('?')?.1;
     q.split('&')
         .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
         .and_then(|v| v.parse().ok())
+}
+
+fn epoch_mismatch(path: &str, server: &FakeServer) -> Option<Response> {
+    let epoch: Uuid = query(path, "epoch")?;
+    (epoch != server.epoch).then(|| error(409, "epoch_mismatch", json!({ "epoch": server.epoch })))
 }
 
 /// Scripted faults for the mock transport.
@@ -192,8 +234,11 @@ impl MockTransport {
             };
         }
         if req.path.starts_with("/api/v1/events?") {
-            let since = query(&req.path, "since").unwrap_or(0);
-            let limit = query(&req.path, "limit").unwrap_or(500) as usize;
+            if let Some(r) = epoch_mismatch(&req.path, &server) {
+                return r;
+            }
+            let since: u64 = query(&req.path, "since").unwrap_or(0);
+            let limit: usize = query(&req.path, "limit").unwrap_or(500);
             if since > server.head() {
                 return error(
                     400,
@@ -201,8 +246,9 @@ impl MockTransport {
                     json!({ "since": since, "head_seq": server.head() }),
                 );
             }
-            let events: Vec<&Event> = server.log.iter().skip(since as usize).take(limit).collect();
-            let next_since = events.last().and_then(|e| e.seq).unwrap_or(since);
+            let events: Vec<&LogEvent> =
+                server.log.iter().skip(since as usize).take(limit).collect();
+            let next_since = events.last().and_then(|e| e.event.seq).unwrap_or(since);
             return json_response(
                 200,
                 &json!({
@@ -210,6 +256,7 @@ impl MockTransport {
                     "next_since": next_since,
                     "head_seq": server.head(),
                     "has_more": next_since < server.head(),
+                    "epoch": server.epoch,
                 }),
             );
         }
@@ -232,10 +279,18 @@ pub struct MockStream {
     server: Arc<Mutex<FakeServer>>,
     grew: Notify,
     next: u64,
+    hello: Option<String>,
 }
 
 impl EventStream for MockStream {
     async fn next_frame(&mut self) -> Option<Result<SseFrame, TransportError>> {
+        if let Some(data) = self.hello.take() {
+            return Some(Ok(SseFrame::Event {
+                event: "hello".into(),
+                id: None,
+                data,
+            }));
+        }
         loop {
             let seen = self.grew.generation();
             let event = self
@@ -278,8 +333,14 @@ impl Transport for MockTransport {
         if self.offline() {
             return Err(TransportError::Network("offline".into()));
         }
-        let since = query(&request.path, "since").unwrap_or(0);
-        let head = self.server.lock().unwrap().head();
+        let server = self.server.lock().unwrap();
+        if let Some(r) = epoch_mismatch(&request.path, &server) {
+            return Ok(StreamOpen::Refused(r));
+        }
+        let since: u64 = query(&request.path, "since").unwrap_or(0);
+        let head = server.head();
+        let hello = json!({ "epoch": server.epoch, "head_seq": head }).to_string();
+        drop(server);
         if since > head {
             return Ok(StreamOpen::Refused(error(
                 400,
@@ -291,6 +352,7 @@ impl Transport for MockTransport {
             server: self.server.clone(),
             grew: self.grew.clone(),
             next: since,
+            hello: Some(hello),
         }))
     }
 }

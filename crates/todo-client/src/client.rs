@@ -15,21 +15,30 @@
 //!
 //! # Following the log
 //!
-//! The event loop subscribes to `GET /api/v1/events` (SSE) from the persisted cursor and applies each
-//! event to the confirmed state and to storage. It handles the server's catch-up protocol: a
-//! `catch_up` frame or a 409 `catch_up_required` makes it page the JSON endpoint up to the head and
-//! reconnect; a 400 `invalid_since` (the cursor is ahead of the server, for example after a restore
-//! from backup) makes it forget the confirmed state and resync from 0, keeping the outbox. Lost
-//! connections are retried with backoff from the cursor. A stream that shows no sign of life (no
-//! event and no heartbeat) for [`ClientConfig::stream_idle_timeout`] is dropped and reopened.
+//! The event loop subscribes to `GET /api/v1/events` (SSE) from the persisted cursor and log epoch and
+//! applies each event to the confirmed state and to storage. It handles the server's catch-up
+//! protocol: a `catch_up` frame or a 409 `catch_up_required` makes it page the JSON endpoint up to the
+//! head and reconnect. Lost connections are retried with backoff from the cursor. A stream that shows
+//! no sign of life (no event and no heartbeat) for [`ClientConfig::stream_idle_timeout`] is dropped
+//! and reopened; a frame larger than the transport's cap ends it, and the events are paged instead.
+//!
+//! # Resyncing
+//!
+//! The confirmed state is forgotten and the whole log fetched again, keeping the outbox, when the
+//! server's log is not the one the replica followed: the server reports another log epoch (409
+//! `epoch_mismatch`, or a page or `hello` frame with another epoch; a restore rotates it), the cursor
+//! is ahead of the server (400 `invalid_since`), an event does not apply, or an acknowledgement names
+//! an event the confirmed state has another event for. If the same event fails to apply again right
+//! after a resync, the client reports a protocol error and retries with backoff instead.
 
 use crate::notify::{Backoff, Notify, sleep_or_wake, timeout};
-use crate::outbox::{CommandId, FailedEntry, Operation, OutboxEntry, Rejection};
+use crate::outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 use crate::platform::{
     Clock, Entropy, EventStream, Response, SseFrame, StreamOpen, Transport, TransportError,
 };
 use crate::protocol::{
-    self, CATCH_UP_FRAME, CatchUpNotice, EVENT_FRAME, EventPage, SendOutcome, error_detail,
+    self, CATCH_UP_FRAME, CatchUpNotice, EPOCH_MISMATCH, EVENT_FRAME, EVENT_MISMATCH, EventPage,
+    HELLO_FRAME, Hello, LogEvent, SendOutcome, error_detail,
 };
 use crate::replica::{Ack, ConfirmError, OpenError, Replica, SubmitError};
 use crate::storage::{Storage, StorageError};
@@ -39,8 +48,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-use todo_core::event::Event;
-use todo_core::ids::uuid_v7;
+use todo_core::ids::{EventId, uuid_v7};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
@@ -210,6 +218,8 @@ struct Inner<T, C> {
     stop: Notify,
     /// Bumped when [`Shared::resync_requested`] is set.
     resync: Notify,
+    /// Bumped after every resync (the confirmed state was forgotten).
+    resynced: Notify,
     stopped: AtomicBool,
     /// Bumped whenever the view or the status may have changed.
     changes: Notify,
@@ -254,6 +264,11 @@ impl Changes {
 enum Step {
     /// Reconnect at once (progress was made).
     Reconnect,
+    /// Forget the confirmed state and fetch the whole log again (keeping the outbox).
+    Resync {
+        /// The event that did not apply, if that is why.
+        diverged_at: Option<u64>,
+    },
     /// Back off, then reconnect.
     Fail {
         error: SyncError,
@@ -315,6 +330,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 wake: Notify::default(),
                 stop: Notify::default(),
                 resync: Notify::default(),
+                resynced: Notify::default(),
                 stopped: AtomicBool::new(false),
                 changes: Notify::default(),
             }),
@@ -386,9 +402,29 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     }
 
     /// Queues an undo of the command that produced event `seq` (or a redo, if `seq` is a compensating
-    /// event). It shows in the view once the server confirms it.
-    pub fn undo(&self, seq: u64, force: bool) -> Result<CommandId, SubmitError> {
-        self.enqueue(Operation::Undo { seq, force })
+    /// event). `expected_event_id` is the ID of the event at `seq` the user means (from the activity
+    /// feed or the confirmed log); with the current log epoch, it lets the server refuse the undo if its
+    /// log was replaced meanwhile, and the entry then lands in the "couldn't sync" list instead of
+    /// undoing some other event. It shows in the view once the server confirms it.
+    pub fn undo(
+        &self,
+        seq: u64,
+        expected_event_id: EventId,
+        force: bool,
+    ) -> Result<CommandId, SubmitError> {
+        let epoch = self.with(|s| s.replica.epoch());
+        self.enqueue(Operation::Undo {
+            seq,
+            force,
+            expected_event_id,
+            epoch,
+        })
+    }
+
+    /// The log epoch the confirmed state belongs to.
+    #[must_use]
+    pub fn epoch(&self) -> Option<Epoch> {
+        self.with(|s| s.replica.epoch())
     }
 
     /// The confirmed state with pending commands applied.
@@ -506,7 +542,24 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             .await;
     }
 
+    fn storage_failed(&self, what: &str, err: &StorageError) {
+        tracing::warn!(error = %err, "cannot {what}");
+        let error = self.error(ErrorKind::Storage, format!("cannot {what}: {err}"));
+        self.with(|s| s.last_error = Some(error));
+        self.changed();
+    }
+
+    /// Asks the event loop to resync and waits until it did.
+    async fn await_resync(&self) {
+        let seen = self.inner.resynced.generation();
+        self.with(|s| s.resync_requested = true);
+        self.inner.resync.notify();
+        self.changed();
+        let _ = self.unless_stopped(self.inner.resynced.changed(seen)).await;
+    }
+
     async fn send_loop(&self) {
+        // Reset only after durable progress: a storage failure backs off like a network failure.
         let mut failures = 0u32;
         loop {
             if self.is_stopped() {
@@ -523,10 +576,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     continue;
                 }
                 Err(err) => {
-                    let error = self.error(ErrorKind::Storage, err.to_string());
-                    tracing::warn!(error = %err, "cannot update the outbox");
-                    self.with(|s| s.last_error = Some(error));
-                    self.changed();
+                    self.storage_failed("update the outbox", &err);
                     self.back_off(&mut failures, None).await;
                     continue;
                 }
@@ -536,51 +586,61 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             };
             match result {
                 SendResult::Accepted(r) => {
-                    failures = 0;
                     let stored = self.with(|s| {
                         s.send = SendState::Ok;
                         s.replica.acknowledge(entry.command_id, &r)
                     });
-                    if let Ok(Ack::Diverged) = stored {
-                        tracing::warn!(
-                            "the server's log differs from the confirmed state; resyncing"
-                        );
-                        self.with(|s| s.resync_requested = true);
-                        self.inner.resync.notify();
-                        self.changed();
-                        // The entry is resent once the resync caught up (the server replays the
-                        // result); until then, do not hammer it.
-                        self.back_off(&mut failures, None).await;
-                        continue;
+                    match stored {
+                        Ok(Ack::Recorded) => {
+                            failures = 0;
+                            tracing::debug!(command_id = %entry.command_id, events = r.events.len(), "command acknowledged");
+                            self.changed();
+                        }
+                        Ok(Ack::Diverged) => {
+                            tracing::warn!(
+                                "the server's log differs from the confirmed state; resyncing"
+                            );
+                            // The entry is sent again after the resync (the server replays the
+                            // result), not before.
+                            self.await_resync().await;
+                        }
+                        Err(err) => {
+                            // The entry stays unacknowledged and is sent again; the server replays.
+                            self.storage_failed("record an acknowledgement", &err);
+                            self.back_off(&mut failures, None).await;
+                        }
                     }
-                    if let Err(err) = stored {
-                        // The entry stays in the outbox and is resent; the server replays the result.
-                        tracing::warn!(error = %err, "cannot record an acknowledgement");
-                        let error = self.error(ErrorKind::Storage, err.to_string());
-                        self.with(|s| s.last_error = Some(error));
-                    }
-                    tracing::debug!(command_id = %entry.command_id, events = r.events.len(), "command acknowledged");
-                    self.changed();
                 }
                 SendResult::Rejected(rejection) => {
-                    failures = 0;
                     tracing::info!(
                         command_id = %entry.command_id,
                         status = rejection.status,
                         code = %rejection.code,
                         "the server rejected a command"
                     );
+                    let replaced = rejection.code == EPOCH_MISMATCH;
+                    let rejection = explain(&entry, rejection);
                     let now = self.inner.clock.now();
                     let stored = self.with(|s| {
                         s.send = SendState::Ok;
                         s.replica.reject(entry.command_id, rejection, now)
                     });
-                    if let Err(err) = stored {
-                        tracing::warn!(error = %err, "cannot record a rejection");
-                        let error = self.error(ErrorKind::Storage, err.to_string());
-                        self.with(|s| s.last_error = Some(error));
+                    match stored {
+                        Ok(()) => {
+                            failures = 0;
+                            self.changed();
+                        }
+                        Err(err) => {
+                            self.storage_failed("record a rejection", &err);
+                            self.back_off(&mut failures, None).await;
+                            continue;
+                        }
                     }
-                    self.changed();
+                    if replaced {
+                        // This replica follows a log the server no longer has.
+                        self.with(|s| s.resync_requested = true);
+                        self.inner.resync.notify();
+                    }
                 }
                 SendResult::Retry {
                     error,
@@ -652,13 +712,47 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     async fn event_loop(&self) {
         let mut failures = 0u32;
+        // The event the last divergence-triggered resync was for.
+        let mut last_divergence: Option<u64> = None;
         loop {
             if self.is_stopped() {
                 return;
             }
-            match self.connect_once().await {
+            let step = match self.connect_once().await {
+                Step::Resync {
+                    diverged_at: Some(seq),
+                } if last_divergence == Some(seq) => Step::Fail {
+                    error: self.error(
+                        ErrorKind::Protocol,
+                        format!("event {seq} does not apply, even after a full resync"),
+                    ),
+                    offline: false,
+                    retry_after: None,
+                    progressed: false,
+                },
+                step => step,
+            };
+            match step {
                 Step::Stopped => return,
                 Step::Reconnect => failures = 0,
+                Step::Resync { diverged_at } => {
+                    last_divergence = diverged_at;
+                    tracing::info!(
+                        ?diverged_at,
+                        "the server's log is not the one this client followed; resyncing from 0"
+                    );
+                    let reset = self.with(|s| s.replica.reset());
+                    self.inner.resynced.notify();
+                    match reset {
+                        // Acknowledged entries are sent again.
+                        Ok(()) => self.inner.outbox_changed.notify(),
+                        Err(err) => {
+                            self.storage_failed("forget the confirmed state", &err);
+                            self.back_off(&mut failures, None).await;
+                        }
+                    }
+                    self.changed();
+                }
                 Step::Fail {
                     error,
                     offline,
@@ -702,16 +796,24 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// Opens the stream once and follows it until it ends.
     async fn connect_once(&self) -> Step {
         if self.take_resync_request() {
-            return self.resync().await;
+            return Step::Resync { diverged_at: None };
         }
-        let since = self.cursor();
+        let position = self.with(|s| {
+            s.replica
+                .refresh()
+                .map(|()| (s.replica.cursor(), s.replica.epoch()))
+        });
+        let (since, epoch) = match position {
+            Ok(p) => p,
+            Err(err) => return self.fail(ErrorKind::Storage, err.to_string(), false),
+        };
         let opened = self
             .unless_stopped(timeout(
                 &self.inner.clock,
                 self.inner.config.request_timeout,
                 self.inner
                     .transport
-                    .open_stream(protocol::stream_request(since)),
+                    .open_stream(protocol::stream_request(since, epoch)),
             ))
             .await;
         match opened {
@@ -727,40 +829,43 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         }
     }
 
-    /// Handles a stream (or page) request the server refused.
+    /// Handles a stream request the server refused.
     async fn refused(&self, res: &Response) -> Step {
         let detail = error_detail(res);
         let code = detail.as_ref().map_or("", |d| d.code.as_str());
-        match (res.status, code) {
-            (409, "catch_up_required") => {
-                let before = self.cursor();
-                match self.catch_up().await {
-                    Step::Reconnect if self.cursor() == before => self.fail(
-                        ErrorKind::Protocol,
-                        "the server asked to catch up, but there was nothing to fetch",
-                        false,
-                    ),
-                    step => step,
-                }
-            }
-            (400, "invalid_since") => self.resync().await,
-            (401, _) => Step::Fail {
-                error: self.error(
-                    ErrorKind::Unauthorized,
-                    "the server rejected the token (401)",
+        if (res.status, code) == (409, "catch_up_required") {
+            let before = self.cursor();
+            return match self.catch_up().await {
+                Step::Reconnect if self.cursor() == before => self.fail(
+                    ErrorKind::Protocol,
+                    "the server asked to catch up, but there was nothing to fetch",
+                    false,
                 ),
-                offline: false,
-                retry_after: res.retry_after,
-                progressed: false,
-            },
+                step => step,
+            };
+        }
+        self.refused_request("the event stream", res)
+    }
+
+    /// What to do about a refused stream or page request (other than `catch_up_required`).
+    fn refused_request(&self, what: &str, res: &Response) -> Step {
+        let code = error_detail(res).map(|d| d.code).unwrap_or_default();
+        match (res.status, code.as_str()) {
+            (400, "invalid_since") | (409, EPOCH_MISMATCH) => Step::Resync { diverged_at: None },
             (status, code) => Step::Fail {
                 error: self.error(
-                    if status >= 500 || status == 429 {
+                    if status == 401 {
+                        ErrorKind::Unauthorized
+                    } else if status >= 500 || status == 429 {
                         ErrorKind::Server
                     } else {
                         ErrorKind::Protocol
                     },
-                    format!("the event stream was refused: {status} {code}"),
+                    if status == 401 {
+                        "the server rejected the token (401)".to_owned()
+                    } else {
+                        format!("{what} was refused: {status} {code}")
+                    },
                 ),
                 offline: false,
                 retry_after: res.retry_after,
@@ -773,35 +878,38 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| std::mem::take(&mut s.resync_requested))
     }
 
-    /// Forgets the confirmed state and refetches the whole log, keeping the outbox.
-    async fn resync(&self) -> Step {
-        tracing::info!("the server's log is behind this client's cursor; resyncing from 0");
-        if let Err(err) = self.with(|s| s.replica.reset()) {
-            return self.fail(ErrorKind::Storage, err.to_string(), false);
-        }
-        // Acknowledged entries are sent again.
-        self.inner.outbox_changed.notify();
+    /// Applies confirmed events from the log with `epoch` (or only checks the epoch). Returns the step
+    /// to take if they could not all be applied, except for a gap, which the caller handles.
+    fn confirm(&self, epoch: Epoch, events: &[LogEvent]) -> Result<(), ConfirmFailure> {
+        let result = self.with(|s| s.replica.apply_confirmed(epoch, events));
         self.changed();
-        self.catch_up().await
-    }
-
-    /// Applies confirmed events. A gap or a divergence is reported to the caller, which pages or
-    /// resyncs.
-    fn confirm(&self, events: &[Event]) -> Result<(), ConfirmError> {
-        let result = self.with(|s| s.replica.apply_confirmed(events));
-        let result = match result {
-            Err(ConfirmError::Storage(err)) => {
-                // Applied in memory; the next write stores a snapshot.
-                tracing::warn!(error = %err, "cannot store confirmed events");
-                let error = self.error(ErrorKind::Storage, err.to_string());
-                self.with(|s| s.last_error = Some(error));
-                Ok(())
-            }
+        match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        };
-        self.changed();
-        result
+            Err(ConfirmError::Gap { .. }) => Err(ConfirmFailure::Gap),
+            Err(ConfirmError::EpochChanged) => {
+                Err(ConfirmFailure::Step(Step::Resync { diverged_at: None }))
+            }
+            Err(ConfirmError::Diverged { seq, error }) => {
+                tracing::warn!(seq, error = %error, "a confirmed event does not apply");
+                Err(ConfirmFailure::Step(Step::Resync {
+                    diverged_at: Some(seq),
+                }))
+            }
+            Err(ConfirmError::Storage(err)) => {
+                // Nothing was applied: the events are fetched again after the backoff.
+                tracing::warn!(error = %err, "cannot store confirmed events");
+                Err(ConfirmFailure::Step(self.fail(
+                    ErrorKind::Storage,
+                    format!("cannot store confirmed events: {err}"),
+                    false,
+                )))
+            }
+            Err(e @ ConfirmError::MissingSeq) => Err(ConfirmFailure::Step(self.fail(
+                ErrorKind::Protocol,
+                e.to_string(),
+                false,
+            ))),
+        }
     }
 
     /// Pages `GET /api/v1/events` from the cursor until the server reports no more.
@@ -809,8 +917,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| s.stream = StreamState::CatchingUp);
         self.changed();
         loop {
-            let since = self.cursor();
-            let request = protocol::events_page_request(since, self.inner.config.page_limit);
+            let (since, epoch) = self.with(|s| (s.replica.cursor(), s.replica.epoch()));
+            let request = protocol::events_page_request(since, self.inner.config.page_limit, epoch);
             let response = self
                 .unless_stopped(timeout(
                     &self.inner.clock,
@@ -827,7 +935,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 Some(Some(Ok(res))) => res,
             };
             if res.status != 200 {
-                return Box::pin(self.refused_page(&res)).await;
+                return self.refused_request("a page of events", &res);
             }
             let page: EventPage = match serde_json::from_slice(&res.body) {
                 Ok(p) => p,
@@ -839,13 +947,16 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     );
                 }
             };
-            match self.confirm(&page.events) {
+            match self.confirm(page.epoch, &page.events) {
                 Ok(()) => {}
-                Err(ConfirmError::Diverged(err)) => {
-                    tracing::warn!(error = %err, "confirmed state diverged; resyncing");
-                    return Box::pin(self.resync()).await;
+                Err(ConfirmFailure::Gap) => {
+                    return self.fail(
+                        ErrorKind::Protocol,
+                        "the server sent a page with a gap",
+                        false,
+                    );
                 }
-                Err(e) => return self.fail(ErrorKind::Protocol, e.to_string(), false),
+                Err(ConfirmFailure::Step(step)) => return step,
             }
             if !page.has_more {
                 return Step::Reconnect;
@@ -860,37 +971,17 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         }
     }
 
-    async fn refused_page(&self, res: &Response) -> Step {
-        let code = error_detail(res).map(|d| d.code).unwrap_or_default();
-        if res.status == 400 && code == "invalid_since" {
-            return self.resync().await;
-        }
-        Step::Fail {
-            error: self.error(
-                if res.status == 401 {
-                    ErrorKind::Unauthorized
-                } else if res.status >= 500 || res.status == 429 {
-                    ErrorKind::Server
-                } else {
-                    ErrorKind::Protocol
-                },
-                format!("a page of events was refused: {} {code}", res.status),
-            ),
-            offline: false,
-            retry_after: res.retry_after,
-            progressed: false,
-        }
-    }
-
     /// Follows an open stream until it ends.
     async fn follow(&self, mut stream: T::Stream) -> Step {
         self.with(|s| s.stream = StreamState::Live);
         self.changed();
         let mut progressed = false;
+        // From the `hello` frame, which comes first.
+        let mut epoch: Option<Epoch> = None;
         loop {
             let seen = self.inner.resync.generation();
             if self.take_resync_request() {
-                return self.resync().await;
+                return Step::Resync { diverged_at: None };
             }
             let next = timeout(
                 &self.inner.clock,
@@ -919,6 +1010,18 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 Some(None) => {
                     return self.down("the server closed the event stream", false, progressed);
                 }
+                Some(Some(Err(TransportError::Protocol(message)))) => {
+                    // Typically a frame over the size cap. Page past it instead of reconnecting
+                    // into it again.
+                    tracing::warn!(reason = %message, "the event stream broke the protocol; paging instead");
+                    let before = self.cursor();
+                    return match self.catch_up().await {
+                        Step::Reconnect if self.cursor() == before => {
+                            self.fail(ErrorKind::Protocol, message, false)
+                        }
+                        step => step,
+                    };
+                }
                 Some(Some(Err(e))) => return self.down(&e.to_string(), true, progressed),
                 Some(Some(Ok(frame))) => frame,
             };
@@ -926,8 +1029,30 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             let SseFrame::Event { event, data, .. } = frame else {
                 continue;
             };
-            if event == EVENT_FRAME {
-                let ev: Event = match serde_json::from_str(&data) {
+            if event == HELLO_FRAME {
+                let hello: Hello = match serde_json::from_str(&data) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return self.fail(
+                            ErrorKind::Protocol,
+                            format!("unreadable hello frame: {e}"),
+                            false,
+                        );
+                    }
+                };
+                if let Err(ConfirmFailure::Step(step)) = self.confirm(hello.epoch, &[]) {
+                    return step;
+                }
+                epoch = Some(hello.epoch);
+            } else if event == EVENT_FRAME {
+                let Some(epoch) = epoch else {
+                    return self.fail(
+                        ErrorKind::Protocol,
+                        "the event stream sent an event before its hello frame",
+                        false,
+                    );
+                };
+                let ev: LogEvent = match serde_json::from_str(&data) {
                     Ok(ev) => ev,
                     Err(e) => {
                         return self.fail(
@@ -937,9 +1062,9 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                         );
                     }
                 };
-                match self.confirm(std::slice::from_ref(&ev)) {
+                match self.confirm(epoch, std::slice::from_ref(&ev)) {
                     Ok(()) => {}
-                    Err(ConfirmError::Gap { .. }) => {
+                    Err(ConfirmFailure::Gap) => {
                         // Fill the gap from the JSON endpoint, then go on with the stream (it skips
                         // what is now below the cursor).
                         match self.catch_up().await {
@@ -950,11 +1075,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                             step => return step,
                         }
                     }
-                    Err(ConfirmError::Diverged(err)) => {
-                        tracing::warn!(error = %err, "confirmed state diverged; resyncing");
-                        return self.resync().await;
-                    }
-                    Err(e) => return self.fail(ErrorKind::Protocol, e.to_string(), false),
+                    Err(ConfirmFailure::Step(step)) => return step,
                 }
             } else if event == CATCH_UP_FRAME {
                 let target = serde_json::from_str::<CatchUpNotice>(&data).map(|n| n.head_seq);
@@ -963,4 +1084,24 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             }
         }
     }
+}
+
+/// Why [`SyncClient::confirm`] did not apply everything.
+enum ConfirmFailure {
+    /// Events are missing before the ones given: page them.
+    Gap,
+    /// Anything else, with the step to take.
+    Step(Step),
+}
+
+/// Replaces the server's message of a stale undo with one that says what happened.
+fn explain(entry: &OutboxEntry, mut rejection: Rejection) -> Rejection {
+    if let Operation::Undo { seq, .. } = entry.op
+        && (rejection.code == EPOCH_MISMATCH || rejection.code == EVENT_MISMATCH)
+    {
+        rejection.message = format!(
+            "not undone: the server's history was replaced (restored from a backup) after this undo was queued, so event {seq} is no longer the change it was meant for"
+        );
+    }
+    rejection
 }

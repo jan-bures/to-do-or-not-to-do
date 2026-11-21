@@ -17,6 +17,7 @@ use todo_core::ids::{EntityId, EventId};
 use todo_core::model::{Entity, LinkKind};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply};
+use uuid::Uuid;
 
 /// Storage errors.
 #[derive(Debug, thiserror::Error)]
@@ -279,6 +280,23 @@ fn corrupt<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> StoreE
 }
 
 const EVENT_COLUMNS: &str = "seq, id, group_id, actor, at, undoes, forced, payload";
+const LOG_COLUMNS: &str =
+    "seq, id, group_id, actor, at, undoes, forced, payload, command_id, command_idx";
+
+/// A stored event as the API returns it: the event plus the command (or undo) that produced it.
+///
+/// The event's fields stay at the top level (flattened), so a client that only knows [`Event`] reads
+/// it unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct LogEvent {
+    /// The event.
+    #[serde(flatten)]
+    pub event: Event,
+    /// The client-chosen ID of the command or undo that produced it.
+    pub command_id: Uuid,
+    /// Its position among that command's events (0-based).
+    pub command_idx: u32,
+}
 
 type RawEvent = (
     i64,
@@ -319,6 +337,28 @@ fn decode_event(raw: RawEvent) -> Result<Event> {
         forced,
         payload: serde_json::from_str::<EventPayload>(&payload)?,
     })
+}
+
+fn query_log_events(
+    conn: &Connection,
+    sql: &str,
+    p: impl rusqlite::Params,
+) -> Result<Vec<LogEvent>> {
+    let mut stmt = conn.prepare_cached(sql)?;
+    let raws = stmt
+        .query_map(p, |r| {
+            Ok((raw_event(r)?, r.get::<_, String>(8)?, r.get::<_, i64>(9)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    raws.into_iter()
+        .map(|(raw, command_id, idx)| {
+            Ok(LogEvent {
+                event: decode_event(raw)?,
+                command_id: command_id.parse().map_err(corrupt("command id"))?,
+                command_idx: u32::try_from(idx).map_err(corrupt("command index"))?,
+            })
+        })
+        .collect()
 }
 
 fn query_events(conn: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<Event>> {
@@ -370,7 +410,7 @@ const EVENT_OVERHEAD: u64 = 256;
 #[derive(Debug, Clone, Default)]
 pub struct CappedEvents {
     /// The events, in the order asked for.
-    pub events: Vec<Event>,
+    pub events: Vec<LogEvent>,
     /// True if the page stopped early because of the byte budget.
     pub truncated: bool,
     /// The seq of the first event in range when that event alone exceeds the budget. It was neither
@@ -417,11 +457,9 @@ pub fn events_after_capped(
     let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
     let events = match last {
         None => Vec::new(),
-        Some(last) => query_events(
+        Some(last) => query_log_events(
             conn,
-            &format!(
-                "SELECT {EVENT_COLUMNS} FROM events WHERE seq > ?1 AND seq <= ?2 ORDER BY seq"
-            ),
+            &format!("SELECT {LOG_COLUMNS} FROM events WHERE seq > ?1 AND seq <= ?2 ORDER BY seq"),
             params![from_seq(after), from_seq(last)],
         )?,
     };
@@ -454,10 +492,10 @@ pub fn events_before_capped(
     let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
     let events = match last {
         None => Vec::new(),
-        Some(last) => query_events(
+        Some(last) => query_log_events(
             conn,
             &format!(
-                "SELECT {EVENT_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
+                "SELECT {LOG_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
             ),
             params![before.map_or(i64::MAX, from_seq), from_seq(last)],
         )?,
@@ -802,6 +840,27 @@ pub fn sync_entities(
             None => remove_entity(tx, id)?,
         }
     }
+    Ok(())
+}
+
+/// The log epoch: a random ID of this event log, created with the database. A restore from a backup
+/// must rotate it (`todo-server rotate-log-epoch`) so that clients notice the log is not the one they
+/// followed.
+pub fn log_epoch(conn: &Connection) -> Result<Option<Uuid>> {
+    conn.query_row("SELECT value FROM meta WHERE key = 'log_epoch'", [], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()?
+    .map(|v| v.parse().map_err(corrupt("log epoch")))
+    .transpose()
+}
+
+/// Sets the log epoch.
+pub fn set_log_epoch(conn: &Connection, epoch: Uuid) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('log_epoch', ?1)",
+        params![epoch.to_string()],
+    )?;
     Ok(())
 }
 

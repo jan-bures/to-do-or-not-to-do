@@ -25,6 +25,10 @@ enum Cmd {
     Serve,
     /// Rebuild the projection tables from the event log, then exit. Run while the server is stopped.
     RebuildProjections,
+    /// Give the event log a new epoch, then exit. Run it, with the server stopped, after restoring
+    /// the database from a backup: clients that followed the replaced log then resync from scratch
+    /// instead of mixing the two histories (see `GET /api/v1/events`).
+    RotateLogEpoch,
     /// Read a token from stdin and print the SHA-256 hash to put in the config.
     HashToken,
 }
@@ -61,6 +65,14 @@ fn main() -> anyhow::Result<()> {
             let head = Engine::rebuild_projections(&path)
                 .with_context(|| format!("rebuilding projections in {}", path.display()))?;
             tracing::info!(head, "projections rebuilt");
+            Ok(())
+        }
+        Cmd::RotateLogEpoch => {
+            let config = Config::load(cli.config.as_deref())?;
+            let path = config.database_path();
+            let epoch = Engine::rotate_log_epoch(&path)
+                .with_context(|| format!("rotating the log epoch in {}", path.display()))?;
+            tracing::info!(%epoch, "log epoch rotated");
             Ok(())
         }
         Cmd::Serve => {

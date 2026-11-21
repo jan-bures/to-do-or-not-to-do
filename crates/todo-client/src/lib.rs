@@ -14,7 +14,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
-//! | [`replica`] | [`Replica`]: confirmed state, cursor, outbox and the optimistic view (no I/O) |
+//! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
 //! | [`protocol`] | the server API: paths, bodies, response classification |
 //! | [`storage`] | the [`Storage`] trait and [`MemoryStorage`] |
@@ -46,7 +46,7 @@ pub mod sqlite;
 
 pub use client::{ClientConfig, Connection, ErrorKind, Status, SyncClient, SyncError};
 pub use notify::Backoff;
-pub use outbox::{CommandId, FailedEntry, Operation, OutboxEntry, Rejection};
+pub use outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 pub use platform::{Clock, Entropy, EventStream, Transport};
 pub use replica::{Replica, SubmitError};
 pub use storage::{MemoryStorage, Storage, StorageError};

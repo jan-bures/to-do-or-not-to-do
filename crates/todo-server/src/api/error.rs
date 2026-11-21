@@ -132,6 +132,27 @@ impl ApiError {
         )
     }
 
+    /// 400 when an undo request has no `expected_event_id`.
+    #[must_use]
+    pub fn expected_event_id_required() -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "expected_event_id_required",
+            "undo requests need the expected_event_id of the event at seq",
+        )
+    }
+
+    /// 409 when a request refers to another log epoch. `details.epoch` is the current one.
+    #[must_use]
+    pub fn epoch_mismatch(current: uuid::Uuid) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "epoch_mismatch",
+            "the event log was replaced (restored); resync from seq 0",
+        )
+        .with_details(json!({ "epoch": current }))
+    }
+
     /// 500 when a single item is larger than the response byte budget. `next` lets the client skip it
     /// (a `next_cursor` or `next_since`, depending on the route).
     #[must_use]
@@ -404,6 +425,17 @@ impl From<EngineError> for ApiError {
                 "command_id_reused",
                 format!("command id {id} was already used for a different request"),
             ),
+            EngineError::EpochMismatch { current } => Self::epoch_mismatch(current),
+            EngineError::UndoTargetMismatch {
+                seq,
+                expected,
+                found,
+            } => Self::new(
+                StatusCode::CONFLICT,
+                "event_mismatch",
+                format!("event {seq} is not the expected event"),
+            )
+            .with_details(json!({ "seq": seq, "expected": expected, "found": found })),
             EngineError::Cancelled => Self::timeout(),
             EngineError::Unavailable => Self::unavailable(),
             EngineError::Store(s) => s.into(),

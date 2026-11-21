@@ -60,7 +60,8 @@ impl TestServer {
         Self::boot(dir, config).await
     }
 
-    async fn boot(dir: TempDir, config: Config) -> Self {
+    /// Starts a server on an existing data directory (see [`stop`](Self::stop)).
+    pub async fn boot(dir: TempDir, config: Config) -> Self {
         let server = Server::bind(&config, Options::default())
             .await
             .unwrap()
@@ -168,8 +169,19 @@ impl TestServer {
         let mut body = body.unwrap_or_else(|| json!({}));
         if let Value::Object(m) = &mut body {
             m.entry("command_id").or_insert_with(|| json!(id()));
+            if !m.contains_key("expected_event_id") {
+                m.insert("expected_event_id".into(), json!(self.event_id_at(seq)));
+            }
         }
         self.undo_raw(seq, Some(body)).await
+    }
+
+    /// The ID of the event at `seq`, or a random one if there is none.
+    pub fn event_id_at(&self, seq: u64) -> Value {
+        match self.server.engine.events_since(seq.saturating_sub(1), 1) {
+            Ok(events) if events.first().and_then(|e| e.seq) == Some(seq) => json!(events[0].id),
+            _ => json!(id()),
+        }
     }
 
     /// Undoes `seq` with exactly `body`.
@@ -258,13 +270,23 @@ impl Frame {
 pub struct SseReader {
     res: reqwest::Response,
     buf: String,
+    /// The `log-epoch` response header.
+    pub epoch_header: Option<String>,
+    /// The `hello` frame, once read (every stream starts with one; the readers skip it).
+    pub hello: Option<Frame>,
 }
 
 impl SseReader {
     pub fn new(res: reqwest::Response) -> Self {
         Self {
+            epoch_header: res
+                .headers()
+                .get("log-epoch")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
             res,
             buf: String::new(),
+            hello: None,
         }
     }
 
@@ -288,7 +310,7 @@ impl SseReader {
         f
     }
 
-    /// Next frame (event or comment), or `None` on timeout or end of stream.
+    /// Next frame (event or comment) after the `hello` frame, or `None` on timeout or end of stream.
     pub async fn next_frame(&mut self, within: Duration) -> Option<Frame> {
         let deadline = tokio::time::Instant::now() + within;
         loop {
@@ -296,7 +318,13 @@ impl SseReader {
             if let Some(pos) = normalized.find("\n\n") {
                 let block = normalized[..pos].to_owned();
                 self.buf = normalized[pos + 2..].to_owned();
-                return Some(Self::parse(&block));
+                let frame = Self::parse(&block);
+                if self.hello.is_none() {
+                    assert_eq!(frame.event.as_deref(), Some("hello"), "the first frame");
+                    self.hello = Some(frame);
+                    continue;
+                }
+                return Some(frame);
             }
             let chunk = tokio::time::timeout_at(deadline, self.res.chunk()).await;
             match chunk {

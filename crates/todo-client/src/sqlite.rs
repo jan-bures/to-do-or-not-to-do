@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS snapshot (
     state  TEXT    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, event TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox (
     pos        INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id TEXT    NOT NULL UNIQUE,
@@ -107,8 +108,21 @@ impl Storage for SqliteStorage {
                 Ok::<_, StorageError>((serde_json::from_str(&state)?, cursor))
             })
             .transpose()?;
+        let epoch = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'epoch'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
+            .map_err(backend)?
+            .map(|e| {
+                e.parse()
+                    .map_err(|_| StorageError::Corrupt("bad epoch".into()))
+            })
+            .transpose()?;
         Ok(Loaded {
             snapshot,
+            epoch,
             events: decode(rows(&self.conn, "SELECT event FROM events ORDER BY seq")?)?,
             outbox: decode(rows(&self.conn, "SELECT entry FROM outbox ORDER BY pos")?)?,
             failed: decode(rows(&self.conn, "SELECT entry FROM failed ORDER BY pos")?)?,
@@ -125,6 +139,7 @@ impl Storage for SqliteStorage {
                         .map_err(backend)?;
                     for e in *events {
                         let seq = e
+                            .event
                             .seq
                             .and_then(|s| i64::try_from(s).ok())
                             .ok_or_else(|| StorageError::Backend("event without seq".into()))?;
@@ -141,12 +156,21 @@ impl Storage for SqliteStorage {
                         params![cursor, serde_json::to_string(state)?],
                     )
                     .map_err(backend)?;
-                    tx.execute("DELETE FROM events WHERE seq <= ?1", params![cursor])
-                        .map_err(backend)?;
+                    tx.execute("DELETE FROM events", []).map_err(backend)?;
                 }
                 StorageOp::ClearConfirmed => {
-                    tx.execute_batch("DELETE FROM snapshot; DELETE FROM events;")
-                        .map_err(backend)?;
+                    tx.execute_batch(
+                        "DELETE FROM snapshot; DELETE FROM events; DELETE FROM meta WHERE key = 'epoch';",
+                    )
+                    .map_err(backend)?;
+                }
+                StorageOp::SetEpoch(e) => {
+                    tx.execute(
+                        "INSERT INTO meta (key, value) VALUES ('epoch', ?1)
+                         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                        params![e.to_string()],
+                    )
+                    .map_err(backend)?;
                 }
                 StorageOp::PutOutbox(e) => {
                     tx.execute(
