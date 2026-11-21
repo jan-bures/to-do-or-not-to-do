@@ -157,6 +157,80 @@ fn a_deleted_room_falls_back_to_my_day_and_counts_follow_edits() {
 }
 
 #[test]
+fn collapsing_hides_lists_but_keeps_the_count_and_current_selection() {
+    let mut f = fixtures::my_day();
+    let planning = list_named(&f.state, "Planning");
+    let work_id = f.state.lists[&planning].collection.expect("Work");
+    f.ui.room = RoomKey::List(planning);
+    let expanded = f.shell();
+    let work = &expanded.sidebar.collections[0];
+    assert_eq!(work.id, work_id);
+    assert!(!work.collapsed && !work.selected);
+    assert!(work.count > 0);
+    assert_eq!(work.count, work.lists.iter().map(|l| l.count).sum::<u32>());
+    assert!(expanded.detail.is_some());
+
+    f.ui.toggle_collection(work_id);
+    let collapsed = f.shell();
+    let hidden = &collapsed.sidebar.collections[0];
+    assert!(hidden.collapsed && hidden.selected);
+    assert!(hidden.lists.is_empty());
+    assert_eq!(hidden.count, work.count);
+    assert_eq!(
+        collapsed.sidebar.collections[1..],
+        expanded.sidebar.collections[1..]
+    );
+    assert_eq!(collapsed.sidebar.selected, RoomKey::List(planning));
+    assert_eq!(collapsed.room, expanded.room);
+    assert_eq!(collapsed.detail, expanded.detail);
+
+    f.ui.toggle_collection(work_id);
+    assert_eq!(f.shell().sidebar, expanded.sidebar);
+}
+
+#[test]
+fn navigating_to_a_list_reveals_only_its_own_collection() {
+    let mut f = fixtures::my_day();
+    let all = f.shell().sidebar.collections;
+    f.ui.collapsed_collections = all.iter().map(|c| c.id).collect();
+    let planning = list_named(&f.state, "Planning");
+    let work = RoomKey::Collection(all[0].id);
+    let target = RoomKey::List(planning);
+
+    assert!(!f.ui.select_room(&f.state, work));
+    assert!(f.shell().sidebar.collections[0].collapsed);
+    assert!(f.ui.select_room(&f.state, target));
+    let shell = f.shell();
+    assert_eq!(shell.sidebar.selected, target);
+    assert_eq!(shell.sidebar.collections[0], all[0]);
+    assert!(shell.sidebar.collections[1..].iter().all(|c| c.collapsed));
+    assert!(!f.ui.select_room(&f.state, target));
+
+    // An explicit navigation to the already selected list also reveals it.
+    f.ui.toggle_collection(all[0].id);
+    assert_eq!(f.shell().sidebar.selected, target);
+    assert!(f.ui.select_room(&f.state, target));
+    assert!(!f.shell().sidebar.collections[0].collapsed);
+}
+
+#[test]
+fn pruning_drops_deleted_and_unknown_collection_ids() {
+    let mut f = fixtures::my_day();
+    let all = f.shell().sidebar.collections;
+    let (deleted, kept) = (all[0].id, all[1].id);
+    let unknown = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+    f.ui.collapsed_collections = [deleted, kept, unknown].into();
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::Delete { id: deleted.into() },
+    );
+    assert!(f.ui.prune_collapsed_collections(&f.state));
+    assert_eq!(f.ui.collapsed_collections, [kept].into());
+    assert!(!f.ui.prune_collapsed_collections(&f.state));
+}
+
+#[test]
 fn smart_list_counts_and_agent_rows() {
     let shell = fixtures::my_day().shell();
     let counts: Vec<Option<u32>> = shell.sidebar.smart.iter().map(|n| n.count).collect();

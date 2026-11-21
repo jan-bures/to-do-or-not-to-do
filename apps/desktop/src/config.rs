@@ -5,6 +5,7 @@
 //! | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL learnt at pairing, the device ID and a random pairing ID |
 //! | `device-token.bin` | same | the device token, encrypted with DPAPI for the current user |
 //! | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
+//! | `pairings\<pairing ID>\ui.json` | same | local sidebar preferences |
 //! | `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
 //!
 //! `TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile).
@@ -20,12 +21,13 @@
 //! to work through a `pairings` directory (or app directory) that is a junction, symlink or other
 //! reparse point, and removes a reparse point found inside as a link, never following it.
 
-use std::io::ErrorKind;
+use std::collections::BTreeSet;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use todo_client::Entropy as _;
-use todo_core::DeviceId;
+use todo_core::{DeviceId, ids::CollectionId};
 
 use crate::platform::dpapi;
 
@@ -34,6 +36,7 @@ const CONFIG_FILE: &str = "config.json";
 const TOKEN_FILE: &str = "device-token.bin";
 const PAIRINGS_DIR: &str = "pairings";
 pub(crate) const CACHE_FILE: &str = "cache.sqlite";
+const UI_FILE: &str = "ui.json";
 const ATTACHMENTS_DIR: &str = "attachments";
 /// `<pairing ID>.signed-out`, beside a pairing's directory once its sign-in is gone: remove it.
 const SIGNED_OUT: &str = ".signed-out";
@@ -113,6 +116,42 @@ impl DataDir {
         self.path.join(CACHE_FILE)
     }
 
+    /// Returns the sidebar preferences, defaulting to expanded if the file is missing or unreadable.
+    pub fn load_collapsed(&self) -> BTreeSet<CollectionId> {
+        self.read_ui()
+            .map(|ui| ui.collapsed_collections)
+            .unwrap_or_default()
+    }
+
+    fn read_ui(&self) -> anyhow::Result<UiPreferences> {
+        self.check()?;
+        let path = self.path.join(UI_FILE);
+        let meta = std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            meta.is_file() && todo_fs::is_plain(&meta),
+            "not a plain file"
+        );
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    }
+
+    /// Writes into the existing pairing directory, using a flushed temporary file and a durable
+    /// replacement. A failed or interrupted write never leaves a partially written `ui.json`.
+    pub fn save_collapsed(&self, ids: &BTreeSet<CollectionId>) -> anyhow::Result<()> {
+        self.check()?;
+        let mut tmp = tempfile::NamedTempFile::new_in(self.path())?;
+        serde_json::to_writer(
+            &mut tmp,
+            &UiPreferences {
+                collapsed_collections: ids.clone(),
+            },
+        )?;
+        tmp.flush()?;
+        tmp.as_file().sync_all()?;
+        let tmp = tmp.into_temp_path();
+        todo_fs::replace_durably(&tmp, &self.path.join(UI_FILE))?;
+        Ok(())
+    }
+
     /// Where attachments are downloaded to be opened.
     pub fn attachments(&self) -> PathBuf {
         self.path.join(ATTACHMENTS_DIR)
@@ -145,6 +184,12 @@ impl DataDir {
         self.check_ancestors()?;
         check_plain_dir(&self.path)
     }
+}
+
+#[derive(Deserialize, Serialize)]
+struct UiPreferences {
+    #[serde(default)]
+    collapsed_collections: BTreeSet<CollectionId>,
 }
 
 /// Fails if `dir` exists and is a link (junction, symlink) or not a directory. A missing one is fine.
@@ -527,6 +572,44 @@ mod tests {
         assert_eq!(last_server(&paths), None);
         forget_pairing(&paths).expect("forgetting twice is fine");
         let _ = std::fs::remove_dir_all(&paths.config_dir);
+    }
+
+    #[test]
+    fn sidebar_preferences_round_trip_and_are_removed_with_the_pairing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::in_dir(dir.path().to_owned());
+        let data = paths.data(&PairingId::random());
+        let other = paths.data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        let id = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        let ids = BTreeSet::from([id]);
+
+        data.save_collapsed(&ids).expect("save preferences");
+        assert_eq!(data.load_collapsed(), ids);
+        assert!(other.load_collapsed().is_empty());
+
+        // A second write replaces the file without leaving a temporary file behind.
+        data.save_collapsed(&BTreeSet::new())
+            .expect("replace preferences");
+        assert!(data.load_collapsed().is_empty());
+        assert_eq!(std::fs::read_dir(data.path()).expect("contents").count(), 1);
+
+        remove_data(&data).expect("remove pairing data");
+        assert!(!data.path().exists());
+    }
+
+    #[test]
+    fn missing_or_corrupt_sidebar_preferences_default_to_expanded() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::in_dir(dir.path().to_owned());
+        let data = paths.data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        assert!(data.load_collapsed().is_empty());
+        let path = data.path().join(UI_FILE);
+        for corrupt in ["{", r#"{"collapsed_collections":["not an id"]}"#] {
+            std::fs::write(&path, corrupt).expect("corrupt preferences");
+            assert!(data.load_collapsed().is_empty());
+        }
     }
 
     #[test]

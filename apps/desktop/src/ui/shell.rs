@@ -15,7 +15,8 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions, div, prelude::*, px,
     uniform_list,
 };
-use todo_core::ids::TaskId;
+use todo_client::Connection;
+use todo_core::ids::{CollectionId, TaskId};
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
@@ -256,12 +257,28 @@ impl ShellView {
 
     /// Re-derives the shell from the store and the UI state.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let shell = model::derive(
-            &self.store.view(),
-            &self.ui,
-            &self.store.sync(),
-            &self.store.now(),
-        );
+        self.refresh_with_collapse_change(false, cx);
+    }
+
+    fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
+        let session = self.store.session();
+        // Don't prune against the empty replica while a new or rebuilt cache awaits its first sync.
+        let can_prune = session.is_none_or(|s| {
+            let status = s.client().status();
+            status.cursor != 0 || status.connection == Connection::Online
+        });
+        let state = self.store.view();
+        let pruned = can_prune && self.ui.prune_collapsed_collections(&state);
+        if (collapsed_changed || pruned)
+            && let Some(session) = session
+            && let Err(e) = session
+                .data()
+                .save_collapsed(&self.ui.collapsed_collections)
+        {
+            tracing::warn!("couldn't save sidebar preferences: {e}");
+            self.notice = Some(Notice::error("Couldn't save sidebar preferences."));
+        }
+        let shell = model::derive(&state, &self.ui, &self.store.sync(), &self.store.now());
         // A room that disappeared (deleted elsewhere) falls back to My Day; keep the UI state honest.
         self.ui.room = shell.room.key;
         if shell.detail.is_none() {
@@ -373,13 +390,20 @@ impl ShellView {
             self.keep_unsaved(cx);
             return;
         }
-        if self.ui.room != room {
-            self.ui.room = room;
-            self.ui.task = None;
-            self.ui.show_completed = false;
+        let room_changed = self.ui.room != room;
+        let revealed = self.ui.select_room(&self.store.view(), room);
+        if room_changed {
             self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
         }
-        self.refresh(cx);
+        self.refresh_with_collapse_change(revealed, cx);
+    }
+
+    fn toggle_collection(&mut self, id: CollectionId, cx: &mut Context<Self>) {
+        let live = self.store.view().is_live(id.into());
+        if live {
+            self.ui.toggle_collection(id);
+        }
+        self.refresh_with_collapse_change(live, cx);
     }
 
     fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {

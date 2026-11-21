@@ -97,6 +97,7 @@ into the app**: it is learnt here and saved in the user's config.
 | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL, the device ID and a random pairing ID |
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
+| `pairings\<pairing ID>\ui.json` | same | local sidebar preferences (collapsed collections, never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
 | `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
 | `pairings\<pairing ID>.signed-out` | same | the record that the pairing beside it was signed out and its data is to be removed |
@@ -111,7 +112,7 @@ pairing never picks up an old cache and cleaning up an old one can't touch the c
 cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory and
 flushed to disk (if it can't be, nothing is removed: the app says so and stays signed in, syncing again, and
 signing out can be tried again); the token and the config are removed (if that fails, the record is
-withdrawn, and the app says so and stays signed in the same way); the shell lets go of the cache, and the directory (cache and downloads) is removed; the
+withdrawn, and the app says so and stays signed in the same way); the shell lets go of the cache, and the directory (cache, sidebar preferences and downloads) is removed; the
 record goes last. Only then is pairing shown. A directory still in use is removed at the next start, which
 only ever removes directories that have a record, named exactly by a pairing ID, and never the current one.
 
@@ -162,7 +163,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 
 | Part | What it does |
 |---|---|
-| Sidebar | Smart lists (My Day, Important, Planned, All, Completed, Agent activity) with counts from the query language's built-in lists, collections and lists in server order with open counts. List colours snap to the design's swatches; glyphs come from the list's name (English and Czech keywords). Double-click or right-click renames; the context menu moves a list up or down or deletes it (after asking); "New list" adds one and starts renaming it. Agents seen in the last week, and the sync state. |
+| Sidebar | Smart lists (My Day, Important, Planned, All, Completed, Agent activity) with counts from the query language's built-in lists, collections and lists in server order with open counts. A collection's chevron or context menu hides or shows its lists without changing the room. A collapsed header shows the selected look when it hides the current list; navigating to that list reveals it. List colours snap to the design's swatches; glyphs come from the list's name (English and Czech keywords). Double-click or right-click renames; the context menu moves a list up or down or deletes it (after asking); "New list" adds one and starts renaming it. Agents seen in the last week, and the sync state. |
 | Task list | Open tasks in server order (by list, then position, in a collection), virtualized; Completed below, newest first, behind a toggle. Checkbox completes or reopens; a completed task holds its place (fill, tick, dimmed title), fades and leaves. The priority mark cycles on click. **J/K** or arrows move, **Space** completes, **E** edits the title, **D** the due date, **Alt+Up/Down** moves a task in a list. The title-bar field filters (**Ctrl+K**): a query (`tag:docs`, `due:today`) or plain words. |
 | Quick add | In the room (**Ctrl+N**) and global (**Ctrl+Alt+Space**, into My Day). A trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`, `pátek`) and priority (`!`, `!!`, `!!!`) are read off the title; the date shows as a chip while typing. My Day, Important and Planned shape the new task. |
 | Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
@@ -201,7 +202,7 @@ Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 ## Screenshots
 
 ```sh
-todo-desktop --screenshot <out.png> --fixture <my-day|work|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
+todo-desktop --screenshot <out.png> --fixture <my-day|work|collapsed-collection|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
 The screenshot mode opens one window with a fixture and never talks to a server. A fixture is a

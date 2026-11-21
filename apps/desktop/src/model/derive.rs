@@ -521,13 +521,18 @@ fn sidebar(
                 .filter(|l| l.collection == Some(c.id))
                 .map(|l| nav(l))
                 .collect();
+            let collapsed = ui.collapsed_collections.contains(&c.id);
+            let selected = ui.room == RoomKey::Collection(c.id)
+                || (collapsed && lists.iter().any(|l| ui.room == RoomKey::List(l.id)));
             CollectionNav {
                 id: c.id,
                 glyph: lists::collection_glyph(&c.name),
                 name: c.name.clone().into(),
                 hue: lists::hue(c.color.as_deref(), c.id.as_uuid().as_bytes()),
                 count: lists.iter().map(|l| l.count).sum(),
-                lists,
+                collapsed,
+                selected,
+                lists: if collapsed { Vec::new() } else { lists },
             }
         })
         .collect();

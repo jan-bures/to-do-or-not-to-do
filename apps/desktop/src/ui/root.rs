@@ -325,10 +325,14 @@ impl RootView {
     }
 
     fn show_shell(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        let ui = UiState {
+            collapsed_collections: session.data().load_collapsed(),
+            ..UiState::default()
+        };
         session.start();
         let store = Rc::new(Store::Live(LiveStore::new(session)));
         let theme = self.theme;
-        let view = cx.new(|cx| ShellView::new(store, UiState::default(), theme, None, window, cx));
+        let view = cx.new(|cx| ShellView::new(store, ui, theme, None, window, cx));
         let events =
             cx.subscribe_in(
                 &view,

@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 use gpui::SharedString;
 use jiff::tz::TimeZone;
 use todo_client::Connection;
+use todo_core::State;
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TaskId};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
@@ -186,6 +187,43 @@ pub struct UiState {
     pub show_completed: bool,
     /// Tasks just completed that keep their place while the completion plays.
     pub holding: BTreeSet<TaskId>,
+    /// Collection IDs whose child lists are hidden in the sidebar.
+    pub collapsed_collections: BTreeSet<CollectionId>,
+}
+
+impl UiState {
+    /// Changes only sidebar visibility, even if the current room is a list in this collection.
+    pub fn toggle_collection(&mut self, id: CollectionId) {
+        if !self.collapsed_collections.remove(&id) {
+            self.collapsed_collections.insert(id);
+        }
+    }
+
+    /// Navigates to a room, revealing its sidebar row if needed. Returns whether visibility changed.
+    pub fn select_room(&mut self, state: &State, room: RoomKey) -> bool {
+        if self.room != room {
+            self.room = room;
+            self.task = None;
+            self.show_completed = false;
+        }
+        if let RoomKey::List(id) = room
+            && let Some(list) = state.lists.get(&id)
+            && let Some(collection) = list.collection
+            && state.is_live(id.into())
+        {
+            self.collapsed_collections.remove(&collection)
+        } else {
+            false
+        }
+    }
+
+    /// Drops deleted and unknown collections once the replica has data. Returns whether any were dropped.
+    pub fn prune_collapsed_collections(&mut self, state: &State) -> bool {
+        let before = self.collapsed_collections.len();
+        self.collapsed_collections
+            .retain(|&id| state.is_live(id.into()));
+        self.collapsed_collections.len() != before
+    }
 }
 
 /// What the sidebar footer says about sync.
@@ -362,6 +400,9 @@ pub struct CollectionNav {
     pub name: SharedString,
     pub hue: Hue,
     pub count: u32,
+    pub collapsed: bool,
+    /// The collection itself is selected, or it hides the selected list.
+    pub selected: bool,
     pub lists: Vec<ListNav>,
 }
 

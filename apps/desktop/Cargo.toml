@@ -34,6 +34,7 @@ todo-fs = { path = "../../crates/todo-fs" }
 jiff = { version = "1", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 uuid = "1"
 # The sync engine's runtime (network I/O runs here, never on the UI thread).
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
@@ -67,7 +68,6 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 # Integration tests run the session against an in-process server (never a deployed one).
 todo-server = { path = "../../crates/todo-server" }
-tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 # Damages a cache on purpose in the recovery tests (the same SQLite the sync engine bundles).
 rusqlite = { version = "0.43", features = ["bundled"] }

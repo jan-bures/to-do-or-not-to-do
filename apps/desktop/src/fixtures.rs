@@ -45,6 +45,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" => Some(my_day()),
         "work" => Some(work()),
+        "collapsed-collection" => Some(collapsed_collection()),
         "empty" => Some(empty()),
         "finished" => Some(finished()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
@@ -674,6 +675,18 @@ pub fn work() -> Fixture {
     f.sync = online("2026-11-21T14:09:00Z");
     f.quick_add_text = Some("Draft the changelog for 0.4 tomorrow");
     f
+}
+
+/// A selected list inside the collapsed Work collection.
+fn collapsed_collection() -> Fixture {
+    let (b, l) = sample();
+    let ui = UiState {
+        room: RoomKey::List(l.planning),
+        task: Some(l.q4),
+        collapsed_collections: b.state.lists[&l.planning].collection.into_iter().collect(),
+        ..UiState::default()
+    };
+    fixture(b, ui, MORNING)
 }
 
 /// A list with nothing open: scenery only, no sun.

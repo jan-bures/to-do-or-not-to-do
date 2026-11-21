@@ -299,7 +299,7 @@ impl ShellView {
         let mut collections = Vec::new();
         for c in &sb.collections {
             let cid = c.id;
-            let on = sb.selected == RoomKey::Collection(cid);
+            let on = c.selected;
             let name = match self.inline_for(InlineTarget::Collection(cid)) {
                 Some(input) => div().flex_1().min_w_0().child(input).into_any_element(),
                 None => div()
@@ -309,18 +309,35 @@ impl ShellView {
                     .child(c.name.clone())
                     .into_any_element(),
             };
+            let chevron = if c.collapsed {
+                Icon::ChevronRight
+            } else {
+                Icon::ChevronDown
+            };
+            let toggle = div()
+                .id("toggle-collection")
+                .flex_none()
+                .h_full()
+                .flex()
+                .items_center()
+                .pl(px(space::S1))
+                .cursor_pointer()
+                .child(kit::icon(chevron, component::ICON_SMALL, p.ink_3))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_collection(cid, cx);
+                }));
             let head = div()
                 .h(px(desktop::NAV_SUB_ROW))
                 .mt(px(space::S3))
                 .flex()
                 .items_center()
                 .gap(px(space::S2))
-                .pl(px(space::S1))
                 .pr(px(space::S2 + 2.))
                 .rounded(px(radius::MD))
                 .style(ty::NAV_COLLECTION)
                 .text_color(p.ink)
-                .child(kit::icon(Icon::ChevronDown, component::ICON_SMALL, p.ink_4))
+                .child(toggle)
                 .child(kit::glyph(c.glyph, theme::list_colors(t, c.hue).glyph))
                 .child(name)
                 .child(count(c.count));
@@ -637,8 +654,21 @@ impl ShellView {
             MenuKind::Collection { id } => {
                 let c = state.collections.get(&id)?;
                 let name: SharedString = c.name.clone().into();
+                let (icon, label) = if self.ui.collapsed_collections.contains(&id) {
+                    (Icon::ChevronDown, "Expand")
+                } else {
+                    (Icon::ChevronRight, "Collapse")
+                };
                 kit::overlay(&p)
                     .w(px(space::S10 * 6.))
+                    .child(
+                        item("collection-toggle", icon, label.into(), false).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                close(this, cx);
+                                this.toggle_collection(id, cx);
+                            },
+                        )),
+                    )
                     .child(
                         item(
                             "collection-new-list",
