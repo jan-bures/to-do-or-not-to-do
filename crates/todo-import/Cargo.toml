@@ -1,6 +1,6 @@
 [package]
 name = "todo-import"
-description = "One-time importer: Microsoft To Do (Graph export + local cache) to an import bundle."
+description = "One-time importer: Microsoft To Do (Graph export + local cache) to an import bundle, applied over REST."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,34 @@ license-file.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "todo-import"
+path = "src/main.rs"
+
 [dependencies]
 todo-core.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+jiff = { workspace = true, features = ["tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
+uuid = { workspace = true, features = ["std"] }
+rusqlite.workspace = true
+ureq = { workspace = true, features = ["json"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+todo-server.workspace = true
+tokio.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

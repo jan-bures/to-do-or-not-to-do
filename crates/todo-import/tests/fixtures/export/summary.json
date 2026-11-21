@@ -1,0 +1,10 @@
+{
+  "started": "2026-02-01T10:00:00+00:00",
+  "lists": [
+    {"id": "L-tasks", "displayName": "Tasks", "dir": "lists/00_tasks"},
+    {"id": "L-flagged", "displayName": "Flagged Emails", "dir": "lists/01_flagged"},
+    {"id": "L-groceries", "displayName": "Groceries", "dir": "lists/02_groceries"},
+    {"id": "L-projects", "displayName": "Projects", "dir": "lists/03_projects"},
+    {"id": "L-someday", "displayName": "Someday", "dir": "lists/04_someday"}
+  ]
+}

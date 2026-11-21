@@ -6,7 +6,7 @@
 use crate::ids::{
     AttachmentId, CollectionId, EntityId, LinkId, ListId, ReminderId, StepId, TagId, TaskId,
 };
-use crate::model::{LinkKind, Priority};
+use crate::model::{Entity, LinkKind, Priority};
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -370,5 +370,17 @@ pub enum Command {
     Restore {
         /// The entity.
         id: EntityId,
+    },
+    /// Import an entity from another app, keeping its history. Owner only.
+    ///
+    /// Unlike the create commands, this takes the whole entity, so the times it already had are kept:
+    /// its creation time, a task's last-modified time, and the completion time of a task or step. The
+    /// actor in its stamps is replaced by the caller. The entity must be new, must not be deleted or
+    /// merged, its parent and tags must be live, and it is validated like a created entity. A
+    /// completed recurring task does not spawn its next occurrence. If a live sibling already uses
+    /// the position key, the entity gets a fresh key just before that sibling.
+    ImportEntity {
+        /// The entity.
+        entity: Box<Entity>,
     },
 }

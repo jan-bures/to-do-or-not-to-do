@@ -1629,3 +1629,194 @@ fn rrule_until_rejects_trailing_junk() {
         Some(d(2026, 12, 31))
     );
 }
+
+// ---- import ---------------------------------------------------------------------------------------
+
+mod import {
+    use super::*;
+    use todo_core::model::{Entity, Stamp, Step, Task};
+    use todo_core::ordering::PosKey;
+    use todo_core::state::Scope;
+
+    fn stamp(secs: i64) -> Stamp {
+        Stamp {
+            at: ts(secs),
+            by: Actor::System,
+        }
+    }
+
+    fn imported_task(w: &mut World, list: todo_core::ids::ListId, key: &str) -> Task {
+        Task {
+            id: w.ids.task(),
+            list,
+            title: "  old task ".into(),
+            notes: "from elsewhere".into(),
+            due: Some(d(2024, 5, 1)),
+            priority: Priority::High,
+            my_day: None,
+            completed_at: Some(ts(-300)),
+            recurrence: Some(Recurrence::new(Rule::Daily { interval: 1 })),
+            tags: Default::default(),
+            position: PosKey::new(key).unwrap(),
+            created: stamp(-1000),
+            updated: stamp(-200),
+            deleted: None,
+            merged_into: None,
+        }
+    }
+
+    fn import(e: Entity) -> Command {
+        Command::ImportEntity {
+            entity: Box::new(e),
+        }
+    }
+
+    #[test]
+    fn keeps_historical_times_and_restamps_the_actor() {
+        let mut w = World::new();
+        let list = w.list(None, "Inbox");
+        let t = imported_task(&mut w, list, "V");
+        let events = w.run(import(Entity::Task(t.clone())));
+        // One creation, and a completed recurring task does not spawn its next occurrence.
+        assert_eq!(events.len(), 1);
+        let got = &w.state.tasks[&t.id];
+        assert_eq!(got.title, "old task");
+        assert_eq!(got.created.at, ts(-1000));
+        assert_eq!(got.updated.at, ts(-200));
+        assert_eq!(got.completed_at, Some(ts(-300)));
+        assert_eq!(got.created.by, w.owner);
+        assert_eq!(got.updated.by, w.owner);
+        assert_eq!(got.position.to_string(), "V");
+        assert_eq!(w.state.tasks.len(), 1);
+
+        let step = Step {
+            id: w.ids.step(),
+            task: t.id,
+            title: "done step".into(),
+            completed_at: Some(ts(-250)),
+            position: PosKey::new("V").unwrap(),
+            created: stamp(-900),
+            deleted: None,
+        };
+        w.run(import(Entity::Step(step.clone())));
+        assert_eq!(w.state.steps[&step.id].completed_at, Some(ts(-250)));
+        assert_eq!(w.state.steps[&step.id].created.at, ts(-900));
+    }
+
+    #[test]
+    fn is_owner_only_and_validates_like_a_create() {
+        let mut w = World::new();
+        w.grant_default("bot", AccessLevel::Plan);
+        let bot = Actor::agent("bot").unwrap();
+        let list = w.list(None, "Inbox");
+        let t = imported_task(&mut w, list, "V");
+        assert!(matches!(
+            w.run_as(&bot, import(Entity::Task(t.clone()))),
+            Err(DomainError::Denied(_))
+        ));
+        // Importer and system actors have owner rights.
+        let mut deleted = t.clone();
+        deleted.deleted = Some(todo_core::model::Tombstone {
+            at: ts(-1),
+            by: Actor::System,
+        });
+        assert!(matches!(
+            w.run_as(&Actor::Importer, import(Entity::Task(deleted))),
+            Err(DomainError::Invalid {
+                field: "deleted",
+                ..
+            })
+        ));
+        let mut merged = t.clone();
+        merged.merged_into = Some(w.ids.task());
+        assert!(matches!(
+            w.run_as(&Actor::Importer, import(Entity::Task(merged))),
+            Err(DomainError::Invalid {
+                field: "merged_into",
+                ..
+            })
+        ));
+        let mut no_due = t.clone();
+        no_due.due = None;
+        assert!(matches!(
+            w.run_as(&Actor::Importer, import(Entity::Task(no_due))),
+            Err(DomainError::Invalid {
+                field: "recurrence",
+                ..
+            })
+        ));
+        let mut orphan = t.clone();
+        orphan.list = w.ids.list();
+        assert!(matches!(
+            w.run_as(&Actor::Importer, import(Entity::Task(orphan))),
+            Err(DomainError::NotFound(_))
+        ));
+        w.run_as(&Actor::Importer, import(Entity::Task(t.clone())))
+            .unwrap();
+        assert_eq!(w.state.tasks[&t.id].created.by, Actor::Importer);
+        assert!(matches!(
+            w.run_as(&Actor::Importer, import(Entity::Task(t))),
+            Err(DomainError::AlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn taken_key_gets_a_fresh_one_before_the_sibling() {
+        let mut w = World::new();
+        let list = w.list(None, "Inbox");
+        let a = imported_task(&mut w, list, "V");
+        let b = imported_task(&mut w, list, "V");
+        w.run(import(Entity::Task(a.clone())));
+        w.run(import(Entity::Task(b.clone())));
+        let order: Vec<_> = w
+            .state
+            .siblings(Scope::Tasks(list))
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        assert_eq!(order, vec![b.id.into(), a.id.into()]);
+    }
+
+    #[test]
+    fn undo_withdraws_and_redo_brings_it_back() {
+        let mut w = World::new();
+        let list = w.list(None, "Inbox");
+        let before = w.state.clone();
+        let t = imported_task(&mut w, list, "V");
+        let ev = w.run(import(Entity::Task(t.clone())));
+        let comp = w.undo(&ev[0]).unwrap();
+        assert!(w.state.data_eq(&before));
+        w.undo(&comp[0]).unwrap();
+        assert_eq!(w.state.tasks[&t.id].created.at, ts(-1000));
+    }
+
+    #[test]
+    fn imported_tags_must_be_live_and_unique() {
+        let mut w = World::new();
+        let tag = todo_core::model::Tag {
+            id: w.ids.tag(),
+            name: "Work".into(),
+            color: None,
+            created: stamp(-10),
+            deleted: None,
+        };
+        w.run(import(Entity::Tag(tag.clone())));
+        let mut dup = tag.clone();
+        dup.id = w.ids.tag();
+        dup.name = "work".into();
+        assert!(matches!(
+            w.run_as(&w.owner.clone(), import(Entity::Tag(dup))),
+            Err(DomainError::DuplicateName(_))
+        ));
+        let list = w.list(None, "Inbox");
+        let mut t = imported_task(&mut w, list, "V");
+        t.tags.insert(w.ids.tag());
+        assert!(matches!(
+            w.run_as(&w.owner.clone(), import(Entity::Task(t.clone()))),
+            Err(DomainError::NotFound(_))
+        ));
+        t.tags = [tag.id].into_iter().collect();
+        w.run(import(Entity::Task(t.clone())));
+        assert!(w.state.tasks[&t.id].tags.contains(&tag.id));
+    }
+}

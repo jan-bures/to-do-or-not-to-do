@@ -1,0 +1,7 @@
+[
+  {"id": "F-1", "title": "Re: quarterly report", "status": "notStarted", "importance": "normal",
+   "createdDateTime": "2026-01-20T12:00:00Z", "lastModifiedDateTime": "2026-01-20T12:00:00Z", "hasAttachments": false},
+  {"id": "F-2", "title": "Conference tickets", "status": "completed", "importance": "normal",
+   "createdDateTime": "2026-01-21T12:00:00Z", "lastModifiedDateTime": "2026-01-22T12:00:00Z",
+   "completedDateTime": {"dateTime": "2026-01-22T00:00:00.0000000", "timeZone": "UTC"}, "hasAttachments": false}
+]

@@ -1,0 +1,7 @@
+[
+  {"id": "L-tasks", "displayName": "Tasks", "wellknownListName": "defaultList", "isOwner": true, "isShared": false},
+  {"id": "L-flagged", "displayName": "Flagged Emails", "wellknownListName": "flaggedEmails", "isOwner": true, "isShared": false},
+  {"id": "L-groceries", "displayName": "Groceries", "wellknownListName": "none", "isOwner": true, "isShared": false},
+  {"id": "L-projects", "displayName": "Projects", "wellknownListName": "none", "isOwner": true, "isShared": false},
+  {"id": "L-someday", "displayName": "Someday", "wellknownListName": "none", "isOwner": true, "isShared": false}
+]

@@ -10,7 +10,7 @@ use todo_core::command::{Command, NewTask, Placement, TaskPatch};
 use todo_core::error::{ApplyError, DomainError, UndoError};
 use todo_core::event::{Event, EventPayload, FieldChange, FieldKey};
 use todo_core::ids::{EntityId, EventId, TaskId};
-use todo_core::model::{EmailLink, Entity, LinkKind, Priority};
+use todo_core::model::{EmailLink, Entity, LinkKind, List, Priority, Stamp, Task};
 use todo_core::ordering::{MAX_KEY_LEN, OrderError, PosKey};
 use todo_core::query::*;
 use todo_core::recurrence::{MAX_INTERVAL, Recurrence, Rule};
@@ -23,7 +23,9 @@ use todo_core::{Actor, AgentId, State, apply};
 type Op = (u8, u16, u16, u8);
 
 /// Number of op kinds [`build`] understands.
-const OP_KINDS: u8 = 27;
+const OP_KINDS: u8 = 28;
+/// The op kind that imports an entity with historical times.
+const IMPORT_OP: u8 = 27;
 /// The op kind that tries to create a task with the ID of an earlier task (which must fail).
 const REUSE_OP: u8 = 26;
 
@@ -329,6 +331,74 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                 .collect();
             let n = NewTask::new(pick(&used, a)?, pick(&live_lists, b)?, "reused");
             Command::CreateTask(Box::new(n))
+        }
+        IMPORT_OP => {
+            // Historical times, and an actor that `decide` must replace with the caller.
+            let at = common::ts(-1_000_000 + i64::from(b));
+            let stamp = Stamp {
+                at,
+                by: Actor::System,
+            };
+            let done = (c % 2 == 0).then(|| common::ts(-500_000 + i64::from(a)));
+            // Half the time reuse a sibling's key, to exercise the fresh-key path.
+            let key = |sibs: Vec<(PosKey, EntityId)>| -> Option<PosKey> {
+                match (b % 2, sibs.last()) {
+                    (0, Some(_)) => Some(sibs[usize::from(a) % sibs.len()].0.clone()),
+                    _ => PosKey::between(sibs.last().map(|x| &x.0), None).ok(),
+                }
+            };
+            let entity = match c % 3 {
+                0 => {
+                    let list = pick(&live_lists, a)?;
+                    let due = (c % 4 == 0).then(|| Date::constant(2025, 3, 1 + (b % 28) as i8));
+                    Entity::Task(Task {
+                        id: w.ids.task(),
+                        list,
+                        title: format!("imported {c}"),
+                        notes: String::new(),
+                        due,
+                        priority: Priority::High,
+                        my_day: None,
+                        completed_at: done,
+                        recurrence: due.and_then(|_| {
+                            (c % 8 == 0).then(|| Recurrence::new(Rule::Daily { interval: 1 }))
+                        }),
+                        tags: pick(&live_tags, b).into_iter().collect(),
+                        position: key(s.siblings(todo_core::state::Scope::Tasks(list)))?,
+                        created: stamp.clone(),
+                        updated: stamp,
+                        deleted: None,
+                        merged_into: None,
+                    })
+                }
+                1 => {
+                    let task = pick(&live_tasks, a)?;
+                    Entity::Step(todo_core::model::Step {
+                        id: w.ids.step(),
+                        task,
+                        title: format!("imported step {c}"),
+                        completed_at: done,
+                        position: key(s.siblings(todo_core::state::Scope::Steps(task)))?,
+                        created: stamp,
+                        deleted: None,
+                    })
+                }
+                _ => {
+                    let collection = pick(&live_cols, a);
+                    Entity::List(List {
+                        id: w.ids.list(),
+                        collection,
+                        name: format!("imported list {c}"),
+                        color: Some("#123456".into()),
+                        position: key(s.siblings(todo_core::state::Scope::Lists(collection)))?,
+                        created: stamp,
+                        deleted: None,
+                    })
+                }
+            };
+            Command::ImportEntity {
+                entity: Box::new(entity),
+            }
         }
         _ => Command::AddAttachment {
             id: w.ids.attachment(),
@@ -1242,8 +1312,10 @@ fn histories_exercise_many_event_kinds() {
     let ops: Vec<Op> = (0..600)
         .map(|_| {
             let v = next();
+            // Every kind except the ID-reuse op.
+            let kind = (v % u64::from(OP_KINDS - 1)) as u8;
             (
-                (v % 26) as u8,
+                if kind == REUSE_OP { IMPORT_OP } else { kind },
                 (v >> 8) as u16,
                 (v >> 24) as u16,
                 (v >> 40) as u8,
@@ -1268,4 +1340,10 @@ fn histories_exercise_many_event_kinds() {
         "no merges happened"
     );
     assert!(w.log.iter().any(|e| e.actor.is_agent()));
+    assert!(
+        count(
+            &|p| matches!(p, EventPayload::Created { entity } if entity.created().at < common::ts(0))
+        ) > 3,
+        "no imports happened"
+    );
 }

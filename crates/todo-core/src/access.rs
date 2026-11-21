@@ -270,6 +270,7 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
         }
         C::CreateTag { .. } => vec![(Need::PlanAnywhere, Target::Global)],
         C::UpdateTag { .. } => vec![(Need::Structure, Target::Global)],
+        C::ImportEntity { entity } => vec![(Need::Structure, value_target(state, entity))],
         C::Reorder { id, .. } | C::Delete { id } | C::Restore { id } => {
             let need = if structural(*id) {
                 Need::Structure

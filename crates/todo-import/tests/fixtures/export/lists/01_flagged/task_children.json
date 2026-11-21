@@ -1,0 +1,8 @@
+{
+  "F-1": {"checklistItems": [], "attachments": [], "linkedResources": [
+    {"id": "LR-1", "webUrl": "https://mail.example.com/owa/?ItemID=MSG-1", "applicationName": "Outlook",
+     "displayName": "Re: quarterly report", "externalId": "MSG-1"}]},
+  "F-2": {"checklistItems": [], "attachments": [], "linkedResources": [
+    {"id": "LR-2", "webUrl": "https://mail.example.com/owa/?ItemID=MSG-2", "applicationName": "Outlook",
+     "displayName": "Conference tickets", "externalId": "MSG-2"}]}
+}

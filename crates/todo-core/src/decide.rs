@@ -651,6 +651,67 @@ impl<'a> Decider<'a> {
         Ok(())
     }
 
+    /// Stores an imported entity with its own times (see [`Command::ImportEntity`]).
+    fn import(&mut self, entity: &Entity) -> Result<(), DomainError> {
+        let id = entity.id();
+        self.require_new(id)?;
+        if entity.deleted().is_some() {
+            return Err(DomainError::invalid("deleted", "must not be set on import"));
+        }
+        if let Some(parent) = entity.parent() {
+            self.require_live(parent)?;
+        }
+        let by = self.actor.clone();
+        let mut e = entity.clone();
+        match &mut e {
+            Entity::Collection(Collection { name, created, .. })
+            | Entity::List(List { name, created, .. }) => {
+                *name = text("name", name, MAX_NAME)?;
+                created.by = by;
+            }
+            Entity::Tag(t) => {
+                t.name = text("name", &t.name, MAX_NAME)?;
+                self.unique_tag_name(&t.name, None)?;
+                t.created.by = by;
+            }
+            Entity::Task(t) => {
+                if t.merged_into.is_some() {
+                    return Err(DomainError::invalid(
+                        "merged_into",
+                        "must not be set on import",
+                    ));
+                }
+                for tag in &t.tags {
+                    self.require_live((*tag).into())?;
+                }
+                t.title = text("title", &t.title, MAX_TITLE)?;
+                t.created.by = by.clone();
+                t.updated.by = by;
+            }
+            Entity::Step(s) => {
+                s.title = text("title", &s.title, MAX_TITLE)?;
+                s.created.by = by;
+            }
+            Entity::Link(Link { created, .. })
+            | Entity::Attachment(AttachmentRef { created, .. })
+            | Entity::Reminder(Reminder { created, .. }) => created.by = by,
+        }
+        validate_entity(&e)?;
+        if let (Some(scope), Some(key)) = (State::scope_of_entity(&e), e.position().cloned())
+            && let Some(fresh) = self.state.fresh_key_if_taken(scope, id, &key)?
+        {
+            match &mut e {
+                Entity::Collection(x) => x.position = fresh,
+                Entity::List(x) => x.position = fresh,
+                Entity::Task(x) => x.position = fresh,
+                Entity::Step(x) => x.position = fresh,
+                _ => {}
+            }
+        }
+        self.push(EventPayload::Created { entity: e });
+        Ok(())
+    }
+
     fn run(&mut self, cmd: &Command) -> Result<(), DomainError> {
         use Command as C;
         let stamp = self.stamp();
@@ -969,6 +1030,7 @@ impl<'a> Decider<'a> {
                     );
                 }
             }
+            C::ImportEntity { entity } => self.import(entity)?,
             C::Reorder { id, placement } => self.reorder(*id, placement)?,
             C::Delete { id } => self.delete(*id)?,
             C::Restore { id } => self.restore(*id)?,

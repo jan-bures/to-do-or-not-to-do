@@ -1,0 +1,8 @@
+{
+  "G-1": {"checklistItems": [], "linkedResources": [], "attachments": []},
+  "G-2": {"checklistItems": [], "linkedResources": [], "attachments": [
+    {"@odata.type": "#microsoft.graph.taskFileAttachment", "id": "A-1", "name": "shopping/list.txt",
+     "contentType": "text/plain", "size": 11, "lastModifiedDateTime": "2026-01-06T09:30:00Z",
+     "contentBytes": "aGVsbG8gd29ybGQ=", "_exportedFile": "lists/02_groceries/attachments/list.txt", "_exportedBytes": 11}]},
+  "G-3": {"checklistItems": [], "linkedResources": [], "attachments": []}
+}

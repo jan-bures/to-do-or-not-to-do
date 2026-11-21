@@ -1,0 +1,8 @@
+{
+  "P-1": {"linkedResources": [], "attachments": [], "checklistItems": [
+    {"id": "S-1", "displayName": "Outline", "isChecked": false, "createdDateTime": "2026-01-08T09:01:00Z"},
+    {"id": "S-2", "displayName": "Draft", "isChecked": true, "checkedDateTime": "2026-01-09T10:00:00.5Z",
+     "createdDateTime": "2026-01-08T09:02:00Z"},
+    {"id": "S-3", "displayName": "Polish", "isChecked": false, "createdDateTime": "2026-01-08T09:03:00Z"}]},
+  "P-2": {"checklistItems": [], "linkedResources": [], "attachments": []}
+}

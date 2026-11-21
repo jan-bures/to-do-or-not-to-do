@@ -172,6 +172,7 @@ pub fn command(state: &State, cmd: &Command, events: &[Event]) -> String {
             format!("Attached {} to {}", d((*id).into()), d((*task).into()))
         }
         C::AddReminder { task, .. } => format!("Added a reminder to {}", d((*task).into())),
+        C::ImportEntity { entity } => format!("Imported {}", d(entity.id())),
         C::Reorder { id, .. } => format!("Reordered {}", d(*id)),
         C::Delete { id } => format!("Deleted {}", d(*id)),
         C::Restore { id } => format!("Restored {}", d(*id)),
