@@ -18,7 +18,7 @@ pub mod parse;
 pub use ast::{
     ActorSpec, CmpOp, DateExpr, DateField, DueState, Expr, Predicate, Query, Sort, SortKey,
 };
-pub use eval::EvalContext;
+pub use eval::{EvalContext, KeyPart, KeyValue, Matcher, OrderKey, Stop};
 pub use fold::fold;
 pub use parse::{ParseError, ParseErrorKind};
 

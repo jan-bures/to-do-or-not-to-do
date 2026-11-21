@@ -1211,7 +1211,15 @@ proptest! {
         let text = q.to_string();
         let parsed = Query::parse(&text);
         prop_assert!(parsed.is_ok(), "`{}` failed: {:?}", text, parsed);
-        prop_assert_eq!(parsed.unwrap(), q, "text was `{}`", text);
+        // The parser keeps the first clause per sort key.
+        let mut want = q.clone();
+        let mut seen = Vec::new();
+        want.sort.retain(|s| {
+            let first = !seen.contains(&s.key);
+            seen.push(s.key);
+            first
+        });
+        prop_assert_eq!(parsed.unwrap(), want, "text was `{}`", text);
     }
 
     #[test]

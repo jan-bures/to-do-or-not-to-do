@@ -378,10 +378,13 @@ impl Parser {
                     &value,
                 );
             };
-            self.sorts.push(Sort {
-                key: *key,
-                descending: desc,
-            });
+            // A repeated key can never break a tie the first one left, so only the first counts.
+            if !self.sorts.iter().any(|s| s.key == *key) {
+                self.sorts.push(Sort {
+                    key: *key,
+                    descending: desc,
+                });
+            }
             self.i += 1;
         }
         Ok(())

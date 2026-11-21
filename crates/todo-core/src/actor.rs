@@ -14,6 +14,7 @@ fn valid_slug(s: &str) -> bool {
 macro_rules! slug_id {
     ($(#[$meta:meta])* $name:ident, $what:literal) => {
         $(#[$meta])*
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
         #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
@@ -63,6 +64,7 @@ slug_id!(
 );
 
 /// The party that caused an event.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Actor {

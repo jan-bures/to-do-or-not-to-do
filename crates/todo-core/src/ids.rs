@@ -51,6 +51,7 @@ pub fn stable_hash(data: &[u8]) -> [u8; 16] {
 macro_rules! typed_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(Uuid);
@@ -141,6 +142,7 @@ typed_id!(
 );
 
 /// Identifier of any entity, tagged with its kind.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum EntityId {

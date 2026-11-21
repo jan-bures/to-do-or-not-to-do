@@ -13,6 +13,7 @@ use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// A field value before and after an update.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change<T> {
     /// Value before the event.
@@ -38,6 +39,7 @@ impl<T: Clone> Change<T> {
 }
 
 /// One changed field of an entity, with its previous value.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
 pub enum FieldChange {
@@ -57,12 +59,15 @@ pub enum FieldChange {
     /// Compensations in the undo/redo chain of such a change keep this variant.
     NoteAdded(Change<String>),
     /// Due date of a task.
+    #[cfg_attr(feature = "openapi", schema(value_type = Change<Option<String>>))]
     Due(Change<Option<Date>>),
     /// Priority of a task.
     Priority(Change<Priority>),
     /// My Day date of a task.
+    #[cfg_attr(feature = "openapi", schema(value_type = Change<Option<String>>))]
     MyDay(Change<Option<Date>>),
     /// Completion time of a task or step.
+    #[cfg_attr(feature = "openapi", schema(value_type = Change<Option<String>>))]
     CompletedAt(Change<Option<Timestamp>>),
     /// Recurrence of a task.
     Recurrence(Change<Option<Recurrence>>),
@@ -75,6 +80,7 @@ pub enum FieldChange {
     /// Task a task was merged into.
     MergedInto(Change<Option<TaskId>>),
     /// Time of a reminder.
+    #[cfg_attr(feature = "openapi", schema(value_type = Change<String>))]
     ReminderAt(Change<Timestamp>),
     /// A tag was added to a task.
     TagAdded {
@@ -91,6 +97,7 @@ pub enum FieldChange {
 }
 
 /// Identifies a field for undo conflict detection. [`FieldChange::Touch`] has no key.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldKey {
@@ -201,6 +208,7 @@ impl FieldChange {
 }
 
 /// What an event did.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -267,6 +275,7 @@ impl EventPayload {
 }
 
 /// A recorded change.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Identifier, derived deterministically from the command so retries are idempotent.
@@ -276,6 +285,7 @@ pub struct Event {
     /// Who caused it.
     pub actor: Actor,
     /// When.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub at: Timestamp,
     /// The first event produced by the same command; used to undo a command as a unit.
     pub group: EventId,

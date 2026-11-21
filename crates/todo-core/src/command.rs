@@ -20,6 +20,7 @@ where
 }
 
 /// Where to put an item among its siblings.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "at", content = "sibling", rename_all = "snake_case")]
 pub enum Placement {
@@ -35,6 +36,7 @@ pub enum Placement {
 }
 
 /// Fields of a new task.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewTask {
     /// ID chosen by the client.
@@ -48,12 +50,14 @@ pub struct NewTask {
     pub notes: String,
     /// Due date.
     #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Date>,
     /// Priority.
     #[serde(default)]
     pub priority: Priority,
     /// My Day date.
     #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub my_day: Option<Date>,
     /// Repeat rule (needs a due date).
     #[serde(default)]
@@ -86,6 +90,7 @@ impl NewTask {
 }
 
 /// A partial update of a task. `None` leaves a field alone; `Some(None)` clears an optional field.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskPatch {
     /// New title.
@@ -100,6 +105,7 @@ pub struct TaskPatch {
         deserialize_with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Option<Date>>,
     /// New priority.
     #[serde(default)]
@@ -114,6 +120,7 @@ pub struct TaskPatch {
 }
 
 /// A request to change the state.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
@@ -220,6 +227,7 @@ pub enum Command {
         /// The task.
         id: TaskId,
         /// The date, or `None` to clear.
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
         date: Option<Date>,
     },
     /// Attach a tag to a task.
@@ -335,6 +343,7 @@ pub enum Command {
         /// The task.
         task: TaskId,
         /// When to fire.
+        #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
         at: Timestamp,
     },
     /// Change a reminder's time.
@@ -342,6 +351,7 @@ pub enum Command {
         /// The reminder.
         id: ReminderId,
         /// New time.
+        #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
         at: Timestamp,
     },
     /// Reorder a collection, list, task or step among its siblings.

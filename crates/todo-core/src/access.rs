@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 /// How much an agent may do. Ordered: `None < Read < Capture < Plan`.
 ///
 /// A future `Queue` level (claim and work tasks) is reserved and intentionally absent.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]

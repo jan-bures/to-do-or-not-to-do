@@ -8,11 +8,46 @@ license-file.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "todo-server"
+path = "src/main.rs"
+
 [dependencies]
-todo-core.workspace = true
+todo-core = { workspace = true, features = ["openapi"] }
 anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff = { workspace = true, features = ["tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
+uuid = { workspace = true, features = ["std", "v4"] }
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+base64.workspace = true
+tower-http.workspace = true
+rusqlite.workspace = true
+utoipa.workspace = true
+clap.workspace = true
+toml.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+hex.workspace = true
+futures-util.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
+reqwest.workspace = true
+tempfile.workspace = true
+rusqlite.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

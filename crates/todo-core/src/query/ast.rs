@@ -234,7 +234,8 @@ pub struct Sort {
 pub struct Query {
     /// The filter.
     pub expr: Expr,
-    /// Sort clauses, most significant first. Empty means manual order.
+    /// Sort clauses, most significant first. Empty means manual order. The parser keeps only the
+    /// first clause per key (a repeated key cannot change the order).
     pub sort: Vec<Sort>,
 }
 

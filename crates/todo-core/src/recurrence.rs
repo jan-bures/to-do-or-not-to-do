@@ -42,6 +42,7 @@ pub enum RecurrenceError {
 }
 
 /// The repeat pattern.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "freq", rename_all = "snake_case")]
 pub enum Rule {
@@ -72,11 +73,13 @@ pub enum Rule {
 }
 
 /// A recurrence rule with an optional end date.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Recurrence {
     /// The repeat pattern.
     pub rule: Rule,
     /// Last date on which an occurrence may fall (inclusive).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub until: Option<Date>,
 }
 

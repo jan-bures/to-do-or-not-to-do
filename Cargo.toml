@@ -30,6 +30,24 @@ jiff = { version = "1", default-features = false, features = ["std", "serde"] }
 uuid = { version = "1", default-features = false, features = ["serde"] }
 proptest = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Server-only dependencies (never used by todo-core or todo-client).
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "macros", "matched-path"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+base64 = "0.23"
+tower-http = { version = "0.7", features = ["limit", "sensitive-headers"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+utoipa = { version = "6", features = ["uuid"] }
+clap = { version = "4", features = ["derive", "env"] }
+toml = "1"
+subtle = "2"
+hex = "0.4"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -10,7 +10,7 @@ use todo_core::error::{DomainError, UndoError};
 use todo_core::event::{EventPayload, FieldChange, FieldKey};
 use todo_core::ids::EntityId;
 use todo_core::model::{EmailLink, LinkKind, Priority};
-use todo_core::query::{BUILTIN_LISTS, EvalContext, Query};
+use todo_core::query::{BUILTIN_LISTS, EvalContext, OrderKey, Query};
 use todo_core::recurrence::{Recurrence, Rule};
 use todo_core::time::{Date, Timestamp};
 use todo_core::{Actor, State, apply, decide};
@@ -637,6 +637,145 @@ fn free_text_ignores_case_and_diacritics() {
         titles(&w, &ctx, "REPORT or mleko sort:title"),
         ["Koupit mléko", "Write report"]
     );
+}
+
+#[test]
+fn free_text_matches_live_step_titles_and_agrees_with_matches() {
+    let (mut w, ctx) = query_world();
+    let report = *w
+        .state
+        .tasks
+        .iter()
+        .find(|(_, t)| t.title == "Write report")
+        .unwrap()
+        .0;
+    let step = w.ids.step();
+    w.run(Command::CreateStep {
+        id: step,
+        task: report,
+        title: "Přehled čísel".into(),
+        placement: Placement::Last,
+    });
+    let gone = w.ids.step();
+    w.run(Command::CreateStep {
+        id: gone,
+        task: report,
+        title: "obsolete".into(),
+        placement: Placement::Last,
+    });
+    w.run(Command::Delete { id: gone.into() });
+    assert_eq!(titles(&w, &ctx, "prehled"), ["Write report"]);
+    assert_eq!(titles(&w, &ctx, "obsolete"), Vec::<String>::new());
+    // `run` (which indexes steps once) agrees with the per-task `matches`.
+    for q in ["prehled", "cisel or mleko", "not prehled", "report prehled"] {
+        let q = Query::parse(q).unwrap();
+        let mut by_matches: Vec<_> = w
+            .state
+            .tasks
+            .values()
+            .filter(|t| w.state.is_live(t.id.into()) && q.matches(&w.state, t, &ctx))
+            .map(|t| t.id)
+            .collect();
+        by_matches.sort();
+        let mut by_run: Vec<_> = q.run(&w.state, &ctx).iter().map(|t| t.id).collect();
+        by_run.sort();
+        assert_eq!(by_run, by_matches, "{q}");
+    }
+}
+
+/// Final review, finding 1: a repeated sort key counts once, so keys (and cursors) stay bounded.
+#[test]
+fn repeated_sort_keys_count_once() {
+    let (w, _ctx) = query_world();
+    let q = Query::parse("sort:title sort:-title sort:due sort:title sort:-due").unwrap();
+    assert_eq!(q.to_string(), "sort:title sort:due");
+    let plain = Query::parse("sort:title sort:due").unwrap();
+    assert_eq!(q, plain);
+    // Hand-built queries with repeats produce the same key as well.
+    let mut built = plain.clone();
+    built.sort.extend(plain.sort.iter().copied());
+    for t in w.state.tasks.values() {
+        assert_eq!(built.order_key(&w.state, t), plain.order_key(&w.state, t));
+    }
+}
+
+/// Final review, finding 2: the step index and per-task step scans honour a stop check.
+#[test]
+fn a_stoppable_matcher_gives_up_on_steps() {
+    let (mut w, ctx) = query_world();
+    let task = *w
+        .state
+        .tasks
+        .iter()
+        .find(|(_, t)| t.title == "Write report")
+        .unwrap()
+        .0;
+    for _ in 0..600 {
+        let id = w.ids.step();
+        w.run(Command::CreateStep {
+            id,
+            task,
+            title: "needle".into(),
+            placement: Placement::Last,
+        });
+    }
+    let q = Query::parse("needle").unwrap();
+    let t = &w.state.tasks[&task];
+    // Stopped while indexing: no matcher.
+    let always = || true;
+    assert!(q.matcher_until(&w.state, &ctx, &always).is_none());
+    // Not stopped: same answers as `matcher`.
+    let stopped = std::cell::Cell::new(false);
+    let check = || stopped.get();
+    let m = q.matcher_until(&w.state, &ctx, &check).unwrap();
+    assert!(m.matches(t));
+    assert!(q.matcher(&w.state, &ctx).matches(t));
+    // Stopped after indexing: the step scan gives up.
+    stopped.set(true);
+    assert!(!m.matches(t));
+    // A query without free text needs no index, and the stop check does not apply to it.
+    let q = Query::parse("not done").unwrap();
+    assert!(q.matcher_until(&w.state, &ctx, &always).unwrap().matches(t));
+}
+
+#[test]
+fn order_keys_are_the_run_order_and_survive_serialization() {
+    let (w, ctx) = query_world();
+    for text in [
+        "",
+        "sort:due",
+        "sort:-due",
+        "sort:priority sort:title",
+        "sort:-priority",
+        "sort:-completed",
+        "sort:created",
+        "sort:-updated sort:-title",
+    ] {
+        let q = Query::parse(text).unwrap();
+        let run = q.run(&w.state, &ctx);
+        assert_eq!(run.len(), 4, "{text}");
+        let keys: Vec<OrderKey> = run.iter().map(|t| q.order_key(&w.state, t)).collect();
+        assert!(
+            keys.windows(2).all(|p| p[0] < p[1]),
+            "{text}: not strictly increasing"
+        );
+        for (a, b) in run.iter().zip(run.iter().skip(1)) {
+            assert_eq!(
+                q.compare(&w.state, a, b),
+                std::cmp::Ordering::Less,
+                "{text}"
+            );
+        }
+        let json = serde_json::to_string(&keys).unwrap();
+        let back: Vec<OrderKey> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, keys, "{text}");
+    }
+    // Missing values sort last ascending and first descending.
+    assert_eq!(
+        titles(&w, &ctx, "not done sort:due").last().unwrap(),
+        "Refactor"
+    );
+    assert_eq!(titles(&w, &ctx, "not done sort:-due")[0], "Refactor");
 }
 
 #[test]

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b09cc4088d2f2c921e63214b48309729f70daf3a45ef11c2403408b175e3aafa # shrinks to q = Query { expr: True, sort: [Sort { key: Completed, descending: false }, Sort { key: Completed, descending: false }] }

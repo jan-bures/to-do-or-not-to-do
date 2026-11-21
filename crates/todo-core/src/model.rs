@@ -15,24 +15,29 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// When and by whom something happened.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Stamp {
     /// The time.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub at: Timestamp,
     /// The actor.
     pub by: Actor,
 }
 
 /// Marks an entity as deleted.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Tombstone {
     /// When it was deleted.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub at: Timestamp,
     /// Who deleted it.
     pub by: Actor,
 }
 
 /// Task priority. Ordered `None < Low < Normal < High`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -71,6 +76,7 @@ impl Priority {
 }
 
 /// A group of lists (Microsoft To Do: "list group").
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     /// Identifier.
@@ -88,6 +94,7 @@ pub struct Collection {
 }
 
 /// A list of tasks, optionally inside a collection.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct List {
     /// Identifier.
@@ -107,6 +114,7 @@ pub struct List {
 }
 
 /// A task.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     /// Identifier.
@@ -118,12 +126,15 @@ pub struct Task {
     /// Notes (Markdown).
     pub notes: String,
     /// Due date.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Date>,
     /// Priority.
     pub priority: Priority,
     /// The date this task is in My Day; it counts as My Day only while that date is today.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub my_day: Option<Date>,
     /// Completion time; `None` while open.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
     pub completed_at: Option<Timestamp>,
     /// Repeat rule; requires a due date.
     pub recurrence: Option<Recurrence>,
@@ -150,6 +161,7 @@ impl Task {
 }
 
 /// A checklist step of a task.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
     /// Identifier.
@@ -159,6 +171,7 @@ pub struct Step {
     /// Title.
     pub title: String,
     /// Completion time; `None` while open.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
     pub completed_at: Option<Timestamp>,
     /// Sort key among the steps of the task.
     pub position: PosKey,
@@ -169,6 +182,7 @@ pub struct Step {
 }
 
 /// A tag (Microsoft To Do: "category").
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
     /// Identifier.
@@ -184,6 +198,7 @@ pub struct Tag {
 }
 
 /// Metadata of an email a task was created from. Never contains the message body.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EmailLink {
     /// Subject line.
@@ -191,6 +206,7 @@ pub struct EmailLink {
     /// Sender address or display name.
     pub sender: String,
     /// When the message was received.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub received_at: Timestamp,
     /// RFC 5322 `Message-ID`.
     pub message_id: String,
@@ -199,6 +215,7 @@ pub struct EmailLink {
 }
 
 /// What a link points at.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LinkKind {
@@ -214,6 +231,7 @@ pub enum LinkKind {
 }
 
 /// A source link of a task.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     /// Identifier.
@@ -229,6 +247,7 @@ pub struct Link {
 }
 
 /// Reference to an attachment stored elsewhere: metadata and a storage key, never the bytes.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentRef {
     /// Identifier.
@@ -250,6 +269,7 @@ pub struct AttachmentRef {
 }
 
 /// A reminder at an absolute time.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reminder {
     /// Identifier.
@@ -257,6 +277,7 @@ pub struct Reminder {
     /// The task it belongs to.
     pub task: TaskId,
     /// When to fire.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub at: Timestamp,
     /// Creation stamp.
     pub created: Stamp,
@@ -265,6 +286,7 @@ pub struct Reminder {
 }
 
 /// Any entity, by value.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]

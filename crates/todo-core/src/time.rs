@@ -12,6 +12,7 @@ use jiff::{Span, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 
 /// Day of the week, Monday first (ISO 8601).
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Weekday {

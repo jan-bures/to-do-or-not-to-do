@@ -1,0 +1,940 @@
+//! SQLite storage: schema and migrations, the append-only event log, idempotency records and the
+//! projection tables.
+//!
+//! The event log is the source of truth. Projection tables hold the current entities (with a few
+//! columns denormalised for SQL inspection and a `data` column with the full JSON). They are written
+//! in the same transaction as the events that changed them, and can always be rebuilt by folding the
+//! log with [`todo_core::apply`].
+
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use todo_core::event::{Event, EventPayload};
+use todo_core::ids::{EntityId, EventId};
+use todo_core::model::{Entity, LinkKind};
+use todo_core::time::Timestamp;
+use todo_core::{Actor, State, apply};
+
+/// Storage errors.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    /// SQLite failed.
+    #[error("database error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    /// Stored JSON could not be (de)serialised.
+    #[error("stored JSON is invalid: {0}")]
+    Json(#[from] serde_json::Error),
+    /// The stored data is inconsistent.
+    #[error("database is corrupt: {0}")]
+    Corrupt(String),
+    /// Another process (or engine) owns the database.
+    #[error(
+        "database {} is in use by another todo-server process (lock file {}); stop it first",
+        db.display(),
+        lock.display()
+    )]
+    Locked {
+        /// The database file.
+        db: PathBuf,
+        /// The lock file.
+        lock: PathBuf,
+    },
+    /// The lock file could not be created or locked.
+    #[error("cannot lock {}: {source}", path.display())]
+    Lock {
+        /// The lock file.
+        path: PathBuf,
+        /// The cause.
+        source: std::io::Error,
+    },
+    /// The database was written by a newer server.
+    #[error("database schema version {found} is newer than this server supports ({supported})")]
+    TooNew {
+        /// Version in the file.
+        found: i64,
+        /// Newest version this build knows.
+        supported: i64,
+    },
+}
+
+/// Result alias for storage operations.
+pub type Result<T, E = StoreError> = std::result::Result<T, E>;
+
+/// Migrations, applied in order. `PRAGMA user_version` records how many have run.
+const MIGRATIONS: &[&str] = &[r"
+CREATE TABLE events (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          TEXT    NOT NULL UNIQUE,
+    command_id  TEXT    NOT NULL,
+    command_idx INTEGER NOT NULL,
+    group_id    TEXT    NOT NULL,
+    actor       TEXT    NOT NULL,
+    at          TEXT    NOT NULL,
+    undoes      TEXT,
+    forced      INTEGER NOT NULL,
+    payload     TEXT    NOT NULL,
+    UNIQUE (command_id, command_idx)
+);
+CREATE INDEX events_group ON events (group_id);
+CREATE TRIGGER events_append_only_update BEFORE UPDATE ON events
+    BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+CREATE TRIGGER events_append_only_delete BEFORE DELETE ON events
+    BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+
+CREATE TABLE commands (
+    command_id   TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    actor        TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    received_at  TEXT NOT NULL,
+    result       TEXT NOT NULL
+);
+
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE collections (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, position TEXT NOT NULL,
+    created_at TEXT NOT NULL, deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE TABLE lists (
+    id TEXT PRIMARY KEY, collection_id TEXT, name TEXT NOT NULL, color TEXT, position TEXT NOT NULL,
+    created_at TEXT NOT NULL, deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE INDEX lists_collection ON lists (collection_id);
+CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, list_id TEXT NOT NULL, title TEXT NOT NULL, due TEXT, priority TEXT NOT NULL,
+    my_day TEXT, completed_at TEXT, position TEXT NOT NULL, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL, deleted_at TEXT, merged_into TEXT, data TEXT NOT NULL
+);
+CREATE INDEX tasks_list ON tasks (list_id, position);
+CREATE TABLE task_tags (
+    task_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (task_id, tag_id)
+) WITHOUT ROWID;
+CREATE INDEX task_tags_tag ON task_tags (tag_id);
+CREATE TABLE steps (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, title TEXT NOT NULL, completed_at TEXT,
+    position TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE INDEX steps_task ON steps (task_id);
+CREATE TABLE tags (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at TEXT NOT NULL,
+    deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE TABLE links (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL,
+    deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE INDEX links_task ON links (task_id);
+CREATE TABLE attachments (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, file_name TEXT NOT NULL, media_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL, storage_key TEXT NOT NULL, created_at TEXT NOT NULL,
+    deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE INDEX attachments_task ON attachments (task_id);
+CREATE TABLE reminders (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, at TEXT NOT NULL, created_at TEXT NOT NULL,
+    deleted_at TEXT, data TEXT NOT NULL
+);
+CREATE INDEX reminders_task ON reminders (task_id);
+"];
+
+/// Projection tables, in a fixed order (used for clearing and dumping).
+pub const PROJECTION_TABLES: &[&str] = &[
+    "collections",
+    "lists",
+    "tasks",
+    "task_tags",
+    "steps",
+    "tags",
+    "links",
+    "attachments",
+    "reminders",
+];
+
+fn configure(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
+    Ok(())
+}
+
+/// The ownership lock file of a database: `<canonical db path>.lock`.
+///
+/// The database path is canonicalised first (the file itself if it exists, else its directory), so
+/// relative paths, `..` and symlinks all lead to the same lock. The database must still be reached
+/// through a single file: a hard link, a bind mount or a copy of the data directory under another path
+/// gets a lock of its own, so never point two servers at the same file through such aliases.
+pub fn lock_path(db: &Path) -> std::io::Result<PathBuf> {
+    let canonical = match std::fs::canonicalize(db) {
+        Ok(p) => p,
+        Err(_) => {
+            let parent = db
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let name = db.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the database path has no file name",
+                )
+            })?;
+            std::fs::canonicalize(parent)?.join(name)
+        }
+    };
+    let mut name = canonical.into_os_string();
+    name.push(".lock");
+    Ok(PathBuf::from(name))
+}
+
+/// Takes the exclusive ownership lock of the database at `db` (an OS file lock on [`lock_path`]),
+/// without waiting. The lock is held until the returned file is dropped, and the OS releases it if the
+/// process dies. Fails with [`StoreError::Locked`] if another holder exists, in this process or another.
+pub fn lock_database(db: &Path) -> Result<File> {
+    let path = lock_path(db).map_err(|source| StoreError::Lock {
+        path: db.to_owned(),
+        source,
+    })?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| StoreError::Lock {
+            path: path.clone(),
+            source,
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(StoreError::Locked {
+            db: db.to_owned(),
+            lock: path,
+        }),
+        Err(TryLockError::Error(source)) => Err(StoreError::Lock { path, source }),
+    }
+}
+
+/// Opens (creating if needed) the database for writing, enables WAL and runs migrations.
+pub fn open_writer(path: &Path) -> Result<Connection> {
+    let mut conn = Connection::open(path)?;
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(StoreError::Corrupt(format!(
+            "could not enable WAL mode (got `{mode}`)"
+        )));
+    }
+    configure(&conn)?;
+    migrate(&mut conn)?;
+    Ok(conn)
+}
+
+/// Opens a read-only connection to an existing database.
+pub fn open_reader(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    configure(&conn)?;
+    Ok(conn)
+}
+
+/// Applies pending migrations.
+pub fn migrate(conn: &mut Connection) -> Result<()> {
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let supported = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);
+    if current > supported {
+        return Err(StoreError::TooNew {
+            found: current,
+            supported,
+        });
+    }
+    let start = usize::try_from(current).unwrap_or(0);
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(start) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.pragma_update(
+            None,
+            "user_version",
+            i64::try_from(i + 1).unwrap_or(i64::MAX),
+        )?;
+        tx.commit()?;
+        tracing::info!(version = i + 1, "applied database migration");
+    }
+    Ok(())
+}
+
+// ---- events ---------------------------------------------------------------------------------------
+
+fn to_seq(v: i64) -> Result<u64> {
+    u64::try_from(v).map_err(|_| StoreError::Corrupt(format!("negative seq {v}")))
+}
+
+fn from_seq(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+fn corrupt<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> StoreError {
+    move |e| StoreError::Corrupt(format!("{what}: {e}"))
+}
+
+const EVENT_COLUMNS: &str = "seq, id, group_id, actor, at, undoes, forced, payload";
+
+type RawEvent = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    bool,
+    String,
+);
+
+fn raw_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvent> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+    ))
+}
+
+fn decode_event(raw: RawEvent) -> Result<Event> {
+    let (seq, id, group, actor, at, undoes, forced, payload) = raw;
+    Ok(Event {
+        id: id.parse().map_err(corrupt("event id"))?,
+        seq: Some(to_seq(seq)?),
+        actor: serde_json::from_str::<Actor>(&actor)?,
+        at: at.parse::<Timestamp>().map_err(corrupt("event time"))?,
+        group: group.parse().map_err(corrupt("event group"))?,
+        undoes: undoes
+            .map(|u| u.parse::<EventId>())
+            .transpose()
+            .map_err(corrupt("event undoes"))?,
+        forced,
+        payload: serde_json::from_str::<EventPayload>(&payload)?,
+    })
+}
+
+fn query_events(conn: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare_cached(sql)?;
+    let raws = stmt
+        .query_map(p, raw_event)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    raws.into_iter().map(decode_event).collect()
+}
+
+/// Appends an event and returns its sequence number.
+pub fn insert_event(
+    tx: &Transaction<'_>,
+    event: &Event,
+    command_id: &str,
+    command_idx: usize,
+) -> Result<u64> {
+    tx.prepare_cached(
+        "INSERT INTO events (id, command_id, command_idx, group_id, actor, at, undoes, forced, payload)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?
+    .execute(params![
+        event.id.to_string(),
+        command_id,
+        i64::try_from(command_idx).unwrap_or(i64::MAX),
+        event.group.to_string(),
+        serde_json::to_string(&event.actor)?,
+        event.at.to_string(),
+        event.undoes.map(|u| u.to_string()),
+        event.forced,
+        serde_json::to_string(&event.payload)?,
+    ])?;
+    to_seq(tx.last_insert_rowid())
+}
+
+/// Events with `seq > after`, oldest first, at most `limit`.
+pub fn events_after(conn: &Connection, after: u64, limit: usize) -> Result<Vec<Event>> {
+    query_events(
+        conn,
+        &format!("SELECT {EVENT_COLUMNS} FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2"),
+        params![from_seq(after), i64::try_from(limit).unwrap_or(i64::MAX)],
+    )
+}
+
+/// Rough JSON size of an event beyond its payload and actor (IDs, times, field names).
+const EVENT_OVERHEAD: u64 = 256;
+
+/// A page of the log read within a byte budget.
+#[derive(Debug, Clone, Default)]
+pub struct CappedEvents {
+    /// The events, in the order asked for.
+    pub events: Vec<Event>,
+    /// True if the page stopped early because of the byte budget.
+    pub truncated: bool,
+    /// The seq of the first event in range when that event alone exceeds the budget. It was neither
+    /// decoded nor returned; skip it (it can still be found with a larger budget offline).
+    pub oversized: Option<u64>,
+}
+
+/// Picks the seqs that fit `max_bytes`, from `(seq, size)` rows in page order.
+fn fit(sizes: &[(i64, i64)], max_bytes: usize) -> Result<(Option<u64>, bool, Option<u64>)> {
+    let budget = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let mut total = 0u64;
+    let mut last = None;
+    for (i, (seq, size)) in sizes.iter().enumerate() {
+        let size = u64::try_from(*size).unwrap_or(0) + EVENT_OVERHEAD;
+        total = total.saturating_add(size);
+        if total > budget {
+            let oversized = (i == 0).then(|| to_seq(*seq)).transpose()?;
+            return Ok((last, true, oversized));
+        }
+        last = Some(to_seq(*seq)?);
+    }
+    Ok((last, false, None))
+}
+
+const SIZE_EXPR: &str = "length(CAST(payload AS BLOB)) + length(CAST(actor AS BLOB))";
+
+/// Like [`events_after`], but stops before the events' JSON would exceed `max_bytes`. Row sizes are
+/// read first, so nothing beyond the budget is fetched or decoded.
+pub fn events_after_capped(
+    conn: &Connection,
+    after: u64,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<CappedEvents> {
+    let sizes = conn
+        .prepare_cached(&format!(
+            "SELECT seq, {SIZE_EXPR} FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2"
+        ))?
+        .query_map(
+            params![from_seq(after), i64::try_from(limit).unwrap_or(i64::MAX)],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
+    let events = match last {
+        None => Vec::new(),
+        Some(last) => query_events(
+            conn,
+            &format!(
+                "SELECT {EVENT_COLUMNS} FROM events WHERE seq > ?1 AND seq <= ?2 ORDER BY seq"
+            ),
+            params![from_seq(after), from_seq(last)],
+        )?,
+    };
+    Ok(CappedEvents {
+        events,
+        truncated,
+        oversized,
+    })
+}
+
+/// Like [`events_before`], but within a byte budget (see [`events_after_capped`]).
+pub fn events_before_capped(
+    conn: &Connection,
+    before: Option<u64>,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<CappedEvents> {
+    let sizes = conn
+        .prepare_cached(&format!(
+            "SELECT seq, {SIZE_EXPR} FROM events WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
+        ))?
+        .query_map(
+            params![
+                before.map_or(i64::MAX, from_seq),
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
+    let events = match last {
+        None => Vec::new(),
+        Some(last) => query_events(
+            conn,
+            &format!(
+                "SELECT {EVENT_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
+            ),
+            params![before.map_or(i64::MAX, from_seq), from_seq(last)],
+        )?,
+    };
+    Ok(CappedEvents {
+        events,
+        truncated,
+        oversized,
+    })
+}
+
+/// Events with `seq < before` (or the newest ones), newest first, at most `limit`.
+pub fn events_before(conn: &Connection, before: Option<u64>, limit: usize) -> Result<Vec<Event>> {
+    query_events(
+        conn,
+        &format!("SELECT {EVENT_COLUMNS} FROM events WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"),
+        params![
+            before.map_or(i64::MAX, from_seq),
+            i64::try_from(limit).unwrap_or(i64::MAX)
+        ],
+    )
+}
+
+/// The event with this sequence number.
+pub fn event_by_seq(conn: &Connection, seq: u64) -> Result<Option<Event>> {
+    Ok(query_events(
+        conn,
+        &format!("SELECT {EVENT_COLUMNS} FROM events WHERE seq = ?1"),
+        params![from_seq(seq)],
+    )?
+    .pop())
+}
+
+/// All events of a command group, oldest first.
+pub fn events_in_group(conn: &Connection, group: EventId) -> Result<Vec<Event>> {
+    query_events(
+        conn,
+        &format!("SELECT {EVENT_COLUMNS} FROM events WHERE group_id = ?1 ORDER BY seq"),
+        params![group.to_string()],
+    )
+}
+
+/// Sequence number of an event ID.
+pub fn seq_of(conn: &Connection, id: EventId) -> Result<Option<u64>> {
+    conn.prepare_cached("SELECT seq FROM events WHERE id = ?1")?
+        .query_row(params![id.to_string()], |r| r.get::<_, i64>(0))
+        .optional()?
+        .map(to_seq)
+        .transpose()
+}
+
+/// The highest sequence number (0 for an empty log).
+pub fn head_seq(conn: &Connection) -> Result<u64> {
+    to_seq(conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?)
+}
+
+/// Folds the whole log into a fresh state.
+pub fn fold_log(conn: &Connection) -> Result<State> {
+    let mut state = State::new();
+    let mut after = 0;
+    loop {
+        let page = events_after(conn, after, 1000)?;
+        let Some(last) = page.last().and_then(|e| e.seq) else {
+            break;
+        };
+        for e in &page {
+            apply(&mut state, e).map_err(|err| {
+                StoreError::Corrupt(format!("event seq {:?} does not apply: {err}", e.seq))
+            })?;
+        }
+        after = last;
+    }
+    Ok(state)
+}
+
+// ---- idempotency records --------------------------------------------------------------------------
+
+/// A stored command result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// `command` or `undo`.
+    pub kind: String,
+    /// Hash of the actor and the request.
+    pub request_hash: String,
+    /// The JSON result returned to the client.
+    pub result: String,
+}
+
+/// Looks up a command by its client-chosen ID.
+pub fn find_command(conn: &Connection, command_id: &str) -> Result<Option<CommandRecord>> {
+    Ok(conn
+        .prepare_cached("SELECT kind, request_hash, result FROM commands WHERE command_id = ?1")?
+        .query_row(params![command_id], |r| {
+            Ok(CommandRecord {
+                kind: r.get(0)?,
+                request_hash: r.get(1)?,
+                result: r.get(2)?,
+            })
+        })
+        .optional()?)
+}
+
+/// Records a handled command.
+pub fn insert_command(
+    tx: &Transaction<'_>,
+    command_id: &str,
+    actor: &Actor,
+    received_at: Timestamp,
+    record: &CommandRecord,
+) -> Result<()> {
+    tx.prepare_cached(
+        "INSERT INTO commands (command_id, kind, actor, request_hash, received_at, result)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?
+    .execute(params![
+        command_id,
+        record.kind,
+        serde_json::to_string(actor)?,
+        record.request_hash,
+        received_at.to_string(),
+        record.result,
+    ])?;
+    Ok(())
+}
+
+// ---- projections ----------------------------------------------------------------------------------
+
+fn opt_str<T: ToString>(v: Option<&T>) -> Option<String> {
+    v.map(ToString::to_string)
+}
+
+/// Writes (inserts or replaces) one entity's projection row.
+pub fn write_entity(tx: &Connection, entity: &Entity) -> Result<()> {
+    let data = entity_json(entity)?;
+    match entity {
+        Entity::Collection(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO collections (id, name, color, position, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.name,
+                e.color,
+                e.position.to_string(),
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::List(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO lists (id, collection_id, name, color, position, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                opt_str(e.collection.as_ref()),
+                e.name,
+                e.color,
+                e.position.to_string(),
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::Task(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO tasks (id, list_id, title, due, priority, my_day, completed_at, position,
+                 created_at, updated_at, deleted_at, merged_into, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.list.to_string(),
+                e.title,
+                opt_str(e.due.as_ref()),
+                e.priority.name(),
+                opt_str(e.my_day.as_ref()),
+                opt_str(e.completed_at.as_ref()),
+                e.position.to_string(),
+                e.created.at.to_string(),
+                e.updated.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                opt_str(e.merged_into.as_ref()),
+                data
+            ])?;
+            let id = e.id.to_string();
+            tx.prepare_cached("DELETE FROM task_tags WHERE task_id = ?1")?
+                .execute(params![id])?;
+            let mut ins =
+                tx.prepare_cached("INSERT INTO task_tags (task_id, tag_id) VALUES (?1, ?2)")?;
+            for tag in &e.tags {
+                ins.execute(params![id, tag.to_string()])?;
+            }
+        }
+        Entity::Step(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO steps (id, task_id, title, completed_at, position, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.task.to_string(),
+                e.title,
+                opt_str(e.completed_at.as_ref()),
+                e.position.to_string(),
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::Tag(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO tags (id, name, color, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.name,
+                e.color,
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::Link(e) => {
+            let kind = match e.kind {
+                LinkKind::Web { .. } => "web",
+                LinkKind::Email(_) => "email",
+            };
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO links (id, task_id, kind, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.task.to_string(),
+                kind,
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::Attachment(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO attachments (id, task_id, file_name, media_type, size_bytes, storage_key,
+                 created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.task.to_string(),
+                e.file_name,
+                e.media_type,
+                i64::try_from(e.size_bytes).unwrap_or(i64::MAX),
+                e.storage_key,
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+        Entity::Reminder(e) => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO reminders (id, task_id, at, created_at, deleted_at, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![
+                e.id.to_string(),
+                e.task.to_string(),
+                e.at.to_string(),
+                e.created.at.to_string(),
+                opt_str(e.deleted.as_ref().map(|t| &t.at)),
+                data
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+/// The JSON of the entity itself, without the `kind` wrapper (what the `data` column holds).
+fn entity_json(entity: &Entity) -> serde_json::Result<String> {
+    match entity {
+        Entity::Collection(e) => serde_json::to_string(e),
+        Entity::List(e) => serde_json::to_string(e),
+        Entity::Task(e) => serde_json::to_string(e),
+        Entity::Step(e) => serde_json::to_string(e),
+        Entity::Tag(e) => serde_json::to_string(e),
+        Entity::Link(e) => serde_json::to_string(e),
+        Entity::Attachment(e) => serde_json::to_string(e),
+        Entity::Reminder(e) => serde_json::to_string(e),
+    }
+}
+
+fn table_of(id: EntityId) -> &'static str {
+    match id {
+        EntityId::Collection(_) => "collections",
+        EntityId::List(_) => "lists",
+        EntityId::Task(_) => "tasks",
+        EntityId::Step(_) => "steps",
+        EntityId::Tag(_) => "tags",
+        EntityId::Link(_) => "links",
+        EntityId::Attachment(_) => "attachments",
+        EntityId::Reminder(_) => "reminders",
+    }
+}
+
+fn raw_id(id: EntityId) -> String {
+    match id {
+        EntityId::Collection(i) => i.to_string(),
+        EntityId::List(i) => i.to_string(),
+        EntityId::Task(i) => i.to_string(),
+        EntityId::Step(i) => i.to_string(),
+        EntityId::Tag(i) => i.to_string(),
+        EntityId::Link(i) => i.to_string(),
+        EntityId::Attachment(i) => i.to_string(),
+        EntityId::Reminder(i) => i.to_string(),
+    }
+}
+
+/// Removes one entity's projection row (used when a creation is withdrawn).
+pub fn remove_entity(tx: &Connection, id: EntityId) -> Result<()> {
+    let raw = raw_id(id);
+    tx.prepare_cached(&format!("DELETE FROM {} WHERE id = ?1", table_of(id)))?
+        .execute(params![raw])?;
+    if matches!(id, EntityId::Task(_)) {
+        tx.prepare_cached("DELETE FROM task_tags WHERE task_id = ?1")?
+            .execute(params![raw])?;
+    }
+    Ok(())
+}
+
+/// Brings the projection rows of `ids` in line with `state`.
+pub fn sync_entities(
+    tx: &Connection,
+    state: &State,
+    ids: impl IntoIterator<Item = EntityId>,
+) -> Result<()> {
+    for id in ids {
+        match state.entity(id) {
+            Some(e) => write_entity(tx, &e)?,
+            None => remove_entity(tx, id)?,
+        }
+    }
+    Ok(())
+}
+
+/// Records the sequence number the projections reflect.
+pub fn set_projection_seq(tx: &Connection, seq: u64) -> Result<()> {
+    tx.prepare_cached("INSERT OR REPLACE INTO meta (key, value) VALUES ('projection_seq', ?1)")?
+        .execute(params![seq.to_string()])?;
+    Ok(())
+}
+
+/// The sequence number the projections reflect, if recorded.
+pub fn projection_seq(conn: &Connection) -> Result<Option<u64>> {
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'projection_seq'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    v.map(|s| s.parse().map_err(corrupt("projection_seq")))
+        .transpose()
+}
+
+fn load_table<T: serde::de::DeserializeOwned>(conn: &Connection, table: &str) -> Result<Vec<T>> {
+    let mut stmt = conn.prepare(&format!("SELECT data FROM {table} ORDER BY id"))?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.iter()
+        .map(|s| serde_json::from_str(s).map_err(StoreError::from))
+        .collect()
+}
+
+/// Loads the entities from the projection tables (grants and the journal stay empty).
+pub fn load_projections(conn: &Connection) -> Result<State> {
+    let mut s = State::new();
+    s.collections = load_table::<todo_core::model::Collection>(conn, "collections")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.lists = load_table::<todo_core::model::List>(conn, "lists")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.tasks = load_table::<todo_core::model::Task>(conn, "tasks")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.steps = load_table::<todo_core::model::Step>(conn, "steps")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.tags = load_table::<todo_core::model::Tag>(conn, "tags")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.links = load_table::<todo_core::model::Link>(conn, "links")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.attachments = load_table::<todo_core::model::AttachmentRef>(conn, "attachments")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    s.reminders = load_table::<todo_core::model::Reminder>(conn, "reminders")?
+        .into_iter()
+        .map(|e| (e.id, e))
+        .collect();
+    Ok(s)
+}
+
+fn all_entities(state: &State) -> Vec<Entity> {
+    let mut v: Vec<Entity> = Vec::new();
+    v.extend(state.collections.values().cloned().map(Entity::Collection));
+    v.extend(state.lists.values().cloned().map(Entity::List));
+    v.extend(state.tasks.values().cloned().map(Entity::Task));
+    v.extend(state.steps.values().cloned().map(Entity::Step));
+    v.extend(state.tags.values().cloned().map(Entity::Tag));
+    v.extend(state.links.values().cloned().map(Entity::Link));
+    v.extend(state.attachments.values().cloned().map(Entity::Attachment));
+    v.extend(state.reminders.values().cloned().map(Entity::Reminder));
+    v
+}
+
+/// Replaces every projection row with the entities of `state`, recording `seq` as the projection head.
+pub fn write_all_projections(conn: &mut Connection, state: &State, seq: u64) -> Result<()> {
+    let tx = conn.transaction()?;
+    for table in PROJECTION_TABLES {
+        tx.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    for e in all_entities(state) {
+        write_entity(&tx, &e)?;
+    }
+    set_projection_seq(&tx, seq)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Rebuilds the projection tables from the event log. Returns the folded state.
+pub fn rebuild_projections(conn: &mut Connection) -> Result<State> {
+    let state = fold_log(conn)?;
+    let head = head_seq(conn)?;
+    write_all_projections(conn, &state, head)?;
+    Ok(state)
+}
+
+fn cell(v: rusqlite::types::ValueRef<'_>) -> Value {
+    use rusqlite::types::ValueRef;
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::from(i),
+        ValueRef::Real(f) => Value::from(f),
+        ValueRef::Text(t) | ValueRef::Blob(t) => Value::from(String::from_utf8_lossy(t)),
+    }
+}
+
+/// Every projection row, as JSON values, keyed by table name.
+pub type ProjectionDump = BTreeMap<String, Vec<Vec<Value>>>;
+
+/// Every projection row, as JSON values, keyed by table. Used to compare live and rebuilt projections.
+pub fn dump_projections(conn: &Connection) -> Result<ProjectionDump> {
+    let mut out = BTreeMap::new();
+    for table in PROJECTION_TABLES {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2"))?;
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map([], |r| {
+                (0..n)
+                    .map(|i| r.get_ref(i).map(cell))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        out.insert((*table).to_owned(), rows);
+    }
+    Ok(out)
+}

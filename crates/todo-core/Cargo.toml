@@ -16,6 +16,11 @@ uuid.workspace = true
 # Canonical serialization for event fingerprints. Pure Rust; builds for wasm32 and Android.
 serde_json.workspace = true
 sha2.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+# OpenAPI schema derives for the server. Off by default so the core stays dependency-light and portable.
+openapi = ["dep:utoipa"]
 
 [dev-dependencies]
 proptest.workspace = true

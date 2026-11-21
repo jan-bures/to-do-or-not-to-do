@@ -1,0 +1,509 @@
+//! `GET /api/v1/events`: JSON pages of the log, or a Server-Sent Events stream.
+//!
+//! The stream subscribes to the live broadcast *before* replaying from the database, so nothing
+//! committed in between is lost. Live events at or below the last sent sequence number are skipped;
+//! a lagged receiver or a gap in sequence numbers is repaired by re-reading from the database.
+//!
+//! # Catching up
+//!
+//! A stream replays at most `limits.max_replay_events` events and `limits.max_replay_bytes` bytes. A
+//! client further behind than that catches up through JSON pages instead:
+//!
+//! 1. **At connect**, a resume point more than `max_replay_events` behind the head gets 409
+//!    `catch_up_required` (`details`: `since`, `head_seq`). A resume point ahead of the head gets 400
+//!    `invalid_since`. Neither takes a stream slot or reads the database.
+//! 2. **During a stream** (the byte budget ran out, or the client lagged too far), the server sends one
+//!    [`CATCH_UP`] frame (data: [`CatchUp`]) and closes the stream. It also marks the principal: a
+//!    reconnect at or before that position (what `EventSource` does by itself) gets the same 409 at
+//!    once. A 409 makes `EventSource` stop retrying.
+//! 3. **The client** captures `head_seq`, pages `GET /api/v1/events?since=` (JSON) following
+//!    `next_since` until it reaches that head, then opens a fresh stream with `since` set to where it
+//!    got to (or `Last-Event-ID`). The mark is the highest point any of the principal's streams gave
+//!    up at; streams from later points may connect meanwhile, and a JSON page reaching past the mark
+//!    clears it.
+//!
+//! # Bounds
+//!
+//! - **Connects.** Each principal may (re)connect `limits.sse_connects_per_minute` times per minute
+//!   (burst `limits.sse_connect_burst`); more gets 429 with `Retry-After`. This is checked first.
+//! - **Slots.** The stream slot is owned by the response body, so it is freed when the body is dropped:
+//!   when the stream ends, the client disconnects, or the connection is closed for making no write
+//!   progress (see [`crate::conn`]).
+//! - **Backpressure.** Every send waits at most `limits.sse_stall_timeout_ms` for the client to take
+//!   frames, and gives up at shutdown.
+//! - **Reads** take a permit from the shared read pool (held inside the blocking read). Waiting for
+//!   the permit and for the read itself ends on disconnect, shutdown or the stall deadline. Each read
+//!   is bounded by the remaining byte budget before rows are decoded.
+
+use super::dto::{EventPage, EventsParams};
+use super::error::{ApiError, ErrorBody};
+use super::{ApiQuery, Work, blocking};
+use crate::app::AppState;
+use crate::auth::{Authenticated, Principal};
+use crate::db::CappedEvents;
+use crate::engine::Engine;
+use crate::ratelimit::CatchUpMarks;
+use axum::Json;
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::http::header::ACCEPT;
+use axum::response::sse::{Event as SseEvent, Sse};
+use axum::response::{IntoResponse, Response};
+use futures_util::Stream;
+use serde::Serialize;
+use serde_json::json;
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+use todo_core::event::Event;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch};
+use tokio_stream::wrappers::ReceiverStream;
+
+/// Events read from the database per replay page.
+const REPLAY_PAGE: usize = 500;
+/// Largest JSON page of `GET /api/v1/events`.
+pub const MAX_EVENTS_PAGE: usize = 1000;
+/// Most bytes of one JSON page, envelope included (at least one event is returned unless that event
+/// alone is larger, which is a 500 `item_too_large` whose details carry the `next_since` to skip it).
+pub const MAX_EVENTS_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Bytes of a JSON page reserved for the envelope around the events.
+const PAGE_ENVELOPE: usize = 1024;
+/// SSE frames buffered per client before the producer waits.
+const CLIENT_BUFFER: usize = 64;
+/// The comment text of heartbeat frames (`:heartbeat`).
+pub const HEARTBEAT: &str = "heartbeat";
+/// The SSE event name of the "too far behind" notice. Its data is a [`CatchUp`].
+pub const CATCH_UP: &str = "catch_up";
+
+/// True if the client asked for an event stream.
+#[must_use]
+pub fn wants_sse(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_ascii_lowercase().contains("text/event-stream"))
+}
+
+fn last_event_id(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// Data of the [`CATCH_UP`] SSE event: the client is too far behind to be replayed over the stream.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct CatchUp {
+    /// `too_far_behind` (event count) or `too_many_bytes` (byte budget).
+    pub reason: &'static str,
+    /// The last sequence number this stream delivered (or the one it started from).
+    pub since: u64,
+    /// The newest sequence number when the stream gave up. Page up to here.
+    pub head_seq: u64,
+    /// What to do.
+    pub hint: String,
+}
+
+/// The event log since a sequence number, as JSON or as an SSE stream (`Accept: text/event-stream`).
+///
+/// SSE frames carry `id: <seq>`, `event: event` and the event JSON as `data`. A `:heartbeat` comment is
+/// sent periodically. On reconnect, `Last-Event-ID` takes precedence over `since`. See the module
+/// documentation for the catch-up protocol (409 `catch_up_required`, the `catch_up` frame).
+#[utoipa::path(
+    get, path = "/api/v1/events", tag = "events", params(EventsParams),
+    responses(
+        (status = 200, description = "A page of events, or an SSE stream when `Accept: text/event-stream`", body = EventPage),
+        (status = 400, description = "`since` is ahead of the log (`invalid_since`)", body = ErrorBody),
+        (status = 401, body = ErrorBody),
+        (status = 409, description = "Stream only: too far behind to replay, or reconnecting to where the last stream sent `catch_up` (`catch_up_required`); page the JSON form first", body = ErrorBody),
+        (status = 429, description = "Too many stream (re)connects; see `Retry-After`", body = ErrorBody),
+        (status = 500, description = "One event is larger than the page limit (`item_too_large`, with `next_since` to skip it)", body = ErrorBody),
+        (status = 503, description = "Too many open streams, or the server is busy", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_events(
+    auth: Authenticated,
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    ApiQuery(q): ApiQuery<EventsParams>,
+) -> Result<Response, ApiError> {
+    if wants_sse(&headers) {
+        // Cheap checks first: rate limit, health, position, catch-up mark; then the slot.
+        app.sse_connects
+            .check(&auth.principal)
+            .map_err(ApiError::rate_limited)?;
+        if !app.engine.is_healthy() {
+            return Err(ApiError::unavailable());
+        }
+        // A reconnecting browser keeps the original URL (with its `since`) and adds Last-Event-ID,
+        // which is the newer position.
+        let since = last_event_id(&headers).or(q.since).unwrap_or(0);
+        let head_seq = app.engine.head_seq();
+        if since > head_seq {
+            return Err(ApiError::invalid_since(since, head_seq));
+        }
+        if head_seq - since > app.limits.max_replay_events as u64 {
+            return Err(ApiError::catch_up_required(
+                since,
+                head_seq,
+                "too_far_behind",
+            ));
+        }
+        if app.catch_up_marks.must_catch_up(&auth.principal, since) {
+            return Err(ApiError::catch_up_required(
+                since,
+                head_seq,
+                "catch_up_sent",
+            ));
+        }
+        let permit = app
+            .sse_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ApiError::too_many_streams())?;
+        return Ok(stream(&app, auth.principal, since, permit).into_response());
+    }
+    let since = q.since.unwrap_or(0);
+    let limit = q.limit.unwrap_or(REPLAY_PAGE).clamp(1, MAX_EVENTS_PAGE);
+    let engine = app.engine.clone();
+    let head_seq = engine.head_seq();
+    if since > head_seq {
+        return Err(ApiError::invalid_since(since, head_seq));
+    }
+    let page = blocking(&app, Work::Read, move || {
+        engine.events_since_capped(since, limit, MAX_EVENTS_PAGE_BYTES - PAGE_ENVELOPE)
+    })
+    .await??;
+    if let Some(seq) = page.oversized {
+        tracing::warn!(seq, "an event is larger than the page limit");
+        return Err(ApiError::item_too_large("next_since", json!(seq)));
+    }
+    let next_since = page.events.last().and_then(|e| e.seq).unwrap_or(since);
+    app.catch_up_marks.paged(&auth.principal, next_since);
+    Ok(Json(EventPage {
+        has_more: page.truncated || page.events.len() == limit,
+        events: page.events,
+        next_since,
+        head_seq: head_seq.max(next_since),
+    })
+    .into_response())
+}
+
+type Tx = mpsc::Sender<Result<SseEvent, Infallible>>;
+
+/// The SSE response body. It owns the stream slot, so the slot is freed exactly when the body is
+/// dropped, however the connection ends.
+struct Body {
+    rx: ReceiverStream<Result<SseEvent, Infallible>>,
+    _slot: OwnedSemaphorePermit,
+}
+
+impl Stream for Body {
+    type Item = Result<SseEvent, Infallible>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.get_mut().rx).poll_next(cx)
+    }
+}
+
+/// Why a send did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendError {
+    /// The client went away.
+    Closed,
+    /// The server is shutting down.
+    Shutdown,
+    /// The client did not take the frame within the stall deadline.
+    Stalled,
+}
+
+/// Sends a frame, waiting at most `stall` for room and giving up at shutdown.
+pub async fn send_frame(
+    tx: &Tx,
+    shutdown: &mut watch::Receiver<bool>,
+    stall: Duration,
+    frame: SseEvent,
+) -> Result<(), SendError> {
+    tokio::select! {
+        r = tx.send(Ok(frame)) => r.map_err(|_| SendError::Closed),
+        _ = shutdown.changed() => Err(SendError::Shutdown),
+        () = tokio::time::sleep(stall) => Err(SendError::Stalled),
+    }
+}
+
+struct Pump {
+    engine: Arc<Engine>,
+    reads: Arc<Semaphore>,
+    marks: Arc<CatchUpMarks>,
+    principal: Principal,
+    shutdown: watch::Receiver<bool>,
+    tx: Tx,
+    /// The last sequence number delivered (or the starting point).
+    last: u64,
+    stall: Duration,
+    max_events: usize,
+    max_bytes: usize,
+}
+
+impl Pump {
+    async fn send(&mut self, frame: SseEvent) -> bool {
+        match send_frame(&self.tx, &mut self.shutdown, self.stall, frame).await {
+            Ok(()) => true,
+            Err(SendError::Stalled) => {
+                tracing::debug!("event stream stalled; closing it");
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Reads a page of the log within `max_bytes`. The read permit is taken first (waiting at most the
+    /// stall deadline) and held by the blocking read itself; waiting for either ends early when the
+    /// client goes away or the server shuts down.
+    async fn read_page(
+        &mut self,
+        after: u64,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Option<CappedEvents> {
+        let permit = tokio::select! {
+            p = self.reads.clone().acquire_owned() => p.ok()?,
+            () = self.tx.closed() => return None,
+            _ = self.shutdown.changed() => return None,
+            () = tokio::time::sleep(self.stall) => {
+                tracing::debug!("event stream: no read permit; closing it");
+                return None;
+            }
+        };
+        let engine = self.engine.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            engine.events_since_capped(after, limit, max_bytes)
+        });
+        tokio::select! {
+            r = read => match r {
+                Ok(Ok(page)) => Some(page),
+                Ok(Err(err)) => {
+                    tracing::error!(error = %err, "event stream: cannot read events");
+                    None
+                }
+                Err(_) => None,
+            },
+            () = self.tx.closed() => None,
+            _ = self.shutdown.changed() => None,
+            () = tokio::time::sleep(self.stall) => {
+                tracing::debug!("event stream: a read took too long; closing it");
+                None
+            }
+        }
+    }
+
+    /// Tells the client to catch up through JSON pages and marks the principal; the caller then ends
+    /// the stream.
+    async fn too_far_behind(&mut self, reason: &'static str) {
+        self.marks.set(&self.principal, self.last);
+        let head_seq = self.engine.head_seq();
+        let notice = CatchUp {
+            reason,
+            since: self.last,
+            head_seq,
+            hint: format!(
+                "page through GET /api/v1/events?since={} up to head_seq, then reconnect from there",
+                self.last
+            ),
+        };
+        if let Ok(data) = serde_json::to_string(&notice) {
+            let _ = self
+                .send(SseEvent::default().event(CATCH_UP).data(data))
+                .await;
+        }
+    }
+
+    /// Sends every stored event after `self.last`, within the replay budget. Returns false if the
+    /// stream must end.
+    async fn catch_up(&mut self) -> bool {
+        if self.engine.head_seq().saturating_sub(self.last) > self.max_events as u64 {
+            self.too_far_behind("too_far_behind").await;
+            return false;
+        }
+        let (mut events, mut bytes) = (0usize, 0usize);
+        loop {
+            let want = REPLAY_PAGE.min(self.max_events - events + 1);
+            let budget = self.max_bytes.saturating_sub(bytes);
+            let Some(page) = self.read_page(self.last, want, budget).await else {
+                return false;
+            };
+            let full = page.events.len() == want;
+            for ev in &page.events {
+                let Some(seq) = ev.seq else { continue };
+                let data = match serde_json::to_string(ev) {
+                    Ok(d) => d,
+                    Err(err) => {
+                        tracing::error!(error = %err, seq, "cannot encode event");
+                        return false;
+                    }
+                };
+                events += 1;
+                bytes = bytes.saturating_add(data.len());
+                if events > self.max_events {
+                    self.too_far_behind("too_far_behind").await;
+                    return false;
+                }
+                if bytes > self.max_bytes {
+                    self.too_far_behind("too_many_bytes").await;
+                    return false;
+                }
+                if !self.send(frame(seq, data)).await {
+                    return false;
+                }
+                self.last = seq;
+            }
+            if page.truncated || page.oversized.is_some() {
+                self.too_far_behind("too_many_bytes").await;
+                return false;
+            }
+            if !full {
+                return true;
+            }
+        }
+    }
+
+    async fn run(mut self, mut live: broadcast::Receiver<Arc<Event>>, heartbeat: Duration) {
+        if !self.catch_up().await {
+            return;
+        }
+        let mut beat = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = self.tx.closed() => return,
+                _ = self.shutdown.changed() => return,
+                _ = beat.tick() => {
+                    if !self.send(SseEvent::default().comment(HEARTBEAT)).await {
+                        return;
+                    }
+                }
+                msg = live.recv() => match msg {
+                    Ok(ev) => {
+                        let Some(seq) = ev.seq else { continue };
+                        if seq <= self.last {
+                            continue;
+                        }
+                        if seq > self.last + 1 {
+                            // A gap: re-read from the database (which includes this event).
+                            if !self.catch_up().await {
+                                return;
+                            }
+                            continue;
+                        }
+                        let data = match serde_json::to_string(&*ev) {
+                            Ok(d) => d,
+                            Err(err) => {
+                                tracing::error!(error = %err, seq, "cannot encode event");
+                                return;
+                            }
+                        };
+                        if data.len() > self.max_bytes {
+                            self.too_far_behind("too_many_bytes").await;
+                            return;
+                        }
+                        if !self.send(frame(seq, data)).await {
+                            return;
+                        }
+                        self.last = seq;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "event stream lagged; re-reading from the database");
+                        if !self.catch_up().await {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    }
+}
+
+fn frame(seq: u64, data: String) -> SseEvent {
+    SseEvent::default()
+        .id(seq.to_string())
+        .event("event")
+        .data(data)
+}
+
+fn stream(
+    app: &AppState,
+    principal: Principal,
+    since: u64,
+    slot: OwnedSemaphorePermit,
+) -> impl IntoResponse + use<> {
+    let (tx, rx) = mpsc::channel(CLIENT_BUFFER);
+    // Subscribe before replaying so nothing committed in between is missed.
+    let live = app.engine.subscribe();
+    let mut shutdown = app.shutdown.clone();
+    shutdown.mark_unchanged();
+    let pump = Pump {
+        engine: app.engine.clone(),
+        reads: app.reads.clone(),
+        marks: app.catch_up_marks.clone(),
+        principal,
+        shutdown,
+        tx,
+        last: since,
+        stall: app.limits.sse_stall_timeout(),
+        max_events: app.limits.max_replay_events,
+        max_bytes: app.limits.max_replay_bytes,
+    };
+    tokio::spawn(pump.run(live, app.limits.sse_heartbeat()));
+    Sse::new(Body {
+        rx: ReceiverStream::new(rx),
+        _slot: slot,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_send_to_a_stuck_client_gives_up_after_the_stall_deadline() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stop, mut shutdown) = watch::channel(false);
+        let stall = Duration::from_millis(100);
+        send_frame(&tx, &mut shutdown, stall, SseEvent::default().data("1"))
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let r = send_frame(&tx, &mut shutdown, stall, SseEvent::default().data("2")).await;
+        assert_eq!(r, Err(SendError::Stalled));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_send_ends_at_shutdown() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (stop, mut shutdown) = watch::channel(false);
+        tx.send(Ok(SseEvent::default().data("1"))).await.unwrap();
+        let send = tokio::spawn(async move {
+            send_frame(
+                &tx,
+                &mut shutdown,
+                Duration::from_secs(3600),
+                SseEvent::default().data("2"),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stop.send(true).unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(2), send)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r, Err(SendError::Shutdown));
+    }
+}

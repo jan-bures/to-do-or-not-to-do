@@ -52,6 +52,7 @@ pub enum OrderError {
 }
 
 /// A fractional-index position key. Construct with [`PosKey::new`] or the generators.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct PosKey(String);
