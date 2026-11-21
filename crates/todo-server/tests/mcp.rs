@@ -852,6 +852,60 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
 }
 
 #[tokio::test]
+async fn agents_cannot_import_anywhere_and_learn_nothing_from_trying() {
+    let env = Env::start().await;
+    let open = env.t.create_list("Inbox").await;
+    let hidden = env.t.create_list("Diary").await;
+    // Plan everywhere except the diary: core alone would report `have: none` only there.
+    let (_, token) = env.agent(
+        "planner",
+        &grants(AccessLevel::Plan, &[(&hidden, AccessLevel::None)]),
+        None,
+    );
+    let head = env.t.server.engine.head_seq();
+    let import = |list: &str| {
+        let stamp =
+            json!({ "at": "2020-01-02T03:04:05Z", "by": { "type": "owner", "device": "alpha" } });
+        json!({ "command_id": id(), "command": { "cmd": "import_entity", "entity": {
+            "kind": "task", "data": {
+                "id": id(), "list": list, "title": "Imported", "notes": "",
+                "due": null, "priority": "none", "my_day": null, "completed_at": null,
+                "recurrence": null, "tags": [], "position": "a", "created": stamp,
+                "updated": stamp, "deleted": null, "merged_into": null
+            }
+        } } })
+    };
+    let mut answers = Vec::new();
+    for list in [open.clone(), hidden.clone(), id()] {
+        let (status, body) = env
+            .rest(
+                &token,
+                Method::POST,
+                "/api/v1/commands",
+                Some(import(&list)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"]["code"], "forbidden");
+        assert_eq!(body["error"]["details"]["owner_only"], true);
+        answers.push(body);
+    }
+    assert!(answers.windows(2).all(|w| w[0] == w[1]), "{answers:?}");
+    assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+    // No MCP tool takes a raw command: the tool list is exactly the fixed set.
+    let c = env.connect(&token).await;
+    let mut tools: Vec<String> = c
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    tools.sort();
+    assert_eq!(tools, ALL_TOOLS);
+}
+
+#[tokio::test]
 async fn a_retry_after_losing_access_gets_not_found_and_never_writes_twice() {
     let env = Env::start().await;
     let work = env.t.create_list("Work").await;

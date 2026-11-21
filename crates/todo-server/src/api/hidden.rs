@@ -23,14 +23,18 @@
 //! They read a snapshot taken just before the engine takes the writer, so a grant change that lands in
 //! between is not seen by this one request.
 //!
+//! Imports (`import_entity`, owner-only) are refused for agents here with one fixed `forbidden`,
+//! whatever list they name.
+//!
 //! Only agents are filtered (see [`visibility::sees_all`]); the helpers there decide what is readable.
 
 use super::error::{ApiError, domain_error};
 use super::visibility;
 use crate::engine::{Engine, EngineError};
+use todo_core::AccessLevel;
 use todo_core::access::entity_target;
 use todo_core::command::{Command, Placement};
-use todo_core::error::DomainError;
+use todo_core::error::{AccessDenied, DomainError};
 use todo_core::ids::EntityId;
 use todo_core::{Actor, State};
 
@@ -112,6 +116,8 @@ pub fn referenced(cmd: &Command) -> Vec<EntityId> {
             place(placement, &mut v);
         }
         C::Delete { id } | C::Restore { id } => v.push(*id),
+        // Owner-only, and refused for agents before any lookup (see `check_command`).
+        C::ImportEntity { .. } => {}
     }
     v
 }
@@ -143,10 +149,20 @@ fn readable(state: &State, actor: &Actor, id: EntityId) -> bool {
     }
 }
 
-/// `not_found` for the first entity `cmd` refers to that is missing or that `actor` cannot read.
+/// `not_found` for the first entity `cmd` refers to that is missing or that `actor` cannot read, and
+/// `forbidden` for an import.
 pub fn check_command(state: &State, actor: &Actor, cmd: &Command) -> Result<(), ApiError> {
     if visibility::sees_all(actor) {
         return Ok(());
+    }
+    if matches!(cmd, Command::ImportEntity { .. }) {
+        // Core would refuse it too, but with the caller's level on the import's target list, which
+        // tells a hidden list from a missing one. No agent may import anywhere: one fixed answer.
+        return Err(domain_error(&DomainError::Denied(AccessDenied {
+            needed: AccessLevel::Plan,
+            have: AccessLevel::None,
+            owner_only: true,
+        })));
     }
     match referenced(cmd)
         .into_iter()
@@ -171,7 +187,10 @@ pub fn check_undo(engine: &Engine, actor: &Actor, seq: u64) -> Result<(), ApiErr
         .find(|e| e.event.seq == Some(seq))
         .is_some_and(|e| {
             let scope = page.scopes.get(&seq);
-            visibility::event_visible(&engine.state(), actor, &e.event, scope)
+            // `state` before `whereabouts`, as `Engine::whereabouts` asks.
+            let state = engine.state();
+            let gone = engine.whereabouts();
+            visibility::event_visible(&state, &gone, actor, &e.event, scope)
         });
     if visible {
         Ok(())
