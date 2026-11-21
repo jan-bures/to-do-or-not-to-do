@@ -7,6 +7,7 @@ members = [
     "crates/todo-import",
     "crates/todo-backup",
     "crates/todo-fs",
+    "crates/todo-design",
 ]
 # Spikes are standalone throwaway projects and are not part of the workspace.
 exclude = ["spikes"]
@@ -24,6 +25,7 @@ todo-core = { path = "crates/todo-core" }
 todo-client = { path = "crates/todo-client" }
 todo-server = { path = "crates/todo-server" }
 todo-fs = { path = "crates/todo-fs" }
+todo-design = { path = "crates/todo-design" }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
@@ -75,6 +77,8 @@ hkdf = "0.12"
 # MCP server at /mcp (server only); the client half is used by the tests.
 rmcp = { version = "3.11", default-features = false }
 schemars = { version = "1", features = ["uuid1"] }
+# todo-design tests: reads the bundled fonts' cmap and names. Pure Rust, no dependencies.
+ttf-parser = "0.25"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

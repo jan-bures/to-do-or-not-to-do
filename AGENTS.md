@@ -35,6 +35,10 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `crates/todo-import` | Microsoft To Do importer CLI. |
 | `crates/todo-fs` | Owner-only files and directories (POSIX modes, Windows DACLs), shared by the server and the backup CLI. |
 | `crates/todo-backup` | Backup CLI: snapshot, zstd and age, upload to R2 under a monthly operations budget, restore and drill. |
+| `crates/todo-design` | Design tokens shared by every client: colours (OKLCH, derived from a hue), type, spacing, radii, motion, landscape geometry, icons. **No I/O.** Generates `generated/tokens.css` and `tokens.json`. |
+| `assets/fonts` | Bundled OFL fonts (static instances, Czech coverage), their licenses, sources and build script. |
+| `assets/icons` | Lucide icon subset (ISC) and the hand-drawn list glyphs. |
+| `docs/design-language.md` | The design language. Every UI change follows it and passes the screenshot gate. |
 | `apps/desktop` | GPUI desktop app (not yet created). |
 | `workers/email-ingest` | Cloudflare Email Worker for email to task (plain JS, Node tests). Contract: `docs/ingest-email.md`. |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
@@ -46,8 +50,10 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 # The shared crates must keep building for these targets (CI enforces it):
-cargo check -p todo-core -p todo-client --target wasm32-unknown-unknown
-cargo check -p todo-core -p todo-client --target aarch64-linux-android
+cargo check -p todo-core -p todo-client -p todo-design --target wasm32-unknown-unknown
+cargo check -p todo-core -p todo-client -p todo-design --target aarch64-linux-android
+# After changing a design token, regenerate the checked-in exports:
+TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated
 # The email Worker (Node 22 or later):
 cd workers/email-ingest && npm ci && npm test
 ```
@@ -64,8 +70,10 @@ with GPUI.
   `[workspace.dependencies]`.
 - **Tests.** Every behaviour change ships with tests. Event and undo logic gets property tests: replaying
   events rebuilds the same state, and undoing every event restores the previous state.
-- **Shared crates stay portable.** Before adding a dependency to `todo-core` or `todo-client`, check that it
-  builds for wasm32 and Android.
+- **Shared crates stay portable.** Before adding a dependency to `todo-core`, `todo-client` or `todo-design`,
+  check that it builds for wasm32 and Android.
+- **UI values come from `todo-design`.** Clients never hard-code colours, sizes or durations. Follow
+  `docs/design-language.md`.
 - **Process.** Work on branches, open PRs against `main`, and let CI pass before merging.
 
 ## Merging pull requests

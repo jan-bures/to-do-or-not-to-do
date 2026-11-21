@@ -22,7 +22,10 @@ A personal to-do app built as a shared interface for one person and their AI age
 | `crates/todo-client` | Client sync engine shared by the desktop, Android and web clients |
 | `crates/todo-server` | Self-hosted server: REST, live event stream, MCP |
 | `crates/todo-import` | Microsoft To Do importer |
+| `crates/todo-design` | Design tokens shared by every client (colours, type, spacing, motion, icons), with CSS and JSON exports. No I/O |
 | `crates/todo-backup` | Encrypted SQLite backups to S3-compatible storage (R2), with restore, a restore drill and a monthly operations budget |
+| `assets/fonts`, `assets/icons` | Bundled OFL fonts and the Lucide icon subset, with their licenses |
+| `docs/design-language.md` | The design language: concept, colour, type, grid, motion, icons and the screenshot gate |
 | `docs/agents` | Connecting agents over MCP (Claude Code, Codex, any streamable-HTTP client) and how they should behave |
 | `spikes/gpui-desktop` | GPUI viability spike on Windows: list, text input, tray, global hotkey, software rendering, drag-and-drop formats |
 | `spikes/graph-export` | Microsoft To Do export through Microsoft Graph, with a check against the local cache |

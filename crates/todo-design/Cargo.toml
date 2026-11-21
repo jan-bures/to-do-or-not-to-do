@@ -1,0 +1,23 @@
+[package]
+name = "todo-design"
+description = "Design tokens for every client: colours derived in OKLCH, type, spacing, radii, motion, landscape geometry, icons. Pure Rust, no I/O; must build for Windows, Android and wasm32."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Builds the JSON export. Pure Rust; builds for wasm32 and Android.
+serde_json.workspace = true
+
+[features]
+# `fonts::FontFace::bytes()`: embeds the bundled font files (about 0.9 MB) with `include_bytes!`.
+embed-fonts = []
+
+[dev-dependencies]
+ttf-parser.workspace = true
+
+[lints]
+workspace = true

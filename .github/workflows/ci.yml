@@ -51,8 +51,8 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p todo-core -p todo-client --locked --target wasm32-unknown-unknown
-      - run: cargo check -p todo-core -p todo-client --locked --target aarch64-linux-android
+      - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target wasm32-unknown-unknown
+      - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target aarch64-linux-android
 
   email-worker:
     name: email worker tests (Node)
