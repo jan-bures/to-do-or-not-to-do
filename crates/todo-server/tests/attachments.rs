@@ -1205,7 +1205,8 @@ async fn access_revoked_during_the_blob_lookup_hides_the_content() {
 async fn an_upload_past_its_deadline_charges_and_sends_nothing() {
     let t = TestServer::start_with(|c| {
         c.attachments.max_upload_bytes = MAX;
-        c.attachments.upload_timeout_ms = 300;
+        // Generous: the in-time retry below must finish well inside it on a loaded Windows CI runner.
+        c.attachments.upload_timeout_ms = 2_000;
     })
     .await;
     let (_, task) = inbox_task(&t).await;
@@ -1215,7 +1216,7 @@ async fn an_upload_past_its_deadline_charges_and_sends_nothing() {
     // The body is read and sealed in time; the commit would be claimed only after the deadline.
     t.server
         .attachments
-        .set_store_delay(std::time::Duration::from_millis(600));
+        .set_store_delay(std::time::Duration::from_millis(4_000));
     let up = upload_as(
         &t,
         TOKEN_A,
@@ -1229,7 +1230,7 @@ async fn an_upload_past_its_deadline_charges_and_sends_nothing() {
     assert_eq!(up.status, StatusCode::REQUEST_TIMEOUT, "{}", up.body);
     assert_eq!(up.body["error"]["code"], "timeout");
     // Let the abandoned work finish: it refuses to commit.
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(4_000)).await;
     assert_nothing_stored(&t, "upload past the deadline");
     assert_eq!(t.server.engine.head_seq(), head, "no command was stored");
     let (s, _) = t.get(&format!("/api/v1/tasks/{task}")).await;
