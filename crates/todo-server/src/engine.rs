@@ -35,7 +35,6 @@ use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
@@ -196,7 +195,7 @@ struct Writer {
     /// Milliseconds of the latest event time handed out, so event times strictly increase.
     last_ms: i64,
     /// The exclusive ownership lock on the database; released by [`Engine::close`].
-    owner_lock: Option<File>,
+    owner_lock: Option<db::OwnerLock>,
     /// Set by [`Engine::close`]: no more writes.
     closed: bool,
 }
@@ -478,6 +477,7 @@ impl Engine {
         w.closed = true;
         drop(w.conn.take());
         lock(&self.readers).clear();
+        // Dropping the guard unlocks at once (see `db::OwnerLock`).
         w.owner_lock = None;
     }
 

@@ -4,7 +4,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`crypto`] | the master key ring and the per-object STREAM (XChaCha20-Poly1305) construction |
-//! | [`store`] | the [`BlobStore`](store::BlobStore) trait, the local-filesystem store and the R2 store |
+//! | [`store`] | the [`BlobStore`] trait, the local-filesystem store and the R2 store |
 //! | [`registry`] | `attachments.sqlite3`: known objects, the R2 budget, GC state |
 //!
 //! The HTTP side is [`crate::api::attachments`].
@@ -65,7 +65,9 @@
 //!
 //! See [`registry`]. When the budget refuses (an upload that would not fit, or a month's operations used
 //! up) the request fails with 507 `storage_budget_exhausted` or 429 `r2_budget_exhausted`, and the first
-//! refusal of each month adds one warning task to the owner's Inbox, created by `System`. Nothing is ever
+//! refusal of each month adds one warning task to the owner's Inbox, created by `System` (its task and
+//! command IDs are derived from the master key: stable across restarts, but not computable by an agent
+//! probing for them). Nothing is ever
 //! sent to the bucket without being charged first, so the free tier cannot be exceeded silently. The
 //! counts cover attachments only; `todo-backup` keeps its own, much smaller budget for its bucket.
 //!
@@ -253,6 +255,9 @@ pub enum AttachmentError {
     /// The engine refused (closed, or failed).
     #[error(transparent)]
     Engine(#[from] EngineError),
+    /// The registry cannot be used by this server (it is newer).
+    #[error(transparent)]
+    Incompatible(RegistryError),
 }
 
 impl From<RegistryError> for AttachmentError {
@@ -260,6 +265,7 @@ impl From<RegistryError> for AttachmentError {
         match e {
             RegistryError::Refused(r) => Self::Refused(r),
             RegistryError::Sql(e) => Self::Registry(e),
+            e @ RegistryError::TooNew { .. } => Self::Incompatible(e),
         }
     }
 }
@@ -732,9 +738,13 @@ impl Attachments {
             .min_by_key(|l| (l.collection.is_some(), l.position.to_string(), l.id))
             .map(|l| l.id);
         let inbox = inbox.ok_or("no list named Inbox")?;
-        let task = TaskId::from_uuid(deterministic(&format!(
-            "todo-server attachment budget warning {month}"
-        )));
+        // Deterministic, so a lost registry flag cannot file a second warning, but keyed with the master
+        // key: an agent cannot compute the ID and probe whether a warning was filed.
+        let task = TaskId::from_uuid(
+            self.ring
+                .derive_uuid(&format!("budget warning task {month}"))
+                .map_err(|e| e.to_string())?,
+        );
         let mut t = NewTask::new(
             task,
             inbox,
@@ -757,9 +767,10 @@ impl Attachments {
             u.objects,
             self.cfg.gc_retention_days,
         );
-        let id = deterministic(&format!(
-            "todo-server attachment budget warning command {month}"
-        ));
+        let id = self
+            .ring
+            .derive_uuid(&format!("budget warning command {month}"))
+            .map_err(|e| e.to_string())?;
         match self
             .engine
             .execute(&Actor::System, id, &Command::CreateTask(Box::new(t)))
@@ -926,8 +937,15 @@ impl Attachments {
     #[allow(clippy::unused_self)]
     fn gc_hook(&self, _: GcStage, _: &BlobRow) {}
 
-    /// Runs [`collect_garbage_if_due`](Self::collect_garbage_if_due) every few minutes until shutdown.
-    pub fn spawn_collector(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) {
+    /// Runs [`collect_garbage_if_due`](Self::collect_garbage_if_due) every few minutes until `shutdown`
+    /// turns true or its sender is dropped. The task never starts a run after that, finishes a run in
+    /// progress, and then drops its handle on the engine; await the returned handle before closing the
+    /// engine.
+    #[must_use = "await the handle before closing the engine"]
+    pub fn spawn_collector(
+        self: &Arc<Self>,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(5 * 60));
@@ -948,7 +966,7 @@ impl Attachments {
                     Err(e) => tracing::error!(error = %e, "attachment garbage collection panicked"),
                 }
             }
-        });
+        })
     }
 }
 

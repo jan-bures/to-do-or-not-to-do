@@ -32,6 +32,22 @@ async fn upload_as(
     body: impl Into<reqwest::Body>,
     extra: &[(&str, &str)],
 ) -> Upload {
+    try_upload_as(t, token, task, name, media, body, extra)
+        .await
+        .unwrap()
+}
+
+/// For a body the server refuses before reading all of it: it answers, but the connection may also
+/// be reset under the client while it is still sending (Windows does that), which is `Err`.
+async fn try_upload_as(
+    t: &TestServer,
+    token: &str,
+    task: &str,
+    name: &str,
+    media: Option<&str>,
+    body: impl Into<reqwest::Body>,
+    extra: &[(&str, &str)],
+) -> Result<Upload, reqwest::Error> {
     let mut q = vec![("file_name", name)];
     q.extend_from_slice(extra);
     let mut req = t
@@ -43,15 +59,15 @@ async fn upload_as(
     if let Some(m) = media {
         req = req.header(CONTENT_TYPE, m);
     }
-    let res = req.send().await.unwrap();
+    let res = req.send().await?;
     let status = res.status();
     let headers = res.headers().clone();
-    let text = res.text().await.unwrap();
-    Upload {
+    let text = res.text().await?;
+    Ok(Upload {
         status,
         headers,
         body: serde_json::from_str(&text).unwrap_or(Value::String(text)),
-    }
+    })
 }
 
 async fn upload(
@@ -247,12 +263,16 @@ async fn the_size_cap_is_enforced_while_streaming() {
     let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
         (0..4).map(|_| Ok(vec![b'z'; 40_000])).collect();
     let body = reqwest::Body::wrap_stream(futures_util::stream::iter(chunks));
-    let up = upload_as(&t, TOKEN_A, &task, "big.bin", None, body, &[]).await;
-    assert_eq!(up.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", up.body);
-    assert_eq!(up.body["error"]["code"], "payload_too_large");
+    if let Ok(up) = try_upload_as(&t, TOKEN_A, &task, "big.bin", None, body, &[]).await {
+        assert_eq!(up.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", up.body);
+        assert_eq!(up.body["error"]["code"], "payload_too_large");
+    }
     // A declared length over the cap is refused before anything is read.
-    let up = upload(&t, &task, "big.bin", None, &vec![0; MAX as usize + 1]).await;
-    assert_eq!(up.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", up.body);
+    let big = vec![0; MAX as usize + 1];
+    if let Ok(up) = try_upload_as(&t, TOKEN_A, &task, "big.bin", None, big, &[]).await {
+        assert_eq!(up.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", up.body);
+        assert_eq!(up.body["error"]["code"], "payload_too_large");
+    }
     // Nothing was kept anywhere.
     assert!(files_in(&t.dir.path().join("blobs")).is_empty());
     assert!(files_in(&t.dir.path().join("attachments-spool")).is_empty());

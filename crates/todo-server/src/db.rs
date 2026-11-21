@@ -300,10 +300,26 @@ pub fn lock_path(db: &Path) -> std::io::Result<PathBuf> {
     Ok(PathBuf::from(name))
 }
 
+/// The ownership lock of a database (see [`lock_database`]). Dropping it unlocks.
+#[derive(Debug)]
+pub struct OwnerLock(File);
+
+impl Drop for OwnerLock {
+    fn drop(&mut self) {
+        // Unlock explicitly rather than rely on closing the file: a child process forked meanwhile
+        // (by a test that runs a tool, say) holds a duplicate of the descriptor until it execs, and an
+        // `flock` lock lasts while any duplicate is open. The next owner could then find it locked.
+        if let Err(e) = self.0.unlock() {
+            tracing::warn!(error = %e, "cannot unlock the database ownership lock");
+        }
+    }
+}
+
 /// Takes the exclusive ownership lock of the database at `db` (an OS file lock on [`lock_path`]),
-/// without waiting. The lock is held until the returned file is dropped, and the OS releases it if the
-/// process dies. Fails with [`StoreError::Locked`] if another holder exists, in this process or another.
-pub fn lock_database(db: &Path) -> Result<File> {
+/// without waiting. The lock is held until the returned guard is dropped, and the OS releases it if
+/// the process dies. Fails with [`StoreError::Locked`] if another holder exists, in this process or
+/// another.
+pub fn lock_database(db: &Path) -> Result<OwnerLock> {
     let path = lock_path(db).map_err(|source| StoreError::Lock {
         path: db.to_owned(),
         source,
@@ -318,7 +334,7 @@ pub fn lock_database(db: &Path) -> Result<File> {
             source,
         })?;
     match file.try_lock() {
-        Ok(()) => Ok(file),
+        Ok(()) => Ok(OwnerLock(file)),
         Err(TryLockError::WouldBlock) => Err(StoreError::Locked {
             db: db.to_owned(),
             lock: path,
@@ -1361,4 +1377,23 @@ pub fn dump_projections(conn: &Connection) -> Result<ProjectionDump> {
         out.insert((*table).to_owned(), rows);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_the_lock_releases_it_while_a_duplicate_descriptor_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("todo.sqlite3");
+        let lock = lock_database(&db).unwrap();
+        // What a child process forked at the wrong moment holds until it execs.
+        let duplicate = lock.0.try_clone().unwrap();
+        assert!(matches!(lock_database(&db), Err(StoreError::Locked { .. })));
+        drop(lock);
+        let again = lock_database(&db).expect("released despite the duplicate");
+        drop(duplicate);
+        drop(again);
+    }
 }

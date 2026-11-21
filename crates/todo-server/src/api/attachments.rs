@@ -20,6 +20,22 @@
 //! **IDs.** A taken `attachment_id` is 409 `already_exists` for the owner and the generic
 //! `id_unavailable` for agents, the same whoever holds the ID (see [`super::hidden`]).
 //!
+//! What remains: IDs are chosen by clients, so an agent can still confirm that an ID *it already knows*
+//! is taken (it gets `id_unavailable`, or `command_id_reused` for the upload's derived command ID,
+//! instead of success). It learns nothing else: not the task, the list, or whether the attachment is
+//! live. That is acceptable only because IDs cannot be guessed:
+//!
+//! - an upload without `attachment_id` gets a UUIDv4 from the server: 122 random bits;
+//! - clients built on `todo-client` make UUIDv7s: a 48-bit millisecond timestamp and 74 bits from the
+//!   OS random number generator, so knowing roughly when it was made still leaves 2^74 candidates;
+//! - imported attachments are UUIDv7-shaped with the original creation time and 74 bits of a SHA-256
+//!   over a fixed namespace and the Microsoft To Do attachment ID, which never leaves the import bundle
+//!   (the server stores no source IDs);
+//! - the one server-made ID that used to be computable, the monthly budget warning task, is now
+//!   derived with the master key (see [`crate::blobs`]).
+//!
+//! An agent that picks a predictable ID for its own upload only makes its own attachment probeable.
+//!
 //! **Costs.** Every upload and download is an R2 operation counted in the monthly budget (see
 //! [`crate::blobs`]); downloads are also rate-limited per token, and both have concurrency caps.
 //!

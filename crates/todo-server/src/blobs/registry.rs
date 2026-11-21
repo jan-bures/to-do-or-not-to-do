@@ -12,6 +12,12 @@
 //!   zero. Operations are charged *before* the request is sent, so a failed request still counts.
 //!
 //! A charge that would pass a cap is refused and nothing is sent.
+//!
+//! # Schema
+//!
+//! Versioned with `PRAGMA user_version`: opening runs the missing steps of `MIGRATIONS` in order, one
+//! transaction each, and refuses a registry newer than this code ([`RegistryError::TooNew`]) rather than
+//! guess at it.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
@@ -109,6 +115,17 @@ pub enum RegistryError {
     /// SQLite failed.
     #[error("attachment registry: {0}")]
     Sql(#[from] rusqlite::Error),
+    /// The registry was written by a newer server.
+    #[error(
+        "attachment registry has schema version {found}, newer than this server knows ({known}); \
+         run a newer server"
+    )]
+    TooNew {
+        /// The registry's version.
+        found: i64,
+        /// The newest version this code knows.
+        known: i64,
+    },
 }
 
 /// One object.
@@ -157,28 +174,56 @@ pub struct Registry {
     caps: BudgetCaps,
 }
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS blobs (
-    object_key TEXT PRIMARY KEY,
-    attachment_id TEXT NOT NULL,
-    ref_key TEXT NOT NULL,
-    plain_size INTEGER NOT NULL,
-    stored_size INTEGER NOT NULL,
-    stored INTEGER NOT NULL DEFAULT 0,
-    created_ms INTEGER NOT NULL,
-    gone_since_ms INTEGER,
-    purging INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS blobs_by_attachment ON blobs (attachment_id, ref_key);
-CREATE TABLE IF NOT EXISTS budget (
-    month TEXT PRIMARY KEY,
-    class_a INTEGER NOT NULL DEFAULT 0,
-    class_b INTEGER NOT NULL DEFAULT 0,
-    warned INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
-PRAGMA user_version = 1;
-";
+/// The schema, as ordered migrations: `MIGRATIONS[n]` takes a registry from version `n` to `n + 1`
+/// (`PRAGMA user_version`). Append only; never edit a step that has shipped.
+const MIGRATIONS: &[&str] = &[
+    // 1: objects, budget, meta.
+    "CREATE TABLE blobs (
+        object_key TEXT PRIMARY KEY,
+        attachment_id TEXT NOT NULL,
+        ref_key TEXT NOT NULL,
+        plain_size INTEGER NOT NULL,
+        stored_size INTEGER NOT NULL,
+        stored INTEGER NOT NULL DEFAULT 0,
+        created_ms INTEGER NOT NULL,
+        gone_since_ms INTEGER
+    );
+    CREATE INDEX blobs_by_attachment ON blobs (attachment_id, ref_key);
+    CREATE TABLE budget (
+        month TEXT PRIMARY KEY,
+        class_a INTEGER NOT NULL DEFAULT 0,
+        class_b INTEGER NOT NULL DEFAULT 0,
+        warned INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL);",
+    // 2: the garbage collector's claims.
+    "ALTER TABLE blobs ADD COLUMN purging INTEGER NOT NULL DEFAULT 0;",
+];
+
+/// The schema version this code writes.
+pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
+
+/// Brings the registry to [`SCHEMA_VERSION`], one transaction per step. Refuses a newer registry.
+fn migrate(conn: &mut Connection) -> Result<(), RegistryError> {
+    let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if found > SCHEMA_VERSION {
+        return Err(RegistryError::TooNew {
+            found,
+            known: SCHEMA_VERSION,
+        });
+    }
+    for (step, sql) in MIGRATIONS
+        .iter()
+        .enumerate()
+        .skip(usize::try_from(found).unwrap_or(0))
+    {
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", step as i64 + 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
 
 /// The registry file in the data directory.
 pub const REGISTRY_FILE: &str = "attachments.sqlite3";
@@ -213,11 +258,11 @@ const COLUMNS: &str = "object_key, attachment_id, ref_key, plain_size, stored_si
 impl Registry {
     /// Opens (creating) the registry.
     pub fn open(path: &Path, caps: BudgetCaps) -> Result<Self, RegistryError> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(SCHEMA)?;
+        migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             caps,
@@ -551,6 +596,75 @@ mod tests {
         drop(r);
         let r = Registry::open(&dir.path().join(REGISTRY_FILE), caps).unwrap();
         assert_eq!(r.usage("2026-11").unwrap().class_a, 2, "persisted");
+    }
+
+    /// The schema as the first release (`bbb092d`) wrote it, before claims existed.
+    const V1_AS_SHIPPED: &str = "
+        CREATE TABLE IF NOT EXISTS blobs (
+            object_key TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL,
+            ref_key TEXT NOT NULL,
+            plain_size INTEGER NOT NULL,
+            stored_size INTEGER NOT NULL,
+            stored INTEGER NOT NULL DEFAULT 0,
+            created_ms INTEGER NOT NULL,
+            gone_since_ms INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS blobs_by_attachment ON blobs (attachment_id, ref_key);
+        CREATE TABLE IF NOT EXISTS budget (
+            month TEXT PRIMARY KEY,
+            class_a INTEGER NOT NULL DEFAULT 0,
+            class_b INTEGER NOT NULL DEFAULT 0,
+            warned INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+        PRAGMA user_version = 1;
+        INSERT INTO blobs VALUES ('k1', '0190c4f0-0000-7000-8000-000000000001', 'k1', 5, 90, 1, 7, NULL);
+        INSERT INTO budget VALUES ('2026-11', 3, 4, 1);
+    ";
+
+    #[test]
+    fn a_first_release_registry_is_migrated_and_keeps_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(REGISTRY_FILE);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(V1_AS_SHIPPED)
+            .unwrap();
+        let r = Registry::open(&path, BudgetCaps::default()).unwrap();
+        let version: i64 = r
+            .lock()
+            .pragma_query_value(None, "user_version", |x| x.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let rows = r.all().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].stored && !rows[0].purging);
+        assert_eq!(r.usage("2026-11").unwrap().class_a, 3);
+        assert!(!r.claim_warning("2026-11").unwrap(), "the flag survived");
+        // Claims work on the migrated schema and load after a reopen.
+        assert!(r.purging().unwrap().is_empty());
+        r.set_purging("k1", true).unwrap();
+        drop(r);
+        let r = Registry::open(&path, BudgetCaps::default()).unwrap();
+        assert_eq!(r.purging().unwrap()[0].object_key, "k1");
+    }
+
+    #[test]
+    fn a_registry_from_a_newer_server_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(REGISTRY_FILE);
+        Registry::open(&path, BudgetCaps::default()).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        match Registry::open(&path, BudgetCaps::default()) {
+            Err(RegistryError::TooNew { found, known }) => {
+                assert_eq!((found, known), (SCHEMA_VERSION + 1, SCHEMA_VERSION));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

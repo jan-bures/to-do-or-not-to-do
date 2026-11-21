@@ -291,6 +291,8 @@ pub struct Server {
     authsvc: Arc<AuthService>,
     ingest: Arc<Ingest>,
     attachments: Arc<crate::blobs::Attachments>,
+    /// The attachment garbage collector; awaited before the engine is closed.
+    collector: JoinHandle<()>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -372,7 +374,7 @@ impl Server {
                 source,
             })?;
         let (shutdown, shutdown_rx) = watch::channel(false);
-        attachments.spawn_collector(shutdown_rx.clone());
+        let collector = attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
             engine: engine.clone(),
             auth,
@@ -398,6 +400,7 @@ impl Server {
             authsvc,
             ingest,
             attachments,
+            collector,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -441,6 +444,12 @@ impl Server {
             signal,
         )
         .await;
+        // `serve` set the shutdown flag and dropped its sender: the collector finishes a run in progress
+        // (it may need the writer) and ends, dropping its handle on the engine.
+        if let Err(e) = self.collector.await {
+            tracing::error!(error = %e, "attachment garbage collector failed");
+        }
+        drop(self.attachments);
         // Refuse late writes (from timed-out requests still on the blocking pool) and release the
         // ownership lock so the next server can open the database.
         let engine = self.engine;

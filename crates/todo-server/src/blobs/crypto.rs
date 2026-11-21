@@ -227,6 +227,16 @@ impl KeyRing {
         Ok(Self { keys })
     }
 
+    /// A UUID (version 8) derived from the current key and `context`: the same for the same key and
+    /// context, and unpredictable without the key. For server-made IDs that must not be guessable.
+    pub fn derive_uuid(&self, context: &str) -> Result<uuid::Uuid, CryptoError> {
+        let hk = Hkdf::<Sha256>::new(Some(b"todo-server derived id"), &self.current().key);
+        let mut b = [0u8; 16];
+        hk.expand(context.as_bytes(), &mut b)
+            .map_err(|_| CryptoError::Corrupt("key derivation"))?;
+        Ok(uuid::Uuid::new_v8(b))
+    }
+
     fn current(&self) -> &MasterKey {
         // Never empty: every constructor adds a key.
         &self.keys[0]
@@ -481,6 +491,17 @@ mod tests {
         let mut out = Vec::new();
         Opener::new(ring, key, att, sealed)?.copy_to(&mut out)?;
         Ok(out)
+    }
+
+    #[test]
+    fn derived_ids_are_stable_per_key_and_unpredictable_without_it() {
+        let a = KeyRing::from_key([1; 32]);
+        let b = KeyRing::from_key([2; 32]);
+        let id = a.derive_uuid("budget warning task 2026-11").unwrap();
+        assert_eq!(id, a.derive_uuid("budget warning task 2026-11").unwrap());
+        assert_ne!(id, a.derive_uuid("budget warning task 2026-12").unwrap());
+        assert_ne!(id, b.derive_uuid("budget warning task 2026-11").unwrap());
+        assert_eq!(id.get_version_num(), 8);
     }
 
     #[test]

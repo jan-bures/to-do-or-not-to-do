@@ -625,3 +625,31 @@ fn config_limits() {
         assert!(bad.validate().is_err(), "{bad:?}");
     }
 }
+
+#[tokio::test]
+async fn the_collector_stops_on_shutdown_and_lets_go_of_the_engine() {
+    let env = Env::new(cfg());
+    let engine = env.engine.clone();
+    let att = Arc::new(env.att);
+    let (tx, rx) = watch::channel(false);
+    let handle = att.spawn_collector(rx);
+    // Let the first (immediate) run start, then shut down.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("the collector ended")
+        .unwrap();
+    assert_eq!(Arc::strong_count(&att), 1, "the task dropped its handle");
+    drop(att);
+    // A dropped sender stops it as well.
+    let att =
+        Arc::new(Attachments::with_store(&cfg(), env._dir.path(), engine, env.store).unwrap());
+    let (tx, rx) = watch::channel(false);
+    let handle = att.spawn_collector(rx);
+    drop(tx);
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("the collector ended")
+        .unwrap();
+}
