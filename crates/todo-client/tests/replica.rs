@@ -1,0 +1,313 @@
+//! The replica's rules, without a network: optimistic view, acknowledgement, recognition of a
+//! command's events, rejection, persistence and resync.
+#![allow(clippy::unwrap_used)]
+
+mod fake;
+
+use fake::*;
+use proptest::prelude::*;
+use todo_client::outbox::{Operation, OutboxEntry, Rejection};
+use todo_client::replica::{ConfirmError, SubmitError};
+use todo_client::{MemoryStorage, Replica};
+use todo_core::Command;
+use uuid::Uuid;
+
+fn entry(n: u128, command: Command, at_ms: i64) -> OutboxEntry {
+    OutboxEntry {
+        command_id: Uuid::from_u128(n),
+        op: Operation::Command { command },
+        submitted_at: ts(at_ms),
+        attempts: 0,
+        acked: None,
+    }
+}
+
+fn open(storage: &MemoryStorage) -> Replica {
+    Replica::open(owner(), Box::new(storage.clone())).unwrap()
+}
+
+fn notes(r: &mut Replica, t: todo_core::ids::TaskId) -> String {
+    r.view().tasks[&t].notes.clone()
+}
+
+/// A replica that has confirmed one list and one task.
+fn seeded() -> (Replica, FakeServer, MemoryStorage) {
+    let storage = MemoryStorage::new();
+    let mut r = open(&storage);
+    let mut server = FakeServer::default();
+    server
+        .execute(
+            &owner(),
+            Uuid::from_u128(900),
+            &create_list(list_id(1), "Inbox"),
+        )
+        .unwrap();
+    server
+        .execute(
+            &owner(),
+            Uuid::from_u128(901),
+            &create_task(task_id(1), list_id(1), "Task"),
+        )
+        .unwrap();
+    r.apply_confirmed(&server.log).unwrap();
+    (r, server, storage)
+}
+
+#[test]
+fn a_submitted_command_shows_in_the_view_at_once() {
+    let (mut r, _server, _) = seeded();
+    r.submit(entry(1, add_note(task_id(1), "hello"), 1))
+        .unwrap();
+    assert_eq!(notes(&mut r, task_id(1)), "hello");
+    assert!(r.confirmed().tasks[&task_id(1)].notes.is_empty());
+    assert_eq!(r.outbox().len(), 1);
+}
+
+#[test]
+fn an_invalid_command_is_refused_locally_and_not_queued() {
+    let (mut r, _server, _) = seeded();
+    let err = r
+        .submit(entry(1, add_note(task_id(99), "x"), 1))
+        .unwrap_err();
+    assert!(matches!(err, SubmitError::Invalid(_)));
+    assert!(r.outbox().is_empty());
+}
+
+#[test]
+fn a_storage_failure_refuses_the_submission() {
+    let (mut r, _server, storage) = seeded();
+    storage.set_fail_writes(true);
+    let err = r
+        .submit(entry(1, add_note(task_id(1), "x"), 1))
+        .unwrap_err();
+    assert!(matches!(err, SubmitError::Storage(_)));
+    assert!(r.outbox().is_empty());
+    assert!(notes(&mut r, task_id(1)).is_empty());
+}
+
+#[test]
+fn an_acknowledged_command_leaves_when_its_events_arrive_and_is_never_applied_twice() {
+    let (mut r, mut server, _) = seeded();
+    let e = entry(1, add_note(task_id(1), "once"), 1);
+    r.submit(e.clone()).unwrap();
+    let sent = r.next_to_send().unwrap().unwrap();
+    assert_eq!(sent.attempts, 1);
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    r.acknowledge(e.command_id, &result).unwrap();
+    // Acknowledged but not yet confirmed: still pending, still in the view.
+    assert_eq!(r.outbox().len(), 1);
+    assert!(r.next_to_send().unwrap().is_none());
+    assert_eq!(notes(&mut r, task_id(1)), "once");
+    r.apply_confirmed(&server.log).unwrap();
+    assert!(r.outbox().is_empty());
+    assert_eq!(notes(&mut r, task_id(1)), "once");
+}
+
+#[test]
+fn events_arriving_before_the_acknowledgement_are_recognised() {
+    let (mut r, mut server, _) = seeded();
+    let e = entry(1, add_note(task_id(1), "once"), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap().unwrap();
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    // The stream is faster than the response.
+    r.apply_confirmed(&server.log).unwrap();
+    assert!(r.outbox().is_empty(), "recognised by its event IDs");
+    assert_eq!(notes(&mut r, task_id(1)), "once");
+    // The late acknowledgement is harmless.
+    r.acknowledge(e.command_id, &result).unwrap();
+    assert!(r.outbox().is_empty());
+}
+
+#[test]
+fn a_command_that_was_never_sent_is_not_mistaken_for_someone_elses() {
+    let (mut r, mut server, _) = seeded();
+    // Another device makes the same change: different actor, so different event IDs.
+    let other = todo_core::Actor::owner("phone").unwrap();
+    r.submit(entry(1, add_note(task_id(1), "same"), 1)).unwrap();
+    r.next_to_send().unwrap();
+    server
+        .execute(&other, Uuid::from_u128(5), &add_note(task_id(1), "same"))
+        .unwrap();
+    r.apply_confirmed(&server.log).unwrap();
+    assert_eq!(r.outbox().len(), 1);
+    assert_eq!(notes(&mut r, task_id(1)).matches("same").count(), 2);
+}
+
+#[test]
+fn a_command_that_changed_nothing_leaves_on_acknowledgement() {
+    let (mut r, mut server, _) = seeded();
+    let complete = Command::CompleteTask { id: task_id(1) };
+    server
+        .execute(&owner(), Uuid::from_u128(7), &complete)
+        .unwrap();
+    r.apply_confirmed(&server.log).unwrap();
+    let e = entry(1, complete.clone(), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap();
+    let result = server.execute(&owner(), e.command_id, &complete).unwrap();
+    assert!(result.events.is_empty());
+    r.acknowledge(e.command_id, &result).unwrap();
+    assert!(r.outbox().is_empty());
+}
+
+#[test]
+fn a_rejected_command_moves_to_couldnt_sync_until_dismissed() {
+    let (mut r, _server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "x"), 1);
+    r.submit(e.clone()).unwrap();
+    let rejection = Rejection {
+        status: 409,
+        code: "deleted".into(),
+        message: "task is deleted".into(),
+    };
+    r.reject(e.command_id, rejection.clone(), ts(2)).unwrap();
+    assert!(r.outbox().is_empty());
+    assert_eq!(r.failed().len(), 1);
+    assert_eq!(r.failed()[0].rejection, rejection);
+    assert!(
+        notes(&mut r, task_id(1)).is_empty(),
+        "no longer in the view"
+    );
+    // Survives a restart.
+    let mut again = open(&storage);
+    assert_eq!(again.failed().len(), 1);
+    assert!(again.dismiss(e.command_id).unwrap());
+    assert!(!again.dismiss(e.command_id).unwrap());
+    assert!(open(&storage).failed().is_empty());
+}
+
+#[test]
+fn a_restart_resumes_from_the_cursor_and_keeps_the_outbox() {
+    for snapshot_every in [1, 2, 1000] {
+        let storage = MemoryStorage::new();
+        let mut server = FakeServer::default();
+        let mut r = open(&storage);
+        r.set_snapshot_every(snapshot_every);
+        server
+            .execute(&owner(), Uuid::from_u128(1), &create_list(list_id(1), "A"))
+            .unwrap();
+        server
+            .execute(
+                &owner(),
+                Uuid::from_u128(2),
+                &create_task(task_id(1), list_id(1), "T"),
+            )
+            .unwrap();
+        server
+            .execute(&owner(), Uuid::from_u128(3), &add_note(task_id(1), "n"))
+            .unwrap();
+        r.apply_confirmed(&server.log).unwrap();
+        r.submit(entry(10, add_note(task_id(1), "pending"), 1))
+            .unwrap();
+        r.next_to_send().unwrap();
+        let cursor = r.cursor();
+        let view = r.view();
+        drop(r);
+
+        let mut again = open(&storage);
+        assert_eq!(again.cursor(), cursor, "snapshot_every {snapshot_every}");
+        assert!(again.confirmed().data_eq(&server.state));
+        assert_eq!(again.outbox().len(), 1);
+        assert_eq!(again.outbox()[0].attempts, 1, "attempts are durable");
+        assert!(again.view().data_eq(&view));
+    }
+}
+
+#[test]
+fn a_gap_and_a_divergence_are_reported() {
+    let (mut r, mut server, _) = seeded();
+    server
+        .execute(&owner(), Uuid::from_u128(1), &add_note(task_id(1), "a"))
+        .unwrap();
+    server
+        .execute(&owner(), Uuid::from_u128(2), &add_note(task_id(1), "b"))
+        .unwrap();
+    let last = server.log.last().unwrap().clone();
+    assert!(matches!(
+        r.apply_confirmed(std::slice::from_ref(&last)),
+        Err(ConfirmError::Gap {
+            expected: 3,
+            got: 4
+        })
+    ));
+    // An event that does not apply (here: the same event under a new sequence number).
+    let mut dup = server.log[0].clone();
+    dup.seq = Some(3);
+    assert!(matches!(
+        r.apply_confirmed(&[dup]),
+        Err(ConfirmError::Diverged(_))
+    ));
+    assert_eq!(r.cursor(), 2);
+}
+
+#[test]
+fn reset_forgets_the_confirmed_state_but_keeps_the_outbox() {
+    let (mut r, mut server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "x"), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap();
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    r.acknowledge(e.command_id, &result).unwrap();
+    r.reset().unwrap();
+    assert_eq!(r.cursor(), 0);
+    assert!(r.confirmed().tasks.is_empty());
+    assert_eq!(r.outbox().len(), 1);
+    assert_eq!(r.outbox()[0].acked, None, "sent again after a resync");
+    let again = open(&storage);
+    assert_eq!(again.cursor(), 0);
+    assert_eq!(again.outbox().len(), 1);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    /// However responses get lost and acknowledgements and confirmed events interleave, every command
+    /// ends up applied once: the outbox drains, the replica's confirmed state equals the server's, and
+    /// the view holds every note exactly once at every step.
+    #[test]
+    fn acknowledgements_and_events_in_any_order_apply_each_command_once(
+        plan in prop::collection::vec((any::<bool>(), 0usize..4), 1..12)
+    ) {
+        let (mut r, mut server, _) = seeded();
+        let mut delivered = server.log.len();
+        for (i, (ack, deliver)) in plan.iter().enumerate() {
+            let e = entry(100 + i as u128, add_note(task_id(1), &format!("[{i}]")), i as i64 + 10);
+            r.submit(e).unwrap();
+            // The sender retries the oldest unacknowledged entry; `ack == false` loses the response.
+            if let Some(sent) = r.next_to_send().unwrap() {
+                let result = server.execute(&owner(), sent.command_id, sent.command().unwrap()).unwrap();
+                if *ack {
+                    r.acknowledge(sent.command_id, &result).unwrap();
+                }
+            }
+            let upto = (delivered + deliver).min(server.log.len());
+            r.apply_confirmed(&server.log[delivered..upto]).unwrap();
+            delivered = upto;
+            let view = r.view();
+            for j in 0..=i {
+                prop_assert_eq!(view.tasks[&task_id(1)].notes.matches(&format!("[{j}]")).count(), 1);
+            }
+        }
+        // The network recovers.
+        while let Some(sent) = r.next_to_send().unwrap() {
+            let result = server.execute(&owner(), sent.command_id, sent.command().unwrap()).unwrap();
+            r.acknowledge(sent.command_id, &result).unwrap();
+        }
+        r.apply_confirmed(&server.log[delivered..]).unwrap();
+        prop_assert!(r.outbox().is_empty());
+        prop_assert_eq!(server.stored_commands(), 2 + plan.len());
+        prop_assert!(r.confirmed().data_eq(&server.state));
+        prop_assert!(r.view().data_eq(&server.state));
+    }
+}

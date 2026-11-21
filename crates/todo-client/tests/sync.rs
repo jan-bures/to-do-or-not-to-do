@@ -1,0 +1,397 @@
+//! End-to-end sync against an in-process `todo-server` over real HTTP and SSE.
+#![cfg(feature = "native")]
+#![allow(clippy::unwrap_used)]
+
+mod server;
+
+use server::*;
+use std::time::Duration;
+use todo_client::{Connection, MemoryStorage, Replica};
+use todo_core::Command;
+use todo_core::command::{NewTask, Placement};
+use todo_core::ids::{ListId, TaskId};
+
+const WAIT: Duration = Duration::from_secs(20);
+
+fn new_list<T: todo_client::Transport>(c: &Client<T>, name: &str) -> (ListId, Command) {
+    let id = ListId::from_uuid(c.new_uuid());
+    (
+        id,
+        Command::CreateList {
+            id,
+            collection: None,
+            name: name.into(),
+            color: None,
+            placement: Placement::Last,
+        },
+    )
+}
+
+fn new_task<T: todo_client::Transport>(
+    c: &Client<T>,
+    list: ListId,
+    title: &str,
+) -> (TaskId, Command) {
+    let id = TaskId::from_uuid(c.new_uuid());
+    (
+        id,
+        Command::CreateTask(Box::new(NewTask::new(id, list, title))),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_clients_converge_and_see_each_others_edits_through_the_stream() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+
+    let (list, cmd) = new_list(&a, "Groceries");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "Milk");
+    a.submit(cmd).unwrap();
+    assert!(a.view().tasks.contains_key(&task), "optimistic");
+
+    eventually("b sees a's task", WAIT, || {
+        b.view().tasks.contains_key(&task)
+    })
+    .await;
+    b.submit(Command::CompleteTask { id: task }).unwrap();
+    eventually("a sees b's completion", WAIT, || {
+        a.view().tasks[&task].completed_at.is_some()
+    })
+    .await;
+
+    eventually("both converge", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    eventually("both online", WAIT, || {
+        a.status().connection == Connection::Online && b.status().connection == Connection::Online
+    })
+    .await;
+    assert_eq!(a.status().pending, 0);
+    assert_eq!(a.status().last_error, None);
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edits_made_offline_sync_after_reconnecting() {
+    let server = TestServer::start().await;
+    let ta = Switch::new(server.transport(TOKEN_A));
+    let a = client(ta.clone(), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, cmd) = new_list(&a, "Inbox");
+    a.submit(cmd).unwrap();
+    eventually("b has the list", WAIT, || {
+        b.view().lists.contains_key(&list)
+    })
+    .await;
+
+    ta.set_online(false);
+    eventually("a is offline", WAIT, || {
+        a.status().connection == Connection::Offline
+    })
+    .await;
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let (t, cmd) = new_task(&a, list, &format!("offline {i}"));
+        a.submit(cmd).unwrap();
+        tasks.push(t);
+    }
+    a.submit(Command::AddNote {
+        task: tasks[0],
+        text: "note".into(),
+    })
+    .unwrap();
+    // Meanwhile b keeps working.
+    let (bt, cmd) = new_task(&b, list, "from b");
+    b.submit(cmd).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(a.status().pending, 6);
+    assert!(a.view().tasks.contains_key(&tasks[4]));
+    assert!(!server.state().tasks.contains_key(&tasks[0]));
+
+    ta.set_online(true);
+    a.nudge();
+    eventually("both converge", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    let state = server.state();
+    assert!(tasks.iter().all(|t| state.tasks.contains_key(t)));
+    assert!(state.tasks.contains_key(&bt));
+    assert_eq!(state.tasks[&tasks[0]].notes.matches("note").count(), 1);
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_command_the_server_rejects_lands_in_couldnt_sync() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let tb = Switch::new(server.transport(TOKEN_B));
+    let b = client(tb.clone(), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, cmd) = new_list(&a, "Shared");
+    a.submit(cmd).unwrap();
+    eventually("b has the list", WAIT, || {
+        b.view().lists.contains_key(&list)
+    })
+    .await;
+
+    tb.set_online(false);
+    a.submit(Command::Delete { id: list.into() }).unwrap();
+    eventually("a's delete is stored", WAIT, || converged(&a, &server)).await;
+    // b still sees the list and adds a task to it.
+    let (task, cmd) = new_task(&b, list, "orphan");
+    let id = b.submit(cmd).unwrap();
+    assert!(b.view().tasks.contains_key(&task));
+
+    tb.set_online(true);
+    b.nudge();
+    eventually("b's command is refused", WAIT, || b.failed().len() == 1).await;
+    eventually("b converges", WAIT, || converged(&b, &server)).await;
+    let failed = &b.failed()[0];
+    assert_eq!(failed.entry.command_id, id);
+    assert_eq!(failed.rejection.status, 409);
+    assert_eq!(failed.rejection.code, "deleted");
+    assert_eq!(b.status().failed, 1);
+    assert!(!b.view().tasks.contains_key(&task));
+    assert!(b.dismiss(id).unwrap());
+    assert_eq!(b.status().failed, 0);
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cursor_ahead_of_the_server_triggers_a_full_resync() {
+    let storage = MemoryStorage::new();
+    let first = TestServer::start().await;
+    let a = client(first.transport(TOKEN_A), storage.clone(), alpha());
+    let h = spawn(&a);
+    for i in 0..4 {
+        let (_, cmd) = new_list(&a, &format!("old {i}"));
+        a.submit(cmd).unwrap();
+    }
+    eventually("synced with the first server", WAIT, || {
+        converged(&a, &first)
+    })
+    .await;
+    stop(&a, h).await;
+    first.stop().await;
+
+    // A server whose log is shorter than the cursor (for example restored from an old backup).
+    let second = TestServer::start().await;
+    let seed = client(second.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let hs = spawn(&seed);
+    let (kept, cmd) = new_list(&seed, "on the new server");
+    seed.submit(cmd).unwrap();
+    eventually("seeded", WAIT, || converged(&seed, &second)).await;
+    stop(&seed, hs).await;
+
+    let a = client(
+        Switch::new(second.transport(TOKEN_A)),
+        storage.clone(),
+        alpha(),
+    );
+    assert_eq!(a.cursor(), 4);
+    let (queued, cmd) = new_list(&a, "queued before reconnecting");
+    a.submit(cmd).unwrap();
+    let h = spawn(&a);
+    eventually("resynced", WAIT, || converged(&a, &second)).await;
+    let view = a.view();
+    assert!(view.lists.contains_key(&kept));
+    assert!(
+        view.lists.contains_key(&queued),
+        "the outbox survived the resync"
+    );
+    assert_eq!(view.lists.len(), 2, "nothing from the old log");
+    stop(&a, h).await;
+    let again = Replica::open(alpha(), Box::new(storage)).unwrap();
+    assert!(again.confirmed().data_eq(&second.state()));
+    second.stop().await;
+}
+
+async fn restart_resumes(storage: impl todo_client::Storage + Clone + 'static) {
+    let server = TestServer::start().await;
+    let t = Switch::new(server.transport(TOKEN_A));
+    let a = client(t.clone(), storage.clone(), alpha());
+    let h = spawn(&a);
+    let (list, cmd) = new_list(&a, "Persisted");
+    a.submit(cmd).unwrap();
+    for i in 0..10 {
+        let (_, cmd) = new_task(&a, list, &format!("t{i}"));
+        a.submit(cmd).unwrap();
+    }
+    eventually("synced", WAIT, || converged(&a, &server)).await;
+    t.set_online(false);
+    let (pending, cmd) = new_task(&a, list, "queued while offline");
+    a.submit(cmd).unwrap();
+    stop(&a, h).await;
+    let cursor = a.cursor();
+    drop(a);
+
+    let t = Switch::new(server.transport(TOKEN_A));
+    let a = client(t.clone(), storage, alpha());
+    assert_eq!(a.cursor(), cursor, "the cursor survived");
+    assert_eq!(a.pending().len(), 1, "the outbox survived");
+    assert!(a.view().tasks.contains_key(&pending));
+    let h = spawn(&a);
+    eventually("synced after the restart", WAIT, || converged(&a, &server)).await;
+    assert!(server.state().tasks.contains_key(&pending));
+    let first_stream = t
+        .paths
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|p| p.starts_with("/api/v1/events?since=") && !p.contains("limit"))
+        .cloned()
+        .unwrap();
+    assert_eq!(first_stream, format!("/api/v1/events?since={cursor}"));
+    stop(&a, h).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_resumes_from_the_cursor_and_keeps_the_outbox() {
+    restart_resumes(MemoryStorage::new()).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone)]
+struct SqliteFile(std::sync::Arc<tempfile::TempDir>);
+
+#[cfg(feature = "sqlite")]
+impl todo_client::Storage for SqliteFile {
+    fn load(&mut self) -> Result<todo_client::storage::Loaded, todo_client::StorageError> {
+        self.open().load()
+    }
+
+    fn write(
+        &mut self,
+        ops: &[todo_client::storage::StorageOp<'_>],
+    ) -> Result<(), todo_client::StorageError> {
+        self.open().write(ops)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteFile {
+    fn open(&self) -> todo_client::sqlite::SqliteStorage {
+        todo_client::sqlite::SqliteStorage::open(&self.0.path().join("client.db")).unwrap()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_on_sqlite_resumes_from_the_cursor_and_keeps_the_outbox() {
+    restart_resumes(SqliteFile(std::sync::Arc::new(
+        tempfile::tempdir().unwrap(),
+    )))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_far_behind_catches_up_through_pages() {
+    let server = TestServer::start_with(|c| {
+        c.limits.max_replay_events = 3;
+        c.limits.max_replay_bytes = 4096;
+    })
+    .await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let ha = spawn(&a);
+    let (list, cmd) = new_list(&a, "Busy");
+    a.submit(cmd).unwrap();
+    for i in 0..30 {
+        let (_, cmd) = new_task(&a, list, &format!("task {i} {}", "x".repeat(200)));
+        a.submit(cmd).unwrap();
+    }
+    eventually("a synced", WAIT, || converged(&a, &server)).await;
+    // b starts from 0: 409 catch_up_required at connect, then pages of 7.
+    let tb = Switch::new(server.transport(TOKEN_B));
+    let b = client(tb.clone(), MemoryStorage::new(), beta());
+    let hb = spawn(&b);
+    eventually("b caught up", WAIT, || converged(&b, &server)).await;
+    let pages = |t: &Switch<_>| {
+        t.paths
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.contains("limit="))
+            .count()
+    };
+    assert!(pages(&tb) >= 4, "31 events in pages of 7");
+    let before = pages(&tb);
+    // An event larger than the stream's byte budget while b is live: the server sends a `catch_up`
+    // frame instead, and b fetches it through a page.
+    let (task, cmd) = new_task(&a, list, "big");
+    a.submit(cmd).unwrap();
+    a.submit(Command::AddNote {
+        task,
+        text: "y".repeat(8000),
+    })
+    .unwrap();
+    eventually("b followed", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    assert!(pages(&tb) > before, "the stream sent `catch_up`");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, cmd) = new_list(&a, "Undo");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "rename me");
+    a.submit(cmd).unwrap();
+    a.submit(Command::UpdateTask {
+        id: task,
+        patch: todo_core::command::TaskPatch {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    eventually("b sees the rename", WAIT, || {
+        b.view()
+            .tasks
+            .get(&task)
+            .is_some_and(|t| t.title == "renamed")
+    })
+    .await;
+    let seq = server.head();
+    let undo_id = a.undo(seq, false).unwrap();
+    eventually("b sees the undo", WAIT, || {
+        b.view().tasks[&task].title == "rename me"
+    })
+    .await;
+    eventually("converged", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    assert!(
+        server
+            .stored_command_ids()
+            .contains(&(undo_id.to_string(), "undo".to_owned()))
+    );
+    // Undoing the same event again is refused for good: it is already undone.
+    a.undo(seq, false).unwrap();
+    eventually("refused", WAIT, || a.failed().len() == 1).await;
+    assert_eq!(a.failed()[0].rejection.code, "already_undone");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}

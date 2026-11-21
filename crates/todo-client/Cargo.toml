@@ -8,10 +8,36 @@ license-file.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
+native = ["dep:tokio", "dep:reqwest", "dep:rustls", "uuid/v4"]
+# A bundled-SQLite `Storage` (native only).
+sqlite = ["native", "dep:rusqlite"]
+
 [dependencies]
+# Default build: pure Rust, no runtime; must build for wasm32-unknown-unknown and aarch64-linux-android.
 todo-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+# `native`
+tokio = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+rustls = { workspace = true, optional = true }
+# `sqlite`
+rusqlite = { workspace = true, optional = true }
+
+[dev-dependencies]
+todo-server.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tempfile.workspace = true
+proptest.workspace = true
+rusqlite.workspace = true
+futures-executor.workspace = true
 
 [lints]
 workspace = true
