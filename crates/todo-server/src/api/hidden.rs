@@ -41,7 +41,9 @@
 //! **Timing.** A hidden target and a missing one get the same response, but not necessarily in the
 //! same time: refusing a hidden one may take a little longer (it is found, then its visibility is
 //! computed). Accepted: the difference is small and noisy next to network latency and the writer
-//! queue, and closing it would mean doing the visibility work for missing targets too.
+//! queue, and closing it would mean doing the visibility work for missing targets too. The same holds
+//! for `HEAD` and `GET` on `/api/v1/attachments/{id}`, which confirm visibility in the writer after
+//! their blob lookup (see [`super::attachments`]).
 //!
 //! Email ingest writes as `email-ingest`, which is not an agent (it sees everything), and picks its list
 //! inside the writer, so it needs none of this.
@@ -56,10 +58,6 @@
 //! ID held only by the undo journal, so it never depends on hidden state.
 //!
 //! Only agents are filtered (see [`visibility::sees_all`]); the helpers there decide what is readable.
-//!
-//! **Timing is not equalised.** A hidden entity and a missing one get the same answer, but not always
-//! in the same time: the hidden one is found and then checked. That difference is accepted, including
-//! for `HEAD` and `GET` on `/api/v1/attachments/{id}` (see [`super::attachments`]).
 
 use super::error::{ApiError, domain_error};
 use super::visibility;

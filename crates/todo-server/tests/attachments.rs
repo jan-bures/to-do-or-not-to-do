@@ -1138,3 +1138,65 @@ async fn an_announced_size_tells_non_owners_nothing_about_the_fill_route() {
     }
     assert_nothing_stored(&t, "announced sizes");
 }
+
+/// Waits until `n` callers are queued for the (held) writer.
+async fn queued(engine: &todo_server::engine::Engine, n: usize) {
+    for _ in 0..1000 {
+        if engine.waiting_writes() >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the request never reached the writer");
+}
+
+#[tokio::test]
+async fn access_revoked_during_the_blob_lookup_hides_the_content() {
+    let t = server().await;
+    let shared = t.create_list("Shared").await;
+    let task = t.create_task(&shared, "s", json!({})).await;
+    let up = upload(&t, &task, "a.txt", None, b"content").await;
+    let att = up.body["attachment"]["id"].as_str().unwrap().to_owned();
+    let reader = agent(&t, "reader", &shared, AccessLevel::Read).await;
+    let engine = t.server.engine.clone();
+    for revoke in [false, true] {
+        for method in [reqwest::Method::HEAD, reqwest::Method::GET] {
+            let hold = engine.hold_writer();
+            let req = t
+                .client
+                .request(
+                    method.clone(),
+                    format!("{}/api/v1/attachments/{att}", t.url),
+                )
+                .header(AUTHORIZATION, format!("Bearer {reader}"))
+                .send();
+            let pending = tokio::spawn(req);
+            // Past the snapshot check and the blob lookup, waiting to confirm in the writer.
+            queued(&engine, 1).await;
+            let before = engine.state().grants.clone();
+            if revoke {
+                let mut g = before.clone();
+                g.get_mut(&AgentId::new("reader").unwrap())
+                    .unwrap()
+                    .lists
+                    .remove(&shared.parse().unwrap());
+                hold.set_grants(g);
+            }
+            drop(hold);
+            let res = pending.await.unwrap().unwrap();
+            let want = if revoke {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::OK
+            };
+            assert_eq!(res.status(), want, "{method} revoked={revoke}");
+            if revoke {
+                // Put the grant back for the next method.
+                engine.hold_writer().set_grants(before);
+            }
+        }
+    }
+    // A revoked GET answers like a missing attachment and charges no GET.
+    let a = &t.server.attachments;
+    assert_eq!(a.registry().usage(&a.month()).unwrap().class_b, 1);
+}

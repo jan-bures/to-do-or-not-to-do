@@ -20,9 +20,16 @@
 //!   anonymous callers get exactly what a missing route gives (404 `no such endpoint`, or 401 / the
 //!   global 413), before any parameter or announced size is looked at.
 //!
+//! **Visibility under the writer.** A HEAD or GET decides visibility on a snapshot, looks the object up
+//! in the registry (which can block), and then, for agents, confirms the decision inside the writer, so
+//! access revoked during the lookup gives the 404 of a missing attachment (the approach of
+//! [`super::hidden`]). The fill route is owner-only and reads no visibility, so it has nothing to
+//! confirm; an attachment deleted while its content is stored is collected like any unreferenced
+//! object.
+//!
 //! **Timing.** A HEAD (or GET) for an attachment the caller cannot see and one that does not exist give
 //! the same 404, but the hidden one also runs the visibility check, so it may answer measurably later.
-//! That difference is accepted, as for the other reads (see [`super::hidden`]).
+//! That difference is accepted, as for writes (see [`super::hidden`]).
 //!
 //! **Access.** Uploading is `add_attachment`: the owner, or an agent with capture access on the task's
 //! list, exactly as `todo-core` decides for the command; it counts as one write against an agent's quota.
@@ -1089,6 +1096,22 @@ async fn stored_content(
             .find(id, &meta.storage_key)
             .map_err(|e| attachment_error(&a, e))?
             .ok_or_else(content_unavailable)?;
+        // The registry lookup can block, and access may have been revoked meanwhile: for agents the
+        // decision is confirmed inside the writer, on a state no grant change can move (as for upload
+        // replays, see [`hidden`]). Owners see everything, so they skip it.
+        if !visibility::sees_all(&actor) {
+            let still = engine.with_writer(|now| {
+                visibility::can_read(now, &actor, entity_target(now, EntityId::Attachment(id)))
+                    && now.is_live(EntityId::Attachment(id))
+                    && now
+                        .attachments
+                        .get(&id)
+                        .is_some_and(|m| m.storage_key == meta.storage_key)
+            })?;
+            if !still {
+                return Err(missing());
+            }
+        }
         Ok((meta.clone(), row))
     })
     .await?
