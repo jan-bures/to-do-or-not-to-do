@@ -23,15 +23,20 @@
 //! # Storage failures
 //!
 //! Every change is written to storage before it is made in memory, so memory is never ahead of disk.
-//! Confirming events applies them in place and writes them (with the outbox entries they confirm) in
-//! one batch; if that write fails, the replica reloads itself from storage, and if even that fails it
-//! refuses further changes until a reload succeeds.
+//! Confirming events applies them to a copy of the confirmed state, writes them (with the outbox
+//! entries they confirm) in one batch, and swaps the copy in only once that write succeeded; a failed
+//! write changes nothing.
 //!
 //! # The log epoch
 //!
 //! The confirmed state belongs to one server log, named by its epoch (see
 //! [`crate::protocol::EventPage::epoch`]). Events from another epoch are refused with
 //! [`ConfirmError::EpochChanged`]; the client then resyncs from 0, keeping the outbox.
+//!
+//! Acknowledgements are bound to an epoch too (the server's command response names it). One from
+//! another epoch than the replica's is not recorded ([`Ack::OtherEpoch`]), and recorded ones are
+//! forgotten when the replica resyncs onto another log, so the entry is sent again; the command ID
+//! makes that safe (a server that has the command replays its result, one that lost it applies it).
 
 use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry, Rejection};
 use crate::protocol::{CommandResult, LogEvent};
@@ -106,6 +111,10 @@ pub enum Ack {
     /// the confirmed state has another event there: the server's log is not the one this replica
     /// followed. Resync, then send the entry again. Nothing was recorded.
     Diverged,
+    /// The acknowledgement is from another log epoch than the replica's (a response that arrived
+    /// after a resync, or one from a log the replica has yet to switch to). Nothing was recorded:
+    /// send the entry again later.
+    OtherEpoch,
 }
 
 /// Confirmed state, cursor, epoch, outbox and "couldn't sync" list, persisted in a [`Storage`].
@@ -125,9 +134,6 @@ pub struct Replica {
     /// The stored events could not all be replayed: the next write stores a full snapshot (which
     /// drops them).
     needs_snapshot: bool,
-    /// A write failed and reloading from storage failed too: memory may be ahead of disk, so every
-    /// change first reloads.
-    stale: bool,
 }
 
 /// What [`Replica::open`] rebuilt from storage.
@@ -141,6 +147,13 @@ struct Restored {
     needs_snapshot: bool,
     /// Outbox entries whose events the confirmed state already has.
     settled: Vec<CommandId>,
+    /// Outbox entries whose acknowledgement belongs to another epoch, now unacknowledged.
+    unbound: Vec<OutboxEntry>,
+}
+
+/// True if `entry`'s acknowledgement does not belong to the log with `epoch`.
+fn acked_elsewhere(entry: &OutboxEntry, epoch: Epoch) -> bool {
+    entry.acked.is_some() && entry.acked_epoch != Some(epoch)
 }
 
 /// Replays the stored events onto the snapshot and finds the outbox entries they settle.
@@ -170,12 +183,22 @@ fn restore(loaded: Loaded) -> Restored {
     }
     // Writes are atomic, so an entry leaves storage with the events that confirm it. Check anyway:
     // an entry whose events are confirmed must not be applied (or sent) again.
-    let (settled, outbox): (Vec<_>, Vec<_>) = loaded.outbox.into_iter().partition(|e| {
+    let (settled, mut outbox): (Vec<_>, Vec<_>) = loaded.outbox.into_iter().partition(|e| {
         seen_commands.contains(&e.command_id)
             || e.acked
                 .as_ref()
                 .is_some_and(|ids| ids.iter().any(|id| confirmed.journal.has_seen(*id)))
     });
+    // An acknowledgement from another log than the stored one is void: send the entry again.
+    let mut unbound = Vec::new();
+    if let Some(epoch) = loaded.epoch {
+        for e in &mut outbox {
+            if acked_elsewhere(e, epoch) {
+                *e = e.unacknowledged();
+                unbound.push(e.clone());
+            }
+        }
+    }
     Restored {
         confirmed,
         cursor,
@@ -185,6 +208,7 @@ fn restore(loaded: Loaded) -> Restored {
         replayed,
         needs_snapshot,
         settled: settled.into_iter().map(|e| e.command_id).collect(),
+        unbound,
     }
 }
 
@@ -220,25 +244,26 @@ impl Replica {
             unsnapshotted: 0,
             snapshot_every: SNAPSHOT_EVERY,
             needs_snapshot: false,
-            stale: true,
         };
-        r.reload()?;
+        r.load()?;
         Ok(r)
     }
 
-    /// Rebuilds everything from storage.
-    fn reload(&mut self) -> Result<(), StorageError> {
+    /// Builds everything from storage.
+    fn load(&mut self) -> Result<(), StorageError> {
         let r = restore(self.storage.load()?);
-        if !r.settled.is_empty() {
+        if !r.settled.is_empty() || !r.unbound.is_empty() {
             tracing::info!(
-                entries = r.settled.len(),
-                "removing outbox entries whose events are confirmed"
+                settled = r.settled.len(),
+                unbound = r.unbound.len(),
+                "reconciling the outbox with the confirmed state"
             );
-            let ops: Vec<StorageOp<'_>> = r
+            let mut ops: Vec<StorageOp<'_>> = r
                 .settled
                 .iter()
                 .map(|id| StorageOp::RemoveOutbox(*id))
                 .collect();
+            ops.extend(r.unbound.iter().map(StorageOp::PutOutbox));
             self.storage.write(&ops)?;
         }
         tracing::debug!(
@@ -255,21 +280,7 @@ impl Replica {
         self.view = None;
         self.unsnapshotted = r.replayed;
         self.needs_snapshot = r.needs_snapshot;
-        self.stale = false;
         Ok(())
-    }
-
-    /// Reloads from storage if an earlier failure left memory possibly ahead of it.
-    pub fn refresh(&mut self) -> Result<(), StorageError> {
-        if self.stale { self.reload() } else { Ok(()) }
-    }
-
-    /// After a failed write of an in-place change: go back to what storage has.
-    fn roll_back(&mut self) {
-        self.stale = true;
-        if let Err(err) = self.reload() {
-            tracing::warn!(error = %err, "cannot reload the replica after a failed write");
-        }
     }
 
     /// Changes how many confirmed events are stored between snapshots.
@@ -338,7 +349,6 @@ impl Replica {
     /// A command is first decided against the view; one that is already invalid there is refused
     /// with the domain error and not queued.
     pub fn submit(&mut self, entry: OutboxEntry) -> Result<(), SubmitError> {
-        self.refresh()?;
         let mut decided = None;
         if let Some(command) = entry.command() {
             let view = self.view();
@@ -363,7 +373,6 @@ impl Replica {
     /// The oldest entry the server has not acknowledged yet, with its attempt counted (and stored, so
     /// after a crash the replica knows the server may have applied it).
     pub fn next_to_send(&mut self) -> Result<Option<OutboxEntry>, StorageError> {
-        self.refresh()?;
         let Some(entry) = self.outbox.iter_mut().find(|e| e.acked.is_none()) else {
             return Ok(None);
         };
@@ -377,6 +386,10 @@ impl Replica {
     /// Records the server's acknowledgement: the entry is not sent again, and leaves the outbox when
     /// its events are confirmed (at once if it changed nothing).
     ///
+    /// Returns [`Ack::OtherEpoch`] without recording anything if the acknowledgement names another log
+    /// epoch than the replica's. While the replica has no epoch yet, it is recorded with its epoch and
+    /// forgotten if the replica then adopts another one.
+    ///
     /// Returns [`Ack::Diverged`] if the entry is still pending but the server reports one of its
     /// events at or below the cursor: had the confirmed state that event, it would have confirmed the
     /// entry, so the server's log is not the one this replica followed (it was restored from a backup
@@ -386,10 +399,14 @@ impl Replica {
         command_id: CommandId,
         result: &CommandResult,
     ) -> Result<Ack, StorageError> {
-        self.refresh()?;
         let Some(pos) = self.position(command_id) else {
             return Ok(Ack::Recorded);
         };
+        if let (Some(theirs), Some(ours)) = (result.epoch, self.epoch)
+            && theirs != ours
+        {
+            return Ok(Ack::OtherEpoch);
+        }
         if result.events.iter().any(|r| r.seq <= self.cursor) {
             return Ok(Ack::Diverged);
         }
@@ -400,6 +417,7 @@ impl Replica {
         } else {
             let mut next = self.outbox[pos].clone();
             next.acked = Some(result.events.iter().map(|r| r.id).collect());
+            next.acked_epoch = result.epoch;
             self.storage.write(&[StorageOp::PutOutbox(&next)])?;
             self.outbox[pos] = next;
         }
@@ -413,7 +431,6 @@ impl Replica {
         rejection: Rejection,
         now: Timestamp,
     ) -> Result<(), StorageError> {
-        self.refresh()?;
         let Some(pos) = self.position(command_id) else {
             return Ok(());
         };
@@ -434,7 +451,6 @@ impl Replica {
 
     /// Removes an entry from the "couldn't sync" list. Returns false if there was none.
     pub fn dismiss(&mut self, command_id: CommandId) -> Result<bool, StorageError> {
-        self.refresh()?;
         let Some(pos) = self
             .failed
             .iter()
@@ -456,14 +472,15 @@ impl Replica {
     /// slice only checks (or records) the epoch.
     ///
     /// The first epoch is adopted while the replica is empty; another one is refused with
-    /// [`ConfirmError::EpochChanged`]. On a gap or a divergence the events before it stay applied (and
-    /// stored). If the write fails, nothing is applied.
+    /// [`ConfirmError::EpochChanged`]. Adopting an epoch forgets acknowledgements from other ones. On
+    /// a gap or a divergence the events before it stay applied (and stored). The events are applied to
+    /// a copy of the confirmed state that replaces it only after the write succeeded, so if the write
+    /// fails, nothing changes.
     pub fn apply_confirmed(
         &mut self,
         epoch: Epoch,
         events: &[LogEvent],
     ) -> Result<usize, ConfirmError> {
-        self.refresh()?;
         let adopt = match self.epoch {
             Some(e) if e == epoch => false,
             None if self.cursor == 0 => true,
@@ -471,33 +488,44 @@ impl Replica {
         };
         let mut applied: Vec<LogEvent> = Vec::new();
         let mut failure = None;
-        let cursor_before = self.cursor;
+        let mut cursor = self.cursor;
+        let mut next: Option<State> = None;
         for e in events {
             let Some(seq) = e.event.seq else {
                 failure = Some(ConfirmError::MissingSeq);
                 break;
             };
-            if seq <= self.cursor {
+            if seq <= cursor {
                 continue;
             }
-            if seq != self.cursor + 1 {
+            if seq != cursor + 1 {
                 failure = Some(ConfirmError::Gap {
-                    expected: self.cursor + 1,
+                    expected: cursor + 1,
                     got: seq,
                 });
                 break;
             }
             // `apply` leaves the state untouched when it fails.
-            if let Err(error) = apply(&mut self.confirmed, &e.event) {
+            let state = next.get_or_insert_with(|| self.confirmed.clone());
+            if let Err(error) = apply(state, &e.event) {
                 failure = Some(ConfirmError::Diverged { seq, error });
                 break;
             }
-            self.cursor = seq;
+            cursor = seq;
             applied.push(e.clone());
         }
         if applied.is_empty() && !adopt {
             return failure.map_or(Ok(0), Err);
         }
+        let unbound: Vec<OutboxEntry> = if adopt {
+            self.outbox
+                .iter()
+                .filter(|e| acked_elsewhere(e, epoch))
+                .map(OutboxEntry::unacknowledged)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let done: BTreeSet<CommandId> = applied.iter().map(|e| e.command_id).collect();
         let settled: Vec<CommandId> = self
             .outbox
@@ -507,26 +535,39 @@ impl Replica {
             .collect();
         let snapshot = !applied.is_empty()
             && (self.needs_snapshot || self.unsnapshotted + applied.len() >= self.snapshot_every);
-        let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(settled.len() + 2);
+        let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(settled.len() + unbound.len() + 2);
         if adopt {
             ops.push(StorageOp::SetEpoch(epoch));
+            ops.extend(unbound.iter().map(StorageOp::PutOutbox));
         }
         if snapshot {
             ops.push(StorageOp::Snapshot {
-                state: &self.confirmed,
-                cursor: self.cursor,
+                state: next.as_ref().unwrap_or(&self.confirmed),
+                cursor,
             });
         } else if !applied.is_empty() {
             ops.push(StorageOp::AppendEvents(&applied));
         }
         ops.extend(settled.iter().map(|id| StorageOp::RemoveOutbox(*id)));
         if let Err(err) = self.storage.write(&ops) {
-            tracing::warn!(error = %err, cursor = cursor_before, "cannot store confirmed events");
-            self.roll_back();
+            tracing::warn!(error = %err, cursor = self.cursor, "cannot store confirmed events");
             return Err(err.into());
         }
         if adopt {
             self.epoch = Some(epoch);
+            for u in unbound {
+                if let Some(e) = self
+                    .outbox
+                    .iter_mut()
+                    .find(|e| e.command_id == u.command_id)
+                {
+                    *e = u;
+                }
+            }
+        }
+        if let Some(state) = next {
+            self.confirmed = state;
+            self.cursor = cursor;
         }
         if snapshot {
             self.unsnapshotted = 0;
@@ -548,21 +589,17 @@ impl Replica {
     /// "couldn't sync" list. Acknowledged entries are sent again: the server they were acknowledged by
     /// may no longer have them (a restore from backup), and if it does, the retry is idempotent.
     pub fn reset(&mut self) -> Result<(), StorageError> {
-        self.refresh()?;
         let reacked: Vec<OutboxEntry> = self
             .outbox
             .iter()
             .filter(|e| e.acked.is_some())
-            .map(|e| OutboxEntry {
-                acked: None,
-                ..e.clone()
-            })
+            .map(OutboxEntry::unacknowledged)
             .collect();
         let mut ops = vec![StorageOp::ClearConfirmed];
         ops.extend(reacked.iter().map(StorageOp::PutOutbox));
         self.storage.write(&ops)?;
         for e in &mut self.outbox {
-            e.acked = None;
+            *e = e.unacknowledged();
         }
         self.confirmed = State::new();
         self.cursor = 0;

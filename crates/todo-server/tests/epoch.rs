@@ -70,18 +70,27 @@ async fn events_carry_the_command_that_produced_them_everywhere() {
 }
 
 #[tokio::test]
-async fn pages_and_streams_name_their_epoch() {
+async fn pages_streams_and_command_results_name_their_epoch() {
     let t = TestServer::start().await;
-    t.create_list("L").await;
+    let list = t.create_list("L").await;
     let e = epoch(&t).await;
     assert_eq!(e, t.server.engine.epoch().to_string());
+    // Command (and replayed command) results too: their seqs belong to that log.
+    let cid = id();
+    let cmd = json!({ "cmd": "create_task", "id": id(), "list": list, "title": "T" });
+    for _ in 0..2 {
+        let (s, _, r) = t.command_with_id(TOKEN_A, &cid, cmd.clone()).await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+        assert_eq!(r["epoch"], e);
+        assert_eq!(r["command_id"], cid);
+    }
     let mut sse = t.sse(TOKEN_A, Some(0)).await;
     assert_eq!(sse.epoch_header.as_deref(), Some(e.as_str()));
     sse.next_event(Duration::from_secs(5)).await.unwrap();
     let hello = sse.hello.clone().unwrap();
     assert_eq!(hello.id, None, "the hello frame moves no cursor");
     assert_eq!(hello.json()["epoch"], e);
-    assert_eq!(hello.json()["head_seq"], 1);
+    assert_eq!(hello.json()["head_seq"], 2);
     // The epoch is stable across restarts.
     let t = t.restart().await;
     assert_eq!(epoch(&t).await, e);
@@ -200,6 +209,7 @@ async fn an_undo_must_name_the_event_it_means() {
     let body = json!({ "command_id": cid, "expected_event_id": t.event_id_at(seq), "epoch": e });
     let (s, u1) = t.undo_raw(seq, Some(body.clone())).await;
     assert_eq!(s, StatusCode::OK, "{u1}");
+    assert_eq!(u1["epoch"], e);
     let (s, u2) = t.undo_raw(seq, Some(body)).await;
     assert_eq!(s, StatusCode::OK, "a retry replays");
     assert_eq!(u1, u2);

@@ -247,3 +247,88 @@ fn an_event_that_never_applies_is_a_backed_off_protocol_error_not_a_resync_loop(
     });
     assert_eq!(c.cursor(), 2, "everything before the broken event is kept");
 }
+
+/// Storage whose next `n` resets (writes that clear the confirmed state) fail.
+#[derive(Clone)]
+struct FailingResets {
+    inner: MemoryStorage,
+    left: Arc<std::sync::atomic::AtomicUsize>,
+    failed: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl todo_client::Storage for FailingResets {
+    fn load(&mut self) -> Result<todo_client::storage::Loaded, todo_client::StorageError> {
+        self.inner.load()
+    }
+
+    fn write(
+        &mut self,
+        ops: &[todo_client::storage::StorageOp<'_>],
+    ) -> Result<(), todo_client::StorageError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let reset = ops
+            .iter()
+            .any(|op| matches!(op, todo_client::storage::StorageOp::ClearConfirmed));
+        if reset && self.left.load(SeqCst) > 0 {
+            self.left.fetch_sub(1, SeqCst);
+            self.failed.fetch_add(1, SeqCst);
+            return Err(todo_client::StorageError::Backend(
+                "disk full (test)".into(),
+            ));
+        }
+        self.inner.write(ops)
+    }
+}
+
+#[test]
+fn a_reset_that_fails_is_retried_instead_of_tripping_the_divergence_guard() {
+    // The server's log: a list, task 1, and a note on task 1 (event 3).
+    let server = seeded_server();
+    server
+        .lock()
+        .unwrap()
+        .execute(&owner(), Uuid::from_u128(3), &add_note(task_id(1), "n"))
+        .unwrap();
+    // This client's stored state followed another history with the same epoch: its event 2 created
+    // task 2, so the server's event 3 does not apply to it.
+    let storage = MemoryStorage::new();
+    {
+        let mut other = FakeServer::default();
+        other
+            .execute(&owner(), Uuid::from_u128(1), &create_list(list_id(1), "L"))
+            .unwrap();
+        other
+            .execute(
+                &owner(),
+                Uuid::from_u128(2),
+                &create_task(task_id(2), list_id(1), "T"),
+            )
+            .unwrap();
+        let mut r = Replica::open(owner(), Box::new(storage.clone())).unwrap();
+        r.apply_confirmed(EPOCH, &other.log).unwrap();
+    }
+    let flaky = FailingResets {
+        inner: storage.clone(),
+        left: Arc::new(1.into()),
+        failed: Arc::default(),
+    };
+    let t = MockTransport::new(server.clone(), owner());
+    let mut cfg = ClientConfig::new(owner());
+    cfg.backoff = Backoff {
+        initial: Duration::from_millis(1),
+        max: Duration::from_millis(2),
+    };
+    let c = SyncClient::new(
+        t.clone(),
+        FastClock::default(),
+        CountingEntropy::seeded(1),
+        flaky.clone(),
+        cfg,
+    )
+    .unwrap();
+    assert_eq!(c.cursor(), 2);
+    run_until(&c, |c| synced(c, &t));
+    assert_eq!(flaky.failed.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(c.view().tasks.contains_key(&task_id(1)));
+    assert!(!c.view().tasks.contains_key(&task_id(2)));
+}

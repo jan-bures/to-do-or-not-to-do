@@ -47,6 +47,7 @@ impl Modify for BearerAuth {
         CommandResult,
         EventRef,
         dto::CommandRequest,
+        dto::CommandResponse,
         dto::UndoRequest,
         dto::TaskDetail,
         dto::EventPage,

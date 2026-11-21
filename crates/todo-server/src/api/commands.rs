@@ -1,11 +1,11 @@
 //! Writes: commands and undo.
 
-use super::dto::{CommandRequest, UndoRequest};
+use super::dto::{CommandRequest, CommandResponse, UndoRequest};
 use super::error::{ApiError, ErrorBody};
 use super::{ApiJson, ApiPath, RequestCancel, Work, blocking};
 use crate::app::AppState;
 use crate::auth::Authenticated;
-use crate::engine::{CommandResult, Outcome, UndoExpect};
+use crate::engine::{Outcome, UndoExpect};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -15,8 +15,12 @@ use axum::response::{IntoResponse, Response};
 /// Header set on a response that replays the stored result of a retried command.
 pub const REPLAYED_HEADER: &str = "idempotent-replayed";
 
-fn outcome_response(o: Outcome) -> Response {
-    let mut res = Json(o.result).into_response();
+fn outcome_response(o: Outcome, epoch: uuid::Uuid) -> Response {
+    let mut res = Json(CommandResponse {
+        result: o.result,
+        epoch,
+    })
+    .into_response();
     if o.replayed {
         res.headers_mut()
             .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
@@ -31,7 +35,7 @@ fn outcome_response(o: Outcome) -> Response {
     tag = "commands",
     request_body = CommandRequest,
     responses(
-        (status = 200, description = "Stored (or replayed: see the `idempotent-replayed` header)", body = CommandResult),
+        (status = 200, description = "Stored (or replayed: see the `idempotent-replayed` header)", body = CommandResponse),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "Not allowed", body = ErrorBody),
         (status = 404, description = "A referenced entity does not exist", body = ErrorBody),
@@ -56,7 +60,7 @@ pub async fn post_command(
         engine.execute_cancellable(&auth.actor, req.command_id, &req.command, &cancel)
     })
     .await??;
-    Ok(outcome_response(outcome))
+    Ok(outcome_response(outcome, app.engine.epoch()))
 }
 
 /// Undoes the command that produced an event. Undoing a compensating event redoes the change.
@@ -67,7 +71,7 @@ pub async fn post_command(
     params(("seq" = u64, Path, description = "Sequence number of any event of the command to undo")),
     request_body(content = UndoRequest, description = "`command_id` and `expected_event_id` are required; `force` defaults to false"),
     responses(
-        (status = 200, description = "Compensating events stored (or replayed: see the `idempotent-replayed` header)", body = CommandResult),
+        (status = 200, description = "Compensating events stored (or replayed: see the `idempotent-replayed` header)", body = CommandResponse),
         (status = 400, description = "No `command_id` (`command_id_required`) or `expected_event_id` (`expected_event_id_required`)", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "No such event", body = ErrorBody),
@@ -118,5 +122,5 @@ pub async fn post_undo(
         )
     })
     .await??;
-    Ok(outcome_response(outcome))
+    Ok(outcome_response(outcome, app.engine.epoch()))
 }

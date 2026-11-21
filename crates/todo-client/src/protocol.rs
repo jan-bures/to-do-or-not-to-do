@@ -71,6 +71,9 @@ pub struct CommandResult {
     /// One-line description.
     #[serde(default)]
     pub summary: String,
+    /// The log epoch the events' sequence numbers belong to.
+    #[serde(default)]
+    pub epoch: Option<Epoch>,
 }
 
 /// A page of `GET /api/v1/events`.

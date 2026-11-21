@@ -20,6 +20,7 @@ fn entry(n: u128, command: Command, at_ms: i64) -> OutboxEntry {
         submitted_at: ts(at_ms),
         attempts: 0,
         acked: None,
+        acked_epoch: None,
     }
 }
 
@@ -205,6 +206,7 @@ fn opening_removes_acknowledged_entries_whose_events_are_confirmed() {
     let acked = OutboxEntry {
         attempts: 1,
         acked: Some(result.events.iter().map(|r| r.id).collect()),
+        acked_epoch: Some(EPOCH),
         ..e
     };
     storage
@@ -273,10 +275,17 @@ fn an_acknowledgement_below_the_cursor_for_a_pending_entry_means_divergence() {
     let e = entry(7, add_note(task_id(1), "mine"), 1);
     r.submit(e.clone()).unwrap();
     r.next_to_send().unwrap();
-    let result = server
+    let mut result = server
         .execute(&owner(), e.command_id, e.command().unwrap())
         .unwrap();
     assert_eq!(result.events[0].seq, 3);
+    // The response names the restored log's epoch: that alone says not to record it.
+    assert_eq!(
+        r.acknowledge(e.command_id, &result).unwrap(),
+        Ack::OtherEpoch
+    );
+    // Without an epoch (defence in depth), the sequence number gives it away.
+    result.epoch = None;
     assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Diverged);
     assert_eq!(r.outbox()[0].acked, None, "nothing recorded");
 }
@@ -406,6 +415,128 @@ fn reset_forgets_the_confirmed_state_but_keeps_the_outbox() {
     let again = open(&storage);
     assert_eq!(again.cursor(), 0);
     assert_eq!(again.outbox().len(), 1);
+}
+
+#[test]
+fn a_failed_confirmation_write_changes_nothing_even_if_storage_cannot_be_read_either() {
+    for snapshot_every in [1, 1000] {
+        let (mut r, mut server, storage) = seeded();
+        r.set_snapshot_every(snapshot_every);
+        let e = entry(1, add_note(task_id(1), "once"), 1);
+        r.submit(e.clone()).unwrap();
+        server
+            .execute(&owner(), e.command_id, e.command().unwrap())
+            .unwrap();
+        let (cursor, confirmed) = (r.cursor(), r.confirmed().clone());
+        storage.set_fail_writes(true);
+        storage.set_fail_loads(true);
+        assert!(matches!(
+            r.apply_confirmed(EPOCH, &server.log),
+            Err(ConfirmError::Storage(_))
+        ));
+        assert_eq!(r.cursor(), cursor, "snapshot_every {snapshot_every}");
+        assert!(r.confirmed().data_eq(&confirmed));
+        assert_eq!(r.confirmed().journal, confirmed.journal);
+        assert_eq!(r.outbox().len(), 1);
+        assert_eq!(notes(&mut r, task_id(1)), "once");
+        // Once storage works again, the same events go through.
+        storage.set_fail_writes(false);
+        storage.set_fail_loads(false);
+        r.apply_confirmed(EPOCH, &server.log).unwrap();
+        assert!(r.outbox().is_empty());
+        assert!(open(&storage).confirmed().data_eq(&server.state));
+    }
+}
+
+#[test]
+fn a_late_acknowledgement_from_a_replaced_log_is_not_recorded() {
+    // The command commits in epoch A, but its response arrives only after the replica resynced onto
+    // epoch B, whose log (restored from a backup) does not have the command.
+    let (mut r, mut server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "mine"), 1);
+    r.submit(e.clone()).unwrap();
+    r.next_to_send().unwrap();
+    let late = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    assert_eq!(late.epoch, Some(EPOCH));
+    let new_epoch = Uuid::from_u128(0xe1);
+    server.restore(2, new_epoch);
+    assert!(matches!(
+        r.apply_confirmed(new_epoch, &server.log),
+        Err(ConfirmError::EpochChanged)
+    ));
+    r.reset().unwrap();
+    r.apply_confirmed(new_epoch, &server.log).unwrap();
+
+    assert_eq!(r.acknowledge(e.command_id, &late).unwrap(), Ack::OtherEpoch);
+    assert_eq!(r.outbox()[0].acked, None, "not recorded");
+    assert_eq!(open(&storage).outbox()[0].acked, None, "not stored");
+    // So it is sent again, and the restored server applies it.
+    let sent = r.next_to_send().unwrap().expect("sent again");
+    let result = server
+        .execute(&owner(), sent.command_id, sent.command().unwrap())
+        .unwrap();
+    assert_eq!(result.epoch, Some(new_epoch));
+    assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Recorded);
+    r.apply_confirmed(new_epoch, &server.log).unwrap();
+    assert!(r.outbox().is_empty());
+    assert_eq!(notes(&mut r, task_id(1)).matches("mine").count(), 1);
+    assert!(r.view().data_eq(&server.state));
+}
+
+#[test]
+fn an_acknowledgement_from_before_the_epoch_was_known_counts_only_for_its_own_epoch() {
+    for same in [true, false] {
+        let storage = MemoryStorage::new();
+        let mut r = open(&storage);
+        let mut server = FakeServer::default();
+        let e = entry(1, create_list(list_id(1), "L"), 1);
+        r.submit(e.clone()).unwrap();
+        r.next_to_send().unwrap();
+        let result = server
+            .execute(&owner(), e.command_id, e.command().unwrap())
+            .unwrap();
+        // The replica has no epoch yet: recorded, with the response's epoch.
+        assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Recorded);
+        assert_eq!(r.outbox()[0].acked_epoch, Some(EPOCH));
+        let epoch = if same {
+            EPOCH
+        } else {
+            // Restored to an empty backup before the replica saw any log.
+            server.restore(0, Uuid::from_u128(0xe1));
+            server.epoch
+        };
+        r.apply_confirmed(epoch, &[]).unwrap();
+        if same {
+            assert!(r.next_to_send().unwrap().is_none(), "still acknowledged");
+        } else {
+            assert_eq!(r.outbox()[0].acked, None, "forgotten");
+            assert_eq!(open(&storage).outbox()[0].acked, None, "and stored");
+            assert!(r.next_to_send().unwrap().is_some(), "sent again");
+        }
+    }
+}
+
+#[test]
+fn opening_forgets_acknowledgements_from_another_epoch() {
+    let mut storage = MemoryStorage::new();
+    let mut e = entry(1, create_list(list_id(1), "L"), 1);
+    e.attempts = 1;
+    e.acked = Some(vec![todo_core::ids::EventId::from_uuid(Uuid::from_u128(
+        77,
+    ))]);
+    e.acked_epoch = Some(EPOCH);
+    storage
+        .write(&[
+            StorageOp::SetEpoch(Uuid::from_u128(0xe1)),
+            StorageOp::PutOutbox(&e),
+        ])
+        .unwrap();
+    let mut r = open(&storage);
+    assert_eq!(r.outbox()[0].acked, None);
+    assert!(r.next_to_send().unwrap().is_some());
+    assert_eq!(open(&storage).outbox()[0].acked, None, "stored");
 }
 
 proptest! {

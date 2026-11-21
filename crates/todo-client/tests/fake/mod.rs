@@ -120,6 +120,7 @@ impl FakeServer {
             command_id,
             events: refs,
             summary: String::new(),
+            epoch: Some(self.epoch),
         };
         self.results.insert(command_id, (hash, result.clone()));
         Ok(result)

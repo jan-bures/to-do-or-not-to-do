@@ -55,6 +55,22 @@ pub struct OutboxEntry {
     /// the outbox when an event carrying its command ID reaches the confirmed state.
     #[serde(default)]
     pub acked: Option<Vec<EventId>>,
+    /// The log epoch the acknowledgement's events belong to. An acknowledgement only counts while the
+    /// replica follows that log: when it resyncs onto another one, the entry is sent again.
+    #[serde(default)]
+    pub acked_epoch: Option<Epoch>,
+}
+
+impl OutboxEntry {
+    /// The entry with its acknowledgement forgotten, so it is sent again.
+    #[must_use]
+    pub fn unacknowledged(&self) -> Self {
+        Self {
+            acked: None,
+            acked_epoch: None,
+            ..self.clone()
+        }
+    }
 }
 
 impl OutboxEntry {

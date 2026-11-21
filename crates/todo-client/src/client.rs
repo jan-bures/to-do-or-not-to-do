@@ -29,7 +29,12 @@
 //! `epoch_mismatch`, or a page or `hello` frame with another epoch; a restore rotates it), the cursor
 //! is ahead of the server (400 `invalid_since`), an event does not apply, or an acknowledgement names
 //! an event the confirmed state has another event for. If the same event fails to apply again right
-//! after a resync, the client reports a protocol error and retries with backoff instead.
+//! after a resync, the client reports a protocol error and retries with backoff instead. A reset that
+//! cannot be stored is retried (with backoff) before anything else.
+//!
+//! Acknowledgements are bound to the log epoch the server names in its response: one from another
+//! epoch is not recorded, and a resync forgets the recorded ones, so their entries are sent again
+//! (idempotently) to the log the client now follows.
 
 use crate::notify::{Backoff, Notify, sleep_or_wake, timeout};
 use crate::outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
@@ -384,6 +389,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 submitted_at,
                 attempts: 0,
                 acked: None,
+                acked_epoch: None,
             })?;
             s.last_submitted_ms = ms;
             Ok::<_, SubmitError>(())
@@ -596,6 +602,14 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                             tracing::debug!(command_id = %entry.command_id, events = r.events.len(), "command acknowledged");
                             self.changed();
                         }
+                        Ok(Ack::OtherEpoch) => {
+                            // A response from before a resync, or from a log this client has yet
+                            // to switch to: not recorded. The entry is sent again (the server
+                            // replays the result if it has the command, or applies it if it lost it),
+                            // after a backoff so a pending switch can happen first.
+                            tracing::debug!(command_id = %entry.command_id, "acknowledgement from another log epoch; sending again");
+                            self.back_off(&mut failures, None).await;
+                        }
                         Ok(Ack::Diverged) => {
                             tracing::warn!(
                                 "the server's log differs from the confirmed state; resyncing"
@@ -712,46 +726,55 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     async fn event_loop(&self) {
         let mut failures = 0u32;
-        // The event the last divergence-triggered resync was for.
+        // The event the last (durably completed) divergence-triggered resync was for.
         let mut last_divergence: Option<u64> = None;
+        // A resync whose reset failed: retried before anything else.
+        let mut pending_reset: Option<Option<u64>> = None;
         loop {
             if self.is_stopped() {
                 return;
             }
-            let step = match self.connect_once().await {
-                Step::Resync {
-                    diverged_at: Some(seq),
-                } if last_divergence == Some(seq) => Step::Fail {
-                    error: self.error(
-                        ErrorKind::Protocol,
-                        format!("event {seq} does not apply, even after a full resync"),
-                    ),
-                    offline: false,
-                    retry_after: None,
-                    progressed: false,
+            let step = match pending_reset.take() {
+                Some(diverged_at) => Step::Resync { diverged_at },
+                None => match self.connect_once().await {
+                    Step::Resync {
+                        diverged_at: Some(seq),
+                    } if last_divergence == Some(seq) => Step::Fail {
+                        error: self.error(
+                            ErrorKind::Protocol,
+                            format!("event {seq} does not apply, even after a full resync"),
+                        ),
+                        offline: false,
+                        retry_after: None,
+                        progressed: false,
+                    },
+                    step => step,
                 },
-                step => step,
             };
             match step {
                 Step::Stopped => return,
                 Step::Reconnect => failures = 0,
                 Step::Resync { diverged_at } => {
-                    last_divergence = diverged_at;
                     tracing::info!(
                         ?diverged_at,
                         "the server's log is not the one this client followed; resyncing from 0"
                     );
-                    let reset = self.with(|s| s.replica.reset());
-                    self.inner.resynced.notify();
-                    match reset {
-                        // Acknowledged entries are sent again.
-                        Ok(()) => self.inner.outbox_changed.notify(),
+                    match self.with(|s| s.replica.reset()) {
+                        Ok(()) => {
+                            // Only a durable reset counts: it arms the repeat-divergence guard and
+                            // releases a sender waiting to resend a divergent acknowledgement.
+                            last_divergence = diverged_at;
+                            self.inner.resynced.notify();
+                            // Acknowledged entries are sent again.
+                            self.inner.outbox_changed.notify();
+                            self.changed();
+                        }
                         Err(err) => {
+                            pending_reset = Some(diverged_at);
                             self.storage_failed("forget the confirmed state", &err);
                             self.back_off(&mut failures, None).await;
                         }
                     }
-                    self.changed();
                 }
                 Step::Fail {
                     error,
@@ -798,15 +821,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         if self.take_resync_request() {
             return Step::Resync { diverged_at: None };
         }
-        let position = self.with(|s| {
-            s.replica
-                .refresh()
-                .map(|()| (s.replica.cursor(), s.replica.epoch()))
-        });
-        let (since, epoch) = match position {
-            Ok(p) => p,
-            Err(err) => return self.fail(ErrorKind::Storage, err.to_string(), false),
-        };
+        let (since, epoch) = self.with(|s| (s.replica.cursor(), s.replica.epoch()));
         let opened = self
             .unless_stopped(timeout(
                 &self.inner.clock,

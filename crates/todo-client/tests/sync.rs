@@ -86,8 +86,9 @@ async fn edits_made_offline_sync_after_reconnecting() {
     let (ha, hb) = (spawn(&a), spawn(&b));
     let (list, cmd) = new_list(&a, "Inbox");
     a.submit(cmd).unwrap();
-    eventually("b has the list", WAIT, || {
-        b.view().lists.contains_key(&list)
+    // a must have settled its own command before going offline, or it would still be pending.
+    eventually("both have the list", WAIT, || {
+        b.view().lists.contains_key(&list) && converged(&a, &server)
     })
     .await;
 

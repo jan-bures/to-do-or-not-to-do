@@ -94,6 +94,7 @@ struct MemoryData {
     outbox: Vec<(CommandId, String)>,
     failed: Vec<(CommandId, String)>,
     fail_writes: bool,
+    fail_loads: bool,
 }
 
 /// In-memory [`Storage`]. Clones share the same data, so a test can "restart" a client on it.
@@ -131,6 +132,11 @@ impl MemoryStorage {
     pub fn set_fail_writes(&self, fail: bool) {
         self.lock().fail_writes = fail;
     }
+
+    /// Makes every following load fail (or succeed again), for tests.
+    pub fn set_fail_loads(&self, fail: bool) {
+        self.lock().fail_loads = fail;
+    }
 }
 
 fn put(list: &mut Vec<(CommandId, String)>, id: CommandId, json: String) {
@@ -143,6 +149,9 @@ fn put(list: &mut Vec<(CommandId, String)>, id: CommandId, json: String) {
 impl Storage for MemoryStorage {
     fn load(&mut self) -> Result<Loaded, StorageError> {
         let d = self.lock();
+        if d.fail_loads {
+            return Err(StorageError::Backend("loads are disabled".into()));
+        }
         Ok(Loaded {
             snapshot: d
                 .snapshot
@@ -181,6 +190,7 @@ impl Storage for MemoryStorage {
             outbox: d.outbox.clone(),
             failed: d.failed.clone(),
             fail_writes: false,
+            fail_loads: d.fail_loads,
         };
         for op in ops {
             match op {

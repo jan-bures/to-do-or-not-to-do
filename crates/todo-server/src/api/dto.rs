@@ -43,6 +43,16 @@ pub struct UndoRequest {
     pub epoch: Option<Uuid>,
 }
 
+/// The 200 body of a command or undo: what it produced, and the log it is in.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CommandResponse {
+    /// The stored (or replayed) result.
+    #[serde(flatten)]
+    pub result: crate::engine::CommandResult,
+    /// The log epoch the result's sequence numbers belong to (see `GET /api/v1/events`).
+    pub epoch: Uuid,
+}
+
 /// A task with everything attached to it.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TaskDetail {
