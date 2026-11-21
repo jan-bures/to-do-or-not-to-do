@@ -22,6 +22,7 @@ A personal to-do app built as a shared interface for one person and their AI age
 | `crates/todo-client` | Client sync engine shared by the desktop, Android and web clients |
 | `crates/todo-server` | Self-hosted server: REST, live event stream, MCP |
 | `crates/todo-import` | Microsoft To Do importer |
+| `crates/todo-backup` | Encrypted SQLite backups to S3-compatible storage (R2), with restore, a restore drill and a monthly operations budget |
 | `spikes/gpui-desktop` | GPUI viability spike on Windows: list, text input, tray, global hotkey, software rendering, drag-and-drop formats |
 | `spikes/graph-export` | Microsoft To Do export through Microsoft Graph, with a check against the local cache |
 

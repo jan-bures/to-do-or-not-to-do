@@ -5,6 +5,7 @@ members = [
     "crates/todo-client",
     "crates/todo-server",
     "crates/todo-import",
+    "crates/todo-backup",
 ]
 # Spikes are standalone throwaway projects and are not part of the workspace.
 exclude = ["spikes"]
@@ -48,6 +49,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream"] }
 tempfile = "3"
+# todo-backup only.
+age = "0.12"
+rusty-s3 = "0.12"
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+url = "2"
+zstd = "0.14"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

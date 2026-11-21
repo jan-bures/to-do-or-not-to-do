@@ -33,6 +33,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `crates/todo-client` | Sync engine shared by every client. Put platform specifics behind traits. |
 | `crates/todo-server` | axum server: REST, SSE, MCP, auth, ingest. |
 | `crates/todo-import` | Microsoft To Do importer CLI. |
+| `crates/todo-backup` | Backup CLI: snapshot, zstd and age, upload to R2 under a monthly operations budget, restore and drill. |
 | `apps/desktop` | GPUI desktop app (not yet created). |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
 

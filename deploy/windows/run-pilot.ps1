@@ -12,6 +12,11 @@
       crashing quickly.
     - Writes process output to dated log files under <DataDir>\logs and prunes logs older than 14 days.
     - A named mutex keeps a single supervisor per user. stop-pilot.ps1 stops it cleanly.
+    - If <DataDir>\bin\todo-backup.exe and <DataDir>\backup.toml both exist, it also runs encrypted
+      backups: `run --kind frequent` every 6 hours and `run --kind daily` once per calendar day. Each run is
+      a separate short-lived process that the loop only polls, so a slow or failing backup never holds up
+      supervising the server. The last runs are kept in <DataDir>\backup-schedule.json, so a restart does
+      not back up again straight away.
 
     Nothing here is deployment-specific: the tunnel token is read by cloudflared from a file
     (--token-file), and every path defaults to %LOCALAPPDATA%\todo.
@@ -24,7 +29,16 @@ param(
     [string]$HealthUrl = 'http://127.0.0.1:47320/health',
     [string]$CloudflaredExe = '',
     [string]$TunnelTokenFile = '',
-    [switch]$NoTunnel
+    [switch]$NoTunnel,
+    [string]$BackupExe = '',
+    [string]$BackupConfig = '',
+    # Minutes between frequent backups. Each run that changed nothing costs no request at all.
+    [int]$FrequentBackupMinutes = 360,
+    # After a failed run, wait this long before trying the same kind again.
+    [int]$BackupRetryMinutes = 30,
+    # Give the server time to start (and run migrations) before the first backup.
+    [int]$BackupStartDelayMinutes = 5,
+    [int]$BackupTimeoutMinutes = 60
 )
 
 Set-StrictMode -Version Latest
@@ -34,10 +48,13 @@ $ErrorActionPreference = 'Stop'
 if (-not $ServerExe) { $ServerExe = Join-Path $DataDir 'bin\todo-server.exe' }
 if (-not $ServerConfig) { $ServerConfig = Join-Path $DataDir 'server.toml' }
 if (-not $TunnelTokenFile) { $TunnelTokenFile = Join-Path $DataDir 'cloudflared-token' }
+if (-not $BackupExe) { $BackupExe = Join-Path $DataDir 'bin\todo-backup.exe' }
+if (-not $BackupConfig) { $BackupConfig = Join-Path $DataDir 'backup.toml' }
 
 $logDir = Join-Path $DataDir 'logs'
 $stateFile = Join-Path $DataDir 'pilot.pids.json'
 $stopFile = Join-Path $DataDir 'pilot.stop'
+$backupScheduleFile = Join-Path $DataDir 'backup-schedule.json'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-PilotLog([string]$Message) {
@@ -88,7 +105,161 @@ function Save-State($Children) {
     foreach ($c in $Children) {
         if ($c.Process -and -not $c.Process.HasExited) { $pids[$c.Name] = $c.Process.Id }
     }
+    if ($script:backupJob -and -not $script:backupJob.Process.HasExited) {
+        $pids['todo-backup'] = $script:backupJob.Process.Id
+    }
     $pids | ConvertTo-Json | Set-Content -Path $stateFile
+}
+
+# Reads a property that may be missing. Under StrictMode, $obj.$name throws for a missing property.
+function Get-JsonValue($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+# --- Backups -------------------------------------------------------------------------------------------
+
+$script:backupJob = $null
+$backupKinds = @('daily', 'frequent')   # daily first when both are due
+$backupNotBefore = (Get-Date).ToUniversalTime().AddMinutes($BackupStartDelayMinutes)
+
+function ConvertTo-UtcTime($Value) {
+    if ($null -eq $Value -or $Value -eq '') { return [datetime]::MinValue }
+    # Windows PowerShell keeps ISO strings as strings; PowerShell 7 turns them into DateTime already.
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    try {
+        return [datetime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    } catch {
+        return [datetime]::MinValue
+    }
+}
+
+function Read-BackupSchedule {
+    $schedule = @{}
+    $json = $null
+    if (Test-Path $backupScheduleFile) {
+        try {
+            $json = Get-Content -Raw -Path $backupScheduleFile | ConvertFrom-Json
+        } catch {
+            Write-PilotLog "could not read $backupScheduleFile; treating every backup as due"
+        }
+    }
+    foreach ($kind in $backupKinds) {
+        foreach ($field in @('LastSuccess', 'LastAttempt')) {
+            $schedule["$kind$field"] = ConvertTo-UtcTime (Get-JsonValue $json "$kind$field")
+        }
+    }
+    return $schedule
+}
+
+function Save-BackupSchedule($Schedule) {
+    $out = [ordered]@{}
+    foreach ($key in ($Schedule.Keys | Sort-Object)) {
+        $t = $Schedule[$key]
+        if ($t -ne [datetime]::MinValue) { $out[$key] = $t.ToString('o') } else { $out[$key] = $null }
+    }
+    $tmp = "$backupScheduleFile.tmp"
+    $out | ConvertTo-Json | Set-Content -Path $tmp
+    Move-Item -Path $tmp -Destination $backupScheduleFile -Force
+}
+
+function Test-BackupDue([string]$Kind, $Schedule, [datetime]$NowUtc) {
+    $lastSuccess = $Schedule["${Kind}LastSuccess"]
+    $lastAttempt = $Schedule["${Kind}LastAttempt"]
+    # A run that failed waits before it's retried, so a broken config doesn't spin.
+    if ($lastAttempt -gt $lastSuccess -and ($NowUtc - $lastAttempt).TotalMinutes -lt $BackupRetryMinutes) {
+        return $false
+    }
+    if ($Kind -eq 'daily') {
+        if ($lastSuccess -eq [datetime]::MinValue) { return $true }
+        return $lastSuccess.ToLocalTime().Date -lt $NowUtc.ToLocalTime().Date
+    }
+    return ($NowUtc - $lastSuccess).TotalMinutes -ge $FrequentBackupMinutes
+}
+
+function Start-BackupJob([string]$Kind, $Schedule, [datetime]$NowUtc) {
+    $stamp = '{0:yyyyMMdd-HHmmss}' -f (Get-Date)
+    $out = Join-Path $logDir "backup-$Kind-$stamp.out.tmp"
+    $err = Join-Path $logDir "backup-$Kind-$stamp.err.tmp"
+    $Schedule["${Kind}LastAttempt"] = $NowUtc
+    Save-BackupSchedule $Schedule
+    $p = Start-Process -FilePath $BackupExe -ArgumentList @(
+        '--config', "`"$BackupConfig`"", 'run', '--kind', $Kind) `
+        -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    # Touching Handle now keeps ExitCode readable after the process exits.
+    $null = $p.Handle
+    $script:backupJob = [pscustomobject]@{
+        Kind = $Kind; Process = $p; StartedAt = $NowUtc; Out = $out; Err = $err
+    }
+    Write-PilotLog "started backup $Kind (pid $($p.Id))"
+}
+
+# Appends a finished run's output to the day's backup log and removes the temporary files.
+function Complete-BackupJob($Job, [string]$Result) {
+    $log = Join-Path $logDir ('backup-{0:yyyy-MM-dd}.log' -f (Get-Date))
+    $lines = @('{0:yyyy-MM-ddTHH:mm:ss.fffK} backup {1}: {2}' -f (Get-Date), $Job.Kind, $Result)
+    foreach ($f in @($Job.Out, $Job.Err)) {
+        if (Test-Path $f) {
+            $lines += @(Get-Content -Path $f | ForEach-Object { "  $_" })
+            Remove-Item -Path $f -ErrorAction SilentlyContinue
+        }
+    }
+    Add-Content -Path $log -Value $lines
+}
+
+function Invoke-BackupScheduler {
+    $nowUtc = (Get-Date).ToUniversalTime()
+    $job = $script:backupJob
+    if ($job) {
+        if (-not $job.Process.HasExited) {
+            if (($nowUtc - $job.StartedAt).TotalMinutes -lt $BackupTimeoutMinutes) { return }
+            Write-PilotLog "backup $($job.Kind) ran longer than $BackupTimeoutMinutes min; stopping it"
+            Stop-Process -Id $job.Process.Id -ErrorAction SilentlyContinue
+            $job.Process.WaitForExit(10000) | Out-Null
+            Complete-BackupJob $job 'timed out'
+            $script:backupJob = $null
+            return
+        }
+        $job.Process.WaitForExit()
+        $code = $job.Process.ExitCode
+        Write-PilotLog "backup $($job.Kind) exited with code $code"
+        if ($code -eq 0) {
+            $schedule = Read-BackupSchedule
+            # Count from the start, so the cadence doesn't drift by the run time.
+            $schedule["$($job.Kind)LastSuccess"] = $job.StartedAt
+            Save-BackupSchedule $schedule
+            Complete-BackupJob $job 'ok'
+        } elseif ($code -eq 3) {
+            Complete-BackupJob $job 'refused: monthly operations budget reached'
+        } else {
+            Complete-BackupJob $job "failed with exit code $code"
+        }
+        $script:backupJob = $null
+        return
+    }
+    if ($nowUtc -lt $backupNotBefore) { return }
+    $schedule = Read-BackupSchedule
+    foreach ($kind in $backupKinds) {
+        if (Test-BackupDue $kind $schedule $nowUtc) {
+            Start-BackupJob $kind $schedule $nowUtc
+            return
+        }
+    }
+}
+
+function Stop-BackupJob {
+    $job = $script:backupJob
+    if ($job -and -not $job.Process.HasExited) {
+        # Safe to interrupt: nothing is recorded until an upload completes, and the next run cleans up.
+        Write-PilotLog "stopping backup $($job.Kind) (pid $($job.Process.Id))"
+        Stop-Process -Id $job.Process.Id -ErrorAction SilentlyContinue
+        $job.Process.WaitForExit(10000) | Out-Null
+        Complete-BackupJob $job 'stopped with the supervisor'
+    }
+    $script:backupJob = $null
 }
 
 function Stop-Children($Children) {
@@ -129,8 +300,8 @@ if (-not $NoTunnel) {
 if (Test-Path $stateFile) {
     try {
         $old = Get-Content -Raw -Path $stateFile | ConvertFrom-Json
-        foreach ($name in @('cloudflared', 'todo-server')) {
-            $oldPid = $old.$name
+        foreach ($name in @('cloudflared', 'todo-server', 'todo-backup')) {
+            $oldPid = Get-JsonValue $old $name
             if ($oldPid) {
                 $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
                 if ($p -and $p.ProcessName -eq $name) {
@@ -144,12 +315,24 @@ if (Test-Path $stateFile) {
     }
 }
 
+$backupEnabled = (Test-Path $BackupExe) -and (Test-Path $BackupConfig)
+if ($backupEnabled) {
+    Write-PilotLog ("backups enabled: frequent every {0} min, daily once a day, first check after {1} min" -f `
+        $FrequentBackupMinutes, $BackupStartDelayMinutes)
+} else {
+    Write-PilotLog 'backups disabled (needs bin\todo-backup.exe and backup.toml in the data directory)'
+}
+
 Remove-Item -Path $stopFile -ErrorAction SilentlyContinue
 Write-PilotLog "supervisor started (pid $PID)"
 
 # Prune old logs once per start.
 Get-ChildItem -Path $logDir -Filter '*.log' |
     Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-14) } |
+    Remove-Item -ErrorAction SilentlyContinue
+# Output of backup runs that were cut off by a killed supervisor.
+Get-ChildItem -Path $logDir -Filter 'backup-*.tmp' |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-1) } |
     Remove-Item -ErrorAction SilentlyContinue
 
 try {
@@ -172,11 +355,16 @@ try {
             if ($c -eq $tunnel -and -not (Test-Health)) { continue }
             Start-Child $c
         }
+        if ($backupEnabled) {
+            # A scheduling problem must never stop the supervisor from looking after the server.
+            try { Invoke-BackupScheduler } catch { Write-PilotLog "backup scheduler error: $_" }
+        }
         Save-State $children
         Start-Sleep -Seconds 2
     }
     Write-PilotLog 'stop requested'
 } finally {
+    Stop-BackupJob
     Stop-Children $children
     Remove-Item -Path $stateFile, $stopFile -ErrorAction SilentlyContinue
     Write-PilotLog 'supervisor stopped'

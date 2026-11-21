@@ -34,9 +34,13 @@ while ((Test-Path $stateFile) -and (Get-Date) -lt $deadline) {
 if (Test-Path $stateFile) {
     Write-Warning 'The supervisor did not stop in time; stopping the recorded processes directly.'
     $state = Get-Content -Raw -Path $stateFile | ConvertFrom-Json
-    $expected = [ordered]@{ cloudflared = 'cloudflared'; 'todo-server' = 'todo-server'; supervisor = $null }
+    $expected = [ordered]@{
+        cloudflared = 'cloudflared'; 'todo-server' = 'todo-server'; 'todo-backup' = 'todo-backup'; supervisor = $null
+    }
     foreach ($key in $expected.Keys) {
-        $procId = $state.$key
+        # Under StrictMode a missing property throws, so look it up instead of using $state.$key.
+        $prop = $state.PSObject.Properties[$key]
+        $procId = if ($prop) { $prop.Value } else { $null }
         if (-not $procId) { continue }
         $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
         if (-not $p) { continue }

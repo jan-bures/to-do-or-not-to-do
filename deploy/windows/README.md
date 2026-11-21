@@ -7,7 +7,7 @@ window appears.
 | Script | What it does |
 |---|---|
 | `install-pilot.ps1` | Copies the supervisor to `<data>\bin` and registers the logon task `\todo\pilot`. `-Start` also starts it now. |
-| `run-pilot.ps1` | The supervisor. It starts the server, waits for `/health`, then starts the tunnel. It restarts either one if it exits, with backoff, and logs to `<data>\logs`. |
+| `run-pilot.ps1` | The supervisor. It starts the server, waits for `/health`, then starts the tunnel. It restarts either one if it exits, with backoff, and logs to `<data>\logs`. When backups are set up, it schedules them too (see [Backups](#backups)). |
 | `stop-pilot.ps1` | Stops the tunnel first, then the server, then the supervisor. The task stays registered. |
 | `uninstall-pilot.ps1` | Stops everything and removes the task. Data, logs and secrets stay. |
 
@@ -23,7 +23,12 @@ secrets.
 | `server.toml` | Server config, passed in as `TODO_SERVER_CONFIG`. Keep `bind` on `127.0.0.1`. |
 | `cloudflared-token` | The tunnel token. `cloudflared` reads it with `--token-file`, so it never appears on a command line. |
 | `todo.sqlite3*` | The database and its WAL and lock files, under the `data_dir` set in the config. |
-| `logs\` | Supervisor and process logs, one file per day, pruned after 14 days. |
+| `logs\` | Supervisor and process logs, one file per day, pruned after 14 days. Backup runs go to `backup-<date>.log`. |
+| `bin\todo-backup.exe` | Optional: the backup tool. If it and `backup.toml` exist, backups run on a schedule. |
+| `backup.toml` | Backup config, passed to `todo-backup --config`. |
+| `r2-backups.json` | R2 credentials scoped to the backup bucket. Any name works; `backup.toml` points to it. |
+| `backup-state\` | The tool's state: monthly operation counts, the record of past uploads, a lock file and scratch space. |
+| `backup-schedule.json` | When the supervisor last started and last completed each kind of backup. |
 
 `cloudflared` is found on `PATH`. A per-user install, for example with scoop, needs no admin rights either.
 Without a token file, or with `-NoTunnel`, only the server runs.
@@ -50,3 +55,130 @@ Copy-Item target\release\todo-server.exe "$env:LOCALAPPDATA\todo\bin\"
 - **Starting by hand.** `Start-ScheduledTask` can run an interactive task in another, disconnected session of
   the same user, where it fails with `0xC0000142`. `install-pilot.ps1 -Start` launches the supervisor in the
   current session instead. The logon trigger always uses the session that's logging on.
+
+## Backups
+
+`todo-backup` takes a consistent snapshot of the live database with `VACUUM INTO`, which is safe while the
+server writes. Then it:
+
+1. runs `PRAGMA integrity_check` on the snapshot;
+2. compresses it with zstd;
+3. encrypts it with [age](https://age-encryption.org) to a public key;
+4. uploads it to R2 as `<kind>/<UTC timestamp>-<max seq>.sqlite3.zst.age`.
+
+The PC only ever holds the public key. A leaked R2 credential or a stolen disk exposes no readable backup.
+
+### Set up
+
+```powershell
+$data = "$env:LOCALAPPDATA\todo"
+Copy-Item target\release\todo-backup.exe "$data\bin\"
+
+# Make a key pair. It prints the public recipient (age1...), which is all the config needs.
+& "$data\bin\todo-backup.exe" keygen --out "$env:USERPROFILE\Desktop\todo-backup-identity.txt"
+# Store the identity file's contents in your password manager, then delete the file.
+```
+
+Write `backup.toml` in the data directory. Relative paths are resolved against the config file's directory.
+
+```toml
+db_path = 'todo.sqlite3'
+state_dir = 'backup-state'
+recipient = 'age1...'                 # from keygen
+credentials_file = 'r2-backups.json'
+
+# Optional. These are the defaults. Caps above the R2 free tier are rejected.
+[budget]
+class_a_monthly = 20000
+class_b_monthly = 200000
+```
+
+Then write `r2-backups.json` with an R2 API token that is limited to the backup bucket:
+
+```json
+{
+  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+  "bucket": "<bucket>",
+  "access_key_id": "<access-key-id>",
+  "secret_access_key": "<secret-access-key>"
+}
+```
+
+Run it once by hand, then restart the supervisor with `stop-pilot.ps1` and `install-pilot.ps1 -Start`:
+
+```powershell
+$env:TODO_BACKUP_CONFIG = "$data\backup.toml"
+& "$data\bin\todo-backup.exe" run --kind daily
+& "$data\bin\todo-backup.exe" status
+```
+
+### Schedule
+
+When `bin\todo-backup.exe` and `backup.toml` both exist, the supervisor:
+
+- runs `run --kind frequent` every 6 hours (`-FrequentBackupMinutes`) and `run --kind daily` once per calendar
+  day. The first check comes 5 minutes after the supervisor starts (`-BackupStartDelayMinutes`).
+- runs one backup at a time, as a separate process. The supervisor loop only polls it, so supervising the
+  server never waits on a backup. A run that takes longer than an hour is stopped (`-BackupTimeoutMinutes`).
+- records start and completion times in `backup-schedule.json`, so restarts and reboots don't back up again
+  straight away. A failed run is retried after 30 minutes (`-BackupRetryMinutes`).
+- appends each run's output to `logs\backup-<date>.log`.
+
+A run sends no request at all if nothing changed since the last backup of the same kind: the same `max(seq)`
+and the same snapshot SHA-256.
+
+The bucket's lifecycle rules do the pruning: `frequent/` expires after 7 days and `daily/` after 90, and
+incomplete multipart uploads are aborted after a day. The tool never deletes anything, and normal runs never
+list.
+
+### Budget
+
+The tool counts every request it sends, per calendar month (UTC), in `backup-state\budget.json`. It charges
+each request before sending it, so a failed request still counts. Once a cap would be exceeded, it refuses to
+run and exits with code 3.
+
+- **Class A:** PUT, LIST and the multipart calls.
+- **Class B:** GET and HEAD.
+
+| | Class A a month | Class B a month |
+|---|---|---|
+| Default schedule (at most 4 frequent and 1 daily a day) | about 155 | 0 |
+| Each restore drill | 0, or 1 LIST per kind without a local record | 1 |
+| Each `restore --latest` | 1 LIST | 1 |
+| Default cap | 20,000 | 200,000 |
+| R2 free tier, for the whole account | 1,000,000 | 10,000,000 |
+
+Storage stays small. At most 28 frequent and 90 daily objects exist at a time. A database of a few MB
+compresses to well under 1 MB per object, far below the 10 GB free tier.
+
+### Restore
+
+```powershell
+# A specific object. Its key is in the logs and in `todo-backup status`.
+todo-backup restore --object daily/20261121T060000Z-42.sqlite3.zst.age --identity <file> --out D:\restore\todo.sqlite3
+# The newest of one kind. Costs one LIST.
+todo-backup restore --latest --kind daily --identity <file> --out D:\restore\todo.sqlite3
+```
+
+Restore downloads, decrypts and decompresses the backup, and checks its integrity, before the file appears at
+`--out`. It never overwrites an existing file.
+
+To put a backup back in place:
+
+1. Stop the pilot.
+2. Move the old `todo.sqlite3*` files aside.
+3. Restore to `todo.sqlite3`.
+4. Start the pilot again.
+
+### Restore drill
+
+`todo-backup drill --identity <file>` restores the newest backup into a scratch directory and checks:
+
+- `integrity_check`;
+- the SHA-256 of the restored file;
+- the `events` row count and `max(seq)`, against what was recorded at upload;
+- that the counters are sane.
+
+It prints a short report. It exits with 1 if the object can't be downloaded, decrypted or checked, and with 4
+if its contents don't match. The drill needs the identity, which deliberately isn't kept on the PC, so run it
+by hand, for example once a month.
