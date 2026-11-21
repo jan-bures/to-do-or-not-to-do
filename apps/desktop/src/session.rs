@@ -650,6 +650,109 @@ fn finish_recovery(
     }))
 }
 
+/// Where [`Session::start_fresh`] put the damaged data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartedFresh {
+    /// `damaged\<ms>\` in the pairing's directory: the damaged cache, its copy, anything rebuilt so far
+    /// and the recovery record, moved as they were. Removed with the pairing's data at sign-out.
+    pub kept: PathBuf,
+}
+
+/// The pairing's folder for damaged data set aside by "Start fresh".
+const DAMAGED_DIR: &str = "damaged";
+
+impl Session {
+    /// Whether a recovery was started and hasn't finished (its record is still there). Only then is
+    /// starting fresh offered.
+    pub fn recovery_pending(paths: &Paths, pairing: &Pairing) -> bool {
+        let record = paths
+            .data(&pairing.config.pairing)
+            .path()
+            .join(RECOVERY_FILE);
+        std::fs::symlink_metadata(record).is_ok()
+    }
+
+    /// Gives up on a recovery that can't finish: moves the damaged data (never deleting it) to a new
+    /// folder `damaged\<ms>\`, the recovery record last, then opens an empty cache, which loads from the
+    /// server once started. Unsent changes in the damaged copy are not recovered.
+    ///
+    /// Safe to repeat after a failure: until the record has moved, the next start still sees the
+    /// recovery as pending, and whatever wasn't moved yet is moved the next time.
+    pub fn start_fresh(
+        rt: Runtime,
+        paths: &Paths,
+        pairing: &Pairing,
+    ) -> Result<(Self, StartedFresh), OpenError> {
+        let data = paths.data(&pairing.config.pairing);
+        let kept = set_aside(&data).map_err(unavailable("setting the damaged data aside"))?;
+        tracing::warn!("started fresh; the damaged data was kept aside");
+        let session = Self::open_cache(rt, paths, pairing)?;
+        Ok((session, StartedFresh { kept }))
+    }
+}
+
+/// Whether `name` in a pairing's directory is part of a damaged cache or its recovery: the cache, the
+/// quarantined copies, the staged rebuild (each with its log files) and a half-written record.
+fn damaged_name(name: &str) -> bool {
+    let base = name
+        .strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+        .unwrap_or(name);
+    base == config::CACHE_FILE
+        || base == STAGED_CACHE
+        || (base.starts_with("cache.damaged-") && base.ends_with(".sqlite"))
+        || name == format!("{RECOVERY_FILE}.tmp")
+}
+
+fn invalid(what: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, what)
+}
+
+fn set_aside(data: &DataDir) -> std::io::Result<PathBuf> {
+    data.check_ancestors()?;
+    let damaged = data.path().join(DAMAGED_DIR);
+    match todo_fs::create_private_dir(&damaged) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let m = std::fs::symlink_metadata(&damaged)?;
+    if !todo_fs::is_plain(&m) || !m.is_dir() {
+        return Err(invalid(format!(
+            "{} is a link or not a directory",
+            damaged.display()
+        )));
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let kept = damaged.join(ms.to_string());
+    todo_fs::create_private_dir(&kept)?;
+    let plain_file =
+        |path: &Path| std::fs::symlink_metadata(path).map(|m| todo_fs::is_plain(&m) && m.is_file());
+    for entry in std::fs::read_dir(data.path())? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        if damaged_name(&name) && plain_file(&path)? {
+            todo_fs::replace_durably(&path, &kept.join(&name))?;
+        }
+    }
+    // Last, and durably: once the record is gone, the next start opens the new cache.
+    let record = data.path().join(RECOVERY_FILE);
+    match plain_file(&record) {
+        Ok(true) => todo_fs::replace_durably(&record, &kept.join(RECOVERY_FILE))?,
+        Ok(false) => {
+            return Err(invalid(
+                "the recovery record is a link or not a file".into(),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    Ok(kept)
+}
+
 /// Signing out stopped before anything was removed: the device is still signed in, and signing out
 /// can simply be tried again.
 #[derive(Debug, thiserror::Error)]

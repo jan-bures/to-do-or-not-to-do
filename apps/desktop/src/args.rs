@@ -16,7 +16,7 @@ Options:
   --background      Start in the tray without showing the window (used by Start with Windows).
   --screenshot      Render a fixture into its own window, save that window to a PNG and exit.
   --fixture         Fixture to render: my-day, work, empty, finished, quick-add,
-                    pairing or pairing-code.
+                    pairing, pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -35,6 +35,8 @@ pub const FIXTURES: &[&str] = &[
     "quick-add",
     "pairing",
     "pairing-code",
+    "open-failed",
+    "open-failed-confirm",
 ];
 
 /// What to do.

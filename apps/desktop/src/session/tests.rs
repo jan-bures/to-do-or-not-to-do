@@ -801,6 +801,96 @@ fn a_copy_that_cant_be_read_yet_is_retried_not_taken_as_empty() {
 }
 
 #[test]
+fn a_copy_that_can_never_be_read_can_be_set_aside_to_start_fresh() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, queued) = queued_offline(&server, &net, &paths);
+    let data = paths.data(&pairing.config.pairing);
+
+    // The cache is garbage: it can be recognised as damaged, but nothing can ever be read back.
+    for log in ["cache.sqlite-wal", "cache.sqlite-shm"] {
+        let _ = std::fs::remove_file(data.path().join(log));
+    }
+    std::fs::write(data.cache(), vec![0x5a; 8192]).expect("garbage");
+    assert!(!Session::recovery_pending(&paths, &pairing));
+    for attempt in ["the start", "Try again"] {
+        let failed = Session::open_or_recover(net.clone(), &paths, &pairing);
+        assert!(
+            matches!(&failed, Err(OpenError::Unavailable(_))),
+            "{attempt} fails: {:?}",
+            failed.as_ref().err()
+        );
+        assert!(
+            Session::recovery_pending(&paths, &pairing),
+            "{attempt}: start fresh is offered"
+        );
+    }
+
+    let (session, fresh) =
+        Session::start_fresh(net.clone(), &paths, &pairing).expect("start fresh");
+    assert!(
+        !Session::recovery_pending(&paths, &pairing),
+        "the record is gone"
+    );
+    assert!(!data.path().join("recovery.json").exists());
+    // The damaged data is kept, with its record, under the pairing's data.
+    assert!(
+        fresh.kept.starts_with(data.path().join("damaged")),
+        "{}",
+        fresh.kept.display()
+    );
+    let kept: Vec<String> = std::fs::read_dir(&fresh.kept)
+        .expect("kept")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(kept.iter().any(|n| n == "recovery.json"), "{kept:?}");
+    assert!(
+        kept.iter()
+            .any(|n| n.starts_with("cache.damaged-") && n.ends_with(".sqlite")),
+        "{kept:?}"
+    );
+    assert!(
+        !std::fs::read_dir(data.path()).expect("data").any(|e| e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with("cache.damaged-")),
+        "nothing damaged is left beside the new cache"
+    );
+
+    // A working, synced app on an empty cache; the unsent edit was given up.
+    assert_eq!(session.client().status().pending, 0);
+    session.start();
+    eventually("loaded from the server", || {
+        let view = session.client().view();
+        !view.lists.is_empty() && view.lists.len() == server.state().lists.len()
+    });
+    assert!(!server.state().lists.contains_key(&queued));
+    net.block_on(session.shutdown());
+    drop(session);
+
+    // The next start opens the new cache as usual.
+    let (session, recovered) =
+        Session::open_or_recover(net.clone(), &paths, &pairing).expect("reopen");
+    assert_eq!(recovered, None);
+
+    // Signing out removes the kept copy with the rest of the pairing's data.
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        move || drop(session),
+        || tokio::time::sleep(Duration::from_millis(100)),
+    ));
+    assert_eq!(result.expect("signed out"), SignedOut::Clean);
+    assert!(!fresh.kept.exists() && !data.path().exists());
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
 fn signing_out_stops_downloads_before_removing_the_data() {
     // A server that accepts the connection and never answers: the download hangs until cancelled.
     let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");

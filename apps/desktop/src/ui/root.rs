@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use gpui::{
     App, AsyncWindowContext, Context, Entity, FocusHandle, Focusable, SharedString, Subscription,
-    WeakEntity, Window, div, prelude::*, px,
+    WeakEntity, Window, div, prelude::*,
 };
 
-use super::kit;
+use super::failed::{FailedEvent, FailedView};
 use super::pairing::{PairingEvent, PairingView};
 use super::quick_add::QuickAddView;
 use super::shell::{ShellEvent, ShellView};
@@ -17,7 +17,7 @@ use crate::config::{self, Pairing, Paths};
 use crate::model::{RoomKey, Smart, UiState};
 use crate::session::{self, OpenError, Recovered, Runtime, Session, SignedOut};
 use crate::store::{LiveStore, Store};
-use crate::theme::{self, TextStyled, Theme, space, ty};
+use crate::theme::Theme;
 
 /// What startup loads before the first frame, off the UI thread.
 #[allow(missing_debug_implementations)] // Holds the session.
@@ -36,8 +36,9 @@ pub enum Opened {
     NotPaired,
     /// The saved sign-in couldn't be read (or can't be used): pair again. The old data stays.
     PairAgain(SharedString),
-    /// Paired, but the cache couldn't be opened now. Nothing was changed; trying again may work.
-    Failed(SharedString),
+    /// Paired, but the cache couldn't be opened now. Nothing was removed; trying again may work.
+    /// `recovery`: a recovery of damaged data couldn't finish, so starting fresh is offered too.
+    Failed { why: SharedString, recovery: bool },
     /// The paired session, opened on its cache (not syncing yet), and what was recovered if the cache
     /// was damaged.
     Session(Box<Session>, Option<Recovered>),
@@ -74,7 +75,10 @@ fn open(rt: &Runtime, paths: &Paths) -> Opened {
                 }
                 Err(e) => {
                     tracing::warn!("the local data couldn't be opened: {e}");
-                    Opened::Failed(format!("{}.", capitalized(&e.to_string())).into())
+                    Opened::Failed {
+                        why: format!("{}.", capitalized(&e.to_string())).into(),
+                        recovery: Session::recovery_pending(paths, &pairing),
+                    }
                 }
             }
         }
@@ -112,13 +116,42 @@ fn recovered_notice(r: &Recovered) -> String {
     )
 }
 
+/// What the shell says after starting fresh.
+pub const STARTED_FRESH: &str = "Started fresh from the server. Unsent changes in the damaged data \
+                                 weren't recovered; a copy is kept.";
+
+/// Opens the saved pairing on an empty cache, the damaged data set aside (`Session::start_fresh`).
+/// On failure, what to show: why, and whether the recovery is still pending.
+fn start_fresh(
+    rt: &Runtime,
+    paths: &Paths,
+) -> Result<(Session, session::StartedFresh), (SharedString, bool)> {
+    let pairing = match config::load(paths) {
+        Ok(Some(p)) => p,
+        Ok(None) => return Err(("The saved sign-in is gone. Restart the app.".into(), false)),
+        Err(e) => {
+            return Err((
+                format!("The saved sign-in couldn't be read: {e:#}.").into(),
+                false,
+            ));
+        }
+    };
+    Session::start_fresh(rt.clone(), paths, &pairing).map_err(|e| {
+        tracing::warn!("starting fresh failed: {e}");
+        (
+            format!("Starting fresh didn't work: {e}.").into(),
+            Session::recovery_pending(paths, &pairing),
+        )
+    })
+}
+
 enum Screen {
     /// While `RootView::new` runs, and while signing out lets go of the shell.
     Starting,
     Pairing(Entity<PairingView>),
     Shell(Entity<ShellView>),
-    /// The paired data couldn't be opened; nothing was changed.
-    Failed(SharedString),
+    /// The paired data couldn't be opened; nothing was removed.
+    Failed(Entity<FailedView>),
 }
 
 #[allow(missing_debug_implementations)] // Holds GPUI entities.
@@ -177,12 +210,60 @@ impl RootView {
             }
             Opened::NotPaired => self.show_pairing(last_server, None, window, cx),
             Opened::PairAgain(why) => self.show_pairing(last_server, Some(why), window, cx),
-            Opened::Failed(why) => {
-                self._subscriptions.clear();
-                self.screen = Screen::Failed(why);
-                cx.notify();
-            }
+            Opened::Failed { why, recovery } => self.show_failed(why, recovery, window, cx),
         }
+    }
+
+    fn show_failed(
+        &mut self,
+        why: SharedString,
+        recovery: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let theme = self.theme;
+        let view = cx.new(|cx| FailedView::new(theme, why, recovery, cx));
+        let sub =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &FailedEvent, window, cx| match event {
+                    FailedEvent::Retry => this.retry(window, cx),
+                    FailedEvent::StartFresh => this.start_fresh(window, cx),
+                },
+            );
+        self._subscriptions = vec![sub];
+        let focus = view.focus_handle(cx);
+        window.focus(&focus, cx);
+        self.screen = Screen::Failed(view);
+        cx.notify();
+    }
+
+    /// Starting fresh was confirmed: set the damaged data aside off the UI thread, then show the shell on
+    /// an empty cache and say what was given up, with a way to the kept copy.
+    fn start_fresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (rt, paths) = (self.rt.clone(), self.paths.clone());
+        self._subscriptions.clear();
+        self.screen = Screen::Starting;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { start_fresh(&rt, &paths) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok((s, fresh)) => {
+                    this.show_shell(s, window, cx);
+                    if let Screen::Shell(shell) = &this.screen {
+                        shell.update(cx, |s, cx| {
+                            s.show_folder_notice(STARTED_FRESH, fresh.kept, cx);
+                        });
+                    }
+                }
+                Err((why, recovery)) => this.show_failed(why, recovery, window, cx),
+            });
+        })
+        .detach();
     }
 
     /// Opens the saved pairing again (after a failure), off the UI thread.
@@ -336,10 +417,7 @@ impl RootView {
                     shell.update(cx, |s, cx| s.show_notice(text, true, cx));
                 }
             }
-            Err(e) => {
-                self.screen = Screen::Failed(format!("{text} ({e})").into());
-                cx.notify();
-            }
+            Err(e) => self.show_failed(format!("{text} ({e})").into(), false, window, cx),
         }
     }
 
@@ -381,70 +459,18 @@ impl Focusable for RootView {
         match &self.screen {
             Screen::Pairing(p) => p.focus_handle(cx),
             Screen::Shell(s) => s.focus_handle(cx),
-            Screen::Starting | Screen::Failed(_) => self.focus.clone(),
+            Screen::Failed(f) => f.focus_handle(cx),
+            Screen::Starting => self.focus.clone(),
         }
     }
 }
 
-impl RootView {
-    /// The paired data couldn't be opened: what happened, and a way to try again. Nothing was deleted.
-    fn failed(&self, why: &SharedString, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let p = theme::palette(self.theme, Smart::MyDay.hue());
-        div()
-            .id("failed")
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(p.pane)
-            .style(ty::BODY)
-            .text_color(p.ink)
-            .child(
-                div()
-                    .h(px(theme::desktop::TITLEBAR))
-                    .flex_none()
-                    .flex()
-                    .justify_end()
-                    .window_control_area(gpui::WindowControlArea::Drag)
-                    .child(kit::window_controls(&p)),
-            )
-            .child(
-                div()
-                    .w(px(520.))
-                    .mx_auto()
-                    .pt(px(space::S10 * 2.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(space::S4))
-                    .child(
-                        div()
-                            .style(ty::ROOM_TITLE)
-                            .child("Your tasks couldn't be opened"),
-                    )
-                    .child(div().text_color(p.ink_2).child(why.clone()))
-                    .child(
-                        div()
-                            .text_color(p.ink_3)
-                            .child("Nothing was changed or removed. Close other copies of the app and try again."),
-                    )
-                    .child(
-                        div().flex().child(
-                            kit::button(&p, "Try again")
-                                .id("retry")
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, window, cx| this.retry(window, cx))),
-                        ),
-                    ),
-            )
-            .into_any_element()
-    }
-}
-
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let screen = match &self.screen {
             Screen::Pairing(p) => p.clone().into_any_element(),
             Screen::Shell(s) => s.clone().into_any_element(),
-            Screen::Failed(why) => self.failed(&why.clone(), cx),
+            Screen::Failed(f) => f.clone().into_any_element(),
             Screen::Starting => div().into_any_element(),
         };
         div().size_full().child(screen)

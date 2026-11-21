@@ -23,6 +23,7 @@ use crate::model;
 use crate::platform::win;
 use crate::store::Store;
 use crate::theme::desktop;
+use crate::ui::failed::FailedView;
 use crate::ui::pairing::PairingView;
 use crate::ui::quick_add::{self, QuickAddView};
 use crate::ui::shell::{self, ShellView};
@@ -135,6 +136,13 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
             "pairing-code" => Some(true),
             _ => None,
         };
+        // The failed-open screen after a recovery couldn't finish, before (`open-failed`) and while
+        // (`open-failed-confirm`) confirming Start fresh.
+        let failed = match opts.fixture.as_str() {
+            "open-failed" => Some(false),
+            "open-failed-confirm" => Some(true),
+            _ => None,
+        };
         let logical = if quick {
             (
                 f32::from(quick_add::SIZE.width),
@@ -174,6 +182,14 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
                         cx,
                     )
                 })
+            })
+            .map(|w| {
+                w.update(cx, |_, window, _| win::hwnd_of(window))
+                    .unwrap_or_default()
+            })
+        } else if let Some(confirming) = failed {
+            cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |_, cx| {
+                cx.new(|cx| FailedView::fixture(theme, confirming, cx))
             })
             .map(|w| {
                 w.update(cx, |_, window, _| win::hwnd_of(window))

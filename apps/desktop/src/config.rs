@@ -33,7 +33,7 @@ const APP_DIR: &str = "to-do-or-not-to-do";
 const CONFIG_FILE: &str = "config.json";
 const TOKEN_FILE: &str = "device-token.bin";
 const PAIRINGS_DIR: &str = "pairings";
-const CACHE_FILE: &str = "cache.sqlite";
+pub(crate) const CACHE_FILE: &str = "cache.sqlite";
 const ATTACHMENTS_DIR: &str = "attachments";
 /// `<pairing ID>.signed-out`, beside a pairing's directory once its sign-in is gone: remove it.
 const SIGNED_OUT: &str = ".signed-out";

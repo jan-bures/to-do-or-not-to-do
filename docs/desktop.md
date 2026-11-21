@@ -98,6 +98,7 @@ into the app**: it is learnt here and saved in the user's config.
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
+| `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
 | `pairings\<pairing ID>.signed-out` | same | the record that the pairing beside it was signed out and its data is to be removed |
 
 `TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile). The token
@@ -139,6 +140,13 @@ Direct3D and DirectWrite, so a warm start draws real data in its first frame. Op
   failure at any step leaves the record, and the next start finishes the recovery from there, so an unsent
   edit is never lost. The confirmed state is loaded from the server again. The status bar says how many
   unsent changes were kept.
+- **A recovery that can't finish** (the copy can never be read, say) doesn't lock the app: while
+  `recovery.json` is there, the screen also offers **Start fresh (keep the damaged copy)**, after asking,
+  since it gives up on the unsent changes. It moves the damaged cache, its copies, anything rebuilt so far
+  and, last and durably, the record into a new `damaged\<ms>\` folder in the pairing's directory (nothing is
+  deleted), then opens an empty cache and loads from the server. The status bar says the unsent changes
+  weren't recovered, with **Open folder** for the kept copy. Kept copies are removed with the pairing's data
+  at sign-out.
 - **A cache that can't be opened now** (another copy of the app holds it, no permission, disk full) is left
   as it is. A screen says what happened, with **Try again**.
 - **A saved sign-in that can't be used** goes back to pairing with the reason. The old data stays.
@@ -190,14 +198,15 @@ Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 ## Screenshots
 
 ```sh
-todo-desktop --screenshot <out.png> --fixture <my-day|work|empty|finished|quick-add|pairing|pairing-code> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
+todo-desktop --screenshot <out.png> --fixture <my-day|work|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
 The screenshot mode opens one window with a fixture and never talks to a server. A fixture is a
 `todo_core::State` built from invented sample data by running commands through the domain (as the owner and
 as agents, at fixed times), plus UI state, a fake sync status and a fixed clock; the window is the real
 shell on a local store (`src/store.rs`). `pairing` and `pairing-code` show the pairing screen before and
-after asking for a code. It waits for the window to settle, reads back its next frame from the window's own render target and exits. It doesn't capture the
+after asking for a code. `open-failed` and `open-failed-confirm` show the "couldn't be opened" screen after a
+recovery that can't finish, before and while confirming **Start fresh**. It waits for the window to settle, reads back its next frame from the window's own render target and exits. It doesn't capture the
 screen and doesn't send any input. It refuses to replace an existing file unless `--overwrite` is given,
 and it checks that the captured image is the window's logical size times the scale. Exit code 0 means the
 PNG was written and flushed to disk, 3 means a font family is missing, 4 means the output exists, and 1 is

@@ -1,5 +1,6 @@
 //! GPUI views.
 
+pub mod failed;
 pub mod input;
 pub mod kit;
 pub mod landscape;

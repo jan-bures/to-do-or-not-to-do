@@ -90,6 +90,8 @@ pub enum ShellEvent {
 struct Notice {
     text: SharedString,
     error: bool,
+    /// A folder the notice is about, opened in Explorer by its "Open folder" action.
+    folder: Option<std::path::PathBuf>,
 }
 
 impl Notice {
@@ -97,6 +99,7 @@ impl Notice {
         Self {
             text: text.into(),
             error: false,
+            folder: None,
         }
     }
 
@@ -104,6 +107,7 @@ impl Notice {
         Self {
             text: text.into(),
             error: true,
+            folder: None,
         }
     }
 }
@@ -317,6 +321,20 @@ impl ShellView {
             Notice::error(text)
         } else {
             Notice::info(text)
+        });
+        cx.notify();
+    }
+
+    /// Shows a warning in the status bar with an "Open folder" action for `folder`.
+    pub fn show_folder_notice(
+        &mut self,
+        text: impl Into<SharedString>,
+        folder: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.notice = Some(Notice {
+            folder: Some(folder),
+            ..Notice::error(text)
         });
         cx.notify();
     }
@@ -1222,6 +1240,7 @@ impl ShellView {
                 .child(s)
         };
         let error = self.notice.as_ref().is_some_and(|n| n.error);
+        let folder = self.notice.as_ref().and_then(|n| n.folder.clone());
         let right: SharedString = self
             .notice
             .as_ref()
@@ -1270,8 +1289,22 @@ impl ShellView {
             )
             .child(
                 div()
+                    .flex()
+                    .gap(px(space::S2))
                     .when(error, |d| d.text_color(p.danger_ink))
-                    .child(right),
+                    .child(right)
+                    .when_some(folder, |d, folder| {
+                        d.child(
+                            div()
+                                .id("notice-open-folder")
+                                .cursor_pointer()
+                                .text_color(p.ink_2)
+                                .font_weight(FontWeight::MEDIUM)
+                                .underline()
+                                .child("Open folder")
+                                .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                        )
+                    }),
             )
     }
 }

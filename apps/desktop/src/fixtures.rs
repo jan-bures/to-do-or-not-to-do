@@ -47,7 +47,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "work" => Some(work()),
         "empty" => Some(empty()),
         "finished" => Some(finished()),
-        "pairing" | "pairing-code" => Some(pairing()),
+        "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
         _ => None,
     }
 }
