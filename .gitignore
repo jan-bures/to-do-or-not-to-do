@@ -18,3 +18,14 @@ Thumbs.db
 
 # Agent worktrees
 /.claude/worktrees/
+
+# Email Worker deployment config: the real values live in the private repo
+/workers/email-ingest/wrangler.toml
+/workers/email-ingest/wrangler.json
+/workers/email-ingest/wrangler.jsonc
+/workers/email-ingest/cloudflare.config.ts
+/workers/email-ingest/wrangler.config.ts
+/workers/email-ingest/.secrets*.json
+/workers/email-ingest/.dev.vars*
+/workers/email-ingest/.wrangler/
+/workers/email-ingest/.cloudflare/

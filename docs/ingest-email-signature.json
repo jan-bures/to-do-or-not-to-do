@@ -1,0 +1,9 @@
+{
+  "description": "Shared test vector for POST /api/v1/ingest/email request signing (see docs/ingest-email.md). signature = lowercase hex of HMAC-SHA256 with key = the UTF-8 bytes of secret and message = timestamp, LF, nonce, LF, then the body bytes exactly as sent (UTF-8). body_sha256 lets a test confirm it read body byte for byte.",
+  "secret": "example-ingest-key-for-tests-only-0000",
+  "timestamp": "1763712000",
+  "nonce": "00112233445566778899aabbccddeeff",
+  "body": "{\"version\":1,\"message_id\":\"<CAexample-1234@mail.example.org>\",\"list\":\"shopping\",\"title\":\"Nákup – mléko #2\",\"subject\":\"Fwd: Nákup – mléko #2 #keep\",\"keep\":true,\"original_sender\":{\"address\":\"alice@example.org\",\"name\":\"Alice Example\",\"source\":\"forwarded_header\"},\"forwarded_by\":\"you@example.com\",\"received_at\":\"2025-11-21T08:00:00.000Z\",\"body\":{\"text\":\"Line one\\nLine \\\"two\\\" ✓\",\"source\":\"text\",\"truncated\":false},\"raw_truncated\":false}",
+  "body_sha256": "ee324e896faaf858fde339211a3f271157b2f4915cb43025890082a9f436da55",
+  "signature": "756c265983517521c291f3647dd7acf371d50bc2e7d8dd2e59d7086bf08e24c7"
+}

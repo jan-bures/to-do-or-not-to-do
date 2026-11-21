@@ -1,0 +1,48 @@
+# Template for the email-ingest Worker's Wrangler configuration. Placeholders only.
+#
+# Copy it to wrangler.toml in this directory (git ignores that file), fill in the placeholders, and
+# keep the filled-in copy in the private deployment repo. See README.md for the deploy steps.
+
+name = "todo-email-ingest"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+# Or set CLOUDFLARE_ACCOUNT_ID in the environment instead.
+account_id = "<account-id>"
+
+# Email Workers need no HTTP route. Keep the workers.dev URL off: the Worker has no fetch handler.
+workers_dev = false
+preview_urls = false
+
+[vars]
+# Full URL of the server's ingest endpoint. Must be https.
+INGEST_URL = "https://todo.example.com/api/v1/ingest/email"
+# Local part of the ingest address: todo@in.example.com and todo+<list>@in.example.com.
+INGEST_LOCAL_PART = "todo"
+# Failure notices: a verified Email Routing destination address, and a sender on the routing domain.
+NOTIFY_ADDRESS = "you@example.com"
+NOTIFY_FROM = "todo-notify@in.example.com"
+
+# Secrets, set with `wrangler secret put <NAME>` or `cf deploy --secrets-file <file>`, never here:
+#   INGEST_HMAC_SECRET  at least 32 characters; the server is configured with the same value
+#   ALLOWED_SENDERS     comma-separated sender addresses, such as "you@example.com, work@example.org"
+
+# Retry queue: this Worker both produces to it and consumes from it.
+[[queues.producers]]
+binding = "INGEST_QUEUE"
+queue = "todo-email-ingest-retry"
+
+[[queues.consumers]]
+queue = "todo-email-ingest-retry"
+max_batch_size = 10
+max_batch_timeout = 5
+# Only used when the consumer itself throws; normal retries re-enqueue with their own schedule.
+max_retries = 10
+
+# Failure notices. Restricted to one verified destination address, which keeps them free on the
+# Workers Free plan. Remove this block (and the NOTIFY_* vars) to log failures only.
+[[send_email]]
+name = "NOTIFY"
+destination_address = "you@example.com"
+
+[observability]
+enabled = true

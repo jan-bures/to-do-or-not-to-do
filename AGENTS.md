@@ -35,6 +35,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `crates/todo-import` | Microsoft To Do importer CLI. |
 | `crates/todo-backup` | Backup CLI: snapshot, zstd and age, upload to R2 under a monthly operations budget, restore and drill. |
 | `apps/desktop` | GPUI desktop app (not yet created). |
+| `workers/email-ingest` | Cloudflare Email Worker for email to task (plain JS, Node tests). Contract: `docs/ingest-email.md`. |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
 
 ## Commands
@@ -46,6 +47,8 @@ cargo test --workspace
 # The shared crates must keep building for these targets (CI enforces it):
 cargo check -p todo-core -p todo-client --target wasm32-unknown-unknown
 cargo check -p todo-core -p todo-client --target aarch64-linux-android
+# The email Worker (Node 22 or later):
+cd workers/email-ingest && npm ci && npm test
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` to what the GPUI revision needs. Bump it only together

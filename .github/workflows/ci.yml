@@ -54,6 +54,21 @@ jobs:
       - run: cargo check -p todo-core -p todo-client --locked --target wasm32-unknown-unknown
       - run: cargo check -p todo-core -p todo-client --locked --target aarch64-linux-android
 
+  email-worker:
+    name: email worker tests (Node)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/email-ingest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned Node LTS (24.x "Krypton").
+          node-version: 24.15.0
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
   secret-scan:
     name: gitleaks
     runs-on: ubuntu-latest
