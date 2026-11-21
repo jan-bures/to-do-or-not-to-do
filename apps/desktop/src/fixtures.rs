@@ -559,7 +559,10 @@ fn sample() -> (Builder, Lists) {
     });
     b.task(T {
         my_day: true,
-        ..t(health, "Call the dentist to reschedule")
+        ..t(
+            health,
+            "Call the dentist to reschedule the check-up and ask about the bill from March",
+        )
     });
     let passport = b.task(T {
         priority: Priority::Low,

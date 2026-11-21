@@ -118,7 +118,7 @@ fn the_filter_narrows_rows_with_the_query_language_or_plain_words() {
     f.ui.filter = "(dentist".into();
     assert_eq!(
         titles(&f.shell().room.tasks),
-        ["Call the dentist to reschedule"]
+        ["Call the dentist to reschedule the check-up and ask about the bill from March"]
     );
     f.ui.filter = "zzz".into();
     let none = f.shell();

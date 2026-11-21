@@ -42,6 +42,7 @@ actions!(
         ToggleTask,
         EditTask,
         EditDue,
+        CyclePriority,
         MoveTaskUp,
         MoveTaskDown,
         Escape
@@ -58,6 +59,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
         KeyBinding::new("e", EditTask, list),
         KeyBinding::new("d", EditDue, list),
+        KeyBinding::new("p", CyclePriority, list),
         KeyBinding::new("alt-up", MoveTaskUp, list),
         KeyBinding::new("alt-down", MoveTaskDown, list),
         KeyBinding::new("j", NextTask, list),
@@ -740,9 +742,13 @@ impl ShellView {
                             .justify_between()
                             .gap(px(space::S6))
                             .child(
+                                // Long titles end in an ellipsis, but only the sides clip: the display
+                                // face's descenders (the y in "My Day") hang below its tight line box.
                                 div()
                                     .min_w_0()
-                                    .truncate()
+                                    .overflow_x_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .style(ty::ROOM_TITLE)
                                     .text_color(title_ink)
                                     .child(room.title.clone()),
@@ -924,6 +930,11 @@ impl ShellView {
         } else {
             title.text_color(p.ink)
         };
+        // The trailing columns keep their places from the right edge, but empty ones to the left of every
+        // filled one are left out, so the title runs on into their room instead of stopping short.
+        let show_agent = task.agent.is_some();
+        let show_priority = show_agent || task.priority > 0;
+        let full_due = show_priority || !matches!(task.due, Due::None);
         let row = div()
             .id(SharedString::from(format!("task-{id}")))
             .relative()
@@ -947,28 +958,32 @@ impl ShellView {
                     .child(title)
                     .child(meta),
             )
-            .child(
-                div().w(px(desktop::COL_AGENT)).flex_none().children(
-                    task.agent
-                        .map(|a| kit::agent_mark(t, a, component::AGENT_MARK)),
-                ),
-            )
+            .when(show_agent, |row| {
+                row.child(
+                    div().w(px(desktop::COL_AGENT)).flex_none().children(
+                        task.agent
+                            .map(|a| kit::agent_mark(t, a, component::AGENT_MARK)),
+                    ),
+                )
+            })
+            .when(show_priority, |row| {
+                row.child(
+                    div()
+                        .id(SharedString::from(format!("priority-{id}")))
+                        .w(px(desktop::COL_PRIORITY))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(kit::priority(p, task.priority))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.cycle_priority(id, cx);
+                        })),
+                )
+            })
             .child(
                 div()
-                    .id(SharedString::from(format!("priority-{id}")))
-                    .w(px(desktop::COL_PRIORITY))
-                    .flex_none()
-                    .flex()
-                    .justify_center()
-                    .child(kit::priority(p, task.priority))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.cycle_priority(id, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .w(px(desktop::COL_DUE))
+                    .when(full_due, |d| d.w(px(desktop::COL_DUE)))
                     .flex_none()
                     .flex()
                     .justify_end()
@@ -1116,6 +1131,11 @@ impl ShellView {
                     .on_action(
                         cx.listener(|this, _: &EditDue, window, cx| this.start_due(window, cx)),
                     )
+                    .on_action(cx.listener(|this, _: &CyclePriority, _, cx| {
+                        if let Some(id) = this.ui.task {
+                            this.cycle_priority(id, cx);
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
                     .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
                     .child(body),
@@ -1309,7 +1329,8 @@ impl ShellView {
                     .child(hint("J K", "move"))
                     .child(hint("Space", "complete"))
                     .child(hint("E", "edit"))
-                    .child(hint("D", "due")),
+                    .child(hint("D", "due"))
+                    .child(hint("P", "priority")),
             )
             .child(
                 div()
