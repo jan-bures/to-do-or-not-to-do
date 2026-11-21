@@ -1454,17 +1454,43 @@ const WINDOW_CLASS_NAME: PCWSTR = w!("Zed::Window");
 fn register_window_class(icon_handle: HICON) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let wc = WNDCLASSW {
+        // TO-DO PATCH (app icon): the class also gets a small icon (`hIconSm`), loaded at the system's small
+        // icon size (16 px at 100 %, 24 px at 150 %) from the same icon resource, so the taskbar, Alt+Tab and
+        // the window caption pick a hand-tuned size from the .ico instead of scaling the 32 px one down.
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(window_procedure),
             hIcon: icon_handle,
+            hIconSm: load_small_icon(),
             lpszClassName: PCWSTR(WINDOW_CLASS_NAME.as_ptr()),
             style: CS_HREDRAW | CS_VREDRAW,
             hInstance: get_module_handle().into(),
             hbrBackground: unsafe { CreateSolidBrush(COLORREF(0x00000000)) },
             ..Default::default()
         };
-        unsafe { RegisterClassW(&wc) };
+        unsafe { RegisterClassExW(&wc) };
     });
+}
+
+/// TO-DO PATCH (app icon): the exe's icon resource (id 1) at the system's small icon size. A missing resource
+/// (a test binary, say) gives a null handle, and Windows derives the small icon from the large one.
+fn load_small_icon() -> HICON {
+    unsafe {
+        let (width, height) = (
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+        );
+        LoadImageW(
+            Some(HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0)),
+            PCWSTR(1 as _),
+            IMAGE_ICON,
+            width,
+            height,
+            LR_SHARED,
+        )
+        .map(|handle| HICON(handle.0))
+        .unwrap_or_default()
+    }
 }
 
 unsafe extern "system" fn window_procedure(

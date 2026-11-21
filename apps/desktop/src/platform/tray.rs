@@ -85,7 +85,7 @@ pub fn create(
         quit: quit.id().clone(),
     };
 
-    let icon = Icon::from_rgba(icon_rgba(ICON_SIZE), ICON_SIZE, ICON_SIZE)?;
+    let icon = load_icon()?;
     let tray = TrayIconBuilder::new()
         .with_tooltip("To-do")
         .with_icon(icon)
@@ -116,65 +116,44 @@ pub fn create(
     })
 }
 
-const ICON_SIZE: u32 = 32;
+/// The id of the icon resource `build.rs` embeds from `assets/brand/generated/todo.ico`.
+const ICON_RESOURCE: u16 = 1;
 
-/// The app mark, drawn in code: the sun over two hills on My Day's light sky, in a rounded square. The
-/// colours are the design tokens'.
-pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let p = todo_design::palette(todo_design::Theme::Light, todo_design::hues::MY_DAY);
-    let rgb = |c: todo_design::Rgb| [f32::from(c.r), f32::from(c.g), f32::from(c.b)];
-    let (sky_c, sun_c, far_c, near_c) = (rgb(p.sky), rgb(p.sun), rgb(p.hill_far), rgb(p.sun_ink));
-    const SAMPLES: u32 = 4;
-    let s = size as f32;
-    let mut out = Vec::with_capacity((size * size * 4) as usize);
-    for py in 0..size {
-        for px in 0..size {
-            let (mut acc, mut cover) = ([0.0f32; 3], 0.0f32);
-            for sy in 0..SAMPLES {
-                for sx in 0..SAMPLES {
-                    // Unit coordinates of the sub-sample.
-                    let x = (px as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / s;
-                    let y = (py as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / s;
-                    if !in_rounded_square(x, y, 0.22) {
-                        continue;
-                    }
-                    let near = y > 0.74 + 0.05 * (x * 5.2 + 0.6).sin();
-                    let far = y > 0.62 + 0.06 * (x * 4.1 + 2.2).sin();
-                    let sun = (x - 0.56).powi(2) + (y - 0.46).powi(2) < 0.16f32.powi(2);
-                    let color = if near {
-                        near_c
-                    } else if far {
-                        far_c
-                    } else if sun {
-                        sun_c
-                    } else {
-                        sky_c
-                    };
-                    for (a, c) in acc.iter_mut().zip(color) {
-                        *a += c;
-                    }
-                    cover += 1.0;
-                }
-            }
-            let n = (SAMPLES * SAMPLES) as f32;
-            let alpha = cover / n;
-            for a in acc {
-                out.push(if cover > 0.0 {
-                    (a / cover).round() as u8
-                } else {
-                    0
-                });
-            }
-            out.push((alpha * 255.0).round() as u8);
-        }
-    }
-    out
+/// The 32 px render of the app icon, for when the exe has no icon resource (a test binary, say).
+const FALLBACK_PNG: &[u8] = include_bytes!("../../../../assets/brand/generated/icon-32.png");
+
+/// The tray's icon size in pixels: 16 at 100 % scaling, 24 at 150 %, 32 at 200 %. The .ico holds a hand-tuned
+/// image for each, so Windows never has to scale one.
+#[allow(unsafe_code)] // One Win32 metrics call.
+fn tray_icon_size() -> u32 {
+    // SAFETY: GetSystemMetrics has no preconditions.
+    let size = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+            windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON,
+        )
+    };
+    u32::try_from(size).ok().filter(|s| *s > 0).unwrap_or(16)
 }
 
-fn in_rounded_square(x: f32, y: f32, r: f32) -> bool {
-    let cx = x.clamp(r, 1.0 - r);
-    let cy = y.clamp(r, 1.0 - r);
-    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
+/// The app icon from the exe's resource at the tray's size, or the embedded 32 px render.
+fn load_icon() -> anyhow::Result<Icon> {
+    let size = tray_icon_size();
+    match Icon::from_resource(ICON_RESOURCE, Some((size, size))) {
+        Ok(icon) => Ok(icon),
+        Err(error) => {
+            tracing::debug!("no icon resource ({error}); using the embedded render");
+            let (rgba, width, height) = fallback_rgba()?;
+            Ok(Icon::from_rgba(rgba, width, height)?)
+        }
+    }
+}
+
+/// The embedded render as RGBA pixels, with its width and height.
+fn fallback_rgba() -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    let image =
+        image::load_from_memory_with_format(FALLBACK_PNG, image::ImageFormat::Png)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok((image.into_raw(), width, height))
 }
 
 #[cfg(test)]
@@ -182,13 +161,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icon_is_rgba_with_transparent_corners_and_an_opaque_centre() {
-        let px = icon_rgba(32);
-        assert_eq!(px.len(), 32 * 32 * 4);
+    fn the_embedded_render_has_transparent_corners_and_an_opaque_centre() {
+        let (px, width, height) = fallback_rgba().expect("decodes");
+        assert_eq!((width, height), (32, 32));
         let alpha = |x: usize, y: usize| px[(y * 32 + x) * 4 + 3];
         assert_eq!(alpha(0, 0), 0);
         assert_eq!(alpha(31, 31), 0);
         assert_eq!(alpha(16, 16), 255);
+    }
+
+    #[test]
+    fn the_ico_has_an_image_for_every_scale() {
+        // The window class and the tray ask Windows for 16, 24 (150 %), 32 (200 %) and 48 px images.
+        let ico = include_bytes!("../../../../assets/brand/generated/todo.ico");
+        assert_eq!(u16::from_le_bytes([ico[2], ico[3]]), 1, "an icon file");
+        let count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
+        let sizes: Vec<u32> = (0..count)
+            .map(|i| match ico[6 + 16 * i] {
+                0 => 256,
+                n => u32::from(n),
+            })
+            .collect();
+        assert_eq!(sizes, [16, 24, 32, 48, 64, 256]);
     }
 
     #[test]

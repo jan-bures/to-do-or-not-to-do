@@ -65,6 +65,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+# Embeds the app icon and the version information in the exe (`build.rs`, `resources/app.rc`).
+embed-resource = "3"
+
 [dev-dependencies]
 # Integration tests run the session against an in-process server (never a deployed one).
 todo-server = { path = "../../crates/todo-server" }

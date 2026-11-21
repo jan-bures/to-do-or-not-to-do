@@ -1,0 +1,13 @@
+{
+  "name": "todo-brand-assets",
+  "private": true,
+  "description": "Generates the app icon rasters, the .ico and the flattened monochrome layer from the SVG sources.",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs",
+    "check": "node generate.mjs --check"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  }
+}

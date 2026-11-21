@@ -37,6 +37,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `crates/todo-backup` | Backup CLI: snapshot, zstd and age, upload to R2 under a monthly operations budget, restore and drill. |
 | `crates/todo-design` | Design tokens shared by every client: colours (OKLCH, derived from a hue), type, spacing, radii, motion, landscape geometry, icons. **No I/O.** Generates `generated/tokens.css` and `tokens.json`. |
 | `assets/fonts` | Bundled OFL fonts (static instances, Czech coverage), their licenses, sources and build script. |
+| `assets/brand` | The app icon (Daybreak): SVG sources, generated PNG/ICO rasters and the flattened Android monochrome layer. Regenerate with `node generate.mjs` (see its README). |
 | `assets/icons` | Lucide icon subset (ISC) and the hand-drawn list glyphs. |
 | `docs/design-language.md` | The design language. Every UI change follows it and passes the screenshot gate. |
 | `apps/desktop` | GPUI desktop app, Windows only for now. Its own Cargo workspace with a vendored, patched `gpui_windows`. See `docs/desktop.md`. |

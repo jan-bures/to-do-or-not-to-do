@@ -98,6 +98,22 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
 
+  brand-assets:
+    name: brand assets are up to date
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assets/brand
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+      # Regenerates the icon rasters, the .ico and the flattened monochrome layer in memory and fails when a
+      # checked-in file differs. Run `npm run generate` in assets/brand to fix it.
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+
   secret-scan:
     name: gitleaks
     runs-on: ubuntu-latest

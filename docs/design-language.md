@@ -259,6 +259,24 @@ The design requirement is a hard gate, not polish. A UI change is done only when
 - **Fixtures and mockups use invented data only:** made-up tasks, lists and people, and `example.com` addresses.
   Never use real tasks.
 
+## The app icon
+
+**Daybreak:** the sun, which means "done" everywhere in the app, rises over the My Day hills and carries the tick.
+It sits on a light sky tile, so the icon says "done" in the app's own language. Sky, hills, halo, sun and tick are
+`sky`, `hill-far`, `hill-near`, `sun` and `ink` of the light My Day room. The shapes are flat and unblurred.
+
+- **Two drawings.** `master.svg` is for 32 px and up. At 16 and 24 px the halo and the fine curves turn to mush, so
+  `small-16.svg` drops the halo and uses a bigger disc, a heavier tick and one hill: disc, tick and hill is all
+  that is left to read. Never scale the master down for 16 or 24 px.
+- **One source.** The SVGs in `assets/brand/` are the source of every size and platform: the Windows `.ico`, the
+  PWA and apple-touch PNGs, and the Android adaptive layers (key art inside the 66-unit safe circle of the 108-unit
+  canvas). `assets/brand/generate.mjs` produces the rasters, the `.ico` and the monochrome layer flattened for
+  Android; CI fails when they are stale. Clients embed the generated files and never redraw the mark in code.
+- **The tile is part of the icon.** The tile is a rounded square on desktop and the web, a full-bleed square for
+  apple-touch and maskable (the OS cuts the shape), and the adaptive background layer on Android.
+
+See `assets/brand/README.md` for which file goes where.
+
 ## Using the tokens
 
 | Platform | How |
