@@ -31,6 +31,14 @@ enum Cmd {
     RotateLogEpoch,
     /// Read a token from stdin and print the SHA-256 hash to put in the config.
     HashToken,
+    /// Make a new token for the local admin API: write it to a new owner-only file and print the
+    /// config lines with its hash. Works while the server runs (it touches neither the database nor
+    /// the config); restart the server after changing the config.
+    AdminToken {
+        /// The file to write the token to. It must not exist yet.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 async fn ctrl_c() {
@@ -56,6 +64,16 @@ fn main() -> anyhow::Result<()> {
             let token = token.trim();
             anyhow::ensure!(!token.is_empty(), "no token on stdin");
             println!("{}", todo_server::auth::hash_token(token));
+            Ok(())
+        }
+        Cmd::AdminToken { out } => {
+            let hash = todo_server::admin::write_token_file(&out)?;
+            eprintln!(
+                "Wrote a new admin token to {} (readable only by this account).\n\
+                 Put these lines in the server config, with a loopback `bind`, and restart the server:\n",
+                out.display()
+            );
+            println!("[admin]\nbind = \"127.0.0.1:47321\"\ntoken_sha256 = \"{hash}\"");
             Ok(())
         }
         Cmd::RebuildProjections => {

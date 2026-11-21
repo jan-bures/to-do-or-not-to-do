@@ -2,6 +2,7 @@
 //!
 //! | Module | Contents |
 //! |---|---|
+//! | [`admin`] | the local admin API: a loopback-only listener with its own token, for routine admin operations |
 //! | [`config`] | TOML config file plus `TODO_SERVER_*` environment overrides |
 //! | [`db`] | SQLite schema, migrations, the append-only event log and projection tables |
 //! | [`cancel`] | per-request cancellation with an atomic cancel-or-commit hand-off |
@@ -19,6 +20,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod admin;
 pub mod api;
 pub mod app;
 pub mod auth;

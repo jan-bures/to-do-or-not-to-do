@@ -579,6 +579,15 @@ impl AuthStore {
         Ok(n == 1)
     }
 
+    /// Replaces an active agent token's grants and write quota. Returns false if it is not active.
+    pub fn set_agent_access(&self, id: i64, grants: &Grants, writes_per_hour: u32) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE agent_tokens SET grants = ?2, writes_per_hour = ?3 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, serde_json::to_string(grants)?, i64::from(writes_per_hour)],
+        )?;
+        Ok(n == 1)
+    }
+
     /// Records use of an agent token.
     pub fn touch_agent(&self, id: i64, now: i64) -> Result<()> {
         self.conn().execute(
@@ -670,20 +679,32 @@ impl AuthStore {
 
     /// The newest audit entries, newest first.
     pub fn audit_page(&self, limit: usize) -> Result<Vec<AuditRow>> {
+        self.audit_before(None, limit)
+    }
+
+    /// The newest audit entries older than the entry `before` (all entries when `None`), newest
+    /// first.
+    pub fn audit_before(&self, before: Option<i64>, limit: usize) -> Result<Vec<AuditRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, at, kind, ip, detail FROM audit ORDER BY id DESC LIMIT ?1",
+            "SELECT id, at, kind, ip, detail FROM audit WHERE id < ?2 ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt
-            .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
-                Ok(AuditRow {
-                    id: r.get(0)?,
-                    at: r.get(1)?,
-                    kind: r.get(2)?,
-                    ip: r.get(3)?,
-                    detail: r.get(4)?,
-                })
-            })?
+            .query_map(
+                params![
+                    i64::try_from(limit).unwrap_or(i64::MAX),
+                    before.unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(AuditRow {
+                        id: r.get(0)?,
+                        at: r.get(1)?,
+                        kind: r.get(2)?,
+                        ip: r.get(3)?,
+                        detail: r.get(4)?,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -757,5 +778,9 @@ mod tests {
         let rows = s.audit_page(10).unwrap();
         assert_eq!(rows[0].kind, "sign_out");
         assert_eq!(rows[1].ip.as_deref(), Some("127.0.0.1"));
+        let older = s.audit_before(Some(rows[0].id), 10).unwrap();
+        assert_eq!(older, rows[1..].to_vec());
+        assert!(s.audit_before(Some(rows[1].id), 10).unwrap().is_empty());
+        assert_eq!(s.audit_before(None, 1).unwrap(), rows[..1].to_vec());
     }
 }

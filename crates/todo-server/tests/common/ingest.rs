@@ -118,7 +118,11 @@ pub fn task_id(v: &Value) -> String {
     v["task_id"].as_str().unwrap().to_owned()
 }
 
-pub const BY: By = By { at: 0, ip: None };
+pub const BY: By = By {
+    at: 0,
+    ip: None,
+    actor: None,
+};
 
 /// Picks `list` as the Inbox, as the owner does on the admin page (tested in `tests/auth.rs`).
 pub fn set_inbox(t: &TestServer, list: &str) {

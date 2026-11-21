@@ -22,6 +22,21 @@ use uuid::Uuid;
 pub const TOKEN_A: &str = "test-token-alpha-0123456789";
 pub const TOKEN_B: &str = "test-token-beta-9876543210";
 
+/// The admin API token the tests configure with [`admin_on`].
+pub const ADMIN_TOKEN: &str = "tdx_test-admin-token-0123456789abcdefghijklmn";
+
+/// Turns the admin listener on (an ephemeral loopback port) with [`ADMIN_TOKEN`].
+pub fn admin_on(cfg: &mut Config) {
+    cfg.admin.bind = Some("127.0.0.1:0".parse().unwrap());
+    cfg.admin.token_sha256 = Some(hash_token(ADMIN_TOKEN));
+    // Bursty tests, many of them with wrong tokens; `tests/admin.rs` checks both budgets with small
+    // values.
+    cfg.admin.requests_per_minute = 100_000;
+    cfg.admin.request_burst = 10_000;
+    cfg.admin.failures_per_minute = 100_000;
+    cfg.admin.failure_burst = 10_000;
+}
+
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }

@@ -150,7 +150,7 @@ async fn ingest_logs_carry_no_content() {
         .store
         .set_inbox(
             Some(inbox.parse().unwrap()),
-            todo_server::ingest::store::By { at: 0, ip: None },
+            todo_server::ingest::store::By::owner(0, None),
         )
         .unwrap();
     let send = |forwarded_by: &str| {

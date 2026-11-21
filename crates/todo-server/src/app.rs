@@ -8,6 +8,11 @@
 //!
 //! Exactly [`public_routes`]; the integration tests check that list and that every other route
 //! rejects anonymous requests.
+//!
+//! # The admin listener
+//!
+//! With `[admin] bind`, a second, loopback-only socket serves [`crate::admin`]'s router and nothing
+//! else. The public router never mounts those routes and answers 404 under `/api/v1/admin`.
 
 use crate::api;
 use crate::api::RouteLabel;
@@ -113,7 +118,7 @@ async fn health() -> StatusCode {
 }
 
 /// Gives 413 responses from the body-limit layer the same JSON shape as every other error.
-async fn json_413(res: Response) -> Response {
+pub(crate) async fn json_413(res: Response) -> Response {
     let is_json = res
         .headers()
         .get(CONTENT_TYPE)
@@ -178,7 +183,7 @@ pub(crate) async fn deadline(
 /// One line per request: method, matched route template (never the raw path or the query string),
 /// status and duration. Requests that were rejected by authentication or matched no route can come
 /// from anyone on the internet, so they are logged at `debug` only.
-async fn access_log(req: Request, next: Next) -> Response {
+pub(crate) async fn access_log(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let started = Instant::now();
     let res = next.run(req).await;
@@ -244,6 +249,7 @@ pub fn router(state: AppState) -> Router {
     // fallback (with the limits) as the app's fallback.
     api::attachments::upload_router(state.clone())
         .merge(limited)
+        .layer(from_fn(crate::admin::not_on_the_public_listener))
         .layer(map_response(json_413))
         .layer(SetSensitiveRequestHeadersLayer::new([
             AUTHORIZATION,
@@ -291,6 +297,8 @@ impl Default for Options {
 pub struct Server {
     listener: TcpListener,
     router: Router,
+    /// The admin listener and its router, when `[admin] bind` is set.
+    admin: Option<(TcpListener, Router)>,
     engine: Arc<Engine>,
     authsvc: Arc<AuthService>,
     ingest: Arc<Ingest>,
@@ -377,6 +385,24 @@ impl Server {
                 context: format!("cannot bind {}", config.bind),
                 source,
             })?;
+        let admin = match (config.admin.bind, config.admin_token_hash()) {
+            (Some(bind), Some(hash)) => {
+                // `validate` refused anything else; checked again because exposure is the point.
+                if !bind.ip().is_loopback() {
+                    return Err(ServerError::Config(ConfigError::Invalid(format!(
+                        "admin.bind {bind} is not a loopback address"
+                    ))));
+                }
+                let l = TcpListener::bind(bind)
+                    .await
+                    .map_err(|source| ServerError::Io {
+                        context: format!("cannot bind the admin listener {bind}"),
+                        source,
+                    })?;
+                Some((l, hash))
+            }
+            _ => None,
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
         let collector = attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
@@ -397,9 +423,14 @@ impl Server {
             ingest: ingest.clone(),
             attachments: attachments.clone(),
         };
+        let admin = admin.map(|(l, hash)| {
+            let st = crate::admin::AdminState::new(state.clone(), hash, &config.admin);
+            (l, crate::admin::router(st))
+        });
         Ok(Self {
             listener,
             router: router(state),
+            admin,
             engine,
             authsvc,
             ingest,
@@ -418,6 +449,19 @@ impl Server {
                 context: "local address".into(),
                 source,
             })
+    }
+
+    /// The admin listener's bound address, when it is on.
+    pub fn admin_addr(&self) -> Result<Option<SocketAddr>, ServerError> {
+        self.admin
+            .as_ref()
+            .map(|(l, _)| {
+                l.local_addr().map_err(|source| ServerError::Io {
+                    context: "admin local address".into(),
+                    source,
+                })
+            })
+            .transpose()
     }
 
     /// The engine.
@@ -440,6 +484,21 @@ impl Server {
     ) -> Result<(), ServerError> {
         let addr = self.listener.local_addr().ok();
         tracing::info!(addr = ?addr, "listening");
+        // The admin listener stops when the public one starts shutting down, and drains alongside it.
+        let admin = self.admin.map(|(listener, router)| {
+            tracing::info!(addr = ?listener.local_addr().ok(), "admin API listening (loopback only)");
+            let mut stopping = self.shutdown.subscribe();
+            let (stop, _) = watch::channel(false);
+            tokio::spawn(crate::conn::serve(
+                listener,
+                router,
+                self.limits.clone(),
+                stop,
+                async move {
+                    let _ = stopping.wait_for(|s| *s).await;
+                },
+            ))
+        });
         crate::conn::serve(
             self.listener,
             self.router,
@@ -448,6 +507,11 @@ impl Server {
             signal,
         )
         .await;
+        if let Some(a) = admin
+            && let Err(e) = a.await
+        {
+            tracing::error!(error = %e, "admin listener failed");
+        }
         // `serve` set the shutdown flag and dropped its sender: the collector finishes a run in progress
         // (it may need the writer) and ends, dropping its handle on the engine.
         if let Err(e) = self.collector.await {
@@ -464,6 +528,7 @@ impl Server {
     /// Runs the server on a background task. Used by tests and embedders.
     pub fn spawn(self) -> Result<RunningServer, ServerError> {
         let addr = self.local_addr()?;
+        let admin_addr = self.admin_addr()?;
         let engine = self.engine();
         let authsvc = self.auth_service();
         let ingest = self.ingest.clone();
@@ -474,6 +539,7 @@ impl Server {
         }));
         Ok(RunningServer {
             addr,
+            admin_addr,
             engine,
             authsvc,
             ingest,
@@ -489,6 +555,8 @@ impl Server {
 pub struct RunningServer {
     /// The bound address.
     pub addr: SocketAddr,
+    /// The admin listener's address, when it is on.
+    pub admin_addr: Option<SocketAddr>,
     /// The engine.
     pub engine: Arc<Engine>,
     /// The authentication service (tokens, grants, revocation).
@@ -506,6 +574,12 @@ impl RunningServer {
     #[must_use]
     pub fn url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// Base URL of the admin listener, for example `http://127.0.0.1:12346`, when it is on.
+    #[must_use]
+    pub fn admin_url(&self) -> Option<String> {
+        self.admin_addr.map(|a| format!("http://{a}"))
     }
 
     /// Stops the server and waits for it to finish.

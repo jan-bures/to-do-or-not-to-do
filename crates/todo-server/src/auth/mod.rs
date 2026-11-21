@@ -10,6 +10,9 @@
 //! - **The owner's browser** signs in with a passkey and gets a session cookie for the admin pages
 //!   ([`session`]). Sessions never authenticate the API, and bearer tokens never open the admin pages,
 //!   so agents cannot manage tokens, share links, devices or grants.
+//! - **A local operator** may use the admin API on its own loopback listener with the `tdx_` admin
+//!   token (see [`crate::admin`]). That token is unknown here: every route of the public listener
+//!   refuses it.
 //!
 //! [`service::AuthService`] holds the state; [`store`] persists it.
 

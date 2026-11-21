@@ -105,6 +105,36 @@ pub mod audit {
     pub const INGEST_INBOX_SET: &str = "ingest_inbox_set";
 }
 
+/// The `actor` of audit entries for changes made through the local admin API.
+pub const ADMIN_API_ACTOR: &str = "admin API";
+
+/// Who made a change, for its audit entry: the client IP, and who when it is not the owner on the
+/// admin pages. Plain `Option<IpAddr>` converts into the owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Who {
+    /// The client IP, if known.
+    pub ip: Option<IpAddr>,
+    /// Recorded as the entry's `actor` (for example [`ADMIN_API_ACTOR`]); `None` for the owner.
+    pub actor: Option<&'static str>,
+}
+
+impl Who {
+    /// The local admin API, called from `ip`.
+    #[must_use]
+    pub fn admin_api(ip: Option<IpAddr>) -> Self {
+        Self {
+            ip,
+            actor: Some(ADMIN_API_ACTOR),
+        }
+    }
+}
+
+impl From<Option<IpAddr>> for Who {
+    fn from(ip: Option<IpAddr>) -> Self {
+        Self { ip, actor: None }
+    }
+}
+
 /// Receives the setup code instead of the log (for embedding and tests).
 pub type SetupCodeSink = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -426,6 +456,15 @@ impl AuthService {
         {
             tracing::error!(error = %e, kind, "cannot write an audit entry");
         }
+    }
+
+    /// Writes an audit entry for a change made by `who` (its `actor`, if any, joins the details).
+    /// Blocking.
+    pub fn audit_by(&self, kind: &str, who: Who, mut detail: Value) {
+        if let (Some(actor), Some(m)) = (who.actor, detail.as_object_mut()) {
+            m.insert("actor".into(), json!(actor));
+        }
+        self.audit(kind, who.ip, detail);
     }
 
     /// Records a failed sign-in-like attempt from `ip` (locking it out at the threshold) and audits
@@ -1169,7 +1208,8 @@ impl AuthService {
     }
 
     /// Revokes a device: its token stops working at once and its event streams close. Blocking.
-    pub fn revoke_device(&self, id: &str, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+    pub fn revoke_device(&self, id: &str, by: impl Into<Who>) -> Result<bool, ApiError> {
+        let by = by.into();
         let guard = self.begin_mutation();
         if !self.store.revoke_device(id, self.now())? {
             return Ok(false);
@@ -1177,7 +1217,7 @@ impl AuthService {
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit(audit::DEVICE_REVOKED, ip, json!({ "device": id }));
+        self.audit_by(audit::DEVICE_REVOKED, by, json!({ "device": id }));
         Ok(true)
     }
 
@@ -1226,7 +1266,8 @@ impl AuthService {
     }
 
     /// Revokes an agent token, immediately. Blocking.
-    pub fn revoke_agent(&self, id: i64, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+    pub fn revoke_agent(&self, id: i64, by: impl Into<Who>) -> Result<bool, ApiError> {
+        let by = by.into();
         let guard = self.begin_mutation();
         let row = self.store.agent(id)?;
         if !self.store.revoke_agent(id, self.now())? {
@@ -1236,9 +1277,9 @@ impl AuthService {
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit(
+        self.audit_by(
             audit::AGENT_TOKEN_REVOKED,
-            ip,
+            by,
             json!({ "agent": row.map(|r| r.agent), "token_id": id }),
         );
         Ok(true)
@@ -1249,8 +1290,9 @@ impl AuthService {
         &self,
         id: i64,
         grants: &Grants,
-        ip: Option<IpAddr>,
+        by: impl Into<Who>,
     ) -> Result<bool, ApiError> {
+        let by = by.into();
         let guard = self.begin_mutation();
         let Some(before) = self.store.agent(id)? else {
             return Ok(false);
@@ -1261,10 +1303,46 @@ impl AuthService {
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit(
+        self.audit_by(
             audit::GRANTS_CHANGED,
-            ip,
+            by,
             json!({ "agent": before.agent, "token_id": id, "before": before.grants, "after": grants }),
+        );
+        Ok(true)
+    }
+
+    /// Replaces an active agent token's grants and write quota together. Returns false if there is
+    /// no such active token. Blocking.
+    pub fn set_agent_access(
+        &self,
+        id: i64,
+        grants: &Grants,
+        writes_per_hour: u32,
+        by: impl Into<Who>,
+    ) -> Result<bool, ApiError> {
+        let by = by.into();
+        let writes_per_hour = writes_per_hour.max(1);
+        let guard = self.begin_mutation();
+        let Some(before) = self.store.agent(id)?.filter(|a| a.revoked_at.is_none()) else {
+            return Ok(false);
+        };
+        if !self.store.set_agent_access(id, grants, writes_per_hour)? {
+            return Ok(false);
+        }
+        self.publish(&guard)?;
+        drop(guard);
+        self.revoked();
+        self.audit_by(
+            audit::GRANTS_CHANGED,
+            by,
+            json!({
+                "agent": before.agent,
+                "token_id": id,
+                "before": before.grants,
+                "after": grants,
+                "writes_per_hour_before": before.writes_per_hour,
+                "writes_per_hour_after": writes_per_hour,
+            }),
         );
         Ok(true)
     }
@@ -1304,11 +1382,12 @@ impl AuthService {
     }
 
     /// Revokes a share link. Blocking.
-    pub fn revoke_share(&self, id: i64, ip: Option<IpAddr>) -> Result<bool, ApiError> {
+    pub fn revoke_share(&self, id: i64, by: impl Into<Who>) -> Result<bool, ApiError> {
+        let by = by.into();
         if !self.store.revoke_share(id, self.now())? {
             return Ok(false);
         }
-        self.audit(audit::SHARE_REVOKED, ip, json!({ "share_id": id }));
+        self.audit_by(audit::SHARE_REVOKED, by, json!({ "share_id": id }));
         Ok(true)
     }
 

@@ -526,12 +526,12 @@ pub async fn agent_revoke(
     Ok(Redirect::to("/admin/agents").into_response())
 }
 
-pub(super) type Structure = (
+pub(crate) type Structure = (
     Vec<(CollectionId, String)>,
     Vec<(ListId, Option<CollectionId>, String)>,
 );
 
-pub(super) fn sorted_structure(state: &CoreState) -> Structure {
+pub(crate) fn sorted_structure(state: &CoreState) -> Structure {
     let mut cols: Vec<_> = state
         .collections
         .values()

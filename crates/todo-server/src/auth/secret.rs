@@ -14,6 +14,8 @@ use subtle::ConstantTimeEq;
 pub const DEVICE_TOKEN_PREFIX: &str = "tdd_";
 /// Prefix of agent tokens.
 pub const AGENT_TOKEN_PREFIX: &str = "tda_";
+/// Prefix of the local admin API token (see [`crate::admin`]).
+pub const ADMIN_TOKEN_PREFIX: &str = "tdx_";
 /// Letters of pairing user codes and setup codes: no `0`/`O`, `1`/`I`/`L`, so they read back
 /// unambiguously.
 pub const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";

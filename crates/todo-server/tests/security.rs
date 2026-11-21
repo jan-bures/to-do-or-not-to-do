@@ -3,7 +3,8 @@
 //! | Section | Guarantee |
 //! |---|---|
 //! | Route inventory | Built from the web route table, the OpenAPI document and the router source, so a new route can't slip past. The public set is exactly [`PUBLIC`]. |
-//! | Anonymous access | Every method (HEAD, OPTIONS and unknown ones too) on every other route and on unknown paths is refused: 401, 403, 404 or 405, or a redirect to sign-in for a page load. Nothing is written. |
+//! | Anonymous access | Every method (HEAD, OPTIONS and unknown ones too) on every other route and on unknown paths is refused: 401, 403, 404 or 405, or a redirect to sign-in for a page load. The admin API token opens none of them either. Nothing is written. |
+//! | Admin API | Its routes (`todo_server::admin`, on a separate loopback listener) don't exist on the public listener: 404 for every method and credential. `tests/admin.rs` covers the admin listener itself. |
 //! | Public routes | They answer without credentials and reveal nothing: `/health` is an empty 200 without a version, and no response names the server or its version. |
 //! | Token scope | Agents at none, read, capture and plan stay inside their grants across REST reads, queries, smart lists, task detail, activity, the event log and stream, commands, undo and every MCP tool. Hidden lists, tasks, steps, tags and events look missing. |
 //! | Request limits | Oversized bodies get 413 on every route, with or without credentials, announced or chunked (the attachment upload and content routes have their own, larger cap; `tests/attachments.rs` covers their chunked case). Slow request heads are dropped and the connection cap holds. |
@@ -18,7 +19,7 @@ use common::ingest;
 use common::mcp::{ALL_TOOLS, Client, agent, call, connect, fails, ok};
 use common::raw::{self, health, read_until_closed};
 use common::web::{Env, Page, SITE, assert_session_cookie};
-use common::{TOKEN_A, TestServer, first_seq, id};
+use common::{ADMIN_TOKEN, TOKEN_A, TestServer, admin_on, first_seq, id};
 use reqwest::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN,
     REFERRER_POLICY, STRICT_TRANSPORT_SECURITY, WWW_AUTHENTICATE, X_CONTENT_TYPE_OPTIONS,
@@ -92,6 +93,11 @@ struct Route {
 
 fn openapi() -> Value {
     serde_json::to_value(todo_server::api::openapi::spec()).unwrap()
+}
+
+/// The admin API's own document (its routes are only on the admin listener).
+fn admin_openapi() -> Value {
+    serde_json::to_value(todo_server::admin::openapi::spec()).unwrap()
 }
 
 /// An operation is open when its `security` is absent or lists the empty requirement
@@ -244,10 +250,39 @@ fn the_inventory_matches_the_router_source() {
         .cloned()
         .collect();
     assert_eq!(in_source, documented, "API routes vs the OpenAPI document");
+    // The admin listener's routes are exactly its own document's, all under `/api/v1/admin/`.
+    let admin = |f: &str, c: &str| f == "admin/mod.rs" && c == "route";
+    let admin_in_source: BTreeSet<String> = regs
+        .iter()
+        .filter(|(f, c, _)| admin(f, c))
+        .map(|(_, _, a)| a.trim_matches('"').to_owned())
+        .collect();
+    let admin_documented: BTreeSet<String> = admin_openapi()["paths"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        admin_in_source, admin_documented,
+        "admin routes vs the admin OpenAPI document"
+    );
+    assert!(
+        admin_in_source
+            .iter()
+            .all(|p| p.starts_with("/api/v1/admin/")),
+        "{admin_in_source:?}"
+    );
+    assert!(
+        documented.iter().all(|p| !p.starts_with("/api/v1/admin")),
+        "the public document lists no admin route"
+    );
     // Everything else is one of these. A new registration anywhere fails here: add it to
     // `inventory()` (and to `PUBLIC` if it is meant to be open).
-    let others: BTreeSet<(String, String, String)> =
-        regs.into_iter().filter(|(f, c, _)| !api(f, c)).collect();
+    let others: BTreeSet<(String, String, String)> = regs
+        .into_iter()
+        .filter(|(f, c, _)| !api(f, c) && !admin(f, c))
+        .collect();
     let expected: BTreeSet<(String, String, String)> = [
         ("app.rs", "route", "\"/health\""),
         ("app.rs", "nest", "\"/api/v1\""),
@@ -296,6 +331,8 @@ enum Creds {
     WrongToken,
     /// A made-up session cookie, with the right `Origin` and a CSRF header.
     BogusSession,
+    /// The real admin API token (valid only on the admin listener).
+    AdminToken,
 }
 
 async fn anonymous(
@@ -317,6 +354,9 @@ async fn anonymous(
                 .header(COOKIE, format!("__Host-todo_session={}", "B".repeat(43)))
                 .header(ORIGIN, SITE)
                 .header("x-csrf-token", "C".repeat(43));
+        }
+        Creds::AdminToken => {
+            req = req.bearer_auth(ADMIN_TOKEN);
         }
     }
     if matches!(method, "POST" | "PUT" | "PATCH") {
@@ -376,7 +416,8 @@ fn assert_anonymous(what: &str, headers: &reqwest::header::HeaderMap, body: &str
 
 #[tokio::test]
 async fn every_method_outside_the_public_set_is_refused_without_credentials() {
-    let env = Env::start().await;
+    // With the admin listener on: its token must open nothing here.
+    let env = Env::start_with(admin_on).await;
     let client = no_redirects();
     let public = public_set();
     let mut targets: Vec<(String, String)> = inventory()
@@ -392,7 +433,12 @@ async fn every_method_outside_the_public_set_is_refused_without_credentials() {
             if is_public(&public, method, template) {
                 continue;
             }
-            for creds in [Creds::None, Creds::WrongToken, Creds::BogusSession] {
+            for creds in [
+                Creds::None,
+                Creds::WrongToken,
+                Creds::BogusSession,
+                Creds::AdminToken,
+            ] {
                 let a = anonymous(&env, &client, method, path, creds).await;
                 let what = format!("{method} {path} ({creds:?}): {} {}", a.status, a.body);
                 assert!(refused(&a), "{what}");
@@ -425,7 +471,7 @@ async fn every_method_outside_the_public_set_is_refused_without_credentials() {
             }
         }
     }
-    assert!(checked > 1000, "{checked}");
+    assert!(checked > 1500, "{checked}");
     // The SSE variant of the event endpoint too.
     let res = client
         .get(format!("{}/api/v1/events", env.t.url))
@@ -553,6 +599,80 @@ async fn public_routes_answer_without_credentials_and_reveal_nothing() {
             .await;
         assert_eq!(r.status, StatusCode::NOT_FOUND, "{m} {p}: {}", r.body);
     }
+}
+
+// ---- the admin API --------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_admin_api_is_absent_on_the_public_listener() {
+    let env = Env::start_with(admin_on).await;
+    let client = no_redirects();
+    let mut paths: Vec<String> = admin_openapi()["paths"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|p| {
+            p.replace("{id}", "1")
+                .replace("{address}", "you@example.com")
+                .replace("{key}", "errands")
+        })
+        .collect();
+    paths.extend(
+        [
+            "/api/v1/admin",
+            "/api/v1/admin/",
+            "/api/v1/admin/nope",
+            "/api/v1/admin/agents/1/revoke/extra",
+        ]
+        .map(str::to_owned),
+    );
+    let mut checked = 0;
+    for path in &paths {
+        for method in METHODS {
+            for creds in [
+                Creds::None,
+                Creds::WrongToken,
+                Creds::BogusSession,
+                Creds::AdminToken,
+            ] {
+                let a = anonymous(&env, &client, method, path, creds).await;
+                let what = format!("{method} {path} ({creds:?}): {} {}", a.status, a.body);
+                assert_eq!(a.status, StatusCode::NOT_FOUND, "{what}");
+                if *method != "HEAD" {
+                    let v: Value = serde_json::from_str(&a.body).unwrap();
+                    assert_eq!(v["error"]["code"], "not_found", "{what}");
+                }
+                assert_anonymous(&what, &a.headers, &a.body);
+                checked += 1;
+            }
+            // An owner's own device token doesn't reach them either.
+            let m = Method::from_bytes(method.as_bytes()).unwrap();
+            let res = client
+                .request(m, format!("{}{path}", env.t.url))
+                .bearer_auth(TOKEN_A)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {path} (owner)"
+            );
+        }
+    }
+    assert!(checked > 500, "{checked}");
+    // Meanwhile the admin listener answers them.
+    let res = client
+        .get(format!(
+            "{}/api/v1/admin/agents",
+            env.t.server.admin_url().unwrap()
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(env.t.server.engine.head_seq(), 0);
 }
 
 // ---- token scope ----------------------------------------------------------------------------------
@@ -1803,10 +1923,15 @@ fn logs() -> &'static (Capture, Capture) {
 #[tokio::test]
 async fn tokens_secrets_and_task_content_never_reach_the_log_at_info() {
     let (info, debug) = logs();
-    let env = Env::start().await;
+    let env = Env::start_with(admin_on).await;
     let mark = uuid::Uuid::new_v4().simple().to_string();
     let content = |what: &str| format!("zzsecret{what}{mark}");
-    let mut secrets: Vec<String> = vec![TOKEN_A.to_owned(), todo_server::auth::hash_token(TOKEN_A)];
+    let mut secrets: Vec<String> = vec![
+        TOKEN_A.to_owned(),
+        todo_server::auth::hash_token(TOKEN_A),
+        ADMIN_TOKEN.to_owned(),
+        todo_server::auth::hash_token(ADMIN_TOKEN),
+    ];
 
     // Setup, sign-in and step-up: the setup code, session cookies and CSRF tokens.
     let code = env.take_code().unwrap();
@@ -1957,6 +2082,33 @@ async fn tokens_secrets_and_task_content_never_reach_the_log_at_info() {
     assert_eq!(p.status, StatusCode::OK);
     assert!(p.body.contains(&content("title")));
 
+    // The admin API: a change, a read, a wrong admin token and the admin token on the public API.
+    let admin_url = env.t.server.admin_url().unwrap();
+    let res = env
+        .t
+        .client
+        .post(format!("{admin_url}/api/v1/admin/ingest/senders"))
+        .bearer_auth(ADMIN_TOKEN)
+        .json(&json!({ "address": "logged@example.org" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    for token in [
+        ADMIN_TOKEN.to_owned(),
+        format!("tdx_{}", content("admintoken")),
+    ] {
+        env.t
+            .client
+            .get(format!("{admin_url}/api/v1/admin/audit"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+    }
+    env.api(Method::GET, "/api/v1/lists", ADMIN_TOKEN, None)
+        .await;
+
     // Signing in again.
     let p = owner.login().await;
     assert_eq!(p.status, StatusCode::OK);
@@ -1989,6 +2141,7 @@ async fn tokens_secrets_and_task_content_never_reach_the_log_at_info() {
         "mcpbad",
         "rpc",
         "device",
+        "admintoken",
     ] {
         secrets.push(content(what));
     }

@@ -182,7 +182,7 @@ pub async fn sender_add(
     let address = normalize_address(&f.address).ok_or_else(|| bad_input("not an email address"))?;
     let (ingest, ip) = (app.ingest.clone(), s.ip);
     blocking(&app.authsvc, move |svc| {
-        let by = By { at: svc.now(), ip };
+        let by = By::owner(svc.now(), ip);
         ingest.store.add_sender(&address, by)
     })
     .await??;
@@ -199,7 +199,7 @@ pub async fn sender_remove(
     let address = normalize_address(&f.address).ok_or_else(not_found)?;
     let (ingest, ip) = (app.ingest.clone(), s.ip);
     let removed = blocking(&app.authsvc, move |svc| {
-        let by = By { at: svc.now(), ip };
+        let by = By::owner(svc.now(), ip);
         ingest.store.remove_sender(&address, by)
     })
     .await??;
@@ -239,7 +239,7 @@ pub async fn inbox_set(
     let list = picked(&app.engine.state(), &f.list)?;
     let (ingest, ip) = (app.ingest.clone(), s.ip);
     blocking(&app.authsvc, move |svc| {
-        let by = By { at: svc.now(), ip };
+        let by = By::owner(svc.now(), ip);
         ingest.store.set_inbox(list, by)
     })
     .await??;
@@ -266,7 +266,7 @@ pub async fn key_add(
     let key = f.key.trim().to_owned();
     let (ingest, ip) = (app.ingest.clone(), s.ip);
     let added = blocking(&app.authsvc, move |svc| {
-        let by = By { at: svc.now(), ip };
+        let by = By::owner(svc.now(), ip);
         ingest.store.add_list_key(&key, list, by)
     })
     .await??;
@@ -292,7 +292,7 @@ pub async fn key_remove(
     let key = f.key.trim().to_owned();
     let (ingest, ip) = (app.ingest.clone(), s.ip);
     let removed = blocking(&app.authsvc, move |svc| {
-        let by = By { at: svc.now(), ip };
+        let by = By::owner(svc.now(), ip);
         ingest.store.remove_list_key(&key, by)
     })
     .await??;

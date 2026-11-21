@@ -62,10 +62,29 @@ pub struct By {
     pub at: i64,
     /// The client IP, if known.
     pub ip: Option<IpAddr>,
+    /// Who, when not the owner on the admin pages (recorded as the entry's `actor`, for example
+    /// [`crate::auth::service::ADMIN_API_ACTOR`]).
+    pub actor: Option<&'static str>,
+}
+
+impl By {
+    /// The owner, on the admin pages.
+    #[must_use]
+    pub fn owner(at: i64, ip: Option<IpAddr>) -> Self {
+        Self {
+            at,
+            ip,
+            actor: None,
+        }
+    }
 }
 
 fn record(tx: &Transaction<'_>, by: By, kind: &str, detail: &serde_json::Value) -> Result<()> {
     let ip = by.ip.map(|i| i.to_string());
+    let mut detail = detail.clone();
+    if let (Some(actor), Some(m)) = (by.actor, detail.as_object_mut()) {
+        m.insert("actor".into(), json!(actor));
+    }
     insert_audit(tx, by.at, kind, ip.as_deref(), &detail.to_string())
 }
 
@@ -259,10 +278,7 @@ impl IngestStore {
             "INSERT INTO meta (key, value) VALUES (?1, ?2)",
             params![META_SEEDED, now_ms.to_string()],
         )?;
-        let by = By {
-            at: now_ms,
-            ip: None,
-        };
+        let by = By::owner(now_ms, None);
         record(
             &tx,
             by,
@@ -382,7 +398,11 @@ mod tests {
         (dir, IngestStore::open(&path).unwrap())
     }
 
-    const BY: By = By { at: 1, ip: None };
+    const BY: By = By {
+        at: 1,
+        ip: None,
+        actor: None,
+    };
 
     fn audit_kinds(s: &IngestStore) -> Vec<String> {
         let conn = s.conn();

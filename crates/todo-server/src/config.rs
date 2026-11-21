@@ -75,11 +75,26 @@
 //! # characters; surrounding whitespace is ignored). Also `TODO_SERVER_INGEST_EMAIL_HMAC_SECRET_FILE`.
 //! email_hmac_secret_file = "/etc/todo/ingest-email-hmac.secret"
 //! # Seeds the sender allowlist once, on the first start that finds it never seeded. After that the
-//! # allowlist is managed on the admin page (`/admin/ingest`) only.
+//! # allowlist is managed on the admin page (`/admin/ingest`) or the local admin API only.
 //! allowed_senders = ["you@example.com"]
 //! # Ingest requests per client IP.
 //! requests_per_minute = 60
 //! request_burst = 20
+//!
+//! [admin]
+//! # The local admin API (`/api/v1/admin/...`, see docs/admin-api.md): a second listener, off unless
+//! # `bind` is set. It must be a loopback address; the server refuses to start otherwise. Never route
+//! # a tunnel or proxy to it.
+//! bind = "127.0.0.1:47321"
+//! # Hex SHA-256 of the admin token (`todo-server admin-token --out <file>` makes one and prints this
+//! # line). Required with `bind`. Also `TODO_SERVER_ADMIN_TOKEN_SHA256`.
+//! token_sha256 = "<hex SHA-256 of the admin token>"
+//! # Requests per minute, and burst, across all callers.
+//! requests_per_minute = 120
+//! request_burst = 60
+//! # Failed token checks per minute, and burst, across all callers; past it, every request gets 429.
+//! failures_per_minute = 10
+//! failure_burst = 10
 //! ```
 
 use jiff::tz::TimeZone;
@@ -305,6 +320,38 @@ impl Default for AuthConfig {
     }
 }
 
+/// The local admin API (see the module docs and `docs/admin-api.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AdminConfig {
+    /// Where the admin listener binds: a loopback address. Without it the admin API is off.
+    pub bind: Option<SocketAddr>,
+    /// Hex SHA-256 of the admin bearer token. Required with `bind`.
+    pub token_sha256: Option<String>,
+    /// Sustained requests per minute on the admin listener, across all callers.
+    pub requests_per_minute: u32,
+    /// Request burst on the admin listener.
+    pub request_burst: u32,
+    /// Failed token checks per minute on the admin listener, across all callers; once spent, every
+    /// request gets 429 until the budget refills.
+    pub failures_per_minute: u32,
+    /// Burst of failed token checks.
+    pub failure_burst: u32,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            bind: None,
+            token_sha256: None,
+            requests_per_minute: 120,
+            request_burst: 60,
+            failures_per_minute: 10,
+            failure_burst: 10,
+        }
+    }
+}
+
 /// The server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -328,6 +375,8 @@ pub struct Config {
     pub ingest: IngestConfig,
     /// Attachment content.
     pub attachments: crate::blobs::AttachmentsConfig,
+    /// The local admin API.
+    pub admin: AdminConfig,
 }
 
 /// Email ingest settings (see the module docs and `docs/ingest-email.md`).
@@ -368,6 +417,7 @@ impl Default for Config {
             auth: AuthConfig::default(),
             ingest: IngestConfig::default(),
             attachments: crate::blobs::AttachmentsConfig::default(),
+            admin: AdminConfig::default(),
         }
     }
 }
@@ -475,6 +525,18 @@ impl Config {
             let v = v.trim();
             self.ingest.email_hmac_secret_file = (!v.is_empty()).then(|| PathBuf::from(v));
         }
+        if let Some(v) = get("TODO_SERVER_ADMIN_BIND") {
+            let v = v.trim();
+            self.admin.bind = if v.is_empty() {
+                None
+            } else {
+                Some(parse_env("TODO_SERVER_ADMIN_BIND", v)?)
+            };
+        }
+        if let Some(v) = get("TODO_SERVER_ADMIN_TOKEN_SHA256") {
+            let v = v.trim();
+            self.admin.token_sha256 = (!v.is_empty()).then(|| v.to_owned());
+        }
         if let Some(v) = get("TODO_SERVER_OWNER_TOKEN_SHA256") {
             let device = DeviceId::new(ENV_TOKEN_DEVICE).map_err(|e| ConfigError::Env {
                 var: "TODO_SERVER_OWNER_TOKEN_SHA256",
@@ -507,6 +569,7 @@ impl Config {
             }
         }
         self.attachments.validate().map_err(ConfigError::Invalid)?;
+        self.validate_admin()?;
         let a = &self.auth;
         for (name, value) in [
             ("session_idle_timeout_mins", a.session_idle_timeout_mins),
@@ -595,6 +658,52 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    fn validate_admin(&self) -> Result<(), ConfigError> {
+        let a = &self.admin;
+        if a.requests_per_minute == 0
+            || a.request_burst == 0
+            || a.failures_per_minute == 0
+            || a.failure_burst == 0
+        {
+            return Err(ConfigError::Invalid(
+                "admin.requests_per_minute, admin.request_burst, admin.failures_per_minute and admin.failure_burst must be > 0".into(),
+            ));
+        }
+        if let Some(h) = &a.token_sha256
+            && decode_hash(h).is_none()
+        {
+            return Err(ConfigError::Invalid(
+                "admin.token_sha256 is not a 64-digit hex SHA-256".into(),
+            ));
+        }
+        let Some(bind) = a.bind else {
+            return Ok(());
+        };
+        if !bind.ip().is_loopback() {
+            return Err(ConfigError::Invalid(format!(
+                "admin.bind {bind} is not a loopback address; the admin API is local only (use an SSH tunnel to reach it from elsewhere)"
+            )));
+        }
+        if a.token_sha256.is_none() {
+            return Err(ConfigError::Invalid(
+                "admin.bind is set but admin.token_sha256 is not; run `todo-server admin-token --out <file>` and put the printed line in the config".into(),
+            ));
+        }
+        if bind.port() != 0 && bind == self.bind {
+            return Err(ConfigError::Invalid(
+                "admin.bind must differ from bind".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The admin token's hash, when the admin listener is on.
+    #[must_use]
+    pub fn admin_token_hash(&self) -> Option<[u8; 32]> {
+        self.admin.bind?;
+        self.admin.token_sha256.as_deref().and_then(decode_hash)
     }
 
     /// The configured time zone.
@@ -775,6 +884,58 @@ mod tests {
             device: DeviceId::new("x").unwrap(),
             sha256: "abc".into(),
         });
+        assert!(c.validate().is_err());
+    }
+
+    const HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn the_admin_listener_is_off_by_default_and_loopback_only() {
+        let c = Config::default();
+        assert_eq!(c.admin.bind, None);
+        assert_eq!(c.admin_token_hash(), None);
+
+        let mut c = Config::from_toml(&format!(
+            "[admin]\nbind = \"127.0.0.1:47321\"\ntoken_sha256 = \"{HASH}\"\n"
+        ))
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.admin_token_hash(), Some([0; 32]));
+        c.admin.bind = Some("[::1]:47321".parse().unwrap());
+        c.validate().unwrap();
+
+        for bad in [
+            "0.0.0.0:47321",
+            "[::]:47321",
+            "192.168.1.10:47321",
+            "8.8.8.8:1",
+        ] {
+            c.admin.bind = Some(bad.parse().unwrap());
+            let e = c.validate().unwrap_err().to_string();
+            assert!(e.contains("not a loopback address"), "{bad}: {e}");
+        }
+        c.admin.bind = Some(c.bind);
+        assert!(
+            c.validate().is_err(),
+            "the same port as the public listener"
+        );
+        c.admin.bind = Some("127.0.0.1:47321".parse().unwrap());
+        c.admin.token_sha256 = None;
+        assert!(c.validate().is_err(), "a bind without a token");
+        c.admin.token_sha256 = Some("abc".into());
+        assert!(c.validate().is_err(), "a malformed hash");
+
+        let mut c = Config::default();
+        c.apply_env(|k| match k {
+            "TODO_SERVER_ADMIN_BIND" => Some("127.0.0.1:9".into()),
+            "TODO_SERVER_ADMIN_TOKEN_SHA256" => Some(HASH.into()),
+            _ => None,
+        })
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.admin.bind.unwrap().port(), 9);
+        c.apply_env(|k| (k == "TODO_SERVER_ADMIN_BIND").then(|| "10.0.0.1:9".into()))
+            .unwrap();
         assert!(c.validate().is_err());
     }
 }
