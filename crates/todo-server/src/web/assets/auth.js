@@ -135,6 +135,10 @@
     };
   }
 
+  // True once a form result replaced the page in place: the address bar still shows the page the
+  // form was on, so "go back" after a step-up means reloading it, not leaving it.
+  let swapped = false;
+
   const actions = {
     login: guarded(async function (el) {
       status("Waiting for your passkey…");
@@ -144,7 +148,7 @@
     "step-up": guarded(async function (el) {
       status("Waiting for your passkey…");
       await assert("/auth/step-up");
-      if (el.getAttribute("data-after") === "back") window.history.back();
+      if (el.getAttribute("data-after") === "back" && !swapped) window.history.back();
       else window.location.reload();
     }),
     "add-passkey": guarded(async function () {
@@ -162,12 +166,66 @@
     window.location.assign(r.redirect || "/admin");
   });
 
-  document.addEventListener("DOMContentLoaded", function () {
-    document.querySelectorAll("button[data-action]").forEach(function (b) {
+  // Admin forms post in place: the result replaces the page body without a navigation, so a form
+  // that redirects back to the page it was on (add a key, remove a sender…) keeps the scroll
+  // position. Any other result (a one-time token, an error) shows from the top. Sign-out and setup
+  // navigate as usual. Without JavaScript the forms still work as plain posts.
+  async function submitInPlace(ev) {
+    const form = ev.currentTarget;
+    ev.preventDefault();
+    const submitter = ev.submitter || form.querySelector('button[type="submit"]');
+    if (submitter) submitter.disabled = true;
+    let res;
+    try {
+      res = await fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(new FormData(form)),
+      });
+    } catch (e) {
+      if (submitter) submitter.disabled = false;
+      status("Could not reach the server: " + (e && e.message ? e.message : String(e)), true);
+      return;
+    }
+    const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+    if (!doc.body || !doc.querySelector("main")) {
+      // Not one of our pages: show whatever it was.
+      window.location.assign(res.url);
+      return;
+    }
+    const back = res.redirected && new URL(res.url).pathname === window.location.pathname;
+    const y = window.scrollY;
+    document.title = doc.title;
+    document.body.replaceChildren(...Array.from(doc.body.childNodes).map(function (n) {
+      return document.adoptNode(n);
+    }));
+    if (res.redirected && !back) {
+      // A redirect to another page: show its address so a reload stays there.
+      window.history.pushState(null, "", res.url);
+    } else if (!back) {
+      swapped = true;
+    }
+    window.scrollTo(0, back ? y : 0);
+    bind(document);
+  }
+
+  function bind(root) {
+    root.querySelectorAll("button[data-action]").forEach(function (b) {
       const fn = actions[b.getAttribute("data-action")];
       if (fn) b.addEventListener("click", fn);
     });
-    const form = document.querySelector('form[data-action="setup"]');
-    if (form) form.addEventListener("submit", setup);
-  });
+    const setupForm = root.querySelector('form[data-action="setup"]');
+    if (setupForm) setupForm.addEventListener("submit", setup);
+    root.querySelectorAll('form[method="post"]').forEach(function (f) {
+      const action = f.getAttribute("action") || "";
+      if (action.indexOf("/admin/") === 0 || action.indexOf("/pair/") === 0) {
+        f.addEventListener("submit", submitInPlace);
+      }
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () { bind(document); });
+  // Back and forward over an address pushed by an in-place post: load that page for real.
+  window.addEventListener("popstate", function () { window.location.reload(); });
 })();

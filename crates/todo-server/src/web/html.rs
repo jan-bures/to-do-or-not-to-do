@@ -100,23 +100,40 @@ pub fn html(status: StatusCode, body: String) -> Response {
 
 /// An error shown as an HTML page.
 #[derive(Debug)]
-pub struct PageError(pub ApiError);
+pub struct PageError {
+    /// What went wrong.
+    pub err: ApiError,
+    /// The session's CSRF token, when the page offers an action that needs it. The "Verify with passkey"
+    /// button on a `step_up_required` page posts to `/auth/step-up`, which the CSRF check refuses without it.
+    pub csrf: Option<String>,
+}
+
+impl PageError {
+    /// A step-up error page for a signed-in session, so its "Verify with passkey" button works.
+    #[must_use]
+    pub fn with_csrf(err: ApiError, csrf: &str) -> Self {
+        Self {
+            err,
+            csrf: Some(csrf.to_owned()),
+        }
+    }
+}
 
 impl From<ApiError> for PageError {
-    fn from(e: ApiError) -> Self {
-        Self(e)
+    fn from(err: ApiError) -> Self {
+        Self { err, csrf: None }
     }
 }
 
 impl From<crate::db::StoreError> for PageError {
     fn from(e: crate::db::StoreError) -> Self {
-        Self(e.into())
+        Self::from(ApiError::from(e))
     }
 }
 
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
-        let e = self.0;
+        let e = self.err;
         let extra = if e.code == "step_up_required" {
             r#"<p><button type="button" data-action="step-up" data-after="back">Verify with passkey, then go back</button></p>"#
         } else {
@@ -127,6 +144,7 @@ impl IntoResponse for PageError {
             esc(&e.message)
         );
         let chrome = Chrome {
+            csrf: self.csrf.as_deref(),
             script: true,
             ..Chrome::default()
         };

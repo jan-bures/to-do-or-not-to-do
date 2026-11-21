@@ -39,7 +39,7 @@ pub(super) fn ok_page(title: &str, chrome: &Chrome<'_>, body: &str) -> PageResul
 }
 
 pub(super) fn not_found() -> PageError {
-    PageError(ApiError::not_found("there is nothing here"))
+    PageError::from(ApiError::not_found("there is nothing here"))
 }
 
 pub(super) fn csrf_field(s: &OwnerSession) -> String {
@@ -58,7 +58,9 @@ pub(super) fn guard(
 ) -> Result<(), PageError> {
     check_csrf(&s.row, Some(csrf))?;
     if step_up {
-        app.authsvc.require_step_up(&s.row)?;
+        app.authsvc
+            .require_step_up(&s.row)
+            .map_err(|e| PageError::with_csrf(e, &s.row.csrf))?;
     }
     Ok(())
 }
@@ -217,7 +219,7 @@ pub async fn pair(
         return ok_page("Pair a device", &chrome, body);
     }
     if !svc.may_look_up_codes(&s.row) {
-        return Err(PageError(ApiError::new(
+        return Err(PageError::from(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "too_many_codes",
             "too many wrong codes; sign out and in again to continue",
@@ -267,7 +269,7 @@ async fn decide(app: AppState, s: OwnerSession, f: PairForm, approve: bool) -> P
     guard(&app, &s, &f.csrf, approve)?;
     let svc = &app.authsvc;
     let Some(p) = svc.pairings.decide(&f.code, approve, svc.now()) else {
-        return Err(PageError(ApiError::not_found(
+        return Err(PageError::from(ApiError::not_found(
             "there is no pending request with this code; it may have expired or been decided already",
         )));
     };
@@ -455,7 +457,7 @@ pub struct NewAgentForm {
 }
 
 pub(super) fn bad_input(msg: &str) -> PageError {
-    PageError(ApiError::new(
+    PageError::from(ApiError::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "invalid",
         msg,

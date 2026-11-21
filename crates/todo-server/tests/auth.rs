@@ -440,6 +440,15 @@ async fn admin_actions_need_a_recent_passkey_verification() {
             "{path}: {}",
             p.body
         );
+        // The button posts to /auth/step-up with the page's CSRF token; without the token in the page,
+        // the CSRF check refused it and the button could never work.
+        let csrf = b.csrf.clone().expect("signed in");
+        assert!(
+            p.body
+                .contains(&format!(r#"<meta name="csrf-token" content="{csrf}">"#)),
+            "{path}: the step-up page must carry the session's CSRF token: {}",
+            p.body
+        );
     }
     let p = b.post_json("/auth/passkeys/start", json!({})).await;
     assert_eq!(p.status, StatusCode::FORBIDDEN);
