@@ -38,7 +38,7 @@ pub struct PairStarted {
     pub poll_token: String,
     /// The page the owner opens (it carries the user code).
     pub verification_uri: String,
-    /// Seconds until the request expires.
+    /// Seconds until the request expires, rounded up (the full lifetime when just started).
     pub expires_in: u32,
     /// Seconds to wait between polls.
     pub interval: u32,
@@ -131,8 +131,9 @@ pub async fn start(
             .with_retry_after(60),
             StartError::Random(r) => r.into(),
         })?;
-    let expires_in =
-        u32::try_from((started.expires_at - app.authsvc.now()).max(0) / 1000).unwrap_or(0);
+    // Rounded up: a request answered within its first second reports its full lifetime.
+    let left_ms = (started.expires_at - app.authsvc.now()).max(0);
+    let expires_in = u32::try_from(left_ms.saturating_add(999) / 1000).unwrap_or(0);
     Ok(Json(PairStarted {
         verification_uri: format!("{origin}/pair?code={}", started.user_code),
         user_code: started.user_code,

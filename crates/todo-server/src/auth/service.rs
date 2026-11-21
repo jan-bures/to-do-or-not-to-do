@@ -474,11 +474,14 @@ impl AuthService {
         self.publish(&guard)
     }
 
-    /// Reads the valid tokens and grants from the store and publishes them: one swap of the snapshot
-    /// that authentication reads, then the same grants to the engine (whose state decides commands
-    /// and visibility). Runs only under the mutation lock (`_held`), which every change to devices,
-    /// agents and grants holds from its write until here; so publishes happen in write order and none
-    /// can bring back a token revoked after it read the store.
+    /// Reads the valid tokens and grants from the store and publishes them: first the grants to the
+    /// engine (whose state decides commands and visibility), then one swap of the snapshot that
+    /// authentication and [`standing`](Self::standing) read. In that order, a standing never shows
+    /// grants the engine does not filter with yet: an event stream that starts during a publish
+    /// records the old standing (and ends at the swap) or the new one (and filters with the new
+    /// grants). Runs only under the mutation lock (`_held`), which every change to devices, agents
+    /// and grants holds from its write until here; so publishes happen in write order and none can
+    /// bring back a token revoked after it read the store.
     fn publish(&self, _held: &MutexGuard<'_, ()>) -> Result<(), StoreError> {
         let mut map = HashMap::new();
         for d in self.store.devices()? {
@@ -516,19 +519,18 @@ impl AuthService {
                 );
             }
         }
+        self.engine.set_grants(grants.clone());
         let pause = lock(&self.pause_next_publish).take();
         if let Some(d) = pause {
             std::thread::sleep(d);
         }
-        let next = Arc::new(Snapshot {
-            bearers: map,
-            grants,
-        });
         *self
             .snapshot
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = next.clone();
-        self.engine.set_grants(next.grants.clone());
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(Snapshot {
+            bearers: map,
+            grants,
+        });
         Ok(())
     }
 

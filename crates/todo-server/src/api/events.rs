@@ -68,6 +68,7 @@ use crate::auth::{Authenticated, Principal};
 use crate::db::CappedEvents;
 use crate::engine::{Engine, LiveEvent};
 use crate::ratelimit::CatchUpMarks;
+use crate::scope::EventScope;
 use axum::Json;
 use axum::extract::State;
 use axum::http::header::ACCEPT;
@@ -84,6 +85,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use todo_core::Actor;
+use todo_core::event::Event;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -264,14 +266,32 @@ fn check_epoch(engine: &Engine, epoch: Option<uuid::Uuid>) -> Result<(), ApiErro
     }
 }
 
-type Tx = mpsc::Sender<Result<SseEvent, Infallible>>;
+type Tx = mpsc::Sender<Queued>;
+
+/// A frame waiting for the client. Event frames for agents carry the event and its scope, so the body
+/// can filter them again when it hands them out.
+#[derive(Debug)]
+pub struct Queued {
+    frame: SseEvent,
+    check: Option<Box<(Event, EventScope)>>,
+}
+
+impl From<SseEvent> for Queued {
+    fn from(frame: SseEvent) -> Self {
+        Self { frame, check: None }
+    }
+}
 
 /// The SSE response body. It owns the stream slot, so the slot is freed exactly when the body is
-/// dropped, however the connection ends. Once `revoked` is set it ends, dropping any queued frames;
-/// and before handing out a frame it re-checks the caller (`access`), so a frame the pump filtered
-/// under grants that have since changed is never delivered, even before the pump notices.
+/// dropped, however the connection ends. Once `revoked` is set it ends, dropping any queued frames.
+///
+/// Frames wait in a queue between the pump's filter and the client. So before handing one out, the
+/// body re-checks the caller (`access`): a changed standing ends the stream, and an agent's event
+/// frame is filtered again against the engine's state and grants as they are now; one that no longer
+/// passes is dropped (as if the pump had skipped it: the next frame's `id` moves past it, the way a
+/// JSON page's `next_since` moves past events the agent cannot see).
 struct Body {
-    rx: ReceiverStream<Result<SseEvent, Infallible>>,
+    rx: ReceiverStream<Queued>,
     revoked: Arc<AtomicBool>,
     access: Option<Caller>,
     _slot: OwnedSemaphorePermit,
@@ -280,8 +300,26 @@ struct Body {
 /// Whose stream it is, and the access it started with.
 struct Caller {
     authsvc: Arc<AuthService>,
+    engine: Arc<Engine>,
     principal: Principal,
+    actor: Actor,
     standing: Option<Standing>,
+}
+
+impl Caller {
+    /// True if the frame may still go out: the caller's access is unchanged and (for an agent's event
+    /// frame) the event is visible now.
+    fn still_sees(&self, q: &Queued) -> bool {
+        q.check.as_deref().is_none_or(|(event, scope)| {
+            visibility::event_visible(
+                &self.engine.state(),
+                &self.engine.whereabouts(),
+                &self.actor,
+                event,
+                Some(scope),
+            )
+        })
+    }
 }
 
 impl Stream for Body {
@@ -289,17 +327,26 @@ impl Stream for Body {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if this.revoked.load(Ordering::Acquire) {
-            return Poll::Ready(None);
+        loop {
+            if this.revoked.load(Ordering::Acquire) {
+                return Poll::Ready(None);
+            }
+            let q = match Pin::new(&mut this.rx).poll_next(cx) {
+                Poll::Ready(Some(q)) => q,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            if let Some(c) = &this.access {
+                if lost_access(&c.authsvc, &c.principal, c.standing.as_ref()) {
+                    this.revoked.store(true, Ordering::Release);
+                    return Poll::Ready(None);
+                }
+                if !c.still_sees(&q) {
+                    continue;
+                }
+            }
+            return Poll::Ready(Some(Ok(q.frame)));
         }
-        let next = Pin::new(&mut this.rx).poll_next(cx);
-        if let (Poll::Ready(Some(_)), Some(c)) = (&next, &this.access)
-            && lost_access(&c.authsvc, &c.principal, c.standing.as_ref())
-        {
-            this.revoked.store(true, Ordering::Release);
-            return Poll::Ready(None);
-        }
-        next
     }
 }
 
@@ -343,10 +390,10 @@ pub async fn send_frame(
     tx: &Tx,
     shutdown: &mut watch::Receiver<bool>,
     stall: Duration,
-    frame: SseEvent,
+    frame: impl Into<Queued>,
 ) -> Result<(), SendError> {
     tokio::select! {
-        r = tx.send(Ok(frame)) => r.map_err(|_| SendError::Closed),
+        r = tx.send(frame.into()) => r.map_err(|_| SendError::Closed),
         _ = shutdown.changed() => Err(SendError::Shutdown),
         () = tokio::time::sleep(stall) => Err(SendError::Stalled),
     }
@@ -374,6 +421,17 @@ struct Pump {
 }
 
 impl Pump {
+    /// What the body needs to filter an agent's event frame again (nothing for the owner).
+    fn check(&self, event: &Event, scope: Option<&EventScope>) -> Option<Box<(Event, EventScope)>> {
+        if visibility::sees_all(&self.actor) {
+            return None;
+        }
+        Some(Box::new((
+            event.clone(),
+            scope.cloned().unwrap_or_default(),
+        )))
+    }
+
     fn lost(&self) -> bool {
         lost_access(&self.authsvc, &self.principal, self.standing.as_ref())
     }
@@ -384,7 +442,8 @@ impl Pump {
         self.revoked.store(true, Ordering::Release);
     }
 
-    async fn send(&mut self, frame: SseEvent) -> bool {
+    async fn send(&mut self, frame: impl Into<Queued>) -> bool {
+        let frame = frame.into();
         let sent = tokio::select! {
             r = send_frame(&self.tx, &mut self.shutdown, self.stall, frame) => r,
             () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal, self.standing.as_ref()) => {
@@ -514,7 +573,14 @@ impl Pump {
                     self.too_far_behind("too_many_bytes").await;
                     return false;
                 }
-                if !self.send(frame(seq, data)).await {
+                let check = self.check(&ev.event, scope);
+                if !self
+                    .send(Queued {
+                        frame: frame(seq, data),
+                        check,
+                    })
+                    .await
+                {
                     return false;
                 }
                 self.last = seq;
@@ -607,7 +673,8 @@ impl Pump {
                             self.too_far_behind("too_many_bytes").await;
                             return;
                         }
-                        if !self.send(frame(seq, data)).await {
+                        let check = self.check(&ev.event, Some(&live_event.scope));
+                        if !self.send(Queued { frame: frame(seq, data), check }).await {
                             return;
                         }
                         self.last = seq;
@@ -650,7 +717,9 @@ fn stream(
     let standing = app.authsvc.standing(&principal);
     let caller = Caller {
         authsvc: app.authsvc.clone(),
+        engine: app.engine.clone(),
         principal: principal.clone(),
+        actor: actor.clone(),
         standing: standing.clone(),
     };
     let pump = Pump {
@@ -754,6 +823,19 @@ mod tests {
         }
     }
 
+    impl Rig {
+        /// The body's view of the rig's agent, with its standing as of now.
+        fn caller(&self) -> Caller {
+            Caller {
+                authsvc: self.svc.clone(),
+                engine: self.engine.clone(),
+                principal: self.principal.clone(),
+                actor: Actor::agent("bot").unwrap(),
+                standing: self.svc.standing(&self.principal),
+            }
+        }
+    }
+
     /// A pump for the rig's agent, subscribed as `stream` does.
     fn pump(
         r: &Rig,
@@ -806,7 +888,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let (pump, _, live) = pump(&r, tx, Duration::from_secs(3600));
         let task = tokio::spawn(pump.run(live, Duration::from_secs(3600)));
-        let hello = rx.recv().await.unwrap().unwrap();
+        let hello = rx.recv().await.unwrap().frame;
         let text = format!("{hello:?}");
         assert!(
             text.contains("epoch") && !text.contains("head_seq"),
@@ -840,7 +922,7 @@ mod tests {
         use futures_util::StreamExt as _;
         let (tx, rx) = mpsc::channel(4);
         for i in 0..3 {
-            tx.send(Ok(SseEvent::default().data(i.to_string())))
+            tx.send(SseEvent::default().data(i.to_string()).into())
                 .await
                 .unwrap();
         }
@@ -863,7 +945,7 @@ mod tests {
         let r = rig(0);
         let (tx, rx) = mpsc::channel(4);
         for i in 0..3 {
-            tx.send(Ok(SseEvent::default().data(i.to_string())))
+            tx.send(SseEvent::default().data(i.to_string()).into())
                 .await
                 .unwrap();
         }
@@ -871,11 +953,7 @@ mod tests {
         let mut body = Body {
             rx: ReceiverStream::new(rx),
             revoked: Arc::new(AtomicBool::new(false)),
-            access: Some(Caller {
-                authsvc: r.svc.clone(),
-                principal: r.principal.clone(),
-                standing: r.svc.standing(&r.principal),
-            }),
+            access: Some(r.caller()),
             _slot: slot,
         };
         assert!(body.next().await.is_some());
@@ -887,6 +965,181 @@ mod tests {
         };
         assert!(r.svc.set_grants(r.token_id, &none, None).unwrap());
         assert!(body.next().await.is_none(), "queued frames are dropped");
+    }
+
+    /// Runs owner commands on the rig's engine.
+    fn owner_runs(r: &Rig, cmds: &[serde_json::Value]) {
+        let owner = Actor::owner("pc").unwrap();
+        for c in cmds {
+            let cmd = serde_json::from_value(c.clone()).unwrap();
+            r.engine
+                .execute(&owner, uuid::Uuid::new_v4(), &cmd)
+                .unwrap();
+        }
+    }
+
+    /// The agent's event frames after `since`, queued as the pump queues them (filtered now).
+    async fn queue_events(r: &Rig, since: u64, tx: &Tx) -> usize {
+        let page = r.engine.events_since_capped(since, 100, 1 << 20).unwrap();
+        let (state, gone) = (r.engine.state(), r.engine.whereabouts());
+        let actor = Actor::agent("bot").unwrap();
+        let mut n = 0;
+        for ev in &page.events {
+            let seq = ev.event.seq.unwrap();
+            let scope = page.scopes.get(&seq);
+            if !visibility::event_visible(&state, &gone, &actor, &ev.event, scope) {
+                continue;
+            }
+            let check = Some(Box::new((ev.event.clone(), scope.cloned().unwrap())));
+            let data = serde_json::to_string(ev).unwrap();
+            tx.send(Queued {
+                frame: frame(seq, data),
+                check,
+            })
+            .await
+            .unwrap();
+            n += 1;
+        }
+        n
+    }
+
+    fn private(list: uuid::Uuid) -> todo_core::Grants {
+        let mut g = todo_core::Grants {
+            default: todo_core::AccessLevel::Read,
+            ..todo_core::Grants::default()
+        };
+        g.lists.insert(
+            serde_json::from_value(json!(list)).unwrap(),
+            todo_core::AccessLevel::None,
+        );
+        g
+    }
+
+    #[tokio::test]
+    async fn a_queued_frame_is_dropped_if_its_task_moved_out_of_sight_meanwhile() {
+        use futures_util::StreamExt as _;
+        let r = rig(0);
+        let (open, hidden) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        owner_runs(
+            &r,
+            &[
+                json!({ "cmd": "create_list", "id": open, "name": "open" }),
+                json!({ "cmd": "create_list", "id": hidden, "name": "hidden" }),
+            ],
+        );
+        assert!(
+            r.svc
+                .set_grants(r.token_id, &private(hidden), None)
+                .unwrap()
+        );
+        let since = r.engine.head_seq();
+        let (moves, stays) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        owner_runs(
+            &r,
+            &[
+                json!({ "cmd": "create_task", "id": moves, "list": open, "title": "MOVES" }),
+                json!({ "cmd": "create_task", "id": stays, "list": open, "title": "STAYS" }),
+            ],
+        );
+        // Both creations pass the filter and wait in the queue (the client is not reading).
+        let (tx, rx) = mpsc::channel(8);
+        assert_eq!(queue_events(&r, since, &tx).await, 2);
+        drop(tx);
+        let mut body = Body {
+            rx: ReceiverStream::new(rx),
+            revoked: Arc::new(AtomicBool::new(false)),
+            access: Some(r.caller()),
+            _slot: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        };
+        // Meanwhile the owner moves one task into the private list.
+        owner_runs(
+            &r,
+            &[json!({ "cmd": "move_task", "id": moves, "list": hidden })],
+        );
+        let out: Vec<String> = body
+            .by_ref()
+            .map(|f| format!("{:?}", f.unwrap()))
+            .collect()
+            .await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            out[0].contains("STAYS") && !out[0].contains("MOVES"),
+            "{out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_engine_filters_with_new_grants_before_any_stream_sees_them() {
+        use futures_util::StreamExt as _;
+        let r = rig(0);
+        let hidden = uuid::Uuid::new_v4();
+        let since = r.engine.head_seq();
+        owner_runs(
+            &r,
+            &[
+                json!({ "cmd": "create_list", "id": hidden, "name": "soon hidden" }),
+                json!({ "cmd": "create_task", "id": uuid::Uuid::new_v4(), "list": hidden, "title": "SECRET" }),
+            ],
+        );
+        // Filtered under the old grants (everything readable): queued.
+        let (tx, rx) = mpsc::channel(8);
+        assert_eq!(queue_events(&r, since, &tx).await, 2);
+        drop(tx);
+        let before = r.svc.standing(&r.principal);
+
+        // The reduction is published slowly; look while it is in progress.
+        r.svc.pause_next_publish(Duration::from_millis(400));
+        let (svc, token) = (r.svc.clone(), r.token_id);
+        let reduce = std::thread::spawn(move || svc.set_grants(token, &private(hidden), None));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let agent = todo_core::AgentId::new("bot").unwrap();
+        assert_eq!(
+            r.engine.state().grants.get(&agent),
+            Some(&private(hidden)),
+            "the engine has the new grants first"
+        );
+        assert_eq!(
+            r.svc.standing(&r.principal),
+            before,
+            "streams still see the old standing, which ends them at the swap"
+        );
+        // A stream that starts now records the old standing.
+        let during = r.caller();
+        assert!(reduce.join().unwrap().unwrap());
+
+        // Whether the stream started during the publish or after it, the queued frames about the
+        // now-hidden list are not delivered.
+        let mut started_during = Body {
+            rx: ReceiverStream::new(rx),
+            revoked: Arc::new(AtomicBool::new(false)),
+            access: Some(during),
+            _slot: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        };
+        assert!(started_during.next().await.is_none());
+
+        let (tx, rx) = mpsc::channel(8);
+        // Queue them as if filtered under the old grants, for a stream with the new standing.
+        let page = r.engine.events_since_capped(since, 100, 1 << 20).unwrap();
+        for ev in &page.events {
+            let seq = ev.event.seq.unwrap();
+            let check = Some(Box::new((ev.event.clone(), page.scopes[&seq].clone())));
+            let data = serde_json::to_string(ev).unwrap();
+            tx.send(Queued {
+                frame: frame(seq, data),
+                check,
+            })
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        let started_after = Body {
+            rx: ReceiverStream::new(rx),
+            revoked: Arc::new(AtomicBool::new(false)),
+            access: Some(r.caller()),
+            _slot: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        };
+        let out: Vec<_> = started_after.collect().await;
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[tokio::test]
@@ -915,7 +1168,7 @@ mod tests {
     async fn a_blocked_send_ends_at_shutdown() {
         let (tx, _rx) = mpsc::channel(1);
         let (stop, mut shutdown) = watch::channel(false);
-        tx.send(Ok(SseEvent::default().data("1"))).await.unwrap();
+        tx.send(SseEvent::default().data("1").into()).await.unwrap();
         let send = tokio::spawn(async move {
             send_frame(
                 &tx,
