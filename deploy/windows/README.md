@@ -6,10 +6,12 @@ window appears.
 
 | Script | What it does |
 |---|---|
-| `install-pilot.ps1` | Copies the supervisor to `<data>\bin` and registers the logon task `\todo\pilot`. `-Start` also starts it now. |
+| `install-pilot.ps1` | Copies the supervisor to `<data>\bin` and registers the logon task `\todo\pilot`. `-Start` also starts it now. `-NoRegister` leaves the task alone. |
 | `run-pilot.ps1` | The supervisor. It starts the server, waits for `/health`, then starts the tunnel. It restarts either one if it exits, with backoff, and logs to `<data>\logs`. When backups are set up, it schedules them too (see [Backups](#backups)). |
 | `stop-pilot.ps1` | Stops the tunnel first, then the server, then the supervisor. The task stays registered. |
 | `uninstall-pilot.ps1` | Stops everything and removes the task. Data, logs and secrets stay. |
+| `deploy-local.ps1` | Builds a release, swaps it in and restarts the pilot, and rolls back if `/health` doesn't come up. See [Deploying](#deploying). |
+| `../probe.ps1`, `../probe.sh` | Probe a deployment from the outside, without credentials. See [Probing from outside](#probing-from-outside). |
 
 ## Layout
 
@@ -44,6 +46,95 @@ Copy-Item target\release\todo-server.exe "$env:LOCALAPPDATA\todo\bin\"
 ./deploy/windows/install-pilot.ps1 -Start
 ```
 
+## Deploying
+
+```powershell
+./deploy/windows/deploy-local.ps1
+```
+
+It runs under Windows PowerShell 5.1 and needs no admin rights. `-DataDir` (default `%LOCALAPPDATA%\todo`) and
+`-RepoPath` (default: this checkout) pick what to deploy where.
+
+1. **Build.** `cargo build --release --locked -p todo-server -p todo-backup`. If the build fails, nothing
+   else happens. `-SkipBuild` deploys what is already in `target\release` (or `-ArtifactDir`).
+2. **Stop.** `stop-pilot.ps1`, then a check that nothing answers the health URL any more. If something still
+   does, it is another server on the same port: the script starts the pilot again and stops.
+3. **Copy the database.** `todo.sqlite3` and its `-wal` and `-shm` files go to `<data>\deploy\pre-<time>\`.
+   The server is stopped, so the copy is consistent. The newest three are kept (`-KeepSnapshots`). The
+   database directory is `data_dir` from `server.toml` (or `TODO_SERVER_DATA_DIR`, or `-DatabaseDir`). It must
+   be an absolute path; otherwise the script warns and skips the copy.
+4. **Swap.** The current `todo-server.exe` and `todo-backup.exe` become `*.exe.prev`, and the new ones are
+   copied in.
+5. **Migrations.** There is no separate step. `todo-server` applies pending migrations when it opens the
+   database, before it starts listening, so `/health` answers only after they are done.
+6. **Start.** `install-pilot.ps1 -NoRegister -Start`. That refreshes `bin\run-pilot.ps1` and starts the
+   supervisor in this session, but leaves the scheduled task as it is. `-NoTunnel` follows the registered
+   task when it runs the same data directory. The script then waits up to 60 s (`-HealthTimeoutSeconds`)
+   for `/health`. The URL comes from `bind` in `server.toml` (default `127.0.0.1:47320`), or `-HealthUrl`.
+7. **Roll back.** If `/health` doesn't answer 200 in time, the script stops the pilot, puts the `.prev`
+   binaries back and starts it again. If the previous version doesn't come up either, typically because the
+   new one ran a migration the old one doesn't know, it moves the database files to
+   `<data>\deploy\failed-<time>\`, restores the copy from step 3 and tries once more.
+
+Exit codes: 0 deployed; 1 nothing changed; 2 rolled back, and the previous version is running; 3 the rollback
+failed and the pilot is down.
+
+Restoring the copy is only safe because the new server never answered `/health`, so it never accepted a
+write. A server that only comes up after the health timeout could in principle have accepted a few writes
+before it was stopped. Raise `-HealthTimeoutSeconds` for a migration that is expected to be slow. The files
+the copy replaced are kept in `failed-<time>\`.
+
+**Trying it out.** Point it at a throwaway data directory with its own `server.toml` (another port, an
+absolute `data_dir`), with `-NoTunnel`. The supervisor's single-instance lock is per data directory, and
+`-NoRegister` keeps the deploy away from the scheduled task, so the live pilot is never touched:
+
+```powershell
+$t = 'D:\todo-deploy-test'
+New-Item -ItemType Directory -Force $t | Out-Null
+"bind = `"127.0.0.1:47391`"`ndata_dir = '$t'" | Set-Content "$t\server.toml"
+./deploy/windows/deploy-local.ps1 -DataDir $t -NoTunnel
+./deploy/windows/stop-pilot.ps1 -DataDir $t
+```
+
+## Probing from outside
+
+`deploy/probe.ps1` (Windows PowerShell 5.1 or PowerShell 7) and `deploy/probe.sh` (POSIX `sh` and `curl`)
+check a deployment the way an outsider sees it. They take the base URL as their only required argument, so
+they work against any deployment from any machine. Run one from a machine outside the PC, for example a
+phone hotspot or a VPS, after each deploy that changes routes or headers:
+
+```powershell
+./deploy/probe.ps1 -BaseUrl https://todo.example.com
+```
+
+```sh
+deploy/probe.sh https://todo.example.com
+```
+
+They:
+
+- list every route that is reachable without authentication and what it answers;
+- check that a sample of everything else is refused with 401, 403, 404 or 405, or with a redirect to
+  `/login` for a page load. The sample covers the API, the event stream, MCP, the admin pages, unknown paths
+  and unusual methods. Only for TRACE and made-up methods do they also accept 400 or 501, which the edge may
+  answer itself;
+- check TLS: a valid certificate, TLS 1.2 or newer, and plain HTTP either redirecting to HTTPS or not being
+  served (a warning otherwise);
+- check that `/health` is an empty 200 that names no server or version (`Server: cloudflare` is the edge's);
+- check the security headers: CSP with `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, the referrer
+  policy and HSTS of at least 180 days, on `/login`, `/health` and an API error.
+
+They send about 35 requests, 250 ms apart (`-DelayMs`, or `DELAY` for the shell version). At most 10 go to
+the paths the Cloudflare rate-limiting rule covers (`/auth`, `/pair`, `/login`, `/setup`), well under its
+limit. They change nothing on the server. A sign-in or pairing request is sent so that it is refused before
+it does anything: web forms without an `Origin` header, API calls with an empty body. They exit with 1 if
+any check failed.
+
+`-AllowHttp` (`--allow-http`) probes a local `http://` server and skips the TLS and HSTS checks.
+
+The in-repo suite, `crates/todo-server/tests/security.rs`, checks every route and every method. The probe
+checks that what is deployed behaves the same way through the tunnel.
+
 ## Notes
 
 - **Restarts.** If a process keeps exiting within a minute, the restart delay doubles from 5 s up to 5 minutes.
@@ -53,6 +144,9 @@ Copy-Item target\release\todo-server.exe "$env:LOCALAPPDATA\todo\bin\"
 - **Leftover processes.** If the supervisor itself is killed, it cleans up the processes it left behind the
   next time it starts. A backup worker is recorded with its start time as well as its PID, so it's only
   killed if it is still the same process, never one that happens to reuse the PID.
+- **One supervisor per data directory.** A named mutex derived from the data directory's path keeps a second
+  supervisor for the same directory from starting. A pilot on another directory, such as a test deploy, can
+  run alongside.
 - **Starting by hand.** `Start-ScheduledTask` can run an interactive task in another, disconnected session of
   the same user, where it fails with `0xC0000142`. `install-pilot.ps1 -Start` launches the supervisor in the
   current session instead. The logon trigger always uses the session that's logging on.

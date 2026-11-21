@@ -2,6 +2,10 @@
 //! JSON client, and a minimal SSE reader.
 #![allow(dead_code, clippy::unwrap_used)]
 
+pub mod mcp;
+pub mod raw;
+pub mod web;
+
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};

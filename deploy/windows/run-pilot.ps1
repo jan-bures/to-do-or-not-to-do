@@ -11,7 +11,7 @@
     - Restarts either process when it exits, with exponential backoff (5 s up to 5 min) if it keeps
       crashing quickly.
     - Writes process output to dated log files under <DataDir>\logs and prunes logs older than 14 days.
-    - A named mutex keeps a single supervisor per user. stop-pilot.ps1 stops it cleanly.
+    - A named mutex keeps a single supervisor per data directory. stop-pilot.ps1 stops it cleanly.
     - If <DataDir>\bin\todo-backup.exe and <DataDir>\backup.toml both exist, it also runs encrypted
       backups: `run --kind frequent` every 6 hours and `run --kind daily` once per calendar day. Each run is
       a separate short-lived process that the loop only polls, so a slow or failing backup never holds up
@@ -62,7 +62,13 @@ function Write-PilotLog([string]$Message) {
     Add-Content -Path (Join-Path $logDir ('pilot-{0:yyyy-MM-dd}.log' -f (Get-Date))) -Value $line
 }
 
-$mutex = New-Object System.Threading.Mutex($false, 'Local\todo-pilot-supervisor')
+# One supervisor per data directory, so a second pilot on another directory (a test deploy, say) can
+# run next to this one. The name is a hash of the normalized path.
+$dataKey = [IO.Path]::GetFullPath($DataDir).TrimEnd('\').ToLowerInvariant()
+$sha = [Security.Cryptography.SHA256]::Create()
+$dataHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($dataKey))[0..7] | ForEach-Object { $_.ToString('x2') })
+$sha.Dispose()
+$mutex = New-Object System.Threading.Mutex($false, "Local\todo-pilot-supervisor-$dataHash")
 if (-not $mutex.WaitOne(0)) {
     Write-PilotLog 'another supervisor is already running; exiting'
     exit 0

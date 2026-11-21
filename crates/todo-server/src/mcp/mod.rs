@@ -16,7 +16,9 @@
 //! 1. [`auth::require_auth`]: the bearer token (an agent token or an owner device token), the per-token
 //!    request rate limit, 401 with `WWW-Authenticate: Bearer` otherwise;
 //! 2. [`Inflight`]: at most `limits.max_mcp_requests_per_token` requests per token in flight (the
-//!    stateless equivalent of a per-token session cap), 429 `too_many_mcp_requests` beyond that.
+//!    stateless equivalent of a per-token session cap), 429 `too_many_mcp_requests` beyond that;
+//! 3. [`buffer_body`]: the whole body is read before `rmcp` sees it, so a body over the app-wide limit
+//!    gets the same 413 `payload_too_large` as everywhere else (`rmcp` would answer 500).
 //!
 //! Every tool then goes through the REST handlers themselves ([`tools`]), so admission permits, the
 //! write quota, the engine's access checks and the read visibility filters are exactly the REST ones.
@@ -33,9 +35,9 @@ use crate::api::error::ApiError;
 use crate::app::AppState;
 use crate::auth::{self, Authenticated, Principal};
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{FromRequest, Request, State};
 use axum::http::StatusCode;
-use axum::middleware::{Next, from_fn_with_state};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -161,6 +163,32 @@ async fn admit(State(inflight): State<Arc<Inflight>>, req: Request, next: Next) 
     res
 }
 
+/// Middleware (innermost, right before `rmcp`) that reads the whole request body.
+///
+/// The app-wide body limit cuts off a chunked body as it is read. Read by `rmcp`, that surfaces as a
+/// 500; read here, it is the typed 413 every other route gives.
+pub async fn buffer_body(req: Request, next: Next) -> Response {
+    let (parts, body) = req.into_parts();
+    let mut inner = Request::new(body);
+    // Keeps the `DefaultBodyLimit` the app sets, so the configured limit applies, not axum's default.
+    *inner.extensions_mut() = parts.extensions.clone();
+    match axum::body::Bytes::from_request(inner, &()).await {
+        Ok(bytes) => {
+            next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+                .await
+        }
+        Err(r) if r.status() == StatusCode::PAYLOAD_TOO_LARGE => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "request body is too large",
+        )
+        .into_response(),
+        Err(r) => {
+            ApiError::new(StatusCode::BAD_REQUEST, "bad_request", r.body_text()).into_response()
+        }
+    }
+}
+
 /// The `rmcp` transport configuration (see the module docs).
 #[must_use]
 pub fn transport_config(state: &AppState) -> StreamableHttpServerConfig {
@@ -185,6 +213,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     );
     Router::new()
         .route_service(PATH, service)
+        .route_layer(from_fn(buffer_body))
         .route_layer(from_fn_with_state(inflight, admit))
         .route_layer(from_fn_with_state(state, auth::require_auth))
 }

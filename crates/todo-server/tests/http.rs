@@ -1,26 +1,13 @@
 #![allow(clippy::unwrap_used)]
-//! HTTP integration tests: commands, idempotency, undo and redo, reads, queries, auth and limits.
+//! HTTP integration tests: commands, idempotency, undo and redo, reads, queries and limits. Route
+//! authentication, body limits on every route and `/health` are checked in `tests/security.rs`.
 
 mod common;
 
 use common::{TOKEN_A, TOKEN_B, TestServer, first_seq, id};
-use reqwest::header::{ACCEPT, AUTHORIZATION, WWW_AUTHENTICATE};
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
+use reqwest::header::AUTHORIZATION;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
-
-#[tokio::test]
-async fn health_is_a_bare_200_without_auth() {
-    let t = TestServer::start().await;
-    let res = t
-        .client
-        .get(format!("{}/health", t.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    assert!(res.text().await.unwrap().is_empty());
-}
 
 #[tokio::test]
 async fn create_update_complete_task() {
@@ -391,171 +378,6 @@ async fn queries_and_smart_lists() {
     assert_eq!(titles(&v), ["Ship release"]);
     let (s, _) = t.get("/api/v1/smart-lists/nope/tasks").await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-}
-
-/// Every route except `/health`, with a request that would otherwise succeed or fail validation.
-fn protected_routes() -> Vec<(Method, String, Option<Value>)> {
-    let u = id();
-    vec![
-        (Method::GET, "/api/v1/openapi.json".into(), None),
-        (
-            Method::POST,
-            "/api/v1/commands".into(),
-            Some(
-                json!({ "command_id": id(), "command": { "cmd": "create_list", "id": id(), "name": "x" } }),
-            ),
-        ),
-        (Method::GET, "/api/v1/events".into(), None),
-        (Method::POST, "/api/v1/events/1/undo".into(), None),
-        (Method::GET, "/api/v1/activity".into(), None),
-        (Method::GET, "/api/v1/collections".into(), None),
-        (Method::GET, "/api/v1/lists".into(), None),
-        (Method::GET, format!("/api/v1/lists/{u}/tasks"), None),
-        (Method::GET, "/api/v1/tasks?query=done".into(), None),
-        (Method::GET, format!("/api/v1/tasks/{u}"), None),
-        (Method::GET, "/api/v1/tags".into(), None),
-        (Method::GET, "/api/v1/smart-lists".into(), None),
-        (Method::GET, "/api/v1/smart-lists/my_day/tasks".into(), None),
-        (Method::GET, "/api/v1/no-such-route".into(), None),
-        (
-            Method::POST,
-            "/mcp".into(),
-            Some(
-                json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_lists", "arguments": {} } }),
-            ),
-        ),
-        (Method::GET, "/mcp".into(), None),
-    ]
-}
-
-#[tokio::test]
-async fn every_non_health_route_requires_a_token() {
-    let t = TestServer::start().await;
-    for (method, path, body) in protected_routes() {
-        for token in [None, Some("wrong-token")] {
-            let (s, h, v) = t.request(method.clone(), &path, token, body.clone()).await;
-            assert_eq!(
-                s,
-                StatusCode::UNAUTHORIZED,
-                "{method} {path} with {token:?}"
-            );
-            assert_eq!(h.get(WWW_AUTHENTICATE).unwrap(), "Bearer");
-            assert_eq!(v["error"]["code"], "unauthorized");
-        }
-    }
-    // The SSE variant of the event endpoint too.
-    let res = t
-        .client
-        .get(format!("{}/api/v1/events", t.url))
-        .header(ACCEPT, "text/event-stream")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    // Nothing was written by the rejected requests.
-    assert_eq!(t.server.engine.head_seq(), 0);
-}
-
-#[tokio::test]
-async fn protected_route_list_covers_the_openapi_document() {
-    let t = TestServer::start().await;
-    let doc = t.get_ok("/api/v1/openapi.json").await;
-    assert_eq!(
-        doc["components"]["securitySchemes"]["bearer"]["scheme"],
-        "bearer"
-    );
-    let mut documented = BTreeSet::new();
-    for (path, item) in doc["paths"].as_object().unwrap() {
-        for method in item.as_object().unwrap().keys() {
-            documented.insert((method.to_uppercase(), path.clone()));
-        }
-    }
-    let tested: BTreeSet<(String, String)> = protected_routes()
-        .into_iter()
-        .map(|(m, p, _)| {
-            let p = p.split('?').next().unwrap().to_owned();
-            // Map concrete paths back to their templates.
-            let p = regex_lite_replace(&p);
-            (m.to_string(), p)
-        })
-        .collect();
-    let public: BTreeSet<(String, String)> =
-        todo_server::app::public_routes().into_iter().collect();
-    for d in documented.iter().filter(|d| !public.contains(*d)) {
-        assert!(
-            tested.contains(d),
-            "route {d:?} is not covered by protected_routes()"
-        );
-    }
-    for name in ["Command", "Event", "Task", "CommandResult", "ErrorBody"] {
-        assert!(
-            doc["components"]["schemas"].get(name).is_some(),
-            "schema {name} missing"
-        );
-    }
-}
-
-/// Replaces UUIDs and numeric segments with the OpenAPI path templates used by the router.
-fn regex_lite_replace(path: &str) -> String {
-    let segs: Vec<&str> = path.split('/').collect();
-    let mut out = Vec::new();
-    for (i, s) in segs.iter().enumerate() {
-        let prev = if i > 0 { segs[i - 1] } else { "" };
-        let templ = match (
-            prev,
-            s.parse::<uuid::Uuid>().is_ok(),
-            s.parse::<u64>().is_ok(),
-        ) {
-            (_, true, _) => "{id}",
-            ("events", _, true) => "{seq}",
-            ("smart-lists", _, _) => "{id}",
-            _ => s,
-        };
-        out.push(templ);
-    }
-    out.join("/")
-}
-
-/// Sends only the request head with a large `Content-Length` and reads the response. The server must
-/// answer 413 without waiting for (or reading) the body.
-async fn raw_oversized(t: &TestServer, method: &str, path: &str, len: usize) -> (u16, Value) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut sock = tokio::net::TcpStream::connect(t.server.addr).await.unwrap();
-    let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN_A}\r\n\
-         Content-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
-    );
-    sock.write_all(head.as_bytes()).await.unwrap();
-    let mut buf = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        sock.read_to_end(&mut buf),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let text = String::from_utf8_lossy(&buf);
-    let status: u16 = text.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
-    let body = serde_json::from_str(body.trim()).unwrap_or(Value::Null);
-    (status, body)
-}
-
-#[tokio::test]
-async fn oversized_bodies_get_413() {
-    let t = TestServer::start().await;
-    assert_eq!(t.config.limits.max_body_bytes, 1024 * 1024);
-    let (s, v) = raw_oversized(&t, "POST", "/api/v1/commands", 1024 * 1024 + 1).await;
-    assert_eq!(s, 413);
-    assert_eq!(v["error"]["code"], "payload_too_large");
-    // Routes that do not read a body are limited too.
-    let (s, _) = raw_oversized(&t, "GET", "/api/v1/lists", 2 * 1024 * 1024).await;
-    assert_eq!(s, 413);
-    // Bodies under the limit work.
-    let list = t.create_list("L").await;
-    let task = t.create_task(&list, "T", json!({})).await;
-    t.ok(json!({ "cmd": "add_note", "task": task, "text": "x".repeat(60_000) }))
-        .await;
 }
 
 #[tokio::test]

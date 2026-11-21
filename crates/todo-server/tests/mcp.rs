@@ -4,25 +4,19 @@
 
 mod common;
 
+use common::mcp::{ALL_TOOLS, Client, args, fails, grants, ok, same_shape};
 use common::{TOKEN_A, TestServer, first_seq, id};
 use reqwest::Method;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN, WWW_AUTHENTICATE};
-use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::RunningService;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::model::CallToolRequestParams;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
-use todo_core::ids::ListId;
 use todo_core::time::Timestamp;
-use todo_core::{AccessLevel, AgentId, Grants};
+use todo_core::{AccessLevel, Grants};
 use todo_server::{Config, Options};
-
-type Client = RunningService<RoleClient, ()>;
 
 struct Env {
     t: TestServer,
@@ -69,26 +63,11 @@ impl Env {
 
     /// A real agent token with `grants`; returns `(token row id, token)`.
     fn agent(&self, name: &str, grants: &Grants, writes_per_hour: Option<u32>) -> (i64, String) {
-        let svc = &self.t.server.authsvc;
-        let (row, token) = svc
-            .create_agent(
-                &AgentId::new(name).unwrap(),
-                AccessLevel::None,
-                writes_per_hour,
-                None,
-                None,
-            )
-            .unwrap();
-        assert!(svc.set_grants(row, grants, None).unwrap());
-        (row, token)
+        common::mcp::agent(&self.t, name, grants, writes_per_hour)
     }
 
     async fn connect(&self, token: &str) -> Client {
-        let transport = StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.t.url))
-                .auth_header(token),
-        );
-        ().serve(transport).await.unwrap()
+        common::mcp::connect(&self.t, token).await
     }
 
     /// A raw JSON-RPC POST to `/mcp` (no client, so status codes and headers are visible).
@@ -107,45 +86,10 @@ impl Env {
     }
 }
 
-fn args(v: Value) -> rmcp::model::JsonObject {
-    match v {
-        Value::Object(m) => m,
-        _ => panic!("arguments must be an object"),
-    }
-}
-
-async fn call(c: &Client, tool: &str, a: Value) -> CallToolResult {
-    c.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(args(a)))
-        .await
-        .unwrap()
-}
-
-/// The structured result of a call that must succeed.
-async fn ok(c: &Client, tool: &str, a: Value) -> Value {
-    let r = call(c, tool, a.clone()).await;
-    let v = r.structured_content.clone().unwrap_or(Value::Null);
-    assert_ne!(r.is_error, Some(true), "{tool} {a}: {v}");
-    v
-}
-
-/// The error code of a call that must fail as a tool error.
-async fn fails(c: &Client, tool: &str, a: Value) -> Value {
-    let r = call(c, tool, a.clone()).await;
-    assert_eq!(r.is_error, Some(true), "{tool} {a} succeeded");
-    let v = r.structured_content.unwrap();
-    // The text content carries the same envelope, for clients that only show text.
-    v["error"].clone()
-}
-
-/// An error with `id` replaced by a placeholder, to compare the answers for two different IDs.
 /// `undo_event` arguments for the first event of a write result.
 fn undo_args(result: &Value) -> Value {
     let e = &result["events"][0];
     json!({ "seq": e["seq"], "event_id": e["id"] })
-}
-
-fn same_shape(e: &Value, id: &str) -> String {
-    e.to_string().replace(id, "<id>")
 }
 
 fn titles(page: &Value) -> Vec<String> {
@@ -165,37 +109,6 @@ fn names(page: &Value) -> Vec<String> {
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect()
 }
-
-fn list_id(s: &str) -> ListId {
-    serde_json::from_value(json!(s)).unwrap()
-}
-
-fn grants(default: AccessLevel, lists: &[(&str, AccessLevel)]) -> Grants {
-    let mut g = Grants::with_default(default);
-    for (l, level) in lists {
-        g.lists.insert(list_id(l), *level);
-    }
-    g
-}
-
-const ALL_TOOLS: [&str; 16] = [
-    "add_note",
-    "add_step",
-    "archive_task",
-    "complete_task",
-    "create_task",
-    "get_activity",
-    "get_task",
-    "list_collections",
-    "list_lists",
-    "merge_tasks",
-    "move_task",
-    "query_tasks",
-    "set_my_day",
-    "undo_event",
-    "update_step",
-    "update_task",
-];
 
 #[tokio::test]
 async fn an_agent_initializes_lists_tools_and_captures_into_the_inbox() {
