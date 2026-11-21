@@ -285,10 +285,11 @@ compresses to well under 1 MB per object, far below the 10 GB free tier.
 ### Restore
 
 ```powershell
+$identity = '<file>'   # the backup identity, in a file only you can read
 # A specific object. Its key is in the logs and in `todo-backup status`.
-todo-backup restore --object daily/20261121T060000Z-42.sqlite3.zst.age --identity <file> --out D:\restore\todo.sqlite3
+todo-backup restore --object daily/20261121T060000Z-42.sqlite3.zst.age --identity $identity --out D:\restore\todo.sqlite3
 # The newest of one kind. Costs one LIST.
-todo-backup restore --latest --kind daily --identity <file> --out D:\restore\todo.sqlite3
+todo-backup restore --latest --kind daily --identity $identity --out D:\restore\todo.sqlite3
 ```
 
 Restore downloads, decrypts and decompresses the backup, and checks its integrity, before the file appears at

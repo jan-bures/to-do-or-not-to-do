@@ -28,6 +28,8 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 | `/opt/todo/current` | root | A symlink to the running release. A deploy switches it with one atomic rename. The units run the binaries through it. |
 | `/usr/local/bin/todo-server`, `todo-backup` | root | Symlinks to `/opt/todo/current/`, for running the tools by hand. |
 | `/opt/todo/deploy-in-progress` | root, 0600 | Exists only while a deploy is unfinished. See [An interrupted deploy](#an-interrupted-deploy). |
+| `/opt/todo/deploy.lock` | root | Held by the deploy or recovery that is running, so only one runs at a time. |
+| `/run/todo-deploy/allow-start` | root, 0600 | Exists only for a moment: the deploy's permission for one start of the server. In RAM, gone after a reboot. |
 | `/usr/local/lib/todo/` | root, 0755 | `deploy-guard`, which the units run before they start, and `install-release`, a copy of the deploy script for `--recover`. |
 | `/etc/todo/` | root:todo, 0750 | Config and secrets (see [Secrets](#secrets)). |
 | `/var/lib/todo/` | todo:todo, 0700 | `todo.sqlite3` with its WAL, `attachments.sqlite3`, `attachments.key`, `blobs/` (local store only), `backup-state/`. |
@@ -51,16 +53,29 @@ which it calls "OK".
 
 The two backup kinds never run at once. Each run takes a `flock` on `/var/lib/todo/backup-run.lock`, so a
 daily run that lands on a frequent one waits for it instead of failing on the tool's state lock. A restore
-takes the same lock (see [Putting a backup into service](#putting-a-backup-into-service)).
+takes the same lock (see [Putting a backup into service](#putting-a-backup-into-service)), and so does a
+deploy before it copies or replaces a database.
 
 The server and the backups refuse to start while a deploy is unfinished: `deploy-guard` runs first
-(`ExecStartPre`) and fails while `/opt/todo/deploy-in-progress` exists. The one exception is the deploy script
-itself starting the server.
+(`ExecStartPre`) and fails while `/opt/todo/deploy-in-progress` exists. The one exception is a start of the
+server that the deploy script authorizes. Each authorization is a random nonce, written both to the marker and
+to `/run/todo-deploy/allow-start` (root, 0600, in RAM, so it can't outlive a reboot). The guard allows a start
+only if the two match, and deletes the file as it does, so each nonce allows exactly one start. A backup is
+never let through.
 
 ## Google Cloud: create the VM
 
-Pick one of the free-tier regions (`us-west1`, `us-central1` or `us-east1`) and a zone in it (`<region>` and
-`<zone>` below).
+Pick one of the free-tier regions (`us-west1`, `us-central1` or `us-east1`) and a zone in it. Every PowerShell
+block in this runbook uses these variables, so set them once in the session, replacing the placeholders:
+
+```powershell
+$projectId = '<project-id>'
+$region = '<region>'      # for example us-west1
+$zone = '<zone>'          # a zone in that region, for example us-west1-b
+$instance = '<instance>'  # the VM's name
+$gcloud = "$env:LOCALAPPDATA\google-cloud-sdk\bin\gcloud.cmd"
+$g = @('--project', $projectId, '--zone', $zone, '--tunnel-through-iap')
+```
 
 The VM gets a network of its own. Leave the project's `default` network alone: don't attach the VM to it and
 don't delete it, since other things in the project may rely on it. A new custom-mode network has no firewall
@@ -68,24 +83,23 @@ rules, so nothing gets in; one rule then lets SSH in from Google's IAP range onl
 `--tunnel-through-iap` connections come from. Networks, subnets and firewall rules cost nothing.
 
 ```powershell
-$gcloud = "$env:LOCALAPPDATA\google-cloud-sdk\bin\gcloud.cmd"
-& $gcloud compute networks create todo-net --project <project-id> --subnet-mode custom
-& $gcloud compute networks subnets create todo-subnet --project <project-id> --network todo-net `
-    --region <region> --range 10.10.0.0/24
-& $gcloud compute firewall-rules create todo-net-allow-ssh-from-iap --project <project-id> --network todo-net `
+& $gcloud compute networks create todo-net --project $projectId --subnet-mode custom
+& $gcloud compute networks subnets create todo-subnet --project $projectId --network todo-net `
+    --region $region --range 10.10.0.0/24
+& $gcloud compute firewall-rules create todo-net-allow-ssh-from-iap --project $projectId --network todo-net `
     --direction INGRESS --action ALLOW --rules tcp:22 --source-ranges 35.235.240.0/20
 ```
 
 Check that this is the network's only rule:
 
 ```powershell
-& $gcloud compute firewall-rules list --project <project-id> --filter 'network~/todo-net$'
+& $gcloud compute firewall-rules list --project $projectId --filter 'network~/todo-net$'
 ```
 
 Then create the VM in it:
 
 ```powershell
-& $gcloud compute instances create <instance> --project <project-id> --zone <zone> `
+& $gcloud compute instances create $instance --project $projectId --zone $zone `
     --machine-type e2-micro --image-family debian-13 --image-project debian-cloud `
     --boot-disk-size 30GB --boot-disk-type pd-standard `
     --network todo-net --subnet todo-subnet --network-tier STANDARD `
@@ -107,9 +121,8 @@ Copy `deploy/linux` to the VM and run the script. From the repository root (keep
 scp read `C:\...` as a host named `C`):
 
 ```powershell
-$g = @('--project', '<project-id>', '--zone', '<zone>', '--tunnel-through-iap')
-& $gcloud compute scp @g --recurse deploy/linux <instance>:
-& $gcloud compute ssh <instance> @g --command 'sudo bash linux/provision.sh'
+& $gcloud compute scp @g --recurse deploy/linux "${instance}:"
+& $gcloud compute ssh $instance @g --command 'sudo bash linux/provision.sh'
 ```
 
 It installs base packages and adds Cloudflare's apt repository. apt trusts every key in the repository's
@@ -144,8 +157,13 @@ sudoedit /etc/todo/server.toml
 
 Keep `bind` on `127.0.0.1` and the port the tunnel's public hostname points at (`http://127.0.0.1:47320` by
 default), `data_dir = "/var/lib/todo"`, the same `public_origin` as the pilot, and
-`trust_cloudflare_headers = true`. Put each secret in place with the owner and mode from [Secrets](#secrets),
-for example:
+`trust_cloudflare_headers = true`.
+
+This file is the only source of the server's settings. Don't set `TODO_SERVER_*` variables in the unit or a
+drop-in, and don't add an `EnvironmentFile`: a deploy refuses to run if it finds one, because it must know
+which database the server opens.
+
+Put each secret in place with the owner and mode from [Secrets](#secrets), for example:
 
 ```sh
 sudo install -m 0640 -o root -g todo r2-attachments.json /etc/todo/
@@ -176,7 +194,7 @@ Open a new WSL shell afterwards, so `~/.cargo/bin` is on `PATH`.
 From the Windows PC:
 
 ```powershell
-./deploy/deploy-linux.ps1 -Project <project-id> -Zone <zone> -Instance <instance>
+./deploy/deploy-linux.ps1 -Project $projectId -Zone $zone -Instance $instance
 ```
 
 1. **Build.** WSL builds release binaries with the toolchain pinned in `rust-toolchain.toml`, under `nice`.
@@ -186,37 +204,47 @@ From the Windows PC:
    few minutes, later ones less.
 2. **Copy.** The binaries and `install-release.sh` go to `~/todo-deploy-<time>/` on the VM. That directory is
    removed again afterwards, whatever happens.
-3. **Install.** `sudo install-release.sh` takes over. Nothing is stopped until the first three steps pass:
+3. **Install.** `sudo install-release.sh` takes over. It holds `/opt/todo/deploy.lock` throughout, so a second
+   deploy or recovery started meanwhile is refused at once. Nothing is stopped until the first three steps
+   pass:
    1. It checks the checksums and that both binaries run on the VM, and installs them as a new release
       directory, `/opt/todo/releases/<version>-<hash>/`, synced to disk before it gets its name.
-   2. It asks the new server which database its config points at (`todo-server database-path`, with the
-      unit's working directory), so a relative `data_dir` resolves exactly as the server resolves it. A config
-      the new server refuses stops the deploy.
-   3. If a release is installed already but there is no database at that path, it stops: the copy in step 5
-      would silently be skipped. After a deliberate wipe, pass `-AllowEmptyDatabase`.
-   4. It writes the deploy marker, `/opt/todo/deploy-in-progress`, synced to disk. Then it stops the backup
-      timers, any backup run and the server, and checks that all of them are inactive and that nothing
-      answers `/health`.
-   5. It copies the databases with their WAL files to `/var/lib/todo-deploy/pre-<time>/` and syncs them.
-   6. It points `/opt/todo/current` at the new release: a new symlink, renamed over the old one.
-   7. It starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the unit is active and
+   2. It asks the new server which database its config points at (`todo-server database-path`, as `todo`, in
+      the unit's working directory), so a relative `data_dir` resolves exactly as the server resolves it. A
+      config the new server refuses stops the deploy, and so does a unit that sets the server's settings
+      through its environment (see [Configure](#configure)).
+   3. If a release is installed already but there is no database at that path, it stops: there would be
+      nothing to roll back to. After a deliberate wipe, pass `-AllowEmptyDatabase`.
+   4. **prepared.** It writes the deploy marker, `/opt/todo/deploy-in-progress`, synced to disk. Then it
+      stops the backup timers, any backup run and the server, checks each `systemctl stop`, and waits until
+      every one of them is inactive and nothing answers `/health`. It takes the backup lock.
+   5. **snapshotted.** It copies the databases and their `-wal` and `-shm` files to
+      `/var/lib/todo-deploy/pre-<time>/`, and writes a `MANIFEST` (a `sha256sum` list) of exactly the files that
+      existed. Every file is synced, and every sync is checked; any failure stops the deploy before it
+      switches.
+   6. **switched.** It points `/opt/todo/current` at the new release (a new symlink, renamed over the old
+      one), starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the unit is active and
       `/health` answers 200. The server runs pending migrations before it listens.
-   8. It removes the marker and starts the backup timers that were running before. Timers that were off stay
+   7. It removes the marker and starts the backup timers that were running before. Timers that were off stay
       off.
-4. **Roll back.** If the new release doesn't become healthy, the script points `current` back at the previous
-   release and starts it. If that doesn't come up either, typically because the new one ran a migration it
-   doesn't know, it restores the copy from step 5 and tries once more. Each file is written to a temporary
-   name next to the live one and synced, the live files (with their WAL) go to `failed-<time>/`, the copies
-   are renamed into place, and the directory is synced. The live database is never overwritten in place.
+4. **Roll back** (phase **restoring**). If the new release doesn't become healthy, it may already have
+   migrated the databases, so the script always restores the copy, in full, before anything starts:
+   1. Each file in the `MANIFEST` is written to a temporary name next to the live one and synced.
+   2. For each database, the live file and its sidecars go to `failed-<time>/`, including sidecars the copy
+      didn't have, and the copies are renamed into place.
+   3. The directory is synced and the result checked against the `MANIFEST`.
+
+   Then `current` points at the previous release again, and it starts. The live database is never
+   overwritten in place, and the marker says `restoring` until the previous release runs.
 
 Exit codes: 0 deployed; 1 nothing changed (a build, copy, checksum or config failure, a missing database, or
-the server wouldn't stop); 2 rolled back, the previous release runs; 3 the server is down; 4 deployed, but
-`-PublicHealthUrl` didn't answer.
+another deploy running); 2 rolled back, the previous release is current; 3 unfinished (see the next section);
+4 deployed, but `-PublicHealthUrl` didn't answer.
 
 | Option | Effect |
 |---|---|
 | `-SkipBuild` | Deploys what is already in `-ArtifactDir`. |
-| `-NoStart` | Installs the release and leaves the server stopped. |
+| `-NoStart` | Installs the release and leaves the server stopped. The marker records it, so a recovery keeps it stopped too. |
 | `-AllowEmptyDatabase` | Deploys although a release is installed and no database exists, after a deliberate wipe. |
 | `-PublicHealthUrl https://todo.example.com/health` | Also checks the server from outside after the deploy. |
 | `-GcloudPath` | Another gcloud. By default the script uses the portable install in `%LOCALAPPDATA%\google-cloud-sdk`, then `PATH`. |
@@ -246,28 +274,40 @@ reports an unexpected exit code) leaves the marker behind. While it exists:
   `refusing to start todo-server: a deploy was interrupted (phase '...')`.
 - Backup runs refuse to start too, so nothing backs up half-restored databases.
 
-The databases are safe in every phase. The copy is taken while the server is stopped, the release switch is a
+The databases are safe in every phase. The copy is taken while everything is stopped, the release switch is a
 single rename, and a restore never writes over the live file. To see where the deploy stopped:
 
 ```sh
 sudo /usr/local/lib/todo/install-release --status
 ```
 
-It prints the phase, the new and previous release, the database path, the copy (`snapshot=`) and whether the
-new release had already started (`new_ran=1`). Then choose one:
+It only reads. It prints the phase, the new and previous release, the data directory, the copy (`snapshot=`)
+and the start policy (`start=no` after `-NoStart`), and says so if a deploy or recovery is running right now.
+The phases:
 
-- **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from that phase: it
-  stops what runs, copies the databases if that hadn't happened yet, switches to the new release and starts
-  it. If the new release doesn't become healthy, it rolls back as a normal deploy would.
-- **Roll back.** `sudo /usr/local/lib/todo/install-release --recover rollback` points `current` back at the
-  previous release and starts it. If the new release had already started and the previous one won't run on
-  what it left, the databases are restored from the copy, as above. Anything written while the new release
-  ran is then only in `failed-<time>/`.
+| Phase | What is true |
+|---|---|
+| `prepared` | The previous release is current; the copy may be incomplete. The databases are untouched. |
+| `snapshotted` | The copy is complete. The previous release is current, and the new one never ran. |
+| `switched` | `current` may point at either release, and the new one may have run. |
+| `restoring` | A restore was started; the databases may be a mix of old and new until it completes. |
 
-Both need neither the PC nor the upload: the script keeps a copy of itself in `/usr/local/lib/todo`. Both
-exit with the deploy's codes, and on 0 or 2 the marker is gone and the timers run again. Exit code 3 leaves
-the marker in place; read `sudo journalctl -u todo-server`, fix the cause, and run `--recover` again. A
-recovery that is itself interrupted can be run again.
+Then choose one:
+
+- **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from `prepared`,
+  `snapshotted` or `switched`: it stops what runs, takes the copy if it wasn't complete, switches to the new
+  release and starts it. If the new release doesn't become healthy, it rolls back as a normal deploy would.
+  From `restoring` only a rollback is possible.
+- **Roll back.** `sudo /usr/local/lib/todo/install-release --recover rollback` returns to the previous
+  release. From `prepared` or `snapshotted` it just starts it again. From `switched` or `restoring` it first
+  restores the copy in full, as above, every time it runs, so the server never starts on a mixed pair of
+  databases. Anything the new release wrote is then only in `failed-<time>/`.
+
+Both honour the deploy's start policy, so after `-NoStart` the server stays stopped. Both need neither the PC
+nor the upload: the script keeps a copy of itself in `/usr/local/lib/todo`. They exit with the deploy's codes,
+and on 0 or 2 the marker is gone and the timers run again. Exit code 3 leaves the marker in place: read the
+message and `sudo journalctl -u todo-server`, fix the cause, and run `--recover` again. A recovery that is
+itself interrupted can always be run again.
 
 Don't delete the marker by hand. If you must, stop the server first, and check that `/opt/todo/current` points
 at a release that can open the databases.
@@ -279,7 +319,12 @@ runs a connector with the same token, and the PC's goes away. Clients notice a f
 nothing else. Passkeys, sessions, device and agent tokens, and share links all keep working, because the
 public origin doesn't change. Forwarded emails wait in the Email Worker's retry queue meanwhile.
 
-Plan for 30 minutes. The pilot's data directory is `$data = "$env:LOCALAPPDATA\todo"`.
+Plan for 30 minutes. Besides the variables from [Google Cloud: create the VM](#google-cloud-create-the-vm),
+the blocks below use the pilot's data directory:
+
+```powershell
+$data = "$env:LOCALAPPDATA\todo"
+```
 
 ### Before the day
 
@@ -321,8 +366,9 @@ Plan for 30 minutes. The pilot's data directory is `$data = "$env:LOCALAPPDATA\t
    `$data`; that directory's ACL is yours only. Then:
 
    ```powershell
+   $objectKey = '<key>'   # the key from step 2
    New-Item -ItemType Directory "$data\move" | Out-Null
-   & "$data\bin\todo-backup.exe" restore --object <key> --identity "$data\identity.tmp" --out "$data\move\todo.sqlite3"
+   & "$data\bin\todo-backup.exe" restore --object $objectKey --identity "$data\identity.tmp" --out "$data\move\todo.sqlite3"
    Remove-Item "$data\identity.tmp"
    ```
 
@@ -341,8 +387,8 @@ Plan for 30 minutes. The pilot's data directory is `$data = "$env:LOCALAPPDATA\t
 
    ```powershell
    Push-Location "$data\move"
-   & $gcloud compute ssh <instance> @g --command 'mkdir -m 700 move'
-   & $gcloud compute scp @g --recurse * <instance>:move/
+   & $gcloud compute ssh $instance @g --command 'mkdir -m 700 move'
+   & $gcloud compute scp @g --recurse * "${instance}:move/"
    Pop-Location
    Remove-Item -Recurse "$data\move"
    ```
@@ -484,7 +530,7 @@ VM's `blobs/` comes along too.
    ```
 
    ```powershell
-   & $gcloud compute scp @g --recurse <instance>:rollback .
+   & $gcloud compute scp @g --recurse "${instance}:rollback" .
    ```
 
    ```sh
@@ -620,7 +666,7 @@ sudo -u todo sh -c 'cd /var/lib/todo && todo-server --config /etc/todo/server.to
 The admin listener stays on `127.0.0.1:47321`. Reach it through an SSH port forward over IAP:
 
 ```powershell
-& $gcloud compute ssh <instance> @g -- -N -L 47321:127.0.0.1:47321
+& $gcloud compute ssh $instance @g -- -N -L 47321:127.0.0.1:47321
 ```
 
 Then call `http://127.0.0.1:47321/api/v1/admin/...` on the PC (see `admin-api.md`).
@@ -682,7 +728,8 @@ through the tunnel. Downloads from R2 to the VM are ingress, which is free, and 
 **Set a budget alert** so any charge is noticed at once:
 
 ```powershell
-& $gcloud billing budgets create --billing-account <billing-account-id> --display-name todo-vm `
+$billingAccount = '<billing-account-id>'
+& $gcloud billing budgets create --billing-account $billingAccount --display-name todo-vm `
     --budget-amount 1USD --threshold-rule percent=0.01 --threshold-rule percent=0.5 --threshold-rule percent=1.0
 ```
 

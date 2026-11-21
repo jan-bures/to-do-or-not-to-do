@@ -2,19 +2,25 @@
 # Installed by provision.sh as /usr/local/lib/todo/deploy-guard and run by todo-server.service and
 # todo-backup@.service before they start (ExecStartPre, as root). While a deploy is unfinished
 # (/opt/todo/deploy-in-progress exists), it refuses the start, so that after a power cut or a killed
-# deploy neither a half-installed server nor a backup of half-restored databases runs. The deploy
-# script itself starts the server through it: it writes its PID to /run/todo-deploy-allow-start, and
-# the start is allowed while that process is alive. Backups are always refused while the marker exists.
+# deploy neither a half-installed server nor a backup of half-restored databases runs.
+#
+# The one exception is a start of todo-server that install-release.sh authorizes: it writes a random
+# nonce to the marker and to /run/todo-deploy/allow-start (root, 0600, on tmpfs, so it can't outlive a
+# reboot). This guard allows the start only if the two match, and deletes the file first, so each nonce
+# authorizes exactly one start. Backups are never let through while the marker exists.
 set -u
 MARKER=/opt/todo/deploy-in-progress
-ALLOW=/run/todo-deploy-allow-start
+ALLOW=/run/todo-deploy/allow-start
 UNIT="${1:-this unit}"
 
 [ -e "$MARKER" ] || exit 0
 
-if [ "$UNIT" = todo-server ] && [ -f "$ALLOW" ]; then
-    pid="$(head -c 16 "$ALLOW" | tr -cd 0-9)"
-    if [ -n "$pid" ] && grep -q install-release "/proc/$pid/cmdline" 2> /dev/null; then
+if [ "$UNIT" = todo-server ] && [ -f "$ALLOW" ] && [ ! -L "$ALLOW" ]; then
+    owner_mode="$(stat -c '%u %a' "$ALLOW" 2> /dev/null)"
+    have="$(head -n 1 "$ALLOW" 2> /dev/null)"
+    rm -f "$ALLOW"
+    want="$(sed -n 's/^nonce=//p' "$MARKER" 2> /dev/null | head -n 1)"
+    if [ "$owner_mode" = "0 600" ] && [ ${#want} -eq 32 ] && [ "$have" = "$want" ]; then
         exit 0
     fi
 fi

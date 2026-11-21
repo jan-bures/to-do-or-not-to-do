@@ -7,37 +7,32 @@
 #   sudo bash install-release.sh --status
 #
 # STAGING_DIR holds todo-server, todo-backup and SHA256SUMS. A deploy:
-#   1. Checks the checksums and copies the binaries into their own directory,
-#      /opt/todo/releases/<version>-<hash>/, which is synced to disk before it gets its final name. It asks
-#      the new server for the database path its config resolves to (`todo-server database-path`, which
-#      also checks the config); a config it refuses stops the deploy before anything changes.
-#   2. Writes a durable marker, /opt/todo/deploy-in-progress, with the phase it is in. While the marker
-#      exists, todo-server refuses to start (except when this script starts it), so a power cut or a
-#      killed deploy never leaves a half-installed server running after a reboot.
-#   3. Stops the backup timers and runs and todo-server, and checks that they are inactive and that
-#      nothing answers the health URL any more.
-#   4. Copies the databases (todo.sqlite3 and attachments.sqlite3 with their -wal and -shm files) to
-#      /var/lib/todo-deploy/pre-<time>/ and syncs them. The server is stopped, so the copy is consistent.
-#      Without a database where one is expected (a release is already installed), it stops instead,
-#      unless --allow-empty-database is given.
-#   5. Switches /opt/todo/current to the new release: a new symlink renamed over the old one, then the
-#      directory synced. Migrations need no step of their own: the server runs them before it listens.
-#   6. Starts todo-server and waits until it is active and /health answers 200.
-#   7. If it doesn't: switches back to the previous release and starts again. If that fails too (the new
-#      release ran a migration the old one doesn't know), restores the copy from step 4 (each file to a
-#      temporary name, synced, renamed over, then the directory synced) and tries once more.
-#   8. Removes the marker, and starts again the backup timers that were running.
+#   1. Takes /opt/todo/deploy.lock, so only one deploy or recovery runs at a time.
+#   2. Checks the checksums and installs the binaries as their own release directory,
+#      /opt/todo/releases/<version>-<hash>/. It asks the new server for its database path
+#      (`todo-server database-path`, which also checks the config), and refuses a unit that overrides
+#      the config through the environment. Nothing has changed if any of this fails.
+#   3. Writes a durable marker, /opt/todo/deploy-in-progress (phase "prepared"). While it exists,
+#      todo-server and the backups refuse to start, except for one start that this script authorizes.
+#   4. Stops the backup timers and runs and todo-server and waits until each is inactive. Takes the
+#      backup lock, copies the databases and their -wal and -shm files to /var/lib/todo-deploy/pre-<time>/
+#      with a MANIFEST of what existed, and syncs it all (phase "snapshotted").
+#   5. Points /opt/todo/current at the new release with one rename (phase "switched"), starts the server
+#      and waits until it is active and /health answers 200. The server runs migrations before it listens.
+#   6. If it doesn't become healthy: rolls back (phase "restoring"). The databases go back to the copy,
+#      exactly as the MANIFEST lists them; then the previous release becomes current and starts.
+#   7. Removes the marker and starts the backup timers that were running.
 #
-# --no-start stops after step 5: the release is current and the server stays stopped. --keep N (3) is how
-# many older database copies (pre-*), replaced files (failed-*) and older releases to keep.
+# --no-start stops after the switch; the policy is kept in the marker, so a recovery honours it too.
+# --keep N (3) is how many older copies (pre-*), replaced files (failed-*) and older releases to keep.
 #
-# After an interrupted deploy (a reboot or a kill), the marker stays and the server refuses to start.
-# --recover finish completes the deploy from where it stopped; --recover rollback returns to the
-# previous release and, if the new one may have touched the databases, to the copy from step 4. Neither
-# needs the staging directory. --status shows the marker.
+# After an interruption (a power cut, a reboot, a kill), the marker stays and nothing starts.
+# --recover finish carries the deploy on from its phase. --recover rollback returns to the previous release;
+# from "switched" or "restoring" it first restores the copy in full, every time, so the server never starts
+# on a mixed pair of databases. Neither needs the staging directory. --status only reads.
 #
-# Exit codes: 0 deployed (or recovered forward); 1 nothing changed; 2 rolled back, the previous release
-# runs; 3 the server is down and the marker stays.
+# Exit codes: 0 deployed (or finished); 1 nothing changed; 2 rolled back, the previous release is current;
+# 3 unfinished or down: see --status.
 set -euo pipefail
 set +x
 umask 077
@@ -46,15 +41,22 @@ OPT=/opt/todo
 RELEASES="$OPT/releases"
 CURRENT="$OPT/current"
 MARKER="$OPT/deploy-in-progress"
-ALLOW=/run/todo-deploy-allow-start
+LOCK="$OPT/deploy.lock"
+ALLOW_DIR=/run/todo-deploy
+ALLOW="$ALLOW_DIR/allow-start"
+SELF_COPY=/usr/local/lib/todo/install-release
 BIN_DIR=/usr/local/bin
 CONFIG=/etc/todo/server.toml
+BACKUP_LOCK=/var/lib/todo/backup-run.lock
 DEPLOY_DIR=/var/lib/todo-deploy
 SERVICE=todo-server.service
 TIMERS=(todo-backup-frequent.timer todo-backup-daily.timer)
+BACKUP_UNITS=(todo-backup@frequent.service todo-backup@daily.service)
 BINARIES=(todo-server todo-backup)
 DB_BASES=(todo.sqlite3 attachments.sqlite3)
 DB_SUFFIXES=("" -wal -shm)
+# How long to wait for each unit to become inactive (overridable for tests).
+STOP_TIMEOUT="${TODO_DEPLOY_STOP_TIMEOUT:-60}"
 
 health_timeout=60
 keep=3
@@ -66,6 +68,12 @@ status_only=0
 
 log() { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# For failures after the marker: it stays, and nothing starts until a recovery.
+die3() {
+    printf 'error: %s\n' "$*" >&2
+    printf 'The deploy is unfinished and the marker stays. See: sudo %s --status\n' "$SELF_COPY" >&2
+    exit 3
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -83,15 +91,51 @@ done
 case "$health_timeout$keep" in *[!0-9]*) fail "--health-timeout and --keep take whole numbers" ;; esac
 [ "$keep" -ge 1 ] || fail "--keep must be at least 1"
 case "$recover" in "" | finish | rollback) ;; *) fail "--recover takes finish or rollback" ;; esac
+if [ -n "$recover" ] && { [ "$no_start" -eq 1 ] || [ -n "$staging" ]; }; then
+    fail "--recover takes no staging directory and no --no-start: the marker holds the deploy's settings"
+fi
 
 [ "$(id -u)" -eq 0 ] || fail "run as root"
+
+marker_get() { sed -n "s/^$1=//p" "$MARKER" 2> /dev/null | head -n 1; }
+current_id() {
+    local t
+    t="$(readlink "$CURRENT" 2> /dev/null || true)"
+    printf '%s' "${t##*/}"
+}
+
+# ---- --status: reads only -------------------------------------------------------------------------
+
+if [ "$status_only" -eq 1 ]; then
+    if [ -e "$LOCK" ] && ! flock --nonblock --shared "$LOCK" true 2> /dev/null; then
+        printf 'a deploy or recovery is running right now\n'
+    fi
+    if [ -f "$MARKER" ]; then
+        printf 'an unfinished deploy (current release: %s):\n' "$(current_id)"
+        grep -v '^nonce=' "$MARKER" | sed 's/^/  /'
+    else
+        printf 'no deploy in progress; current release: %s\n' "$(current_id)"
+    fi
+    exit 0
+fi
+
 [ -d /run/systemd/system ] || fail "systemd is not running"
 id todo > /dev/null 2>&1 || fail "no todo user: run provision.sh first"
 [ -f "/etc/systemd/system/$SERVICE" ] || fail "no $SERVICE: run provision.sh first"
 [ -x /usr/local/lib/todo/deploy-guard ] || fail "no deploy guard: run provision.sh again"
 
-# Test hook: TODO_DEPLOY_CRASH_AT=<point> kills this script there, as a power cut would stop it. The
-# points are marker-written, stopped, snapshotted, switched, started and restoring.
+# ---- one at a time --------------------------------------------------------------------------------
+
+install -d -m 0755 -o root -g root "$OPT"
+exec 9> "$LOCK"
+flock --nonblock 9 || fail "another deploy or recovery is running (it holds $LOCK)"
+install -d -m 0755 -o root -g root "$RELEASES"
+install -d -m 0700 -o root -g root "$DEPLOY_DIR"
+trap 'rm -f -- "$ALLOW" "$ALLOW.tmp"' EXIT
+# A dropped SSH connection must not stop a deploy halfway; if it does stop, the marker covers it.
+trap '' HUP
+
+# Test hook: TODO_DEPLOY_CRASH_AT=<point> kills this script there, as a power cut would stop it.
 crash_point() {
     if [ "${TODO_DEPLOY_CRASH_AT:-}" = "$1" ]; then
         printf 'test: crashing at %s\n' "$1" >&2
@@ -101,63 +145,53 @@ crash_point() {
 
 # ---- durable files --------------------------------------------------------------------------------
 
-# fsync a file or a directory (GNU sync opens it and calls fsync).
+# fsync files or directories (GNU sync opens each one and calls fsync).
 fsync() { sync -- "$@"; }
 
-marker_get() { sed -n "s/^$1=//p" "$MARKER" 2> /dev/null | head -n 1; }
-
-# Writes the marker from the current variables, durably: a temporary file, synced, renamed over.
+# Writes the marker from the current variables: a temporary file, synced, renamed over, the directory
+# synced. Exits on any failure: without a durable marker nothing else may happen.
 write_marker() {
-    local phase="$1"
-    {
+    phase="$1"
+    if ! {
         printf 'phase=%s\n' "$phase"
         printf 'new=%s\n' "$new_id"
         printf 'previous=%s\n' "$prev_id"
-        printf 'database=%s\n' "$db_path"
+        printf 'data_dir=%s\n' "$data_dir"
         printf 'snapshot=%s\n' "$snapshot"
+        printf 'start=%s\n' "$start_policy"
         printf 'timers=%s\n' "$active_timers"
-        printf 'new_ran=%s\n' "$new_ran"
+        printf 'nonce=%s\n' "$nonce"
         printf 'started=%s\n' "$stamp"
-    } > "$MARKER.tmp"
-    fsync "$MARKER.tmp"
-    mv -f -- "$MARKER.tmp" "$MARKER"
-    fsync "$OPT"
+    } > "$MARKER.tmp" || ! fsync "$MARKER.tmp" || ! mv -f -- "$MARKER.tmp" "$MARKER" || ! fsync "$OPT"; then
+        die3 "could not write $MARKER durably"
+    fi
 }
 
 remove_marker() {
-    rm -f -- "$MARKER" "$MARKER.tmp"
-    fsync "$OPT"
+    if ! rm -f -- "$MARKER" "$MARKER.tmp" || ! fsync "$OPT"; then die3 "could not remove $MARKER durably"; fi
 }
 
 # Points $1 at $2 atomically: a new symlink renamed over the old one, then the directory synced.
 switch_link() {
     local link="$1" target="$2" tmp
     tmp="$(dirname "$link")/.$(basename "$link").new"
-    rm -f -- "$tmp"
-    ln -s -- "$target" "$tmp"
-    mv -T -f -- "$tmp" "$link"
-    fsync "$(dirname "$link")"
-}
-
-current_id() {
-    local t
-    t="$(readlink "$CURRENT" 2> /dev/null || true)"
-    printf '%s' "${t##*/}"
+    rm -f -- "$tmp" && ln -s -- "$target" "$tmp" && mv -T -f -- "$tmp" "$link" && fsync "$(dirname "$link")"
 }
 
 switch_release() {
-    [ -d "$RELEASES/$1" ] || fail "release $1 is missing from $RELEASES"
-    switch_link "$CURRENT" "releases/$1"
+    local b
+    [ -d "$RELEASES/$1" ] || die3 "release $1 is missing from $RELEASES"
+    switch_link "$CURRENT" "releases/$1" || die3 "could not switch $CURRENT to $1"
     # Stable names for the operator; they always follow `current`.
     for b in "${BINARIES[@]}"; do
         if [ "$(readlink "$BIN_DIR/$b" 2> /dev/null || true)" != "$CURRENT/$b" ]; then
-            switch_link "$BIN_DIR/$b" "$CURRENT/$b"
+            switch_link "$BIN_DIR/$b" "$CURRENT/$b" || die3 "could not link $BIN_DIR/$b"
         fi
     done
     log "current release: $1"
 }
 
-# ---- health ---------------------------------------------------------------------------------------
+# ---- services -------------------------------------------------------------------------------------
 
 health_url=""
 set_health_url() {
@@ -185,30 +219,42 @@ wait_healthy() {
     return 1
 }
 
-# Starts the server while the marker exists: the deploy guard lets it through while this script runs.
+# Starts the server while the marker exists. The guard lets exactly one start through: it needs a file
+# in /run (gone after a reboot) that holds the same random nonce as the marker, and deletes it.
 start_server() {
-    printf '%s\n' "$$" > "$ALLOW"
+    nonce="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    [ ${#nonce} -eq 32 ] || return 1
+    write_marker "$phase"
+    install -d -m 0700 -o root -g root "$ALLOW_DIR" || return 1
+    printf '%s\n' "$nonce" > "$ALLOW.tmp" && mv -f -- "$ALLOW.tmp" "$ALLOW" || return 1
     systemctl reset-failed "$SERVICE" 2> /dev/null || true
     systemctl start "$SERVICE" || true
+    rm -f -- "$ALLOW"
     wait_healthy
 }
 
+# Stops the timers, any backup run and the server, and waits until each is inactive or failed. Any
+# failure is reported and returned: nothing may touch the databases while one of them still runs.
 stop_all() {
-    systemctl stop "${TIMERS[@]}" 2> /dev/null || true
-    # Interrupting a backup run is safe: nothing is recorded until an upload completes.
-    systemctl stop 'todo-backup@*.service' 2> /dev/null || true
-    systemctl stop "$SERVICE" 2> /dev/null || true
-    local u
-    for u in "$SERVICE" "${TIMERS[@]}" todo-backup@frequent.service todo-backup@daily.service; do
-        if systemctl is-active --quiet "$u"; then
-            printf 'error: %s is still active after stopping it\n' "$u" >&2
-            return 1
-        fi
+    local u state deadline code
+    systemctl stop "${TIMERS[@]}" || { printf 'error: could not stop the backup timers\n' >&2; return 1; }
+    systemctl stop 'todo-backup@*.service' || { printf 'error: could not stop the backup runs\n' >&2; return 1; }
+    systemctl stop "$SERVICE" || { printf 'error: could not stop %s\n' "$SERVICE" >&2; return 1; }
+    deadline=$((SECONDS + STOP_TIMEOUT))
+    for u in "$SERVICE" "${TIMERS[@]}" "${BACKUP_UNITS[@]}"; do
+        while :; do
+            state="$(systemctl is-active "$u" 2> /dev/null || true)"
+            case "$state" in inactive | failed) break ;; esac
+            if [ "$SECONDS" -ge "$deadline" ]; then
+                printf 'error: %s is still %s after stopping it\n' "$u" "${state:-unknown}" >&2
+                return 1
+            fi
+            sleep 1
+        done
     done
-    local code
     code="$(http_status)"
     if [ "$code" != 000 ]; then
-        printf 'error: something still answers %s (HTTP %s) after stopping %s\n' "$health_url" "$code" "$SERVICE" >&2
+        printf 'error: something still answers %s (HTTP %s)\n' "$health_url" "$code" >&2
         return 1
     fi
 }
@@ -216,12 +262,18 @@ stop_all() {
 restart_timers() {
     local t
     for t in ${active_timers//,/ }; do
-        systemctl start "$t" 2> /dev/null || printf 'warning: could not start %s\n' "$t" >&2
+        systemctl start "$t" || printf 'warning: could not start %s\n' "$t" >&2
     done
 }
 
-# Removes the marker and the start permission and starts the timers again: the end of every outcome in
-# which the server runs.
+# Cancels any start systemd still has queued for the server (Restart= retries the guard refused), so it
+# stays stopped once the marker is gone.
+stay_stopped() {
+    systemctl stop "$SERVICE" || die3 "could not stop $SERVICE"
+    systemctl reset-failed "$SERVICE" 2> /dev/null || true
+}
+
+# The end of every outcome in which the deploy's work is done.
 finish_ok() {
     remove_marker
     rm -f -- "$ALLOW"
@@ -230,55 +282,75 @@ finish_ok() {
 
 # ---- databases ------------------------------------------------------------------------------------
 
-db_files() { # the database files present in directory $1
+# Holds the lock every backup run takes, until this script exits, so no run reads or writes a database
+# file while it is copied or replaced.
+backup_locked=0
+take_backup_lock() {
+    [ "$backup_locked" -eq 0 ] || return 0
+    if [ ! -e "$BACKUP_LOCK" ]; then
+        install -m 0600 -o todo -g todo /dev/null "$BACKUP_LOCK" || return 1
+    fi
+    exec 8< "$BACKUP_LOCK" || return 1
+    flock --nonblock 8 || { printf 'error: a backup run holds %s\n' "$BACKUP_LOCK" >&2; return 1; }
+    backup_locked=1
+}
+
+db_names() { # every database and sidecar name this script handles
     local base suffix
     for base in "${DB_BASES[@]}"; do
-        for suffix in "${DB_SUFFIXES[@]}"; do
-            [ -e "$1/$base$suffix" ] && printf '%s\n' "$base$suffix"
-        done
+        for suffix in "${DB_SUFFIXES[@]}"; do printf '%s\n' "$base$suffix"; done
     done
-    return 0
 }
 
+# True if the files in directory $1 match the MANIFEST (an empty MANIFEST matches: nothing existed).
+manifest_matches() { [ ! -s "$snapshot/MANIFEST" ] || (cd "$1" && sha256sum --check --quiet --strict "$snapshot/MANIFEST"); }
+
+in_manifest() { awk -v n="$1" '$2 == n { found = 1 } END { exit !found }' "$snapshot/MANIFEST"; }
+
+# Copies the databases and sidecars that exist to $snapshot, then writes MANIFEST (a sha256sum list of
+# exactly those files) last: a copy without a MANIFEST is incomplete. Every step is checked.
 take_snapshot() {
-    local data_dir f
-    data_dir="$(dirname "$db_path")"
-    if [ ! -f "$db_path" ]; then
-        log "no database at $db_path yet; nothing to copy"
-        snapshot=""
-        return
-    fi
-    rm -rf -- "$snapshot"
+    local f
+    rm -rf -- "$snapshot" || return 1
     mkdir -m 0700 -- "$snapshot" || return 1
+    : > "$snapshot/MANIFEST.tmp" || return 1
     while read -r f; do
+        [ -e "$data_dir/$f" ] || continue
         cp -a -- "$data_dir/$f" "$snapshot/$f" || return 1
         cmp -s -- "$data_dir/$f" "$snapshot/$f" || { printf 'error: the copy of %s differs\n' "$f" >&2; return 1; }
-        fsync "$snapshot/$f"
-    done < <(db_files "$data_dir")
-    fsync "$snapshot" "$DEPLOY_DIR"
-    log "copied the databases to $snapshot"
+        fsync "$snapshot/$f" || return 1
+        (cd "$snapshot" && sha256sum -- "$f") >> "$snapshot/MANIFEST.tmp" || return 1
+    done < <(db_names)
+    fsync "$snapshot/MANIFEST.tmp" || return 1
+    mv -f -- "$snapshot/MANIFEST.tmp" "$snapshot/MANIFEST" || return 1
+    fsync "$snapshot" "$DEPLOY_DIR" || return 1
+    log "copied the databases to $snapshot: $(awk '{ printf "%s ", $2 }' "$snapshot/MANIFEST")"
 }
 
-# Puts the snapshot back: every file to a temporary name next to the live one, synced, then the live
-# files moved aside and the copies renamed over, then the directory synced. The snapshot itself is only
-# read, so this can run again after an interruption.
+# Puts the data directory back exactly as the MANIFEST lists it. Each listed file is first copied next to
+# the live one under a temporary name and synced; then, for each database, the live files and any sidecar
+# the copy didn't have go to a failed-* directory, and the copies are renamed in; then everything is synced
+# and checked against the MANIFEST. The copy is only read, so this can run again after an interruption.
 restore_snapshot() {
-    local data_dir failed f base suffix
-    data_dir="$(dirname "$db_path")"
-    if [ -z "$snapshot" ] || [ ! -f "$snapshot/todo.sqlite3" ]; then
-        printf 'error: no database copy to restore\n' >&2
-        return 1
+    local failed name base suffix
+    [ -f "$snapshot/MANIFEST" ] || { printf 'error: %s has no MANIFEST\n' "$snapshot" >&2; return 1; }
+    manifest_matches "$snapshot" ||
+        { printf 'error: the copy in %s is damaged\n' "$snapshot" >&2; return 1; }
+    if [ ! -d "$data_dir" ]; then
+        # Never created: right only if there was nothing to copy either.
+        [ ! -s "$snapshot/MANIFEST" ] || { printf 'error: %s is missing\n' "$data_dir" >&2; return 1; }
+        log "there was no database before the deploy and there is none now"
+        return 0
     fi
-    failed="$DEPLOY_DIR/failed-$(date -u +%Y%m%dT%H%M%SZ)"
-    mkdir -m 0700 -- "$failed" || return 1
-    while read -r f; do
-        cp -a -- "$snapshot/$f" "$data_dir/.$f.restore" || return 1
-        fsync "$data_dir/.$f.restore" || return 1
-    done < <(db_files "$snapshot")
-    crash_point restoring
+    while read -r name; do
+        in_manifest "$name" || continue
+        cp -a -- "$snapshot/$name" "$data_dir/.$name.restore" || return 1
+        fsync "$data_dir/.$name.restore" || return 1
+    done < <(db_names)
+    fsync "$data_dir" || return 1
+    crash_point restore-copied
+    failed="$(mktemp -d "$DEPLOY_DIR/failed-$(date -u +%Y%m%dT%H%M%SZ)-XXXX")" || return 1
     for base in "${DB_BASES[@]}"; do
-        [ -e "$snapshot/$base" ] || continue
-        # The live WAL must go too: replayed onto the restored file, it would corrupt it.
         for suffix in "${DB_SUFFIXES[@]}"; do
             if [ -e "$data_dir/$base$suffix" ]; then mv -f -- "$data_dir/$base$suffix" "$failed/" || return 1; fi
         done
@@ -287,14 +359,16 @@ restore_snapshot() {
                 mv -f -- "$data_dir/.$base$suffix.restore" "$data_dir/$base$suffix" || return 1
             fi
         done
+        crash_point "restore-swapped-$base"
     done
-    fsync "$data_dir" "$failed"
+    fsync "$data_dir" "$failed" "$DEPLOY_DIR" || return 1
+    manifest_matches "$data_dir" ||
+        { printf 'error: the restored files differ from the copy\n' >&2; return 1; }
     log "restored the databases from $snapshot (the replaced files are in $failed)"
 }
 
 prune() {
     local kind old r
-    # Copies from before a deploy (pre-*) and the files a restore replaced (failed-*): the newest $keep.
     for kind in pre failed; do
         find "$DEPLOY_DIR" -mindepth 1 -maxdepth 1 -type d -name "$kind-*" -printf '%f\n' | sort -r |
             tail -n +"$((keep + 1))" | while read -r old; do rm -rf -- "${DEPLOY_DIR:?}/$old"; done
@@ -307,93 +381,89 @@ prune() {
     done
 }
 
-# ---- the steps from a phase onwards ---------------------------------------------------------------
+# ---- rollback and deploy --------------------------------------------------------------------------
 
-# Rolls back from $1, the phase reached: to the previous release, and to the snapshot if the new release
-# ran (it may have migrated the databases). Exits.
-rollback_from() {
-    local phase="$1"
-    write_marker rolling-back
-    stop_all || true
-    if [ -n "$prev_id" ]; then
-        switch_release "$prev_id"
-    fi
-    if [ "$new_ran" = 1 ]; then
-        # The previous release may still open what the new one left; try that first, unless a restore
-        # was already under way.
-        if [ "$phase" != restoring ] && [ -n "$prev_id" ] && start_server; then
-            finish_ok
-            log "rolled back: $prev_id runs"
-            exit 2
-        fi
-        stop_all || true
-        if [ -n "$snapshot" ] && [ -d "$snapshot" ]; then
-            write_marker restoring
-            if ! restore_snapshot; then
-                rm -f -- "$ALLOW"
-                printf 'error: the restore failed; %s is down and the marker stays. See: sudo journalctl -u %s\n' "$SERVICE" "$SERVICE" >&2
-                exit 3
-            fi
-        else
-            log "there was no database before the deploy; nothing to restore"
-        fi
+# The previous release runs again (or stays stopped, by the start policy). Exits.
+start_previous_and_exit() {
+    local code="$1" no_previous_code="${2:-3}"
+    if [ "$start_policy" = no ]; then
+        stay_stopped
+        finish_ok
+        log "the previous release ${prev_id:-(none)} is current; $SERVICE stays stopped (--no-start)"
+        exit "$code"
     fi
     if [ -z "$prev_id" ]; then
-        # A first install that failed: there is nothing to go back to.
+        stay_stopped
         finish_ok
-        log "no previous release: $SERVICE stays stopped"
-        exit 3
+        log "there is no previous release: $SERVICE stays stopped"
+        exit "$no_previous_code"
     fi
     if start_server; then
         finish_ok
-        log "rolled back: $prev_id runs"
-        exit 2
+        log "the previous release runs: $prev_id"
+        exit "$code"
     fi
-    stop_all || true
-    rm -f -- "$ALLOW"
-    printf 'error: the rollback failed; %s is down and the marker stays. See: sudo journalctl -u %s\n' "$SERVICE" "$SERVICE" >&2
-    exit 3
+    die3 "the previous release $prev_id did not become healthy. See: sudo journalctl -u $SERVICE"
+}
+
+# Rolls back from phase $1. Exits.
+rollback_from() {
+    case "$1" in
+        prepared | snapshotted)
+            # current is still the previous release and the new one never ran: the databases are untouched.
+            stop_all || die3 "could not stop everything; nothing was rolled back"
+            if [ -n "$prev_id" ]; then switch_release "$prev_id"; fi
+            start_previous_and_exit "${2:-2}" "${2:-2}"
+            ;;
+        switched | restoring)
+            # The new release may have run, and a restore may be half done: restore in full, every time.
+            write_marker restoring
+            crash_point rollback-marked
+            stop_all || die3 "could not stop everything; the databases were not touched"
+            take_backup_lock || die3 "could not take the backup lock; the databases were not touched"
+            restore_snapshot || die3 "the restore did not complete; run --recover rollback again"
+            crash_point restored
+            if [ -n "$prev_id" ]; then
+                switch_release "$prev_id"
+            else
+                if ! rm -f -- "$CURRENT" "$BIN_DIR/todo-server" "$BIN_DIR/todo-backup" || ! fsync "$OPT"; then
+                    die3 "could not remove $CURRENT"
+                fi
+            fi
+            start_previous_and_exit 2
+            ;;
+        *) die3 "unknown phase '$1' in $MARKER" ;;
+    esac
 }
 
 # Runs the deploy from phase $1 onwards. Exits.
 deploy_from() {
-    local phase="$1"
-    case "$phase" in
-        stopping)
+    case "$1" in
+        prepared)
             log "stopping backups and $SERVICE"
-            if ! stop_all; then
-                if [ -z "$recover" ]; then
-                    # Nothing has changed yet: undo the stop and the marker.
-                    if [ "$server_was_active" -eq 1 ]; then start_server || true; fi
-                    finish_ok
-                    fail "nothing changed"
-                fi
-                exit 3
+            if ! stop_all || ! take_backup_lock; then
+                printf 'error: could not stop everything and take the backup lock; rolling back\n' >&2
+                rollback_from prepared 1
             fi
-            crash_point stopped
             if ! take_snapshot; then
-                # Still nothing changed but the stop: start the current release again.
-                printf 'error: could not copy the databases to %s\n' "$snapshot" >&2
-                if [ "$server_was_active" -eq 1 ]; then start_server || true; fi
-                finish_ok
-                fail "nothing changed (is the disk full?)"
+                printf 'error: could not copy the databases to %s; rolling back\n' "$snapshot" >&2
+                rollback_from prepared 1
             fi
             write_marker snapshotted
             crash_point snapshotted
             ;&
         snapshotted)
-            switch_release "$new_id"
             write_marker switched
+            switch_release "$new_id"
             crash_point switched
             ;&
-        switched | starting)
-            if [ "$no_start" -eq 1 ]; then
+        switched)
+            if [ "$start_policy" = no ]; then
+                stay_stopped
                 finish_ok
                 log "--no-start: $new_id is current and $SERVICE stays stopped"
                 exit 0
             fi
-            new_ran=1
-            write_marker starting
             log "starting $SERVICE and waiting up to ${health_timeout}s for HTTP 200 from $health_url"
             if start_server; then
                 crash_point started
@@ -403,57 +473,44 @@ deploy_from() {
             fi
             printf 'error: the new release did not become healthy. Its last log lines:\n' >&2
             journalctl -u "$SERVICE" -n 30 --no-pager -o cat >&2 || true
-            rollback_from starting
+            rollback_from switched
             ;;
-        *)
-            fail "can't finish from phase '$phase': run --recover rollback"
-            ;;
+        restoring) fail "a rollback is under way: run --recover rollback" ;;
+        *) die3 "unknown phase '$1' in $MARKER" ;;
     esac
 }
 
-# ---- entry points ---------------------------------------------------------------------------------
-
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-install -d -m 0755 -o root -g root "$OPT" "$RELEASES"
-install -d -m 0700 -o root -g root "$DEPLOY_DIR"
 set_health_url
-trap 'rm -f -- "$ALLOW"' EXIT
-# A dropped SSH connection must not stop a deploy halfway; if it does stop, the marker covers it.
-trap '' HUP
 
-if [ "$status_only" -eq 1 ]; then
-    if [ -f "$MARKER" ]; then
-        printf 'an unfinished deploy:\n'
-        sed 's/^/  /' "$MARKER"
-    else
-        printf 'no deploy in progress; current release: %s\n' "$(current_id)"
-    fi
-    exit 0
-fi
+# ---- recovery -------------------------------------------------------------------------------------
 
 if [ -n "$recover" ]; then
     [ -f "$MARKER" ] || fail "no deploy in progress (no $MARKER)"
     phase="$(marker_get phase)"
     new_id="$(marker_get new)"
     prev_id="$(marker_get previous)"
-    db_path="$(marker_get database)"
+    data_dir="$(marker_get data_dir)"
     snapshot="$(marker_get snapshot)"
+    start_policy="$(marker_get start)"
     active_timers="$(marker_get timers)"
-    new_ran="$(marker_get new_ran)"
+    nonce="$(marker_get nonce)"
     stamp="$(marker_get started)"
-    server_was_active=0
+    case "$start_policy" in yes | no) ;; *) die3 "the marker has no start policy" ;; esac
+    if [ -z "$data_dir" ] || [ -z "$snapshot" ] || [ -z "$new_id" ]; then die3 "the marker is incomplete"; fi
     log "recovering ($recover) a deploy of $new_id interrupted in phase '$phase'"
     if [ "$recover" = rollback ]; then
         rollback_from "$phase"
     fi
-    [ -d "$RELEASES/$new_id" ] || fail "release $new_id is missing; run --recover rollback"
+    [ -d "$RELEASES/$new_id" ] || die3 "release $new_id is missing; run --recover rollback"
     deploy_from "$phase"
 fi
 
+# ---- a new deploy ---------------------------------------------------------------------------------
+
 if [ -f "$MARKER" ]; then
-    printf 'error: an earlier deploy was interrupted (%s exists). Run this script with --recover finish or\n' "$MARKER" >&2
-    printf '%s\n' '--recover rollback first (see docs/hosting-linux.md, "An interrupted deploy"):' >&2
-    sed 's/^/  /' "$MARKER" >&2
+    printf 'error: an earlier deploy is unfinished (%s exists):\n' "$MARKER" >&2
+    grep -v '^nonce=' "$MARKER" | sed 's/^/  /' >&2
+    printf 'Run %s --recover finish or --recover rollback first (docs/hosting-linux.md, "An interrupted deploy").\n' "$SELF_COPY" >&2
     exit 1
 fi
 [ -n "$staging" ] || fail "usage: install-release.sh [options] STAGING_DIR (see --help)"
@@ -462,9 +519,23 @@ for f in "${BINARIES[@]}" SHA256SUMS; do
     [ -f "$staging/$f" ] || fail "$staging/$f is missing"
 done
 
-# ---- 1. stage and check ---------------------------------------------------------------------------
+# The config file is the one source of the server's settings: refuse a unit (or drop-in) that sets
+# another TODO_SERVER_* variable, points TODO_SERVER_CONFIG elsewhere, or reads an EnvironmentFile.
+set -f
+unit_env="$(systemctl show -p Environment --value "$SERVICE")"
+env_files="$(systemctl show -p EnvironmentFiles --value "$SERVICE")"
+[ -z "$env_files" ] || fail "$SERVICE reads an EnvironmentFile ($env_files). Move its settings into $CONFIG; nothing changed."
+config_seen=0
+for kv in $unit_env; do
+    case "$kv" in
+        "TODO_SERVER_CONFIG=$CONFIG") config_seen=1 ;;
+        TODO_SERVER_*) fail "$SERVICE sets ${kv%%=*} in its environment. Put the setting in $CONFIG instead (systemctl cat $SERVICE shows where); nothing changed." ;;
+    esac
+done
+set +f
+[ "$config_seen" -eq 1 ] || fail "$SERVICE doesn't set TODO_SERVER_CONFIG=$CONFIG; run provision.sh again. Nothing changed."
 
-# Leftovers of a stage that was interrupted; never a finished release.
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 find "$RELEASES" -mindepth 1 -maxdepth 1 -name '.stage-*' -exec rm -rf -- {} +
 work="$RELEASES/.stage-$stamp"
 mkdir -m 0755 "$work"
@@ -487,44 +558,45 @@ if [ -d "$RELEASES/$new_id" ]; then
     rm -rf -- "$work"
     log "release $new_id is already installed; reusing it"
 else
-    fsync "$work"/* "$work"
+    fsync "$work"/* "$work" || fail "could not sync $work"
     mv -T -- "$work" "$RELEASES/$new_id"
-    fsync "$RELEASES"
+    fsync "$RELEASES" || fail "could not sync $RELEASES"
     log "installed release $new_id"
 fi
 
-# The database the new server will open, by its own rules: a relative data_dir is relative to the unit's
-# working directory. A config the server refuses stops the deploy here.
+# The database the new server will open, by its own rules: run as the service user, in the unit's working
+# directory, with the config the unit passes and nothing else. A config it refuses stops the deploy here.
 workdir="$(systemctl show -p WorkingDirectory --value "$SERVICE")"
-workdir="${workdir:-/}"
-db_path="$(cd "$workdir" && runuser -u todo -- env -i PATH=/usr/bin:/bin TODO_SERVER_CONFIG="$CONFIG" \
+db_path="$(cd "${workdir:-/}" && runuser -u todo -- env -i PATH=/usr/bin:/bin TODO_SERVER_CONFIG="$CONFIG" \
     "$RELEASES/$new_id/todo-server" database-path)" || fail "the new server refuses $CONFIG; nothing changed"
 case "$db_path" in /*) ;; *) fail "the server printed an unexpected database path: $db_path" ;; esac
+data_dir="$(dirname "$db_path")"
 prev_id="$(current_id)"
 if [ -n "$prev_id" ] && [ ! -f "$db_path" ] && [ "$allow_empty" -eq 0 ]; then
     fail "release $prev_id is installed but there is no database at $db_path to copy before the deploy. Nothing changed. If that is expected (a fresh or wiped install), pass --allow-empty-database (-AllowEmptyDatabase)."
 fi
 log "database: $db_path"
 
-# ---- 2. onwards -----------------------------------------------------------------------------------
-
 active_timers=""
 for t in "${TIMERS[@]}"; do
-    systemctl is-active --quiet "$t" && active_timers="${active_timers:+$active_timers,}$t"
+    if systemctl is-active --quiet "$t"; then active_timers="${active_timers:+$active_timers,}$t"; fi
 done
-server_was_active=0
-systemctl is-active --quiet "$SERVICE" && server_was_active=1
 snapshot="$DEPLOY_DIR/pre-$stamp"
-new_ran=0
+start_policy=yes
+[ "$no_start" -eq 0 ] || start_policy=no
+nonce=""
+
 # Keep this script where --recover can find it after the upload is gone.
 self="$(readlink -f -- "$0")"
-if [ "$self" != /usr/local/lib/todo/install-release ]; then
-    install -m 0755 -o root -g root -- "$self" /usr/local/lib/todo/.install-release.new
-    fsync /usr/local/lib/todo/.install-release.new
-    mv -f -- /usr/local/lib/todo/.install-release.new /usr/local/lib/todo/install-release
+if [ "$self" != "$SELF_COPY" ]; then
+    if ! install -m 0755 -o root -g root -- "$self" "$SELF_COPY.new" || ! fsync "$SELF_COPY.new" ||
+        ! mv -f -- "$SELF_COPY.new" "$SELF_COPY"; then
+        fail "could not install $SELF_COPY"
+    fi
 fi
-write_marker stopping
+
+write_marker prepared
 crash_point marker-written
 # Prune only once the marker is written, so an interrupted run never loses the copies it may need.
 prune
-deploy_from stopping
+deploy_from prepared

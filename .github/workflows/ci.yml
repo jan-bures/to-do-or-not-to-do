@@ -42,6 +42,13 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      # The runbooks' PowerShell blocks must parse as written, in both editions.
+      - name: Parse the PowerShell blocks in the runbooks
+        run: |
+          pwsh -NoProfile -File deploy/check-doc-powershell.ps1 docs/hosting-linux.md deploy/windows/README.md
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          powershell -NoProfile -ExecutionPolicy Bypass -File deploy/check-doc-powershell.ps1 docs/hosting-linux.md deploy/windows/README.md
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
   desktop-windows:
     name: desktop app (Windows)
