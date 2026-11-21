@@ -1,744 +1,821 @@
-//! What the shell shows: the view model, and the fixtures `--screenshot` renders.
+//! The `--screenshot` fixtures: invented sample data, never real tasks.
 //!
-//! Until sync lands (plan step 4b) the running app shows an empty My Day. Every fixture is invented sample
-//! data, never real tasks.
+//! Each fixture is a `todo_core::State` built by running commands through `decide` and `apply` (as agents
+//! and the owner, at fixed times), plus the window's UI state, a fake sync status and a fixed clock. The
+//! screenshot renders it through the same derivation (`model::derive`) as the running app, so the gallery
+//! shows the real views, not a mock-up of them. No server is involved.
 
-use gpui::SharedString;
+use todo_core::command::{Command, NewTask, Placement, TaskPatch};
+use todo_core::ids::{CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId, uuid_v7};
+use todo_core::model::{EmailLink, LinkKind, Priority};
+use todo_core::recurrence::{Recurrence, Rule};
+use todo_core::time::{Date, Timestamp, Weekday};
+use todo_core::{AccessLevel, Actor, AgentId, Grants, State, apply, decide};
 
-use crate::theme::{Agent, Glyph, Hue, Icon, hues, swatch};
+use crate::model::{Now, RoomKey, Smart, SyncInfo, UiState};
 
-/// The line above the room title.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Eyebrow {
-    /// Smart lists: the weekday in italics, then the date and the week.
-    Day {
-        weekday: String,
-        date: String,
-        week: String,
-    },
-    /// Collections and lists: an italic kind, then a mono count.
-    Kind { kind: &'static str, detail: String },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ListRef {
-    pub collection: &'static str,
-    pub name: &'static str,
-    pub hue: Hue,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Due {
-    None,
-    /// Soon: accent colour.
-    Soon(&'static str),
-    Plain(&'static str),
-    Overdue(&'static str),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Task {
-    pub title: SharedString,
-    pub list: Option<ListRef>,
-    pub tags: &'static [&'static str],
-    pub steps: Option<(u32, u32)>,
-    pub agent: Option<Agent>,
-    /// 0 to 3 exclamation marks.
-    pub priority: u8,
-    pub due: Due,
-    pub from_mail: bool,
-}
-
-/// The room the main pane shows.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Room {
-    pub title: &'static str,
-    pub eyebrow: Eyebrow,
-    pub hue: Hue,
-    /// Smart lists show the list's collection in chips ("Work · Finance"); collections only the list.
-    pub smart: bool,
-    pub done: u32,
-    pub total: u32,
-    pub estimate: Option<&'static str>,
-    pub tasks: Vec<Task>,
-    /// Shown instead of rows when there are no tasks.
-    pub empty_line: &'static str,
-    pub quick_add_placeholder: &'static str,
-    /// Text typed into the quick-add, for fixtures that show it focused.
+/// A fixture: data, UI state, sync status and clock.
+#[derive(Clone, Debug)]
+pub struct Fixture {
+    pub state: State,
+    pub ui: UiState,
+    pub sync: SyncInfo,
+    pub now: Now,
+    /// Text typed into the room's quick-add, to show its focused state.
     pub quick_add_text: Option<&'static str>,
-    pub completed: u32,
-    /// My Day: finishing every task turns the header into the dusk scene.
-    pub finishes_day: bool,
-    /// What the finished day hands over to.
-    pub tomorrow: Option<Tomorrow>,
 }
 
-/// The finished day's hand-over: tomorrow's first task, the rest of tomorrow and the rest of the week.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Tomorrow {
-    pub weekday: &'static str,
-    pub first: Task,
-    pub first_when: &'static str,
-    pub also: Vec<Task>,
-    pub week: Vec<Task>,
-    pub more: u32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct NavItem {
-    pub icon: Icon,
-    pub label: &'static str,
-    pub hue: Hue,
-    pub count: Option<u32>,
-    /// "3 new" pip instead of a count.
-    pub pip: Option<&'static str>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Collection {
-    pub glyph: Glyph,
-    pub name: &'static str,
-    pub hue: Hue,
-    pub count: u32,
-    pub lists: Vec<(ListRef, Glyph, u32)>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AgentRow {
-    pub agent: Agent,
-    pub name: &'static str,
-    pub status: &'static str,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Sidebar {
-    pub smart: Vec<NavItem>,
-    pub collections: Vec<Collection>,
-    pub agents: Vec<AgentRow>,
-    /// Index into `smart` or a list name that is selected.
-    pub selected: Selected,
-    pub synced: &'static str,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Selected {
-    Smart(usize),
-    Collection(&'static str),
-    List(&'static str),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Step {
-    pub title: &'static str,
-    pub done: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Detail {
-    pub list: ListRef,
-    pub title: &'static str,
-    pub subtitle: &'static str,
-    pub steps: Vec<Step>,
-    pub notes: &'static str,
-    pub fields: Vec<(Icon, &'static str, &'static str)>,
-}
-
-/// Everything one window shows.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Shell {
-    pub room: Room,
-    pub sidebar: Sidebar,
-    pub detail: Option<Detail>,
-    /// Index of the selected task row.
-    pub selected_task: Option<usize>,
-}
-
-const fn list(collection: &'static str, name: &'static str, hue: Hue) -> ListRef {
-    ListRef {
-        collection,
-        name,
-        hue,
+impl Fixture {
+    #[cfg(test)]
+    pub fn shell(&self) -> crate::model::Shell {
+        crate::model::derive(&self.state, &self.ui, &self.sync, &self.now)
     }
 }
 
-/// Collection hues: list swatches, as the owner would pick them.
-const WORK: Hue = swatch("lagoon");
-const PROJECTS: Hue = swatch("fern");
-const PERSONAL: Hue = swatch("rose");
+/// The server the pairing fixture shows (a placeholder domain).
+pub const PAIRING_SERVER: &str = "https://todo.example.com";
+/// The user code the pairing fixture shows.
+pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 
-const PLANNING: ListRef = list("Work", "Planning", swatch("azure"));
-const FINANCE: ListRef = list("Work", "Finance", swatch("teal"));
-const OFFICE: ListRef = list("Work", "Office", swatch("cornflower"));
-const EVENTS: ListRef = list("Work", "Events", swatch("jade"));
-const TODO_APP: ListRef = list("Projects", "To-do app", swatch("fern"));
-const HOME: ListRef = list("Projects", "Home renovation", swatch("olive"));
-const READING: ListRef = list("Projects", "Reading list", swatch("jade"));
-const ERRANDS: ListRef = list("Personal", "Errands", swatch("coral"));
-const HEALTH: ListRef = list("Personal", "Health", swatch("pink"));
-const TRAVEL: ListRef = list("Personal", "Travel", swatch("clay"));
-const ADMIN: ListRef = list("Personal", "Admin", swatch("orchid"));
-
-fn task(title: &'static str, list: ListRef) -> Task {
-    Task {
-        title: title.into(),
-        list: Some(list),
-        tags: &[],
-        steps: None,
-        agent: None,
-        priority: 0,
-        due: Due::None,
-        from_mail: false,
-    }
-}
-
-fn sidebar(selected: Selected) -> Sidebar {
-    let nav = |icon, label, hue, count| NavItem {
-        icon,
-        label,
-        hue,
-        count: Some(count),
-        pip: None,
-    };
-    Sidebar {
-        smart: vec![
-            nav(Icon::Sun, "My Day", hues::MY_DAY, 9),
-            nav(Icon::Star, "Important", hues::IMPORTANT, 4),
-            nav(Icon::Calendar, "Planned", hues::PLANNED, 17),
-            nav(Icon::List, "All", hues::ALL, 38),
-            nav(Icon::CircleCheck, "Completed", hues::COMPLETED, 112),
-            NavItem {
-                icon: Icon::Sparkles,
-                label: "Agent activity",
-                hue: hues::AGENT_ACTIVITY,
-                count: None,
-                pip: Some("3 new"),
-            },
-        ],
-        collections: vec![
-            Collection {
-                glyph: Glyph::Briefcase,
-                name: "Work",
-                hue: WORK,
-                count: 15,
-                lists: vec![
-                    (PLANNING, Glyph::Flag, 6),
-                    (FINANCE, Glyph::Coin, 3),
-                    (OFFICE, Glyph::Paperclip, 4),
-                    (EVENTS, Glyph::CalendarStar, 2),
-                ],
-            },
-            Collection {
-                glyph: Glyph::Layers,
-                name: "Projects",
-                hue: PROJECTS,
-                count: 16,
-                lists: vec![
-                    (TODO_APP, Glyph::Code, 9),
-                    (HOME, Glyph::Wrench, 5),
-                    (READING, Glyph::Book, 2),
-                ],
-            },
-            Collection {
-                glyph: Glyph::House,
-                name: "Personal",
-                hue: PERSONAL,
-                count: 9,
-                lists: vec![
-                    (ERRANDS, Glyph::Basket, 3),
-                    (HEALTH, Glyph::Heart, 2),
-                    (TRAVEL, Glyph::PaperPlane, 4),
-                ],
-            },
-        ],
-        agents: vec![
-            AgentRow {
-                agent: Agent::Claude,
-                name: "Claude",
-                status: "2 added",
-            },
-            AgentRow {
-                agent: Agent::Codex,
-                name: "Codex",
-                status: "3 moved",
-            },
-            AgentRow {
-                agent: Agent::Pi,
-                name: "Pi",
-                status: "idle",
-            },
-        ],
-        selected,
-        synced: "Synced 10:34",
-    }
-}
-
-fn detail() -> Detail {
-    Detail {
-        list: PLANNING,
-        title: "Prepare Q4 roadmap review",
-        subtitle: "Created 14 Nov / Edited today 09:12",
-        steps: vec![
-            Step {
-                title: "Collect shipped features from the changelog",
-                done: true,
-            },
-            Step {
-                title: "Draft three themes for next quarter",
-                done: true,
-            },
-            Step {
-                title: "Estimate effort per theme",
-                done: false,
-            },
-            Step {
-                title: "Review the draft with Alex",
-                done: false,
-            },
-            Step {
-                title: "Publish the final deck to the team wiki",
-                done: false,
-            },
-        ],
-        notes: "Keep it to one page. Compare against the Q3 goals and flag anything that slipped, with a one-line reason each.",
-        fields: vec![
-            (Icon::Calendar, "Due", "Sat 21 Nov, 17:00"),
-            (Icon::Bell, "Reminder", "Today, 15:30"),
-            (Icon::Repeat, "Repeat", "Every Monday"),
-            (Icon::Hash, "Tags", "#planning #q4"),
-        ],
-    }
-}
-
-/// My Day, 3 of 12 done (the F2 light mockup).
-pub fn my_day() -> Shell {
-    let tasks = vec![
-        Task {
-            tags: &["#tax"],
-            priority: 3,
-            due: Due::Overdue("2d overdue"),
-            ..task("Pay quarterly VAT filing", FINANCE)
-        },
-        Task {
-            from_mail: true,
-            due: Due::Soon("in 1h 25m"),
-            ..task("Send venue booking confirmation", EVENTS)
-        },
-        Task {
-            tags: &["#q4"],
-            steps: Some((2, 5)),
-            agent: Some(Agent::Codex),
-            priority: 2,
-            due: Due::Plain("Today 17:00"),
-            ..task("Prepare Q4 roadmap review", PLANNING)
-        },
-        Task {
-            tags: &["#domácnost"],
-            due: Due::Plain("Today 18:30"),
-            ..task("Koupit rohlíky a mléko", ERRANDS)
-        },
-        Task {
-            tags: &["#review"],
-            agent: Some(Agent::Claude),
-            priority: 3,
-            due: Due::Plain("Today"),
-            ..task("Review sync-engine pull request", TODO_APP)
-        },
-        Task {
-            priority: 1,
-            due: Due::Plain("Tomorrow"),
-            ..task("Renew passport appointment", ADMIN)
-        },
-        Task {
-            tags: &["#pojištění"],
-            agent: Some(Agent::Pi),
-            priority: 1,
-            due: Due::Plain("Mon 23 Nov"),
-            ..task(
-                "Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení od lékaře",
-                HEALTH,
-            )
-        },
-        Task {
-            tags: &["#docs"],
-            steps: Some((1, 3)),
-            agent: Some(Agent::Codex),
-            due: Due::Plain("Mon 23 Nov"),
-            ..task("Write schema migration notes", TODO_APP)
-        },
-        Task {
-            ..task("Call the dentist to reschedule", HEALTH)
-        },
-    ];
-    Shell {
-        room: Room {
-            title: "My Day",
-            eyebrow: Eyebrow::Day {
-                weekday: "Saturday".into(),
-                date: "21 Nov 2026".into(),
-                week: "W47".into(),
-            },
-            hue: hues::MY_DAY,
-            smart: true,
-            done: 3,
-            total: 12,
-            estimate: Some("5h 40m"),
-            tasks,
-            empty_line: "Nothing planned yet.",
-            quick_add_placeholder: "Add a task…",
-            quick_add_text: None,
-            completed: 3,
-            finishes_day: true,
-            tomorrow: None,
-        },
-        sidebar: sidebar(Selected::Smart(0)),
-        detail: Some(detail()),
-        selected_task: Some(2),
-    }
-}
-
-/// Work, 7 of 22 done, with quick-add typing (the F2 dark mockup).
-pub fn work() -> Shell {
-    let tasks = vec![
-        Task {
-            tags: &["#tax"],
-            priority: 3,
-            due: Due::Overdue("2d overdue"),
-            ..task("Pay quarterly VAT filing", FINANCE)
-        },
-        Task {
-            tags: &["#retro"],
-            agent: Some(Agent::Claude),
-            due: Due::Soon("in 1h 20m"),
-            ..task("Confirm catering numbers for the retro", EVENTS)
-        },
-        Task {
-            tags: &["#q4"],
-            steps: Some((2, 5)),
-            agent: Some(Agent::Codex),
-            priority: 2,
-            due: Due::Plain("Today 17:00"),
-            ..task("Prepare Q4 roadmap review", PLANNING)
-        },
-        Task {
-            tags: &["#retro"],
-            due: Due::Plain("Tue 24 Nov"),
-            ..task("Book a room for the retro", EVENTS)
-        },
-        Task {
-            tags: &["#budget"],
-            steps: Some((0, 4)),
-            agent: Some(Agent::Claude),
-            priority: 2,
-            due: Due::Plain("Wed 25 Nov"),
-            ..task("Draft Q1 budget summary", FINANCE)
-        },
-        Task {
-            tags: &["#docs"],
-            steps: Some((1, 3)),
-            priority: 1,
-            due: Due::Plain("Thu 26 Nov"),
-            ..task("Update the onboarding checklist", PLANNING)
-        },
-        Task {
-            tags: &["#legal"],
-            agent: Some(Agent::Codex),
-            priority: 3,
-            due: Due::Plain("Fri 27 Nov"),
-            ..task("Review the vendor contract", OFFICE)
-        },
-        Task {
-            tags: &["#supplies"],
-            agent: Some(Agent::Pi),
-            ..task("Order printer toner", OFFICE)
-        },
-        Task {
-            ..task("Archive the old design files", OFFICE)
-        },
-    ];
-    Shell {
-        room: Room {
-            title: "Work",
-            eyebrow: Eyebrow::Kind {
-                kind: "Collection",
-                detail: "4 lists".into(),
-            },
-            hue: WORK,
-            smart: false,
-            done: 7,
-            total: 22,
-            estimate: Some("9h 20m"),
-            tasks,
-            empty_line: "Nothing here yet.",
-            quick_add_placeholder: "Add a task to Work…",
-            quick_add_text: Some("Draft the changelog for 0.4 tomorrow"),
-            completed: 3,
-            finishes_day: false,
-            tomorrow: None,
-        },
-        sidebar: sidebar(Selected::Collection("Work")),
-        detail: Some(detail()),
-        selected_task: Some(2),
-    }
-}
-
-/// An empty list: scenery only, no sun (nothing to keep score of).
-pub fn empty() -> Shell {
-    Shell {
-        room: Room {
-            title: "Reading list",
-            eyebrow: Eyebrow::Kind {
-                kind: "Projects",
-                detail: "0 open".into(),
-            },
-            hue: READING.hue,
-            smart: false,
-            done: 0,
-            total: 0,
-            estimate: None,
-            tasks: Vec::new(),
-            empty_line: "Nothing on the shelf yet.",
-            quick_add_placeholder: "Add a book or an article…",
-            quick_add_text: None,
-            completed: 2,
-            finishes_day: false,
-            tomorrow: None,
-        },
-        sidebar: {
-            // The shelf is empty here, so the sidebar agrees.
-            let mut sidebar = sidebar(Selected::List("Reading list"));
-            for collection in &mut sidebar.collections {
-                if let Some(entry) = collection
-                    .lists
-                    .iter_mut()
-                    .find(|(list, _, _)| list.name == "Reading list")
-                {
-                    collection.count -= entry.2;
-                    entry.2 = 0;
-                }
-            }
-            sidebar
-        },
-        detail: None,
-        selected_task: None,
-    }
-}
-
-/// What the running app shows before sync exists: an empty My Day for today.
-pub fn startup(weekday: String, date: String, week: String) -> Shell {
-    let mut shell = my_day();
-    shell.room.eyebrow = Eyebrow::Day {
-        weekday,
-        date,
-        week,
-    };
-    shell.room.tasks.clear();
-    shell.room.done = 0;
-    shell.room.total = 0;
-    shell.room.estimate = None;
-    shell.room.completed = 0;
-    shell.detail = None;
-    shell.selected_task = None;
-    shell.sidebar = Sidebar {
-        collections: Vec::new(),
-        agents: Vec::new(),
-        synced: "Not signed in",
-        ..shell.sidebar
-    };
-    for item in &mut shell.sidebar.smart {
-        item.count = item.count.map(|_| 0);
-        item.pip = None;
-    }
-    shell
-}
-
-/// The fixture with this name (see `args::FIXTURES`). `quick-add` reuses My Day for its room colours.
-pub fn by_name(name: &str) -> Option<Shell> {
+/// The fixture with this name (see `args::FIXTURES`). `quick-add` reuses My Day for its room;
+/// `pairing` is drawn by the pairing view and has no shell.
+pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" => Some(my_day()),
         "work" => Some(work()),
         "empty" => Some(empty()),
         "finished" => Some(finished()),
+        "pairing" | "pairing-code" => Some(pairing()),
         _ => None,
     }
 }
 
-/// My Day at the end of the day: every task done, the dusk scene, and tomorrow's plan.
-pub fn finished() -> Shell {
-    let mut shell = my_day();
-    let room = &mut shell.room;
-    room.done = 12;
-    room.total = 12;
-    room.estimate = None;
-    room.tasks.clear();
-    room.completed = 12;
-    room.tomorrow = Some(Tomorrow {
-        weekday: "Sunday",
-        first: Task {
-            priority: 1,
-            ..task("Renew passport appointment", ADMIN)
-        },
-        first_when: "Sun 22 Nov, 09:00",
-        also: vec![Task {
-            due: Due::Plain("15:00"),
-            ..task("Call Alex about the venue", EVENTS)
-        }],
-        week: vec![
-            Task {
-                due: Due::Plain("Mon 23 Nov"),
-                ..task("Vyřídit žádost o přeplatek na zdravotním pojištění", HEALTH)
-            },
-            Task {
-                due: Due::Plain("Tue 24 Nov"),
-                ..task("Book a room for the retro", EVENTS)
-            },
-            Task {
-                due: Due::Plain("Fri 27 Nov"),
-                ..task("Pack the weekend bag", TRAVEL)
-            },
-        ],
-        more: 3,
-    });
-    shell.detail = None;
-    shell.selected_task = None;
-    // Nothing is left open today, so My Day's count in the sidebar is zero too.
-    if let Some(item) = shell.sidebar.smart.iter_mut().find(|i| i.label == "My Day") {
-        item.count = Some(0);
+/// "Saturday 21 Nov 2026, 10:35", the morning of the F2 mockups.
+const MORNING: &str = "2026-11-21T10:35:00Z";
+
+fn ts(s: &str) -> Timestamp {
+    s.parse().unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+fn date(s: &str) -> Date {
+    s.parse().unwrap_or_default()
+}
+
+fn owner() -> Actor {
+    Actor::owner("desktop").unwrap_or(Actor::System)
+}
+
+fn agent(id: &str) -> Actor {
+    Actor::agent(id).unwrap_or(Actor::System)
+}
+
+/// The agents in the sample data.
+const AGENTS: [&str; 3] = ["claude", "codex", "pi"];
+
+/// Runs commands against a state. A command the domain refuses is recorded, and a test checks that
+/// every fixture builds without one.
+struct Builder {
+    state: State,
+    n: u64,
+    errors: Vec<String>,
+}
+
+impl Builder {
+    fn new() -> Self {
+        let mut state = State::new();
+        // The sample agents may plan everywhere (the server keeps grants; fixtures set them directly).
+        for id in AGENTS {
+            if let Ok(agent) = AgentId::new(id) {
+                state.grants.insert(
+                    agent,
+                    Grants {
+                        default: AccessLevel::Plan,
+                        ..Grants::default()
+                    },
+                );
+            }
+        }
+        Self {
+            state,
+            n: 0,
+            errors: Vec::new(),
+        }
     }
-    shell
+
+    fn uuid(&mut self) -> uuid::Uuid {
+        self.n += 1;
+        let mut rand = [0u8; 10];
+        rand[..8].copy_from_slice(&self.n.to_le_bytes());
+        uuid_v7(1_763_000_000_000 + self.n, rand)
+    }
+
+    fn run(&mut self, actor: &Actor, at: &str, cmd: Command) {
+        let events = match decide(&self.state, actor, &cmd, ts(at)) {
+            Ok(events) => events,
+            Err(e) => {
+                self.errors.push(format!("{cmd:?}: {e}"));
+                return;
+            }
+        };
+        for e in &events {
+            if let Err(err) = apply(&mut self.state, e) {
+                self.errors.push(format!("{cmd:?}: {err}"));
+            }
+        }
+    }
+
+    fn collection(&mut self, name: &str, swatch: &str) -> CollectionId {
+        let id = CollectionId::from_uuid(self.uuid());
+        self.run(
+            &owner(),
+            "2026-01-10T09:00:00Z",
+            Command::CreateCollection {
+                id,
+                name: name.into(),
+                color: Some(swatch.into()),
+                placement: Placement::Last,
+            },
+        );
+        id
+    }
+
+    fn list(&mut self, collection: CollectionId, name: &str, swatch: &str) -> ListId {
+        let id = ListId::from_uuid(self.uuid());
+        self.run(
+            &owner(),
+            "2026-01-10T09:00:00Z",
+            Command::CreateList {
+                id,
+                collection: Some(collection),
+                name: name.into(),
+                color: Some(swatch.into()),
+                placement: Placement::Last,
+            },
+        );
+        id
+    }
+
+    fn tag(&mut self, name: &str) -> TagId {
+        let id = TagId::from_uuid(self.uuid());
+        self.run(
+            &owner(),
+            "2026-01-10T09:00:00Z",
+            Command::CreateTag {
+                id,
+                name: name.into(),
+                color: None,
+            },
+        );
+        id
+    }
+
+    fn task(&mut self, t: T) -> TaskId {
+        let id = TaskId::from_uuid(self.uuid());
+        // A task an agent edits later starts as a rougher draft of its title.
+        let first = match t.edited_by {
+            Some(_) => format!("{} (draft)", t.title),
+            None => t.title.to_string(),
+        };
+        let mut new = NewTask::new(id, t.list, first);
+        new.priority = t.priority;
+        new.due = t.due.map(date);
+        new.my_day = t.my_day.then(|| date("2026-11-21"));
+        new.tags = t.tags.clone();
+        new.notes = t.notes.into();
+        if let Some(day) = t.repeat {
+            new.recurrence = Some(Recurrence::new(Rule::Weekly {
+                interval: 1,
+                days: [day].into_iter().collect(),
+            }));
+        }
+        let by = t.by.map_or_else(owner, agent);
+        self.run(&by, t.created, Command::CreateTask(Box::new(new)));
+        for (i, title) in t.steps.iter().enumerate() {
+            let step = StepId::from_uuid(self.uuid());
+            self.run(
+                &by,
+                t.created,
+                Command::CreateStep {
+                    id: step,
+                    task: id,
+                    title: (*title).into(),
+                    placement: Placement::Last,
+                },
+            );
+            if i < t.steps_done {
+                self.run(&owner(), t.created, Command::CompleteStep { id: step });
+            }
+        }
+        if let Some(at) = t.reminder {
+            let rid = ReminderId::from_uuid(self.uuid());
+            self.run(
+                &owner(),
+                t.created,
+                Command::AddReminder {
+                    id: rid,
+                    task: id,
+                    at: ts(at),
+                },
+            );
+        }
+        if let Some((subject, sender, received)) = t.mail {
+            let lid = LinkId::from_uuid(self.uuid());
+            self.run(
+                &Actor::EmailIngest,
+                t.created,
+                Command::AddLink {
+                    id: lid,
+                    task: id,
+                    kind: LinkKind::Email(EmailLink {
+                        subject: subject.into(),
+                        sender: sender.into(),
+                        received_at: ts(received),
+                        message_id: format!("<{}@mail.example.com>", self.n),
+                        web_link: None,
+                    }),
+                },
+            );
+        }
+        if let Some((agent_id, at)) = t.edited_by {
+            // An agent's later edit: it tidies the title.
+            self.run(
+                &agent(agent_id),
+                at,
+                Command::UpdateTask {
+                    id,
+                    patch: TaskPatch {
+                        title: Some(t.title.into()),
+                        ..TaskPatch::default()
+                    },
+                },
+            );
+        }
+        if let Some(at) = t.done {
+            self.run(&owner(), at, Command::CompleteTask { id });
+        }
+        id
+    }
 }
 
-/// Header summary numbers: (done, total, open).
-pub fn summary(room: &Room) -> (u32, u32, u32) {
-    (room.done, room.total, room.total.saturating_sub(room.done))
+/// A task to build. Times are UTC strings.
+#[derive(Clone)]
+struct T {
+    list: ListId,
+    title: &'static str,
+    priority: Priority,
+    due: Option<&'static str>,
+    reminder: Option<&'static str>,
+    my_day: bool,
+    tags: Vec<TagId>,
+    steps: &'static [&'static str],
+    steps_done: usize,
+    notes: &'static str,
+    repeat: Option<Weekday>,
+    by: Option<&'static str>,
+    created: &'static str,
+    edited_by: Option<(&'static str, &'static str)>,
+    mail: Option<(&'static str, &'static str, &'static str)>,
+    done: Option<&'static str>,
 }
 
-/// "Saturday", "21 Nov 2026", "W47" for a civil date (ISO 8601 week numbering).
-pub fn eyebrow_for(year: i32, month: u32, day: u32) -> (String, String, String) {
-    const WEEKDAYS: [&str; 7] = [
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-        "Sunday",
+fn t(list: ListId, title: &'static str) -> T {
+    T {
+        list,
+        title,
+        priority: Priority::None,
+        due: None,
+        reminder: None,
+        my_day: false,
+        tags: Vec::new(),
+        steps: &[],
+        steps_done: 0,
+        notes: "",
+        repeat: None,
+        by: None,
+        created: "2026-11-14T08:00:00Z",
+        edited_by: None,
+        mail: None,
+        done: None,
+    }
+}
+
+/// Lists and tags of the sample data.
+#[allow(dead_code)] // Not every fixture uses every list.
+struct Lists {
+    planning: ListId,
+    finance: ListId,
+    office: ListId,
+    events: ListId,
+    todo_app: ListId,
+    home: ListId,
+    reading: ListId,
+    errands: ListId,
+    health: ListId,
+    travel: ListId,
+    passport: TaskId,
+    q4: TaskId,
+}
+
+/// The shared sample data: three collections, ten lists, the day's plan, the week ahead and a backlog of
+/// finished tasks.
+fn sample() -> (Builder, Lists) {
+    let mut b = Builder::new();
+    let work = b.collection("Work", "lagoon");
+    let planning = b.list(work, "Planning", "azure");
+    let finance = b.list(work, "Finance", "teal");
+    let office = b.list(work, "Office", "cornflower");
+    let events = b.list(work, "Events", "jade");
+    let projects = b.collection("Projects", "fern");
+    let todo_app = b.list(projects, "To-do app", "fern");
+    let home = b.list(projects, "Home renovation", "olive");
+    let reading = b.list(projects, "Reading list", "jade");
+    let personal = b.collection("Personal", "rose");
+    let errands = b.list(personal, "Errands", "coral");
+    let health = b.list(personal, "Health", "pink");
+    let travel = b.list(personal, "Travel", "clay");
+
+    let tag = |b: &mut Builder, names: &[&str]| -> Vec<TagId> {
+        names.iter().map(|n| b.tag(n)).collect()
+    };
+    let tax = tag(&mut b, &["tax"]);
+    let q4 = tag(&mut b, &["planning", "q4"]);
+    let domacnost = tag(&mut b, &["domácnost"]);
+    let review = tag(&mut b, &["review"]);
+    let pojisteni = tag(&mut b, &["pojištění"]);
+    let docs = tag(&mut b, &["docs"]);
+    let retro = tag(&mut b, &["retro"]);
+    let budget = tag(&mut b, &["budget"]);
+    let legal = tag(&mut b, &["legal"]);
+    let supplies = tag(&mut b, &["supplies"]);
+
+    // Work / Planning
+    let q4_task = b.task(T {
+        priority: Priority::Normal,
+        due: Some("2026-11-21"),
+        reminder: Some("2026-11-21T17:00:00Z"),
+        my_day: true,
+        tags: q4.clone(),
+        steps: &[
+            "Collect shipped features from the changelog",
+            "Draft three themes for next quarter",
+            "Estimate effort per theme",
+            "Review the draft with Alex",
+            "Publish the final deck to the team wiki",
+        ],
+        steps_done: 2,
+        notes: "Keep it to one page. Compare against the Q3 goals and flag anything that slipped, with a one-line reason each.",
+        repeat: Some(Weekday::Sat),
+        edited_by: Some(("codex", "2026-11-21T09:12:00Z")),
+        mail: Some((
+            "Q4 roadmap: pre-read and agenda",
+            "dana@example.com",
+            "2026-11-20T16:48:00Z",
+        )),
+        ..t(planning, "Prepare Q4 roadmap review")
+    });
+    b.task(T {
+        my_day: true,
+        done: Some("2026-11-21T09:05:00Z"),
+        ..t(planning, "Write the stand-up notes")
+    });
+    b.task(T {
+        priority: Priority::Low,
+        due: Some("2026-11-26"),
+        tags: docs.clone(),
+        steps: &[
+            "List the accounts",
+            "Update the screenshots",
+            "Ask HR to review",
+        ],
+        steps_done: 1,
+        ..t(planning, "Update the onboarding checklist")
+    });
+    // Work / Finance
+    b.task(T {
+        priority: Priority::High,
+        due: Some("2026-11-19"),
+        my_day: true,
+        tags: tax.clone(),
+        ..t(finance, "Pay quarterly VAT filing")
+    });
+    b.task(T {
+        priority: Priority::Normal,
+        due: Some("2026-11-25"),
+        tags: budget.clone(),
+        steps: &[
+            "Pull the actuals",
+            "Compare with plan",
+            "Write the summary",
+            "Send to finance",
+        ],
+        by: Some("claude"),
+        created: "2026-11-21T08:02:00Z",
+        ..t(finance, "Draft Q1 budget summary")
+    });
+    b.task(T {
+        done: Some("2026-11-21T08:40:00Z"),
+        ..t(finance, "Approve the travel expenses")
+    });
+    // Work / Office
+    b.task(T {
+        priority: Priority::High,
+        due: Some("2026-11-27"),
+        tags: legal.clone(),
+        edited_by: Some(("codex", "2026-11-21T09:30:00Z")),
+        ..t(office, "Review the vendor contract")
+    });
+    b.task(T {
+        tags: supplies.clone(),
+        by: Some("pi"),
+        created: "2026-11-19T15:00:00Z",
+        ..t(office, "Order printer toner")
+    });
+    b.task(t(office, "Archive the old design files"));
+    b.task(T {
+        done: Some("2026-11-21T10:10:00Z"),
+        ..t(office, "Book the meeting room for Monday")
+    });
+    // Work / Events
+    b.task(T {
+        due: Some("2026-11-21"),
+        reminder: Some("2026-11-21T12:00:00Z"),
+        my_day: true,
+        mail: Some((
+            "Venue booking for 4 Dec",
+            "events@example.com",
+            "2026-11-20T11:20:00Z",
+        )),
+        ..t(events, "Send venue booking confirmation")
+    });
+    b.task(T {
+        due: Some("2026-11-24"),
+        tags: retro.clone(),
+        ..t(events, "Book a room for the retro")
+    });
+    b.task(T {
+        due: Some("2026-11-21"),
+        reminder: Some("2026-11-21T11:55:00Z"),
+        tags: retro.clone(),
+        by: Some("claude"),
+        created: "2026-11-21T07:40:00Z",
+        ..t(events, "Confirm catering numbers for the retro")
+    });
+    b.task(T {
+        due: Some("2026-11-22"),
+        reminder: Some("2026-11-22T15:00:00Z"),
+        ..t(events, "Call Alex about the venue")
+    });
+    // Projects
+    b.task(T {
+        priority: Priority::High,
+        due: Some("2026-11-21"),
+        my_day: true,
+        tags: review.clone(),
+        by: Some("claude"),
+        created: "2026-11-21T08:02:00Z",
+        ..t(todo_app, "Review sync-engine pull request")
+    });
+    b.task(T {
+        due: Some("2026-11-23"),
+        my_day: true,
+        tags: docs.clone(),
+        steps: &["Outline the changes", "Note the rollback", "Link the PR"],
+        steps_done: 1,
+        edited_by: Some(("codex", "2026-11-21T07:15:00Z")),
+        ..t(todo_app, "Write schema migration notes")
+    });
+    b.task(t(todo_app, "Try the new icon set in the sidebar"));
+    b.task(t(home, "Pick tiles for the bathroom"));
+    b.task(T {
+        due: Some("2026-12-02"),
+        ..t(home, "Get a quote for the windows")
+    });
+    b.task(t(home, "Measure the hallway"));
+    b.task(T {
+        done: Some("2026-11-12T19:00:00Z"),
+        ..t(reading, "The Design of Everyday Things")
+    });
+    b.task(T {
+        done: Some("2026-11-03T21:00:00Z"),
+        ..t(reading, "Thinking in Systems")
+    });
+    // Personal
+    b.task(T {
+        due: Some("2026-11-21"),
+        reminder: Some("2026-11-21T18:30:00Z"),
+        my_day: true,
+        tags: domacnost.clone(),
+        ..t(errands, "Koupit rohlíky a mléko")
+    });
+    b.task(T {
+        my_day: true,
+        done: Some("2026-11-21T08:15:00Z"),
+        ..t(errands, "Water the plants")
+    });
+    b.task(T {
+        my_day: true,
+        done: Some("2026-11-21T09:50:00Z"),
+        ..t(errands, "Reply to the landlord")
+    });
+    b.task(t(errands, "Pick up the dry cleaning"));
+    b.task(T {
+        priority: Priority::Low,
+        due: Some("2026-11-23"),
+        my_day: true,
+        tags: pojisteni.clone(),
+        by: Some("pi"),
+        created: "2026-11-18T10:00:00Z",
+        ..t(
+            health,
+            "Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení od lékaře",
+        )
+    });
+    b.task(T {
+        my_day: true,
+        ..t(health, "Call the dentist to reschedule")
+    });
+    let passport = b.task(T {
+        priority: Priority::Low,
+        due: Some("2026-11-22"),
+        reminder: Some("2026-11-22T09:00:00Z"),
+        my_day: true,
+        ..t(travel, "Renew passport appointment")
+    });
+    b.task(T {
+        due: Some("2026-11-27"),
+        ..t(travel, "Pack the weekend bag")
+    });
+
+    // A backlog of finished work, spread over the autumn.
+    const DONE: [&str; 12] = [
+        "Send the meeting notes",
+        "Renew the domain",
+        "File the receipts",
+        "Fix the squeaky door",
+        "Return the library books",
+        "Update the team calendar",
+        "Back up the photos",
+        "Order new filters",
+        "Plan the offsite agenda",
+        "Pay the electricity bill",
+        "Clean out the inbox",
+        "Check the tyre pressure",
     ];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    let homes = [
+        planning, finance, office, events, todo_app, home, errands, health, travel,
     ];
-    let days = days_from_civil(year, month, day);
-    // 1970-01-01 was a Thursday (index 3).
-    let weekday = (days + 3).rem_euclid(7) as usize;
-    let week = iso_week(year, days, weekday);
-    let month_name = MONTHS
-        .get(month.saturating_sub(1) as usize)
-        .copied()
-        .unwrap_or("?");
-    (
-        WEEKDAYS[weekday].to_string(),
-        format!("{day} {month_name} {year}"),
-        format!("W{week}"),
+    for i in 0..96usize {
+        let list = homes[i % homes.len()];
+        let day = 1 + (i % 19);
+        let id = b.task(T {
+            created: "2026-10-01T08:00:00Z",
+            ..t(list, DONE[i % DONE.len()])
+        });
+        b.run(
+            &owner(),
+            &format!("2026-11-{day:02}T16:00:00Z"),
+            Command::CompleteTask { id },
+        );
+    }
+
+    let lists = Lists {
+        planning,
+        finance,
+        office,
+        events,
+        todo_app,
+        home,
+        reading,
+        errands,
+        health,
+        travel,
+        passport,
+        q4: q4_task,
+    };
+    (b, lists)
+}
+
+fn online(at: &str) -> SyncInfo {
+    SyncInfo {
+        paired: true,
+        connection: todo_client::Connection::Online,
+        pending: 0,
+        failed: 0,
+        unauthorized: false,
+        synced_at: Some(ts(at)),
+    }
+}
+
+fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
+    if !b.errors.is_empty() {
+        tracing::error!("fixture data has errors: {:?}", b.errors);
+    }
+    Fixture {
+        state: b.state,
+        ui,
+        sync: online("2026-11-21T10:34:00Z"),
+        now: Now::fixed(now),
+        quick_add_text: None,
+    }
+}
+
+/// My Day, 3 of 12 done (the F2 light mockup).
+pub fn my_day() -> Fixture {
+    let (b, l) = sample();
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
     )
 }
 
-/// Days since 1970-01-01 (Howard Hinnant's algorithm).
-fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-    let y = i64::from(y) - i64::from(m <= 2);
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let m = i64::from(m);
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+/// The Work collection, with quick-add typing (the F2 dark mockup).
+pub fn work() -> Fixture {
+    let (b, l) = sample();
+    let work = b.state.lists[&l.planning].collection;
+    let mut f = fixture(
+        b,
+        UiState {
+            room: work.map_or(RoomKey::default(), RoomKey::Collection),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        "2026-11-21T14:10:00Z",
+    );
+    f.sync = online("2026-11-21T14:09:00Z");
+    f.quick_add_text = Some("Draft the changelog for 0.4 tomorrow");
+    f
 }
 
-fn iso_week(year: i32, days: i64, weekday: usize) -> u32 {
-    // The Thursday of this week decides the ISO year.
-    let thursday = days - weekday as i64 + 3;
-    let mut iso_year = year;
-    if thursday < days_from_civil(year, 1, 1) {
-        iso_year -= 1;
-    } else if thursday >= days_from_civil(year + 1, 1, 1) {
-        iso_year += 1;
+/// A list with nothing open: scenery only, no sun.
+pub fn empty() -> Fixture {
+    let (b, l) = sample();
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::List(l.reading),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// My Day at the end of the day: every task done, the dusk scene, and tomorrow's plan.
+pub fn finished() -> Fixture {
+    let (mut b, l) = sample();
+    // The passport appointment is tomorrow's, so it leaves today's plan; everything else gets done.
+    b.run(
+        &owner(),
+        "2026-11-21T12:00:00Z",
+        Command::SetMyDay {
+            id: l.passport,
+            date: None,
+        },
+    );
+    let today = date("2026-11-21");
+    let open: Vec<TaskId> = b
+        .state
+        .tasks
+        .values()
+        .filter(|t| t.my_day == Some(today) && !t.is_done())
+        .map(|t| t.id)
+        .collect();
+    for (i, id) in open.into_iter().enumerate() {
+        let at = format!("2026-11-21T{:02}:20:00Z", 11 + i);
+        b.run(&owner(), &at, Command::CompleteTask { id });
     }
-    ((thursday - days_from_civil(iso_year, 1, 1)) / 7 + 1) as u32
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            ..UiState::default()
+        },
+        "2026-11-21T21:40:00Z",
+    );
+    f.sync = online("2026-11-21T21:39:00Z");
+    f
+}
+
+/// Before pairing: the sample data isn't shown; the pairing view draws its own screen.
+pub fn pairing() -> Fixture {
+    Fixture {
+        state: State::new(),
+        ui: UiState::default(),
+        sync: SyncInfo::signed_out(),
+        now: Now::fixed(MORNING),
+        quick_add_text: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Due;
 
     #[test]
-    fn the_empty_fixture_counts_no_open_books() {
-        let shell = empty();
-        let projects = shell
-            .sidebar
-            .collections
-            .iter()
-            .find(|c| c.name == "Projects")
-            .expect("projects");
-        let reading = projects
-            .lists
-            .iter()
-            .find(|(l, _, _)| l.name == "Reading list")
-            .expect("reading list");
-        assert_eq!(reading.2, 0);
-        assert_eq!(projects.count, 14);
-    }
-
-    #[test]
-    fn the_finished_day_has_nothing_open_anywhere() {
-        let shell = finished();
-        assert_eq!(summary(&shell.room).2, 0);
-        let my_day = shell
-            .sidebar
-            .smart
-            .iter()
-            .find(|i| i.label == "My Day")
-            .expect("my day");
-        assert_eq!(my_day.count, Some(0));
-    }
-
-    #[test]
-    fn eyebrow_dates() {
-        assert_eq!(
-            eyebrow_for(2026, 11, 21),
-            ("Saturday".into(), "21 Nov 2026".into(), "W47".into())
+    fn the_sample_data_builds_without_domain_errors() {
+        let (b, _) = sample();
+        assert!(b.errors.is_empty(), "{:#?}", b.errors);
+        let (mut b, l) = sample();
+        b.run(
+            &owner(),
+            MORNING,
+            Command::SetMyDay {
+                id: l.passport,
+                date: None,
+            },
         );
-        assert_eq!(eyebrow_for(2021, 1, 1).2, "W53"); // Friday, still in 2020's last week.
-        assert_eq!(eyebrow_for(2024, 12, 30).2, "W1"); // Monday of 2025's first week.
-        assert_eq!(eyebrow_for(2024, 2, 29).0, "Thursday");
+        assert!(b.errors.is_empty(), "{:#?}", b.errors);
+    }
+
+    #[test]
+    fn my_day_matches_the_mockup() {
+        let shell = my_day().shell();
+        assert_eq!(shell.room.summary(), (3, 12, 9));
+        assert_eq!(shell.room.tasks.len(), 9);
+        assert_eq!(shell.room.completed_count, 3);
+        let my_day = &shell.sidebar.smart[0];
+        assert_eq!(my_day.count, Some(9));
+        assert_eq!(shell.sidebar.collections.len(), 3);
+        let selected = shell
+            .selected_task
+            .and_then(|i| shell.row(i))
+            .expect("selected");
+        assert_eq!(selected.title.as_ref(), "Prepare Q4 roadmap review");
+        assert_eq!(selected.steps, Some((2, 5)));
+        assert_eq!(selected.due, Due::Plain("Today 17:00".into()));
+        let detail = shell.detail.expect("detail");
+        assert_eq!(detail.steps.len(), 5);
+        assert!(
+            detail.subtitle.contains("Edited today 09:12"),
+            "{}",
+            detail.subtitle
+        );
+        assert_eq!(detail.links.len(), 1);
+        let venue = shell
+            .room
+            .tasks
+            .iter()
+            .find(|t| t.title.starts_with("Send venue"))
+            .expect("venue");
+        assert_eq!(venue.due, Due::Soon("in 1h 25m".into()));
+        assert!(venue.from_mail);
+        let vat = shell
+            .room
+            .tasks
+            .iter()
+            .find(|t| t.title.starts_with("Pay"))
+            .expect("vat");
+        assert_eq!(vat.due, Due::Overdue("2d overdue".into()));
+        assert_eq!(vat.priority, 3);
+        assert!(shell.room.tasks.iter().any(|t| t.title.contains('ř')));
     }
 
     #[test]
     fn every_fixture_exists_and_keeps_its_numbers_consistent() {
         for name in crate::args::FIXTURES {
-            let shell = by_name(name).unwrap_or_else(|| panic!("{name}"));
-            let (done, total, open) = summary(&shell.room);
+            let f = by_name(name).unwrap_or_else(|| panic!("{name}"));
+            let shell = f.shell();
+            let (done, total, open) = shell.room.summary();
             assert!(done <= total);
             assert_eq!(done + open, total);
             if let Some(i) = shell.selected_task {
-                assert!(i < shell.room.tasks.len());
+                assert!(i < shell.row_count());
             }
         }
         assert!(by_name("inbox").is_none());
     }
 
     #[test]
-    fn the_running_app_starts_empty() {
-        let shell = startup("Monday".into(), "1 Jan 2029".into(), "W1".into());
-        assert!(shell.room.tasks.is_empty() && shell.detail.is_none());
-        assert_eq!(summary(&shell.room), (0, 0, 0));
+    fn the_finished_day_hands_over_to_tomorrow() {
+        let shell = finished().shell();
+        assert!(shell.room.finished_day());
+        let next = shell.room.tomorrow.expect("tomorrow");
+        assert_eq!(next.weekday.as_ref(), "Sunday");
+        assert_eq!(next.first.title.as_ref(), "Renew passport appointment");
+        assert_eq!(next.first_when.as_ref(), "Sun 22 Nov, 09:00");
+        assert_eq!(next.also.len(), 1);
+        assert_eq!(next.week.len(), 3);
+        assert_eq!(shell.sidebar.smart[0].count, Some(0));
     }
 
     #[test]
-    fn fixtures_carry_czech_text() {
-        let titles: Vec<SharedString> = my_day()
-            .room
-            .tasks
+    fn the_empty_list_counts_what_was_finished() {
+        let shell = empty().shell();
+        assert!(shell.room.tasks.is_empty());
+        assert_eq!(shell.room.summary(), (0, 0, 0));
+        assert_eq!(shell.room.finished_this_month, 2);
+        let reading = shell
+            .sidebar
+            .collections
             .iter()
-            .map(|t| t.title.clone())
-            .collect();
-        assert!(titles.iter().any(|t| t.contains('ř')));
+            .flat_map(|c| c.lists.iter())
+            .find(|l| l.list.name.as_ref() == "Reading list")
+            .expect("reading list");
+        assert_eq!(reading.count, 0);
     }
 }

@@ -4,15 +4,15 @@
 //! window to be created. A slim sky with the day's sun sits over the input, so it reads as the same room.
 
 use gpui::{
-    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Size, Window,
-    WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px, size,
+    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, SharedString, Size,
+    Window, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use super::input::{InputEvent, TextInput};
 use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape};
 use super::shell::quick_add_colors;
-use crate::fixtures::Room;
+use crate::model::Smart;
 use crate::theme::{
     self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
 };
@@ -33,7 +33,7 @@ pub enum QuickAddEvent {
 #[allow(missing_debug_implementations)] // Holds GPUI entities.
 pub struct QuickAddView {
     palette: Palette,
-    room_title: &'static str,
+    room_title: SharedString,
     done: u32,
     total: u32,
     input: Entity<TextInput>,
@@ -45,15 +45,16 @@ pub struct QuickAddView {
 impl EventEmitter<QuickAddEvent> for QuickAddView {}
 
 impl QuickAddView {
+    /// A quick-add into My Day, whose progress (`done` of `total`) the sun shows.
     pub fn new(
-        room: &Room,
+        (done, total): (u32, u32),
         theme: Theme,
         typed: Option<&str>,
         hotkey: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let palette = theme::palette(theme, room.hue);
+        let palette = theme::palette(theme, Smart::MyDay.hue());
         let input = cx.new(|cx| {
             let mut input = TextInput::new("Add a task to My Day…", quick_add_colors(&palette), cx);
             if let Some(t) = typed {
@@ -81,9 +82,9 @@ impl QuickAddView {
         .detach();
         Self {
             palette,
-            room_title: room.title,
-            done: room.done,
-            total: room.total,
+            room_title: Smart::MyDay.label().into(),
+            done,
+            total,
             input,
             landscape: LandscapeCache::default(),
             hotkey,
@@ -92,6 +93,15 @@ impl QuickAddView {
 
     pub fn input(&self) -> &Entity<TextInput> {
         &self.input
+    }
+
+    /// Updates the sun when My Day changes.
+    pub fn set_progress(&mut self, (done, total): (u32, u32), cx: &mut Context<Self>) {
+        if (done, total) != (self.done, self.total) {
+            self.done = done;
+            self.total = total;
+            cx.notify();
+        }
     }
 }
 

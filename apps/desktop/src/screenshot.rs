@@ -4,6 +4,7 @@
 //! the image is read back from the window's own render target (`todo_patch::request_capture`) instead of
 //! capturing the screen. Nothing is clicked or typed.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -18,8 +19,11 @@ use gpui_windows::todo_patch;
 
 use crate::args::ScreenshotOptions;
 use crate::assets::Assets;
+use crate::model;
 use crate::platform::win;
+use crate::store::Store;
 use crate::theme::desktop;
+use crate::ui::pairing::PairingView;
 use crate::ui::quick_add::{self, QuickAddView};
 use crate::ui::shell::{self, ShellView};
 use crate::{fixtures, fonts, ui};
@@ -99,7 +103,7 @@ fn save(image: &image::RgbaImage, out: &std::path::Path, overwrite: bool) -> any
 
 /// Renders the fixture and writes the PNG. Returns the process exit code.
 pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
-    let shell_data = fixtures::by_name(&opts.fixture)
+    let fixture = fixtures::by_name(&opts.fixture)
         .with_context(|| format!("unknown fixture {}", opts.fixture))?;
     if !opts.overwrite && opts.out.exists() {
         eprintln!(
@@ -121,9 +125,16 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
             return;
         }
         cx.bind_keys(ui::input::key_bindings());
+        cx.bind_keys(ui::text_area::key_bindings());
         cx.bind_keys(shell::key_bindings());
         let theme = opts.theme;
         let quick = opts.fixture == "quick-add";
+        // The pairing screen, before (`pairing`) and after (`pairing-code`) asking for a code.
+        let pairing = match opts.fixture.as_str() {
+            "pairing" => Some(false),
+            "pairing-code" => Some(true),
+            _ => None,
+        };
         let logical = if quick {
             (
                 f32::from(quick_add::SIZE.width),
@@ -138,7 +149,7 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
             cx.open_window(options(w, h, true), |window, cx| {
                 cx.new(|cx| {
                     QuickAddView::new(
-                        &shell_data.room,
+                        model::my_day_progress(&fixture.state, &fixture.now),
                         theme,
                         Some(QUICK_ADD_TYPED),
                         true,
@@ -151,9 +162,36 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
                 w.update(cx, |_, window, _| win::hwnd_of(window))
                     .unwrap_or_default()
             })
-        } else {
+        } else if let Some(waiting) = pairing {
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
-                cx.new(|cx| ShellView::new(shell_data.clone(), theme, window, cx))
+                cx.new(|cx| {
+                    PairingView::fixture(
+                        theme,
+                        fixtures::PAIRING_SERVER,
+                        fixtures::PAIRING_CODE,
+                        waiting,
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .map(|w| {
+                w.update(cx, |_, window, _| win::hwnd_of(window))
+                    .unwrap_or_default()
+            })
+        } else {
+            let store = Rc::new(Store::fixture(&fixture));
+            cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
+                cx.new(|cx| {
+                    ShellView::new(
+                        store,
+                        fixture.ui.clone(),
+                        theme,
+                        fixture.quick_add_text,
+                        window,
+                        cx,
+                    )
+                })
             })
             .map(|w| {
                 w.update(cx, |_, window, _| win::hwnd_of(window))

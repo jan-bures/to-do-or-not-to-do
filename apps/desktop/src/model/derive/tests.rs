@@ -1,0 +1,247 @@
+use super::*;
+use crate::fixtures;
+use todo_core::{Command, apply, decide};
+
+fn run(state: &mut State, at: &str, cmd: Command) {
+    let actor = Actor::owner("desktop").expect("actor");
+    let events = decide(state, &actor, &cmd, at.parse().expect("ts")).expect("valid");
+    for e in &events {
+        apply(state, e).expect("applies");
+    }
+}
+
+fn titles(rows: &[TaskRow]) -> Vec<&str> {
+    rows.iter().map(|r| r.title.as_ref()).collect()
+}
+
+fn list_named(state: &State, name: &str) -> ListId {
+    state
+        .lists
+        .values()
+        .find(|l| l.name == name)
+        .map(|l| l.id)
+        .expect("list")
+}
+
+#[test]
+fn a_list_room_shows_its_open_tasks_in_order_and_hides_chips() {
+    let mut f = fixtures::my_day();
+    let office = list_named(&f.state, "Office");
+    f.ui = UiState {
+        room: RoomKey::List(office),
+        ..UiState::default()
+    };
+    let shell = f.shell();
+    assert_eq!(
+        titles(&shell.room.tasks),
+        [
+            "Review the vendor contract",
+            "Order printer toner",
+            "Archive the old design files"
+        ]
+    );
+    assert_eq!(shell.room.chips, Chips::None);
+    assert_eq!(
+        shell.room.eyebrow,
+        Eyebrow::Kind {
+            kind: "Work".into(),
+            detail: "3 open".into()
+        }
+    );
+    // Today's work: one done this morning, three open.
+    assert_eq!(shell.room.summary(), (1, 4, 3));
+    // The Completed section is closed: counted, not listed.
+    assert!(shell.room.completed.is_empty());
+    assert!(shell.room.completed_count > 1);
+    let agent = shell.room.tasks[1].agent;
+    assert_eq!(agent, Some(crate::theme::Agent::Pi));
+}
+
+#[test]
+fn the_completed_section_opens_newest_first() {
+    let mut f = fixtures::my_day();
+    f.ui.show_completed = true;
+    let shell = f.shell();
+    assert_eq!(shell.room.completed.len(), 3);
+    // Completed at 09:50, 09:05 and 08:15.
+    assert_eq!(
+        titles(&shell.room.completed),
+        [
+            "Reply to the landlord",
+            "Write the stand-up notes",
+            "Water the plants"
+        ]
+    );
+    assert!(shell.room.completed.iter().all(|r| r.done));
+    // Rows are open tasks, then the completed ones.
+    assert_eq!(shell.row_count(), 12);
+}
+
+#[test]
+fn a_task_being_completed_keeps_its_place_until_released() {
+    let mut f = fixtures::my_day();
+    let before = f.shell();
+    let vat = before.room.tasks[0].id;
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::CompleteTask { id: vat },
+    );
+    // Without holding, it leaves the open rows at once.
+    let gone = f.shell();
+    assert!(!gone.room.tasks.iter().any(|r| r.id == vat));
+    assert_eq!(gone.room.summary(), (4, 12, 8));
+    // Held, it stays where it was, shown done, and counts as done.
+    f.ui.holding.insert(vat);
+    let held = f.shell();
+    assert_eq!(held.room.tasks[0].id, vat);
+    assert!(held.room.tasks[0].done);
+    assert_eq!(held.room.summary(), (4, 12, 8));
+    assert_eq!(held.room.completed_count, 3);
+}
+
+fn fixtures_now() -> &'static str {
+    "2026-11-21T10:36:00Z"
+}
+
+#[test]
+fn the_filter_narrows_rows_with_the_query_language_or_plain_words() {
+    let mut f = fixtures::my_day();
+    f.ui.filter = "tag:docs".into();
+    let shell = f.shell();
+    assert_eq!(titles(&shell.room.tasks), ["Write schema migration notes"]);
+    assert!(shell.room.filtered);
+    // Diacritics and case don't matter.
+    f.ui.filter = "MLEKO".into();
+    assert_eq!(titles(&f.shell().room.tasks), ["Koupit rohlíky a mléko"]);
+    // Text that isn't a valid query still filters by title words.
+    f.ui.filter = "(dentist".into();
+    assert_eq!(
+        titles(&f.shell().room.tasks),
+        ["Call the dentist to reschedule"]
+    );
+    f.ui.filter = "zzz".into();
+    let none = f.shell();
+    assert!(none.room.tasks.is_empty());
+    assert_eq!(none.room.empty_line.as_ref(), "Nothing matches the filter.");
+    // The header still counts the whole room.
+    assert_eq!(none.room.summary(), (3, 12, 9));
+}
+
+#[test]
+fn a_deleted_room_falls_back_to_my_day_and_counts_follow_edits() {
+    let mut f = fixtures::my_day();
+    let errands = list_named(&f.state, "Errands");
+    f.ui.room = RoomKey::List(errands);
+    f.ui.task = None;
+    let shell = f.shell();
+    assert_eq!(shell.room.key, RoomKey::List(errands));
+    let count_before = shell.sidebar.collections[2].lists[0].count;
+    assert_eq!(count_before, 2);
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::Delete { id: errands.into() },
+    );
+    let shell = f.shell();
+    assert_eq!(shell.room.key, RoomKey::Smart(Smart::MyDay));
+    assert_eq!(shell.sidebar.selected, RoomKey::Smart(Smart::MyDay));
+    assert!(
+        !shell.sidebar.collections[2]
+            .lists
+            .iter()
+            .any(|l| l.id == errands)
+    );
+    // The milk task left My Day with its list.
+    assert_eq!(shell.room.summary().2, 8);
+}
+
+#[test]
+fn smart_list_counts_and_agent_rows() {
+    let shell = fixtures::my_day().shell();
+    let counts: Vec<Option<u32>> = shell.sidebar.smart.iter().map(|n| n.count).collect();
+    // My Day, Important, Planned, All, Completed (open counts; Completed counts finished tasks).
+    assert_eq!(counts[0], Some(9));
+    assert_eq!(counts[1], Some(3));
+    assert!(counts[2].unwrap_or(0) >= 10);
+    assert_eq!(counts[5], None);
+    assert!(shell.sidebar.smart[5].pip.is_some());
+    let agents: Vec<(&str, &str)> = shell
+        .sidebar
+        .agents
+        .iter()
+        .map(|a| (a.name.as_ref(), a.status.as_ref()))
+        .collect();
+    assert_eq!(
+        agents,
+        [("Claude", "3 added"), ("Codex", "3 edited"), ("Pi", "idle")]
+    );
+}
+
+#[test]
+fn the_sync_line_says_what_is_going_on() {
+    let now = Now::fixed("2026-11-21T10:35:00Z");
+    let mut s = SyncInfo {
+        paired: true,
+        connection: Connection::Online,
+        pending: 0,
+        failed: 0,
+        unauthorized: false,
+        synced_at: Some("2026-11-21T10:34:00Z".parse().expect("ts")),
+    };
+    assert_eq!(sync_line(&s, &now), ("Synced 10:34".into(), Tone::Ok));
+    s.connection = Connection::Offline;
+    s.pending = 2;
+    assert_eq!(
+        sync_line(&s, &now),
+        ("Offline, 2 waiting".into(), Tone::Problem)
+    );
+    s.failed = 1;
+    assert_eq!(sync_line(&s, &now).0, "1 couldn't sync");
+    s.unauthorized = true;
+    assert_eq!(sync_line(&s, &now).0, "Signed out by the server");
+    assert_eq!(sync_line(&SyncInfo::signed_out(), &now).0, "Not signed in");
+}
+
+#[test]
+fn hundreds_of_tasks_derive_quickly() {
+    // About the owner's size: 600 tasks, most of them done.
+    let mut f = fixtures::my_day();
+    let list = list_named(&f.state, "Errands");
+    for i in 0..500u32 {
+        let id = TaskId::from_uuid(todo_core::ids::uuid_v7(
+            1_800_000_000_000 + u64::from(i),
+            [7; 10],
+        ));
+        run(
+            &mut f.state,
+            "2026-11-01T10:00:00Z",
+            Command::CreateTask(Box::new(todo_core::command::NewTask::new(
+                id,
+                list,
+                format!("Task {i}"),
+            ))),
+        );
+        if i % 5 != 0 {
+            run(
+                &mut f.state,
+                "2026-11-02T10:00:00Z",
+                Command::CompleteTask { id },
+            );
+        }
+    }
+    f.ui.room = RoomKey::Smart(Smart::All);
+    f.ui.show_completed = true;
+    let start = std::time::Instant::now();
+    let shell = f.shell();
+    let took = start.elapsed();
+    assert!(shell.row_count() > 500);
+    // Generous for debug builds on slow CI machines; release is a few milliseconds.
+    assert!(took.as_millis() < 1500, "derive took {took:?}");
+}
+
+#[test]
+fn hosts_for_untitled_links() {
+    assert_eq!(host("https://www.example.com/a/b?c"), "example.com");
+    assert_eq!(host("example.org"), "example.org");
+}

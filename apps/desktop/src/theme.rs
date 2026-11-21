@@ -7,7 +7,7 @@ use todo_design::Rgb;
 pub use todo_design::Theme;
 pub use todo_design::layout::{component, desktop, elevation, radius, space};
 pub use todo_design::typography as ty;
-pub use todo_design::{Glyph, Icon, hues, landscape};
+pub use todo_design::{Glyph, Icon, hues, landscape, motion};
 
 /// A hue in OKLCH degrees, as `todo_design` takes it.
 pub type Hue = f64;
@@ -151,20 +151,23 @@ pub fn list_colors(theme: Theme, hue: Hue) -> ListColors {
     }
 }
 
-/// An agent's letter mark.
+/// An agent's letter mark. The three known agents have their own letter and hue; any other agent gets its
+/// name's first letter and a hue picked from its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agent {
     Claude,
     Codex,
     Pi,
+    Other { letter: char, hue: u16 },
 }
 
 impl Agent {
-    pub fn letter(self) -> &'static str {
+    pub fn letter(self) -> gpui::SharedString {
         match self {
-            Self::Claude => "C",
-            Self::Codex => "X",
-            Self::Pi => "π",
+            Self::Claude => "C".into(),
+            Self::Codex => "X".into(),
+            Self::Pi => "π".into(),
+            Self::Other { letter, .. } => letter.to_uppercase().collect::<String>().into(),
         }
     }
 
@@ -173,11 +176,15 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Other { .. } => "",
         }
     }
 
     /// The agent's default hue from `todo_design::hues::AGENTS`.
     pub fn hue(self) -> Hue {
+        if let Self::Other { hue, .. } = self {
+            return f64::from(hue);
+        }
         hues::AGENTS
             .iter()
             .find(|h| h.key == self.key())
@@ -200,34 +207,6 @@ pub fn agent_colors(theme: Theme, agent: Agent) -> AgentColors {
         ink: color(c.ink),
         ring: color(c.ring),
     }
-}
-
-/// A list swatch's hue by key (`"lagoon"`, `"rose"`, ...); My Day's hue for an unknown key. Fixtures pick
-/// lists' hues this way, as the owner would in the app. `const`, so fixtures can use it in constants.
-pub const fn swatch(key: &str) -> Hue {
-    let mut i = 0;
-    while i < hues::SWATCHES.len() {
-        if str_eq(hues::SWATCHES[i].key, key) {
-            return hues::SWATCHES[i].degrees;
-        }
-        i += 1;
-    }
-    hues::MY_DAY
-}
-
-const fn str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
 }
 
 /// Applies a `todo_design` text style: family, size, line height, weight and slant. GPUI at the pinned
@@ -268,9 +247,15 @@ mod tests {
     }
 
     #[test]
-    fn agents_and_swatches_resolve_to_named_hues() {
+    fn agents_resolve_to_named_hues() {
         assert_eq!(Agent::Codex.hue(), 245.0);
-        assert_eq!(swatch("lagoon"), 200.0);
-        assert_eq!(swatch("no-such-swatch"), hues::MY_DAY);
+        assert_eq!(
+            Agent::Other {
+                letter: 'H',
+                hue: 120
+            }
+            .hue(),
+            120.0
+        );
     }
 }

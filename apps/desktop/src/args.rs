@@ -15,7 +15,8 @@ Usage:
 Options:
   --background      Start in the tray without showing the window (used by Start with Windows).
   --screenshot      Render a fixture into its own window, save that window to a PNG and exit.
-  --fixture         Fixture to render: my-day, work, empty, finished or quick-add.
+  --fixture         Fixture to render: my-day, work, empty, finished, quick-add,
+                    pairing or pairing-code.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -26,7 +27,15 @@ Options:
 ";
 
 /// The fixtures `--screenshot` can render. Invented sample data only.
-pub const FIXTURES: &[&str] = &["my-day", "work", "empty", "finished", "quick-add"];
+pub const FIXTURES: &[&str] = &[
+    "my-day",
+    "work",
+    "empty",
+    "finished",
+    "quick-add",
+    "pairing",
+    "pairing-code",
+];
 
 /// What to do.
 #[derive(Clone, Debug, PartialEq)]

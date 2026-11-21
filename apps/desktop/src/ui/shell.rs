@@ -1,28 +1,71 @@
 //! The main window: titlebar, sidebar, the room pane under its sky header, the detail pane and the status
-//! bar. Step 3b ships these as a skeleton fed by `fixtures`; the real views arrive in step 7.
+//! bar. It draws a `model::Shell`, derived from the store's state whenever the data or the window's own
+//! state changes, and turns clicks and keys into commands for the store.
+
+mod detail;
+mod sidebar;
+
+use std::collections::BTreeSet;
+use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla, SharedString,
-    Window, WindowControlArea, actions, div, prelude::*, px,
+    Animation, AnimationExt, AnyElement, App, AsyncApp, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful,
+    UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions, div, prelude::*, px,
+    uniform_list,
 };
+use todo_core::ids::TaskId;
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape};
-use crate::fixtures::{Detail, Due, Eyebrow, ListRef, Selected, Shell, Task, Tomorrow};
-use crate::theme::{
-    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
+use crate::model::{
+    self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, quick_add,
 };
+use crate::store::Store;
+use crate::theme::{
+    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, motion, radius, space,
+    ty,
+};
+use detail::Editors;
+use sidebar::{Inline, Menu};
 
-actions!(shell, [FocusQuickAdd]);
-
-/// Key bindings for the main window.
-pub fn key_bindings() -> Vec<gpui::KeyBinding> {
-    vec![gpui::KeyBinding::new(
-        "ctrl-n",
+actions!(
+    shell,
+    [
         FocusQuickAdd,
-        Some("Shell"),
-    )]
+        FocusFilter,
+        NextTask,
+        PreviousTask,
+        ToggleTask,
+        EditTask,
+        EditDue,
+        MoveTaskUp,
+        MoveTaskDown,
+        Escape
+    ]
+);
+
+/// Key bindings for the main window. The single-letter ones only apply while the task list has focus,
+/// never while typing.
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    use gpui::KeyBinding;
+    let list = Some("TaskList");
+    vec![
+        KeyBinding::new("ctrl-n", FocusQuickAdd, Some("Shell")),
+        KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
+        KeyBinding::new("e", EditTask, list),
+        KeyBinding::new("d", EditDue, list),
+        KeyBinding::new("alt-up", MoveTaskUp, list),
+        KeyBinding::new("alt-down", MoveTaskDown, list),
+        KeyBinding::new("j", NextTask, list),
+        KeyBinding::new("down", NextTask, list),
+        KeyBinding::new("k", PreviousTask, list),
+        KeyBinding::new("up", PreviousTask, list),
+        KeyBinding::new("space", ToggleTask, list),
+        KeyBinding::new("escape", Escape, list),
+    ]
 }
 
 /// Colours for an input on the raised quick-add surface.
@@ -35,25 +78,77 @@ pub fn quick_add_colors(p: &Palette) -> InputColors {
     }
 }
 
+/// What the shell asks of the app.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellEvent {
+    /// Sign out: forget the token and the cache, and show pairing.
+    SignOut,
+}
+
+/// A line for the status bar.
+#[derive(Clone, Debug, PartialEq)]
+struct Notice {
+    text: SharedString,
+    error: bool,
+}
+
+impl Notice {
+    fn info(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            error: false,
+        }
+    }
+
+    fn error(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            error: true,
+        }
+    }
+}
+
 #[allow(missing_debug_implementations)] // Holds GPUI entities.
 pub struct ShellView {
+    store: Rc<Store>,
+    ui: UiState,
     shell: Shell,
     theme: Theme,
     palette: Palette,
     landscape: LandscapeCache,
     quick_add: Entity<TextInput>,
     focus: FocusHandle,
+    list_focus: FocusHandle,
+    rows: UniformListScrollHandle,
+    menu: Option<Menu>,
+    inline: Option<Inline>,
+    /// The filter typed into the title bar.
+    filter: Entity<TextInput>,
+    edit: Editors,
+    /// Completed tasks fading out of the list (the last part of the completion hold).
+    leaving: BTreeSet<TaskId>,
+    /// A message for the status bar (a command the domain refused, a failed download).
+    notice: Option<Notice>,
 }
 
+impl EventEmitter<ShellEvent> for ShellView {}
+
 impl ShellView {
-    pub fn new(shell: Shell, theme: Theme, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Rc<Store>,
+        ui: UiState,
+        theme: Theme,
+        typed: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let shell = model::derive(&store.view(), &ui, &store.sync(), &store.now());
         let palette = theme::palette(theme, shell.room.hue);
-        let placeholder = shell.room.quick_add_placeholder;
-        let typed = shell.room.quick_add_text;
+        let placeholder = shell.room.quick_add_placeholder.clone();
         let quick_add = cx.new(|cx| {
             let mut input = TextInput::new(placeholder, quick_add_colors(&palette), cx);
             if let Some(t) = typed {
-                input.set_text(t, cx);
+                input.set_text(t.to_string(), cx);
             }
             input
         });
@@ -62,62 +157,262 @@ impl ShellView {
             window,
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Submit => {
-                    let title = input.read(cx).content.trim().to_string();
-                    if !title.is_empty() {
-                        this.add_task(title);
+                    let text = input.read(cx).content.to_string();
+                    if this.add_task(&text, this.ui.room, cx) {
                         input.update(cx, |i, cx| i.reset(window, cx));
-                        cx.notify();
                     }
                 }
-                InputEvent::Cancel => window.focus(&this.focus, cx),
+                InputEvent::Cancel => window.focus(&this.list_focus, cx),
                 InputEvent::Changed => cx.notify(),
             },
         )
         .detach();
-        Self {
+        let filter = cx.new(|cx| {
+            let mut input = TextInput::new(
+                "Filter tasks, or a query like tag:docs",
+                quick_add_colors(&palette),
+                cx,
+            );
+            input.set_text(ui.filter.clone(), cx);
+            input
+        });
+        cx.subscribe_in(
+            &filter,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Changed => {
+                    this.ui.filter = input.read(cx).content.to_string();
+                    this.refresh(cx);
+                }
+                InputEvent::Submit => window.focus(&this.list_focus, cx),
+                InputEvent::Cancel => {
+                    input.update(cx, |i, cx| i.reset(window, cx));
+                    this.ui.filter.clear();
+                    this.refresh(cx);
+                    window.focus(&this.list_focus, cx);
+                }
+            },
+        )
+        .detach();
+        let edit = Editors::new(&palette, window, cx);
+        let mut this = Self {
+            store,
+            ui,
             shell,
             theme,
             palette,
             landscape: LandscapeCache::default(),
             quick_add,
             focus: cx.focus_handle(),
+            list_focus: cx.focus_handle(),
+            rows: UniformListScrollHandle::new(),
+            menu: None,
+            inline: None,
+            filter,
+            edit,
+            leaving: BTreeSet::new(),
+            notice: None,
+        };
+        this.load_detail(cx);
+        this.watch(cx);
+        this
+    }
+
+    /// Live data: re-derive when the sync engine reports a change (coalesced to one frame), and every
+    /// half minute so relative dates and My Day roll over.
+    fn watch(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.store.session() else {
+            return;
+        };
+        let mut changes = session.client().changes();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                changes.next().await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                if this.update(cx, |v, cx| v.refresh(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
+                if this.update(cx, |v, cx| v.refresh(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Re-derives the shell from the store and the UI state.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let shell = model::derive(
+            &self.store.view(),
+            &self.ui,
+            &self.store.sync(),
+            &self.store.now(),
+        );
+        // A room that disappeared (deleted elsewhere) falls back to My Day; keep the UI state honest.
+        self.ui.room = shell.room.key;
+        if shell.detail.is_none() {
+            self.ui.task = None;
+        }
+        if shell.room.hue != self.shell.room.hue || self.palette.theme != self.theme {
+            self.palette = theme::palette(self.theme, shell.room.hue);
+            let colors = quick_add_colors(&self.palette);
+            for input in [&self.quick_add, &self.filter, &self.edit.step] {
+                input.update(cx, |i, _| i.colors = colors);
+            }
+            for area in [&self.edit.title, &self.edit.notes] {
+                area.update(cx, |a, _| a.colors = colors);
+            }
+        }
+        if shell.room.quick_add_placeholder != self.shell.room.quick_add_placeholder {
+            let placeholder = shell.room.quick_add_placeholder.clone();
+            self.quick_add.update(cx, |i, cx| {
+                i.placeholder = placeholder;
+                cx.notify();
+            });
+        }
+        self.shell = shell;
+        self.load_detail(cx);
+        cx.notify();
+    }
+
+    pub fn store(&self) -> &Rc<Store> {
+        &self.store
+    }
+
+    /// My Day's progress, for the quick-add window's sun.
+    pub fn my_day_progress(&self) -> (u32, u32) {
+        model::my_day_progress(&self.store.view(), &self.store.now())
+    }
+
+    fn submit(&mut self, cmds: Vec<todo_core::Command>) -> bool {
+        for cmd in cmds {
+            if let Err(e) = self.store.submit(cmd) {
+                tracing::warn!("a change was refused: {e}");
+                self.notice = Some(Notice::error(format!("Couldn't save that: {e}")));
+                return false;
+            }
+        }
+        self.notice = None;
+        true
+    }
+
+    /// Adds a task typed into a quick-add, to `room`. Returns whether it was added.
+    pub fn add_task(&mut self, text: &str, room: RoomKey, cx: &mut Context<Self>) -> bool {
+        let now = self.store.now();
+        let parsed = quick_add::parse(text, &now.eval());
+        let store = self.store.clone();
+        let (id, cmds) = commands::add_task(&store.view(), room, &parsed, now.today(), || {
+            store.new_uuid()
+        });
+        let ok = id.is_some() && self.submit(cmds);
+        self.refresh(cx);
+        ok
+    }
+
+    pub fn select_room(&mut self, room: RoomKey, cx: &mut Context<Self>) {
+        self.commit_edits(cx);
+        if self.ui.room != room {
+            self.ui.room = room;
+            self.ui.task = None;
+            self.ui.show_completed = false;
+            self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
+        }
+        self.refresh(cx);
+    }
+
+    fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {
+        if self.ui.task != id {
+            self.commit_edits(cx);
+        }
+        self.ui.task = id;
+        self.refresh(cx);
+        if let Some(i) = self.shell.selected_task {
+            self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
         }
     }
 
-    /// Until sync lands, quick-add keeps tasks in memory so the shell can be tried out.
-    pub fn add_task(&mut self, title: String) {
-        self.shell.room.tasks.insert(
-            0,
-            Task {
-                title: title.into(),
-                list: None,
-                tags: &[],
-                steps: None,
-                agent: None,
-                priority: 0,
-                due: Due::None,
-                from_mail: false,
-            },
-        );
-        self.shell.room.total += 1;
-        self.shell.selected_task = self.shell.selected_task.map(|i| i + 1);
+    /// Completes or reopens a task. A task completed in the open list holds its place for a moment
+    /// (the checkbox fills, the title dims and strikes through), fades, and then leaves the list.
+    fn toggle_complete(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        let state = self.store.view();
+        let completing = state.tasks.get(&id).is_some_and(|t| !t.is_done());
+        if let Some(cmd) = commands::toggle_complete(&state, id) {
+            if self.submit(vec![cmd]) && completing {
+                self.ui.holding.insert(id);
+                cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let ms = |n: u32| Duration::from_millis(u64::from(n));
+                    cx.background_executor()
+                        .timer(ms(motion::CHECK_TICK_DELAY
+                            + motion::CHECK_TICK
+                            + motion::COMPLETE_HOLD))
+                        .await;
+                    let _ = this.update(cx, |v, cx| {
+                        v.leaving.insert(id);
+                        cx.notify();
+                    });
+                    cx.background_executor()
+                        .timer(ms(motion::ROW_COLLAPSE))
+                        .await;
+                    let _ = this.update(cx, |v, cx| {
+                        v.leaving.remove(&id);
+                        v.ui.holding.remove(&id);
+                        v.refresh(cx);
+                    });
+                })
+                .detach();
+            } else if !completing {
+                self.ui.holding.remove(&id);
+            }
+        }
+        self.refresh(cx);
     }
 
-    fn titlebar(&self) -> Div {
-        let p = &self.palette;
-        let control = |icon: Icon, area: WindowControlArea, id: &'static str| {
-            div()
-                .id(id)
-                // Windows caption buttons are 46 px wide; the design has no token for OS chrome.
-                .w(px(46.))
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .window_control_area(area)
-                .hover(|s| s.bg(p.hover))
-                .child(kit::icon(icon, component::GLYPH, p.ink_2))
+    /// Moves the selected task up or down its list (only where the order is the list's own).
+    fn move_task(&mut self, by: i32, cx: &mut Context<Self>) {
+        let (Some(id), RoomKey::List(_)) = (self.ui.task, self.ui.room) else {
+            return;
         };
+        if let Some(cmd) = commands::nudge(&self.store.view(), id.into(), by) {
+            self.submit(vec![cmd]);
+        }
+        self.select_task(Some(id), cx);
+    }
+
+    fn cycle_priority(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        if let Some(cmd) = commands::cycle_priority(&self.store.view(), id) {
+            self.submit(vec![cmd]);
+        }
+        self.refresh(cx);
+    }
+
+    fn move_selection(&mut self, by: isize, cx: &mut Context<Self>) {
+        let n = self.shell.row_count();
+        if n == 0 {
+            return;
+        }
+        let next = match self.shell.selected_task {
+            None if by > 0 => 0,
+            None => n - 1,
+            Some(i) => i.saturating_add_signed(by).min(n - 1),
+        };
+        let id = self.shell.row(next).map(|r| r.id);
+        self.select_task(id, cx);
+    }
+
+    fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let p = &self.palette;
+        let filtering = !self.ui.filter.is_empty();
+        let focused = self.filter.read(cx).focus_handle.is_focused(window);
         div()
             .h(px(desktop::TITLEBAR))
             .flex_none()
@@ -158,229 +453,41 @@ impl ShellView {
                     .pr(px(space::S1))
                     .rounded(px(radius::MD))
                     .border(px(elevation::HAIRLINE))
-                    .border_color(p.line_strong)
+                    .border_color(if focused || filtering {
+                        p.accent
+                    } else {
+                        p.line_strong
+                    })
                     .bg(p.pane)
-                    .child(kit::icon(Icon::Search, component::ICON_SMALL, p.ink_3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .style(ty::SUMMARY)
-                            .text_color(p.ink_3)
-                            .child("Search tasks, lists, commands"),
-                    )
-                    .child(kit::kbd(p, "Ctrl K")),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .justify_end()
-                    .child(
-                        div()
-                            .flex_1()
-                            .h_full()
-                            .window_control_area(WindowControlArea::Drag),
-                    )
-                    .child(control(Icon::Minus, WindowControlArea::Min, "win-min"))
-                    .child(control(Icon::Square, WindowControlArea::Max, "win-max"))
-                    .child(control(Icon::X, WindowControlArea::Close, "win-close")),
-            )
-    }
-
-    fn sidebar(&self) -> Div {
-        let p = &self.palette;
-        let t = self.theme;
-        let sb = &self.shell.sidebar;
-        let selected_bg = |on: bool, el: Div| {
-            if on {
-                el.bg(p.raised)
-                    .border(px(elevation::HAIRLINE))
-                    .border_color(p.line)
-                    .text_color(p.ink)
-                    .font_weight(FontWeight::SEMIBOLD)
-            } else {
-                el.border(px(elevation::HAIRLINE))
-                    .border_color(gpui::transparent_black())
-            }
-        };
-        let count = |n: u32| {
-            div()
-                .style(ty::COUNT)
-                .text_color(p.ink_3)
-                .child(n.to_string())
-        };
-
-        let smart = sb.smart.iter().enumerate().map(|(i, item)| {
-            let row = div()
-                .h(px(desktop::NAV_ROW))
-                .flex()
-                .items_center()
-                .gap(px(space::S2 + 2.))
-                .pl(px(space::S2))
-                .pr(px(space::S2 + 2.))
-                .rounded(px(radius::MD))
-                .style(ty::NAV)
-                .text_color(p.ink_2)
-                .child(kit::icon(
-                    item.icon,
-                    component::ICON,
-                    theme::list_colors(t, item.hue).glyph,
-                ))
-                .child(div().flex_1().child(item.label))
-                .children(item.count.map(count))
-                .children(item.pip.map(|pip| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(component::CHIP_GAP))
-                        .style(ty::COUNT)
-                        .text_color(p.accent_strong)
-                        .child(
-                            div()
-                                .size(px(component::CHIP_DOT))
-                                .rounded_full()
-                                .bg(p.accent),
-                        )
-                        .child(pip)
-                }));
-            selected_bg(sb.selected == Selected::Smart(i), row)
-        });
-
-        let collections = sb.collections.iter().map(|c| {
-            let head = div()
-                .h(px(desktop::NAV_SUB_ROW))
-                .mt(px(space::S3))
-                .flex()
-                .items_center()
-                .gap(px(space::S2))
-                .pl(px(space::S1))
-                .pr(px(space::S2 + 2.))
-                .rounded(px(radius::MD))
-                .style(ty::NAV_COLLECTION)
-                .text_color(p.ink)
-                .child(kit::icon(Icon::ChevronDown, component::ICON_SMALL, p.ink_4))
-                .child(kit::glyph(c.glyph, theme::list_colors(t, c.hue).glyph))
-                .child(div().flex_1().child(c.name))
-                .child(count(c.count));
-            let head = selected_bg(sb.selected == Selected::Collection(c.name), head);
-            let lists = c.lists.iter().map(|(list, glyph, n)| {
-                let row = div()
-                    .h(px(desktop::NAV_SUB_ROW))
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S2 + 2.))
-                    .pl(px(space::S6 + space::S1))
-                    .pr(px(space::S2 + 2.))
-                    .rounded(px(radius::MD))
-                    .style(ty::NAV_SUB)
-                    .text_color(p.ink_2)
-                    .child(kit::glyph(*glyph, theme::list_colors(t, list.hue).glyph))
-                    .child(div().flex_1().child(list.name))
-                    .child(count(*n));
-                selected_bg(sb.selected == Selected::List(list.name), row)
-            });
-            div().flex().flex_col().child(head).children(lists)
-        });
-
-        let agents = (!sb.agents.is_empty()).then(|| {
-            div()
-                .border_t_1()
-                .border_color(p.line)
-                .pt(px(space::S3))
-                .px(px(space::S1))
-                .pb(px(space::S2))
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .px(px(space::S1))
-                        .mb(px(space::S1))
-                        .child(kit::label(p, "Agents"))
-                        .child(kit::label(p, "Today")),
-                )
-                .children(sb.agents.iter().map(|a| {
-                    div()
-                        .h(px(desktop::NAV_ROW))
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S2 + 2.))
-                        .px(px(space::S1))
-                        .style(ty::NAV_SUB.with_weight(500))
-                        .text_color(p.ink_2)
-                        .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
-                        .child(div().flex_1().child(a.name))
-                        .child(div().style(ty::COUNT).text_color(p.ink_3).child(a.status))
-                }))
-        });
-
-        div()
-            .w(px(desktop::SIDEBAR))
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(p.canvas)
-            .border_r_1()
-            .border_color(p.line)
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .pt(px(space::S3))
-                    .px(px(space::S2))
-                    .children(smart)
-                    .children(collections)
-                    .child(
-                        div()
-                            .h(px(desktop::NAV_ROW))
-                            .mt(px(space::S3))
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2 + 2.))
-                            .pl(px(space::S2))
-                            .pr(px(space::S2 + 2.))
-                            .style(ty::NAV_SUB)
-                            .text_color(p.ink_3)
-                            .child(kit::icon(Icon::Plus, component::GLYPH, p.ink_3))
-                            .child(div().flex_1().child("New list"))
-                            .child(kit::kbd(p, "Ctrl N")),
-                    )
-                    .child(div().flex_1())
-                    .children(agents),
-            )
-            .child(
-                div()
-                    .h(px(desktop::SIDEBAR_FOOTER))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(space::S4))
-                    .border_t_1()
-                    .border_color(p.line)
-                    .text_color(p.ink_3)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2))
-                            .style(ty::COUNT)
-                            .child(
-                                div()
-                                    .size(px(component::CHIP_DOT))
-                                    .rounded_full()
-                                    .bg(p.success),
-                            )
-                            .child(sb.synced),
-                    )
                     .child(kit::icon(
-                        Icon::SlidersHorizontal,
-                        component::GLYPH,
-                        p.ink_3,
-                    )),
+                        Icon::Search,
+                        component::ICON_SMALL,
+                        if filtering { p.accent_strong } else { p.ink_3 },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .style(ty::SUMMARY)
+                            .child(self.filter.clone()),
+                    )
+                    .child(if filtering {
+                        div()
+                            .id("clear-filter")
+                            .rounded(px(radius::SM))
+                            .hover(|s| s.bg(p.hover))
+                            .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.filter.update(cx, |i, cx| i.reset(window, cx));
+                                this.ui.filter.clear();
+                                this.refresh(cx);
+                            }))
+                            .into_any_element()
+                    } else {
+                        kit::kbd(p, "Ctrl K").into_any_element()
+                    }),
             )
+            .child(kit::window_controls(p))
     }
 
     fn eyebrow(&self) -> Div {
@@ -391,7 +498,7 @@ impl ShellView {
                 .h(px(ty::CAPS_LABEL.size - 0.5))
                 .bg(line)
         };
-        let mono = |s: String| {
+        let mono = |s: &SharedString| {
             div()
                 .style(ty::EYEBROW_META)
                 .text_color(ink_3)
@@ -409,24 +516,24 @@ impl ShellView {
                 date,
                 week,
             } => row
-                .child(dow(weekday.clone().into()))
+                .child(dow(weekday.clone()))
                 .child(bar())
-                .child(mono(date.clone()))
+                .child(mono(date))
                 .child(bar())
-                .child(mono(week.clone())),
+                .child(mono(week)),
             Eyebrow::Kind { kind, detail } => row
-                .child(dow((*kind).into()))
+                .child(dow(kind.clone()))
                 .child(bar())
-                .child(mono(detail.clone())),
+                .child(mono(detail)),
         }
     }
 
     fn summary(&self) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
-        let (done, total, open) = crate::fixtures::summary(room);
+        let (done, total, open) = room.summary();
         let (ink_2, _, line) = self.header_inks();
-        let finished_day = self.finished_day();
+        let finished_day = room.finished_day();
         let ink = if finished_day { ink_2 } else { p.ink };
         let strong = if finished_day { ink_2 } else { p.accent_strong };
         let sep = || {
@@ -443,7 +550,7 @@ impl ShellView {
             .style(ty::SUMMARY)
             .text_color(ink_2);
         if total == 0 {
-            let finished = room.completed;
+            let finished = room.finished_this_month;
             return row.child(div().style(ty::SUMMARY_FIGURES).child(if finished > 0 {
                 format!("{finished} finished this month")
             } else {
@@ -476,7 +583,7 @@ impl ShellView {
                     .style(ty::SUMMARY_FIGURES)
                     .child(format!("{open} open"))
             });
-        if let Some(est) = room.estimate {
+        if let Some(est) = &room.estimate {
             row = row.child(sep()).child(
                 div()
                     .style(ty::SUMMARY_FIGURES.with_weight(600))
@@ -487,16 +594,10 @@ impl ShellView {
         row
     }
 
-    /// My Day with every task done: the header turns into the finished day's dusk scene.
-    fn finished_day(&self) -> bool {
-        let room = &self.shell.room;
-        room.finishes_day && room.total > 0 && room.done >= room.total
-    }
-
     /// (secondary ink, metadata ink, separator) for text on the header. The dusk scene is a night scene in
     /// both themes, so its header uses the dark theme's inks.
     fn header_inks(&self) -> (Hsla, Hsla, Hsla) {
-        let p = if self.finished_day() {
+        let p = if self.shell.room.finished_day() {
             theme::palette(Theme::Dark, self.shell.room.hue)
         } else {
             self.palette
@@ -512,7 +613,7 @@ impl ShellView {
     fn header(&self) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
-        let finished = self.finished_day();
+        let finished = room.finished_day();
         let (sky_bg, title_ink, sky) = if finished {
             let dusk = theme::dusk(room.hue);
             let ink = theme::palette(Theme::Dark, room.hue).ink;
@@ -560,13 +661,16 @@ impl ShellView {
                             .flex()
                             .items_end()
                             .justify_between()
+                            .gap(px(space::S6))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .style(ty::ROOM_TITLE)
                                     .text_color(title_ink)
-                                    .child(room.title),
+                                    .child(room.title.clone()),
                             )
-                            .child(self.summary()),
+                            .child(div().flex_none().child(self.summary())),
                     ),
             )
             // The finished scene's rings reach past the strip; the header ends at its bottom edge.
@@ -579,10 +683,12 @@ impl ShellView {
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
     }
 
-    fn quick_add(&self, window: &Window, cx: &App) -> Div {
+    fn quick_add_field(&self, window: &Window, cx: &App) -> Div {
         let p = &self.palette;
-        let focused = self.quick_add.read(cx).focus_handle.is_focused(window);
-        let typed = !self.quick_add.read(cx).content.is_empty();
+        let input = self.quick_add.read(cx);
+        let focused = input.focus_handle.is_focused(window);
+        let text = input.content.clone();
+        let typed = !text.is_empty();
         let field = div()
             .h(px(desktop::QUICK_ADD))
             .flex()
@@ -600,12 +706,16 @@ impl ShellView {
             .bg(p.raised)
             .style(ty::QUICK_ADD)
             .child(kit::icon(Icon::Plus, component::ICON, p.accent_strong))
-            .child(self.quick_add.clone());
+            .child(div().flex_1().min_w_0().child(self.quick_add.clone()));
         let field = if typed {
+            // What the typed words will set: the parsed due date as a chip.
+            let now = self.store.now();
+            let parsed = quick_add::parse(&text, &now.eval());
             field
-                .child(
+                .children(parsed.due.map(|d| {
                     div()
                         .flex()
+                        .flex_none()
                         .items_center()
                         .gap(px(component::CHIP_GAP))
                         .px(px(space::S2))
@@ -619,14 +729,14 @@ impl ShellView {
                             component::ICON_SMALL,
                             p.accent_strong,
                         ))
-                        .child("Sun 22 Nov"),
-                )
+                        .child(model::labels::short_date(d, now.today()))
+                }))
                 .child(kit::kbd(p, "Enter"))
         } else {
             field
                 .child(kit::icon(Icon::Calendar, component::GLYPH, p.ink_3))
                 .child(kit::icon(Icon::Flag, component::GLYPH, p.ink_3))
-                .child(kit::kbd(p, "N"))
+                .child(kit::kbd(p, "Ctrl N"))
         };
         // The focus ring is a band of the room tint around the field (a border, not a shadow).
         let ring = if focused || typed {
@@ -643,7 +753,41 @@ impl ShellView {
             .child(field)
     }
 
-    fn row(&self, i: usize, task: &Task) -> Div {
+    fn due(p: &Palette, due: &Due) -> AnyElement {
+        match due {
+            Due::None => div()
+                .style(ty::DUE)
+                .text_color(p.ink_4)
+                .child("–")
+                .into_any_element(),
+            Due::Soon(s) => div()
+                .style(ty::DUE.with_weight(600))
+                .text_color(p.accent_strong)
+                .child(s.clone())
+                .into_any_element(),
+            Due::Plain(s) => div()
+                .style(ty::DUE)
+                .text_color(p.ink_2)
+                .child(s.clone())
+                .into_any_element(),
+            Due::Overdue(s) => kit::overdue_badge(p, s.clone()).into_any_element(),
+        }
+    }
+
+    /// A row, fading out while it leaves after completion.
+    fn row_element(&self, i: usize, task: &TaskRow, cx: &mut Context<Self>) -> AnyElement {
+        let row = self.row(i, task, cx);
+        if self.leaving.contains(&task.id) {
+            let fade = Animation::new(Duration::from_millis(u64::from(motion::ROW_COLLAPSE)))
+                .with_easing(|t| motion::EXIT.ease(t));
+            row.with_animation(("leaving", i), fade, |el, t| el.opacity(1. - t))
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        }
+    }
+
+    fn row(&self, i: usize, task: &TaskRow, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = &self.palette;
         let t = self.theme;
         let selected = self.shell.selected_task == Some(i);
@@ -655,8 +799,10 @@ impl ShellView {
             .h(px(component::CHIP))
             .mt(px(desktop::ROW_LINE_GAP))
             .overflow_hidden();
-        if let Some(list) = &task.list {
-            meta = meta.child(kit::chip(t, list, self.shell.room.smart));
+        match self.shell.room.chips {
+            Chips::None => {}
+            Chips::List => meta = meta.child(kit::chip(t, &task.list, false)),
+            Chips::CollectionAndList => meta = meta.child(kit::chip(t, &task.list, true)),
         }
         if let Some((d, n)) = task.steps {
             meta = meta.child(
@@ -670,32 +816,41 @@ impl ShellView {
                     .child(format!("{d}/{n}")),
             );
         }
-        for tag in task.tags {
-            meta = meta.child(div().style(ty::TAG).text_color(p.ink_3).child(*tag));
+        for tag in &task.tags {
+            meta = meta.child(div().style(ty::TAG).text_color(p.ink_3).child(tag.clone()));
         }
         if task.from_mail {
             meta = meta.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3));
         }
-        let due: AnyElement = match &task.due {
-            Due::None => div()
-                .style(ty::DUE)
-                .text_color(p.ink_4)
-                .child("–")
-                .into_any_element(),
-            Due::Soon(s) => div()
-                .style(ty::DUE.with_weight(600))
-                .text_color(p.accent_strong)
-                .child(*s)
-                .into_any_element(),
-            Due::Plain(s) => div()
-                .style(ty::DUE)
-                .text_color(p.ink_2)
-                .child(*s)
-                .into_any_element(),
-            Due::Overdue(s) => kit::overdue_badge(p, s).into_any_element(),
+        let id = task.id;
+        let check = if task.done && self.ui.holding.contains(&id) {
+            kit::checking(p, selected, desktop::COL_CHECK, ("checking", i)).into_any_element()
+        } else if task.done {
+            kit::checked(p, selected, desktop::COL_CHECK).into_any_element()
+        } else {
+            kit::checkbox(p, overdue, desktop::COL_CHECK).into_any_element()
+        };
+        let check = div()
+            .id(SharedString::from(format!("check-{id}")))
+            .flex_none()
+            .child(check)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.toggle_complete(id, cx);
+            }));
+        let title = div()
+            .style(ty::TASK_TITLE)
+            .truncate()
+            .child(task.title.clone());
+        let title = if task.done {
+            title.text_color(p.ink_3).line_through()
+        } else {
+            title.text_color(p.ink)
         };
         let row = div()
+            .id(SharedString::from(format!("task-{id}")))
             .relative()
+            .w_full()
             .h(px(desktop::ROW))
             .flex_none()
             .flex()
@@ -705,20 +860,14 @@ impl ShellView {
             .px(px(desktop::LIST_PAD_X))
             .border_b_1()
             .border_color(p.line)
-            .child(kit::checkbox(p, overdue, desktop::COL_CHECK))
+            .child(check)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .style(ty::TASK_TITLE)
-                            .text_color(p.ink)
-                            .truncate()
-                            .child(task.title.clone()),
-                    )
+                    .child(title)
                     .child(meta),
             )
             .child(
@@ -729,11 +878,16 @@ impl ShellView {
             )
             .child(
                 div()
+                    .id(SharedString::from(format!("priority-{id}")))
                     .w(px(desktop::COL_PRIORITY))
                     .flex_none()
                     .flex()
                     .justify_center()
-                    .child(kit::priority(p, task.priority)),
+                    .child(kit::priority(p, task.priority))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.cycle_priority(id, cx);
+                    })),
             )
             .child(
                 div()
@@ -741,8 +895,12 @@ impl ShellView {
                     .flex_none()
                     .flex()
                     .justify_end()
-                    .child(due),
-            );
+                    .child(Self::due(p, &task.due)),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&this.list_focus, cx);
+                this.select_task(Some(id), cx);
+            }));
         if selected {
             row.bg(p.wash).child(
                 div()
@@ -754,16 +912,17 @@ impl ShellView {
                     .bg(p.accent),
             )
         } else {
-            row
+            let hover = p.hover;
+            row.hover(move |s| s.bg(hover))
         }
     }
 
-    fn list(&self) -> Div {
-        let p = &self.palette;
+    fn list(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
         let room = &self.shell.room;
-        let body = if let (true, Some(next)) = (self.finished_day(), &room.tomorrow) {
-            self.tomorrow(next)
-        } else if room.tasks.is_empty() {
+        let body: AnyElement = if let (true, Some(next)) = (room.finished_day(), &room.tomorrow) {
+            self.tomorrow(next, cx).into_any_element()
+        } else if room.finished_day() {
             div()
                 .px(px(desktop::LIST_PAD_X))
                 .pt(px(space::S6 + space::S1))
@@ -771,7 +930,18 @@ impl ShellView {
                     div()
                         .style(ty::EMPTY_LINE)
                         .text_color(p.ink)
-                        .child(room.empty_line),
+                        .child("Nothing waiting for tomorrow."),
+                )
+                .into_any_element()
+        } else if self.shell.row_count() == 0 {
+            div()
+                .px(px(desktop::LIST_PAD_X))
+                .pt(px(space::S6 + space::S1))
+                .child(
+                    div()
+                        .style(ty::EMPTY_LINE)
+                        .text_color(p.ink)
+                        .child(room.empty_line.clone()),
                 )
                 .child(
                     div()
@@ -780,15 +950,32 @@ impl ShellView {
                         .text_color(p.ink_3)
                         .child("Add one above, or press Ctrl+Alt+Space from anywhere."),
                 )
+                .into_any_element()
         } else {
-            div()
-                .flex()
-                .flex_col()
-                .children(room.tasks.iter().enumerate().map(|(i, t)| self.row(i, t)))
+            let count = self.shell.row_count();
+            uniform_list(
+                "rows",
+                count,
+                cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                    let rows: Vec<TaskRow> = range
+                        .clone()
+                        .filter_map(|i| this.shell.row(i).cloned())
+                        .collect();
+                    range
+                        .zip(rows.iter())
+                        .map(|(i, r)| this.row_element(i, r, cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.rows)
+            .size_full()
+            .into_any_element()
         };
         // The reserved strip at the bottom: "Completed n" on the left, room for the undo toast on the right.
-        let completed = (room.completed > 0).then(|| {
+        let open = self.ui.show_completed;
+        let completed = (room.completed_count > 0).then(|| {
             div()
+                .id("completed-toggle")
                 .h(px(desktop::TOAST_INSET))
                 .flex_none()
                 .flex()
@@ -798,17 +985,25 @@ impl ShellView {
                 .border_t_1()
                 .border_color(p.line)
                 .child(kit::icon(
-                    Icon::ChevronRight,
+                    if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
                     component::ICON_SMALL,
                     p.ink_3,
                 ))
-                .child(kit::label(p, "Completed"))
+                .child(kit::label(&p, "Completed"))
                 .child(
                     div()
                         .style(ty::CAPS_LABEL)
                         .text_color(p.ink_3)
-                        .child(room.completed.to_string()),
+                        .child(room.completed_count.to_string()),
                 )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.ui.show_completed = !this.ui.show_completed;
+                    this.refresh(cx);
+                }))
         });
         div()
             .flex_1()
@@ -816,13 +1011,44 @@ impl ShellView {
             .flex()
             .flex_col()
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
-            .child(div().flex_1().min_h_0().overflow_hidden().child(body))
+            .child(
+                div()
+                    .id("task-list")
+                    .key_context("TaskList")
+                    .track_focus(&self.list_focus)
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .on_action(cx.listener(|this, _: &NextTask, _, cx| this.move_selection(1, cx)))
+                    .on_action(
+                        cx.listener(|this, _: &PreviousTask, _, cx| this.move_selection(-1, cx)),
+                    )
+                    .on_action(cx.listener(|this, _: &ToggleTask, _, cx| {
+                        if let Some(id) = this.ui.task {
+                            this.toggle_complete(id, cx);
+                        }
+                    }))
+                    .on_action(cx.listener(|this, _: &Escape, _, cx| this.select_task(None, cx)))
+                    .on_action(cx.listener(|this, _: &EditTask, window, cx| {
+                        if this.ui.task.is_some() {
+                            let handle = this.edit.title.read(cx).focus_handle.clone();
+                            this.edit.title.update(cx, |a, cx| a.select_everything(cx));
+                            window.focus(&handle, cx);
+                        }
+                    }))
+                    .on_action(
+                        cx.listener(|this, _: &EditDue, window, cx| this.start_due(window, cx)),
+                    )
+                    .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
+                    .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
+                    .child(body),
+            )
             .children(completed)
     }
 
-    /// The finished day hands over to tomorrow: its first task with a sunrise mark and a button to plan it,
-    /// then the rest of tomorrow and the rest of the week. No congratulations; the scene is the reward.
-    fn tomorrow(&self, next: &Tomorrow) -> Div {
+    /// The finished day hands over to tomorrow: its first task with a sunrise mark, then the rest of
+    /// tomorrow and the rest of the week. No congratulations; the scene is the reward.
+    fn tomorrow(&self, next: &Tomorrow, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let t = self.theme;
         let section = |label: SharedString| {
@@ -834,11 +1060,8 @@ impl ShellView {
                 .style(ty::CAPS_LABEL)
                 .child(label.to_uppercase())
         };
-        let compact = |task: &Task| {
-            let when = match &task.due {
-                Due::Soon(s) | Due::Plain(s) | Due::Overdue(s) => *s,
-                Due::None => "",
-            };
+        let compact = |task: &TaskRow| {
+            let when = task.due.text().cloned().unwrap_or_default();
             div()
                 .mx(px(desktop::LIST_PAD_X))
                 .h(px(component::ICON_BUTTON + space::S1))
@@ -860,7 +1083,7 @@ impl ShellView {
                         .text_color(p.ink)
                         .child(task.title.clone()),
                 )
-                .children(task.list.map(|l| kit::chip(t, &l, false)))
+                .child(kit::chip(t, &task.list, false))
                 .child(div().flex_1())
                 .child(div().style(ty::DUE).text_color(p.ink_2).child(when))
         };
@@ -907,282 +1130,48 @@ impl ShellView {
                                 div()
                                     .style(ty::DUE.with_weight(600))
                                     .text_color(p.accent_strong)
-                                    .child(next.first_when),
+                                    .child(next.first_when.clone()),
                             )
-                            .children(first.list.map(|l| kit::chip(t, &l, true))),
+                            .child(kit::chip(t, &first.list, true)),
                     ),
             )
             .child(
+                // Planning the next day happens in Planned, where tomorrow's tasks are.
                 div()
-                    .h(px(component::BUTTON))
-                    .px(px(space::S4))
-                    .flex()
-                    .items_center()
-                    .rounded(px(radius::BUTTON))
-                    .bg(p.accent_fill)
-                    .text_color(p.on_accent)
-                    .style(ty::BUTTON)
-                    .child(format!("Plan {}", next.weekday)),
+                    .id("plan-next")
+                    .child(kit::button(p, format!("Plan {}", next.weekday)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
+                    })),
             );
         div()
             .flex()
             .flex_col()
             .child(section("When the sun comes up".into()))
             .child(card)
-            .child(section(format!("Also on {}", next.weekday).into()))
-            .children(next.also.iter().map(compact))
-            .child(section("Rest of the week".into()))
-            .children(next.week.iter().map(compact))
-            .child(
-                div()
-                    .px(px(desktop::LIST_PAD_X))
-                    .pt(px(space::S3))
-                    .style(ty::COUNT)
-                    .text_color(p.ink_3)
-                    .child(format!("{} more", next.more)),
-            )
-    }
-
-    fn detail(&self, d: &Detail) -> Div {
-        let p = &self.palette;
-        let t = self.theme;
-        let steps_done = d.steps.iter().filter(|s| s.done).count() as u32;
-        let steps_total = d.steps.len() as u32;
-        let step_row = |i: usize, s: &crate::fixtures::Step| {
-            let selected = i == steps_done as usize;
-            let mark = if s.done {
-                kit::checked(p, selected, component::GLYPH)
-            } else {
-                kit::checkbox(p, false, component::GLYPH)
-            };
-            let title = div().flex_1().truncate().style(ty::STEP);
-            let title = if s.done {
-                title.text_color(p.ink_3).line_through()
-            } else {
-                title.text_color(p.ink)
-            };
-            let row = div()
-                .relative()
-                .h(px(desktop::STEP_ROW))
-                .flex()
-                .items_center()
-                .gap(px(space::S3))
-                .px(px(desktop::DETAIL_PAD_X))
-                .border_b_1()
-                .border_color(p.line)
-                .child(mark)
-                .child(title.child(s.title))
-                .child(
+            .when(!next.also.is_empty(), |d| {
+                d.child(section(format!("Also on {}", next.weekday).into()))
+                    .children(next.also.iter().map(compact))
+            })
+            .when(!next.week.is_empty(), |d| {
+                d.child(section("Rest of the week".into()))
+                    .children(next.week.iter().map(compact))
+            })
+            .when(next.more > 0, |d| {
+                d.child(
                     div()
+                        .px(px(desktop::LIST_PAD_X))
+                        .pt(px(space::S3))
                         .style(ty::COUNT)
-                        .text_color(p.ink_4)
-                        .child(format!("{:02}", i + 1)),
-                );
-            if selected {
-                row.bg(p.wash).child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(elevation::SELECTION_BAR))
-                        .bg(p.accent),
+                        .text_color(p.ink_3)
+                        .child(format!("{} more", next.more)),
                 )
-            } else {
-                row
-            }
-        };
-        let section = |label: &'static str| {
-            div()
-                .px(px(desktop::DETAIL_PAD_X))
-                .pt(px(space::S5))
-                .pb(px(space::S2))
-                .child(kit::label(p, label))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .h(px(desktop::DETAIL_TOP))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .pl(px(desktop::DETAIL_PAD_X))
-                    .pr(px(space::S4))
-                    .border_b_1()
-                    .border_color(p.line)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2))
-                            .style(ty::SUMMARY)
-                            .text_color(p.ink_2)
-                            .child(kit::chip(
-                                t,
-                                &ListRef {
-                                    name: d.list.collection,
-                                    ..d.list
-                                },
-                                false,
-                            ))
-                            .child(div().text_color(p.ink_4).child("/"))
-                            .child(
-                                div()
-                                    .text_color(p.ink)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(d.list.name),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(space::S3 + 2.))
-                            .child(kit::icon(Icon::Star, component::GLYPH, p.ink_3))
-                            .child(kit::icon(Icon::Ellipsis, component::GLYPH, p.ink_3))
-                            .child(kit::icon(Icon::X, component::GLYPH, p.ink_3)),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .pt(px(space::S5))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S3))
-                            .child(kit::checkbox(p, false, component::CHECKBOX + 2.))
-                            .child(
-                                div()
-                                    .style(ty::DETAIL_TITLE)
-                                    .text_color(p.ink)
-                                    .child(d.title),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .ml(px(component::CHECKBOX + 2. + space::S3))
-                            .mt(px(space::S1))
-                            .style(ty::COUNT)
-                            .text_color(p.ink_3)
-                            .child(d.subtitle),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .pt(px(space::S5))
-                    .pb(px(space::S1))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(kit::label(p, "Steps"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2))
-                            .child(kit::meter(p, steps_done, steps_total))
-                            .child(
-                                div()
-                                    .style(ty::TAG)
-                                    .text_color(p.ink_2)
-                                    .child(format!("{steps_done}/{steps_total}")),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(elevation::HAIRLINE))
-                    .mx(px(desktop::DETAIL_PAD_X))
-                    .bg(p.line),
-            )
-            .children(d.steps.iter().enumerate().map(|(i, s)| step_row(i, s)))
-            .child(
-                div()
-                    .h(px(desktop::STEP_ROW))
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S3))
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .style(ty::STEP)
-                    .text_color(p.ink_3)
-                    .child(kit::icon(Icon::Plus, component::GLYPH, p.ink_3))
-                    .child(div().flex_1().child("Add step"))
-                    .child(kit::kbd(p, "Tab")),
-            )
-            .child(section("Notes"))
-            .child(
-                div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .style(ty::NOTES)
-                    .text_color(p.ink_2)
-                    .child(d.notes),
-            )
-            .child(
-                div()
-                    .mt(px(space::S4))
-                    .mx(px(desktop::DETAIL_PAD_X))
-                    .border_t_1()
-                    .border_color(p.line)
-                    .children(d.fields.iter().map(|(icon, label, value)| {
-                        div()
-                            .h(px(desktop::PROP_ROW))
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2 + 2.))
-                            .border_b_1()
-                            .border_color(p.line)
-                            .child(kit::icon(*icon, component::ICON_SMALL, p.ink_3))
-                            .child(
-                                div()
-                                    .w(px(space::S10 * 2.))
-                                    .style(ty::NAV_COLLECTION.with_weight(400))
-                                    .text_color(p.ink_3)
-                                    .child(*label),
-                            )
-                            .child(field_value(p, value))
-                    })),
-            )
-    }
-
-    fn detail_pane(&self) -> Div {
-        let p = &self.palette;
-        let pane = div()
-            .w(px(desktop::DETAIL))
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .bg(p.pane)
-            .border_l_1()
-            .border_color(p.line);
-        match &self.shell.detail {
-            Some(d) => pane.child(self.detail(d)),
-            None => pane.items_center().justify_center().child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(space::S2 + 2.))
-                    .child(kit::icon(Icon::Text, component::ICON + space::S1, p.ink_4))
-                    .child(
-                        div()
-                            .style(ty::BODY)
-                            .text_color(p.ink_3)
-                            .child("Select a task to see its details"),
-                    ),
-            ),
-        }
+            })
     }
 
     fn status_bar(&self) -> Div {
         let p = &self.palette;
-        let (done, _, open) = crate::fixtures::summary(&self.shell.room);
+        let (done, _, open) = self.shell.room.summary();
         let hint = |key: &'static str, what: &'static str| {
             div()
                 .flex()
@@ -1197,6 +1186,12 @@ impl ShellView {
                 .font_weight(FontWeight::MEDIUM)
                 .child(s)
         };
+        let error = self.notice.as_ref().is_some_and(|n| n.error);
+        let right: SharedString = self
+            .notice
+            .as_ref()
+            .map(|n| n.text.clone())
+            .unwrap_or_else(|| "Ctrl N adds a task".into());
         div()
             .h(px(desktop::STATUSBAR))
             .flex_none()
@@ -1238,7 +1233,11 @@ impl ShellView {
                     .child(hint("E", "edit"))
                     .child(hint("D", "due")),
             )
-            .child(div().child("Ctrl Z undoes the last agent change"))
+            .child(
+                div()
+                    .when(error, |d| d.text_color(p.danger_ink))
+                    .child(right),
+            )
     }
 }
 
@@ -1251,22 +1250,30 @@ impl Focusable for ShellView {
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
+        let finished = self.shell.room.finished_day();
+        let quick_add = (!finished).then(|| self.quick_add_field(window, cx));
         div()
             .id("shell")
             .key_context("Shell")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
+                let handle = this.filter.read(cx).focus_handle.clone();
+                window.focus(&handle, cx);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &FocusQuickAdd, window, cx| {
                 let handle = this.quick_add.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
                 cx.notify();
             }))
+            .on_mouse_down(MouseButton::Left, |_, _, _| {})
             .size_full()
             .flex()
             .flex_col()
             .bg(p.canvas)
             .style(ty::BODY)
             .text_color(p.ink)
-            .child(self.titlebar())
+            .child(self.titlebar(window, cx))
             .child(
                 div()
                     .flex_1()
@@ -1274,7 +1281,7 @@ impl Render for ShellView {
                     .flex()
                     .border_t_1()
                     .border_color(p.line)
-                    .child(self.sidebar())
+                    .child(self.sidebar(cx))
                     .child(
                         div()
                             .flex_1()
@@ -1285,25 +1292,12 @@ impl Render for ShellView {
                             .bg(p.pane)
                             .child(self.header())
                             // The finished day hands over to tomorrow instead of taking new tasks.
-                            .when(!self.finished_day(), |pane| {
-                                pane.child(self.quick_add(window, cx))
-                            })
-                            .child(self.list()),
+                            .children(quick_add)
+                            .child(self.list(cx)),
                     )
-                    .child(self.detail_pane()),
+                    .child(self.detail_pane(window, cx)),
             )
             .child(self.status_bar())
-    }
-}
-
-/// A detail field's value: dates and times in mono, tags in quieter mono, words in the UI face.
-fn field_value(p: &Palette, value: &'static str) -> Div {
-    let v = div().child(value);
-    if value.starts_with('#') {
-        v.style(ty::TAG).text_color(p.ink_2)
-    } else if value.chars().any(|c| c.is_ascii_digit()) {
-        v.style(ty::DUE.with_weight(600)).text_color(p.ink)
-    } else {
-        v.style(ty::NAV_COLLECTION).text_color(p.ink)
+            .children(self.menu(cx))
     }
 }

@@ -17,7 +17,6 @@ use gpui_windows::todo_patch;
 
 use crate::args::{BenchKind, BenchOptions, RunOptions};
 use crate::assets::Assets;
-use crate::fixtures;
 use crate::metrics::{Metrics, summarize};
 use crate::platform::autostart::Autostart;
 use crate::platform::single_instance::{self, Instance};
@@ -25,7 +24,8 @@ use crate::platform::tray::{self, TrayAction};
 use crate::platform::{hotkey, win};
 use crate::theme::Theme;
 use crate::ui::quick_add::{self, QuickAddEvent, QuickAddView};
-use crate::ui::shell::{self, ShellView};
+use crate::ui::root::{self, RootView};
+use crate::ui::shell;
 use crate::{fonts, ui};
 
 /// Things that happen outside GPUI (tray, hotkey, a second launch) and are handled on the UI thread.
@@ -76,12 +76,6 @@ fn main_window_options(cx: &App, show: bool) -> WindowOptions {
     }
 }
 
-/// Today's eyebrow from the local clock.
-fn today() -> (String, String, String) {
-    let (y, m, d) = win::local_date();
-    fixtures::eyebrow_for(y, m, d)
-}
-
 /// What startup does after the single-instance check.
 #[derive(Debug)]
 enum Claim {
@@ -128,6 +122,11 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("todo-desktop.exe"));
     let (tx, mut rx) = unbounded::<ShellEvent>();
     let bench_hidden = bench.as_ref().is_some_and(|b| b.kind == BenchKind::Hotkey);
+    // The saved pairing and the cache load on a thread of their own while GPUI starts up, so a warm
+    // start draws real data in its first frame.
+    let loader = std::thread::Builder::new()
+        .name("todo-load".into())
+        .spawn(root::load)?;
 
     application().with_assets(Assets).run(move |cx: &mut App| {
         if bench.is_some() {
@@ -138,10 +137,25 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
             tracing::warn!("fonts missing: {:?}", missing);
         }
         cx.bind_keys(ui::input::key_bindings());
+        cx.bind_keys(ui::text_area::key_bindings());
         cx.bind_keys(shell::key_bindings());
         let theme = theme_for(cx.window_appearance());
-        let (weekday, date, week) = today();
-        let startup = fixtures::startup(weekday, date, week);
+        let startup = match loader.join() {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::error!("starting failed: {e:#}");
+                cx.quit();
+                return;
+            }
+            Err(_) => {
+                tracing::error!("starting failed: the loader panicked");
+                cx.quit();
+                return;
+            }
+        };
+        if bench.is_some() {
+            metrics.ms("data_loaded_ms", win::process_age_ms());
+        }
 
         // The hotkey and the tray come first: whether they work decides what the windows offer. The hotkey
         // handler learns the quick-add window's handle once that window exists.
@@ -165,7 +179,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
         let hotkey_ok = hotkey.is_some();
 
         let main = match cx.open_window(main_window_options(cx, !background), |window, cx| {
-            cx.new(|cx| ShellView::new(startup.clone(), theme, window, cx))
+            cx.new(|cx| RootView::new(startup, theme, window, cx))
         }) {
             Ok(w) => w,
             Err(e) => {
@@ -174,8 +188,11 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
                 return;
             }
         };
+        let progress = main
+            .read_with(cx, |root, cx| root.my_day_progress(cx))
+            .unwrap_or_default();
         let quick = match cx.open_window(quick_add::window_options(cx, false), |window, cx| {
-            cx.new(|cx| QuickAddView::new(&startup.room, theme, None, hotkey_ok, window, cx))
+            cx.new(|cx| QuickAddView::new(progress, theme, None, hotkey_ok, window, cx))
         }) {
             Ok(w) => w,
             Err(e) => {
@@ -193,6 +210,9 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
                 .unwrap_or_default(),
         };
         quick_hwnd.store(hwnds.quick, Ordering::Release);
+        if let Ok(view) = quick.update(cx, |_, _, cx| cx.entity().downgrade()) {
+            let _ = main.update(cx, |root, _, cx| root.set_quick_add(view, cx));
+        }
         let close = if tray.is_some() {
             OnClose::HideToTray
         } else {
@@ -255,7 +275,7 @@ enum OnClose {
 /// Close hides to the tray (or quits without one); the quick-add window reports what was typed and hides
 /// when it loses focus.
 fn wire_windows(
-    main: WindowHandle<ShellView>,
+    main: WindowHandle<RootView>,
     quick: WindowHandle<QuickAddView>,
     hwnds: Hwnds,
     close: OnClose,
@@ -280,14 +300,16 @@ fn wire_windows(
         });
         let view = cx.entity();
         cx.subscribe(&view, move |_, _, event: &QuickAddEvent, cx| {
-            if let QuickAddEvent::Submitted(title) = event {
-                let title = title.clone();
-                let _ = main.update(cx, move |shell, _, cx| {
-                    shell.add_task(title);
-                    cx.notify();
-                });
-            }
             win::hide(hwnds.quick);
+            if let QuickAddEvent::Submitted(text) = event {
+                let added = main
+                    .update(cx, |root, _, cx| root.quick_add(text, cx))
+                    .unwrap_or(false);
+                if !added {
+                    // Not paired yet: show the window that says so.
+                    win::show_and_focus(hwnds.main);
+                }
+            }
         })
         .detach();
         cx.observe_window_activation(window, move |_, window, _| {
@@ -303,7 +325,7 @@ fn wire_windows(
 fn handle_event(
     event: ShellEvent,
     hwnds: Hwnds,
-    main: WindowHandle<ShellView>,
+    main: WindowHandle<RootView>,
     quick: WindowHandle<QuickAddView>,
     tray: Option<&tray::Tray>,
     exe: &std::path::Path,

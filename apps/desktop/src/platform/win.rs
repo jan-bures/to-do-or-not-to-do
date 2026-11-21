@@ -6,7 +6,7 @@ use gpui::Window;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{FILETIME, HWND};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GetSystemTimePreciseAsFileTime};
+use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsIconic, IsWindowVisible, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
@@ -84,16 +84,4 @@ pub fn process_age_ms() -> f64 {
         GetSystemTimePreciseAsFileTime(&mut now);
         filetime_100ns(now).saturating_sub(filetime_100ns(created)) as f64 / 10_000.0
     }
-}
-
-/// Today's local date: (year, month, day).
-pub fn local_date() -> (i32, u32, u32) {
-    // SAFETY: `GetLocalTime` fills the SYSTEMTIME we pass; it cannot fail.
-    let t = unsafe {
-        let mut t = std::mem::zeroed();
-        GetLocalTime(&mut t);
-        t
-    };
-    let t: windows_sys::Win32::Foundation::SYSTEMTIME = t;
-    (i32::from(t.wYear), u32::from(t.wMonth), u32::from(t.wDay))
 }

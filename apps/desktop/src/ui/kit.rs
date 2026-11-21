@@ -6,9 +6,10 @@ use gpui::{
 };
 
 use crate::assets::{glyph_path, icon_path};
-use crate::fixtures::ListRef;
+use crate::model::ListRef;
 use crate::theme::{
-    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, elevation, radius, space, ty,
+    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, elevation, motion, radius,
+    space, ty,
 };
 
 /// A Lucide icon, tinted like text. `size` is `component::ICON` (18) in toolbars and rows and
@@ -59,6 +60,56 @@ pub fn checked(p: &Palette, on_wash: bool, size: f32) -> Div {
         .child(icon(Icon::Check, size * 0.75, p.on_accent))
 }
 
+/// A checkbox being checked: the fill pops in (`CHECK_FILL`, the overshoot curve), then the tick draws
+/// from left to right (`CHECK_TICK` after `CHECK_TICK_DELAY`). Plays once.
+pub fn checking(
+    p: &Palette,
+    on_wash: bool,
+    size: f32,
+    id: impl Into<gpui::ElementId>,
+) -> impl IntoElement {
+    use gpui::{Animation, AnimationExt};
+    use std::time::Duration;
+    let ms = |n: u32| Duration::from_millis(u64::from(n));
+    let fill = if on_wash { p.check_selected } else { p.accent };
+    let id = id.into();
+    let disc = div().size(px(size)).rounded_full().bg(fill).with_animation(
+        (id.clone(), "fill"),
+        Animation::new(ms(motion::CHECK_FILL)).with_easing(|t| motion::POP.ease(t)),
+        move |el, t| {
+            let s = size * (0.55 + 0.45 * t);
+            el.size(px(s))
+        },
+    );
+    let tick_size = size * 0.75;
+    let tick_total = motion::CHECK_TICK_DELAY + motion::CHECK_TICK;
+    let delay = motion::CHECK_TICK_DELAY as f32 / tick_total as f32;
+    let tick = div()
+        .absolute()
+        .left(px((size - tick_size) / 2.))
+        .top(px((size - tick_size) / 2.))
+        .h(px(tick_size))
+        .overflow_hidden()
+        .child(icon(Icon::Check, tick_size, p.on_accent))
+        .with_animation(
+            (id, "tick"),
+            Animation::new(ms(tick_total)),
+            move |el, t| {
+                let drawn = ((t - delay) / (1. - delay)).clamp(0., 1.);
+                el.w(px(tick_size * motion::STANDARD.ease(drawn)))
+            },
+        );
+    div()
+        .relative()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(disc)
+        .child(tick)
+}
+
 /// An agent's round letter mark: the letter at half the mark's size, with a 1 px inset ring.
 pub fn agent_mark(theme: Theme, agent: Agent, size: f32) -> Div {
     let c = theme::agent_colors(theme, agent);
@@ -95,10 +146,9 @@ fn pill(bg: Hsla) -> Div {
 /// A list chip: dot plus "Collection · List" (smart lists) or just the list name.
 pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
     let c = theme::list_colors(theme, list.hue);
-    let label: SharedString = if with_collection {
-        format!("{} · {}", list.collection, list.name).into()
-    } else {
-        list.name.into()
+    let label: SharedString = match (&list.collection, with_collection) {
+        (Some(c), true) => format!("{c} · {}", list.name).into(),
+        _ => list.name.clone(),
     };
     pill(c.tint)
         .text_color(c.ink)
@@ -130,7 +180,7 @@ fn diamond(size: f32, color: Hsla) -> impl IntoElement {
 }
 
 /// The overdue badge.
-pub fn overdue_badge(p: &Palette, label: &'static str) -> Div {
+pub fn overdue_badge(p: &Palette, label: SharedString) -> Div {
     pill(p.danger_bg)
         .text_color(p.danger_ink)
         .style(ty::OVERDUE_BADGE)
@@ -205,6 +255,113 @@ pub fn meter(p: &Palette, done: u32, total: u32) -> Div {
                 .rounded(px(elevation::HAIRLINE))
                 .bg(if i < lit { p.accent } else { p.line_strong })
         }))
+}
+
+/// A transient overlay (menus, popovers): raised, with the design's one shadow, and a 1 px border in
+/// dark mode where shadows barely read.
+pub fn overlay(p: &Palette) -> Div {
+    let layers = if p.night() {
+        elevation::OVERLAY_DARK
+    } else {
+        elevation::OVERLAY_LIGHT
+    };
+    let shadows = layers
+        .iter()
+        .map(|s| gpui::BoxShadow {
+            color: theme::with_alpha(theme::color(s.color.rgb), s.color.alpha),
+            offset: gpui::point(px(0.), px(s.y)),
+            blur_radius: px(s.blur),
+            spread_radius: px(s.spread),
+            inset: false,
+        })
+        .collect();
+    div()
+        .flex()
+        .flex_col()
+        .py(px(space::S1))
+        .rounded(px(radius::LG))
+        .bg(p.raised)
+        .border(px(elevation::HAIRLINE))
+        .border_color(if p.night() { p.line_strong } else { p.line })
+        .shadow(shadows)
+}
+
+/// A primary button: accent fill, label in `on_accent`.
+pub fn button(p: &Palette, label: impl Into<SharedString>) -> Div {
+    div()
+        .h(px(component::BUTTON))
+        .px(px(space::S4))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::BUTTON))
+        .bg(p.accent_fill)
+        .text_color(p.on_accent)
+        .style(ty::BUTTON)
+        .child(label.into())
+}
+
+/// A quiet button: a hairline outline, label in ink.
+pub fn button_quiet(p: &Palette, label: impl Into<SharedString>) -> Div {
+    div()
+        .h(px(component::BUTTON))
+        .px(px(space::S4))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::BUTTON))
+        .border(px(elevation::HAIRLINE))
+        .border_color(p.line_strong)
+        .text_color(p.ink_2)
+        .style(ty::BUTTON)
+        .child(label.into())
+}
+
+/// The minimise, maximise and close buttons at the right of a custom title bar, after a drag area that
+/// fills the rest of their parent.
+pub fn window_controls(p: &Palette) -> Div {
+    let hover = p.hover;
+    let control = |icon: Icon, area: gpui::WindowControlArea, id: &'static str| {
+        div()
+            .id(id)
+            // Windows caption buttons are 46 px wide; the design has no token for OS chrome.
+            .w(px(46.))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .window_control_area(area)
+            .hover(move |s| s.bg(hover))
+            .child(self::icon(icon, component::GLYPH, p.ink_2))
+    };
+    div()
+        .flex_1()
+        .h_full()
+        .flex()
+        .justify_end()
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .window_control_area(gpui::WindowControlArea::Drag),
+        )
+        .child(control(
+            Icon::Minus,
+            gpui::WindowControlArea::Min,
+            "win-min",
+        ))
+        .child(control(
+            Icon::Square,
+            gpui::WindowControlArea::Max,
+            "win-max",
+        ))
+        .child(control(
+            Icon::X,
+            gpui::WindowControlArea::Close,
+            "win-close",
+        ))
 }
 
 /// A section label in mono capitals.

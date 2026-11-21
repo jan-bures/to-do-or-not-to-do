@@ -8,15 +8,22 @@ mod assets;
 mod fixtures;
 mod fonts;
 mod metrics;
+mod model;
 mod theme;
 mod ui;
 
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod config;
+#[cfg(windows)]
 mod platform;
 #[cfg(windows)]
 mod screenshot;
+#[cfg(windows)]
+mod session;
+#[cfg(windows)]
+mod store;
 
 use std::process::ExitCode;
 

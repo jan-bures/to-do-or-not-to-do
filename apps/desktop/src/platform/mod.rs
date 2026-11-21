@@ -2,6 +2,7 @@
 //! visibility. The app targets Windows for M1; see `docs/desktop.md`.
 
 pub mod autostart;
+pub mod dpapi;
 pub mod hotkey;
 pub mod single_instance;
 pub mod tray;

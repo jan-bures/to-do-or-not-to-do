@@ -128,6 +128,13 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Selects everything (to type over it).
+    pub fn select_everything(&mut self, cx: &mut Context<Self>) {
+        self.selected_range = 0..self.content.len();
+        self.selection_reversed = false;
+        cx.notify();
+    }
+
     fn left(&mut self, _: &Left, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), window, cx);
