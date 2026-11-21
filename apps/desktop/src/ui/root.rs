@@ -40,7 +40,7 @@ pub enum Opened {
     Failed(SharedString),
     /// The paired session, opened on its cache (not syncing yet), and what was recovered if the cache
     /// was damaged.
-    Session(Session, Option<Recovered>),
+    Session(Box<Session>, Option<Recovered>),
 }
 
 /// Loads the saved pairing and opens its cache. Runs on a thread of its own while GPUI starts, so a warm
@@ -65,7 +65,7 @@ fn open(rt: &Runtime, paths: &Paths) -> Opened {
         Ok(Some(pairing)) => {
             config::sweep_signed_out(paths, Some(&pairing.config.pairing));
             match Session::open_or_recover(rt.clone(), paths, &pairing) {
-                Ok((s, recovered)) => Opened::Session(s, recovered),
+                Ok((s, recovered)) => Opened::Session(Box::new(s), recovered),
                 Err(OpenError::Config(why)) => {
                     tracing::warn!("the saved sign-in can't be used: {why}");
                     Opened::PairAgain(
@@ -169,7 +169,7 @@ impl RootView {
     ) {
         match opened {
             Opened::Session(s, recovered) => {
-                self.show_shell(s, window, cx);
+                self.show_shell(*s, window, cx);
                 if let (Some(r), Screen::Shell(shell)) = (recovered, &self.screen) {
                     let text = recovered_notice(&r);
                     shell.update(cx, |s, cx| s.show_notice(text, false, cx));

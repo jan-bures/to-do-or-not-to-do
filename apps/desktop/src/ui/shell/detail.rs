@@ -299,7 +299,15 @@ impl ShellView {
             let result = job.await;
             let _ = this.update(cx, |v, cx| {
                 v.notice = Some(match result {
-                    Ok(path) => Notice::info(format!("Saved {}", path.display())),
+                    Ok(saved) if saved.marked => {
+                        Notice::info(format!("Saved {}", saved.path.display()))
+                    }
+                    // Saved, but the drive can't hold the mark (FAT, exFAT): say so.
+                    Ok(saved) => Notice::error(format!(
+                        "Saved {}, but this drive can't mark it as downloaded from the internet, \
+                         so Windows won't warn when it's opened.",
+                        saved.path.display()
+                    )),
                     Err(e) => {
                         tracing::warn!("saving an attachment failed: {e:#}");
                         Notice::error(format!("Couldn't save {name}: {e}"))

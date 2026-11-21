@@ -12,8 +12,13 @@
 //!
 //! A pairing's data lives in a directory named after that pairing, so a new pairing never picks up an
 //! old cache, and cleaning up after an old pairing can't touch the current one. Signing out removes the
-//! token and the config, marks the pairing's directory as signed out and removes it; a directory that
-//! couldn't be removed then (a file still open) is removed at the next start.
+//! token and the config, records the intent to remove the data as `pairings\<pairing ID>.signed-out`
+//! (beside the directory, so it survives a partial removal) and removes the directory; whatever couldn't
+//! be removed then (a file still open, a crash) is removed at the next start, and the record last.
+//!
+//! **Removal never leaves our data.** It only takes directories named exactly like a pairing ID, refuses
+//! to work through a `pairings` directory (or app directory) that is a junction, symlink or other
+//! reparse point, and removes a reparse point found inside as a link, never following it.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -30,8 +35,8 @@ const TOKEN_FILE: &str = "device-token.bin";
 const PAIRINGS_DIR: &str = "pairings";
 const CACHE_FILE: &str = "cache.sqlite";
 const ATTACHMENTS_DIR: &str = "attachments";
-/// Left in a pairing's directory once its sign-in is gone: the directory may be removed.
-const SIGNED_OUT: &str = "signed-out";
+/// `<pairing ID>.signed-out`, beside a pairing's directory once its sign-in is gone: remove it.
+const SIGNED_OUT: &str = ".signed-out";
 
 /// The app's directories.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,26 +87,64 @@ impl Paths {
 
     /// The directory holding one pairing's data.
     pub fn data(&self, pairing: &PairingId) -> DataDir {
-        DataDir(self.pairings().join(pairing.as_str()))
+        DataDir {
+            app: self.cache_dir.clone(),
+            id: pairing.clone(),
+            path: self.pairings().join(pairing.as_str()),
+        }
     }
 }
 
 /// One pairing's data directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DataDir(PathBuf);
+pub struct DataDir {
+    /// The app's machine-local directory, above `pairings`.
+    app: PathBuf,
+    id: PairingId,
+    path: PathBuf,
+}
 
 impl DataDir {
     pub fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 
     pub fn cache(&self) -> PathBuf {
-        self.0.join(CACHE_FILE)
+        self.path.join(CACHE_FILE)
     }
 
     /// Where attachments are downloaded to be opened.
     pub fn attachments(&self) -> PathBuf {
-        self.0.join(ATTACHMENTS_DIR)
+        self.path.join(ATTACHMENTS_DIR)
+    }
+
+    fn pairings(&self) -> PathBuf {
+        self.app.join(PAIRINGS_DIR)
+    }
+
+    /// The record of an unfinished sign-out, beside the directory.
+    fn signed_out_record(&self) -> PathBuf {
+        self.pairings()
+            .join(format!("{}{SIGNED_OUT}", self.id.as_str()))
+    }
+
+    /// Checks that the directories this pairing's data hangs from are plain directories, not junctions
+    /// or links that would lead removal (or writes) somewhere else. Missing ones are fine.
+    pub fn check_ancestors(&self) -> std::io::Result<()> {
+        for dir in [self.app.clone(), self.pairings()] {
+            match std::fs::symlink_metadata(&dir) {
+                Ok(m) if todo_fs::is_plain(&m) && m.is_dir() => {}
+                Ok(_) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("{} is a link or not a directory", dir.display()),
+                    ));
+                }
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -242,38 +285,95 @@ pub fn forget_pairing(paths: &Paths) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Marks a pairing's data as signed out, so it is removed even if removing it now fails.
+/// Records that a pairing's data is to be removed, beside its directory (never inside it), so a removal
+/// that fails or is cut short is finished at the next start.
 pub fn mark_signed_out(data: &DataDir) -> std::io::Result<()> {
-    match std::fs::write(data.path().join(SIGNED_OUT), b"") {
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()), // No data at all.
-        other => other,
+    data.check_ancestors()?;
+    if !data.pairings().exists() {
+        return Ok(()); // No data at all.
+    }
+    std::fs::write(data.signed_out_record(), b"")
+}
+
+/// Withdraws a sign-out record (the sign-in couldn't be removed after all, so the data stays).
+pub fn unmark_signed_out(data: &DataDir) {
+    if let Err(e) = remove(&data.signed_out_record()) {
+        tracing::warn!("a sign-out record couldn't be withdrawn: {e}");
     }
 }
 
-/// Removes a pairing's data directory: the cache and the downloaded attachments. Fails while a session
-/// still has the cache open.
+/// Removes a pairing's data directory (the cache and the downloaded attachments), then its signed-out
+/// record. Never follows a junction or link: if `pairings` or the app directory is one, nothing is
+/// removed; one inside the data is removed as a link. Fails while a session still has the cache open.
 pub fn remove_data(data: &DataDir) -> std::io::Result<()> {
-    match std::fs::remove_dir_all(data.path()) {
-        Err(e) if e.kind() != ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+    data.check_ancestors()?;
+    match std::fs::symlink_metadata(data.path()) {
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+        Ok(m) if !todo_fs::is_plain(&m) || !m.is_dir() => remove_link(data.path(), &m)?,
+        Ok(_) => remove_tree(data.path())?,
+    }
+    remove(&data.signed_out_record())
+}
+
+/// Removes a directory tree without following any reparse point in it.
+fn remove_tree(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let m = std::fs::symlink_metadata(&path)?;
+        if !todo_fs::is_plain(&m) {
+            remove_link(&path, &m)?;
+        } else if m.is_dir() {
+            remove_tree(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    std::fs::remove_dir(dir)
+}
+
+/// Removes a junction, symlink or other reparse point itself (or a stray file), never its target.
+fn remove_link(path: &Path, m: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    if m.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        // For a directory junction or symlink this deletes the link, not the directory it points to.
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
     }
 }
 
-/// Removes the data of pairings that were signed out but couldn't be cleaned up then. Only directories
-/// carrying the signed-out mark go, never `keep` (the current pairing). Returns how many were removed.
+/// Finishes sign-outs that couldn't be completed: for every `<pairing ID>.signed-out` record whose name is
+/// exactly a pairing ID, removes that pairing's data (see [`remove_data`]). Never `keep` (the current
+/// pairing), and nothing without a record. Returns how many were finished.
 pub fn sweep_signed_out(paths: &Paths, keep: Option<&PairingId>) -> usize {
+    let probe = DataDir {
+        app: paths.cache_dir.clone(),
+        id: PairingId(String::new()),
+        path: PathBuf::new(),
+    };
+    if let Err(e) = probe.check_ancestors() {
+        tracing::warn!("not cleaning up signed-out data: {e}");
+        return 0;
+    }
     let Ok(entries) = std::fs::read_dir(paths.pairings()) else {
         return 0;
     };
     let mut removed = 0;
     for entry in entries.flatten() {
-        let path = entry.path();
         let name = entry.file_name();
-        let current = keep.is_some_and(|k| name.to_str() == Some(k.as_str()));
-        if current || !path.join(SIGNED_OUT).exists() {
+        let Some(id) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(SIGNED_OUT))
+            .and_then(|id| PairingId::try_from(id.to_string()).ok())
+        else {
+            continue;
+        };
+        if keep.is_some_and(|k| k.as_str().eq_ignore_ascii_case(id.as_str())) {
             continue;
         }
-        match std::fs::remove_dir_all(&path) {
+        match remove_data(&paths.data(&id)) {
             Ok(()) => removed += 1,
             Err(e) => tracing::warn!("signed-out data couldn't be removed yet: {e}"),
         }
@@ -403,10 +503,111 @@ mod tests {
         assert_eq!(sweep_signed_out(&paths, Some(&old.config.pairing)), 0);
         assert_eq!(sweep_signed_out(&paths, Some(&new.config.pairing)), 1);
         assert!(!old_data.path().exists());
+        assert!(
+            !old_data.signed_out_record().exists(),
+            "the record goes last"
+        );
         assert!(new_data.cache().exists());
         remove_data(&new_data).expect("remove");
         remove_data(&new_data).expect("removing twice is fine");
         mark_signed_out(&new_data).expect("marking missing data is fine");
+        let _ = std::fs::remove_dir_all(&paths.config_dir);
+    }
+
+    /// A directory junction at `link` pointing at `target` (no admin rights needed).
+    fn junction(link: &Path, target: &Path) {
+        let ok = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("mklink")
+            .status
+            .success();
+        assert!(ok, "mklink /J {}", link.display());
+    }
+
+    /// A directory outside the app's data with a file in it that must survive.
+    fn outside() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("outside");
+        let precious = dir.path().join("precious.txt");
+        std::fs::write(&precious, b"keep me").expect("write");
+        (dir, precious)
+    }
+
+    #[test]
+    fn a_junction_at_a_pairing_directory_is_removed_as_a_link() {
+        let paths = temp();
+        let (_out, precious) = outside();
+        let id = PairingId::random();
+        let data = paths.data(&id);
+        std::fs::create_dir_all(data.pairings()).expect("pairings");
+        junction(data.path(), precious.parent().expect("dir"));
+        mark_signed_out(&data).expect("mark");
+        assert_eq!(sweep_signed_out(&paths, None), 1);
+        assert!(!data.path().exists(), "the link is gone");
+        assert_eq!(std::fs::read(&precious).expect("still there"), b"keep me");
+        let _ = std::fs::remove_dir_all(&paths.config_dir);
+    }
+
+    #[test]
+    fn a_junction_inside_the_data_is_never_followed() {
+        let paths = temp();
+        let (_out, precious) = outside();
+        let data = paths.data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("data");
+        std::fs::write(data.cache(), b"cache").expect("cache");
+        junction(&data.attachments(), precious.parent().expect("dir"));
+        remove_data(&data).expect("remove");
+        assert!(!data.path().exists());
+        assert_eq!(std::fs::read(&precious).expect("still there"), b"keep me");
+        let _ = std::fs::remove_dir_all(&paths.config_dir);
+    }
+
+    #[test]
+    fn a_junction_above_the_data_stops_all_removal() {
+        let paths = temp();
+        let (out, precious) = outside();
+        // `pairings` itself leads elsewhere, to a directory holding what looks like pairing data.
+        let id = PairingId::random();
+        let fake = out.path().join(id.as_str());
+        std::fs::create_dir_all(&fake).expect("fake");
+        std::fs::write(fake.join("cache.sqlite"), b"not ours").expect("file");
+        std::fs::write(out.path().join(format!("{}{SIGNED_OUT}", id.as_str())), b"").expect("rec");
+        std::fs::create_dir_all(&paths.cache_dir).expect("app");
+        let data = paths.data(&id);
+        junction(&data.pairings(), out.path());
+        assert_eq!(sweep_signed_out(&paths, None), 0);
+        assert!(remove_data(&data).is_err());
+        assert!(mark_signed_out(&data).is_err());
+        assert!(fake.join("cache.sqlite").exists());
+        assert_eq!(std::fs::read(&precious).expect("still there"), b"keep me");
+        std::fs::remove_dir(data.pairings()).expect("unlink");
+        let _ = std::fs::remove_dir_all(&paths.config_dir);
+    }
+
+    #[test]
+    fn only_exact_pairing_ids_are_swept() {
+        let paths = temp();
+        let id = PairingId::random();
+        let upper = id.as_str().to_ascii_uppercase();
+        let pairings = paths.cache_dir.join(PAIRINGS_DIR);
+        for name in [upper.as_str(), "not-a-pairing", ".."] {
+            std::fs::create_dir_all(pairings.join(name)).expect("dir");
+            std::fs::write(pairings.join(format!("{name}{SIGNED_OUT}")), b"").expect("rec");
+        }
+        std::fs::create_dir_all(pairings.join("not-a-pairing").join("x")).expect("dir");
+        assert_eq!(sweep_signed_out(&paths, None), 0);
+        assert!(pairings.join(&upper).exists());
+        assert!(pairings.join("not-a-pairing").join("x").exists());
+        // The current pairing is kept, whatever the case of the record.
+        let data = paths.data(&id);
+        std::fs::create_dir_all(data.path()).expect("data");
+        mark_signed_out(&data).expect("mark");
+        assert_eq!(sweep_signed_out(&paths, Some(&id)), 0);
+        assert!(data.path().exists());
         let _ = std::fs::remove_dir_all(&paths.config_dir);
     }
 

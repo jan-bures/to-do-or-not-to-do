@@ -1,6 +1,13 @@
 //! Windows DPAPI (`CryptProtectData`) for the device token: encrypted with a key derived from the
-//! current user's logon credentials, so only this user on this machine can decrypt it. No admin rights,
-//! no prompts.
+//! current user's logon credentials. No admin rights, no prompts.
+//!
+//! What this protects against: other accounts, and the file being copied off the machine without the
+//! user's profile. It doesn't keep the token from a program running as the same user (that program can
+//! call DPAPI too). The user's DPAPI master keys roam with a roaming profile, so on a domain with roaming
+//! profiles the sealed token can be opened by the same user on another machine; that is why it is kept
+//! in `%APPDATA%` with the config, while the cache stays machine-local.
+//!
+//! The plaintext the API returns is overwritten before its buffer is freed.
 #![allow(unsafe_code)] // Two plain FFI calls with checked results; buffers are owned by the OS and freed once.
 
 use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
@@ -19,13 +26,20 @@ fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
     }
 }
 
-/// Takes the OS-allocated output blob, copies it out and frees it.
+/// Takes the OS-allocated output blob, copies it out, overwrites it with zeros (it may be the plaintext
+/// token) and frees it.
 fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
     if out.pbData.is_null() {
         return Vec::new();
     }
+    let len = out.cbData as usize;
     // SAFETY: on success the API returns `cbData` bytes at `pbData`, allocated with LocalAlloc.
-    let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
+    let bytes = unsafe { std::slice::from_raw_parts(out.pbData, len) }.to_vec();
+    for i in 0..len {
+        // SAFETY: `i < cbData`, inside the buffer the API returned; volatile so the writes to memory about
+        // to be freed aren't optimised away.
+        unsafe { std::ptr::write_volatile(out.pbData.add(i), 0) };
+    }
     // SAFETY: freed exactly once, with the allocator the API documents.
     unsafe { LocalFree(out.pbData as HLOCAL) };
     bytes

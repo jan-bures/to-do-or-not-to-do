@@ -373,7 +373,7 @@ fn a_damaged_cache_is_set_aside_and_its_unsent_edits_kept() {
     assert!(damaged > 0);
     drop(conn);
     assert!(matches!(
-        Session::open(net.clone(), &paths, &pairing),
+        Session::open_cache(net.clone(), &paths, &pairing),
         Err(OpenError::Corrupt(_))
     ));
 
@@ -459,6 +459,16 @@ fn a_sign_in_that_cant_be_removed_keeps_everything() {
     ));
     assert!(result.is_err(), "still signed in");
     assert!(!released.get(), "the session is kept");
+    assert!(
+        std::fs::read_dir(paths.cache_dir.join("pairings"))
+            .expect("pairings")
+            .all(|e| !e
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".signed-out")),
+        "the sign-out record was withdrawn"
+    );
     assert!(data.cache().exists(), "and so is its data");
     drop(held);
     assert_eq!(config::load(&paths).expect("load"), Some(pairing));
@@ -565,15 +575,187 @@ fn downloads_carry_the_mark_of_the_web_and_only_documents_open() {
     let refused = net.block_on(session.download_to_open(exe, "report.pdf.exe"));
     assert!(refused.is_err());
     let saved_to = home.path().join("saved.pdf.exe");
+    std::fs::write(&saved_to, b"an older file").expect("old");
     let saved = net
         .block_on(session.download_to(exe, saved_to.clone()))
         .expect("save");
-    assert_eq!(saved, saved_to);
-    assert!(zone(&saved).contains("ZoneId=3"));
+    assert_eq!(
+        saved,
+        Saved {
+            path: saved_to.clone(),
+            marked: true
+        }
+    );
+    assert_eq!(
+        std::fs::read(&saved_to).expect("read"),
+        b"MZ test",
+        "replaced"
+    );
+    assert!(zone(&saved_to).contains("ZoneId=3"));
+
+    // A download that fails leaves the previous file as it was, and no temporary file.
+    let missing = AttachmentId::from_uuid(session.client().new_uuid());
+    assert!(
+        net.block_on(session.download_to(missing, saved_to.clone()))
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&saved_to).expect("read"), b"MZ test");
+    assert!(
+        std::fs::read_dir(home.path()).expect("dir").all(|e| !e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".download")),
+        "no temporary file left"
+    );
+
+    // Every open gets a new owner-only directory; nothing is reused.
+    let again = net
+        .block_on(session.download_to_open(pdf, "report.pdf"))
+        .expect("again");
+    assert_ne!(again.parent(), opened.parent());
+    todo_fs::verify_private(opened.parent().expect("dir"), todo_fs::Private::Dir)
+        .expect("private dir");
+    todo_fs::verify_private(&opened, todo_fs::Private::AnyFile).expect("private file");
 
     drop(session);
     drop(server);
     shut_down(net);
+}
+
+fn damage(data: &config::DataDir) {
+    let conn = rusqlite::Connection::open(data.cache()).expect("sqlite");
+    let damaged = conn
+        .execute("UPDATE snapshot SET state = 'not json'", [])
+        .expect("snapshot")
+        + conn
+            .execute("UPDATE events SET event = 'not json'", [])
+            .expect("events");
+    assert!(damaged > 0);
+}
+
+#[test]
+fn an_interrupted_recovery_still_keeps_the_unsent_edit() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    for at in ["recorded", "copied", "cleared", "staged", "swapped"] {
+        let home = tempfile::tempdir().expect("home");
+        let paths = Paths::in_dir(home.path().to_owned());
+        let (pairing, queued) = queued_offline(&server, &net, &paths);
+        let data = paths.data(&pairing.config.pairing);
+        damage(&data);
+
+        // A crash or a full disk at this step: opening fails, and nothing is lost.
+        FAIL_AT.with(|f| f.set(Some(at)));
+        let failed = Session::open_or_recover(net.clone(), &paths, &pairing);
+        FAIL_AT.with(|f| f.set(None));
+        assert!(failed.is_err(), "{at}: the injected failure stops it");
+
+        // The next start finishes the job: the queued edit is in the cache, then on the server.
+        let (session, _) = Session::open_or_recover(net.clone(), &paths, &pairing)
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+        assert_eq!(
+            session.client().status().pending,
+            1,
+            "{at}: the queued edit survived"
+        );
+        assert!(
+            !data.path().join("recovery.json").exists(),
+            "{at}: finished"
+        );
+        session.start();
+        eventually("the queued list reached the server", || {
+            server.state().lists.contains_key(&queued)
+        });
+        net.block_on(session.shutdown());
+        drop(session);
+    }
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn signing_out_stops_downloads_before_removing_the_data() {
+    // A server that accepts the connection and never answers: the download hangs until cancelled.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let mut pairing = server.pair(&net, &paths);
+    pairing.config.server = format!("http://{}", silent.local_addr().expect("addr"));
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let id = AttachmentId::from_uuid(session.client().new_uuid());
+    let pending = session.download_to_open(id, "report.pdf");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let data = session.data().clone();
+    let started = Instant::now();
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        || {},
+        || tokio::time::sleep(Duration::from_millis(20)),
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "it didn't wait for the download"
+    );
+    assert!(net.block_on(pending).is_err(), "the download was stopped");
+    // No download can start any more.
+    assert!(
+        net.block_on(session.download_to_open(id, "report.pdf"))
+            .is_err()
+    );
+    drop(session);
+    // Released only now (the test kept the session): finished at the next start.
+    if result.expect("signed out") != SignedOut::Clean {
+        assert_eq!(config::sweep_signed_out(&paths, None), 1);
+    }
+    assert!(!data.path().exists(), "nothing was recreated");
+    drop(silent);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn a_save_without_the_mark_still_saves_and_says_so() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"old").expect("old");
+    let marked = save_replacing(&path, b"new", |_| {
+        Err(std::io::Error::other("no alternate data streams here"))
+    })
+    .expect("saved");
+    assert!(!marked);
+    assert_eq!(std::fs::read(&path).expect("read"), b"new");
+    // A failure before the replace leaves the old file and no temporary one.
+    let missing_dir = dir.path().join("gone").join("notes.txt");
+    assert!(save_replacing(&missing_dir, b"x", mark_of_the_web).is_err());
+    assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 1);
+}
+
+#[test]
+fn a_junction_at_the_attachments_directory_is_refused() {
+    let home = tempfile::tempdir().expect("home");
+    let outside = tempfile::tempdir().expect("outside");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let data = paths.data(&config::PairingId::random());
+    std::fs::create_dir_all(data.path()).expect("data");
+    let ok = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(data.attachments())
+        .arg(outside.path())
+        .output()
+        .expect("mklink")
+        .status
+        .success();
+    assert!(ok);
+    assert!(write_to_open(&data, "report.pdf", b"%PDF").is_err());
+    assert_eq!(std::fs::read_dir(outside.path()).expect("dir").count(), 0);
 }
 
 /// Builds a paired home with a warm cache of about 600 tasks (mostly completed), for measuring cold start:

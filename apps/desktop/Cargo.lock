@@ -6969,6 +6969,7 @@ dependencies = [
  "todo-client",
  "todo-core",
  "todo-design",
+ "todo-fs",
  "todo-server",
  "tokio",
  "tracing",

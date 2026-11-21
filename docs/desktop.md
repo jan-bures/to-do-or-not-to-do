@@ -97,17 +97,26 @@ into the app**: it is learnt here and saved in the user's config.
 | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL, the device ID and a random pairing ID |
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
-| `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
+| `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
+| `pairings\<pairing ID>.signed-out` | same | the record that the pairing beside it was signed out and its data is to be removed |
 
 `TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile). The token
-is never written in plain text and never logged. Each pairing's data lives under its own pairing ID, so a new
+is never written in plain text and never logged. DPAPI's keys belong to the user's profile: they protect the
+token from other accounts and from a copy taken off the machine, not from programs running as the same user,
+and with a roaming profile they travel with it. Each pairing's data lives under its own pairing ID, so a new
 pairing never picks up an old cache and cleaning up an old one can't touch the current one.
 
-**Sign out** (the gear in the sidebar footer) runs in order: syncing stops; the token and the config are
-removed (if that fails, the app says so and stays signed in, syncing again); the pairing's directory is
-marked signed out, the shell lets go of the cache, and the directory (cache and downloads) is removed; only
-then is pairing shown. A directory still in use is removed at the next start, which only ever removes marked
-directories. The server has no revoke endpoint for a device yet; revoke it there too if the computer is lost.
+**Sign out** (the gear in the sidebar footer) runs in order: syncing stops and downloads in flight are
+cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory; the
+token and the config are removed (if that fails, the record is withdrawn, the app says so and stays signed
+in, syncing again); the shell lets go of the cache, and the directory (cache and downloads) is removed; the
+record goes last. Only then is pairing shown. A directory still in use is removed at the next start, which
+only ever removes directories that have a record, named exactly by a pairing ID, and never the current one.
+
+Removal never leaves our own data. The app directory and `pairings` must be plain directories (a junction or
+symlink there stops all removal); a link at a pairing's directory, or anywhere inside it, is removed as a
+link and never followed. The server has no revoke endpoint for a device yet; revoke it there too if the
+computer is lost.
 
 **Sync** (`src/session.rs`). The app runs `todo_client::SyncClient` with the native HTTP transport and the
 SQLite storage on a small tokio runtime of its own (two worker threads). Initial load, catch-up, the SSE
@@ -119,10 +128,14 @@ the status bar. Attachments download on the runtime too.
 **Startup.** A loader thread reads the config, unseals the token and opens the cache while GPUI sets up
 Direct3D and DirectWrite, so a warm start draws real data in its first frame. Opening never deletes anything:
 
-- **A damaged cache** (SQLite reports it malformed or not a database, or stored data doesn't decode) is moved
-  aside as `cache.damaged-<ms>.sqlite`, with its write-ahead log. Its outbox and "couldn't sync" list are read
-  back (`SqliteStorage::salvage`) into a new cache, and the confirmed state is loaded from the server again.
-  The status bar says how many unsent changes were kept.
+- **A damaged cache** (SQLite reports it malformed or not a database, or stored data doesn't decode) is
+  recovered in steps, each recorded in `recovery.json` before the next one starts: the cache and its
+  write-ahead log are copied aside as `cache.damaged-<ms>.sqlite` and flushed, then the original is removed.
+  The copy's outbox and "couldn't sync" list are read back (`SqliteStorage::salvage`) into a new cache built
+  as `cache.recovering.sqlite`, which then replaces `cache.sqlite`; the record goes last. A crash or a
+  failure at any step leaves the record, and the next start finishes the recovery from there, so an unsent
+  edit is never lost. The confirmed state is loaded from the server again. The status bar says how many
+  unsent changes were kept.
 - **A cache that can't be opened now** (another copy of the app holds it, no permission, disk full) is left
   as it is. A screen says what happened, with **Try again**.
 - **A saved sign-in that can't be used** goes back to pairing with the reason. The old data stays.
@@ -138,7 +151,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 | Sidebar | Smart lists (My Day, Important, Planned, All, Completed, Agent activity) with counts from the query language's built-in lists, collections and lists in server order with open counts. List colours snap to the design's swatches; glyphs come from the list's name (English and Czech keywords). Double-click or right-click renames; the context menu moves a list up or down or deletes it (after asking); "New list" adds one and starts renaming it. Agents seen in the last week, and the sync state. |
 | Task list | Open tasks in server order (by list, then position, in a collection), virtualized; Completed below, newest first, behind a toggle. Checkbox completes or reopens; a completed task holds its place (fill, tick, dimmed title), fades and leaves. The priority mark cycles on click. **J/K** or arrows move, **Space** completes, **E** edits the title, **D** the due date, **Alt+Up/Down** moves a task in a list. The title-bar field filters (**Ctrl+K**): a query (`tag:docs`, `due:today`) or plain words. |
 | Quick add | In the room (**Ctrl+N**) and global (**Ctrl+Alt+Space**, into My Day). A trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`, `pátek`) and priority (`!`, `!!`, `!!!`) are read off the title; the date shows as a chip while typing. My Day, Important and Planned shape the new task. |
-| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads). Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. |
+| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
 | Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). My Day all done turns the sky to dusk and hands over to tomorrow. |
 
 ## The shell

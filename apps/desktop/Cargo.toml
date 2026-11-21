@@ -28,6 +28,8 @@ todo-design = { path = "../../crates/todo-design", features = ["embed-fonts"] }
 # The domain model and the sync engine (tokio + reqwest transport, SQLite cache), also by path.
 todo-core = { path = "../../crates/todo-core" }
 todo-client = { path = "../../crates/todo-client", features = ["sqlite"] }
+# Owner-only files and directories, reparse-point checks and durable replacement.
+todo-fs = { path = "../../crates/todo-fs" }
 # Local times for labels: the system time zone, with the tz database bundled on Windows.
 jiff = { version = "1", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform"] }
 serde = { version = "1", features = ["derive"] }
