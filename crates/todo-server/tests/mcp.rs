@@ -138,6 +138,12 @@ async fn fails(c: &Client, tool: &str, a: Value) -> Value {
 }
 
 /// An error with `id` replaced by a placeholder, to compare the answers for two different IDs.
+/// `undo_event` arguments for the first event of a write result.
+fn undo_args(result: &Value) -> Value {
+    let e = &result["events"][0];
+    json!({ "seq": e["seq"], "event_id": e["id"] })
+}
+
 fn same_shape(e: &Value, id: &str) -> String {
     e.to_string().replace(id, "<id>")
 }
@@ -392,12 +398,7 @@ async fn a_plan_level_agent_organises_tasks() {
     .await;
     assert!(kept["task"]["deleted"].is_object(), "{kept}");
     // Archiving can be undone.
-    ok(
-        &c,
-        "undo_event",
-        json!({ "seq": archived["events"][0]["seq"] }),
-    )
-    .await;
+    ok(&c, "undo_event", undo_args(&archived)).await;
     let all = ok(&c, "query_tasks", json!({})).await;
     assert_eq!(titles(&all), ["Write Q3 report"]);
     let _ = inbox;
@@ -478,19 +479,13 @@ async fn an_agent_undoes_only_its_own_events() {
     let c = env.connect(&token).await;
 
     let created = ok(&c, "create_task", json!({ "title": "Oops" })).await;
-    let seq = created["events"][0]["seq"].clone();
-    let undone = ok(&c, "undo_event", json!({ "seq": seq })).await;
+    let undone = ok(&c, "undo_event", undo_args(&created)).await;
     assert_eq!(undone["events"].as_array().unwrap().len(), 1);
     assert!(titles(&ok(&c, "query_tasks", json!({})).await).is_empty());
     // Undoing the same event again is refused; undoing the undo redoes it.
-    let e = fails(&c, "undo_event", json!({ "seq": seq })).await;
+    let e = fails(&c, "undo_event", undo_args(&created)).await;
     assert_eq!(e["code"], "already_undone");
-    ok(
-        &c,
-        "undo_event",
-        json!({ "seq": undone["events"][0]["seq"] }),
-    )
-    .await;
+    ok(&c, "undo_event", undo_args(&undone)).await;
     assert_eq!(titles(&ok(&c, "query_tasks", json!({})).await), ["Oops"]);
 
     // The owner's event is not the agent's to undo.
@@ -498,10 +493,28 @@ async fn an_agent_undoes_only_its_own_events() {
         .t
         .ok(json!({ "cmd": "create_task", "id": id(), "list": inbox, "title": "Owner's" }))
         .await;
-    let e = fails(&c, "undo_event", json!({ "seq": first_seq(&owner) })).await;
+    let e = fails(&c, "undo_event", undo_args(&owner)).await;
     assert_eq!(e["code"], "not_own_event", "{e}");
-    let e = fails(&c, "undo_event", json!({ "seq": 9999 })).await;
+    let e = fails(&c, "undo_event", json!({ "seq": 9999, "event_id": id() })).await;
     assert_eq!(e["code"], "event_not_found");
+
+    // The event ID must match the one at `seq`, and a mismatch does not reveal the actual one.
+    let created = ok(&c, "create_task", json!({ "title": "Keep" })).await;
+    let mut wrong = undo_args(&created);
+    wrong["event_id"] = json!(id());
+    let e = fails(&c, "undo_event", wrong).await;
+    assert_eq!(e["code"], "event_mismatch", "{e}");
+    let actual = created["events"][0]["id"].as_str().unwrap();
+    assert!(!e.to_string().contains(actual), "{e}");
+    // So does the epoch, which every write result carries.
+    assert!(created["epoch"].is_string(), "{created}");
+    let mut stale = undo_args(&created);
+    stale["epoch"] = json!(id());
+    let e = fails(&c, "undo_event", stale).await;
+    assert_eq!(e["code"], "epoch_mismatch", "{e}");
+    let mut current = undo_args(&created);
+    current["epoch"] = created["epoch"].clone();
+    ok(&c, "undo_event", current).await;
 }
 
 #[tokio::test]
@@ -642,12 +655,7 @@ async fn the_write_quota_applies_to_mcp_writes() {
     let e = fails(&c, "create_task", json!({ "title": "three" })).await;
     assert_eq!(e["code"], "quota_exceeded");
     assert!(e["retry_after"].as_u64().unwrap() >= 1, "{e}");
-    let e = fails(
-        &c,
-        "undo_event",
-        json!({ "seq": first["events"][0]["seq"] }),
-    )
-    .await;
+    let e = fails(&c, "undo_event", undo_args(&first)).await;
     assert_eq!(e["code"], "quota_exceeded");
     // Reads are not writes.
     assert_eq!(titles(&ok(&c, "query_tasks", json!({})).await).len(), 2);
@@ -799,8 +807,23 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
     // Undo: an event the agent cannot see is a missing one.
     let hidden_seq = first_seq(&owner_hidden);
     let missing_seq = 9999;
-    let h = fails(&c, "undo_event", json!({ "seq": hidden_seq })).await;
-    let m = fails(&c, "undo_event", json!({ "seq": missing_seq })).await;
+    // Neither the right event ID nor a wrong one (which would otherwise get `event_mismatch`) tells
+    // the agent anything.
+    let real = undo_args(&owner_hidden);
+    let h = fails(&c, "undo_event", real).await;
+    assert_eq!(h["code"], "event_not_found", "{h}");
+    let h = fails(
+        &c,
+        "undo_event",
+        json!({ "seq": hidden_seq, "event_id": id() }),
+    )
+    .await;
+    let m = fails(
+        &c,
+        "undo_event",
+        json!({ "seq": missing_seq, "event_id": id() }),
+    )
+    .await;
     assert_eq!(h["code"], "event_not_found", "{h}");
     assert_eq!(
         h.to_string().replace(&hidden_seq.to_string(), "<seq>"),
@@ -809,7 +832,7 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
     let undo = |seq: u64| {
         (
             format!("/api/v1/events/{seq}/undo"),
-            json!({ "command_id": id() }),
+            json!({ "command_id": id(), "expected_event_id": id() }),
         )
     };
     let (p, b) = undo(hidden_seq);
@@ -818,12 +841,7 @@ async fn hidden_targets_answer_exactly_like_missing_ones() {
     let (ms, _) = env.rest(&token, Method::POST, &p, Some(b)).await;
     assert_eq!((hs, ms), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
     // A visible event of someone else is still refused as such.
-    let e = fails(
-        &c,
-        "undo_event",
-        json!({ "seq": first_seq(&owner_visible) }),
-    )
-    .await;
+    let e = fails(&c, "undo_event", undo_args(&owner_visible)).await;
     assert_eq!(e["code"], "not_own_event");
     // A visible target with too low a level is still `forbidden`.
     let (_, reader) = env.agent("reader", &Grants::with_default(AccessLevel::Read), None);
@@ -844,8 +862,9 @@ async fn a_retry_after_losing_access_gets_not_found_and_never_writes_twice() {
     let a = json!({ "title": "Draft", "list_id": work, "command_id": cid });
     let first = ok(&c, "create_task", a.clone()).await;
     let undo_cid = id();
-    let undo_args = json!({ "seq": first["events"][0]["seq"], "command_id": undo_cid });
-    ok(&c, "undo_event", undo_args.clone()).await;
+    let mut retried = undo_args(&first);
+    retried["command_id"] = json!(undo_cid);
+    ok(&c, "undo_event", retried.clone()).await;
     let head = env.t.server.engine.head_seq();
 
     // The owner takes the list away: retries no longer show the stored results.
@@ -856,7 +875,7 @@ async fn a_retry_after_losing_access_gets_not_found_and_never_writes_twice() {
     );
     let e = fails(&c, "create_task", a.clone()).await;
     assert_eq!(e["code"], "not_found", "{e}");
-    let e = fails(&c, "undo_event", undo_args.clone()).await;
+    let e = fails(&c, "undo_event", retried.clone()).await;
     assert_eq!(e["code"], "event_not_found", "{e}");
     assert_eq!(env.t.server.engine.head_seq(), head);
 
@@ -865,7 +884,7 @@ async fn a_retry_after_losing_access_gets_not_found_and_never_writes_twice() {
     let again = ok(&c, "create_task", a).await;
     assert_eq!(again["replayed"], true);
     assert_eq!(again["events"], first["events"]);
-    let again = ok(&c, "undo_event", undo_args).await;
+    let again = ok(&c, "undo_event", retried).await;
     assert_eq!(again["replayed"], true);
     assert_eq!(env.t.server.engine.head_seq(), head);
 }

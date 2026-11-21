@@ -10,8 +10,10 @@
 //! - every entity a command refers to (not the ones it creates) must exist and be readable by the
 //!   caller, or the response is exactly what core gives for a missing entity: 404 `not_found` with that
 //!   entity;
-//! - the event an undo targets must exist and be visible to the caller, or the response is exactly the
-//!   one for a missing sequence number: 404 `event_not_found`.
+//! - the event an undo targets must exist and be visible to the caller (both where it happened, by
+//!   the scope recorded with it, and where its entities are now: [`visibility::event_visible`]), or the
+//!   response is exactly the one for a missing sequence number: 404 `event_not_found`. This runs before
+//!   the expected-event check, so an agent never learns which event sits at a hidden seq.
 //!
 //! A visible target the caller lacks the level for still gets `forbidden` from core, and a visible event
 //! of another actor still gets `not_own_event`. The checks run before the engine's idempotency lookup,
@@ -161,13 +163,20 @@ pub fn check_undo(engine: &Engine, actor: &Actor, seq: u64) -> Result<(), ApiErr
     if visibility::sees_all(actor) {
         return Ok(());
     }
-    let event = engine
-        .events_since(seq.saturating_sub(1), 1)?
-        .into_iter()
-        .find(|e| e.seq == Some(seq));
-    match event {
-        Some(e) if visibility::event_visible(&engine.state(), actor, &e) => Ok(()),
-        _ => Err(EngineError::EventNotFound(seq).into()),
+    // One event, with the scope recorded when it was written; no byte budget, as nothing is sent.
+    let page = engine.events_since_capped(seq.saturating_sub(1), 1, usize::MAX)?;
+    let visible = page
+        .events
+        .iter()
+        .find(|e| e.event.seq == Some(seq))
+        .is_some_and(|e| {
+            let scope = page.scopes.get(&seq);
+            visibility::event_visible(&engine.state(), actor, &e.event, scope)
+        });
+    if visible {
+        Ok(())
+    } else {
+        Err(EngineError::EventNotFound(seq).into())
     }
 }
 

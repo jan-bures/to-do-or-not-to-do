@@ -46,9 +46,13 @@ it; tell the owner what you wanted to do instead.
 
 - Every write is recorded under your agent name, shows in the owner's activity feed, and can be undone
   by the owner at any time.
-- Each write returns `events` (`[{id, seq}]`) and a one-line `summary`. To take back one of **your own**
-  changes, call `undo_event` with the `seq` of any of its events. You can't undo other people's changes
-  (`not_own_event`).
+- Each write returns `events` (`[{id, seq}]`), a one-line `summary` and the log's `epoch`. To take back
+  one of **your own** changes, call `undo_event` with the `seq` and `id` of any of its events (they're in
+  the write result and in `get_activity`), and the `epoch` if you have it. You can't undo other people's
+  changes (`not_own_event`).
+- If the list was restored from a backup since you saw the event, the undo is refused with
+  `event_mismatch` or `epoch_mismatch` instead of undoing something else. Look the change up again with
+  `get_activity`.
 - If later changes touched the same fields, undo fails with `undo_conflict` and lists them. Only pass
   `force: true` once you've checked that overwriting them is what the owner wants.
 - `archive_task` hides a task from every list and query, but nothing is lost: `undo_event` brings it back.
@@ -75,6 +79,7 @@ the REST API. The ones you'll meet:
 | `not_found` | No such item, or not visible to you | Check the ID with `list_lists` / `query_tasks` |
 | `invalid_body`, `invalid_query`, `invalid` | Bad arguments | Fix them and retry |
 | `undo_conflict` | Later changes touched the same fields | Inspect, then maybe `force: true` |
+| `event_mismatch`, `epoch_mismatch` | The list was restored since you saw the event | Find the change again with `get_activity` |
 | `quota_exceeded`, `rate_limited`, `too_many_mcp_requests` | Slow down | Wait `retry_after` seconds |
 | `timeout`, `outcome_unknown`, `overloaded` | The server was busy | Retry with the same `command_id` |
 

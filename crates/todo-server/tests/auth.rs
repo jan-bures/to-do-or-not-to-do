@@ -1468,13 +1468,11 @@ async fn agents_write_and_undo_only_within_their_levels() {
             .as_u64()
             .unwrap()
     };
+    // A hidden event answers exactly like a missing seq (see `api::hidden`).
     let r = env.undo(&f.token, hidden_seq).await;
-    assert!(
-        matches!(r.status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
-        "{}",
-        r.json
-    );
-    // A wrong expected ID is refused without naming the event that is there.
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], "event_not_found");
+    // So does a wrong expected ID: neither a mismatch nor the event that is there is revealed.
     let real = env.event_id(hidden_seq).await;
     let r = env
         .undo_expecting(
@@ -1483,13 +1481,8 @@ async fn agents_write_and_undo_only_within_their_levels() {
             &todo_core::ids::EventId::new_v7(1, [0; 10]).to_string(),
         )
         .await;
-    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json);
-    assert_eq!(r.json["error"]["code"], "event_mismatch");
-    assert!(
-        r.json["error"]["details"].get("found").is_none(),
-        "{}",
-        r.json
-    );
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], "event_not_found");
     assert!(!r.json.to_string().contains(&real), "{}", r.json);
     // The owner still gets it.
     let r = env
@@ -1505,6 +1498,23 @@ async fn agents_write_and_undo_only_within_their_levels() {
         "{}",
         r.json
     );
+    // On a visible event, a wrong expected ID is a mismatch, still without naming the event there.
+    let own_id = env.event_id(own).await;
+    let r = env
+        .undo_expecting(
+            &f.token,
+            own,
+            &todo_core::ids::EventId::new_v7(1, [0; 10]).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], "event_mismatch");
+    assert!(
+        r.json["error"]["details"].get("found").is_none(),
+        "{}",
+        r.json
+    );
+    assert!(!r.json.to_string().contains(&own_id), "{}", r.json);
     let r = env.undo(&f.token, own).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 }

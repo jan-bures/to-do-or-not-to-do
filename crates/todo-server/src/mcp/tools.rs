@@ -28,7 +28,9 @@
 //!
 //! A successful tool returns the REST response body as structured content (and the same JSON as
 //! text). A write returns `command_id`, `events` (`[{id, seq}]`), `summary` (the activity-feed line),
-//! `replayed`, and the IDs of anything it created. A failure is a tool error (`isError: true`) whose
+//! `epoch` (the log it is in), `replayed`, and the IDs of anything it created. `undo_event` takes the
+//! event's `seq` and `id` (and optionally `epoch`), like `POST /events/{seq}/undo`, so an undo can never
+//! hit another event after a restore. A failure is a tool error (`isError: true`) whose
 //! structured content is the REST error envelope, `{"error": {"code", "message", "details"}}`, with the
 //! same codes (`forbidden`, `not_found`, `undo_conflict`, `quota_exceeded`, …) plus `retry_after` in
 //! seconds where REST sends `Retry-After`.
@@ -367,6 +369,14 @@ pub struct UndoArgs {
     /// `seq` of any event of the change (from a write result or `get_activity`). Undoing an undo
     /// redoes the change.
     pub seq: u64,
+    /// The `id` of that same event, as given next to its `seq`. If another event has that `seq` (the
+    /// list was restored from a backup since), the undo is refused with `event_mismatch` instead of
+    /// undoing the wrong change.
+    pub event_id: Uuid,
+    /// The `epoch` of the result or feed you took the event from. If the list has been restored
+    /// since, the undo is refused with `epoch_mismatch`. Optional but recommended.
+    #[serde(default)]
+    pub epoch: Option<Uuid>,
     /// Undo even though later changes touched the same fields (only after an `undo_conflict` you have
     /// looked at). Default false.
     #[serde(default)]
@@ -466,10 +476,12 @@ pub fn derived_id(command_id: Uuid, what: &str) -> Uuid {
     Uuid::new_v8(b)
 }
 
-/// A write's result: the stored command result, whether it was replayed, and `extra` fields.
+/// A write's result: the stored command result, the log epoch, whether it was replayed, and `extra`
+/// fields.
 async fn outcome(res: Response, extra: Value) -> Result<Value, ApiError> {
     let replayed = res.headers().contains_key(REPLAYED_HEADER);
-    let v = body_json(res).await?;
+    let mut v = body_json(res).await?;
+    let epoch = v.get_mut("epoch").map(Value::take).unwrap_or(Value::Null);
     let r: CommandResult = serde_json::from_value(v).map_err(|e| {
         tracing::error!(error = %e, "unexpected command result");
         ApiError::internal()
@@ -478,6 +490,7 @@ async fn outcome(res: Response, extra: Value) -> Result<Value, ApiError> {
         "command_id": r.command_id,
         "events": r.events,
         "summary": r.summary,
+        "epoch": epoch,
         "replayed": replayed,
     });
     if let (Value::Object(o), Value::Object(e)) = (&mut out, extra) {
@@ -1063,7 +1076,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Undo one of your own changes by the seq of any of its events (undoing an undo redoes it). Refused with undo_conflict if later changes touched the same fields; look at them before retrying with force: true.",
+        description = "Undo one of your own changes by the seq and id of any of its events (undoing an undo redoes it). Refused with undo_conflict if later changes touched the same fields; look at them before retrying with force: true.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -1077,8 +1090,13 @@ impl TodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         self.run("undo_event", &ctx, |app, auth, cancel| async move {
             let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
-            let body = serde_json::to_vec(&json!({ "command_id": command_id, "force": a.force }))
-                .map_err(|_| ApiError::internal())?;
+            let body = serde_json::to_vec(&json!({
+                "command_id": command_id,
+                "force": a.force,
+                "expected_event_id": a.event_id,
+                "epoch": a.epoch,
+            }))
+            .map_err(|_| ApiError::internal())?;
             let res = commands::post_undo(
                 auth,
                 State(app),
