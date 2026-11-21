@@ -184,25 +184,81 @@ fn a_failed_write_changes_nothing_and_journals_nothing() {
 }
 
 #[test]
-fn requeued_batches_come_back_first() {
+fn a_batch_stays_queued_until_it_is_committed() {
     let mut mirror = MirrorStorage::new();
     mirror
         .write(&[StorageOp::SetEpoch(Uuid::from_u128(1))])
         .unwrap();
-    let first = mirror.take_batches();
     mirror
         .write(&[StorageOp::SetEpoch(Uuid::from_u128(2))])
         .unwrap();
-    mirror.requeue(first);
-    let all = mirror.take_batches();
-    assert_eq!(all.len(), 2);
+    let (seq, first) = mirror.front().unwrap();
     assert_eq!(
-        all[0],
+        first,
         vec![Change::Put(
             Key::Epoch,
             format!("\"{}\"", Uuid::from_u128(1))
         )]
     );
+    // A failed write leaves it at the front, and says why.
+    mirror.set_flush_error("QuotaExceededError");
+    assert_eq!(mirror.front().unwrap().0, seq);
+    assert_eq!(mirror.flush_error().as_deref(), Some("QuotaExceededError"));
+    assert!(mirror.unsaved());
+    mirror.commit_front(seq);
+    assert_eq!(mirror.flush_error(), None);
+    assert!(mirror.unsaved(), "the second batch is still queued");
+    let (seq, _) = mirror.front().unwrap();
+    mirror.commit_front(seq);
+    assert!(!mirror.unsaved());
+    assert_eq!(mirror.front(), None);
+}
+
+#[test]
+fn an_outbox_entry_is_durable_once_the_batch_that_added_it_lands() {
+    let mut mirror = MirrorStorage::new();
+    let saved = mirror.saved().unwrap();
+    let seen = saved.generation();
+    let e = entry(1, "a");
+    mirror.write(&[StorageOp::PutOutbox(&e)]).unwrap();
+    assert!(!mirror.is_durable(e.command_id));
+    // Rewriting it (an attempt counted) does not move the batch it waits for.
+    let mut again = e.clone();
+    again.attempts = 1;
+    mirror.write(&[StorageOp::PutOutbox(&again)]).unwrap();
+    let (seq, _) = mirror.front().unwrap();
+    mirror.commit_front(seq);
+    assert!(mirror.is_durable(e.command_id));
+    assert!(saved.generation() > seen);
+    // Entries another tab wrote, read back from the backend, are durable at once.
+    let theirs = entry(2, "b");
+    mirror.mark_durable([theirs.command_id]);
+    mirror.write(&[StorageOp::PutOutbox(&theirs)]).unwrap();
+    assert!(mirror.is_durable(theirs.command_id));
+    // So are entries read back on start.
+    let mut backend = Persisted::default();
+    let fresh = entry(3, "c");
+    mirror.write(&[StorageOp::PutOutbox(&fresh)]).unwrap();
+    flush(&mirror, &mut backend);
+    let (reopened, _) = MirrorStorage::recover(backend);
+    assert!(reopened.is_durable(fresh.command_id));
+}
+
+#[test]
+fn the_replica_does_not_send_an_entry_before_it_is_durable() {
+    let server = server_with_task();
+    let mirror = MirrorStorage::new();
+    let mut r = Replica::open(owner(), Box::new(mirror.clone())).unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    let _ = mirror.take_batches();
+    r.submit(entry(1, "first")).unwrap();
+    r.submit(entry(2, "second")).unwrap();
+    assert_eq!(r.next_to_send().unwrap(), None, "nothing has landed");
+    // The first lands: it is sent, and the second still waits.
+    let (seq, _) = mirror.front().unwrap();
+    mirror.commit_front(seq);
+    let first = r.next_to_send().unwrap().unwrap();
+    assert_eq!(first.command_id, Uuid::from_u128(1));
 }
 
 fn server_with_task() -> FakeServer {

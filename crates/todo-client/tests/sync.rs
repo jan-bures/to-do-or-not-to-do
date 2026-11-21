@@ -655,3 +655,62 @@ fn a_full_salvage_fails_rather_than_come_back_short() {
     let empty = SqliteStorage::salvage_all(&db).unwrap();
     assert!(empty.outbox.is_empty() && empty.failed.is_empty() && empty.lost == 0);
 }
+
+/// Two tabs of the browser app: only `a` sends; `b` queues, and `a` takes `b`'s entries in (the web
+/// app reads them from IndexedDB when `b` says so over a BroadcastChannel). Edits reach the server in
+/// submission order across both tabs, even while `a` is stalled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_tab_sends_for_both_in_submission_order() {
+    let server = TestServer::start().await;
+    let ta = Switch::new(server.transport(TOKEN_A));
+    let a = client(ta.clone(), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    b.set_sending(false);
+    assert!(!b.is_sending());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+
+    let (list, cmd) = new_list(&a, "Inbox");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "Title 0");
+    a.submit(cmd).unwrap();
+    eventually("both have the task", WAIT, || {
+        b.view().tasks.contains_key(&task) && a.status().pending == 0
+    })
+    .await;
+
+    // `a` stalls with its rename in flight; `b` renames after it.
+    ta.set_online(false);
+    a.submit(rename(task, "Title A")).unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    b.submit(rename(task, "Title B")).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let head = server.head();
+    assert_eq!(
+        server.state().tasks[&task].title,
+        "Title 0",
+        "b sends nothing"
+    );
+    assert_eq!(b.status().pending, 1);
+
+    assert_eq!(a.adopt(b.pending()).unwrap(), 1);
+    assert_eq!(a.adopt(b.pending()).unwrap(), 0, "adopting is idempotent");
+    assert_eq!(
+        a.view().tasks[&task].title,
+        "Title B",
+        "a shows b's edit at once"
+    );
+    ta.set_online(true);
+    a.nudge();
+    eventually("both converge on b's title", WAIT, || {
+        converged(&a, &server)
+            && converged(&b, &server)
+            && a.status().pending == 0
+            && b.status().pending == 0
+    })
+    .await;
+    assert_eq!(server.state().tasks[&task].title, "Title B");
+    assert_eq!(server.head(), head + 2, "a's rename, then b's");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}

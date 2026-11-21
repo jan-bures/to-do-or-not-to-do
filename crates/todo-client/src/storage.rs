@@ -9,8 +9,8 @@
 //! `await`. A backend whose platform API is asynchronous (IndexedDB) keeps an in-memory copy and
 //! persists it in the background, accepting that the newest writes may be lost on a crash; nothing is
 //! lost for good, because unconfirmed events are fetched again and lost outbox removals only lead to an
-//! idempotent resend. Lost outbox *additions* are the exception, so such a backend should flush
-//! submissions promptly.
+//! idempotent resend. Lost outbox *additions* are the exception, so the engine sends an entry only once
+//! such a backend reports it durable ([`Storage::is_durable`]).
 
 use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry};
 use crate::protocol::LogEvent;
@@ -84,6 +84,20 @@ pub trait Storage: crate::platform::MaybeSend {
 
     /// Applies the operations atomically, in order.
     fn write(&mut self, ops: &[StorageOp<'_>]) -> Result<(), StorageError>;
+
+    /// False while the outbox entry `id` is written but not yet durable (an asynchronous backend
+    /// that has not persisted it): the engine does not send it until it is. Synchronous backends are
+    /// durable once [`write`](Self::write) returns.
+    fn is_durable(&self, id: CommandId) -> bool {
+        let _ = id;
+        true
+    }
+
+    /// Changes when entries become durable (or persisting fails), for an asynchronous backend; the
+    /// engine waits on it for entries [`is_durable`](Self::is_durable) held back.
+    fn saved(&self) -> Option<crate::notify::Notify> {
+        None
+    }
 }
 
 #[derive(Default)]

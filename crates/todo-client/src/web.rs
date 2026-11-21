@@ -13,10 +13,13 @@
 //! **A stale token.** The session behind the cookie can change while a tab is open (the owner signs
 //! in again in another tab, which replaces the cookie). The tab's token then no longer matches, and
 //! the server answers `403 csrf`. The transport asks for the session's current token
-//! ([`CSRF_PATH`]) and, if it is a new one, sends the same request again (same body, so the same
-//! command ID: the server applies it once). If the token is unchanged, the refusal was about
-//! something else (the `Origin`), and the `403` stands. If the refresh itself fails, the request
-//! counts as a network failure and is retried later; a signed-out session is a `401`.
+//! ([`CSRF_PATH`]) and, if it differs from the token the refused request was sent with, sends the
+//! same request once more with it (same body, so the same command ID: the server applies it once).
+//! Comparing with the token *sent*, not the shared one, matters when several requests are refused at
+//! once: see [`crate::session::with_fresh_token`]. If the token is unchanged, the refusal was about
+//! something else (the `Origin`), and the `403` stands; the engine retries it later with backoff
+//! (it is never a verdict on a command). If the refresh itself fails, the request counts as a network
+//! failure and is retried later; a signed-out session is a `401`.
 //!
 //! The event stream is a streaming `fetch` read through [`SseParser`], not `EventSource`:
 //! `EventSource` can send no custom header (so no CSRF token), hides the status of a refused stream
@@ -29,19 +32,48 @@
 //! [`IdbFlusher`] whose [`run`](IdbFlusher::run) persists every write, one IndexedDB transaction per
 //! batch, in order. The app spawns it next to the sync client.
 //!
+//! **Durability.** A batch leaves the journal only once its transaction's `complete` fired, and an
+//! outbox entry is not sent before then (see [`crate::mirror`]): an edit made offline is either in
+//! IndexedDB or still shown as unsaved, never "queued" in memory only. A failed write (out of quota,
+//! say) is recorded ([`MirrorStorage::flush_error`]) and retried every second; the app shows it until
+//! a write succeeds, and asks before the page is closed while anything is unsaved.
+//!
+//! **Upgrades.** Opening the database at a newer version waits for every other connection to close.
+//! [`OpenHooks::blocked`] is told while it waits (the app asks the owner to close other tabs), and
+//! every connection closes itself when another tab needs a newer version
+//! ([`OpenHooks::version_change`], after writing what it still has). Version 1 kept the outbox and
+//! the failed list as arrays in `kv`; they are split into records by the first write after the
+//! upgrade, in one transaction that puts every record before it deletes the array, keyed by command
+//! ID, so an interrupted conversion leaves either the array or the records and is simply done again.
+//!
+//! # Several tabs
+//!
+//! Every tab has its own replica over the same database. So that commands from all tabs reach the
+//! server in the order they were made, one tab sends for all of them: the holder of the Web Lock
+//! [`SENDER_LOCK`] ([`elect_sender`]). The others write their commands to the `outbox` store and say
+//! so on the `BroadcastChannel` [`CHANNEL`] (the flusher posts after every committed batch that
+//! touched the outbox or the failed list); the holder reads the store ([`IdbFlusher::queued`]) and
+//! takes their entries in (`SyncClient::adopt`), in submission order. When the holder's tab closes,
+//! the browser hands the lock to the next tab, which takes in whatever is still queued and carries
+//! on. Every tab still follows the event stream, which confirms its own entries. A browser without
+//! Web Locks sends from every tab, as before: each tab's commands stay in order, but two tabs' edits
+//! to one task made while both are offline may reach the server in either order.
+//!
 //! The database has one object store per part of [`Persisted`]: `kv` (snapshot and epoch), `events`,
 //! `outbox` and `failed` (one record per command, so tabs never overwrite each other's), and
 //! `damaged` (records that could not be read, set aside). Nothing here ever deletes the database on
 //! its own: [`delete_storage`] is for an explicit "reset local data" by the user.
 
 use crate::mirror::{Area, Batch, Change, Key, MirrorStorage, Persisted, Recovery};
+use crate::outbox::{FailedEntry, OutboxEntry};
 use crate::platform::{
     Clock, Entropy, EventStream, Method, Request, Response, SseFrame, StreamOpen, Transport,
     TransportError,
 };
+use crate::session::{Attempt, Fresh, is_csrf_refusal, with_fresh_token};
 use crate::sse::{DEFAULT_MAX_FRAME_BYTES, SseParser};
 use js_sys::{Array, Promise, Reflect, Uint8Array};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
@@ -54,9 +86,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    AbortController, Headers, IdbDatabase, IdbObjectStore, IdbOpenDbRequest, IdbRequest,
-    IdbTransaction, IdbTransactionMode, ReadableStreamDefaultReader, RequestCredentials,
-    RequestInit,
+    AbortController, BroadcastChannel, Headers, IdbDatabase, IdbObjectStore, IdbOpenDbRequest,
+    IdbRequest, IdbTransaction, IdbTransactionMode, ReadableStreamDefaultReader,
+    RequestCredentials, RequestInit,
 };
 
 /// The header carrying the session's CSRF token.
@@ -65,54 +97,7 @@ pub const CSRF_HEADER: &str = "X-CSRF-Token";
 /// Where the session's current CSRF token is read (`GET`, the cookie only: `{"csrf": "..."}`).
 pub const CSRF_PATH: &str = "/auth/session";
 
-/// The session's CSRF token, shared by the transport and the page (which needs it for its own
-/// requests, such as the sign-out form). Clones share the value.
-#[derive(Clone, Default)]
-pub struct CsrfToken(Rc<RefCell<String>>);
-
-impl fmt::Debug for CsrfToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Never print the token.
-        f.debug_struct("CsrfToken").finish_non_exhaustive()
-    }
-}
-
-impl CsrfToken {
-    /// A token with this value.
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(Rc::new(RefCell::new(value.into())))
-    }
-
-    /// The current value.
-    #[must_use]
-    pub fn get(&self) -> String {
-        self.0.borrow().clone()
-    }
-
-    fn set(&self, value: String) {
-        *self.0.borrow_mut() = value;
-    }
-}
-
-/// What asking for the session's current token found.
-enum Refresh {
-    /// A new token, now in use: send the request again.
-    New,
-    /// The same token: the refusal was not about it.
-    Same,
-    /// The session is gone (this `401` is the answer).
-    SignedOut(Response),
-}
-
-/// True if a response is the server's `403 csrf`.
-fn is_csrf_refusal(res: &Response) -> bool {
-    res.status == 403
-        && serde_json::from_slice::<serde_json::Value>(&res.body)
-            .ok()
-            .and_then(|v| v.get("error")?.get("code")?.as_str().map(str::to_owned))
-            .is_some_and(|c| c == "csrf")
-}
+pub use crate::session::CsrfToken;
 
 fn js_err(e: &JsValue) -> String {
     e.as_string()
@@ -155,30 +140,28 @@ impl FetchTransport {
     }
 
     /// Asks the server for the session's current token (see the module docs).
-    async fn refresh(&self) -> Result<Refresh, TransportError> {
+    async fn refresh(&self) -> Result<Fresh, TransportError> {
         let abort = new_abort()?;
         let req = Request {
             method: Method::Get,
             path: CSRF_PATH.to_owned(),
             body: None,
         };
-        let res = read(&self.fetch(&req, "application/json", &abort.0).await?).await?;
+        // The refresh needs no token, but sending the current one does no harm.
+        let res = read(
+            &self
+                .fetch(&req, &self.csrf.get(), "application/json", &abort.0)
+                .await?,
+        )
+        .await?;
         match res.status {
-            200 => {
-                let token = serde_json::from_slice::<serde_json::Value>(&res.body)
-                    .ok()
-                    .and_then(|v| v.get("csrf")?.as_str().map(str::to_owned))
-                    .filter(|t| !t.is_empty())
-                    .ok_or_else(|| TransportError::Protocol("unreadable session token".into()))?;
-                if token == self.csrf.get() {
-                    Ok(Refresh::Same)
-                } else {
-                    tracing::debug!("the session's CSRF token changed; retrying with the new one");
-                    self.csrf.set(token);
-                    Ok(Refresh::New)
-                }
-            }
-            401 => Ok(Refresh::SignedOut(res)),
+            200 => serde_json::from_slice::<serde_json::Value>(&res.body)
+                .ok()
+                .and_then(|v| v.get("csrf")?.as_str().map(str::to_owned))
+                .filter(|t| !t.is_empty())
+                .map(Fresh::Token)
+                .ok_or_else(|| TransportError::Protocol("unreadable session token".into())),
+            401 => Ok(Fresh::SignedOut(res)),
             s => Err(TransportError::Network(format!(
                 "could not refresh the session token ({s})"
             ))),
@@ -188,6 +171,7 @@ impl FetchTransport {
     async fn fetch(
         &self,
         request: &Request,
+        token: &str,
         accept: &str,
         abort: &AbortController,
     ) -> Result<web_sys::Response, TransportError> {
@@ -197,7 +181,7 @@ impl FetchTransport {
                 .set(k, v)
                 .map_err(|e| TransportError::Network(js_err(&e)))
         };
-        set(CSRF_HEADER, &self.csrf.get())?;
+        set(CSRF_HEADER, token)?;
         set("Accept", accept)?;
         let init = RequestInit::new();
         init.set_credentials(RequestCredentials::SameOrigin);
@@ -220,6 +204,12 @@ impl FetchTransport {
         res.dyn_into::<web_sys::Response>()
             .map_err(|_| TransportError::Protocol("fetch did not return a Response".into()))
     }
+}
+
+/// One try at opening the event stream.
+enum Opened {
+    Open(web_sys::Response, Abort),
+    Refused(Response),
 }
 
 /// Aborts a `fetch` when dropped (the engine gave up on it, or the stream ended).
@@ -313,44 +303,59 @@ impl Transport for FetchTransport {
     type Stream = FetchEventStream;
 
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
-        let abort = new_abort()?;
-        let res = read(&self.fetch(&request, "application/json", &abort.0).await?).await?;
-        if !is_csrf_refusal(&res) {
-            return Ok(res);
-        }
-        match self.refresh().await? {
-            Refresh::Same => Ok(res),
-            Refresh::SignedOut(r) => Ok(r),
-            Refresh::New => {
+        let request = &request;
+        with_fresh_token(
+            &self.csrf,
+            |token| async move {
                 let abort = new_abort()?;
-                read(&self.fetch(&request, "application/json", &abort.0).await?).await
-            }
-        }
+                let res = read(
+                    &self
+                        .fetch(request, &token, "application/json", &abort.0)
+                        .await?,
+                )
+                .await?;
+                Ok(if is_csrf_refusal(&res) {
+                    Attempt::CsrfRefused(res)
+                } else {
+                    Attempt::Done(res)
+                })
+            },
+            || self.refresh(),
+            |signed_out| signed_out,
+        )
+        .await
     }
 
     async fn open_stream(
         &self,
         request: Request,
     ) -> Result<StreamOpen<FetchEventStream>, TransportError> {
-        let mut abort = new_abort()?;
-        let mut res = self.fetch(&request, "text/event-stream", &abort.0).await?;
-        if res.status() == 403 {
-            let refused = read(&res).await?;
-            if !is_csrf_refusal(&refused) {
-                return Ok(StreamOpen::Refused(refused));
-            }
-            match self.refresh().await? {
-                Refresh::Same => return Ok(StreamOpen::Refused(refused)),
-                Refresh::SignedOut(r) => return Ok(StreamOpen::Refused(r)),
-                Refresh::New => {
-                    abort = new_abort()?;
-                    res = self.fetch(&request, "text/event-stream", &abort.0).await?;
+        let request = &request;
+        let opened = with_fresh_token(
+            &self.csrf,
+            |token| async move {
+                let abort = new_abort()?;
+                let res = self
+                    .fetch(request, &token, "text/event-stream", &abort.0)
+                    .await?;
+                if res.status() == 200 {
+                    return Ok(Attempt::Done(Opened::Open(res, abort)));
                 }
-            }
-        }
-        if res.status() != 200 {
-            return Ok(StreamOpen::Refused(read(&res).await?));
-        }
+                let refused = read(&res).await?;
+                Ok(if is_csrf_refusal(&refused) {
+                    Attempt::CsrfRefused(Opened::Refused(refused))
+                } else {
+                    Attempt::Done(Opened::Refused(refused))
+                })
+            },
+            || self.refresh(),
+            Opened::Refused,
+        )
+        .await?;
+        let (res, abort) = match opened {
+            Opened::Open(res, abort) => (res, abort),
+            Opened::Refused(r) => return Ok(StreamOpen::Refused(r)),
+        };
         let body = res
             .body()
             .ok_or_else(|| TransportError::Protocol("the event stream has no body".into()))?;
@@ -556,12 +561,38 @@ async fn transaction_done(tx: &IdbTransaction) -> Result<(), IdbError> {
         .map_err(|e| idb_err(&e))
 }
 
-async fn open_db(name: &str) -> Result<IdbDatabase, IdbError> {
+/// What [`open_storage`] reports while it opens the database, and later.
+#[derive(Clone)]
+pub struct OpenHooks {
+    /// Called with `true` while the upgrade waits for other tabs to close their connections, and
+    /// with `false` once it went ahead.
+    pub blocked: Rc<dyn Fn(bool)>,
+    /// Called after this tab closed its connection because another tab opens a newer version (the
+    /// app should reload, to run the newer build).
+    pub version_change: Rc<dyn Fn()>,
+}
+
+impl fmt::Debug for OpenHooks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenHooks").finish_non_exhaustive()
+    }
+}
+
+impl Default for OpenHooks {
+    fn default() -> Self {
+        Self {
+            blocked: Rc::new(|_| {}),
+            version_change: Rc::new(|| {}),
+        }
+    }
+}
+
+async fn open_db(name: &str, version: u32, hooks: &OpenHooks) -> Result<IdbDatabase, IdbError> {
     let factory = web_sys::window()
         .and_then(|w| w.indexed_db().ok().flatten())
         .ok_or_else(|| IdbError("IndexedDB is not available".into()))?;
     let open: IdbOpenDbRequest = factory
-        .open_with_u32(name, DB_VERSION)
+        .open_with_u32(name, version)
         .map_err(|e| idb_err(&e))?;
     let o = open.clone();
     let upgrade = Closure::once_into_js(move || {
@@ -575,8 +606,24 @@ async fn open_db(name: &str) -> Result<IdbDatabase, IdbError> {
         }
     });
     open.set_onupgradeneeded(Some(upgrade.unchecked_ref()));
-    let db = request_done(&open).await?;
-    db.dyn_into::<IdbDatabase>()
+    let was_blocked = Rc::new(Cell::new(false));
+    let on_blocked = {
+        let hooks = hooks.clone();
+        let was_blocked = was_blocked.clone();
+        Closure::<dyn FnMut()>::new(move || {
+            tracing::info!("the database upgrade waits for other tabs to close");
+            was_blocked.set(true);
+            (hooks.blocked)(true);
+        })
+    };
+    open.set_onblocked(Some(on_blocked.as_ref().unchecked_ref()));
+    let db = request_done(&open).await;
+    open.set_onblocked(None);
+    drop(on_blocked);
+    if was_blocked.get() {
+        (hooks.blocked)(false);
+    }
+    db?.dyn_into::<IdbDatabase>()
         .map_err(|_| IdbError("open did not return a database".into()))
 }
 
@@ -675,10 +722,25 @@ async fn write_batch(db: &IdbDatabase, batch: &Batch) -> Result<(), IdbError> {
     transaction_done(&tx).await
 }
 
-/// Persists a [`MirrorStorage`]'s journal to IndexedDB.
+/// The Web Lock held by the tab that sends for all tabs.
+pub const SENDER_LOCK: &str = "todo-sender";
+
+/// The `BroadcastChannel` tabs announce new outbox records on.
+pub const CHANNEL: &str = "todo-outbox";
+
+/// How long a tab asked to close its connection waits for its last writes.
+const CLOSE_GRACE_MS: f64 = 2000.0;
+
+/// Persists a [`MirrorStorage`]'s journal to IndexedDB. Clones share the connection.
+#[derive(Clone)]
 pub struct IdbFlusher {
     db: IdbDatabase,
     storage: MirrorStorage,
+    /// A flush is running (it drains the journal; another one would only write the same batches).
+    busy: Rc<Cell<bool>>,
+    /// The connection was closed for another tab's upgrade.
+    closed: Rc<Cell<bool>>,
+    channel: Rc<RefCell<Option<BroadcastChannel>>>,
 }
 
 impl fmt::Debug for IdbFlusher {
@@ -689,26 +751,78 @@ impl fmt::Debug for IdbFlusher {
     }
 }
 
+/// Clears a flag when dropped.
+struct Busy(Rc<Cell<bool>>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+fn touches_entries(batch: &Batch) -> bool {
+    batch
+        .iter()
+        .any(|c| matches!(c, Change::PutEntry(..) | Change::DeleteEntry(..)))
+}
+
 impl IdbFlusher {
-    /// Writes everything waiting now. On failure the batches stay queued.
-    pub async fn flush(&self) -> Result<(), IdbError> {
-        let mut batches: VecDeque<Batch> = self.storage.take_batches().into();
-        while let Some(b) = batches.pop_front() {
-            if let Err(e) = write_batch(&self.db, &b).await {
-                batches.push_front(b);
-                self.storage.requeue(batches.into());
-                return Err(e);
-            }
+    fn new(db: IdbDatabase, storage: MirrorStorage) -> Self {
+        Self {
+            db,
+            storage,
+            busy: Rc::new(Cell::new(false)),
+            closed: Rc::new(Cell::new(false)),
+            channel: Rc::new(RefCell::new(None)),
         }
-        Ok(())
     }
 
-    /// Flushes after every write, forever (spawn it with `spawn_local`). Failures are retried after
-    /// a second.
+    /// Announces committed outbox and failed-list changes on `channel` (see the module docs).
+    pub fn announce_on(&self, channel: BroadcastChannel) {
+        *self.channel.borrow_mut() = Some(channel);
+    }
+
+    /// Writes everything waiting now, oldest first, each batch in its own transaction; a batch
+    /// leaves the journal only once its transaction committed. On failure the batch stays queued and
+    /// the error is recorded. If a flush is already running, returns at once (that one drains the
+    /// journal).
+    pub async fn flush(&self) -> Result<(), IdbError> {
+        if self.busy.get() || self.closed.get() {
+            return Ok(());
+        }
+        self.busy.set(true);
+        let _busy = Busy(self.busy.clone());
+        let mut announce = false;
+        let result = loop {
+            let Some((seq, batch)) = self.storage.front() else {
+                break Ok(());
+            };
+            match write_batch(&self.db, &batch).await {
+                Ok(()) => {
+                    self.storage.commit_front(seq);
+                    announce |= touches_entries(&batch);
+                }
+                Err(e) => {
+                    self.storage.set_flush_error(e.0.clone());
+                    break Err(e);
+                }
+            }
+        };
+        if announce && let Some(c) = &*self.channel.borrow() {
+            let _ = c.post_message(&JsValue::from_str("outbox"));
+        }
+        result
+    }
+
+    /// Flushes after every write, until the connection is closed (spawn it with `spawn_local`).
+    /// Failures are retried after a second.
     pub async fn run(self) {
         let written = self.storage.written();
         let mut seen = written.generation();
         loop {
+            if self.closed.get() {
+                return;
+            }
             if self.storage.has_pending()
                 && let Err(e) = self.flush().await
             {
@@ -719,6 +833,90 @@ impl IdbFlusher {
             seen = written.changed(seen).await;
         }
     }
+
+    /// The outbox and failed-list records in the database now, every tab's (unreadable ones are
+    /// skipped: the replica that reads them on start sets them aside). The outbox entries are
+    /// recorded as durable in this tab's storage.
+    pub async fn queued(&self) -> Result<(Vec<OutboxEntry>, Vec<FailedEntry>), IdbError> {
+        let names: Array = [OUTBOX, FAILED]
+            .iter()
+            .map(|s| JsValue::from_str(s))
+            .collect();
+        let tx = self
+            .db
+            .transaction_with_str_sequence(&names)
+            .map_err(|e| idb_err(&e))?;
+        let outbox: Vec<OutboxEntry> = entries(&tx, OUTBOX)
+            .await?
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_str(&value_text(v)).ok())
+            .collect();
+        let failed: Vec<FailedEntry> = entries(&tx, FAILED)
+            .await?
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_str(&value_text(v)).ok())
+            .collect();
+        self.storage
+            .mark_durable(outbox.iter().map(|e| e.command_id));
+        Ok((outbox, failed))
+    }
+
+    /// Writes what is left (for up to two seconds), then closes the connection.
+    async fn close(&self) {
+        let started = js_sys::Date::now();
+        while self.storage.has_pending() && js_sys::Date::now() - started < CLOSE_GRACE_MS {
+            if self.busy.get() {
+                sleep(Duration::from_millis(50)).await;
+            } else if self.flush().await.is_err() {
+                break;
+            }
+        }
+        self.closed.set(true);
+        self.db.close();
+    }
+}
+
+/// Opens the `BroadcastChannel` [`CHANNEL`] and calls `on_message` for every message from another
+/// tab. `None` if the browser has none.
+#[must_use]
+pub fn open_channel(on_message: impl Fn() + 'static) -> Option<BroadcastChannel> {
+    let channel = BroadcastChannel::new(CHANNEL).ok()?;
+    let cb = Closure::<dyn Fn()>::new(on_message);
+    channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+    cb.forget();
+    Some(channel)
+}
+
+/// Asks for the Web Lock [`SENDER_LOCK`] and calls `on_elected` once this tab holds it; it holds it
+/// until the page goes away. Returns false (and never calls `on_elected`) if the browser has no Web
+/// Locks, in which case every tab sends for itself.
+pub fn elect_sender(on_elected: impl FnOnce() + 'static) -> bool {
+    let Some(locks) = web_sys::window()
+        .and_then(|w| Reflect::get(&w, &JsValue::from_str("navigator")).ok())
+        .and_then(|n| Reflect::get(&n, &JsValue::from_str("locks")).ok())
+        .filter(|l| !l.is_undefined() && !l.is_null())
+    else {
+        return false;
+    };
+    let Ok(request) = Reflect::get(&locks, &JsValue::from_str("request"))
+        .and_then(|f| f.dyn_into::<js_sys::Function>())
+    else {
+        return false;
+    };
+    let mut on_elected = Some(on_elected);
+    let granted = Closure::<dyn FnMut() -> Promise>::new(move || {
+        if let Some(f) = on_elected.take() {
+            tracing::debug!("this tab sends for all tabs");
+            f();
+        }
+        // Never resolves: the lock is held until the page goes away.
+        Promise::new(&mut |_, _| {})
+    });
+    let ok = request
+        .call2(&locks, &JsValue::from_str(SENDER_LOCK), granted.as_ref())
+        .is_ok();
+    granted.forget();
+    ok
 }
 
 /// Opens (or creates) the IndexedDB database `name` and loads it into a [`MirrorStorage`], with what
@@ -726,9 +924,15 @@ impl IdbFlusher {
 /// server again, and unreadable outbox entries are set aside in the `damaged` store. Unsent work is
 /// never deleted. The repairs are written first, as soon as the flusher runs.
 ///
-/// Fails only if IndexedDB itself fails (unavailable, blocked, or out of space).
-pub async fn open_storage(name: &str) -> Result<(MirrorStorage, IdbFlusher, Recovery), IdbError> {
-    let db = open_db(name).await?;
+/// `hooks` hear about an upgrade blocked by other tabs, and about this connection being closed for
+/// another tab's upgrade (see the module docs).
+///
+/// Fails only if IndexedDB itself fails (unavailable, or out of space).
+pub async fn open_storage(
+    name: &str,
+    hooks: OpenHooks,
+) -> Result<(MirrorStorage, IdbFlusher, Recovery), IdbError> {
+    let db = open_db(name, DB_VERSION, &hooks).await?;
     let persisted = read_all(&db).await?;
     let (storage, recovery) = MirrorStorage::recover(persisted);
     if recovery != Recovery::default() {
@@ -739,7 +943,22 @@ pub async fn open_storage(name: &str) -> Result<(MirrorStorage, IdbFlusher, Reco
             "repaired the stored replica"
         );
     }
-    Ok((storage.clone(), IdbFlusher { db, storage }, recovery))
+    let flusher = IdbFlusher::new(db.clone(), storage.clone());
+    let on_version_change = {
+        let flusher = flusher.clone();
+        Closure::<dyn Fn()>::new(move || {
+            tracing::info!("another tab upgrades the database; closing this connection");
+            let flusher = flusher.clone();
+            let done = hooks.version_change.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                flusher.close().await;
+                done();
+            });
+        })
+    };
+    db.set_onversionchange(Some(on_version_change.as_ref().unchecked_ref()));
+    on_version_change.forget();
+    Ok((storage, flusher, recovery))
 }
 
 /// Deletes the database, unsent changes included: only for the user's explicit "reset local data".

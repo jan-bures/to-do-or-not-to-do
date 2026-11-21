@@ -27,6 +27,14 @@
 //! entries they confirm) in one batch, and swaps the copy in only once that write succeeded; a failed
 //! write changes nothing.
 //!
+//! # Several tabs
+//!
+//! In the browser, every tab has a replica over the same database, and one of them (elected with the
+//! Web Locks API) sends for all. It takes the other tabs' entries in with [`Replica::adopt`], which
+//! slots them in by submission time behind anything already sent, and skips what it already has,
+//! refused, or saw confirmed (a bounded memory of recently settled command IDs). Entries another tab
+//! refused come in with [`Replica::adopt_failed`].
+//!
 //! # The log epoch
 //!
 //! The confirmed state belongs to one server log, named by its epoch (see
@@ -41,12 +49,16 @@
 use crate::outbox::{CommandId, Epoch, FailedEntry, OutboxEntry, Rejection};
 use crate::protocol::{CommandResult, LogEvent};
 use crate::storage::{Loaded, Storage, StorageError, StorageOp};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use todo_core::error::{ApplyError, DomainError};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply, decide};
+
+/// How many recently settled command IDs a replica remembers, so it does not adopt an entry another
+/// tab still listed after this one saw it confirmed.
+const SETTLED_MEMORY: usize = 4096;
 
 /// Default number of confirmed events between snapshots.
 pub const SNAPSHOT_EVERY: usize = 500;
@@ -134,6 +146,9 @@ pub struct Replica {
     /// The stored events could not all be replayed: the next write stores a full snapshot (which
     /// drops them).
     needs_snapshot: bool,
+    /// Command IDs recently confirmed, refused, or acknowledged as changing nothing, oldest first.
+    settled: VecDeque<CommandId>,
+    settled_set: BTreeSet<CommandId>,
 }
 
 /// What [`Replica::open`] rebuilt from storage.
@@ -244,6 +259,8 @@ impl Replica {
             unsnapshotted: 0,
             snapshot_every: SNAPSHOT_EVERY,
             needs_snapshot: false,
+            settled: VecDeque::new(),
+            settled_set: BTreeSet::new(),
         };
         r.load()?;
         Ok(r)
@@ -280,6 +297,7 @@ impl Replica {
         self.view = None;
         self.unsnapshotted = r.replayed;
         self.needs_snapshot = r.needs_snapshot;
+        self.remember_settled(r.settled);
         Ok(())
     }
 
@@ -372,10 +390,16 @@ impl Replica {
 
     /// The oldest entry the server has not acknowledged yet, with its attempt counted (and stored, so
     /// after a crash the replica knows the server may have applied it).
+    ///
+    /// `None` also while that entry is not durable yet ([`Storage::is_durable`]): it is sent once
+    /// storage has it, and nothing after it is sent before it.
     pub fn next_to_send(&mut self) -> Result<Option<OutboxEntry>, StorageError> {
         let Some(entry) = self.outbox.iter_mut().find(|e| e.acked.is_none()) else {
             return Ok(None);
         };
+        if !self.storage.is_durable(entry.command_id) {
+            return Ok(None);
+        }
         let mut next = entry.clone();
         next.attempts = next.attempts.saturating_add(1);
         self.storage.write(&[StorageOp::PutOutbox(&next)])?;
@@ -414,6 +438,7 @@ impl Replica {
             self.storage.write(&[StorageOp::RemoveOutbox(command_id)])?;
             self.outbox.remove(pos);
             self.view = None;
+            self.remember_settled([command_id]);
         } else {
             let mut next = self.outbox[pos].clone();
             next.acked = Some(result.events.iter().map(|r| r.id).collect());
@@ -446,7 +471,108 @@ impl Replica {
         self.outbox.remove(pos);
         self.failed.push(failed);
         self.view = None;
+        self.remember_settled([command_id]);
         Ok(())
+    }
+
+    fn remember_settled(&mut self, ids: impl IntoIterator<Item = CommandId>) {
+        for id in ids {
+            if self.settled_set.insert(id) {
+                self.settled.push_back(id);
+            }
+        }
+        while self.settled.len() > SETTLED_MEMORY {
+            if let Some(old) = self.settled.pop_front() {
+                self.settled_set.remove(&old);
+            }
+        }
+    }
+
+    /// True if this replica knows `entry` is done: it is in the "couldn't sync" list, was settled
+    /// recently, or its acknowledged events are confirmed.
+    fn knows_done(&self, entry: &OutboxEntry) -> bool {
+        self.settled_set.contains(&entry.command_id)
+            || self
+                .failed
+                .iter()
+                .any(|f| f.entry.command_id == entry.command_id)
+            || entry
+                .acked
+                .as_ref()
+                .is_some_and(|ids| ids.iter().any(|id| self.confirmed.journal.has_seen(*id)))
+    }
+
+    /// Takes in outbox entries another tab queued (see the module docs), in submission order, never
+    /// ahead of an entry this replica already sent or is sending. Entries it already has or knows to
+    /// be done are skipped. Returns how many were added.
+    ///
+    /// Adopted commands are not decided again: the tab that submitted them did.
+    pub fn adopt(&mut self, entries: Vec<OutboxEntry>) -> Result<usize, StorageError> {
+        let mut new: Vec<OutboxEntry> = Vec::new();
+        for e in entries {
+            if self.position(e.command_id).is_none()
+                && !self.knows_done(&e)
+                && !new.iter().any(|n| n.command_id == e.command_id)
+            {
+                new.push(e);
+            }
+        }
+        if new.is_empty() {
+            return Ok(0);
+        }
+        let ops: Vec<StorageOp<'_>> = new.iter().map(StorageOp::PutOutbox).collect();
+        self.storage.write(&ops)?;
+        let added = new.len();
+        // Everything up to the last entry already sent (or acknowledged) stays where it is.
+        let started = self
+            .outbox
+            .iter()
+            .rposition(|e| e.attempts > 0 || e.acked.is_some())
+            .map_or(0, |i| i + 1);
+        let key = |e: &OutboxEntry| (e.submitted_at.as_millisecond(), e.command_id);
+        for e in new {
+            let at = started
+                + self.outbox[started..]
+                    .iter()
+                    .position(|o| key(o) > key(&e))
+                    .unwrap_or(self.outbox.len() - started);
+            self.outbox.insert(at, e);
+        }
+        self.view = None;
+        Ok(added)
+    }
+
+    /// Takes in entries another tab moved to the "couldn't sync" list: they leave this replica's
+    /// outbox and join its list. Returns how many were new.
+    pub fn adopt_failed(&mut self, failed: Vec<FailedEntry>) -> Result<usize, StorageError> {
+        let new: Vec<FailedEntry> = failed
+            .into_iter()
+            .filter(|f| {
+                !self
+                    .failed
+                    .iter()
+                    .any(|o| o.entry.command_id == f.entry.command_id)
+            })
+            .collect();
+        if new.is_empty() {
+            return Ok(0);
+        }
+        let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(new.len() * 2);
+        for f in &new {
+            ops.push(StorageOp::PutFailed(f));
+            if self.position(f.entry.command_id).is_some() {
+                ops.push(StorageOp::RemoveOutbox(f.entry.command_id));
+            }
+        }
+        self.storage.write(&ops)?;
+        let ids: Vec<CommandId> = new.iter().map(|f| f.entry.command_id).collect();
+        self.outbox.retain(|e| !ids.contains(&e.command_id));
+        self.failed.extend(new);
+        self.failed
+            .sort_by_key(|f| (f.failed_at.as_millisecond(), f.entry.command_id));
+        self.view = None;
+        self.remember_settled(ids.iter().copied());
+        Ok(ids.len())
     }
 
     /// Removes an entry from the "couldn't sync" list. Returns false if there was none.
@@ -578,6 +704,7 @@ impl Replica {
         if !applied.is_empty() {
             self.view = None;
             self.outbox.retain(|e| !done.contains(&e.command_id));
+            self.remember_settled(done.iter().copied());
         }
         match failure {
             Some(f) => Err(f),

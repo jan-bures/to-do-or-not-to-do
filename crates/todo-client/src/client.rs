@@ -217,6 +217,10 @@ struct Inner<T, C> {
     shared: Mutex<Shared>,
     /// Bumped when there may be something new to send.
     outbox_changed: Notify,
+    /// The storage's [`Storage::saved`]: bumped when held-back entries became durable.
+    saved: Option<Notify>,
+    /// False while another tab sends for this one (see [`SyncClient::set_sending`]).
+    sending: AtomicBool,
     /// Bumped by [`SyncClient::nudge`]: cut retry delays short.
     wake: Notify,
     /// Bumped once by [`SyncClient::stop`].
@@ -309,6 +313,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         storage: impl Storage + 'static,
         config: ClientConfig,
     ) -> Result<Self, OpenError> {
+        let saved = storage.saved();
         let mut replica = Replica::open(config.actor.clone(), Box::new(storage))?;
         replica.set_snapshot_every(config.snapshot_every);
         let last_submitted_ms = replica
@@ -332,6 +337,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     resync_requested: false,
                 }),
                 outbox_changed: Notify::default(),
+                saved,
+                sending: AtomicBool::new(true),
                 wake: Notify::default(),
                 stop: Notify::default(),
                 resync: Notify::default(),
@@ -486,6 +493,54 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         }
     }
 
+    /// Whether this client sends its outbox (the default). In the browser, only one tab sends for all
+    /// of them, so commands from every tab reach the server in submission order; the others queue
+    /// their commands (in shared storage) and keep following the event stream, which confirms them.
+    /// The sending tab takes the others' entries in with [`adopt`](Self::adopt).
+    pub fn set_sending(&self, sending: bool) {
+        self.inner.sending.store(sending, Ordering::SeqCst);
+        self.inner.outbox_changed.notify();
+        self.changed();
+    }
+
+    /// True if this client sends its outbox (see [`set_sending`](Self::set_sending)).
+    #[must_use]
+    pub fn is_sending(&self) -> bool {
+        self.inner.sending.load(Ordering::SeqCst)
+    }
+
+    /// Takes in outbox entries another tab queued in shared storage, in submission order behind
+    /// anything already sent (see [`Replica::adopt`]). Returns how many were new.
+    pub fn adopt(&self, entries: Vec<OutboxEntry>) -> Result<usize, StorageError> {
+        let added = self.with(|s| {
+            let added = s.replica.adopt(entries)?;
+            if let Some(ms) = s
+                .replica
+                .outbox()
+                .iter()
+                .map(|e| e.submitted_at.as_millisecond())
+                .max()
+            {
+                s.last_submitted_ms = s.last_submitted_ms.max(ms);
+            }
+            Ok::<_, StorageError>(added)
+        })?;
+        if added > 0 {
+            self.inner.outbox_changed.notify();
+            self.changed();
+        }
+        Ok(added)
+    }
+
+    /// Takes in entries another tab moved to the "couldn't sync" list (see [`Replica::adopt_failed`]).
+    pub fn adopt_failed(&self, failed: Vec<FailedEntry>) -> Result<usize, StorageError> {
+        let added = self.with(|s| s.replica.adopt_failed(failed))?;
+        if added > 0 {
+            self.changed();
+        }
+        Ok(added)
+    }
+
     /// Retries now instead of waiting out the backoff (call it when the network comes back).
     pub fn nudge(&self) {
         self.inner.wake.notify();
@@ -572,13 +627,24 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 return;
             }
             let seen = self.inner.outbox_changed.generation();
-            let next = self.with(|s| s.replica.next_to_send());
+            let saved_seen = self.inner.saved.as_ref().map(Notify::generation);
+            let next = if self.is_sending() {
+                self.with(|s| s.replica.next_to_send())
+            } else {
+                Ok(None)
+            };
             let entry = match next {
                 Ok(Some(entry)) => entry,
                 Ok(None) => {
-                    let _ = self
-                        .unless_stopped(self.inner.outbox_changed.changed(seen))
-                        .await;
+                    // Nothing to send, the next entry is not durable yet, or another tab sends.
+                    let outbox = pin!(self.inner.outbox_changed.changed(seen));
+                    let _ = match (&self.inner.saved, saved_seen) {
+                        (Some(saved), Some(g)) => self
+                            .unless_stopped(select(outbox, pin!(saved.changed(g))))
+                            .await
+                            .map(drop),
+                        _ => self.unless_stopped(outbox).await.map(drop),
+                    };
                     continue;
                 }
                 Err(err) => {

@@ -23,6 +23,10 @@ pub const HELLO_FRAME: &str = "hello";
 pub const EPOCH_MISMATCH: &str = "epoch_mismatch";
 /// Error code: an undo's `expected_event_id` is not the event at its `seq` (409).
 pub const EVENT_MISMATCH: &str = "event_mismatch";
+/// The error code of a request whose session CSRF token (or `Origin`) the server refused. Says
+/// nothing about the command: the web transport fetches the session's current token and retries (see
+/// [`crate::session`]), and the engine retries later if it persists.
+pub const CSRF: &str = "csrf";
 
 #[derive(Serialize)]
 struct CommandRequest<'a> {
@@ -210,8 +214,9 @@ pub enum SendOutcome {
 /// Classifies a response to `POST /commands` or `POST /events/{seq}/undo`.
 ///
 /// Definitive rejections are 4xx answers in the server's error format, except 401 (token problem),
-/// 408 (nothing stored), 429 (rate limited) and a bare 404 without details (wrong base URL or an
-/// unknown route, not a missing entity). Everything else (5xx, including 503 `outcome_unknown`,
+/// 403 `csrf` (the browser session's token or origin, not the command), 408 (nothing stored), 429
+/// (rate limited) and a bare 404 without details (wrong base URL or an unknown route, not a missing
+/// entity). Everything else (5xx, including 503 `outcome_unknown`,
 /// unparseable answers from a proxy) is retried with the same command ID.
 #[must_use]
 pub fn classify_send(res: &Response) -> SendOutcome {
@@ -232,6 +237,9 @@ pub fn classify_send(res: &Response) -> SendOutcome {
         },
         408 | 429 => retry(format!("server answered {}", res.status)),
         400..=499 => match error_detail(res) {
+            Some(d) if res.status == 403 && d.code == CSRF => {
+                retry("the server refused the session's CSRF token (403)".into())
+            }
             Some(d) if !(res.status == 404 && d.details.is_none()) => {
                 SendOutcome::Rejected(Rejection {
                     status: res.status,
@@ -305,6 +313,25 @@ mod tests {
                 message: "gone".into()
             })
         );
+        // A CSRF refusal is about the browser session, not the command.
+        assert!(matches!(
+            classify_send(&res(
+                403,
+                r#"{"error":{"code":"csrf","message":"bad token"}}"#
+            )),
+            SendOutcome::Retry {
+                unauthorized: false,
+                ..
+            }
+        ));
+        // Any other 403 in the error format is a verdict.
+        assert!(matches!(
+            classify_send(&res(
+                403,
+                r#"{"error":{"code":"forbidden","message":"no"}}"#
+            )),
+            SendOutcome::Rejected(_)
+        ));
         // A proxy's HTML error page or an unknown route is not a verdict on the command.
         assert!(matches!(
             classify_send(&res(404, "<html>")),

@@ -21,6 +21,7 @@
 //! | [`storage`] | the [`Storage`] trait and [`MemoryStorage`] |
 //! | [`mirror`] | [`mirror::MirrorStorage`]: in memory, with a journal for an asynchronous backend (IndexedDB) |
 //! | [`platform`] | the transport, clock and entropy traits |
+//! | [`session`] | a browser session's CSRF token, and retrying with a fresh one |
 //! | [`sse`] | an incremental Server-Sent Events parser |
 //! | [`notify`] | runtime-agnostic change signals, timeouts and backoff |
 //!
@@ -42,6 +43,7 @@ pub mod pairing;
 pub mod platform;
 pub mod protocol;
 pub mod replica;
+pub mod session;
 pub mod sse;
 pub mod storage;
 

@@ -585,3 +585,85 @@ proptest! {
         prop_assert!(r.view().data_eq(&server.state));
     }
 }
+
+#[test]
+fn adopted_entries_slot_in_by_submission_time_behind_what_was_sent() {
+    let (mut r, _server, storage) = seeded();
+    r.submit(entry(1, add_note(task_id(1), "a"), 10)).unwrap();
+    r.submit(entry(3, add_note(task_id(1), "c"), 30)).unwrap();
+    // Entry 1 is in flight.
+    assert_eq!(
+        r.next_to_send().unwrap().unwrap().command_id,
+        Uuid::from_u128(1)
+    );
+    // Another tab queued 0 (before 1, but 1 is already sent), 2 and 4.
+    let theirs = vec![
+        entry(4, add_note(task_id(1), "d"), 40),
+        entry(0, add_note(task_id(1), "z"), 5),
+        entry(2, add_note(task_id(1), "b"), 20),
+    ];
+    assert_eq!(r.adopt(theirs.clone()).unwrap(), 3);
+    let order: Vec<u128> = r.outbox().iter().map(|e| e.command_id.as_u128()).collect();
+    assert_eq!(order, [1, 0, 2, 3, 4]);
+    // The view applies them in that order, and storage has them.
+    let n = notes(&mut r, task_id(1));
+    let at = |t: &str| n.find(t).unwrap();
+    assert!(at("a") < at("z") && at("z") < at("b") && at("b") < at("c") && at("c") < at("d"));
+    assert_eq!(storage.clone().load().unwrap().outbox.len(), 5);
+    // Adopting again changes nothing.
+    assert_eq!(r.adopt(theirs).unwrap(), 0);
+    assert_eq!(r.outbox().len(), 5);
+}
+
+#[test]
+fn entries_already_settled_or_refused_are_not_adopted() {
+    let (mut r, mut server, _) = seeded();
+    let mine = entry(1, add_note(task_id(1), "a"), 10);
+    r.submit(mine.clone()).unwrap();
+    // Confirmed: it leaves the outbox, and a tab still listing it does not bring it back.
+    server
+        .execute(&owner(), mine.command_id, mine.command().unwrap())
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert!(r.outbox().is_empty());
+    assert_eq!(r.adopt(vec![mine]).unwrap(), 0);
+    // Refused: likewise.
+    let bad = entry(2, add_note(task_id(1), "b"), 20);
+    r.submit(bad.clone()).unwrap();
+    r.reject(
+        bad.command_id,
+        Rejection {
+            status: 409,
+            code: "deleted".into(),
+            message: String::new(),
+        },
+        ts(30),
+    )
+    .unwrap();
+    assert_eq!(r.adopt(vec![bad]).unwrap(), 0);
+    assert!(r.outbox().is_empty());
+}
+
+#[test]
+fn an_entry_another_tab_saw_refused_leaves_the_outbox() {
+    let (mut r, _server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "a"), 10);
+    r.submit(e.clone()).unwrap();
+    let failed = todo_client::FailedEntry {
+        entry: e.clone(),
+        failed_at: ts(20),
+        rejection: Rejection {
+            status: 409,
+            code: "deleted".into(),
+            message: String::new(),
+        },
+    };
+    assert_eq!(r.adopt_failed(vec![failed.clone()]).unwrap(), 1);
+    assert!(r.outbox().is_empty());
+    assert_eq!(r.failed(), std::slice::from_ref(&failed));
+    let stored = storage.clone().load().unwrap();
+    assert!(stored.outbox.is_empty());
+    assert_eq!(stored.failed.len(), 1);
+    assert_eq!(r.adopt_failed(vec![failed]).unwrap(), 0);
+    assert!(notes(&mut r, task_id(1)).is_empty());
+}
