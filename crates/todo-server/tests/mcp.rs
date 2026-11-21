@@ -944,4 +944,14 @@ async fn the_implicit_inbox_is_one_the_agent_can_capture_into() {
     // The top-level Inbox comes first, but the agent can only read it.
     let created = ok(&c, "create_task", json!({ "title": "x" })).await;
     assert_eq!(created["list_id"], writable);
+
+    // With only a read-only Inbox there is no implicit target.
+    let (_, token) = env.agent(
+        "reader",
+        &grants(AccessLevel::None, &[(&read_only, AccessLevel::Read)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    let e = fails(&c, "create_task", json!({ "title": "y" })).await;
+    assert_eq!(e["code"], "inbox_not_found", "{e}");
 }
