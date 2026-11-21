@@ -56,6 +56,10 @@
 //! ID held only by the undo journal, so it never depends on hidden state.
 //!
 //! Only agents are filtered (see [`visibility::sees_all`]); the helpers there decide what is readable.
+//!
+//! **Timing is not equalised.** A hidden entity and a missing one get the same answer, but not always
+//! in the same time: the hidden one is found and then checked. That difference is accepted, including
+//! for `HEAD` and `GET` on `/api/v1/attachments/{id}` (see [`super::attachments`]).
 
 use super::error::{ApiError, domain_error};
 use super::visibility;

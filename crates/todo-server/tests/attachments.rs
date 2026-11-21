@@ -1031,3 +1031,110 @@ async fn the_content_route_and_head_are_in_the_openapi_document() {
     assert!(put["responses"]["422"].is_object());
     assert!(doc["paths"]["/api/v1/attachments/{id}"]["head"].is_object());
 }
+
+#[tokio::test]
+async fn head_shares_the_download_allowance_and_charges_nothing() {
+    let t = TestServer::start_with(|c| {
+        c.attachments.downloads_per_minute = 1;
+        c.attachments.download_burst = 1;
+    })
+    .await;
+    let (_, task) = inbox_task(&t).await;
+    let up = upload(&t, &task, "a", None, b"a").await;
+    let att = up.body["attachment"]["id"].as_str().unwrap();
+    assert_eq!(download_as(&t, TOKEN_A, att).await.0, StatusCode::OK);
+    // The allowance is used up: HEAD is limited like GET.
+    let (s, h) = head_as(&t, TOKEN_A, att).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert!(h.contains_key("retry-after"));
+    // Another token: HEAD answers, and still charges no GET.
+    assert_eq!(head_as(&t, common::TOKEN_B, att).await.0, StatusCode::OK);
+    let a = &t.server.attachments;
+    assert_eq!(a.registry().usage(&a.month()).unwrap().class_b, 1);
+}
+
+#[tokio::test]
+async fn a_fill_past_its_deadline_charges_and_sends_nothing() {
+    let t = TestServer::start_with(|c| {
+        c.attachments.max_upload_bytes = MAX;
+        c.attachments.upload_timeout_ms = 300;
+    })
+    .await;
+    let (_, task) = inbox_task(&t).await;
+    let content = b"late content".to_vec();
+    let sha = sha_hex(&content);
+    let att = import_attachment(&t, &task, content.len() as u64, &sha).await;
+    // The body is read and verified in time; the commit would be claimed only after the deadline.
+    t.server
+        .attachments
+        .set_fill_delay(std::time::Duration::from_millis(600));
+    let r = fill(&t, &att, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::REQUEST_TIMEOUT, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "timeout");
+    // Let the abandoned work finish: it refuses to commit.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_nothing_stored(&t, "past the deadline");
+    assert_eq!(head_as(&t, TOKEN_A, &att).await.0, StatusCode::NOT_FOUND);
+    // A retry in time stores it.
+    t.server
+        .attachments
+        .set_fill_delay(std::time::Duration::ZERO);
+    let r = fill(&t, &att, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+}
+
+#[tokio::test]
+async fn an_announced_size_tells_non_owners_nothing_about_the_fill_route() {
+    let t = server().await;
+    let (list, task) = inbox_task(&t).await;
+    let att = import_attachment(&t, &task, 10, &sha_hex(b"0123456789")).await;
+    let planner = agent(&t, "planner", &list, AccessLevel::Plan).await;
+    let share = t
+        .server
+        .authsvc
+        .create_share(ShareTarget::List(list.parse().unwrap()), None)
+        .unwrap()
+        .to_string();
+    let addr = t.server.addr;
+    let global = t.config.limits.max_body_bytes;
+    let path = format!(
+        "{}?size_bytes=10&sha256={}",
+        content_path(&att),
+        sha_hex(b"0123456789")
+    );
+    let (agent_auth, share_auth) = (format!("Bearer {planner}"), format!("Bearer {share}"));
+    // Below the attachment cap, between it and the global limit, and over both.
+    let sizes = [
+        MAX as usize - 1,
+        MAX as usize + 1,
+        global + 1,
+        30 * 1024 * 1024,
+    ];
+    for (who, extra) in [
+        ("agent", vec![("Authorization", agent_auth.as_str())]),
+        ("share token", vec![("Authorization", share_auth.as_str())]),
+        ("anonymous", vec![]),
+    ] {
+        for len in sizes {
+            let want = common::raw::oversized(addr, "PUT", "/api/v1/nope", len, &extra).await;
+            let got = common::raw::oversized(addr, "PUT", &path, len, &extra).await;
+            assert_eq!(
+                (got.status, got.body.trim()),
+                (want.status, want.body.trim()),
+                "{who}, Content-Length {len}"
+            );
+        }
+    }
+    // The owner gets the attachment cap.
+    let owner = format!("Bearer {TOKEN_A}");
+    for len in [MAX as usize + 1, global + 1] {
+        let r = common::raw::oversized(addr, "PUT", &path, len, &[("Authorization", &owner)]).await;
+        assert_eq!(r.status, 413, "{}", r.body);
+        assert!(
+            r.body.contains(&format!("limited to {MAX} bytes")),
+            "{}",
+            r.body
+        );
+    }
+    assert_nothing_stored(&t, "announced sizes");
+}

@@ -120,15 +120,19 @@ async fn json_413(res: Response) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("application/json"));
     if res.status() == StatusCode::PAYLOAD_TOO_LARGE && !is_json {
-        ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "payload_too_large",
-            "request body is too large",
-        )
-        .into_response()
+        body_too_large().into_response()
     } else {
         res
     }
+}
+
+/// What the global body limit answers.
+pub(crate) fn body_too_large() -> ApiError {
+    ApiError::new(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+        "request body is too large",
+    )
 }
 
 /// The request deadline. It covers everything up to the response head, including authentication and

@@ -46,7 +46,8 @@ todo-import verify-server --bundle "$work\bundle.json" --server https://todo.exa
 - `apply --attachments` also uploads each attachment's content, after the commands, through the owner-only
   `PUT /api/v1/attachments/{id}/content`. The server checks the size and SHA-256 against the imported
   reference and the body before it stores anything. Content the server already holds is skipped (a `HEAD`
-  of the download route, which fetches nothing), progress goes in the same journal, and a failed attachment
+  of the download route, which fetches nothing). Progress goes in the same journal, but content it records
+  is still checked with a `HEAD`, so content the server has lost since is sent again, and a failed attachment
   doesn't stop the run: the summary lists it, `apply` exits with 1, and running the same command again
   retries only what failed. Each upload counts against the server's attachment budget like any upload.
 - `verify-server` also reports every attachment whose content the server doesn't hold yet.

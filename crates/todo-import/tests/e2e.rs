@@ -35,6 +35,9 @@ async fn start() -> Running {
     };
     // The static owner tokens are the server's development fallback, off by default.
     config.auth.allow_config_owner_tokens = true;
+    // Every content check is a HEAD against the download allowance; these tests make many.
+    config.attachments.downloads_per_minute = 100_000;
+    config.attachments.download_burst = 10_000;
     config.auth.owner_tokens = vec![OwnerToken {
         device: DeviceId::new("importer").unwrap(),
         sha256: hash_token(TOKEN),
@@ -314,6 +317,22 @@ async fn attachment_content_is_uploaded_resumed_and_failures_reported() {
     let a = &s.server.attachments;
     let usage = a.registry().usage(&a.month()).unwrap();
     assert_eq!((usage.objects, usage.class_a), (4, 4));
+    // The server loses one content (its attachment registry restored from an older backup): the
+    // journal still records it, but the re-run checks and sends it again.
+    let lost = bundle.blobs[2].attachment.as_uuid();
+    let row = a
+        .registry()
+        .all()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.attachment == lost)
+        .unwrap();
+    a.registry().remove(&row.object_key).unwrap();
+    let rep = run_verify(&url, &bundle).await;
+    assert_eq!(rep.contents_stored, 3, "{}", rep.render());
+    let c = run_content(&url, &bundle, &journal, None).await.unwrap();
+    assert_eq!((c.skipped, c.uploaded, c.present), (3, 1, 0), "{c:?}");
+    assert!(run_verify(&url, &bundle).await.ok());
     s.server.shutdown().await.unwrap();
 
     // Failures don't stop the run: one attachment deleted on the server, one corrupted in the bundle.
@@ -367,6 +386,65 @@ async fn attachment_content_is_uploaded_resumed_and_failures_reported() {
         rep.problems[0].contains("content missing"),
         "{}",
         rep.render()
+    );
+    s.server.shutdown().await.unwrap();
+}
+
+fn append_torn(journal: &Path, fragment: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(journal)
+        .unwrap();
+    f.write_all(fragment.as_bytes()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_torn_journal_tail_never_swallows_the_next_entry() {
+    let bundle = common::bundle();
+    let total = bundle.items.len();
+    let tmp = tempfile::tempdir().unwrap();
+    let s = start().await;
+    let url = s.server.url();
+    let base = todo_import::http::check_base_url(&url).unwrap();
+    let digest = bundle.digest().unwrap();
+    let journal = tmp.path().join("torn");
+    let done = || read_journal(&journal, &digest, &base).unwrap().done.len();
+    // A crash after 7 sent, 5 synced; then a torn write.
+    let err = run_apply(&url, &bundle, opts(&journal, 5, Some(7)))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApplyError::Aborted(7)));
+    append_torn(&journal, "0190a1b2-c3d4-7");
+    assert_eq!(done(), 5);
+    // Resume one: 2 more synced (batch 1), the third lost by another crash, and torn again.
+    let err = run_apply(&url, &bundle, opts(&journal, 1, Some(3)))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApplyError::Aborted(3)));
+    assert_eq!(done(), 7, "the first entry after the fragment was kept");
+    append_torn(&journal, "content 0190");
+    // Resume two: everything else, and every entry lands on its own line.
+    let sum = run_apply(&url, &bundle, opts(&journal, 1, None))
+        .await
+        .unwrap();
+    assert_eq!(sum.skipped, 7);
+    assert_eq!(done(), total);
+    let text = std::fs::read_to_string(&journal).unwrap();
+    assert!(text.ends_with('\n'));
+    for line in text.lines().skip(1) {
+        assert!(line.parse::<uuid::Uuid>().is_ok(), "glued line: {line}");
+    }
+    // Content lines go through the same repair.
+    append_torn(&journal, "content 01");
+    let c = run_content(&url, &bundle, &journal, None).await.unwrap();
+    assert_eq!(c.uploaded, 1);
+    assert_eq!(
+        read_journal(&journal, &digest, &base)
+            .unwrap()
+            .contents
+            .len(),
+        1
     );
     s.server.shutdown().await.unwrap();
 }

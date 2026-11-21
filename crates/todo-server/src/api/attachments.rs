@@ -14,8 +14,15 @@
 //!   match both, or nothing is charged or stored (422 `content_mismatch`). The object is recorded for
 //!   the existing reference, so no command is written. The same content again is 200
 //!   `idempotent-replayed: true` without reading the body; other content for an attachment that has
-//!   some is 409 `content_exists`. Agents get exactly what a missing route gives (404 `no such
-//!   endpoint`), before any parameter is looked at.
+//!   some is 409 `content_exists`. A replay is decided from the declared `size_bytes` and `sha256`
+//!   alone (stored content was verified against them when it was stored); the body of a replay is never
+//!   read, so a caller must check its own bytes against the hash it sends. Agents, share tokens and
+//!   anonymous callers get exactly what a missing route gives (404 `no such endpoint`, or 401 / the
+//!   global 413), before any parameter or announced size is looked at.
+//!
+//! **Timing.** A HEAD (or GET) for an attachment the caller cannot see and one that does not exist give
+//! the same 404, but the hidden one also runs the visibility check, so it may answer measurably later.
+//! That difference is accepted, as for the other reads (see [`super::hidden`]).
 //!
 //! **Access.** Uploading is `add_attachment`: the owner, or an agent with capture access on the task's
 //! list, exactly as `todo-core` decides for the command; it counts as one write against an agent's quota.
@@ -297,15 +304,67 @@ pub fn content_disposition(name: &str) -> String {
 pub fn upload_router(state: AppState) -> Router<AppState> {
     let timeout = state.attachments.config().upload_timeout();
     let max = state.attachments.config().max_upload_bytes;
-    Router::new()
+    let upload = Router::new()
         .route("/api/v1/tasks/{id}/attachments", post(upload))
-        .route("/api/v1/attachments/{id}/content", put(fill_content))
         // Route layers only: a `layer` would also wrap this router's fallback, which becomes the app's.
-        .route_layer(from_fn_with_state(state, crate::auth::require_auth))
+        .route_layer(from_fn_with_state(state.clone(), crate::auth::require_auth))
         .route_layer(from_fn(super::tag_route))
         .route_layer(from_fn_with_state(timeout, crate::app::deadline))
         // Like the global limit, an announced oversized body is refused before authentication.
-        .route_layer(from_fn_with_state(max, refuse_announced_oversize))
+        .route_layer(from_fn_with_state(max, refuse_announced_oversize));
+    let fill = Router::new()
+        .route("/api/v1/attachments/{id}/content", put(fill_content))
+        .route_layer(from_fn_with_state(state.clone(), crate::auth::require_auth))
+        .route_layer(from_fn(super::tag_route))
+        .route_layer(from_fn_with_state(timeout, crate::app::deadline))
+        // Owner only: the larger cap applies once the caller is known to be the owner.
+        .route_layer(from_fn_with_state(state, owner_sized_body));
+    upload.merge(fill)
+}
+
+fn declared_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+}
+
+/// The body limit of the owner-only fill route. A body announced over the global limit gets exactly
+/// what a route that does not exist gives (the global 413) unless the caller is the owner, who gets the
+/// upload cap instead. So an agent, a share token or an anonymous caller learns nothing from the size
+/// it announces. Checking the token here counts a failure against the caller's address like any bearer
+/// check, so this is no cheaper a token oracle than any other route.
+async fn owner_sized_body(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(declared) = declared_length(req.headers()) else {
+        return next.run(req).await;
+    };
+    let global = u64::try_from(state.limits.max_body_bytes).unwrap_or(u64::MAX);
+    if declared <= global {
+        return next.run(req).await;
+    }
+    let svc = &state.authsvc;
+    let ip = svc.client_ip(req.headers(), crate::auth::peer_ip(req.extensions()));
+    if let Err(wait) = svc.bearer_admission(ip) {
+        return ApiError::too_many_requests(wait).into_response();
+    }
+    match state.auth.authenticate(req.headers()) {
+        Ok(a) if !a.is_agent() => {
+            let max = state.attachments.config().max_upload_bytes;
+            if declared > max {
+                return too_large(max).into_response();
+            }
+            next.run(req).await
+        }
+        Ok(_) => crate::app::body_too_large().into_response(),
+        Err(_) => {
+            svc.bearer_failed(ip);
+            crate::app::body_too_large().into_response()
+        }
+    }
 }
 
 /// 413 for a `Content-Length` over the upload cap, before anything else runs.
@@ -314,12 +373,7 @@ async fn refuse_announced_oversize(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let declared = req
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    if declared.is_some_and(|n| n > max) {
+    if declared_length(req.headers()).is_some_and(|n| n > max) {
         return too_large(max).into_response();
     }
     next.run(req).await
@@ -720,7 +774,7 @@ fn plan_fill(
     ),
     responses(
         (status = 201, description = "Verified and stored", body = ContentResponse),
-        (status = 200, description = "This content is stored already (header `idempotent-replayed: true`); the body was not read", body = ContentResponse),
+        (status = 200, description = "This content is stored already (header `idempotent-replayed: true`). Decided from `size_bytes` and `sha256` alone: the body was not read, so check your own bytes against the hash you send.", body = ContentResponse),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "No such attachment (or a deleted one). Agents get the answer of a missing route: owner only.", body = ErrorBody),
         (status = 408, description = "The deadline passed before the content was stored", body = ErrorBody),
@@ -738,6 +792,7 @@ fn plan_fill(
 pub async fn fill_content(
     auth: Authenticated,
     State(app): State<AppState>,
+    RequestCancel(cancel): RequestCancel,
     path: Result<ApiPath<AttachmentId>, ApiError>,
     query: Result<ApiQuery<ContentParams>, ApiError>,
     headers: HeaderMap,
@@ -759,10 +814,10 @@ pub async fn fill_content(
     if size > max {
         return Err(too_large(max));
     }
-    let declared = headers
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
+    let declared = declared_length(&headers);
+    if declared.is_some_and(|n| n > max) {
+        return Err(too_large(max));
+    }
     if let Some(n) = declared.filter(|n| *n != size) {
         return Err(mismatch(
             "Content-Length is not size_bytes",
@@ -895,14 +950,20 @@ pub async fn fill_content(
     let (a, ref_key) = (att.clone(), meta.storage_key.clone());
     // Recorded as the object of the existing reference (its `storage_key`), so downloads and the
     // collector find it like any upload. No command: the attachment itself does not change.
+    // Charging and the PUT are this request's commit: claimed first, so a request past its deadline
+    // (already answered 408) charges and sends nothing, and one that claimed in time is awaited.
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let _slot = slot;
+        a.before_fill_commit();
+        if !cancel.begin_commit() {
+            return Err(ApiError::timeout());
+        }
         a.store(&object_key, id, &ref_key, &sealed)
+            .map_err(|e| attachment_error(&a, e))
     })
     .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|e| attachment_error(&att, e))?;
+    .map_err(|_| ApiError::internal())??;
     Ok((
         StatusCode::CREATED,
         axum::Json(ContentResponse {
@@ -1043,7 +1104,7 @@ async fn stored_content(
         (status = 200, description = "The content is stored. The headers are those of a download (`Content-Length` is the content's size), with no body. Nothing is fetched from storage or charged to the budget."),
         (status = 401, description = "Missing or invalid token"),
         (status = 404, description = "No such attachment, one you cannot see, a deleted one, or one without stored content"),
-        (status = 429, description = "Rate limit; see `Retry-After`"),
+        (status = 429, description = "Rate limit (the download allowance, shared with `GET`); see `Retry-After`"),
     ),
     security(("bearer" = []))
 )]
@@ -1052,6 +1113,11 @@ pub async fn head(
     State(app): State<AppState>,
     ApiPath(id): ApiPath<AttachmentId>,
 ) -> Result<Response, ApiError> {
+    // The same allowance as downloads, though nothing is fetched: a HEAD is not a free probe.
+    app.attachments
+        .download_limiter
+        .check(&auth.principal)
+        .map_err(ApiError::too_many_requests)?;
     let (meta, row) = stored_content(&app, &auth, id).await?;
     let mut res = Response::new(Body::empty());
     download_headers(&mut res, &meta, row.plain_size);

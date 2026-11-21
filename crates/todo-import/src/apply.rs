@@ -21,6 +21,9 @@
 //! Attachment content ([`apply_attachments`]) is recorded in the same journal, as `content <attachment
 //! ID>` lines, each synced as soon as the server holds that content.
 //!
+//! A crash mid-write can leave a torn last line. Reading ignores it, and opening the journal for a new
+//! run cuts it off first, so the next line never lands on the fragment.
+//!
 //! A command counts as acknowledged only when the server answers 2xx with a command result for that
 //! `command_id`: the result names the command, lists its events (an import always stores one), and
 //! names the log epoch. Anything else (an empty body, another ID, no events) is an error, and nothing
@@ -32,8 +35,12 @@
 //! the bundle. With `--attachments`, once every command is acknowledged, [`apply_attachments`] sends each
 //! attachment's content to `PUT /api/v1/attachments/{id}/content` with its size and SHA-256, which the
 //! server checks against the reference and the body before storing anything. Each one is first checked
-//! with a `HEAD` of the download route (which fetches nothing), so content the server already holds is
-//! never sent again, even without a journal. A failure is recorded and the run goes on with the next
+//! with a `HEAD` of the download route (which fetches and charges nothing), so content the server
+//! already holds is never sent again, even without a journal; and content the journal records is still
+//! checked, so content the server lost since (its attachment registry restored from a backup) is sent
+//! again. The journal only spares decoding and hashing the bundle's copy. The server replays a fill by
+//! the declared size and hash alone, without reading the body, so the importer checks the bytes against
+//! both before it sends them. A failure is recorded and the run goes on with the next
 //! attachment; the summary lists every failure, and a re-run retries exactly those.
 //!
 //! # Log epoch
@@ -446,11 +453,25 @@ fn open_journal(
             create_journal(path, &header(&digest, &server, epoch)).map_err(jerr)?;
         }
     }
+    repair_tail(path).map_err(jerr)?;
     let file = std::fs::OpenOptions::new()
         .append(true)
         .open(path)
         .map_err(jerr)?;
     Ok((journal, epoch, file))
+}
+
+/// Cuts a torn last line (a crash mid-write left no newline after it), so the next line appended starts
+/// on a line of its own instead of being glued to the fragment and lost.
+fn repair_tail(path: &Path) -> std::io::Result<()> {
+    let bytes = std::fs::read(path)?;
+    if bytes.last().is_none_or(|b| *b == b'\n') {
+        return Ok(());
+    }
+    let keep = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let f = std::fs::OpenOptions::new().write(true).open(path)?;
+    f.set_len(keep as u64)?;
+    f.sync_all()
 }
 
 /// Sends every item the journal does not record yet.
@@ -540,7 +561,7 @@ pub struct ContentOptions {
 pub struct ContentSummary {
     /// Attachments with content in the bundle.
     pub total: usize,
-    /// Skipped because the journal records them as stored.
+    /// Skipped: the journal records them as stored, and the server confirms it.
     pub skipped: usize,
     /// Found stored on the server already (by an earlier run without this journal).
     pub present: usize,
@@ -588,34 +609,23 @@ pub fn apply_attachments(
     let mut stored = 0usize;
     for blob in &bundle.blobs {
         let id = blob.attachment.as_uuid();
-        if journal.contents.contains(&id) {
-            sum.skipped += 1;
-            continue;
-        }
+        let journaled = journal.contents.contains(&id);
         let label = labels.get(&id).cloned().unwrap_or_else(|| id.to_string());
         let fail = |sum: &mut ContentSummary, why: String| {
             tracing::warn!(attachment = %label, reason = %why, "attachment content not stored");
             sum.failed.push(format!("attachment {label}: {why}"));
         };
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(&blob.content_base64) {
-            Ok(b) => b,
-            Err(e) => {
-                fail(&mut sum, format!("the bundle's content is not base64: {e}"));
-                continue;
-            }
-        };
-        if bytes.len() as u64 != blob.size_bytes
-            || hex::encode(Sha256::digest(&bytes)) != blob.sha256
-        {
-            fail(
-                &mut sum,
-                "the bundle's content does not match its size and SHA-256".to_owned(),
-            );
-            continue;
-        }
+        // Always asked, journaled or not: the server's attachment registry may have been restored and
+        // lost content since. A HEAD fetches and charges nothing.
         let what = "HEAD /api/v1/attachments/{id}";
         match client.head(what, &format!("/api/v1/attachments/{id}")) {
-            Ok(Some(len)) if len == blob.size_bytes => sum.present += 1,
+            Ok(Some(len)) if len == blob.size_bytes => {
+                if journaled {
+                    sum.skipped += 1;
+                    continue;
+                }
+                sum.present += 1;
+            }
             Ok(Some(len)) => {
                 fail(
                     &mut sum,
@@ -631,6 +641,25 @@ pub fn apply_attachments(
                 continue;
             }
             Ok(None) => {
+                let bytes =
+                    match base64::engine::general_purpose::STANDARD.decode(&blob.content_base64) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            fail(&mut sum, format!("the bundle's content is not base64: {e}"));
+                            continue;
+                        }
+                    };
+                // The server replays a fill by the declared size and hash without reading the body,
+                // so the bytes are checked here, before they are sent.
+                if bytes.len() as u64 != blob.size_bytes
+                    || hex::encode(Sha256::digest(&bytes)) != blob.sha256
+                {
+                    fail(
+                        &mut sum,
+                        "the bundle's content does not match its size and SHA-256".to_owned(),
+                    );
+                    continue;
+                }
                 let path = format!(
                     "/api/v1/attachments/{id}/content?size_bytes={}&sha256={}",
                     blob.size_bytes, blob.sha256
