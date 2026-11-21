@@ -1,0 +1,17 @@
+[package]
+name = "todo-client"
+description = "Client sync engine shared by the desktop, Android and web clients. Platform specifics go behind traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+todo-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

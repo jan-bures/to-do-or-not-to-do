@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned to what the GPUI revision used by the desktop app requires. Bump only together with GPUI.
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown", "aarch64-linux-android"]

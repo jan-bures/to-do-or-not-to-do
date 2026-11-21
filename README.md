@@ -18,6 +18,10 @@ A personal to-do app built as a shared interface for one person and their AI age
 
 | Path | Contents |
 |---|---|
+| `crates/todo-core` | Domain model shared by every component. No I/O; builds for Windows, Android and wasm32 |
+| `crates/todo-client` | Client sync engine shared by the desktop, Android and web clients |
+| `crates/todo-server` | Self-hosted server: REST, live event stream, MCP |
+| `crates/todo-import` | Microsoft To Do importer |
 | `spikes/gpui-desktop` | GPUI viability spike on Windows: list, text input, tray, global hotkey, software rendering, drag-and-drop formats |
 | `spikes/graph-export` | Microsoft To Do export through Microsoft Graph, with a check against the local cache |
 

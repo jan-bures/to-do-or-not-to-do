@@ -1,0 +1,18 @@
+[package]
+name = "todo-server"
+description = "Self-hosted server: REST, SSE event stream, MCP, auth, ingest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+todo-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
