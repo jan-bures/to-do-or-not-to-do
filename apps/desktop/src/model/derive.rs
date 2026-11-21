@@ -62,12 +62,12 @@ impl Index {
                 let collection = l
                     .collection
                     .and_then(|c| state.collections.get(&c))
-                    .map(|c| SharedString::from(c.name.clone()));
+                    .map(|c| SharedString::from(labels::one_line(&c.name)));
                 (
                     l.id,
                     ListRef {
                         collection,
-                        name: l.name.clone().into(),
+                        name: labels::one_line(&l.name).into(),
                         hue: lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()),
                     },
                 )
@@ -131,14 +131,14 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
     };
     TaskRow {
         id: task.id,
-        title: task.title.clone().into(),
+        title: labels::one_line(&task.title).into(),
         list: ix.list(task.list),
         tags: task
             .tags
             .iter()
             .filter_map(|t| state.tags.get(t))
             .filter(|t| t.deleted.is_none())
-            .map(|t| SharedString::from(format!("#{}", t.name)))
+            .map(|t| SharedString::from(format!("#{}", labels::one_line(&t.name))))
             .collect(),
         steps: ix.steps.get(&task.id).copied(),
         agent: agent_of(task),
@@ -280,6 +280,13 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
             (today_done, today_done + still_open)
         }
     };
+    // The status bar's "done today": only what was completed since local midnight, in every room (My Day's
+    // header counts its whole plan, which can hold a task finished on an earlier day).
+    let done_today = open
+        .iter()
+        .chain(done.iter())
+        .filter(|t| completed_on(now, t, |d| d == today))
+        .count();
     let finished_this_month = open
         .iter()
         .chain(done.iter())
@@ -323,7 +330,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
                 .filter(|l| l.collection == Some(c) && l.deleted.is_none())
                 .count();
             (
-                col.name.clone().into(),
+                labels::one_line(&col.name).into(),
                 Eyebrow::Kind {
                     kind: "Collection".into(),
                     detail: format!("{n} {}", if n == 1 { "list" } else { "lists" }).into(),
@@ -331,7 +338,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
                 lists::hue(col.color.as_deref(), c.as_uuid().as_bytes()),
                 Chips::List,
                 "Nothing on the shelf yet.".into(),
-                format!("Add a task to {}…", col.name).into(),
+                format!("Add a task to {}…", labels::one_line(&col.name)).into(),
             )
         }
         RoomKey::List(l) => {
@@ -374,6 +381,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         },
         completed_count: u32::try_from(completed_count).unwrap_or(u32::MAX),
         finished_this_month: u32::try_from(finished_this_month).unwrap_or(u32::MAX),
+        done_today: u32::try_from(done_today).unwrap_or(u32::MAX),
         empty_line: if filtered {
             "Nothing matches the filter.".into()
         } else {
@@ -540,7 +548,7 @@ fn sidebar(
             CollectionNav {
                 id: c.id,
                 glyph: lists::collection_glyph(&c.name),
-                name: c.name.clone().into(),
+                name: labels::one_line(&c.name).into(),
                 hue: lists::hue(c.color.as_deref(), c.id.as_uuid().as_bytes()),
                 count: lists.iter().map(|l| l.count).sum(),
                 collapsed,
@@ -707,7 +715,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         .iter()
         .filter_map(|t| state.tags.get(t))
         .filter(|t| t.deleted.is_none())
-        .map(|t| format!("#{}", t.name))
+        .map(|t| format!("#{}", labels::one_line(&t.name)))
         .collect();
     if !tags.is_empty() {
         fields.push(Field {
@@ -732,17 +740,22 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
                 title: title
                     .clone()
                     .filter(|t| !t.trim().is_empty())
-                    .unwrap_or_else(|| host(url))
+                    .map_or_else(|| labels::one_line(&host(url)), |t| labels::one_line(&t))
                     .into(),
-                detail: url.clone().into(),
+                detail: labels::one_line(url).into(),
                 // Only http(s) opens; anything else is shown as text.
                 url: super::files::openable_link(url).map(Into::into),
                 email: false,
             },
             LinkKind::Email(e) => LinkRow {
                 id: l.id,
-                title: e.subject.clone().into(),
-                detail: format!("{} · {}", e.sender, labels::when(e.received_at, now)).into(),
+                title: labels::one_line(&e.subject).into(),
+                detail: format!(
+                    "{} · {}",
+                    labels::one_line(&e.sender),
+                    labels::when(e.received_at, now)
+                )
+                .into(),
                 url: e
                     .web_link
                     .as_deref()
@@ -762,7 +775,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         .iter()
         .map(|a| AttachmentRow {
             id: a.id,
-            name: a.file_name.clone().into(),
+            name: labels::one_line(&a.file_name).into(),
             detail: labels::size(a.size_bytes).into(),
         })
         .collect();
@@ -779,7 +792,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             .iter()
             .map(|s| StepRow {
                 id: s.id,
-                title: s.title.clone().into(),
+                title: labels::one_line(&s.title).into(),
                 done: s.completed_at.is_some(),
             })
             .collect(),

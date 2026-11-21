@@ -27,12 +27,24 @@ pub enum Focus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HintState {
     pub focus: Focus,
-    /// The list shows rows to move through.
+    /// The list shows tasks to move through (rows, or the finished day's hand-over).
     pub rows: bool,
-    /// A task is selected (open in the detail pane).
-    pub selected: bool,
+    /// The selected task (open in the detail pane), if any: whether it is completed, which turns Space's
+    /// "complete" into "reopen".
+    pub selected: Option<Selected>,
     /// The room is a list, whose own order Alt+Up and Alt+Down change.
     pub reorder: bool,
+}
+
+/// The selected task, as far as the hints care.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selected {
+    pub done: bool,
+}
+
+/// What Space does to a task: `commands::toggle_complete` reopens a completed one.
+pub fn space_label(done: bool) -> &'static str {
+    if done { "reopen" } else { "complete" }
 }
 
 /// A keycap and what it does.
@@ -46,9 +58,9 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
             if s.rows {
                 hints.push(("J K", "move"));
             }
-            if s.selected {
+            if let Some(selected) = s.selected {
                 hints.extend([
-                    ("Space", "complete"),
+                    ("Space", space_label(selected.done)),
                     ("E", "edit"),
                     ("D", "due"),
                     ("P", "priority"),
@@ -83,7 +95,7 @@ mod tests {
         HintState {
             focus: Focus::List,
             rows,
-            selected,
+            selected: selected.then_some(Selected { done: false }),
             reorder,
         }
     }
@@ -126,7 +138,7 @@ mod tests {
             let k = keys(HintState {
                 focus,
                 rows: true,
-                selected: true,
+                selected: Some(Selected { done: false }),
                 reorder: true,
             });
             assert_eq!(k, ["Enter", "Esc"], "{focus:?}");
@@ -138,9 +150,36 @@ mod tests {
         let k = keys(HintState {
             focus: Focus::Elsewhere,
             rows: true,
-            selected: true,
+            selected: Some(Selected { done: false }),
             reorder: true,
         });
         assert_eq!(k, ["Ctrl K"]);
+    }
+
+    #[test]
+    fn space_says_what_toggling_does() {
+        use crate::fixtures;
+        use crate::model::commands;
+        use todo_core::Command;
+        let f = fixtures::my_day();
+        for task in f.state.tasks.values() {
+            let hint = key_hints(HintState {
+                focus: Focus::List,
+                rows: true,
+                selected: Some(Selected {
+                    done: task.is_done(),
+                }),
+                reorder: false,
+            });
+            let space = hint.iter().find(|(k, _)| *k == "Space").map(|(_, w)| *w);
+            let expected = match commands::toggle_complete(&f.state, task.id) {
+                Some(Command::CompleteTask { .. }) => "complete",
+                Some(Command::UncompleteTask { .. }) => "reopen",
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(space, Some(expected), "{}", task.title);
+        }
+        assert!(f.state.tasks.values().any(|t| t.is_done()));
+        assert!(f.state.tasks.values().any(|t| !t.is_done()));
     }
 }

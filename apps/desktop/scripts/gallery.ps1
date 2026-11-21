@@ -15,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'empty', 'finished', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
+    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'empty', 'finished', 'finished-short', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )
@@ -37,7 +37,12 @@ if (-not (Test-Path $exe)) { throw "missing $exe; build first" }
 
 # The expected logical size of each fixture's window; the captured PNG must be exactly this times the scale.
 function Get-ExpectedSize([string]$fixture, [double]$scale) {
-    $logical = if ($fixture -eq 'quick-add') { @(640, 196) } else { @(1440, 900) }
+    $logical = switch ($fixture) {
+        'quick-add' { @(640, 196) }
+        'long-names-narrow' { @(960, 900) }
+        'finished-short' { @(1440, 700) }
+        default { @(1440, 900) }
+    }
     return @([int][math]::Round($logical[0] * $scale), [int][math]::Round($logical[1] * $scale))
 }
 

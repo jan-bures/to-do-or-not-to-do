@@ -185,12 +185,22 @@ pub fn chip_width(window: &Window, list: &ListRef, with_collection: bool) -> f32
         .min(desktop::CHIP_MAX)
 }
 
+/// The narrowest [`chip`] gets in a metadata line: its padding, the dot and an ellipsis.
+pub fn chip_min_width(window: &Window) -> f32 {
+    2. * component::CHIP_PAD_X
+        + component::CHIP_DOT
+        + component::CHIP_GAP
+        + text_width(window, ty::CHIP, "…")
+}
+
 /// The width `text` takes on one line in `style`, as GPUI lays it out (`TextStyled::style` sets the same
-/// family, size, weight and slant).
+/// family, size, weight and slant). Names reach here through `labels::one_line` already; a stray line
+/// break is still measured as a space, since one-line shaping can't take one.
 pub fn text_width(window: &Window, style: ty::TextStyle, text: &str) -> f32 {
     if text.is_empty() {
         return 0.;
     }
+    let text = crate::model::labels::one_line(text);
     let font = gpui::Font {
         weight: gpui::FontWeight(f32::from(style.weight)),
         style: if style.italic {
@@ -208,12 +218,10 @@ pub fn text_width(window: &Window, style: ty::TextStyle, text: &str) -> f32 {
         underline: None,
         strikethrough: None,
     };
-    let line = window.text_system().shape_line(
-        SharedString::from(text.to_string()),
-        px(style.size),
-        &[run],
-        None,
-    );
+    let line =
+        window
+            .text_system()
+            .shape_line(SharedString::from(text), px(style.size), &[run], None);
     f32::from(line.width)
 }
 

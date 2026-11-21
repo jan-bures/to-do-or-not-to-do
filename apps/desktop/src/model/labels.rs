@@ -212,6 +212,22 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
+/// A name as one line of text: every control character (line breaks and tabs included) and the Unicode
+/// line and paragraph separators become a space. Names come from the server and other clients, and a row,
+/// a chip, a breadcrumb or the sidebar draws them on one line (GPUI's one-line shaping can't take a line
+/// break). The data itself is left as it is.
+pub fn one_line(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +345,12 @@ mod tests {
         assert_eq!(size(820), "820 B");
         assert_eq!(size(14_000), "14 KB");
         assert_eq!(size(2_500_000), "2.4 MB");
+    }
+
+    #[test]
+    fn names_are_drawn_on_one_line() {
+        assert_eq!(one_line("Plan\nthe\r\nweek"), "Plan the  week");
+        assert_eq!(one_line("a\tb\u{0}c\u{2028}d\u{85}e"), "a b c d e");
+        assert_eq!(one_line("Koupit rohlíky"), "Koupit rohlíky");
     }
 }

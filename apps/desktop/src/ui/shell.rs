@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, AsyncApp, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful,
+    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle, SharedString, Stateful,
     UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions, div, prelude::*, px,
     uniform_list,
 };
@@ -127,6 +127,8 @@ pub struct ShellView {
     quick_add: Entity<TextInput>,
     list_focus: FocusHandle,
     rows: UniformListScrollHandle,
+    /// The finished day's hand-over, which scrolls when it's taller than the pane.
+    handover_scroll: ScrollHandle,
     menu: Option<Menu>,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
@@ -212,6 +214,7 @@ impl ShellView {
             quick_add,
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
+            handover_scroll: ScrollHandle::new(),
             menu: None,
             inline: None,
             filter,
@@ -427,6 +430,10 @@ impl ShellView {
         self.refresh(cx);
         if let Some(i) = self.shell.selected_task {
             self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
+        } else if let (Some(next), Some(id)) = (self.shell.room.handover(), id)
+            && let Some(child) = handover_child(next, id)
+        {
+            self.handover_scroll.scroll_to_item(child);
         }
     }
 
@@ -484,18 +491,23 @@ impl ShellView {
         self.refresh(cx);
     }
 
+    /// J and K: through the rows, or through the finished day's hand-over to tomorrow.
     fn move_selection(&mut self, by: isize, cx: &mut Context<Self>) {
-        let n = self.shell.row_count();
+        let tasks = self.shell.nav_tasks();
+        let n = tasks.len();
         if n == 0 {
             return;
         }
-        let next = match self.shell.selected_task {
+        let at = self
+            .ui
+            .task
+            .and_then(|id| tasks.iter().position(|&t| t == id));
+        let next = match at {
             None if by > 0 => 0,
             None => n - 1,
             Some(i) => i.saturating_add_signed(by).min(n - 1),
         };
-        let id = self.shell.row(next).map(|r| r.id);
-        self.select_task(id, cx);
+        self.select_task(Some(tasks[next]), cx);
     }
 
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -914,69 +926,45 @@ impl ShellView {
         width
     }
 
-    /// A row's metadata line: the list chip, steps, the mail mark, then tags. Every item is measured
-    /// against the title column's width (`room`); tags that don't fit whole are counted as "+N" rather
-    /// than cut, and the chip, the only item that gives way, ends in an ellipsis. Nothing is clipped, so
-    /// no descender is either.
+    /// A row's metadata line: the list chip, steps, the mail mark, then tags. Every item is measured and
+    /// fitted to the title column's width (`room`, see `fit::fit_meta`): tags that don't fit whole are
+    /// counted as "+N", and when the line is narrower still, the mail mark, the step meter and the step
+    /// count give way in turn before the chip narrows to its minimum, ending in an ellipsis. The line is
+    /// never wider than its column and nothing is clipped, so no descender is either.
     fn meta(&self, task: &TaskRow, room: f32, window: &Window) -> Div {
         let p = &self.palette;
         let t = self.theme;
-        let gap = space::S2;
-        let mut meta = div()
-            .flex()
-            .items_center()
-            .gap(px(gap))
-            .h(px(component::CHIP))
-            .mt(px(desktop::ROW_LINE_GAP));
-        // What the items before the tags take, each but the first after a gap.
-        let mut used = -gap;
-        let chip = match self.shell.room.chips {
+        let with_collection = match self.shell.room.chips {
             Chips::None => None,
             Chips::List => Some(false),
             Chips::CollectionAndList => Some(true),
         };
-        if let Some(with_collection) = chip {
-            used += gap + kit::chip_width(window, &task.list, with_collection);
-            meta = meta.child(kit::chip(t, &task.list, with_collection));
-        }
-        if let Some((d, n)) = task.steps {
-            let count = format!("{d}/{n}");
-            let style = ty::COUNT.with_weight(500);
-            used += gap
-                + kit::meter_width(n)
-                + component::CHIP_GAP
-                + kit::text_width(window, style, &count);
-            meta = meta.child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(component::CHIP_GAP))
-                    .text_color(p.ink_3)
-                    .style(style)
-                    .child(kit::meter(p, d, n))
-                    .child(count),
-            );
-        }
-        if task.from_mail {
-            used += gap + component::ICON_SMALL;
-            meta = meta.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3));
-        }
-        if task.tags.is_empty() {
-            return meta;
-        }
-        // The fit counts a gap before every tag. With nothing before them the first needs none, which
-        // `used` (starting at minus one gap) gives back. A pixel of slack keeps rounding from pushing the
-        // last tag over.
-        let left = room - used - 1.;
-        let widths: Vec<f32> = task
-            .tags
-            .iter()
-            .map(|tag| kit::text_width(window, ty::TAG, tag))
-            .collect();
-        let fit = fit::fit_tags(left, &widths, gap, |n| {
-            kit::text_width(window, ty::TAG, &fit::more_label(n))
-        });
+        let count_style = ty::COUNT.with_weight(500);
+        let steps = task.steps.map(|(d, n)| (d, n, format!("{d}/{n}")));
+        let items = fit::MetaItems {
+            gap: space::S2,
+            chip: with_collection.map(|w| {
+                (
+                    kit::chip_width(window, &task.list, w),
+                    kit::chip_min_width(window),
+                )
+            }),
+            steps: steps.as_ref().map(|(_, n, label)| {
+                (
+                    kit::meter_width(*n),
+                    component::CHIP_GAP,
+                    kit::text_width(window, count_style, label),
+                )
+            }),
+            mail: task.from_mail.then_some(component::ICON_SMALL),
+            tags: task
+                .tags
+                .iter()
+                .map(|tag| kit::text_width(window, ty::TAG, tag))
+                .collect(),
+        };
+        let more_width = |n: usize| kit::text_width(window, ty::TAG, &fit::more_label(n));
+        let fit = fit::fit_meta(room, &items, more_width);
         let tag = |s: SharedString| {
             div()
                 .flex_none()
@@ -985,11 +973,38 @@ impl ShellView {
                 .text_color(p.ink_3)
                 .child(s)
         };
-        meta = meta.children(task.tags[..fit.shown].iter().cloned().map(tag));
-        if fit.more > 0 {
-            meta = meta.child(tag(fit::more_label(fit.more).into()));
-        }
-        meta
+        div()
+            .flex()
+            .items_center()
+            .gap(px(items.gap))
+            .h(px(component::CHIP))
+            .mt(px(desktop::ROW_LINE_GAP))
+            .when_some(fit.chip.zip(with_collection), |m, (width, w)| {
+                m.child(kit::chip(t, &task.list, w).w(px(width)))
+            })
+            .when_some(
+                steps.filter(|_| fit.meter || fit.count),
+                |m, (d, n, label)| {
+                    m.child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(px(component::CHIP_GAP))
+                            .text_color(p.ink_3)
+                            .style(count_style)
+                            .when(fit.meter, |s| s.child(kit::meter(p, d, n)))
+                            .when(fit.count, |s| s.child(label)),
+                    )
+                },
+            )
+            .when(fit.mail, |m| {
+                m.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3))
+            })
+            .children(task.tags[..fit.tags.shown].iter().cloned().map(tag))
+            .when(fit.tags.more > 0, |m| {
+                m.child(tag(fit::more_label(fit.tags.more).into()))
+            })
     }
 
     fn row(
@@ -1128,10 +1143,9 @@ impl ShellView {
         let p = self.palette;
         let room = &self.shell.room;
         // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
-        let handing_over = room.finished_day() && room.completed.is_empty();
-        let body: AnyElement = if let (true, Some(next)) = (handing_over, &room.tomorrow) {
+        let body: AnyElement = if let Some(next) = room.handover() {
             self.tomorrow(next, cx).into_any_element()
-        } else if handing_over {
+        } else if room.finished_day() && room.completed.is_empty() {
             div()
                 .px(px(desktop::LIST_PAD_X))
                 .pt(px(space::S6 + space::S1))
@@ -1262,11 +1276,13 @@ impl ShellView {
 
     /// The finished day hands over to tomorrow: its first task with a sunrise mark, then the rest of
     /// tomorrow and the rest of the week. No congratulations; the scene is the reward.
-    fn tomorrow(&self, next: &Tomorrow, cx: &mut Context<Self>) -> Div {
+    fn tomorrow(&self, next: &Tomorrow, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = &self.palette;
         let t = self.theme;
+        // Every child keeps its height (`flex_none`): the hand-over scrolls rather than squeezing them.
         let section = |label: SharedString| {
             div()
+                .flex_none()
                 .px(px(desktop::LIST_PAD_X))
                 .pt(px(space::S6))
                 .pb(px(space::S2))
@@ -1289,6 +1305,7 @@ impl ShellView {
                 .when(selected == Some(task.id), |d| d.bg(p.wash))
                 .hover(|s| s.bg(p.hover))
                 .on_click(pick(task.id))
+                .flex_none()
                 .mx(px(desktop::LIST_PAD_X))
                 .h(px(component::ICON_BUTTON + space::S1))
                 .flex()
@@ -1331,6 +1348,7 @@ impl ShellView {
             .id("next-first")
             .when(selected == Some(first.id), |d| d.bg(p.wash))
             .on_click(pick(first.id))
+            .flex_none()
             .mx(px(desktop::LIST_PAD_X))
             .rounded(px(radius::LG))
             .flex()
@@ -1375,7 +1393,13 @@ impl ShellView {
                         this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
                     })),
             );
+        // Its children are in the order `handover_child` counts them; it scrolls when taller than the pane.
         div()
+            .id("handover")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.handover_scroll)
+            .pb(px(space::S6))
             .flex()
             .flex_col()
             .child(section("When the sun comes up".into()))
@@ -1391,6 +1415,7 @@ impl ShellView {
             .when(next.more > 0, |d| {
                 d.child(
                     div()
+                        .flex_none()
                         .px(px(desktop::LIST_PAD_X))
                         .pt(px(space::S3))
                         .style(ty::COUNT)
@@ -1436,11 +1461,16 @@ impl ShellView {
 
     fn status_bar(&self, window: &Window, cx: &App) -> Div {
         let p = &self.palette;
-        let (done, _, open) = self.shell.room.summary();
+        let open = self.shell.room.summary().2;
+        let done = self.shell.room.done_today;
         let keys = hints::key_hints(hints::HintState {
             focus: self.focus_now(window, cx),
-            rows: self.shell.row_count() > 0,
-            selected: self.ui.task.is_some(),
+            rows: !self.shell.nav_tasks().is_empty(),
+            selected: self
+                .shell
+                .detail
+                .as_ref()
+                .map(|d| hints::Selected { done: d.done }),
             reorder: matches!(self.ui.room, RoomKey::List(_)),
         });
         let hint = |key: &'static str, what: &'static str| {
@@ -1491,7 +1521,7 @@ impl ShellView {
                         div()
                             .flex()
                             .gap(px(component::CHIP_GAP))
-                            // The header's count, today's; "Completed n" above holds every finished task.
+                            // Completed since midnight; "Completed n" above holds every finished task.
                             .child(strong(done.to_string()))
                             .child("done today"),
                     ),
@@ -1523,6 +1553,26 @@ impl ShellView {
                     }),
             )
     }
+}
+
+/// The child of the hand-over (see `ShellView::tomorrow`) that shows task `id`: the first section label,
+/// tomorrow's first task, then each section's label followed by its tasks.
+fn handover_child(next: &Tomorrow, id: TaskId) -> Option<usize> {
+    if next.first.id == id {
+        return Some(1);
+    }
+    let mut child = 2;
+    for section in [&next.also, &next.week] {
+        if section.is_empty() {
+            continue;
+        }
+        child += 1;
+        if let Some(i) = section.iter().position(|t| t.id == id) {
+            return Some(child + i);
+        }
+        child += section.len();
+    }
+    None
 }
 
 /// The window's focus starts on the task list, where the single-letter keys work.
@@ -1593,5 +1643,26 @@ impl Render for ShellView {
             )
             .child(self.status_bar(window, cx))
             .children(self.menu(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handover_child;
+    use crate::fixtures;
+
+    #[test]
+    fn each_hand_over_task_maps_to_its_own_child() {
+        let shell = fixtures::finished().shell();
+        let next = shell.room.handover().expect("hands over");
+        // Label, first task, "Also on Sunday", its one task, "Rest of the week", its three tasks.
+        let children: Vec<Option<usize>> =
+            next.tasks().map(|t| handover_child(next, t.id)).collect();
+        assert_eq!(children, [Some(1), Some(3), Some(5), Some(6), Some(7)]);
+        // A task the hand-over doesn't show has no child.
+        assert_eq!(
+            handover_child(next, todo_core::ids::TaskId::from_uuid(uuid::Uuid::nil())),
+            None
+        );
     }
 }

@@ -136,7 +136,9 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
   *Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení*.
 - The metadata line reads list chip, steps, source mark (mail), then tags, so the compact indicators are never the
   ones pushed out. A list chip is at most **180** wide (`desktop::CHIP_MAX`) and ends in an ellipsis inside the
-  pill. Tags that don't fit whole collapse into a mono `+N`; nothing is ever cut mid-glyph.
+  pill. Tags that don't fit whole collapse into a mono `+N`; nothing is ever cut mid-glyph. In a narrow column the
+  items give way in order (tags, then the mail mark, then the step meter, then the step count) and the chip narrows
+  last, down to its dot and an ellipsis.
 
 **Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. On a dated row the due date comes first, in a 100 dp slot, so
 the list chips of dated rows start at the same x. An undated row has no slot: its chips start flush with the

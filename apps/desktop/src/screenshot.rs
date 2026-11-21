@@ -32,6 +32,20 @@ use crate::{fixtures, fonts, ui};
 /// side).
 const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAIL, 900.);
 
+/// The logical window size a fixture renders at: the reference window, except the quick-add window, the
+/// narrowest main window (`long-names-narrow`) and a short one (`finished-short`).
+pub fn window_size(fixture: &str) -> (f32, f32) {
+    match fixture {
+        "quick-add" => (
+            f32::from(quick_add::SIZE.width),
+            f32::from(quick_add::SIZE.height),
+        ),
+        "long-names-narrow" => (crate::app::MIN_WINDOW.0, MAIN_SIZE.1),
+        "finished-short" => (MAIN_SIZE.0, 700.),
+        _ => MAIN_SIZE,
+    }
+}
+
 /// Typed into the quick-add fixture, to show its focused state.
 const QUICK_ADD_TYPED: &str = "Call the venue about Friday's room";
 
@@ -167,14 +181,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
         "open-failed-confirm" => Some(true),
         _ => None,
     };
-    let logical = if quick {
-        (
-            f32::from(quick_add::SIZE.width),
-            f32::from(quick_add::SIZE.height),
-        )
-    } else {
-        MAIN_SIZE
-    };
+    let logical = window_size(&opts.fixture);
     let expected = expected_size(logical, opts.scale);
     let opened_at = Instant::now();
     let handle: AnyWindowHandle = cx.update(|cx| {
@@ -194,7 +201,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             })
             .map(Into::into)
         } else if let Some(waiting) = pairing {
-            cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
+            cx.open_window(options(logical.0, logical.1, false), |window, cx| {
                 cx.new(|cx| {
                     PairingView::fixture(
                         theme,
@@ -208,13 +215,13 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             })
             .map(Into::into)
         } else if let Some(confirming) = failed {
-            cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |_, cx| {
+            cx.open_window(options(logical.0, logical.1, false), |_, cx| {
                 cx.new(|cx| FailedView::fixture(theme, confirming, cx))
             })
             .map(Into::into)
         } else {
             let store = Rc::new(Store::fixture(&fixture));
-            cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
+            cx.open_window(options(logical.0, logical.1, false), |window, cx| {
                 let view = cx.new(|cx| {
                     ShellView::new(
                         store,
@@ -306,6 +313,10 @@ mod tests {
         assert_eq!(expected_size(MAIN_SIZE, 1.0), (1440, 900));
         assert_eq!(expected_size(MAIN_SIZE, 1.5), (2160, 1350));
         assert_eq!(expected_size((640., 196.), 1.25), (800, 245));
+        assert_eq!(window_size("my-day"), (1440., 900.));
+        assert_eq!(window_size("quick-add"), (640., 196.));
+        assert_eq!(window_size("long-names-narrow"), (960., 900.));
+        assert_eq!(window_size("finished-short"), (1440., 700.));
     }
 
     #[test]

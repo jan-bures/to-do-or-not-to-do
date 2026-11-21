@@ -388,3 +388,72 @@ fn only_my_day_mentions_the_global_quick_add() {
     f.ui.room = RoomKey::Smart(Smart::Completed);
     assert!(!f.shell().room.empty_hint.contains("Ctrl+Alt+Space"));
 }
+
+#[test]
+fn names_with_line_breaks_are_drawn_on_one_line() {
+    // Another client may store a name with a line break or a control character; one-line text can't
+    // shape that, so every name the views draw on one line is normalised.
+    let mut f = fixtures::my_day();
+    let planning = list_named(&f.state, "Planning");
+    let list = f.state.lists.get_mut(&planning).expect("list");
+    list.name = "Plan\nning".into();
+    let work = list.collection.expect("in a collection");
+    f.state.collections.get_mut(&work).expect("collection").name = "Wo\r\nrk".into();
+    for tag in f.state.tags.values_mut() {
+        tag.name = format!("{}\t\u{2028}x", tag.name);
+    }
+    let q4 = f.ui.task.expect("selected");
+    f.state.tasks.get_mut(&q4).expect("task").title = "Prepare\nQ4".into();
+    for step in f.state.steps.values_mut() {
+        step.title = format!("{}\n", step.title);
+    }
+    let shell = f.shell();
+    let one_line = |s: &str| !s.chars().any(|c| c.is_control() || c == '\u{2028}');
+    for row in shell.rows() {
+        assert!(one_line(&row.title), "{:?}", row.title);
+        assert!(one_line(&row.list.name), "{:?}", row.list.name);
+        assert!(row.list.collection.as_deref().is_none_or(one_line));
+        assert!(row.tags.iter().all(|t| one_line(t)), "{:?}", row.tags);
+    }
+    let q4_row = shell.rows().find(|r| r.id == q4).expect("row");
+    assert_eq!(q4_row.title.as_ref(), "Prepare Q4");
+    assert_eq!(q4_row.list.name.as_ref(), "Plan ning");
+    for c in &shell.sidebar.collections {
+        assert!(one_line(&c.name), "{:?}", c.name);
+        assert!(c.lists.iter().all(|l| one_line(&l.list.name)));
+    }
+    let detail = shell.detail.expect("detail");
+    assert_eq!(detail.list.name.as_ref(), "Plan ning");
+    assert_eq!(detail.list.collection.as_deref(), Some("Wo  rk"));
+    assert!(detail.steps.iter().all(|s| one_line(&s.title)));
+    assert!(detail.fields.iter().all(|f| one_line(&f.value)));
+    // The room title too.
+    f.ui.room = RoomKey::List(planning);
+    assert_eq!(f.shell().room.title.as_ref(), "Plan ning");
+}
+
+#[test]
+fn done_today_counts_only_what_was_completed_since_midnight() {
+    let mut f = fixtures::my_day();
+    // My Day's header counts its whole plan: 3 of 12 done. All three were completed this morning.
+    let shell = f.shell();
+    assert_eq!(shell.room.summary().0, 3);
+    assert_eq!(shell.room.done_today, 3);
+    // A task in today's plan that was completed yesterday still counts for the plan, not for today.
+    let open = shell.room.tasks[0].id;
+    run(
+        &mut f.state,
+        "2026-11-20T18:00:00Z",
+        Command::CompleteTask { id: open },
+    );
+    let shell = f.shell();
+    assert_eq!(shell.room.summary().0, 4);
+    assert_eq!(shell.room.done_today, 3);
+    // In a list, older completions don't count either: Reading list's two were finished earlier this month.
+    let reading = list_named(&f.state, "Reading list");
+    f.ui.room = RoomKey::List(reading);
+    f.ui.task = None;
+    let shell = f.shell();
+    assert_eq!(shell.room.completed_count, 2);
+    assert_eq!(shell.room.done_today, 0);
+}

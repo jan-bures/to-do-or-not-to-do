@@ -28,6 +28,9 @@ use crate::ui::root::{self, RootView};
 use crate::ui::shell;
 use crate::{fonts, ui};
 
+/// The main window's smallest size; a fixture renders at its width to check the layout there.
+pub const MIN_WINDOW: (f32, f32) = (960., 600.);
+
 /// Things that happen outside GPUI (tray, hotkey, a second launch) and are handled on the UI thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShellEvent {
@@ -70,7 +73,7 @@ fn main_window_options(cx: &App, show: bool) -> WindowOptions {
         }),
         focus: show,
         show,
-        window_min_size: Some(size(px(960.), px(600.))),
+        window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
         app_id: Some("to-do-or-not-to-do".into()),
         ..WindowOptions::default()
     }

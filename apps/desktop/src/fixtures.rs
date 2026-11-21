@@ -47,9 +47,9 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
         "long-sidebar" => Some(long_sidebar()),
-        "long-names" => Some(long_names()),
+        "long-names" | "long-names-narrow" => Some(long_names()),
         "empty" => Some(empty()),
-        "finished" => Some(finished()),
+        "finished" | "finished-short" => Some(finished()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
         _ => None,
     }
@@ -906,6 +906,21 @@ mod tests {
         assert!(q4.from_mail && q4.steps.is_some());
         let detail = shell.detail.expect("detail");
         assert_eq!(detail.list.name.as_ref(), LONG_LIST);
+    }
+
+    #[test]
+    fn j_and_k_walk_the_finished_days_hand_over() {
+        let mut f = finished();
+        let shell = f.shell();
+        let next = shell.room.handover().expect("hands over");
+        let ids: Vec<TaskId> = next.tasks().map(|t| t.id).collect();
+        assert_eq!(ids.len(), 5);
+        assert_eq!(shell.nav_tasks(), ids);
+        // With the Completed section open, its rows show and J and K walk those instead.
+        f.ui.show_completed = true;
+        let shell = f.shell();
+        assert!(shell.room.handover().is_none());
+        assert_eq!(shell.nav_tasks().len(), 11);
     }
 
     #[test]

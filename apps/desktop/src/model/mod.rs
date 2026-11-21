@@ -346,6 +346,8 @@ pub struct Room {
     pub completed_count: u32,
     /// For the empty header: tasks finished this month.
     pub finished_this_month: u32,
+    /// For the status bar: tasks completed since local midnight, unfiltered.
+    pub done_today: u32,
     pub empty_line: SharedString,
     /// The quieter line under `empty_line`: how to add a task here.
     pub empty_hint: SharedString,
@@ -364,7 +366,15 @@ impl Room {
         self.finishes_day && self.total > 0 && self.done >= self.total
     }
 
-    /// (done, total, open) for the header and the status bar.
+    /// What the finished day shows instead of rows: tomorrow's hand-over, unless the Completed section is
+    /// open (then its rows show) or there is nothing to hand over.
+    pub fn handover(&self) -> Option<&Tomorrow> {
+        self.tomorrow
+            .as_ref()
+            .filter(|_| self.finished_day() && self.completed.is_empty())
+    }
+
+    /// (done, total, open) for the header.
     pub fn summary(&self) -> (u32, u32, u32) {
         (self.done, self.total, self.total.saturating_sub(self.done))
     }
@@ -379,6 +389,15 @@ pub struct Tomorrow {
     pub also: Vec<TaskRow>,
     pub week: Vec<TaskRow>,
     pub more: u32,
+}
+
+impl Tomorrow {
+    /// Every task the hand-over shows, top to bottom.
+    pub fn tasks(&self) -> impl Iterator<Item = &TaskRow> {
+        std::iter::once(&self.first)
+            .chain(self.also.iter())
+            .chain(self.week.iter())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -518,5 +537,14 @@ impl Shell {
 
     pub fn row_count(&self) -> usize {
         self.room.tasks.len() + self.room.completed.len()
+    }
+
+    /// The tasks J and K walk, in order: the rows, or on the finished day (while it hands over to
+    /// tomorrow) the hand-over's tasks.
+    pub fn nav_tasks(&self) -> Vec<TaskId> {
+        match self.room.handover() {
+            Some(next) => next.tasks().map(|t| t.id).collect(),
+            None => self.rows().map(|r| r.id).collect(),
+        }
     }
 }
