@@ -62,3 +62,14 @@ with GPUI.
 - **Shared crates stay portable.** Before adding a dependency to `todo-core` or `todo-client`, check that it
   builds for wasm32 and Android.
 - **Process.** Work on branches, open PRs against `main`, and let CI pass before merging.
+
+## Merging pull requests
+
+Never merge through the GitHub web UI, and never merge with `gh pr merge` without setting the author. GitHub
+would otherwise use the account's primary email address as the merge-commit author. Always use:
+
+```sh
+gh pr merge <n> --squash --author-email 2668168+jan-bures@users.noreply.github.com
+```
+
+Then run `git fetch` and check `git log --format='%ae %ce' -1 origin/main` before pushing anything else.
