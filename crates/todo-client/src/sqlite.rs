@@ -1,8 +1,8 @@
 //! A bundled-SQLite [`Storage`] (feature `sqlite`).
 
-use crate::outbox::CommandId;
+use crate::outbox::{CommandId, FailedEntry, OutboxEntry};
 use crate::storage::{Loaded, Storage, StorageError, StorageOp};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
 use std::fmt;
 use std::path::Path;
 
@@ -28,8 +28,26 @@ CREATE TABLE IF NOT EXISTS failed (
 );
 ";
 
+/// A damaged or foreign file is [`StorageError::Corrupt`]; anything else (locked, out of space, no
+/// permission) is [`StorageError::Backend`] and may pass.
 fn backend(e: rusqlite::Error) -> StorageError {
-    StorageError::Backend(e.to_string())
+    match e.sqlite_error_code() {
+        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => {
+            StorageError::Corrupt(e.to_string())
+        }
+        _ => StorageError::Backend(e.to_string()),
+    }
+}
+
+/// What [`SqliteStorage::salvage`] could read from a damaged database.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Salvaged {
+    /// Outbox entries that still decode, oldest first.
+    pub outbox: Vec<OutboxEntry>,
+    /// "Couldn't sync" entries that still decode, oldest first.
+    pub failed: Vec<FailedEntry>,
+    /// Rows that were there but could not be decoded.
+    pub lost: usize,
 }
 
 /// [`Storage`] in one SQLite file. Every [`write`](Storage::write) is one transaction.
@@ -54,6 +72,41 @@ impl SqliteStorage {
         Self::init(Connection::open_in_memory().map_err(backend)?)
     }
 
+    /// Reads what can still be read of the unsent changes in a database that failed to open or load:
+    /// the outbox and the "couldn't sync" list, row by row, skipping rows that don't decode. Opens the
+    /// file read-only and changes nothing, so it can run on a quarantined copy. The confirmed state is
+    /// not salvaged; the server has it.
+    ///
+    /// # Errors
+    ///
+    /// The file can't be opened, or neither table can be read.
+    pub fn salvage(path: &Path) -> Result<Salvaged, StorageError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(backend)?;
+        let mut out = Salvaged::default();
+        let outbox = salvage_rows(
+            &conn,
+            "SELECT entry FROM outbox ORDER BY pos",
+            &mut out.lost,
+        );
+        let failed = salvage_rows(
+            &conn,
+            "SELECT entry FROM failed ORDER BY pos",
+            &mut out.lost,
+        );
+        match (outbox, failed) {
+            (Err(e), Err(_)) => Err(e),
+            (outbox, failed) => {
+                out.outbox = outbox.unwrap_or_default();
+                out.failed = failed.unwrap_or_default();
+                Ok(out)
+            }
+        }
+    }
+
     fn init(conn: Connection) -> Result<Self, StorageError> {
         // WAL with full sync: a submitted command survives a power cut once `submit` returned.
         conn.pragma_update(None, "journal_mode", "WAL")
@@ -73,6 +126,35 @@ impl SqliteStorage {
             .map_err(backend)?;
         Ok(Self { conn })
     }
+}
+
+fn salvage_rows<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    sql: &str,
+    lost: &mut usize,
+) -> Result<Vec<T>, StorageError> {
+    let mut stmt = conn.prepare(sql).map_err(backend)?;
+    let mut rows = stmt.query([]).map_err(backend)?;
+    let mut out = Vec::new();
+    loop {
+        match rows.next() {
+            Ok(Some(row)) => match row
+                .get::<_, String>(0)
+                .ok()
+                .and_then(|r| serde_json::from_str(&r).ok())
+            {
+                Some(entry) => out.push(entry),
+                None => *lost += 1,
+            },
+            Ok(None) => break,
+            // A damaged page ends the scan; keep what came before it.
+            Err(_) => {
+                *lost += 1;
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn rows(conn: &Connection, sql: &str) -> Result<Vec<String>, StorageError> {

@@ -535,3 +535,74 @@ async fn a_stream_frame_over_the_cap_ends_the_stream_and_the_event_is_paged() {
     stop(&b, hb).await;
     server.stop().await;
 }
+
+#[cfg(feature = "sqlite")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_damaged_sqlite_cache_gives_up_its_outbox() {
+    use todo_client::StorageError;
+    use todo_client::sqlite::SqliteStorage;
+    use todo_client::storage::StorageOp;
+
+    let server = TestServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("client.db");
+    let t = Switch::new(server.transport(TOKEN_A));
+    let a = client(t.clone(), SqliteStorage::open(&db).unwrap(), alpha());
+    let h = spawn(&a);
+    let (list, cmd) = new_list(&a, "Kept");
+    a.submit(cmd).unwrap();
+    eventually("synced", WAIT, || converged(&a, &server)).await;
+    t.set_online(false);
+    let (pending, cmd) = new_task(&a, list, "queued while offline");
+    a.submit(cmd).unwrap();
+    stop(&a, h).await;
+    drop(a);
+
+    // Damage the confirmed state; the outbox table is intact.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let damaged = conn
+        .execute("UPDATE snapshot SET state = 'not json'", [])
+        .unwrap()
+        + conn
+            .execute("UPDATE events SET event = 'not json'", [])
+            .unwrap();
+    assert!(damaged > 0);
+    drop(conn);
+    let mut broken = SqliteStorage::open(&db).unwrap();
+    assert!(matches!(
+        todo_client::Storage::load(&mut broken),
+        Err(StorageError::Corrupt(_))
+    ));
+    drop(broken);
+
+    let salvaged = SqliteStorage::salvage(&db).unwrap();
+    assert_eq!(salvaged.outbox.len(), 1);
+    assert_eq!(salvaged.lost, 0);
+    let mut fresh = SqliteStorage::open(&dir.path().join("rebuilt.db")).unwrap();
+    let ops: Vec<_> = salvaged.outbox.iter().map(StorageOp::PutOutbox).collect();
+    todo_client::Storage::write(&mut fresh, &ops).unwrap();
+
+    let a = client(server.transport(TOKEN_A), fresh, alpha());
+    assert_eq!(a.pending().len(), 1, "the queued edit survived");
+    let h = spawn(&a);
+    eventually("synced after the rebuild", WAIT, || converged(&a, &server)).await;
+    assert!(server.state().tasks.contains_key(&pending));
+    stop(&a, h).await;
+    server.stop().await;
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn a_file_that_is_not_a_database_is_corrupt_not_unavailable() {
+    use todo_client::StorageError;
+    use todo_client::sqlite::SqliteStorage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("client.db");
+    std::fs::write(&db, vec![0x5a; 8192]).unwrap();
+    assert!(matches!(
+        SqliteStorage::open(&db),
+        Err(StorageError::Corrupt(_))
+    ));
+    assert!(SqliteStorage::salvage(&db).is_err());
+}
