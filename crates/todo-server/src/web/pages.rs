@@ -107,8 +107,9 @@ pub struct NextQuery {
 }
 
 /// `GET /`.
-pub async fn root(_s: OwnerSession) -> Redirect {
-    Redirect::to("/admin")
+pub async fn root(State(app): State<AppState>, _s: OwnerSession) -> Redirect {
+    // The web app when it is installed, the admin pages otherwise.
+    Redirect::to(if app.web.is_some() { "/app" } else { "/admin" })
 }
 
 /// `GET /login`.

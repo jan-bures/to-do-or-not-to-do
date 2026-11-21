@@ -96,6 +96,11 @@
 //! # 429 instead of 401. The right token is never turned away by it.
 //! failures_per_minute = 10
 //! failure_burst = 10
+//!
+//! [web]
+//! # The built web app (see docs/web.md), read into memory at start-up and served at `/app` to the
+//! # signed-in owner. Without it `/app` answers 404. Also `TODO_SERVER_WEB_DIR`.
+//! dir = "/opt/todo/web"
 //! ```
 
 use jiff::tz::TimeZone;
@@ -354,6 +359,15 @@ impl Default for AdminConfig {
     }
 }
 
+/// The web app (see `docs/web.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebConfig {
+    /// The built web app (`apps/web/dist`): read into memory at start-up and served at `/app` to the
+    /// signed-in owner. Without it `/app` answers 404.
+    pub dir: Option<PathBuf>,
+}
+
 /// The server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -379,6 +393,8 @@ pub struct Config {
     pub attachments: crate::blobs::AttachmentsConfig,
     /// The local admin API.
     pub admin: AdminConfig,
+    /// The web app.
+    pub web: WebConfig,
 }
 
 /// Email ingest settings (see the module docs and `docs/ingest-email.md`).
@@ -420,6 +436,7 @@ impl Default for Config {
             ingest: IngestConfig::default(),
             attachments: crate::blobs::AttachmentsConfig::default(),
             admin: AdminConfig::default(),
+            web: WebConfig::default(),
         }
     }
 }
@@ -526,6 +543,10 @@ impl Config {
         if let Some(v) = get("TODO_SERVER_INGEST_EMAIL_HMAC_SECRET_FILE") {
             let v = v.trim();
             self.ingest.email_hmac_secret_file = (!v.is_empty()).then(|| PathBuf::from(v));
+        }
+        if let Some(v) = get("TODO_SERVER_WEB_DIR") {
+            let v = v.trim();
+            self.web.dir = (!v.is_empty()).then(|| PathBuf::from(v));
         }
         if let Some(v) = get("TODO_SERVER_ADMIN_BIND") {
             let v = v.trim();

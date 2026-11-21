@@ -73,6 +73,8 @@ pub struct AppState {
     pub ingest: Arc<Ingest>,
     /// Attachment content (see [`crate::blobs`]).
     pub attachments: Arc<crate::blobs::Attachments>,
+    /// The web app served at `/app`, when `[web] dir` is set.
+    pub web: Option<Arc<crate::web::spa::WebApp>>,
 }
 
 impl AppState {
@@ -103,6 +105,9 @@ pub enum ServerError {
     /// Attachment storage could not be set up.
     #[error(transparent)]
     Attachments(#[from] crate::blobs::AttachmentError),
+    /// The web app could not be loaded.
+    #[error(transparent)]
+    WebApp(#[from] crate::web::spa::WebAppError),
     /// I/O failed (binding, creating the data directory).
     #[error("{context}: {source}")]
     Io {
@@ -403,6 +408,19 @@ impl Server {
             }
             _ => None,
         };
+        let web = match config.web.dir.clone() {
+            Some(dir) => {
+                let app = tokio::task::spawn_blocking(move || crate::web::spa::WebApp::load(&dir))
+                    .await
+                    .map_err(|e| ServerError::Io {
+                        context: "loading the web app".into(),
+                        source: std::io::Error::other(e.to_string()),
+                    })??;
+                tracing::info!("serving the web app at /app");
+                Some(Arc::new(app))
+            }
+            None => None,
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
         let collector = attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
@@ -422,6 +440,7 @@ impl Server {
             shutdown: shutdown_rx,
             ingest: ingest.clone(),
             attachments: attachments.clone(),
+            web,
         };
         let admin = admin.map(|(l, hash)| {
             let st = crate::admin::AdminState::new(state.clone(), hash, &config.admin);

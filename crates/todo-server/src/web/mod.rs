@@ -29,6 +29,7 @@ pub mod html;
 pub mod ingest;
 pub mod pages;
 pub mod share;
+pub mod spa;
 
 use crate::app::AppState;
 use crate::auth::session::check_origin;
@@ -379,6 +380,9 @@ fn table() -> Vec<Route> {
             false,
             get(pages::audit),
         ),
+        // The web app (see `spa`).
+        r(Method::GET, "/app", Session, false, get(spa::root)),
+        r(Method::GET, "/app/{*path}", Session, false, get(spa::path)),
         // Static assets and share pages.
         r(Method::GET, "/assets/{file}", Public, false, get(asset)),
         r(Method::GET, "/s/{token}", Public, false, get(share::show)),

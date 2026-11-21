@@ -14,6 +14,15 @@ pub enum Principal {
         /// The device (paired, or from the development owner-token configuration).
         device: DeviceId,
     },
+    /// The owner in the web app, through their browser session (see
+    /// [`require_auth_or_session`](super::require_auth_or_session)). Acts as the owner on `device`
+    /// ([`WEB_DEVICE`](super::WEB_DEVICE)); loses access when the session ends.
+    Session {
+        /// Hex SHA-256 of the session cookie (the session's row ID; never the cookie itself).
+        session: String,
+        /// The device its events are recorded under.
+        device: DeviceId,
+    },
     /// An AI agent, through one agent token.
     Agent {
         /// The agent; its events are recorded as `Actor::agent(agent)`.
@@ -42,7 +51,7 @@ impl Principal {
     #[must_use]
     pub fn actor(&self) -> Actor {
         match self {
-            Self::Owner { device } => Actor::Owner {
+            Self::Owner { device } | Self::Session { device, .. } => Actor::Owner {
                 device: device.clone(),
             },
             Self::Agent { agent, .. } => Actor::Agent {

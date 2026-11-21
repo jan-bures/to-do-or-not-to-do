@@ -1704,8 +1704,10 @@ fn assert_html_headers(what: &str, p: &Page) {
         csp.contains("object-src 'none'") || csp.contains("default-src 'none'"),
         "{what}: plugins allowed by {csp}"
     );
+    // Quoted: the web app's `'wasm-unsafe-eval'` only lets it compile its wasm module, which is not
+    // JavaScript `eval`.
     assert!(
-        !csp.contains("unsafe-inline") && !csp.contains("unsafe-eval"),
+        !csp.contains("'unsafe-inline'") && !csp.contains("'unsafe-eval'"),
         "{what}: {csp}"
     );
     assert_eq!(p.header(X_FRAME_OPTIONS), "DENY", "{what}");
@@ -1724,7 +1726,15 @@ fn assert_html_headers(what: &str, p: &Page) {
 
 #[tokio::test]
 async fn html_pages_carry_strict_security_headers() {
-    let env = Env::start().await;
+    // A web app build, so `/app` is served too.
+    let dist = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dist.path().join("index.html"),
+        "<!doctype html><head><!--todo-session--></head>",
+    )
+    .unwrap();
+    let web_dir = dist.path().to_owned();
+    let env = Env::start_with(move |cfg| cfg.web.dir = Some(web_dir)).await;
     let anon = env.browser();
     let mut pages = Vec::new();
     for path in ["/login", "/setup", "/pair", "/pair?code=ABCD-EFGH"] {
@@ -1756,6 +1766,8 @@ async fn html_pages_carry_strict_security_headers() {
         "/admin/ingest".to_owned(),
         "/admin/audit".to_owned(),
         "/pair".to_owned(),
+        "/app".to_owned(),
+        "/app/list/x".to_owned(),
     ] {
         let p = owner.get(&path).await;
         pages.push((format!("{path} (owner)"), p));

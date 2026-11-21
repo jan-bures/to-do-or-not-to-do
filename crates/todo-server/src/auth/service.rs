@@ -610,14 +610,21 @@ impl AuthService {
             return None;
         }
         Some(Standing(match principal {
-            Principal::Owner { .. } => None,
+            Principal::Owner { .. } | Principal::Session { .. } => None,
             Principal::Agent { agent, .. } => self.snapshot().grants.get(agent).cloned(),
         }))
     }
 
-    /// True while `principal` may still use the API (its token is neither revoked nor expired).
+    /// True while `principal` may still use the API (its token is neither revoked nor expired, or its
+    /// session has not ended).
+    ///
+    /// For a session this reads the store (one indexed row); it is called when a stream starts, on
+    /// revocation notices and at heartbeats, never per event.
     #[must_use]
     pub fn is_active(&self, principal: &Principal) -> bool {
+        if let Principal::Session { session, .. } = principal {
+            return self.session_live(session);
+        }
         let now = self.now();
         let found = self
             .snapshot()
@@ -662,6 +669,8 @@ impl AuthService {
             let r = match &principal {
                 Principal::Owner { device } => svc.store.touch_device(device.as_str(), now),
                 Principal::Agent { token, .. } => svc.store.touch_agent(*token, now),
+                // Never due: sessions have no bearer entry (they are touched by their own lookup).
+                Principal::Session { .. } => Ok(()),
             };
             if let Err(e) = r {
                 tracing::warn!(error = %e, "cannot record token use");
@@ -1148,9 +1157,27 @@ impl AuthService {
         Ok(Some(row))
     }
 
+    /// True if the session with this ID hash exists and has timed out neither way (does not touch it).
+    #[must_use]
+    pub fn session_live(&self, id_hash: &str) -> bool {
+        match self.store.session(id_hash) {
+            Ok(Some(row)) => {
+                let now = self.now();
+                now - row.last_seen_at < self.idle_ms() && now - row.created_at < self.absolute_ms()
+            }
+            Ok(None) => false,
+            Err(e) => {
+                tracing::error!(error = %e, "session check failed");
+                false
+            }
+        }
+    }
+
     /// Ends a session. Blocking.
     pub fn end_session(&self, session: &SessionRow, ip: Option<IpAddr>) -> Result<(), StoreError> {
         self.store.delete_session(&session.id_hash)?;
+        // The web app's event streams re-check their session and close.
+        self.revoked();
         self.audit(audit::SIGN_OUT, ip, json!({}));
         let now = self.now();
         self.store

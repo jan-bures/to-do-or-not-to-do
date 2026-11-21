@@ -126,7 +126,8 @@ async fn not_found() -> ApiError {
     no_such_endpoint()
 }
 
-/// The API router, to be nested at `/api/v1`. Everything needs a bearer token except the two pairing
+/// The API router, to be nested at `/api/v1`. Everything needs a bearer token (or the web app's
+/// session, see [`auth::require_auth_or_session`]) except the two pairing
 /// endpoints and the email ingest endpoint (HMAC-signed).
 pub fn router(state: AppState) -> Router<AppState> {
     let public = Router::new()
@@ -153,7 +154,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/smart-lists", get(read::smart_lists))
         .route("/smart-lists/{id}/tasks", get(read::smart_list_tasks))
         .fallback(not_found)
-        .layer(from_fn_with_state(state, auth::require_auth))
+        // Bearer tokens, or the owner's browser session for the web app (CSRF header required).
+        .layer(from_fn_with_state(state, auth::require_auth_or_session))
         .merge(public)
         // Outside auth, so rejected requests are labelled too; routes only, so the fallback is not.
         .route_layer(from_fn(tag_route))
