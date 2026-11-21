@@ -46,6 +46,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "my-day" | "quick-add" => Some(my_day()),
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
+        "long-sidebar" => Some(long_sidebar()),
         "empty" => Some(empty()),
         "finished" => Some(finished()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
@@ -684,6 +685,32 @@ fn collapsed_collection() -> Fixture {
         room: RoomKey::List(l.planning),
         task: Some(l.q4),
         collapsed_collections: b.state.lists[&l.planning].collection.into_iter().collect(),
+        ..UiState::default()
+    };
+    fixture(b, ui, MORNING)
+}
+
+/// More lists than the sidebar can show: the rows keep their heights and the pane scrolls.
+fn long_sidebar() -> Fixture {
+    let (mut b, l) = sample();
+    let errands = b.collection("Side projects", "fern");
+    for name in [
+        "Garden plan",
+        "Bike repairs",
+        "Photo archive",
+        "Recipes",
+        "Board games",
+        "Language course",
+        "Workshop",
+        "Travel ideas",
+        "Gift ideas",
+        "Car",
+    ] {
+        b.list(errands, name, "jade");
+    }
+    let ui = UiState {
+        room: RoomKey::List(l.planning),
+        task: Some(l.q4),
         ..UiState::default()
     };
     fixture(b, ui, MORNING)

@@ -297,8 +297,15 @@ impl ShellView {
             .collect();
 
         let mut collections = Vec::new();
-        for c in &sb.collections {
+        for (i, c) in sb.collections.iter().enumerate() {
             let cid = c.id;
+            // A gap sets the collections off from the smart lists, and an open collection from the
+            // next one. Collapsed collections stack like ordinary rows.
+            let gap = match i.checked_sub(1).map(|prev| sb.collections[prev].collapsed) {
+                None => space::S3,
+                Some(false) => space::S2,
+                Some(true) => 0.,
+            };
             let on = c.selected;
             let name = match self.inline_for(InlineTarget::Collection(cid)) {
                 Some(input) => div().flex_1().min_w_0().child(input).into_any_element(),
@@ -329,7 +336,7 @@ impl ShellView {
                 }));
             let head = div()
                 .h(px(desktop::NAV_SUB_ROW))
-                .mt(px(space::S3))
+                .mt(px(gap))
                 .flex()
                 .items_center()
                 .gap(px(space::S2))
@@ -466,16 +473,25 @@ impl ShellView {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .pt(px(space::S3))
-                    .px(px(space::S2))
-                    .children(smart)
-                    .children(collections)
-                    .when(!top.is_empty(), |d| {
-                        d.child(div().h(px(space::S3))).children(top)
-                    })
-                    .child(new_list)
-                    .child(div().flex_1().min_h(px(space::S3)))
-                    .children(agents),
+                    .child(
+                        // The rows keep their heights and the pane scrolls when they don't fit: as
+                        // direct children of the height-limited pane they would shrink instead.
+                        div()
+                            .flex_none()
+                            .min_h_full()
+                            .flex()
+                            .flex_col()
+                            .pt(px(space::S3))
+                            .px(px(space::S2))
+                            .children(smart)
+                            .children(collections)
+                            .when(!top.is_empty(), |d| {
+                                d.child(div().h(px(space::S3))).children(top)
+                            })
+                            .child(new_list)
+                            .child(div().flex_1().min_h(px(space::S3)))
+                            .children(agents),
+                    ),
             )
             .child(
                 div()

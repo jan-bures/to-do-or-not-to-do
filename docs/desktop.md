@@ -206,7 +206,7 @@ Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 
 ```sh
 todo-desktop --screenshot-all <out-dir> [--overwrite]  # all ten fixtures × both themes × 100 % and 150 %
-todo-desktop --screenshot <out.png> --fixture <my-day|work|collapsed-collection|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
+todo-desktop --screenshot <out.png> --fixture <my-day|work|collapsed-collection|long-sidebar|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
 Both modes use the same below-normal-priority fixture runner. It never enters interactive startup: no
