@@ -15,15 +15,64 @@ use todo_core::time::Timestamp;
 /// A transport could not be built.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
-    /// The base URL is not an `http` or `https` URL.
-    #[error("the server URL must start with http:// or https://")]
-    BadUrl,
+    /// The base URL is not a usable server origin (see [`server_origin`]).
+    #[error("{0}")]
+    BadUrl(&'static str),
+    /// The base URL is plain `http` to another machine: tokens would cross the network unencrypted.
+    #[error("the server address must use https:// (plain http only works for this computer)")]
+    Insecure,
     /// The token contains characters a header cannot carry.
     #[error("the token is not a valid header value")]
     BadToken,
     /// reqwest refused the configuration.
     #[error("cannot build the HTTP client: {0}")]
     Client(String),
+}
+
+/// The longest a finite request (pairing, REST, downloads) may take from start to the last body byte.
+/// Event streams have no total limit; the sync engine drops a stream that goes quiet instead.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Parses and checks a server base URL, for example `https://todo.example.com`, and returns it without a
+/// trailing slash. Every client validates addresses with this one function, so they agree on the host.
+///
+/// - The scheme is `https`, or `http` only for a loopback host (`localhost`, `127.0.0.1`, `[::1]`) during
+///   development.
+/// - No user name or password, query string or fragment.
+///
+/// # Errors
+///
+/// [`BuildError::BadUrl`] or [`BuildError::Insecure`].
+pub fn server_origin(base_url: &str) -> Result<String, BuildError> {
+    let url = url::Url::parse(base_url.trim())
+        .map_err(|_| BuildError::BadUrl("that doesn't look like a server address"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(BuildError::BadUrl(
+            "the server address can't contain a user name or password",
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(BuildError::BadUrl(
+            "the server address can't contain ? or #",
+        ));
+    }
+    let loopback = match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => return Err(BuildError::BadUrl("the server address has no host")),
+    };
+    match url.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        "http" => return Err(BuildError::Insecure),
+        _ => {
+            return Err(BuildError::BadUrl(
+                "the server address must start with https://",
+            ));
+        }
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 /// HTTP over reqwest (rustls with the *ring* provider), with the bearer token on every request.
@@ -34,6 +83,7 @@ pub struct HttpTransport {
     /// `None` for an anonymous transport (pairing).
     auth: Option<HeaderValue>,
     max_frame_bytes: usize,
+    request_timeout: Duration,
 }
 
 impl fmt::Debug for HttpTransport {
@@ -67,15 +117,15 @@ impl HttpTransport {
     }
 
     fn build(base_url: &str, auth: Option<HeaderValue>) -> Result<Self, BuildError> {
-        let base = base_url.trim_end_matches('/').to_owned();
-        if !(base.starts_with("http://") || base.starts_with("https://")) {
-            return Err(BuildError::BadUrl);
-        }
+        let base = server_origin(base_url)?;
         // Ignore the error: another part of the process may have installed a provider already.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
             .tls_backend_rustls()
             .connect_timeout(Duration::from_secs(10))
+            // Never follow a redirect: it would carry the token, or a pairing secret in a 307/308 body,
+            // to wherever the server points. A 3xx is an error instead (see `refuse_redirect`).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| BuildError::Client(e.to_string()))?;
         Ok(Self {
@@ -83,7 +133,16 @@ impl HttpTransport {
             base,
             auth,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Limits each finite request to `timeout`, from sending it to its last body byte (default
+    /// [`DEFAULT_REQUEST_TIMEOUT`]). For an event stream it limits the wait for the response headers.
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     /// Caps one event stream frame at `bytes` (default [`DEFAULT_MAX_FRAME_BYTES`]). A larger frame
@@ -132,7 +191,19 @@ fn retry_after(res: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+/// A 3xx is never followed (the client has no redirect policy) and never treated as an answer.
+fn refuse_redirect(res: &reqwest::Response) -> Result<(), TransportError> {
+    if res.status().is_redirection() {
+        return Err(TransportError::Protocol(format!(
+            "the server answered with a redirect (HTTP {}), which is not followed",
+            res.status().as_u16()
+        )));
+    }
+    Ok(())
+}
+
 async fn read(res: reqwest::Response) -> Result<Response, TransportError> {
+    refuse_redirect(&res)?;
     let status = res.status().as_u16();
     let retry_after = retry_after(&res);
     let body = res.bytes().await.map_err(network)?.to_vec();
@@ -180,7 +251,13 @@ impl Transport for HttpTransport {
     type Stream = HttpEventStream;
 
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
-        let res = self.builder(&request).send().await.map_err(network)?;
+        // The timeout covers the body as well: a server that stalls mid-answer can't hang a request.
+        let res = self
+            .builder(&request)
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .map_err(network)?;
         read(res).await
     }
 
@@ -188,12 +265,18 @@ impl Transport for HttpTransport {
         &self,
         request: Request,
     ) -> Result<StreamOpen<HttpEventStream>, TransportError> {
-        let res = self
-            .builder(&request)
-            .header(ACCEPT, "text/event-stream")
-            .send()
-            .await
-            .map_err(network)?;
+        // Only the wait for the headers is limited; the open stream is watched by the sync engine's
+        // idle timeout.
+        let res = tokio::time::timeout(
+            self.request_timeout,
+            self.builder(&request)
+                .header(ACCEPT, "text/event-stream")
+                .send(),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout)?
+        .map_err(network)?;
+        refuse_redirect(&res)?;
         if res.status().as_u16() != 200 {
             return Ok(StreamOpen::Refused(read(res).await?));
         }

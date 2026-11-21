@@ -24,7 +24,8 @@ pub struct Started {
     pub user_code: String,
     /// Secret; poll with it. Never show or log it.
     pub poll_token: String,
-    /// The page the owner opens (it carries the user code).
+    /// The page the server suggests. Don't open it as given: a hostile server could point it at another
+    /// site or a non-web handler. Open [`approval_url`] instead, built from the address the owner typed.
     pub verification_uri: String,
     /// Seconds until the request expires.
     pub expires_in: u32,
@@ -111,6 +112,21 @@ pub enum PairError {
     /// The answer was not understood (not a pairing server?).
     #[error("unexpected answer from the server: {0}")]
     Protocol(String),
+}
+
+/// The approval page for `user_code` on the server at `base_url` (an origin already checked, for example
+/// by `native::server_origin`): `<base>/pair?code=<code>`, with the code percent-encoded.
+#[must_use]
+pub fn approval_url(base_url: &str, user_code: &str) -> String {
+    let mut url = format!("{}/pair?code=", base_url.trim_end_matches('/'));
+    for b in user_code.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            url.push(char::from(b));
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
 }
 
 #[derive(Serialize)]
@@ -202,6 +218,19 @@ mod tests {
         assert!(!format!("{approved:?}").contains("s3cret"));
         let pending: Polled = parse(&res(200, r#"{"status":"pending","interval":2}"#)).unwrap();
         assert_eq!(pending, Polled::Pending { interval: 2 });
+    }
+
+    #[test]
+    fn the_approval_url_is_built_from_the_typed_origin() {
+        assert_eq!(
+            approval_url("https://todo.example.com/", "ABCD-EFGH"),
+            "https://todo.example.com/pair?code=ABCD-EFGH"
+        );
+        // Whatever the server sends as a code, it can't leave the query or the origin.
+        assert_eq!(
+            approval_url("https://todo.example.com", "x&y=1#@evil.example/ä"),
+            "https://todo.example.com/pair?code=x%26y%3D1%23%40evil.example%2F%C3%A4"
+        );
     }
 
     #[test]
