@@ -95,7 +95,9 @@ function ico(images) {
   return Buffer.concat([header, ...images.map((image) => image.data)]);
 }
 
-const icoSizes = [16, 24, 32, 48, 64, 256];
+// 20/40, 24/48 and 32/64 are the small and large icon sizes at 125 %, 150 % and 200 % display scaling (16/32 at
+// 100 %). Up to 24 px the small artwork is used, from 32 px the master.
+const icoSizes = [16, 20, 24, 32, 40, 48, 64, 256];
 
 // ---------------------------------------------------------------------------------------------------------------
 // The monochrome layer, flattened to plain paths.

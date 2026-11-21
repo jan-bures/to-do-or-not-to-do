@@ -32,7 +32,7 @@ Everything in `generated/` is produced by `generate.mjs` from the sources above.
 
 | File | Used for |
 |---|---|
-| `todo.ico` | Windows: the desktop exe's icon resource, the window and the tray icon (16, 24, 32, 48, 64, 256 px, PNG images). Also the web favicon. |
+| `todo.ico` | Windows: the desktop exe's icon resource, the window and the tray icon, each loaded at the size of its display's scale (16, 20, 24, 32, 40, 48, 64, 256 px, PNG images: the small and large icon sizes at 100 %, 125 %, 150 % and 200 % display scaling; 16 to 24 px from `small-16.svg`, the rest from `master.svg`). Also the web favicon. |
 | `icon-16.png`, `icon-24.png` | From `small-16.svg`. Favicons, small UI. |
 | `icon-32.png` to `icon-512.png` | From `master.svg`: 32, 48, 64, 128, 192, 256, 512. `icon-192.png` and `icon-512.png` are the PWA manifest icons. |
 | `apple-touch-icon.png` | 180 px, for iOS. It is full-bleed (a square, no rounded tile), because iOS rounds it itself and paints transparent corners black. |

@@ -572,6 +572,8 @@ impl WindowsWindow {
         let this = context.inner.take().transpose()?;
         let hwnd = creation_result?;
         let this = this.unwrap();
+        // TO-DO PATCH (app icon): the icons for this monitor's DPI (the class icons are the fallback).
+        set_window_icons(hwnd, unsafe { GetDpiForWindow(hwnd) });
 
         register_drag_drop(&this)?;
         set_non_rude_hwnd(hwnd, true);
@@ -1472,24 +1474,59 @@ fn register_window_class(icon_handle: HICON) {
     });
 }
 
-/// TO-DO PATCH (app icon): the exe's icon resource (id 1) at the system's small icon size. A missing resource
-/// (a test binary, say) gives a null handle, and Windows derives the small icon from the large one.
-fn load_small_icon() -> HICON {
-    unsafe {
-        let (width, height) = (
-            GetSystemMetrics(SM_CXSMICON),
-            GetSystemMetrics(SM_CYSMICON),
-        );
+/// TO-DO PATCH (app icon): the exe's icon resource (id 1) at `size` px, loaded once per size and kept for the
+/// life of the process (an app sees only a handful of DPIs, so nothing accumulates). `LR_SHARED` would not do:
+/// it can hand back the icon first loaded for the resource whatever size is asked for. A missing resource (a
+/// test binary, say) gives `None`.
+fn load_icon_resource(size: i32) -> Option<HICON> {
+    use std::{collections::HashMap, sync::Mutex};
+    static CACHE: Mutex<Option<HashMap<i32, isize>>> = Mutex::new(None);
+
+    let mut cache = CACHE.lock().ok()?;
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(handle) = cache.get(&size) {
+        return Some(HICON(*handle as _));
+    }
+    let icon = unsafe {
+        let module = GetModuleHandleW(None).ok()?;
         LoadImageW(
-            Some(HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0)),
+            Some(HINSTANCE(module.0)),
             PCWSTR(1 as _),
             IMAGE_ICON,
-            width,
-            height,
-            LR_SHARED,
+            size,
+            size,
+            LR_DEFAULTCOLOR,
         )
-        .map(|handle| HICON(handle.0))
-        .unwrap_or_default()
+        .ok()?
+    };
+    cache.insert(size, icon.0 as isize);
+    Some(HICON(icon.0))
+}
+
+/// TO-DO PATCH (app icon): the class's small icon, at the system DPI's small icon size. It is only the fallback
+/// for windows that never got `set_window_icons`.
+fn load_small_icon() -> HICON {
+    load_icon_resource(unsafe { GetSystemMetrics(SM_CXSMICON) }).unwrap_or_default()
+}
+
+/// TO-DO PATCH (app icon): sets the window's own small and large icons for `dpi`, the DPI of the monitor the
+/// window is on (96 at 100 %, 144 at 150 %). It runs when the window is created and again on `WM_DPICHANGED`,
+/// so the taskbar, Alt+Tab and the caption always get the hand-tuned .ico image for the current scale: 16/32 px
+/// at 100 %, 20/40 at 125 %, 24/48 at 150 %, 32/64 at 200 %.
+pub(crate) fn set_window_icons(hwnd: HWND, dpi: u32) {
+    let dpi = if dpi == 0 { USER_DEFAULT_SCREEN_DPI } else { dpi };
+    for (kind, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
+        let size = unsafe { GetSystemMetricsForDpi(metric, dpi) };
+        if let Some(icon) = load_icon_resource(size) {
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(kind as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                )
+            };
+        }
     }
 }
 

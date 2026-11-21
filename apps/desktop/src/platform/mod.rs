@@ -4,6 +4,7 @@
 pub mod autostart;
 pub mod dpapi;
 pub mod hotkey;
+pub mod icon;
 pub mod single_instance;
 pub mod tray;
 pub mod win;

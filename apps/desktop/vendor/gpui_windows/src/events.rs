@@ -885,6 +885,8 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
+        // TO-DO PATCH (app icon): the icons follow the monitor's DPI, even when a screenshot forces a scale.
+        crate::window::set_window_icons(handle, wparam.loword() as u32);
         // TO-DO PATCH (screenshots): a forced scale factor ignores monitor DPI changes.
         if crate::todo_patch::scale_factor_override().is_some() {
             return Some(0);

@@ -15,7 +15,8 @@ fn main() {
         format!("VERSION_PATCH={}", var("CARGO_PKG_VERSION_PATCH")),
         format!("VERSION_STRING=\"{}\"", var("CARGO_PKG_VERSION")),
     ];
-    embed_resource::compile("resources/app.rc", macros)
+    // For the exe, and for the test binaries too: tests load the icon resource the way the tray does.
+    embed_resource::compile_for_everything("resources/app.rc", macros)
         .manifest_required()
         .expect("failed to compile the Windows resources");
 }

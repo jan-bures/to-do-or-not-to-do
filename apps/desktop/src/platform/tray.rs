@@ -1,5 +1,9 @@
 //! The tray icon and its menu: show/hide, quick add, Start with Windows, quit.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+use crate::platform::icon::{DpiWatch, notification_area_dpi, small_icon_size_for_dpi};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -36,10 +40,12 @@ impl Ids {
     }
 }
 
-/// Keeps the tray icon alive.
+/// Keeps the tray icon alive, and swaps its image when the notification area's scale changes.
 #[allow(missing_debug_implementations)] // TrayIcon isn't Debug.
 pub struct Tray {
-    _icon: TrayIcon,
+    _icon: Rc<TrayIcon>,
+    /// Reports scale changes to the closure that reloads the icon.
+    _watch: Option<DpiWatch>,
     autostart: CheckMenuItem,
 }
 
@@ -85,13 +91,33 @@ pub fn create(
         quit: quit.id().clone(),
     };
 
-    let icon = load_icon()?;
-    let tray = TrayIconBuilder::new()
-        .with_tooltip("To-do")
-        .with_icon(icon)
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(false)
-        .build()?;
+    let size = small_icon_size_for_dpi(notification_area_dpi());
+    let tray = Rc::new(
+        TrayIconBuilder::new()
+            .with_tooltip("To-do")
+            .with_icon(load_icon(size)?)
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .build()?,
+    );
+    // The icon follows the notification area's scale: when it changes, the image for the new size replaces the
+    // old one. Without the watcher the icon keeps its startup size, which is the only thing lost.
+    let shown = Cell::new(size);
+    let watch = {
+        let tray = tray.clone();
+        DpiWatch::new(move || {
+            let size = small_icon_size_for_dpi(notification_area_dpi());
+            if size == shown.get() {
+                return;
+            }
+            match load_icon(size).and_then(|icon| Ok(tray.set_icon(Some(icon))?)) {
+                Ok(()) => shown.set(size),
+                Err(error) => tracing::warn!("tray icon not reloaded at {size} px: {error:#}"),
+            }
+        })
+        .map_err(|error| tracing::warn!("tray icon will not follow scale changes: {error:#}"))
+        .ok()
+    };
 
     let on_action = std::sync::Arc::new(on_action);
     let menu_action = on_action.clone();
@@ -112,6 +138,7 @@ pub fn create(
     }));
     Ok(Tray {
         _icon: tray,
+        _watch: watch,
         autostart,
     })
 }
@@ -122,22 +149,10 @@ const ICON_RESOURCE: u16 = 1;
 /// The 32 px render of the app icon, for when the exe has no icon resource (a test binary, say).
 const FALLBACK_PNG: &[u8] = include_bytes!("../../../../assets/brand/generated/icon-32.png");
 
-/// The tray's icon size in pixels: 16 at 100 % scaling, 24 at 150 %, 32 at 200 %. The .ico holds a hand-tuned
-/// image for each, so Windows never has to scale one.
-#[allow(unsafe_code)] // One Win32 metrics call.
-fn tray_icon_size() -> u32 {
-    // SAFETY: GetSystemMetrics has no preconditions.
-    let size = unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
-            windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON,
-        )
-    };
-    u32::try_from(size).ok().filter(|s| *s > 0).unwrap_or(16)
-}
-
-/// The app icon from the exe's resource at the tray's size, or the embedded 32 px render.
-fn load_icon() -> anyhow::Result<Icon> {
-    let size = tray_icon_size();
+/// The app icon from the exe's resource at `size` px, or the embedded 32 px render. The .ico holds a
+/// hand-tuned image for each of 16, 20, 24, 32, 40, 48, 64 and 256 px, which cover the common scales at the
+/// notification area (100 % to 200 %); at other scales Windows picks the nearest image and scales it.
+fn load_icon(size: u32) -> anyhow::Result<Icon> {
     match Icon::from_resource(ICON_RESOURCE, Some((size, size))) {
         Ok(icon) => Ok(icon),
         Err(error) => {
@@ -172,7 +187,8 @@ mod tests {
 
     #[test]
     fn the_ico_has_an_image_for_every_scale() {
-        // The window class and the tray ask Windows for 16, 24 (150 %), 32 (200 %) and 48 px images.
+        // The window and the tray ask for the small and large size of 100 % (16/32), 125 % (20/40), 150 % (24/48)
+        // and 200 % (32/64) scaling; 64 and 256 px are in the file too.
         let ico = include_bytes!("../../../../assets/brand/generated/todo.ico");
         assert_eq!(u16::from_le_bytes([ico[2], ico[3]]), 1, "an icon file");
         let count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
@@ -182,7 +198,19 @@ mod tests {
                 n => u32::from(n),
             })
             .collect();
-        assert_eq!(sizes, [16, 24, 32, 48, 64, 256]);
+        assert_eq!(sizes, [16, 20, 24, 32, 40, 48, 64, 256]);
+    }
+
+    #[test]
+    fn the_tray_loads_the_resource_at_every_scale() {
+        // The test binary carries the same icon resource as the exe (see build.rs).
+        for size in [16, 20, 24, 32, 40, 48] {
+            assert!(load_icon(size).is_ok(), "{size} px");
+            assert!(
+                Icon::from_resource(ICON_RESOURCE, Some((size, size))).is_ok(),
+                "{size} px resource"
+            );
+        }
     }
 
     #[test]
