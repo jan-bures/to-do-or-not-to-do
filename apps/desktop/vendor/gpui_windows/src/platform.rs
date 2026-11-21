@@ -463,6 +463,12 @@ impl WindowsPlatform {
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
+                    // TO-DO PATCH: hidden screenshot windows explicitly request their paint
+                    // messages. Don't invalidate them at display frequency, including during
+                    // the interval between DestroyWindow and removal from all_windows.
+                    if crate::todo_patch::scale_factor_override().is_some() {
+                        continue;
+                    }
                     for hwnd in all_windows.read().iter() {
                         unsafe {
                             if let Some(signal_at) = signal_at {
