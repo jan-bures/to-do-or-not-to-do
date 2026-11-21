@@ -60,8 +60,8 @@ The server and the backups refuse to start while a deploy is unfinished: `deploy
 (`ExecStartPre`) and fails while `/opt/todo/deploy-in-progress` exists. The one exception is a start of the
 server that the deploy script authorizes. Each authorization is a random nonce, written both to the marker and
 to `/run/todo-deploy/allow-start` (root, 0600, in RAM, so it can't outlive a reboot). The guard allows a start
-only if the two match, and deletes the file as it does, so each nonce allows exactly one start. A backup is
-never let through.
+only if the two match and it has deleted the file (if the file can't be removed, the start is refused), so
+each nonce allows at most one start. A backup is never let through.
 
 ## Google Cloud: create the VM
 
@@ -159,9 +159,11 @@ Keep `bind` on `127.0.0.1` and the port the tunnel's public hostname points at (
 default), `data_dir = "/var/lib/todo"`, the same `public_origin` as the pilot, and
 `trust_cloudflare_headers = true`.
 
-This file is the only source of the server's settings. Don't set `TODO_SERVER_*` variables in the unit or a
-drop-in, and don't add an `EnvironmentFile`: a deploy refuses to run if it finds one, because it must know
-which database the server opens.
+This file is the only source of the server's settings. **The unit must not have drop-ins; config lives in
+the TOML.** A deploy must know which database the server opens, so it refuses to run if `todo-server.service`
+has any drop-in (`systemctl show -p DropInPaths todo-server` is empty when it has none), uses
+`PassEnvironment`, `UnsetEnvironment` or an `EnvironmentFile`, sets a `TODO_SERVER_*` variable other than
+`TODO_SERVER_CONFIG`, or if the systemd manager's own environment sets one (`systemctl show-environment`).
 
 Put each secret in place with the owner and mode from [Secrets](#secrets), for example:
 
@@ -217,25 +219,28 @@ From the Windows PC:
       nothing to roll back to. After a deliberate wipe, pass `-AllowEmptyDatabase`.
    4. **prepared.** It writes the deploy marker, `/opt/todo/deploy-in-progress`, synced to disk. Then it
       stops the backup timers, any backup run and the server, checks each `systemctl stop`, and waits until
-      every one of them is inactive and nothing answers `/health`. It takes the backup lock.
-   5. **snapshotted.** It copies the databases and their `-wal` and `-shm` files to
-      `/var/lib/todo-deploy/pre-<time>/`, and writes a `MANIFEST` (a `sha256sum` list) of exactly the files that
-      existed. Every file is synced, and every sync is checked; any failure stops the deploy before it
-      switches.
-   6. **switched.** It points `/opt/todo/current` at the new release (a new symlink, renamed over the old
-      one), starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the unit is active and
-      `/health` answers 200. The server runs pending migrations before it listens.
-   7. It removes the marker and starts the backup timers that were running before. Timers that were off stay
-      off.
-4. **Roll back** (phase **restoring**). If the new release doesn't become healthy, it may already have
-   migrated the databases, so the script always restores the copy, in full, before anything starts:
-   1. Each file in the `MANIFEST` is written to a temporary name next to the live one and synced.
-   2. For each database, the live file and its sidecars go to `failed-<time>/`, including sidecars the copy
-      didn't have, and the copies are renamed into place.
-   3. The directory is synced and the result checked against the `MANIFEST`.
+      every one of them is inactive and nothing answers `/health`. It takes the backup lock, copies the
+      databases and their `-wal` and `-shm` files to `/var/lib/todo-deploy/pre-<time>/`, and writes a
+      `MANIFEST` (a `sha256sum` list) of exactly the files that existed. A database name that is a symlink or
+      not a regular file stops the deploy. Every file is synced, and every sync is checked; any failure
+      stops the deploy before it switches.
+   5. **switched.** It points `/opt/todo/current` at the new release (a new symlink, renamed over the old
+      one), checks that it does, starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the
+      unit is active and `/health` answers 200. The server runs pending migrations before it listens.
+   6. It starts the backup timers that were running before (timers that were off stay off), and then removes
+      the marker, as the very last step. Until then the guard refuses any backup run the timers start.
+4. **Roll back.** If the new release doesn't become healthy, it may already have migrated the databases:
+   1. **restoring.** The script restores the copy, in full, before anything starts. The files in the
+      `MANIFEST` are copied into a fresh root-only directory inside the data directory, given the service
+      user and mode 0600, and synced. For each database, every live entry with one of its names (file,
+      sidecar, or anything the service user put there, such as a symlink) is moved aside, unread, into
+      `failed-<time>/`, and the copies are renamed into place: a rename replaces a name and never follows a
+      link. Then the directory is synced and the result checked against the `MANIFEST`.
+   2. **restored.** Once the restore is durable, the marker says so. `current` points at the previous release
+      again, is checked, and the previous release starts. From here on nothing restores again, so writes the
+      previous release accepts are never undone.
 
-   Then `current` points at the previous release again, and it starts. The live database is never
-   overwritten in place, and the marker says `restoring` until the previous release runs.
+   The live database is never overwritten in place.
 
 Exit codes: 0 deployed; 1 nothing changed (a build, copy, checksum or config failure, a missing database, or
 another deploy running); 2 rolled back, the previous release is current; 3 unfinished (see the next section);
@@ -287,21 +292,28 @@ The phases:
 
 | Phase | What is true |
 |---|---|
-| `prepared` | The previous release is current; the copy may be incomplete. The databases are untouched. |
-| `snapshotted` | The copy is complete. The previous release is current, and the new one never ran. |
-| `switched` | `current` may point at either release, and the new one may have run. |
-| `restoring` | A restore was started; the databases may be a mix of old and new until it completes. |
+| `prepared` | The previous release is current, and the new one never ran: the databases are as the previous release left it. The copy may be incomplete. |
+| `switched` | The copy is complete. `current` may point at either release (the rename may not have happened), and the new one may have run. |
+| `restoring` | A rollback restore was started; the databases may be a mix of old and new until it completes. |
+| `restored` | The databases are exactly the copy again. The previous release may have run on them since. |
+
+Any phase can also end with the server and the timers running and only the marker left: the last step,
+removing it, didn't happen. The recovery handles that like any other point in the phase.
 
 Then choose one:
 
-- **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from `prepared`,
-  `snapshotted` or `switched`: it stops what runs, takes the copy if it wasn't complete, switches to the new
-  release and starts it. If the new release doesn't become healthy, it rolls back as a normal deploy would.
-  From `restoring` only a rollback is possible.
+- **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from `prepared` or
+  `switched`: it stops what runs, takes the copy again if the phase is `prepared`, points `current` at the
+  new release and checks it, and starts it. If the new release doesn't become healthy, it rolls back as a
+  normal deploy would. From `restoring` and `restored` only a rollback is possible.
 - **Roll back.** `sudo /usr/local/lib/todo/install-release --recover rollback` returns to the previous
-  release. From `prepared` or `snapshotted` it just starts it again. From `switched` or `restoring` it first
+  release. From `prepared` it just points `current` back and starts it. From `switched` or `restoring` it first
   restores the copy in full, as above, every time it runs, so the server never starts on a mixed pair of
-  databases. Anything the new release wrote is then only in `failed-<time>/`.
+  databases; anything the new release wrote is then only in `failed-<time>/`. From `restored` it never
+  restores again: it only points `current` back and starts the previous release.
+
+Every recovery first stops the server and the timers, and puts `current` where its phase says, whatever it
+pointed at, before it starts anything.
 
 Both honour the deploy's start policy, so after `-NoStart` the server stays stopped. Both need neither the PC
 nor the upload: the script keeps a copy of itself in `/usr/local/lib/todo`. They exit with the deploy's codes,

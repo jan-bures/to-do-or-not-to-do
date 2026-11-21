@@ -6,8 +6,9 @@
 #
 # The one exception is a start of todo-server that install-release.sh authorizes: it writes a random
 # nonce to the marker and to /run/todo-deploy/allow-start (root, 0600, on tmpfs, so it can't outlive a
-# reboot). This guard allows the start only if the two match, and deletes the file first, so each nonce
-# authorizes exactly one start. Backups are never let through while the marker exists.
+# reboot). This guard allows the start only if the two match and it has deleted the file: if the file
+# can't be removed, the start is refused, so each nonce authorizes at most one start. Backups are never
+# let through while the marker exists.
 set -u
 MARKER=/opt/todo/deploy-in-progress
 ALLOW=/run/todo-deploy/allow-start
@@ -18,10 +19,13 @@ UNIT="${1:-this unit}"
 if [ "$UNIT" = todo-server ] && [ -f "$ALLOW" ] && [ ! -L "$ALLOW" ]; then
     owner_mode="$(stat -c '%u %a' "$ALLOW" 2> /dev/null)"
     have="$(head -n 1 "$ALLOW" 2> /dev/null)"
-    rm -f "$ALLOW"
-    want="$(sed -n 's/^nonce=//p' "$MARKER" 2> /dev/null | head -n 1)"
-    if [ "$owner_mode" = "0 600" ] && [ ${#want} -eq 32 ] && [ "$have" = "$want" ]; then
-        exit 0
+    if rm -f "$ALLOW" 2> /dev/null && [ ! -e "$ALLOW" ] && [ ! -L "$ALLOW" ]; then
+        want="$(sed -n 's/^nonce=//p' "$MARKER" 2> /dev/null | head -n 1)"
+        if [ "$owner_mode" = "0 600" ] && [ ${#want} -eq 32 ] && [ "$have" = "$want" ]; then
+            exit 0
+        fi
+    else
+        echo "$ALLOW could not be removed, so it can't authorize a start." >&2
     fi
 fi
 

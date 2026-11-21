@@ -18,7 +18,8 @@ Environment=TODO_SERVER_CONFIG=/etc/todo/server.toml
 Environment=NO_COLOR=1
 WorkingDirectory=/var/lib/todo
 # Refuses to start while a deploy is unfinished (see deploy-guard.sh). '+' runs it as root, outside the
-# sandbox, so it can check that the deploy script allowing the start is still running.
+# sandbox, so it can read the marker and use up the deploy's one-start permission in /run/todo-deploy.
+# This unit must not have drop-ins: a deploy refuses to run if it has any. Config lives in server.toml.
 ExecStartPre=+/usr/local/lib/todo/deploy-guard todo-server
 ExecStart=/opt/todo/current/todo-server serve
 # The server drains in-flight requests on Ctrl+C (SIGINT). SIGTERM would end it at once.
