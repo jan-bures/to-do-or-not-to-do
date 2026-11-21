@@ -265,7 +265,13 @@ async fn capture(
         win::request_hidden_frame(hwnd)?;
         sleep(cx, 10).await;
     }
-    sleep(cx, 400).await;
+    // Vsync does not repaint hidden windows. Give layout and next-frame callbacks time
+    // to settle by pumping frames, rather than just waiting for time to pass.
+    for _ in 0..5 {
+        handle.update(cx, |_, window, _| window.refresh())?;
+        win::request_hidden_frame(hwnd)?;
+        sleep(cx, 16).await;
+    }
     todo_patch::request_capture(hwnd);
     loop {
         if let Some(image) = todo_patch::take_capture(hwnd) {
