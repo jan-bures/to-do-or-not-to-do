@@ -67,6 +67,11 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # Client-only dependencies (`todo-client` features `native` and `sqlite`).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# Browser bindings (`todo-client` feature `web`, wasm32 only, and the web app).
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+js-sys = "0.3.77"
+web-sys = "0.3.77"
 # Passkeys (server only). RustCrypto backend, no OpenSSL.
 webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation"] }
 # Software authenticator for driving passkey ceremonies in tests.

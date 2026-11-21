@@ -19,6 +19,7 @@
 //! | [`pairing`] | device pairing: start, poll |
 //! | [`protocol`] | the server API: paths, bodies, response classification |
 //! | [`storage`] | the [`Storage`] trait and [`MemoryStorage`] |
+//! | [`mirror`] | [`mirror::MirrorStorage`]: in memory, with a journal for an asynchronous backend (IndexedDB) |
 //! | [`platform`] | the transport, clock and entropy traits |
 //! | [`sse`] | an incremental Server-Sent Events parser |
 //! | [`notify`] | runtime-agnostic change signals, timeouts and backoff |
@@ -28,10 +29,13 @@
 //! - `native`: tokio + reqwest (rustls with *ring*) implementations of the platform traits, for the
 //!   desktop app and tests.
 //! - `sqlite`: a bundled-SQLite [`Storage`] (implies `native`).
+//! - `web` (wasm32 only): `fetch`, IndexedDB (through [`mirror::MirrorStorage`]), `setTimeout` and
+//!   Web Crypto implementations for the web app (`web` module).
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod client;
+pub mod mirror;
 pub mod notify;
 pub mod outbox;
 pub mod pairing;
@@ -45,6 +49,8 @@ pub mod storage;
 pub mod native;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub mod web;
 
 pub use client::{ClientConfig, Connection, ErrorKind, Status, SyncClient, SyncError};
 pub use notify::Backoff;

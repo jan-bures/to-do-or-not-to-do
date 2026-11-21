@@ -14,6 +14,9 @@ default = []
 native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:url", "uuid/v4"]
 # A bundled-SQLite `Storage` (native only).
 sqlite = ["native", "dep:rusqlite"]
+# Browser implementations of the platform traits: fetch, IndexedDB, setTimeout, Web Crypto. The module
+# exists on wasm32 only; elsewhere the feature compiles to nothing.
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 [dependencies]
 # Default build: pure Rust, no runtime; must build for wasm32-unknown-unknown and aarch64-linux-android.
@@ -21,7 +24,7 @@ todo-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 futures-util.workspace = true
 # `native`
@@ -31,6 +34,16 @@ rustls = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 # `sqlite`
 rusqlite = { workspace = true, optional = true }
+# `web`
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "AbortController", "AbortSignal", "Crypto", "DomException", "DomStringList", "Headers",
+    "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest",
+    "IdbTransaction", "IdbTransactionMode", "ReadableStream", "ReadableStreamDefaultReader",
+    "Request", "RequestCredentials", "RequestInit", "Response", "Window",
+] }
 
 [dev-dependencies]
 todo-server.workspace = true
