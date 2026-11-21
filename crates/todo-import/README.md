@@ -36,6 +36,8 @@ todo-import verify-server --bundle "$work\bundle.json" --server https://todo.exa
 - `verify --cache` also checks the received times of email links, which come from the cache.
 - The token comes from `--token-file` or `TODO_IMPORT_TOKEN`, never from the command line. Plain `http://`
   is accepted only for `localhost`.
+- Imports are owner-only, so the token must be an owner device token (from pairing, `tdd_…`). Agent tokens
+  are refused. The server's static `[[auth.owner_tokens]]` work only with `auth.allow_config_owner_tokens`.
 - `verify` and `verify-server` exit with 1 on any mismatch. Reports name lists and tasks by a short hash of
   their Graph ID; `verify --show-names` adds list names.
 - `apply` is safe to re-run and resumes after a crash: see the `apply` module documentation. Its journal is

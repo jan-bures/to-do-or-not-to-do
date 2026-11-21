@@ -29,6 +29,8 @@ async fn start() -> Running {
         data_dir: dir.path().to_owned(),
         ..Config::default()
     };
+    // The static owner tokens are the server's development fallback, off by default.
+    config.auth.allow_config_owner_tokens = true;
     config.auth.owner_tokens = vec![OwnerToken {
         device: DeviceId::new("importer").unwrap(),
         sha256: hash_token(TOKEN),

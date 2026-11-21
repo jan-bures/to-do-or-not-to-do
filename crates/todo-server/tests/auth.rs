@@ -1648,6 +1648,45 @@ async fn history_from_a_private_list_stays_hidden_after_a_task_moves_out() {
 }
 
 #[tokio::test]
+async fn imported_history_follows_the_same_rules_and_agents_cannot_import() {
+    let f = fixture("").await;
+    let (read_list, plan_list) = (f.lists["read"].0.clone(), f.lists["plan"].0.clone());
+    let (hidden_list, _) = f.hidden();
+    let hidden_list = hidden_list.to_owned();
+    let import = |task: &str, list: &str, title: &str| {
+        let stamp =
+            json!({ "at": "2020-01-02T03:04:05Z", "by": { "type": "owner", "device": "alpha" } });
+        json!({ "cmd": "import_entity", "entity": { "kind": "task", "data": {
+            "id": task, "list": list, "title": title, "notes": format!("{title}-NOTES"),
+            "due": null, "priority": "none", "my_day": null, "completed_at": null,
+            "recurrence": null, "tags": [], "position": "a", "created": stamp, "updated": stamp,
+            "deleted": null, "merged_into": null
+        } } })
+    };
+    // Agents may not import, not even into a list they can plan in.
+    let r = f
+        .env
+        .command(&f.token, import(&id(), &plan_list, "AGENT-IMPORT"))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.json);
+    // An import into a readable list is visible while the task stays there, and hidden once it is
+    // in a private list.
+    let (stays, moves) = (id(), id());
+    for c in [
+        import(&stays, &read_list, "IMPORT-STAYS"),
+        import(&moves, &read_list, "IMPORT-MOVES"),
+        json!({ "cmd": "move_task", "id": moves, "list": hidden_list }),
+    ] {
+        let r = f.env.command(TOKEN_A, c.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{c}: {}", r.json);
+    }
+    let history = agent_history(&f).await;
+    assert!(history.contains("IMPORT-STAYS-NOTES"));
+    assert!(!history.contains("IMPORT-MOVES") && !history.contains(moves.as_str()));
+    assert!(!history.contains("AGENT-IMPORT"));
+}
+
+#[tokio::test]
 async fn undo_conflicts_name_only_later_events_the_agent_could_read() {
     let f = fixture("").await;
     let (plan_list, task) = f.lists["plan"].clone();
