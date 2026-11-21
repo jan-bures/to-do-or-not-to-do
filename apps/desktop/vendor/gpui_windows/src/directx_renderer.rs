@@ -135,6 +135,13 @@ impl DirectXRendererDevices {
         } else {
             Some(device.cast().context("Creating DXGI device")?)
         };
+        // TO-DO PATCH: lower the capture device's GPU scheduling priority as well as the
+        // process's CPU priority. WARP is software and may not support the GPU hint.
+        if crate::todo_patch::scale_factor_override().is_some()
+            && let Ok(dxgi) = device.cast::<IDXGIDevice>()
+        {
+            unsafe { dxgi.SetGPUThreadPriority(-1) }.log_err();
+        }
         let annotation = device_context.cast().ok();
         let device_context1 = device_context.cast().ok();
 

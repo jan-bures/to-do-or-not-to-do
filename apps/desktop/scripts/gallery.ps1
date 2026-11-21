@@ -3,8 +3,8 @@
 Renders the screenshot gallery: every shell fixture in light and dark, at 100 % and 150 %.
 
 .DESCRIPTION
-Builds the desktop app in release mode (unless -NoBuild), then runs `todo-desktop --screenshot` once per
-fixture, theme and scale, and checks that every image has exactly the expected pixel size. The PNGs land in
+Builds the desktop app in release mode (unless -NoBuild), then runs `todo-desktop --screenshot-all` once
+and checks that every image has exactly the expected pixel size. The PNGs land in
 apps/desktop/target/gallery (git ignores target/). Compare them against the chosen mockups before calling a UI
 change done.
 
@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $app = Resolve-Path (Join-Path $PSScriptRoot '..')
 if (-not $OutDir) { $OutDir = Join-Path $app 'target/gallery' }
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName
 
 if (-not $NoBuild) {
     Push-Location $app
@@ -54,19 +54,51 @@ function Get-PngSize([string]$path) {
     return @((& $be 16), (& $be 20))
 }
 
+# Sample ownership, not just the HWND: the user is free to switch between other apps during a run.
+if (-not ('GalleryForeground' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class GalleryForeground {
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    public static uint Owner() {
+        uint pid;
+        GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+        return pid;
+    }
+}
+'@
+}
+$start = [Diagnostics.ProcessStartInfo]::new($exe)
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+foreach ($arg in @('--screenshot-all', $OutDir, '--overwrite', '--fixture', ($Fixtures -join ','),
+                   '--theme', ($Themes -join ','), '--scale', ($Scales -join ','))) {
+    $start.ArgumentList.Add($arg)
+}
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$before = [GalleryForeground]::Owner()
+$changed = $false
+$tookFocus = $false
+$p = [Diagnostics.Process]::Start($start)
+try {
+    do {
+        $owner = [GalleryForeground]::Owner()
+        if ($owner -ne $before) { $changed = $true }
+        if ($owner -eq $p.Id) { $tookFocus = $true }
+    } until ($p.WaitForExit(10))
+    if ([GalleryForeground]::Owner() -ne $before) { $changed = $true }
+    if ($tookFocus) { throw 'The screenshot process took the foreground' }
+    if ($p.ExitCode -ne 0) { throw "Screenshot process failed ($($p.ExitCode))" }
+} finally { $p.Dispose() }
+
 $failed = 0
 foreach ($fixture in $Fixtures) {
     foreach ($theme in $Themes) {
         foreach ($scale in $Scales) {
             $pct = [int]([double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture) * 100)
             $out = Join-Path $OutDir "$fixture-$theme-$pct.png"
-            $argList = @('--screenshot', "`"$out`"", '--fixture', $fixture, '--theme', $theme, '--scale', $scale, '--overwrite')
-            $p = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru -NoNewWindow
-            if ($p.ExitCode -ne 0) {
-                Write-Warning "$fixture $theme ${pct}%: exit code $($p.ExitCode)"
-                $failed++
-                continue
-            }
             $want = Get-ExpectedSize $fixture ([double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
             $got = Get-PngSize $out
             if ($null -eq $got) {
@@ -81,5 +113,6 @@ foreach ($fixture in $Fixtures) {
         }
     }
 }
-Write-Host "Gallery in $OutDir"
+$focus = if ($changed) { 'other apps switched foreground' } else { 'foreground owner unchanged' }
+Write-Host ('Gallery in {0} ({1:N2} s including validation; {2})' -f $OutDir, $clock.Elapsed.TotalSeconds, $focus)
 if ($failed -gt 0) { throw "$failed screenshot(s) failed" }

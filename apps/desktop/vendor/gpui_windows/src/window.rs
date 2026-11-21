@@ -585,6 +585,21 @@ impl WindowsWindow {
                 placement.showCmd = SW_SHOWNOACTIVATE.0 as u32;
             }
             unsafe { SetWindowPlacement(hwnd, &placement)? };
+        } else if crate::todo_patch::scale_factor_override().is_some() {
+            // TO-DO PATCH (hidden screenshots): ordinary hidden windows defer sizing until
+            // activation. Size the capture swap chain now, without ever showing the HWND.
+            let r = placement.rcNormalPosition;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+                )?;
+            }
         } else {
             this.state.initial_placement.set(Some(WindowOpenStatus {
                 placement,
@@ -694,6 +709,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
+        // TO-DO PATCH: a never-shown capture window cannot be hovered. Do not let the
+        // real pointer's desktop coordinates accidentally highlight a fixture row.
+        if crate::todo_patch::scale_factor_override().is_some() {
+            return point(px(-1.), px(-1.));
+        }
         let scale_factor = self.scale_factor();
         let point = unsafe {
             let mut point: POINT = std::mem::zeroed();
@@ -817,6 +837,10 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn activate(&self) {
+        // TO-DO PATCH: fixture focus is GPUI-local. Never run native activation or send input.
+        if crate::todo_patch::scale_factor_override().is_some() {
+            return;
+        }
         let hwnd = self.0.hwnd;
         let this = self.0.clone();
         self.0

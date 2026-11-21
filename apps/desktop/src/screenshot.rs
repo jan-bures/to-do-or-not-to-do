@@ -1,18 +1,17 @@
-//! `--screenshot`: render a fixture into its own window, save that window to a PNG and exit.
+//! Render one or more fixtures, sequentially, without starting the interactive app.
 //!
 //! Deterministic and input-free: the fixture data and the clock are fixed, the scale factor is forced, and
 //! the image is read back from the window's own render target (`todo_patch::request_capture`) instead of
 //! capturing the screen. Nothing is clicked or typed.
 
+use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use gpui::{
-    App, AppContext, AsyncApp, Bounds, TitlebarOptions, WindowBounds, WindowKind, WindowOptions,
-    point, px, size,
+    AnyWindowHandle, App, AppContext, AsyncApp, Bounds, QuitMode, TitlebarOptions, WindowBounds,
+    WindowKind, WindowOptions, point, px, size,
 };
 use gpui_platform::application;
 use gpui_windows::todo_patch;
@@ -53,7 +52,7 @@ fn options(width: f32, height: f32, quick: bool) -> WindowOptions {
             })
         },
         focus: false,
-        show: true,
+        show: false,
         kind: if quick {
             WindowKind::PopUp
         } else {
@@ -102,57 +101,84 @@ fn save(image: &image::RgbaImage, out: &std::path::Path, overwrite: bool) -> any
     Ok(())
 }
 
-/// Renders the fixture and writes the PNG. Returns the process exit code.
-pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
-    let fixture = fixtures::by_name(&opts.fixture)
-        .with_context(|| format!("unknown fixture {}", opts.fixture))?;
-    if !opts.overwrite && opts.out.exists() {
+/// One GPUI platform and font set per process. This entry point has no interactive app,
+/// instance mutex/event, profile loader, tray, hotkey or sync session.
+pub fn run(shots: Vec<ScreenshotOptions>) -> anyhow::Result<i32> {
+    win::lower_process_priority()?;
+    if let Some(opts) = shots
+        .iter()
+        .find(|opts| !opts.overwrite && opts.out.exists())
+    {
         eprintln!(
             "error: {} exists; pass --overwrite to replace it",
             opts.out.display()
         );
         return Ok(EXIT_EXISTS);
     }
-    todo_patch::set_scale_factor_override(Some(opts.scale));
-    let code = Arc::new(AtomicI32::new(1));
+    let code = Rc::new(Cell::new(1));
     let code_in = code.clone();
 
-    application().with_assets(Assets).run(move |cx: &mut App| {
-        let missing = fonts::load(cx);
-        if !missing.is_empty() {
-            eprintln!("error: fonts missing: {missing:?}");
-            code_in.store(EXIT_FONTS, Ordering::SeqCst);
-            cx.quit();
-            return;
-        }
-        cx.bind_keys(ui::input::key_bindings());
-        cx.bind_keys(ui::text_area::key_bindings());
-        cx.bind_keys(shell::key_bindings());
-        let theme = opts.theme;
-        let quick = opts.fixture == "quick-add";
-        // The pairing screen, before (`pairing`) and after (`pairing-code`) asking for a code.
-        let pairing = match opts.fixture.as_str() {
-            "pairing" => Some(false),
-            "pairing-code" => Some(true),
-            _ => None,
-        };
-        // The failed-open screen after a recovery couldn't finish, before (`open-failed`) and while
-        // (`open-failed-confirm`) confirming Start fresh.
-        let failed = match opts.fixture.as_str() {
-            "open-failed" => Some(false),
-            "open-failed-confirm" => Some(true),
-            _ => None,
-        };
-        let logical = if quick {
-            (
-                f32::from(quick_add::SIZE.width),
-                f32::from(quick_add::SIZE.height),
-            )
-        } else {
-            MAIN_SIZE
-        };
-        let expected = expected_size(logical, opts.scale);
-        let opened = if quick {
+    application()
+        .with_quit_mode(QuitMode::Explicit)
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            let missing = fonts::load(cx);
+            if !missing.is_empty() {
+                eprintln!("error: fonts missing: {missing:?}");
+                code_in.set(EXIT_FONTS);
+                cx.quit();
+                return;
+            }
+            cx.bind_keys(ui::input::key_bindings());
+            cx.bind_keys(ui::text_area::key_bindings());
+            cx.bind_keys(shell::key_bindings());
+            cx.spawn(async move |cx| {
+                for opts in shots {
+                    if let Err(e) = render(cx, &opts).await {
+                        eprintln!("error rendering {}: {e:#}", opts.out.display());
+                        cx.update(|cx| cx.quit());
+                        return;
+                    }
+                }
+                code_in.set(0);
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    Ok(code.get())
+}
+
+async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<()> {
+    let fixture = fixtures::by_name(&opts.fixture)
+        .with_context(|| format!("unknown fixture {}", opts.fixture))?;
+    todo_patch::set_scale_factor_override(Some(opts.scale));
+    let theme = opts.theme;
+    let quick = opts.fixture == "quick-add";
+    // The pairing screen, before (`pairing`) and after (`pairing-code`) asking for a code.
+    let pairing = match opts.fixture.as_str() {
+        "pairing" => Some(false),
+        "pairing-code" => Some(true),
+        _ => None,
+    };
+    // The failed-open screen after a recovery couldn't finish, before (`open-failed`) and while
+    // (`open-failed-confirm`) confirming Start fresh.
+    let failed = match opts.fixture.as_str() {
+        "open-failed" => Some(false),
+        "open-failed-confirm" => Some(true),
+        _ => None,
+    };
+    let logical = if quick {
+        (
+            f32::from(quick_add::SIZE.width),
+            f32::from(quick_add::SIZE.height),
+        )
+    } else {
+        MAIN_SIZE
+    };
+    let expected = expected_size(logical, opts.scale);
+    let opened_at = Instant::now();
+    let handle: AnyWindowHandle = cx.update(|cx| {
+        if quick {
             let (w, h) = logical;
             cx.open_window(options(w, h, true), |window, cx| {
                 cx.new(|cx| {
@@ -166,10 +192,7 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
                     )
                 })
             })
-            .map(|w| {
-                w.update(cx, |_, window, _| win::hwnd_of(window))
-                    .unwrap_or_default()
-            })
+            .map(Into::into)
         } else if let Some(waiting) = pairing {
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
                 cx.new(|cx| {
@@ -183,18 +206,12 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
                     )
                 })
             })
-            .map(|w| {
-                w.update(cx, |_, window, _| win::hwnd_of(window))
-                    .unwrap_or_default()
-            })
+            .map(Into::into)
         } else if let Some(confirming) = failed {
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |_, cx| {
                 cx.new(|cx| FailedView::fixture(theme, confirming, cx))
             })
-            .map(|w| {
-                w.update(cx, |_, window, _| win::hwnd_of(window))
-                    .unwrap_or_default()
-            })
+            .map(Into::into)
         } else {
             let store = Rc::new(Store::fixture(&fixture));
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
@@ -209,54 +226,19 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
                     )
                 })
             })
-            .map(|w| {
-                w.update(cx, |_, window, _| win::hwnd_of(window))
-                    .unwrap_or_default()
-            })
-        };
-        let hwnd = match opened {
-            Ok(h) if h != 0 => h,
-            Ok(_) => {
-                eprintln!("error: no native window handle");
-                cx.quit();
-                return;
-            }
-            Err(e) => {
-                eprintln!("error: opening the window failed: {e:#}");
-                cx.quit();
-                return;
-            }
-        };
-        let out = opts.out.clone();
-        let overwrite = opts.overwrite;
-        let code = code_in.clone();
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            let result = capture(cx, hwnd).await.and_then(|image| {
-                let got = (image.width(), image.height());
-                // A window the system clamped (to a small screen, say) must not pass as the real thing.
-                anyhow::ensure!(
-                    got == expected,
-                    "captured {}x{}, expected {}x{}",
-                    got.0,
-                    got.1,
-                    expected.0,
-                    expected.1
-                );
-                save(&image, &out, overwrite)?;
-                Ok(got)
-            });
-            match result {
-                Ok((w, h)) => {
-                    println!("wrote {} ({w}x{h})", out.display());
-                    code.store(0, Ordering::SeqCst);
-                }
-                Err(e) => eprintln!("error: {e:#}"),
-            }
-            cx.update(|cx| cx.quit());
-        })
-        .detach();
-    });
-    Ok(code.load(Ordering::SeqCst))
+            .map(Into::into)
+        }
+    })?;
+    let hwnd = handle.update(cx, |_, window, _| win::hwnd_of(window))?;
+    anyhow::ensure!(hwnd != 0, "no native window handle");
+    let image = capture(cx, handle, hwnd, opened_at).await?;
+    handle.update(cx, |_, window, _| window.remove_window())?;
+    let got = image.dimensions();
+    // A window the system clamped (to a small screen, say) must not pass as the real thing.
+    anyhow::ensure!(got == expected, "captured {got:?}, expected {expected:?}");
+    save(&image, &opts.out, opts.overwrite)?;
+    println!("wrote {} ({}x{})", opts.out.display(), got.0, got.1);
+    Ok(())
 }
 
 async fn sleep(cx: &AsyncApp, ms: u64) {
@@ -267,27 +249,31 @@ async fn sleep(cx: &AsyncApp, ms: u64) {
 
 /// Waits for the window to settle (a few presented frames, so fonts and icons are rasterized), then asks
 /// the renderer for a readback of the next frame.
-async fn capture(cx: &mut AsyncApp, hwnd: isize) -> anyhow::Result<image::RgbaImage> {
+async fn capture(
+    cx: &mut AsyncApp,
+    handle: AnyWindowHandle,
+    hwnd: isize,
+    opened_at: Instant,
+) -> anyhow::Result<image::RgbaImage> {
     let deadline = Instant::now() + Duration::from_secs(20);
-    while todo_patch::first_present(hwnd).is_none() {
+    // The OS can recycle HWNDs within a batch. Don't count a previous fixture's present.
+    while todo_patch::last_present(hwnd).is_none_or(|t| t < opened_at) {
         anyhow::ensure!(
             Instant::now() < deadline,
             "the window never presented a frame"
         );
+        win::request_hidden_frame(hwnd)?;
         sleep(cx, 10).await;
     }
     sleep(cx, 400).await;
     todo_patch::request_capture(hwnd);
     loop {
-        // Ask GPUI for a fresh frame; the renderer reads it back before presenting it.
-        cx.update(|cx| {
-            for window in cx.windows() {
-                let _ = window.update(cx, |_, window, _| window.refresh());
-            }
-        });
         if let Some(image) = todo_patch::take_capture(hwnd) {
             return image;
         }
+        // Ask GPUI for a fresh frame; the renderer reads it back before presenting it.
+        handle.update(cx, |_, window, _| window.refresh())?;
+        win::request_hidden_frame(hwnd)?;
         anyhow::ensure!(Instant::now() < deadline, "no frame was captured");
         sleep(cx, 16).await;
     }
@@ -296,6 +282,14 @@ async fn capture(cx: &mut AsyncApp, hwnd: isize) -> anyhow::Result<image::RgbaIm
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neither_fixture_window_kind_requests_show_or_focus() {
+        for quick in [false, true] {
+            let opts = options(MAIN_SIZE.0, MAIN_SIZE.1, quick);
+            assert!(!opts.show && !opts.focus);
+        }
+    }
 
     #[test]
     fn expected_sizes_follow_the_scale() {

@@ -61,6 +61,8 @@ cd apps/desktop && cargo fmt --all && cargo clippy --all-targets -- -D warnings 
 pwsh apps/desktop/scripts/gallery.ps1   # screenshot gallery; look at it after UI changes
 ```
 
+For desktop visual checks, agents must use the gallery or screenshot mode. Never launch the interactive app.
+
 The toolchain is pinned in `rust-toolchain.toml` to what the GPUI revision needs. Bump it only together
 with GPUI.
 

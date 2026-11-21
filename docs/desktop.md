@@ -202,22 +202,35 @@ Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 ## Screenshots
 
 ```sh
+todo-desktop --screenshot-all <out-dir> [--overwrite]  # all ten fixtures × both themes × 100 % and 150 %
 todo-desktop --screenshot <out.png> --fixture <my-day|work|collapsed-collection|empty|finished|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
-The screenshot mode opens one window with a fixture and never talks to a server. A fixture is a
+Both modes use the same below-normal-priority fixture runner. It never enters interactive startup: no
+SID-scoped instance mutex or activation event, profile/cache, network, tray, global hotkey or autostart.
+It cannot activate an existing instance or receive a handoff. The batch loads GPUI and the fonts once,
+then opens and closes **one never-shown HWND per shot**. GPUI's Windows headless platform has no real
+text system or Direct3D window renderer. Instead the runner sizes a hidden window without activating it,
+requests paint messages and reads its own render target. No visible window, taskbar entry, sound or input.
+A capture never samples the live pointer: unlike the old visible gallery, it cannot accidentally show a hovered row.
+To render a subset in one process, add e.g. `--fixture my-day,quick-add --theme dark --scale 1,1.5` to
+`--screenshot-all`. For visual checks, use these modes, not the interactive app.
+
+A fixture is a
 `todo_core::State` built from invented sample data by running commands through the domain (as the owner and
 as agents, at fixed times), plus UI state, a fake sync status and a fixed clock; the window is the real
 shell on a local store (`src/store.rs`). `pairing` and `pairing-code` show the pairing screen before and
 after asking for a code. `open-failed` and `open-failed-confirm` show the "couldn't be opened" screen after a
-recovery that can't finish, before and while confirming **Start fresh**. It waits for the window to settle, reads back its next frame from the window's own render target and exits. It doesn't capture the
-screen and doesn't send any input. It refuses to replace an existing file unless `--overwrite` is given,
+recovery that can't finish, before and while confirming **Start fresh**. The runner waits for each fixture to
+settle before reading back its next frame. It doesn't capture the screen. It refuses to replace an existing file unless `--overwrite` is given,
 and it checks that the captured image is the window's logical size times the scale. Exit code 0 means the
 PNG was written and flushed to disk, 3 means a font family is missing, 4 means the output exists, and 1 is
 any other failure (including a wrong image size).
 
 `scripts/gallery.ps1` renders every fixture in both themes at 100 % and 150 % into
 `apps/desktop/target/gallery/` (`<fixture>-<theme>-<pct>.png`, git ignores it), passing `--overwrite`. It
+samples the foreground owner during the run and fails if it sees the renderer take focus (the owner can still
+switch between their own apps). It prints the render and validation time, excluding the build. It also
 checks that each PNG is complete (the signature and the final `IEND` chunk), and fails if its size isn't
 1440 × 900 (main window) or 640 × 196 (quick add) times the scale. CI runs it and uploads the gallery as the
 `desktop-gallery` artifact. Compare the images with the F2 mockups before calling a UI change done.

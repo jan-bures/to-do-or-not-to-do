@@ -7,9 +7,12 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{FILETIME, HWND};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+use windows_sys::Win32::System::Threading::{
+    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetProcessTimes, SetPriorityClass,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IsIconic, IsWindowVisible, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
+    IsIconic, IsWindowVisible, PostMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow,
+    ShowWindow, WM_PAINT,
 };
 
 /// The native handle of a GPUI window, as an integer (0 if unavailable).
@@ -18,6 +21,31 @@ pub fn hwnd_of(window: &Window) -> isize {
         Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
         _ => 0,
     }
+}
+
+/// Lower priority before GPUI starts any worker threads (also for direct CLI captures).
+pub fn lower_process_priority() -> std::io::Result<()> {
+    // SAFETY: the pseudo-handle refers to this process, not the owner's interactive instance.
+    if unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Hidden windows need not receive WM_PAINT from vsync. Post (never send) one so the
+/// normal GPUI frame callback runs after the app borrow is released, with no user input.
+pub fn request_hidden_frame(hwnd: isize) -> anyhow::Result<()> {
+    // SAFETY: the caller keeps the window alive; WM_PAINT has no pointer parameters.
+    unsafe {
+        anyhow::ensure!(
+            IsWindowVisible(hwnd as HWND) == 0,
+            "capture window is visible"
+        );
+        if PostMessageW(hwnd as HWND, WM_PAINT, 0, 0) == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    Ok(())
 }
 
 /// Shows, restores and focuses a window.
@@ -50,7 +78,7 @@ pub fn is_shown(hwnd: isize) -> bool {
     hwnd != 0 && unsafe { IsWindowVisible(hwnd as HWND) != 0 && IsIconic(hwnd as HWND) == 0 }
 }
 
-/// Release builds are GUI-subsystem executables. When started from a terminal, write `--help`, errors
+/// App builds are GUI-subsystem executables. When started from a terminal, write `--help`, errors
 /// and benchmark output there.
 pub fn attach_parent_console() {
     // SAFETY: plain FFI call; fails harmlessly when there is no parent console.

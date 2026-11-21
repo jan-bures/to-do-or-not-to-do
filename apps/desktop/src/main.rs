@@ -1,7 +1,8 @@
 //! The to-do desktop app (GPUI). See `docs/desktop.md`.
 
-// Release builds don't open a console window; `win::attach_parent_console` reconnects to a terminal.
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// Neither a release nor a debug screenshot should open a console window.
+// `win::attach_parent_console` reconnects to an existing terminal.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod args;
 mod assets;

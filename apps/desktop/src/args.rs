@@ -10,11 +10,14 @@ Usage:
   todo-desktop [--background]
   todo-desktop --screenshot <out.png> --fixture <name> [--theme light|dark] [--scale 1|1.25|1.5|2]
                [--overwrite]
+  todo-desktop --screenshot-all <out-dir> [--fixture names] [--theme themes] [--scale scales] [--overwrite]
   todo-desktop --bench <startup|hotkey> --metrics <out.txt>
 
 Options:
   --background      Start in the tray without showing the window (used by Start with Windows).
-  --screenshot      Render a fixture into its own window, save that window to a PNG and exit.
+  --screenshot      Render one hidden fixture window, save its PNG and exit.
+  --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
+                    To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, collapsed-collection, empty, finished,
                     quick-add, pairing, pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
@@ -44,7 +47,7 @@ pub const FIXTURES: &[&str] = &[
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Run(RunOptions),
-    Screenshot(ScreenshotOptions),
+    Screenshot(Vec<ScreenshotOptions>),
     Bench(BenchOptions),
     Help,
     Version,
@@ -122,6 +125,7 @@ struct Raw {
     background: bool,
     overwrite: bool,
     screenshot: Option<PathBuf>,
+    gallery: Option<PathBuf>,
     fixture: Option<String>,
     theme: Option<String>,
     scale: Option<String>,
@@ -171,6 +175,11 @@ where
                 "--screenshot",
                 value("--screenshot")?.into(),
             )?,
+            "--screenshot-all" => set(
+                &mut raw.gallery,
+                "--screenshot-all",
+                value("--screenshot-all")?.into(),
+            )?,
             "--fixture" => set(&mut raw.fixture, "--fixture", value("--fixture")?)?,
             "--theme" => set(&mut raw.theme, "--theme", value("--theme")?)?,
             "--scale" => set(&mut raw.scale, "--scale", value("--scale")?)?,
@@ -184,6 +193,30 @@ where
     build(raw)
 }
 
+/// Validate each axis before expanding the gallery. Aliases (e.g. 1 and 1.0) and repeated
+/// selections must not render the same file twice, particularly without --overwrite.
+fn selection<T: PartialEq>(
+    arg: Option<&str>,
+    defaults: &[&str],
+    gallery: bool,
+    parse: impl Fn(&str) -> Result<T, ArgError>,
+) -> Result<Vec<T>, ArgError> {
+    let mut values = Vec::new();
+    let mut add = |s: &str| -> Result<(), ArgError> {
+        let v = parse(s)?;
+        if !values.contains(&v) {
+            values.push(v);
+        }
+        Ok(())
+    };
+    match arg {
+        Some(s) if gallery => s.split(',').try_for_each(&mut add)?,
+        Some(s) => add(s)?,
+        None => defaults.iter().copied().try_for_each(add)?,
+    }
+    Ok(values)
+}
+
 fn build(raw: Raw) -> Result<Command, ArgError> {
     if raw.help {
         return Ok(Command::Help);
@@ -191,39 +224,81 @@ fn build(raw: Raw) -> Result<Command, ArgError> {
     if raw.version {
         return Ok(Command::Version);
     }
-    if raw.screenshot.is_some() && raw.bench.is_some() {
-        return Err(ArgError::Conflict("--screenshot", "--bench"));
+    if raw.screenshot.is_some() && raw.gallery.is_some() {
+        return Err(ArgError::Conflict("--screenshot", "--screenshot-all"));
     }
-    if let Some(out) = raw.screenshot {
+    let gallery = raw.gallery.is_some();
+    if let Some(out) = raw.screenshot.or(raw.gallery) {
+        let mode = if gallery {
+            "--screenshot-all"
+        } else {
+            "--screenshot"
+        };
+        if raw.bench.is_some() {
+            return Err(ArgError::Conflict(mode, "--bench"));
+        }
         if raw.background {
-            return Err(ArgError::Conflict("--screenshot", "--background"));
+            return Err(ArgError::Conflict(mode, "--background"));
         }
         if raw.metrics.is_some() {
             return Err(ArgError::Orphan("--metrics", "--bench"));
         }
-        let fixture = raw.fixture.ok_or(ArgError::ScreenshotNeedsFixture)?;
-        if !FIXTURES.contains(&fixture.as_str()) {
-            return Err(ArgError::UnknownFixture(fixture));
+        if !gallery && raw.fixture.is_none() {
+            return Err(ArgError::ScreenshotNeedsFixture);
         }
-        let theme = match raw.theme {
-            None => Theme::Light,
-            Some(t) => parse_theme(&t).ok_or(ArgError::UnknownTheme(t))?,
-        };
-        let scale = match raw.scale {
-            None => 1.0,
-            Some(s) => SCALES
+        let fixtures = selection(raw.fixture.as_deref(), FIXTURES, gallery, |s| {
+            FIXTURES
                 .iter()
-                .find(|(name, _)| *name == s)
-                .map(|(_, v)| *v)
-                .ok_or(ArgError::UnsupportedScale(s))?,
-        };
-        return Ok(Command::Screenshot(ScreenshotOptions {
-            out,
-            fixture,
-            theme,
-            scale,
-            overwrite: raw.overwrite,
-        }));
+                .copied()
+                .find(|&f| f == s)
+                .ok_or_else(|| ArgError::UnknownFixture(s.into()))
+        })?;
+        let themes = selection(
+            raw.theme.as_deref(),
+            if gallery {
+                &["light", "dark"]
+            } else {
+                &["light"]
+            },
+            gallery,
+            |s| parse_theme(s).ok_or_else(|| ArgError::UnknownTheme(s.into())),
+        )?;
+        let scales = selection(
+            raw.scale.as_deref(),
+            if gallery { &["1", "1.5"] } else { &["1"] },
+            gallery,
+            |s| {
+                SCALES
+                    .iter()
+                    .find(|&&(name, _)| name == s)
+                    .map(|&(_, v)| v)
+                    .ok_or_else(|| ArgError::UnsupportedScale(s.into()))
+            },
+        )?;
+        let mut shots = Vec::new();
+        for fixture in fixtures {
+            for &theme in &themes {
+                for &scale in &scales {
+                    let path = if gallery {
+                        out.join(format!(
+                            "{fixture}-{}-{}.png",
+                            theme.key(),
+                            (scale * 100.) as u32
+                        ))
+                    } else {
+                        out.clone()
+                    };
+                    shots.push(ScreenshotOptions {
+                        out: path,
+                        fixture: fixture.into(),
+                        theme,
+                        scale,
+                        overwrite: raw.overwrite,
+                    });
+                }
+            }
+        }
+        return Ok(Command::Screenshot(shots));
     }
     for (present, flag) in [
         (raw.fixture.is_some(), "--fixture"),
@@ -285,13 +360,13 @@ mod tests {
     fn screenshot_with_defaults() {
         assert_eq!(
             p(&["--screenshot", "out.png", "--fixture", "my-day"]),
-            Ok(Command::Screenshot(ScreenshotOptions {
+            Ok(Command::Screenshot(vec![ScreenshotOptions {
                 out: "out.png".into(),
                 fixture: "my-day".into(),
                 theme: Theme::Light,
                 scale: 1.0,
                 overwrite: false,
-            }))
+            }]))
         );
     }
 
@@ -307,14 +382,57 @@ mod tests {
                 "g/work.png",
                 "--overwrite"
             ]),
-            Ok(Command::Screenshot(ScreenshotOptions {
+            Ok(Command::Screenshot(vec![ScreenshotOptions {
                 out: "g/work.png".into(),
                 fixture: "work".into(),
                 theme: Theme::Dark,
                 scale: 1.5,
                 overwrite: true,
-            }))
+            }]))
         );
+    }
+
+    #[test]
+    fn gallery_uses_only_the_fixture_runner() {
+        let Ok(Command::Screenshot(shots)) = p(&["--screenshot-all", "g"]) else {
+            panic!("gallery must not enter interactive startup")
+        };
+        assert_eq!(shots.len(), FIXTURES.len() * 4);
+        assert_eq!(
+            shots
+                .iter()
+                .map(|s| &s.out)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            shots.len()
+        );
+        let Ok(Command::Screenshot(shots)) = p(&[
+            "--screenshot-all",
+            "g",
+            "--theme",
+            "dark",
+            "--fixture",
+            "work,quick-add,work",
+            "--scale",
+            "1.25,1.25",
+        ]) else {
+            panic!("valid selection")
+        };
+        assert_eq!(shots.len(), 2);
+        assert_eq!(
+            shots[1].out,
+            PathBuf::from("g").join("quick-add-dark-125.png")
+        );
+        for extra in [
+            ["--screenshot", "x"],
+            ["--bench", "hotkey"],
+            ["--fixture", "../x"],
+            ["--theme", ""],
+            ["--scale", "3"],
+        ] {
+            assert!(p(&["--screenshot-all", "g", extra[0], extra[1]]).is_err());
+        }
+        assert!(p(&["--screenshot-all", "g", "--background"]).is_err());
     }
 
     #[test]
