@@ -1,4 +1,9 @@
-//! Motion: durations and easings. Motion confirms what happened; it never decorates. Nothing loops, nothing idles.
+//! Motion: durations, easings and reduced-motion rules.
+//!
+//! Motion confirms what happened; it never decorates, and nothing loops or idles. Every transition must stay
+//! interruptible and must never block input. The full specification (principles, per-moment choreography,
+//! reduced-motion fallbacks, platform notes and anti-patterns) lives in `docs/design-language.md` under
+//! **Motion**.
 //!
 //! **Completing a task** is the one choreographed moment:
 //!
@@ -12,8 +17,9 @@
 //!
 //! Completing the last task of My Day turns the sky to dusk and sets the sun behind the hills ([`DUSK`]).
 //!
-//! With reduced motion, every movement is replaced by an instant change and fades are capped at
-//! [`REDUCED_FADE`]. See [`reduced()`].
+//! With reduced motion, every movement, scale, rotation and stagger becomes instant (`0 ms`), pure opacity and
+//! colour fades are capped at [`REDUCED_FADE`], and functional timers ([`COMPLETE_HOLD`], [`SCROLLBAR_HOLD`],
+//! [`UNDO_WINDOW`]) keep their full duration. See [`reduced()`].
 
 /// A CSS-style cubic Bézier easing curve from (0, 0) to (1, 1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,15 +96,15 @@ impl CubicBezier {
     }
 }
 
-/// Default for things that move from one resting place to another.
+/// Default for things that move from one resting place to another (tick draw, panels, reorder, hover/focus).
 pub const STANDARD: CubicBezier = CubicBezier::new(0.2, 0.0, 0.0, 1.0);
-/// For things that appear (toasts, popovers): fast start, gentle landing.
+/// For things that appear (new rows, toasts, menus, dialogs, drawers): fast start, gentle landing.
 pub const ENTER: CubicBezier = CubicBezier::new(0.0, 0.0, 0.2, 1.0);
-/// For things that leave (completed rows, dismissed toasts): gentle start, quick exit.
+/// For things that leave (completed rows, dismissed toasts and overlays, fading scrollbars): gentle start, quick exit.
 pub const EXIT: CubicBezier = CubicBezier::new(0.3, 0.0, 1.0, 1.0);
 /// The checkbox fill: a small overshoot, the only bounce in the app.
 pub const POP: CubicBezier = CubicBezier::new(0.34, 1.56, 0.64, 1.0);
-/// The sun on its arc and the dusk: slow in, slow out, like the real thing.
+/// The sun on its arc, room sky hue morphs and the dusk transition: slow in, slow out, like the real thing.
 pub const SUN: CubicBezier = CubicBezier::new(0.45, 0.0, 0.55, 1.0);
 
 /// Named easings, for the exports.
@@ -110,54 +116,84 @@ pub const EASINGS: [(&str, CubicBezier); 5] = [
     ("sun", SUN),
 ];
 
-/// Hover and press colour changes, in milliseconds.
+/// Hover, press release and focus-ring colour changes, in milliseconds.
 pub const HOVER: u32 = 90;
-/// The checkbox ring filling with accent (scale 0.9 → 1 with [`POP`]).
+/// Fast in-place crossfade (switching tasks in an open detail pane, room title/eyebrow swap, sync status change).
+pub const CONTENT_SWAP: u32 = 120;
+/// Menus, popovers, date pickers and dialogs dismissing.
+pub const OVERLAY_OUT: u32 = 120;
+/// The checkbox disc filling with accent and popping slightly with [`POP`].
 pub const CHECK_FILL: u32 = 140;
-/// Delay before the tick starts drawing.
-pub const CHECK_TICK_DELAY: u32 = 60;
-/// The tick drawing itself.
-pub const CHECK_TICK: u32 = 180;
-/// How long a completed row stays in place before it leaves.
-pub const COMPLETE_HOLD: u32 = 450;
-/// A completed row collapsing out of the list.
-pub const ROW_COLLAPSE: u32 = 220;
-/// The sun moving to its new place on the arc.
-pub const SUN_TRAVEL: u32 = 700;
-/// Sky to dusk and the sun setting when My Day is finished.
-pub const DUSK: u32 = 1200;
-/// Toast entering.
-pub const TOAST_IN: u32 = 180;
 /// Toast leaving.
 pub const TOAST_OUT: u32 = 140;
-/// How long the undo toast stays (its countdown line runs for this long). Ctrl+Z works after that too.
-pub const UNDO_WINDOW: u32 = 6000;
-/// Panels (detail pane, popovers) opening and closing.
+/// Menus, popovers, date pickers and dialogs entering.
+pub const OVERLAY_IN: u32 = 150;
+/// Delay before the tick starts drawing.
+pub const CHECK_TICK_DELAY: u32 = 60;
+/// The tick drawing itself left to right (also title dim and strike-through).
+pub const CHECK_TICK: u32 = 180;
+/// A newly added or reopened task row entering a list, and sibling rows shifting during reorder.
+pub const ROW_ENTER: u32 = 180;
+/// Toast entering.
+pub const TOAST_IN: u32 = 180;
+/// Panels (detail pane, sidebar collections, pairing steps, Android drawer and shared-element settles) opening and closing.
 pub const PANEL: u32 = 200;
+/// A completed row collapsing and fading out of the list.
+pub const ROW_COLLAPSE: u32 = 220;
+/// Overlay scrollbar fading out after [`SCROLLBAR_HOLD`].
+pub const SCROLLBAR_OUT: u32 = 300;
+/// The header sky, hills and tinted room palette morphing from one room hue to another ([`SUN`]).
+pub const ROOM_HUE: u32 = 360;
+/// The sun moving to its new place on the arc ([`SUN`]).
+pub const SUN_TRAVEL: u32 = 700;
+/// Quiet `wash` → `pane` background highlight on a row changed by live remote sync or an agent.
+pub const SYNC_HIGHLIGHT: u32 = 900;
+/// Sky to dusk, header expansion to 164 px and the sun setting when My Day is finished ([`SUN`]).
+pub const DUSK: u32 = 1200;
+/// Delay step between items in a small entering group (capped at [`STAGGER_MAX_ITEMS`] items).
+pub const STAGGER: u32 = 25;
+/// Maximum number of items that receive incremental [`STAGGER`] delay (125 ms total cap).
+pub const STAGGER_MAX_ITEMS: usize = 5;
 /// The longest fade allowed with reduced motion.
 pub const REDUCED_FADE: u32 = 100;
+/// Timer: how long a completed row stays in place before it leaves. Unchanged under reduced motion.
+pub const COMPLETE_HOLD: u32 = 450;
+/// Timer: how long an overlay scrollbar stays visible after scrolling stops. Unchanged under reduced motion.
+pub const SCROLLBAR_HOLD: u32 = 1000;
+/// Timer: how long the undo toast stays (its countdown line runs linearly for this long). Ctrl+Z works after that too.
+pub const UNDO_WINDOW: u32 = 6000;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 13] = [
+pub const DURATIONS: [(&str, u32); 22] = [
     ("hover", HOVER),
+    ("content-swap", CONTENT_SWAP),
+    ("overlay-in", OVERLAY_IN),
+    ("overlay-out", OVERLAY_OUT),
     ("check-fill", CHECK_FILL),
     ("check-tick-delay", CHECK_TICK_DELAY),
     ("check-tick", CHECK_TICK),
     ("complete-hold", COMPLETE_HOLD),
+    ("row-enter", ROW_ENTER),
     ("row-collapse", ROW_COLLAPSE),
+    ("room-hue", ROOM_HUE),
     ("sun-travel", SUN_TRAVEL),
     ("dusk", DUSK),
     ("toast-in", TOAST_IN),
     ("toast-out", TOAST_OUT),
     ("undo-window", UNDO_WINDOW),
     ("panel", PANEL),
+    ("scrollbar-hold", SCROLLBAR_HOLD),
+    ("scrollbar-out", SCROLLBAR_OUT),
+    ("sync-highlight", SYNC_HIGHLIGHT),
+    ("stagger", STAGGER),
     ("reduced-fade", REDUCED_FADE),
 ];
 
-/// The duration to use with reduced motion: movement becomes instant, fades shrink to at most
-/// [`REDUCED_FADE`]. Timers that aren't animations (the undo window, the completion hold) are unchanged.
+/// The duration to use with reduced motion: movement, scale, rotation and stagger become instant (`0 ms`),
+/// pure opacity and colour fades shrink to at most [`REDUCED_FADE`]. Functional timers that aren't animations
+/// ([`UNDO_WINDOW`], [`COMPLETE_HOLD`], [`SCROLLBAR_HOLD`]) are unchanged.
 pub const fn reduced(duration_ms: u32, is_fade: bool) -> u32 {
-    if duration_ms == UNDO_WINDOW || duration_ms == COMPLETE_HOLD {
+    if duration_ms == UNDO_WINDOW || duration_ms == COMPLETE_HOLD || duration_ms == SCROLLBAR_HOLD {
         duration_ms
     } else if is_fade {
         if duration_ms < REDUCED_FADE {
@@ -173,6 +209,7 @@ pub const fn reduced(duration_ms: u32, is_fade: bool) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn easings_hit_their_endpoints_and_are_monotonic_in_x() {
@@ -197,8 +234,34 @@ mod tests {
     #[test]
     fn reduced_motion() {
         assert_eq!(reduced(SUN_TRAVEL, false), 0);
+        assert_eq!(reduced(ROOM_HUE, false), 0);
+        assert_eq!(reduced(ROOM_HUE, true), REDUCED_FADE);
         assert_eq!(reduced(TOAST_IN, true), REDUCED_FADE);
+        assert_eq!(reduced(SYNC_HIGHLIGHT, true), REDUCED_FADE);
+        assert_eq!(reduced(SCROLLBAR_OUT, true), REDUCED_FADE);
+        assert_eq!(reduced(STAGGER, false), 0);
         assert_eq!(reduced(HOVER, true), HOVER);
         assert_eq!(reduced(UNDO_WINDOW, false), UNDO_WINDOW);
+        assert_eq!(reduced(COMPLETE_HOLD, false), COMPLETE_HOLD);
+        assert_eq!(reduced(SCROLLBAR_HOLD, false), SCROLLBAR_HOLD);
+    }
+
+    #[test]
+    fn duration_names_are_unique_and_nonzero() {
+        let mut names = HashSet::new();
+        for (name, ms) in DURATIONS {
+            assert!(names.insert(name), "duplicate duration token: {name}");
+            assert!(ms > 0, "duration token {name} must be > 0");
+        }
+        // Functional timers must not collide numerically with non-timer durations so `reduced()` stays exact.
+        let timers = [UNDO_WINDOW, COMPLETE_HOLD, SCROLLBAR_HOLD];
+        for (name, ms) in DURATIONS {
+            if !matches!(name, "undo-window" | "complete-hold" | "scrollbar-hold") {
+                assert!(
+                    !timers.contains(&ms),
+                    "non-timer duration {name} ({ms} ms) collides with a timer duration in reduced()"
+                );
+            }
+        }
     }
 }

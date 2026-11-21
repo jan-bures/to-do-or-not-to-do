@@ -175,33 +175,488 @@ The design is **flat**. Surfaces are separated by colour steps and 1 px lines.
 
 ## Motion
 
-Motion confirms what happened. It never decorates, and nothing loops or idles. Durations and easings are in
-`todo_design::motion`.
+Motion confirms what happened. It never decorates, and nothing loops or idles. Every duration and easing curve
+comes from `todo_design::motion` (`--duration-*` and `--ease-*` in `tokens.css`; `motion.durationsMs` and
+`motion.easings` in `tokens.json`). Clients never invent their own numbers.
 
-**Completing a task** is the one choreographed moment:
+### Principles
 
-1. **The fill (140 ms).** The ring fills with `accent` and pops slightly, using the only overshoot curve in the app.
-2. **The tick (180 ms).** After a 60 ms delay, the tick draws itself from left to right.
-3. **The hold (450 ms).** The title dims to `ink-3` with a strike-through. The row holds still so the eye sees it
-   land.
-4. **The exit (220 ms).** The row collapses and fades, and the rows below close the gap.
-5. **The sun (700 ms).** The sun eases along its arc to the new count, and the travelled path grows with it. The
-   header count changes at the same moment.
+- **Calm.** The pace belongs to Daybreak: crisp on controls (90–200 ms), unhurried on the sky and sun
+  (360–1200 ms). Nothing spins, pulses, breathes, or bounces for attention. The checkbox fill (`POP`) is the
+  only overshoot in the app.
+- **Purposeful.** Motion answers one of three spatial questions: *where did it come from?*, *what changed?*, or
+  *where did it go?*. If a state change is already unmistakable without movement, it snaps.
+- **Never blocks input.** Commands apply optimistically on the first frame. Animations play alongside input and
+  never disable clicks, typing, or keyboard navigation (`J`/`K`, `Space`, `Ctrl+N`, `Ctrl+K`, `Ctrl+Z`).
+- **Interruptible.** Every in-flight transition retargets smoothly from its current interpolated value instead
+  of jumping to the end or restarting from zero:
+  - re-clicking a checking task cancels the hold/collapse and reverses immediately;
+  - rapid completions retarget the sun smoothly from its current arc position to the latest count;
+  - rapid room switches retarget the sky hue from its current intermediate hue;
+  - rapid `J`/`K` selection cancels in-flight detail crossfades and renders the newly selected task at once.
+- **Spatially consistent.** Elements keep a stable mental map: the header stays anchored while its sky and title
+  update; completed rows leave downward toward the "Completed" drawer; the detail pane belongs to the right edge
+  on desktop and pushes forward from the right on phone; menus and popovers open from their anchor edge.
+- **Respects reduced motion on every platform.**
+  - **Web:** `@media (prefers-reduced-motion: reduce)` and `window.matchMedia('(prefers-reduced-motion: reduce)')`
+    (checked before starting any View Transition).
+  - **Android (Compose):** `Settings.Global.ANIMATOR_DURATION_SCALE == 0f` (and `LocalMotionDurationScale`).
+    Intermediate OS scales (e.g. `0.5×`) scale Compose animations automatically; at `0×`, apply the exact
+    reduced-motion fallbacks below rather than leaving bare 0 ms flashes.
+  - **Windows (GPUI):** `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, ...)` (Settings → Accessibility →
+    Visual effects → Animation effects), re-checked on `WM_SETTINGCHANGE`.
+  - **The rule (`motion::reduced`):** Every spatial movement, scale, rotation, and stagger becomes `0 ms`
+    (instant). Pure opacity and colour fades shrink to at most `REDUCED_FADE` (`100 ms`). Functional timers
+    (`COMPLETE_HOLD`, `SCROLLBAR_HOLD`, `UNDO_WINDOW`) are not animations and keep their full duration. Every
+    moment in the catalogue below states its exact reduced-motion fallback.
 
-**Finishing My Day** turns the sky to dusk and sets the sun behind the hills over 1.2 s.
+### Tokens
 
-**Other motion:**
+#### Easing curves
 
-| Event | Duration |
-|---|---|
-| Toast enters | 180 ms |
-| Toast leaves | 140 ms |
-| Undo window (shown by a thin countdown line in the toast) | 6 s; Ctrl+Z still works afterwards |
-| Panels open or close | 200 ms |
-| Hover | 90 ms |
+| Rust (`motion::`) | CSS / JSON key | Curve | Usage |
+|---|---|---|---|
+| `STANDARD` | `standard` | `cubic-bezier(0.2, 0, 0, 1)` | Default for state-to-state transitions: tick draw, panels, collection expand/collapse, sibling reorder, hover and focus. |
+| `ENTER` | `enter` | `cubic-bezier(0, 0, 0.2, 1)` | Fast start, calm landing for arriving elements: new rows, toasts, menus, dialogs, drawers. |
+| `EXIT` | `exit` | `cubic-bezier(0.3, 0, 1, 1)` | Gentle start, brisk departure: collapsing rows, dismissing toasts and overlays, fading scrollbars, sync highlight fade-out. |
+| `POP` | `pop` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Checkbox disc fill only. **The single overshoot curve in the app.** |
+| `SUN` | `sun` | `cubic-bezier(0.45, 0, 0.55, 1)` | Symmetric, celestial ease for the sun's arc travel, room sky hue morphs, and the dusk transition. |
 
-**Reduced motion** replaces every movement with an instant change and caps fades at 100 ms. The completion hold
-and the undo window are timers, not animations, so they stay the same.
+Linear timing (`linear`) is reserved for literal time remaining (the undo countdown bar) and 1:1 pointer or
+touch tracking; it has no custom curve token.
+
+#### Durations and timers
+
+| Rust (`motion::`) | CSS / JSON key | Value | Kind | Usage |
+|---|---|---|---|---|
+| `HOVER` | `hover` | 90 ms | animation | Hover, press release, focus ring, selection bar, scrollbar appear. |
+| `CONTENT_SWAP` | `content-swap` | 120 ms | animation | Fast in-place crossfade: switching tasks in an open detail pane, room title/eyebrow swap, sync status label/dot change. |
+| `OVERLAY_OUT` | `overlay-out` | 120 ms | animation | Menus, popovers, date pickers, dialogs, and quick-add date chips dismissing. |
+| `CHECK_FILL` | `check-fill` | 140 ms | animation | Checkbox disc filling with `accent` (`POP`). |
+| `TOAST_OUT` | `toast-out` | 140 ms | animation | Toast leaving. |
+| `OVERLAY_IN` | `overlay-in` | 150 ms | animation | Menus, popovers, date pickers and dialogs entering. |
+| `CHECK_TICK_DELAY` | `check-tick-delay` | 60 ms | offset | Delay after check press before the tick starts drawing. |
+| `CHECK_TICK` | `check-tick` | 180 ms | animation | Tick stroke drawing left to right; title dimming and strike-through. |
+| `ROW_ENTER` | `row-enter` | 180 ms | animation | New or reopened task row entering a list; sibling rows shifting during reorder. |
+| `TOAST_IN` | `toast-in` | 180 ms | animation | Toast entering; inline pairing error or status note appearing. |
+| `PANEL` | `panel` | 200 ms | animation | Detail pane, sidebar collections, pairing steps, Android drawer/sheet, predictive-back and shared-element settles. |
+| `ROW_COLLAPSE` | `row-collapse` | 220 ms | animation | Completed row collapsing and fading out of the open list. |
+| `SCROLLBAR_OUT` | `scrollbar-out` | 300 ms | animation | Overlay scrollbar fading out once idle. |
+| `ROOM_HUE` | `room-hue` | 360 ms | animation | Header sky, hills and tinted room palette morphing between room hues (`SUN`); reversing dusk back to daytime. |
+| `SUN_TRAVEL` | `sun-travel` | 700 ms | animation | Sun gliding along its arc and travelled stroke growing (`SUN`). |
+| `SYNC_HIGHLIGHT` | `sync-highlight` | 900 ms | animation | Quiet `wash` → `pane` background fade on a row modified by live remote sync or an agent. |
+| `DUSK` | `dusk` | 1200 ms | animation | My Day finishing: sky crossfade to dusk gradient, header growth to 164 px, sun setting behind hills, moon and stars appearing (`SUN`). |
+| `STAGGER` | `stagger` | 25 ms | offset | Per-item delay for small entering groups, capped at `STAGGER_MAX_ITEMS` (5 items / 125 ms max total). |
+| `REDUCED_FADE` | `reduced-fade` | 100 ms | cap | Longest opacity or colour fade permitted under reduced motion. |
+| `COMPLETE_HOLD` | `complete-hold` | 450 ms | timer | Pause after the tick lands so the eye sees the struck-through row before it exits. Unchanged under reduced motion. |
+| `SCROLLBAR_HOLD` | `scrollbar-hold` | 1000 ms | timer | Idle wait after scrolling stops before an overlay scrollbar fades out. Unchanged under reduced motion. |
+| `UNDO_WINDOW` | `undo-window` | 6000 ms | timer | Undo toast lifetime and linear countdown line (`Ctrl+Z` still works afterwards). Unchanged under reduced motion. |
+
+### Catalogue of moments
+
+#### 1. Completing (and reopening) a task
+
+Completing a task is the one choreographed moment in the app.
+
+- **Trigger:** Clicking a task's checkbox or pressing `Space` on a selected row (or reopening from "Completed").
+- **Choreography:**
+  1. **Fill (`CHECK_FILL` 140 ms, `POP`):** The circular disc fills with `accent` (or `check-selected` on a
+     selected `wash` row) and scales `0.55 → 1.0`, overshooting slightly (~`1.06`) before settling at `1.0`.
+  2. **Tick & title (`CHECK_TICK_DELAY` 60 ms offset, then `CHECK_TICK` 180 ms, `STANDARD`):** The checkmark
+     draws from left to right; simultaneously the task title fades to `ink-3` and acquires a strike-through.
+  3. **Sun advance (`SUN_TRAVEL` 700 ms, `SUN`):** Starts immediately on completion (overlapping the hold so the
+     header feels directly coupled to the action). The sun disc, halo and rays glide along the arc from the old
+     ratio to the new ratio while the travelled stroke grows in lockstep. The header count updates immediately.
+     Rapid completions retarget smoothly from the sun's current progress.
+  4. **Hold (`COMPLETE_HOLD` 450 ms timer):** After the tick finishes (`CHECK_TICK_DELAY + CHECK_TICK +
+     COMPLETE_HOLD` total before exit), the struck-through row stays stationary so the eye confirms it landed.
+     Clicking the checkbox again or pressing `Ctrl+Z` cancels the timer and reverses at once.
+  5. **Exit & settle (`ROW_COLLAPSE` 220 ms, `EXIT`):** The row fades (`opacity: 1 → 0`) and collapses its
+     height (`row → 0`) so rows below close the gap. If "Completed" is currently expanded below, the task enters
+     at the top of Completed (`ROW_ENTER` 180 ms, `ENTER`, `height: 0 → row`, `opacity: 0 → 1`); otherwise the
+     "Completed *n*" toggle updates its count when the row finishes leaving.
+- **Reopening:** Checkbox clears (`OVERLAY_OUT` 120 ms, `EXIT`), row exits Completed (`ROW_COLLAPSE` 220 ms,
+  `EXIT`), enters the open list at its sorted slot (`ROW_ENTER` 180 ms, `ENTER`), and the sun glides backwards
+  along its arc (`SUN_TRAVEL` 700 ms, `SUN`).
+- **Stagger:** None.
+- **Reduced motion:** Checkbox switches instantly (`0 ms`, no overshoot or stroke draw); title dims in
+  `REDUCED_FADE` (`100 ms`); `COMPLETE_HOLD` (`450 ms`) **stays unchanged**; the row fades out in
+  `REDUCED_FADE` (`100 ms`) and snaps out of layout at the end (no height slide); the sun jumps immediately
+  (`0 ms`) to its new position.
+- **Platform notes:**
+  - *GPUI:* Uses `with_animation` on the checkbox disc (`POP`) and clipped tick (`STANDARD`). Because
+    `uniform_list` uses fixed row height, GPUI fades the leaving row over `ROW_COLLAPSE` before removing it from
+    the virtualized list. For the sun, interpolate a scalar `progress: f32` and evaluate `Landscape::sun` /
+    `travelled` only while animating, returning to the cached paths as soon as the animation settles.
+  - *Compose:* `AnimatedVisibility` + `LazyColumn` `animateItem` handle smooth height collapse and sibling
+    repositioning; animate `progress` via `animateFloatAsState(tween(SUN_TRAVEL, easing = SunEasing))` inside
+    the header `Canvas`.
+  - *Web:* Animate checkbox scale with `transform` and tick with `clip-path` or SVG `stroke-dashoffset`;
+    collapse rows via a CSS `grid-template-rows: 1fr → 0fr` wrapper; animate the sun `<g>` and arc
+    `stroke-dashoffset` over `var(--duration-sun-travel) var(--ease-sun)`.
+
+#### 2. The day finishing (dusk)
+
+- **Trigger:** Completing the last open task in My Day, beginning as its `ROW_COLLAPSE` finishes and open count
+  reaches `0`.
+- **What moves & properties (`DUSK` 1200 ms, `SUN`):**
+  - Header landscape height grows smoothly from its everyday height (`48 px` desktop; `36 dp` / `40 dp` phone)
+    to `164 px` (`HEIGHT_FINISHED`).
+  - Sky crossfades from room `sky` fill to the `dusk.top → dusk.low` vertical gradient; far and near hills
+    crossfade to `dusk.silhouette-far` and `dusk.silhouette-near`. At ~40 % progress, header text switches cleanly
+    to dark-theme ink over the dusk sky.
+  - The sun descends along the final arc segment behind the hills while its three concentric rings expand subtly
+    (`scale: 0.88 → 1.0`, `opacity: 0 → ring opacity`).
+  - From 40 % to 100 % of `DUSK`, the moon and stars fade in (`0 → MOON_OPACITY` / `STAR_OPACITY`), with stars
+    grouped into up to 5 batches staggered by `STAGGER` (`25 ms`).
+  - Starting at 65 % of `DUSK`, the "When the sun comes up" tomorrow handoff section enters (`ROW_ENTER` 180 ms,
+    `ENTER`, `opacity: 0 → 1`, `translateY: 6 px → 0`).
+- **Reversing dusk:** Reopening a task or adding a new task to My Day returns the header to the daytime strip
+  over `ROOM_HUE` (`360 ms`, `SUN`) — brisker than entering dusk so getting back to work never feels delayed.
+- **Stagger:** Up to `STAGGER_MAX_ITEMS` (5) rows in the tomorrow handoff and 5 star groups, `STAGGER` (`25 ms`)
+  apart (`125 ms` max total).
+- **Reduced motion:** Header height switches instantly (`0 ms`); sky gradient, silhouettes, setting sun, moon,
+  stars, and tomorrow handoff crossfade in `REDUCED_FADE` (`100 ms`), with `0 ms` stagger and `0 px` translation.
+- **Platform notes:**
+  - *GPUI:* Drive the transition from a single scalar `t: 0..1`, interpolating container height and alpha-blending
+    cached `Scene::Slim` and `Scene::Finished` layers (plus lerped hill/sky fills) without rebuilding geometry per
+    frame once settled.
+  - *Compose:* `updateTransition(isFinished)` drives `animateDpAsState` for height and `animateFloatAsState` for
+    dusk progress inside the header `Canvas`.
+  - *Web:* Transition header height and layered sky/SVG opacity (avoid repaints on body text by keeping the
+    tomorrow handoff below the header).
+
+#### 3. Adding a task and resetting quick-add
+
+- **Trigger:** Submitting a new task from inline quick-add (`Enter`) or global quick-add (`Ctrl+Alt+Space`).
+- **What moves & properties:**
+  - **Quick-add reset:** Input text clears immediately (`0 ms`). Inline quick-add keeps focus so rapid entry
+    never pauses; any parsed date or priority preview chip fades out (`OVERLAY_OUT` 120 ms, `EXIT`,
+    `opacity: 1 → 0`, `scale: 1.0 → 0.96`). The global quick-add window dismisses over `OVERLAY_OUT` (`120 ms`,
+    `EXIT`, `opacity: 1 → 0`, `translateY: 0 → -4 px`).
+  - **Row entry (`ROW_ENTER` 180 ms, `ENTER`):** The new row enters at its sorted insertion slot (`height: 0 →
+    row`, `opacity: 0 → 1`, `translateY: -4 px → 0`). If the task lands mid-list (for example, adding a dated
+    task in Planned), scroll it smoothly into view and settle its background from `wash → pane` over `ROOM_HUE`
+    (`360 ms`, `EXIT`) so the eye finds it immediately.
+  - **Empty list → first task:** The italic Fraunces empty-state line fades out (`OVERLAY_OUT` 120 ms, `EXIT`),
+    and the sun and arc fade into the header (`ROW_ENTER` 180 ms, `ENTER`).
+  - **Sun update:** If the room already has completed tasks, the sun eases to the updated `done / total` ratio
+    (`SUN_TRAVEL` 700 ms, `SUN`).
+- **Stagger:** None.
+- **Reduced motion:** Row snaps into layout (`0 ms` height/translation) with `REDUCED_FADE` (`100 ms`) opacity;
+  global quick-add closes instantly (`0 ms`); sun snaps (`0 ms`).
+- **Platform notes:**
+  - *GPUI:* `uniform_list` inserts at full row height and animates `opacity: 0 → 1` over `ROW_ENTER`; global
+    quick-add hides immediately on `Esc` or submit if OS window opacity animation would delay focus return.
+  - *Compose:* `LazyColumn` `animateItem(fadeInSpec = tween(ROW_ENTER), placementSpec = tween(ROW_ENTER))`.
+  - *Web:* CSS `@keyframes` on opacity/transform inside a `grid-template-rows: 0fr → 1fr` wrapper.
+
+#### 4. Switching rooms or lists
+
+- **Trigger:** Clicking a smart list, collection, or list in the sidebar, tapping a phone room pill, or switching
+  rooms by keyboard.
+- **What moves & properties:**
+  - **Sky and room hue morph (`ROOM_HUE` 360 ms, `SUN`):** The header sky, far hill, near hill, horizon band,
+    and subtle tinted room surfaces (`canvas`, `wash`, `accent`, `line`) interpolate smoothly from the previous
+    room's hue to the new room's hue along the **shortest OKLCH hue arc** (so switching from 350° rose to 20°
+    coral travels +30° through red, never 330° through green). Endpoints are already contrast-guarded; mid-flight
+    frames lerp directly between the two palettes.
+  - **Header title and eyebrow (`CONTENT_SWAP` 120 ms):** Outgoing title/eyebrow fades out and shifts `4 px`
+    vertically (`EXIT`); incoming title/eyebrow enters from `±4 px` to `0` (`ENTER`, overlapping by 40 ms). The
+    summary count updates in place.
+  - **Sun:** When both rooms have tasks, the sun glides along its arc from the previous ratio to the new ratio
+    (`SUN_TRAVEL` 700 ms, `SUN`). When moving between an empty list (no sun) and a populated list, the sun and
+    arc fade in (`ROW_ENTER` 180 ms, `ENTER`) or out (`OVERLAY_OUT` 120 ms, `EXIT`) without flying in from an
+    edge.
+  - **Task list (`CONTENT_SWAP` 120 ms, `ENTER`):** Crisp opacity crossfade of the list body; scroll resets
+    immediately to top (`0 ms`). Never cascade individual rows on room switch.
+  - **Active sidebar item / phone room pill:** Sidebar active ring and `wash` crossfade over `HOVER` (`90 ms`,
+    `STANDARD`). On phones, the active room pill crossfades colour (`ROOM_HUE` 360 ms, `SUN`) while the pill
+    strip scrolls smoothly to keep it visible.
+- **Stagger:** None.
+- **Reduced motion:** Sky and palette colours crossfade in `REDUCED_FADE` (`100 ms`); header title and list swap
+  in `REDUCED_FADE` (`100 ms`) with `0 px` translation; sun jumps instantly (`0 ms`).
+- **Platform notes:**
+  - *GPUI:* Animate a scalar `t: 0..1` on room change and lerp `Palette` fields at paint time — the cached hill
+    and arc paths resolve their `Ink` colours dynamically at paint time and never need rebuilding for a hue morph.
+  - *Compose:* `animateColorAsState(target, tween(ROOM_HUE, easing = SunEasing))` for sky, hills, and room tokens.
+  - *Web:* Switching `data-room-hue` transitions CSS variables / `background-color` and SVG `fill` over
+    `var(--duration-room-hue) var(--ease-sun)`, optionally paired with the View Transitions API (see below).
+
+#### 5. Detail pane: opening, closing and switching tasks
+
+- **Trigger:** Selecting a task (open), clicking `×` or pressing `Esc` (close), or choosing another task while
+  the detail pane is open (switch).
+- **What moves & properties:**
+  - **Open (`PANEL` 200 ms, `ENTER`):**
+    - *Desktop wide (fixed 392 px column):* The empty placeholder fades out (`CONTENT_SWAP` 120 ms, `EXIT`) and
+      the detail content enters (`PANEL` 200 ms, `ENTER`, `opacity: 0 → 1`, `translateX: 8 px → 0`).
+    - *Desktop narrow / web drawer / phone:* Slides in from the right edge (`translateX: 100 % → 0` on phone,
+      `24 px → 0` overlay on narrow desktop/web) with `opacity: 0 → 1` (`PANEL` 200 ms, `ENTER`).
+  - **Close (`PANEL` 200 ms, `EXIT`):** Reverse of open (`opacity: 1 → 0`, `translateX: 0 → 8 px` or slide out
+    right).
+  - **Switching tasks while open (`CONTENT_SWAP` 120 ms, `STANDARD`):** In-place opacity crossfade of the detail
+    body (`opacity: 0.25 → 1.0`) with zero horizontal slide, keeping the top action bar anchored. **Key-repeat
+    rule:** if another task is selected within `CONTENT_SWAP` (holding `J`/`K` or arrow keys), cancel the fade
+    and paint the new task immediately (`0 ms`).
+  - **Row selection bar:** The `3 px` left `accent` bar and `wash` fill crossfade over `HOVER` (`90 ms`,
+    `STANDARD`).
+- **Stagger:** None.
+- **Reduced motion:** Open, close, and switch drop all translation and width slides, using `REDUCED_FADE`
+  (`100 ms`) opacity crossfade (`0 ms` on key-repeat).
+- **Platform notes:**
+  - *GPUI:* Keep the 392 px column width constant on wide desktop so the task list never reflows text while
+    animating; animate only the detail content container's opacity and small horizontal offset.
+  - *Compose:* `AnimatedContent` for in-place tablet task switches; `NavHost` slide or `SharedTransitionLayout`
+    on phones (see Android transitions below).
+  - *Web:* CSS `transform`/`opacity` drawer on narrow viewports; View Transitions API optional on route change.
+
+#### 6. Collapsing and expanding sidebar collections
+
+- **Trigger:** Clicking a collection header or chevron, choosing Collapse/Expand from its context menu, or
+  navigating to a list inside a collapsed collection.
+- **What moves & properties:**
+  - **Chevron:** Rotates `0° ↔ -90°` over `PANEL` (`200 ms`, `STANDARD`).
+  - **Child list group:** Height animates `0 ↔ natural height` with clipping (`overflow: hidden`) and
+    `opacity: 0 ↔ 1` over `PANEL` (`200 ms`, `ENTER` on expand, `EXIT` on collapse).
+  - **Hidden active list indicator:** When collapsing a collection that contains the active list, the collection
+    header takes on the selected `1 px` ring and `wash` fill over `HOVER` (`90 ms`, `STANDARD`).
+- **Stagger:** When expanding a collection of ≤ `STAGGER_MAX_ITEMS` (5) lists, child rows may stagger opacity by
+  `STAGGER` (`25 ms`); collapse always uses `0 ms` stagger so closing feels immediate.
+- **Reduced motion:** Chevron snaps (`0 ms`); child rows snap in/out of layout (`0 ms` height, `0 ms` stagger,
+  optional `REDUCED_FADE` `100 ms` opacity on expand).
+- **Platform notes:**
+  - *GPUI:* Sidebar sub-rows have fixed height (`desktop::NAV_SUB_ROW`), so wrap the group in an `overflow_hidden`
+    `div` whose height is driven by `with_animation` (`PANEL`, `ENTER`/`EXIT`).
+  - *Compose:* `AnimatedVisibility(enter = expandVertically(tween(PANEL)) + fadeIn(...), exit =
+    shrinkVertically(tween(PANEL)) + fadeOut(...))`.
+  - *Web:* CSS `grid-template-rows: 0fr ↔ 1fr` with `overflow: hidden` on the inner track — no JS height
+    measurement needed.
+
+#### 7. Hover, press states and focus rings
+
+- **Trigger:** Pointer enter/leave, pointer down/up, keyboard focus (`Tab`, shortcuts).
+- **What moves & properties:**
+  - **Hover (`HOVER` 90 ms, `STANDARD`):** Background (`pane → wash`), border (`line → line-strong`), and icon
+    or text colour shift smoothly. Never scale rows or cards on hover.
+  - **Press (active):** Background deepens immediately on desktop pointer-down (`0 ms` for tactile immediacy; up
+    to `60 ms` touch press) and releases over `HOVER` (`90 ms`, `STANDARD`). Primary buttons and small icon
+    buttons may dip subtly (`scale: 1.0 → 0.98`, `0 ms` down, `HOVER` `90 ms` `STANDARD` release); task rows
+    never scale on press.
+  - **Focus ring (`HOVER` 90 ms, `STANDARD` in / `EXIT` out):** The `3 px` `tint` band and `accent` border fade
+    in on keyboard focus (`:focus-visible`) and fade out on blur. Never animate ring width from `0 px` to `3 px`.
+- **Stagger:** None.
+- **Reduced motion:** Remove button press scale (`1.0` constant); hover and focus colour fades remain at `HOVER`
+  (`90 ms`, already under `REDUCED_FADE`).
+- **Platform notes:**
+  - *GPUI:* Instant hover styles are acceptable on virtualized rows when avoiding extra animation bookkeeping;
+    apply `HOVER` colour transitions on persistent chrome (sidebar items, buttons, quick-add focus ring).
+  - *Compose:* Replace Material's default ripple with a subtle `wash`/`tint` `Indication` driven by `HOVER`.
+  - *Web:* Use `:focus-visible` and transition only `background-color`, `border-color`, `color`, and `box-shadow`
+    with `var(--duration-hover) var(--ease-standard)`.
+
+#### 8. Scrollbar fading
+
+- **Trigger:** Scrolling a pane (sidebar, task list, detail pane), hovering the scrollbar gutter, or stopping
+  scroll.
+- **What moves & properties:**
+  - **Appear (`HOVER` 90 ms, `ENTER`):** Thumb opacity `0 → 1` as soon as scroll starts or the pointer enters the
+    scrollbar track.
+  - **Hold (`SCROLLBAR_HOLD` 1000 ms timer):** Thumb stays visible for 1 s after the last scroll event (and stays
+    visible continuously while hovered or dragged).
+  - **Fade out (`SCROLLBAR_OUT` 300 ms, `EXIT`):** Thumb opacity `1 → 0`.
+  - **Thumb hover / drag:** Thumb colour darkens (`ink-4 → ink-3`) over `HOVER` (`90 ms`, `STANDARD`); dragging
+    tracks the pointer 1:1 with zero lag.
+- **Stagger:** None.
+- **Reduced motion:** Appear in `HOVER` (`90 ms`); `SCROLLBAR_HOLD` (`1000 ms`) stays unchanged; fade out caps at
+  `REDUCED_FADE` (`100 ms`). Respect OS "Always show scrollbars" settings (Windows Accessibility → Visual effects)
+  by keeping thumbs permanently visible and skipping fade-out.
+- **Platform notes:**
+  - *GPUI:* Overlay thumb painted in the scroll container's gutter so content width never shifts; driven by one
+    resettable timer + opacity `with_animation`.
+  - *Compose:* Custom `LazyColumn` scrollbar overlay driven by `LazyListState.isScrollInProgress`.
+  - *Web:* Use `scrollbar-gutter: stable` and themed thin scrollbars (`scrollbar-color`) so layout width never
+    jumps when scrollbars appear.
+
+#### 9. Toasts and undo
+
+- **Trigger:** An undoable action (completing, deleting, moving a task) or transient status feedback; expires
+  after `UNDO_WINDOW` or on clicking Undo / dismissing.
+- **Layout invariant:** Toasts always live inside the reserved `56 px` (desktop) / `56 dp` (phone) bottom inset
+  and never cover a task row.
+- **What moves & properties:**
+  - **Enter (`TOAST_IN` 180 ms, `ENTER`):** `opacity: 0 → 1`, `translateY: 8 px → 0`.
+  - **Countdown line (`UNDO_WINDOW` 6000 ms, `linear`):** Thin `2 px` line in `toast-ink-2` along the toast's
+    bottom edge shrinks from `100 % → 0 %` (`scaleX: 1 → 0`, left-anchored). Pauses while hovered or focused,
+    resuming on leave/blur.
+  - **Replace:** A second undoable action updates the existing toast in place (`CONTENT_SWAP` 120 ms) and resets
+    the countdown bar to `100 %`. Never stack multiple toasts.
+  - **Leave (`TOAST_OUT` 140 ms, `EXIT`):** `opacity: 1 → 0`, `translateY: 0 → 6 px`.
+  - **Undo clicked:** Toast leaves (`TOAST_OUT` 140 ms, `EXIT`), the restored task enters its list (`ROW_ENTER`
+    180 ms, `ENTER`), and the sun glides back (`SUN_TRAVEL` 700 ms, `SUN`).
+- **Stagger:** None.
+- **Reduced motion:** Enter and leave drop `translateY` and fade over `REDUCED_FADE` (`100 ms`). `UNDO_WINDOW`
+  (`6000 ms`) stays unchanged; the linear countdown bar remains functional (it communicates time remaining, not
+  decorative motion).
+- **Platform notes:**
+  - *GPUI:* Rendered in the reserved bottom inset with `with_animation`.
+  - *Compose:* `AnimatedVisibility` inside the 56 dp strip above the phone composer.
+  - *Web:* Mounted in an `aria-live="polite"` region using CSS `transform`/`opacity` and `scaleX` on the
+    countdown bar.
+
+#### 10. Sync status changes
+
+- **Trigger:** `SyncClient` transitioning between `Synced`, `Syncing`, `Offline`, and `Error` / `Couldn't sync`.
+- **Hard rule:** **Nothing spins, pulses, or breathes.** Syncing is calm text and colour, never a rotating arrow
+  or pulsing dot.
+- **What moves & properties:**
+  - **Status dot & label (`CONTENT_SWAP` 120 ms, `STANDARD`):** Dot colour crossfades (`success` for Synced,
+    `accent` for Syncing, `ink-4` for Offline, `danger` for Error) alongside a crossfade of the status label
+    (`Synced`, `Syncing…`, `Offline · 2 pending`).
+  - **Anti-flicker debounce:** Wait `300 ms` before showing transient `Syncing…` so fast background round-trips
+    do not blink the footer.
+  - **Status-bar notice / Retry action:** Enters in place over `TOAST_IN` (`180 ms`, `ENTER`, `opacity: 0 → 1`)
+    without shifting the task list above it.
+- **Stagger:** None.
+- **Reduced motion:** Dot and label crossfade in `REDUCED_FADE` (`100 ms`), zero movement; the `300 ms` debounce
+  stays unchanged.
+- **Platform notes:** All three clients observe `todo_client::SyncStatus` and share the `300 ms` transient
+  debounce.
+
+#### 11. Pairing flow
+
+- **Trigger:** First run or post-sign-out transitions between `Enter server address`, `Starting`, `Waiting for
+  approval` (user code), and the paired handoff into the main shell (or returning to `Enter` on denial/expiry).
+- **Hard rule:** Nothing spins while waiting for browser passkey approval — the code and plain status text carry
+  the state.
+- **What moves & properties:**
+  - **Step transitions:** Outgoing step content fades out and shifts `12 px` opposite the direction of travel
+    (`OVERLAY_OUT` 120 ms, `EXIT`); incoming step fades in from `±12 px` to `0` (`PANEL` 200 ms, `ENTER`). The
+    Daybreak header landscape stays anchored above the column throughout.
+  - **Error or transient poll note:** Reveals smoothly below the input or code (`TOAST_IN` 180 ms, `ENTER`,
+    `opacity: 0 → 1`, `height: 0 → natural`).
+  - **Paired → main shell:** Pairing column fades out (`PANEL` 200 ms, `EXIT`); the main shell panes fade in
+    (`PANEL` 200 ms, `ENTER`) while the header sky settles into My Day (`ROOM_HUE` 360 ms, `SUN`).
+- **Stagger:** None.
+- **Reduced motion:** Horizontal step shifts become `0 px`; step swaps, notes, and the shell handoff crossfade in
+  `REDUCED_FADE` (`100 ms`).
+- **Platform notes:**
+  - *GPUI:* Keeps the pairing header landscape mounted while swapping the centred column (`src/ui/pairing.rs`).
+  - *Compose:* `AnimatedContent` with `fadeIn + slideInHorizontally`.
+  - *Web:* Route/state swap with CSS transitions or View Transitions API.
+
+#### 12. Dialogs, menus and popovers
+
+- **Trigger:** Opening or dismissing a context menu, overflow menu, settings menu, date picker popover, or
+  confirmation dialog (delete list, "Start fresh").
+- **What moves & properties:**
+  - **Anchored menus & popovers:**
+    - *Enter (`OVERLAY_IN` 150 ms, `ENTER`):* `opacity: 0 → 1`, `scale: 0.97 → 1.0`, and `4 px` shift away from
+      the anchor edge (`transform-origin` at the anchor corner so the overlay feels attached to its trigger).
+    - *Leave (`OVERLAY_OUT` 120 ms, `EXIT`):* `opacity: 1 → 0`, `scale: 1.0 → 0.98`.
+  - **Modal confirmation dialogs:**
+    - *Scrim:* Translucent neutral dimming layer fades `0 → 1` (`OVERLAY_IN` 150 ms, `ENTER`) and `1 → 0`
+      (`OVERLAY_OUT` 120 ms, `EXIT`). **Never blur the backdrop** (see Elevation).
+    - *Dialog card (opaque `pane`):* Enters with `opacity: 0 → 1`, `scale: 0.97 → 1.0`, `translateY: 6 px → 0`
+      (`OVERLAY_IN` 150 ms, `ENTER`); leaves with `opacity: 1 → 0`, `translateY: 0 → 4 px` (`OVERLAY_OUT` 120 ms,
+      `EXIT`).
+- **Stagger:** None.
+- **Reduced motion:** Drop scale and translation (`0 px`, `scale: 1.0`); scrim and overlay fade over
+  `REDUCED_FADE` (`100 ms`).
+- **Platform notes:**
+  - *GPUI:* `anchored` overlays omit `scale` (keeps 1 px borders pixel-crisp at 100–150 % DPI) and animate
+    `opacity` + `4 px` vertical offset over `OVERLAY_IN` / `OVERLAY_OUT`.
+  - *Compose:* `DropdownMenu`, `Popup`, and `Dialog` use `scaleIn(0.97f)` + `fadeIn(tween(OVERLAY_IN))` and
+    `fadeOut(tween(OVERLAY_OUT))`.
+  - *Web:* Native `<dialog>` and Popover API with `@starting-style` and `transition-behavior: allow-discrete`.
+
+#### 13. Drag-reordering (and keyboard nudge)
+
+- **Trigger:** Dragging a task row or sidebar list to a new position, or pressing `Alt+Up` / `Alt+Down`.
+- **What moves & properties:**
+  - **Pickup (`HOVER` 90 ms, `STANDARD`):** Dragged row adopts `shadow-overlay` (plus `1 px` `line-strong`
+    border in dark mode) and opaque `pane` fill; on touch only, scales subtly (`1.0 → 1.01`). Never scale desktop
+    text during drag so subpixel rendering stays sharp.
+  - **Dragging:** The dragged item follows the pointer or finger **1:1 with zero easing and zero lag**, locked to
+    the vertical axis of its list.
+  - **Sibling displacement (`ROW_ENTER` 180 ms, `STANDARD`):** Whenever the dragged item crosses a slot midpoint,
+    displaced siblings glide smoothly to their new slot.
+  - **Drop settle (`ROW_ENTER` 180 ms, `STANDARD`):** Released item glides into the target slot and sheds
+    `shadow-overlay`.
+  - **Keyboard nudge (`Alt+Up` / `Alt+Down`):** Swapped rows exchange positions over `ROW_ENTER` (`180 ms`,
+    `STANDARD`), retargeting immediately on rapid presses.
+- **Stagger:** None.
+- **Reduced motion:** Pickup keeps `shadow-overlay` and an `accent` outline (drops touch scale); dragged item
+  still tracks the pointer 1:1 (direct manipulation is never disabled); sibling displacement, drop settle, and
+  keyboard nudges snap instantly (`0 ms`).
+- **Platform notes:**
+  - *GPUI:* Paint the lifted row in a top overlay layer at pointer `y`; animate sibling offsets where variable
+    layout allows, or swap immediately inside `uniform_list` with a `HOVER` `wash` flash on the moved row.
+  - *Compose:* `LazyColumn` `animateItem(placementSpec = tween(ROW_ENTER, easing = StandardEasing))`, paired with
+    `HapticFeedbackType.LongPress` on pickup and `TextHandleMove` on slot crossing.
+  - *Web:* Pointer Events driving GPU-composited `translateY` transforms during drag, committing DOM order once
+    on pointer-up.
+
+#### 14. Android transitions (Compose)
+
+- **Navigation drawer:** Edge swipe tracks the finger **1:1**, coupling scrim opacity directly to drawer progress
+  `0..1`. Release settles open (`PANEL` 200 ms, `ENTER`) or closed (`PANEL` 200 ms, `EXIT`).
+- **Predictive back (Android 14+ / `PredictiveBackHandler`):** Gesture progress `0..1` continuously scales the
+  outgoing surface down (`1.0 → 0.92`), rounds its corners to `radius::CARD`, and shifts it toward the swipe edge
+  while revealing the previous screen underneath. Commit finishes over `PANEL` (`200 ms`, `EXIT`); cancel returns
+  to `1.0` over `PANEL` (`200 ms`, `STANDARD`).
+- **Shared-element transitions (`SharedTransitionLayout`):**
+  - *Task row → Detail screen:* Task title, round checkbox, and list chip morph bounds from row to detail header
+    over `PANEL` (`200 ms`, `STANDARD`); surrounding rows fade out (`OVERLAY_OUT` 120 ms, `EXIT`) while detail
+    notes and steps fade in (`PANEL` 200 ms, `ENTER`).
+  - *Phone room pill → Room header:* Room sky hue morphs (`ROOM_HUE` 360 ms, `SUN`) while title crossfades
+    (`CONTENT_SWAP` 120 ms).
+- **Haptics:** Restraint matches motion — confirm on task completion (`Confirm`), pickup on drag (`LongPress`),
+  and subtle tick on reorder slot cross (`TextHandleMove`). Never vibrate on room switch, scroll, or tap.
+- **Reduced motion (`ANIMATOR_DURATION_SCALE == 0`):** Button-triggered drawer snaps (`0 ms`; drag still tracks
+  finger 1:1); predictive back falls back to instant back on commit; shared-element bounds morphs disable in
+  favour of `REDUCED_FADE` (`100 ms`) crossfades.
+
+#### 15. Web transitions (View Transitions API)
+
+- **Progressive enhancement:** Wrap room switches and narrow-viewport detail navigation in
+  `document.startViewTransition(...)` only when `'startViewTransition' in document` and
+  `!window.matchMedia('(prefers-reduced-motion: reduce)').matches`. Unsupported browsers fall back cleanly to
+  standard CSS transitions with no missing state.
+- **Named elements (`view-transition-name`):**
+  - `room-sky` (landscape header): crossfades sky and hills with `var(--duration-room-hue)` and `var(--ease-sun)`.
+  - `room-title` (Fraunces room title and eyebrow): crossfade + `4 px` vertical glide with
+    `var(--duration-content-swap)` and `var(--ease-standard)`.
+  - `task-detail` (narrow-viewport detail sheet): enters/exits with `var(--duration-panel)` and
+    `var(--ease-enter)` / `var(--ease-exit)`.
+  - Assign `view-transition-name` **only for the active navigation** (set just before `startViewTransition` and
+    clear in `transition.finished`), never permanently on every list row.
+- **Leptos / wasm32 integration:** Commit reactive signal updates synchronously inside the `startViewTransition`
+  callback so the browser snapshots the exact post-navigation DOM. Never wrap key-repeat (`J`/`K`) or incoming
+  remote SSE updates in a View Transition.
+- **Reduced motion:** Skip `startViewTransition` entirely (or restrict `::view-transition-old(*)` /
+  `::view-transition-new(*)` to `var(--duration-reduced-fade)` opacity-only crossfade with `0 px` movement).
+
+### Anti-patterns: what never animates
+
+1. **Live remote and agent updates never move layout.** When SSE delivers a change from another device or an AI
+   agent, never slide rows in, pop checkboxes, animate heights, or trigger a View Transition while the owner may
+   be reading or about to click. Update the list cleanly (anchoring scroll if items change above the viewport)
+   and draw attention with a quiet `wash → pane` background highlight (`SYNC_HIGHLIGHT` 900 ms, `EXIT`; under
+   reduced motion: hold `wash` for `COMPLETE_HOLD` 450 ms, then fade out in `REDUCED_FADE` 100 ms).
+2. **No text reflow or font-metric animation.** Never animate container width or padding in a way that re-wraps
+   titles or Czech strings mid-flight, and never animate `font-size` or `font-weight`.
+3. **No spinners, pulsing dots, or idle loops.** Pairing, syncing, the sun, and the stars never loop or idle.
+   Progress is shown by the sun's position on its arc or plain text.
+4. **No spring bounce outside the checkbox.** `POP` is exclusively for `CHECK_FILL`. Panels, drawers, toasts,
+   menus, and the sun never overshoot.
+5. **No bulk row cascades.** Switching rooms, filtering (`Ctrl+K`), or loading a list never staggers 20 rows one
+   after another. `STAGGER` (`25 ms`) is capped at `STAGGER_MAX_ITEMS` (5) and reserved for small intentional
+   reveals.
+6. **No input gating.** Never wait for an animation to finish before accepting the next click, keypress, or undo.
+7. **No backdrop blur transitions.** Elevation forbids blur everywhere; modal scrims fade opacity only.
+8. **No per-frame landscape rebuilds at rest.** `todo_design::landscape` paths stay cached; only interpolate
+   progress during an active `SUN_TRAVEL` or `DUSK` transition and re-cache as soon as it settles.
 
 ## Iconography
 
