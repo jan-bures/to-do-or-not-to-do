@@ -86,8 +86,13 @@ The build is a directory named in the config, read **into memory at start-up** (
 - Only known file types are loaded, at most 512 files and 64 MB in all; `index.html` must hold the session
   marker `<!--todo-session-->` exactly once, or the server refuses to start.
 
-`index.html` is sent with `no-store`, and with the session's CSRF token written in place of the marker. The
-other files carry an `ETag` and `private, no-cache`, so a deploy is picked up on the next load.
+`index.html` is sent with the session's CSRF token written in place of the marker, so it is
+`Cache-Control: no-store, no-transform`: never cached, and never compressed by a proxy in front (Cloudflare
+honours `no-transform`). Compressing a response that holds a secret next to text an attacker can influence
+leaks the secret through the compressed size (BREACH), so every response that may carry one gets the same
+header: the server's other pages (CSRF form fields), the API's JSON (pairing and agent tokens) and
+`/auth/session`. Only the app's static files, which hold no secret, are compressed, by the build. They carry an
+`ETag` and `private, no-cache`, so a deploy is picked up on the next load.
 
 ### Headers
 
@@ -127,6 +132,18 @@ acts as the owner on the device `web` (`Actor::Owner { device: "web" }`), so its
 any other device's. The session's event stream is closed when the session ends (sign-out, expiry), checked
 on revocation and on every heartbeat.
 
+Only a request that passes the CSRF (and, for writes, the origin) check counts as activity for the session's
+idle timeout.
+
+**A stale token.** The session behind the cookie can change while a tab is open: signing in again in another
+tab replaces the cookie, and the open tab's token no longer fits it. The API answers `403 csrf`. The
+transport (`todo_client::web::FetchTransport`) then reads the session's current token from `GET
+/auth/session` (cookie only, `{"csrf": "..."}`, a 401 without a session) and sends the same request again,
+with the same body and so the same command ID: the server applies it once. If the token hasn't changed, the
+refusal was about something else (the `Origin`) and stands. If the refresh itself fails, the request counts
+as a network failure and is retried later; queued changes are never marked "couldn't sync" for it. The page
+uses the refreshed token too (sign-out, downloads).
+
 When the session is gone (the stream or a request gets a 401), the app sends the browser to
 `/login?next=<the current path>`. Changes not yet sent stay in IndexedDB and go out after signing in.
 
@@ -151,12 +168,32 @@ The sync engine's `Storage` trait is synchronous, and IndexedDB is not. `MirrorS
   the "couldn't sync" list) and behaves exactly like `MemoryStorage` (a property test checks this).
 - Every write also appends a batch of changes to a journal. `IdbFlusher` drains the journal into IndexedDB
   (one transaction per batch, in order), retrying if a write fails.
-- At start the image is read back from IndexedDB. If it can't be read, the database is dropped and the
-  replica starts again from the server: it is a cache, except for the outbox.
+- At start the image is read back from IndexedDB (`MirrorStorage::recover`).
 
-So a change made while the server can't be reached waits in the outbox, survives a reload or a closed tab,
-and is sent when the app runs again (the live browser test does exactly this). The page itself still needs
-the server to load: there is no service worker yet.
+The database has one object store per part: `kv` (snapshot and epoch), `events`, `outbox`, `failed` and
+`damaged`. The outbox and the "couldn't sync" list are stored **one record per command**, keyed by its
+command ID, and a write puts or deletes only the records of the commands it touches.
+
+**Several tabs.** Each tab has its own copy of the replica over the same database, and none knows what the
+others wrote. With per-command records, a tab never overwrites another tab's unsent changes: after every tab
+is closed, the next start reads all of them back, ordered by submission time, and sends each (command IDs are
+idempotent on the server, so a command two tabs both send is applied once). The confirmed part is a function
+of the server's log, so whichever tab wrote it last is fine: the replica skips stored events it already has
+and refetches after a gap.
+
+**Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
+
+- An unreadable snapshot or epoch drops the confirmed part, which is fetched from the server again; an
+  unreadable event drops the stored events after the snapshot. The outbox is kept.
+- An unreadable outbox or failed record is moved to the `damaged` store under its original key, never
+  deleted, and the app says so in a toast.
+- The database is never deleted automatically. If it can't be opened at all, the app shows a storage error
+  with **Reset local data**, which deletes it only after a confirmation that says unsent changes go with it.
+- Version 1 of the database kept each list as one array in `kv`; it is split into records on the first start.
+
+So a change made while the server can't be reached waits in the outbox, survives a reload or a closed tab
+(from one tab or several), and is sent when the app runs again (the live browser tests do exactly this). The
+page itself still needs the server to load: there is no service worker yet.
 
 ## Look and layout
 
@@ -181,7 +218,16 @@ Completing a task runs the F2 choreography: the fill pops (`--duration-check-fil
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
-running out; Ctrl+Z works while it's shown. Reduced motion turns movement into instant changes.
+running out; Ctrl+Z works while it's shown. Undo reopens the task, which is exact for an ordinary task. A
+recurring task with a due date is different: completing it also creates the next occurrence, and reopening
+would leave that behind. Undoing both needs the server's undo of the whole command, which needs the confirmed
+event, so for now (as in the desktop app) completing a recurring task offers no Undo; the toast says the next
+one is scheduled. Reduced motion turns movement into instant changes.
+
+The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
+The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
+touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
+edited follow the update.
 
 Keyboard: **J/K** or the arrows move the selection, **Space** completes, **E** edits the title, **N** focuses
 quick-add, **Esc** closes the detail.
@@ -204,16 +250,27 @@ quick-add, **Esc** closes the detail.
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
-  header being refused. The port is `LIVE_PORT` (default 47412).
+  header being refused. Then: two tabs queueing edits offline, both closed, and every edit sent exactly once
+  on the next start; a tab whose session was replaced by a sign-in elsewhere still sending its queued edit,
+  once; and a note being typed surviving a rename that arrives over the event stream, then saving. The port is
+  `LIVE_PORT` (default 47412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as
   the `web` device, missing or wrong CSRF tokens, cross-origin and originless writes, expired and ended
-  sessions, bearer precedence, MCP and uploads staying bearer-only), the `/app` routes and headers, gzip, and
-  the event stream closing on sign-out.
+  sessions, bearer precedence, MCP and uploads staying bearer-only), the `/app` routes and headers, gzip,
+  `no-store, no-transform` on everything that carries a secret, `/auth/session`, refused requests not
+  extending the session, and the event stream closing on sign-out.
+- **Client tests** (`crates/todo-client/tests/mirror.rs`): the journal rebuilds the storage; two tabs' outbox
+  entries both survive in any order; an unreadable snapshot, event, outbox or failed record is repaired or set
+  aside without losing unsent work; the version 1 arrays are split into records.
 
 ## Not yet
 
 - **Offline start.** There is no service worker, so the app can't load without the server (Web Push and PWA
   install are out of scope for this version, and would come with it).
+- **One writer tab.** Every tab writes its own records; they don't elect one writer (Web Locks or a
+  `BroadcastChannel`), so two open tabs may both send a command the other queued if it was queued before the
+  other tab opened. The server applies it once.
+- **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
 - **Editing more fields.** Due dates, reminders, repeat rules and tags are shown but not editable yet; there is

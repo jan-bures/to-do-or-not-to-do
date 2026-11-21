@@ -39,7 +39,7 @@ async fn start() {
             fixtures::state()
         };
         backend::open_fixtures(state, fixtures::now());
-        app::mount(fixtures::now(), false);
+        app::mount(fixtures::now(), false, None);
     }
     #[cfg(not(feature = "fixtures"))]
     {
@@ -48,14 +48,64 @@ async fn start() {
             return;
         };
         match backend::open_live(csrf).await {
-            Ok(flusher) => {
-                wasm_bindgen_futures::spawn_local(flusher.run());
-                app::mount(platform::now(), true);
+            Ok(opened) => {
+                wasm_bindgen_futures::spawn_local(opened.flusher.run());
+                let r = &opened.recovery;
+                let notice = r.has_damaged().then(|| {
+                    let n = r.damaged.len() + r.damaged_before;
+                    format!(
+                        "{n} unsent change{} couldn’t be read. {} kept in this browser, set aside",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "It is" } else { "They are" },
+                    )
+                });
+                app::mount(platform::now(), true, notice);
                 wasm_bindgen_futures::spawn_local(backend::run());
             }
+            Err(e @ backend::StartError::Storage(_)) => fail_storage(&e.to_string()),
             Err(e) => fail(&e.to_string()),
         }
     }
+}
+
+/// Local storage failed: say so, and offer to reset it (after a confirmation, since it deletes
+/// changes this browser has not sent yet). Nothing is deleted without that.
+#[cfg(all(target_arch = "wasm32", not(feature = "fixtures")))]
+fn fail_storage(message: &str) {
+    use leptos::prelude::*;
+    let message = message.to_owned();
+    let reset = move |_| {
+        let ok = web_sys::window().is_some_and(|w| {
+            w.confirm_with_message(
+                "Reset local data? This deletes this browser’s copy of your tasks, including \
+                 changes it has not sent to the server yet. Everything the server has comes back.",
+            )
+            .unwrap_or(false)
+        });
+        if ok {
+            wasm_bindgen_futures::spawn_local(async {
+                if let Err(e) = backend::reset_local_data().await {
+                    tracing::warn!("reset failed: {e}");
+                }
+                if let Some(w) = web_sys::window() {
+                    let _ = w.location().reload();
+                }
+            });
+        }
+    };
+    leptos::mount::mount_to_body(move || {
+        view! {
+            <main class="fatal">
+                <h1 class="room-title">"To-do"</h1>
+                <p>{format!("The app couldn’t open its local data: {message}.")}</p>
+                <p>"Changes made in this browser and not yet sent are still stored. Closing other tabs of the app and trying again often helps."</p>
+                <p class="fatal-actions">
+                    <a href="/app">"Try again"</a>
+                    <button class="danger" on:click=reset>"Reset local data"</button>
+                </p>
+            </main>
+        }
+    });
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "fixtures")))]

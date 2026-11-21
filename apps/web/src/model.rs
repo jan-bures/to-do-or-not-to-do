@@ -1135,6 +1135,20 @@ fn long_when(at: Timestamp, now: &Now) -> String {
     format!("{day}, {}", clock(dt))
 }
 
+/// Whether reopening a task undoes completing it. Not for a recurring task with a due date: its
+/// completion also created the next occurrence, which reopening would leave behind. The app offers
+/// no Undo then, as the desktop app does; the server's undo of the whole command needs the
+/// confirmed event, which the toast can't wait for.
+#[must_use]
+pub fn reopen_undoes_completion(state: &State, id: TaskId) -> bool {
+    state.tasks.get(&id).is_none_or(|t| {
+        t.recurrence
+            .as_ref()
+            .zip(t.due)
+            .is_none_or(|(r, due)| r.next_after(due).is_none())
+    })
+}
+
 /// The repeat rule in words.
 #[must_use]
 pub fn repeat_text(rule: Option<&todo_core::recurrence::Recurrence>) -> String {
@@ -1313,6 +1327,37 @@ mod tests {
 
     fn now() -> Now {
         fixtures::now()
+    }
+
+    #[test]
+    fn completing_a_recurring_task_is_not_undone_by_reopening_it() {
+        let s = fixtures::state();
+        let owner = Actor::owner("web").unwrap();
+        let run = |s: &mut State, cmd: todo_core::Command| {
+            for e in todo_core::decide(s, &owner, &cmd, now().at).unwrap() {
+                todo_core::apply(s, &e).unwrap();
+            }
+        };
+        // Task 1 repeats weekly and has a due date: completing it creates the next occurrence, and
+        // reopening leaves that behind, so the app must not offer reopening as Undo.
+        let recurring = fixtures::task(1);
+        assert!(s.tasks[&recurring].recurrence.is_some());
+        assert!(!reopen_undoes_completion(&s, recurring));
+        let mut t = s.clone();
+        run(&mut t, todo_core::Command::CompleteTask { id: recurring });
+        run(&mut t, todo_core::Command::UncompleteTask { id: recurring });
+        let live = |s: &State| s.tasks.values().filter(|t| t.deleted.is_none()).count();
+        assert_eq!(live(&t), live(&s) + 1, "an extra occurrence remains");
+
+        // A plain task: reopening restores it exactly.
+        let plain = fixtures::task(2);
+        assert!(s.tasks[&plain].recurrence.is_none());
+        assert!(reopen_undoes_completion(&s, plain));
+        let mut t = s.clone();
+        run(&mut t, todo_core::Command::CompleteTask { id: plain });
+        run(&mut t, todo_core::Command::UncompleteTask { id: plain });
+        assert_eq!(live(&t), live(&s));
+        assert!(t.tasks[&plain].completed_at.is_none());
     }
 
     #[test]

@@ -153,7 +153,9 @@ pub fn sign_in(next: &str) {
 pub async fn download(id: String, file_name: String) {
     use wasm_bindgen_futures::JsFuture;
     let Some(w) = window() else { return };
-    let Some(token) = csrf() else { return };
+    let Some(token) = crate::backend::csrf() else {
+        return;
+    };
     let init = web_sys::RequestInit::new();
     init.set_credentials(web_sys::RequestCredentials::SameOrigin);
     let headers = web_sys::Headers::new().ok();

@@ -1,7 +1,7 @@
 // The screenshot gallery (docs/design-language.md, "The screenshot gate"): every screen in both themes,
 // from invented fixture data with a fixed clock (Saturday 21 November 2026, 10:35). The PNGs land in
 // e2e/gallery/ (CI uploads them); compare them with the approved mockups.
-import { test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { open, watch } from "./helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
@@ -69,6 +69,14 @@ for (const scheme of ["light", "dark"]) {
       const w = watch(page);
       await page.setViewportSize(PHONE);
       await open(page);
+      // Without a date the chips start flush with the title; with one, the date comes first.
+      const left = (row, sel) => row.locator(sel).first().evaluate((e) => e.getBoundingClientRect().left);
+      const undated = page.locator(".row").filter({ hasText: "Review the API latency report" });
+      expect(await undated.locator(".due-slot").count()).toBe(0);
+      expect(Math.abs((await left(undated, ".chip")) - (await left(undated, ".row-title")))).toBeLessThan(1);
+      const dated = page.locator(".row").filter({ hasText: "Prepare the November board update" });
+      expect(Math.abs((await left(dated, ".due-slot")) - (await left(dated, ".row-title")))).toBeLessThan(1);
+      expect(await left(dated, ".chip")).toBeGreaterThan(await left(dated, ".due-slot"));
       await shot(page, `phone-${scheme}`);
       await page.getByText("Prepare the November board update").first().click();
       await page.locator(".detail .d-title").waitFor();

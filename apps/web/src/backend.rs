@@ -3,7 +3,9 @@
 //! - **Live** (the real app): a `todo_client::SyncClient` over `fetch`, with the replica mirrored to
 //!   IndexedDB so pending edits survive a reload or a closed tab, and the event stream read with a
 //!   streaming `fetch` (see `docs/web.md`). Requests carry the session cookie and the CSRF token from the
-//!   page; there is no token in the browser.
+//!   page (refreshed by the transport if the session changes); there is no token in the browser.
+//!   Local data is never deleted on its own: what can't be read is repaired or set aside
+//!   (`todo_client::mirror`), and a storage failure shows a "Reset local data" action instead.
 //! - **Fixtures** (the screenshot gallery, `--features fixtures`): invented data with a fixed clock,
 //!   changed through `decide` and `apply` like the server would, and never sent anywhere.
 //!
@@ -16,7 +18,10 @@
 use crate::model::Now;
 use std::cell::RefCell;
 use std::sync::Arc;
-use todo_client::web::{BrowserClock, BrowserEntropy, FetchTransport, IdbFlusher, open_storage};
+use todo_client::mirror::Recovery;
+use todo_client::web::{
+    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, open_storage,
+};
 use todo_client::{ClientConfig, Connection, ErrorKind, SyncClient};
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
@@ -45,6 +50,16 @@ struct Local {
 
 thread_local! {
     static BACKEND: RefCell<Option<Backend>> = const { RefCell::new(None) };
+    static CSRF: RefCell<Option<CsrfToken>> = const { RefCell::new(None) };
+}
+
+/// The session's CSRF token: the transport's (kept current when the session changes), or the page's
+/// before the backend opens.
+#[must_use]
+pub fn csrf() -> Option<String> {
+    CSRF.with(|c| c.borrow().as_ref().map(CsrfToken::get))
+        .filter(|t| !t.is_empty())
+        .or_else(crate::platform::csrf)
 }
 
 /// Sync status as the UI shows it.
@@ -80,45 +95,52 @@ pub enum StartError {
     /// The page has no CSRF token: it was not served by `todo-server`.
     #[error("this page was not served by the to-do server")]
     NoCsrf,
-    /// IndexedDB is not available (private mode in some browsers) or failed.
+    /// IndexedDB is not available (private mode in some browsers) or failed, or the stored replica
+    /// could not be opened. Nothing is deleted: the page offers "Reset local data".
     #[error("local storage is unavailable: {0}")]
     Storage(String),
+}
+
+/// The live backend, opened.
+pub struct Opened {
+    /// Persists the replica; run it alongside [`run`].
+    pub flusher: IdbFlusher,
+    /// What had to be repaired in the stored replica.
+    pub recovery: Recovery,
 }
 
 fn owner() -> Actor {
     Actor::owner(DEVICE).unwrap_or(Actor::System)
 }
 
-/// Opens the live backend: the replica from IndexedDB (or empty) and the sync engine. Returns the
-/// flusher, which the caller runs alongside [`run`].
-pub async fn open_live(csrf: String) -> Result<IdbFlusher, StartError> {
-    let open = || async {
-        let (storage, flusher) = open_storage(DB_NAME)
-            .await
-            .map_err(|e| StartError::Storage(e.0))?;
-        let client = SyncClient::new(
-            FetchTransport::new(csrf.clone()),
-            BrowserClock,
-            BrowserEntropy,
-            storage,
-            ClientConfig::new(owner()),
-        )
-        .map_err(|e| StartError::Storage(e.to_string()))?;
-        Ok::<_, StartError>((client, flusher))
-    };
-    let (client, flusher) = match open().await {
-        Ok(v) => v,
-        Err(e) => {
-            // An unreadable replica is a cache: drop it and start over from the server.
-            tracing::warn!("replica not opened, starting fresh: {e}");
-            todo_client::web::delete_storage(DB_NAME)
-                .await
-                .map_err(|e| StartError::Storage(e.0))?;
-            open().await?
-        }
-    };
+/// Opens the live backend: the replica from IndexedDB (or empty) and the sync engine.
+///
+/// The stored replica is never deleted here, even if it fails to open: it may hold changes not yet
+/// sent. Unreadable parts are repaired on the way in (see [`Recovery`]); anything worse is a
+/// [`StartError::Storage`], and the page offers [`reset_local_data`].
+pub async fn open_live(csrf: String) -> Result<Opened, StartError> {
+    let (storage, flusher, recovery) = open_storage(DB_NAME)
+        .await
+        .map_err(|e| StartError::Storage(e.0))?;
+    let token = CsrfToken::new(csrf);
+    let client = SyncClient::new(
+        FetchTransport::new(token.clone()),
+        BrowserClock,
+        BrowserEntropy,
+        storage,
+        ClientConfig::new(owner()),
+    )
+    .map_err(|e| StartError::Storage(e.to_string()))?;
+    CSRF.with(|c| *c.borrow_mut() = Some(token));
     BACKEND.with(|b| *b.borrow_mut() = Some(Backend::Live(client)));
-    Ok(flusher)
+    Ok(Opened { flusher, recovery })
+}
+
+/// Deletes this browser's copy, unsent changes included. Only on the user's confirmed request.
+pub async fn reset_local_data() -> Result<(), String> {
+    todo_client::web::delete_storage(DB_NAME)
+        .await
+        .map_err(|e| e.0)
 }
 
 /// The fixtures backend with this state.

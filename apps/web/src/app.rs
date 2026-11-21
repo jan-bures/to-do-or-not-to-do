@@ -146,6 +146,9 @@ impl Ctx {
     /// when it has gone.
     fn complete(self, row: &Row) {
         let room = self.room.get_untracked();
+        let undoable = self
+            .state
+            .with_untracked(|s| model::reopen_undoes_completion(s, row.id));
         let index = self
             .shown
             .get_untracked()
@@ -185,7 +188,16 @@ impl Ctx {
             },
             Duration::from_millis(u64::from(hold)),
         );
-        self.show_toast(format!("Completed “{}”", row.title), Some(id));
+        if undoable {
+            self.show_toast(format!("Completed “{}”", row.title), Some(id));
+        } else {
+            // A recurring task: the next occurrence is already in the list, and reopening this one
+            // would not remove it, so there is no Undo.
+            self.show_toast(
+                format!("Completed “{}”. The next one is scheduled", row.title),
+                None,
+            );
+        }
     }
 
     fn uncomplete(self, id: TaskId) {
@@ -221,13 +233,14 @@ impl Ctx {
     }
 }
 
-/// Starts the app: reads the backend into signals and mounts the page.
-pub fn mount(now: Now, live: bool) {
-    leptos::mount::mount_to_body(move || view! { <App now=now live=live/> });
+/// Starts the app: reads the backend into signals and mounts the page. `notice` is shown once, as a
+/// toast (what the start had to repair).
+pub fn mount(now: Now, live: bool, notice: Option<String>) {
+    leptos::mount::mount_to_body(move || view! { <App now=now live=live notice=notice.clone()/> });
 }
 
 #[component]
-fn App(now: Now, live: bool) -> impl IntoView {
+fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let (room0, task0) = RoomId::from_path(&platform::path());
     let state = RwSignal::new(backend::view());
     let now = RwSignal::new(now);
@@ -288,6 +301,9 @@ fn App(now: Now, live: bool) -> impl IntoView {
     };
     provide_context(c);
     c.refresh();
+    if let Some(n) = notice {
+        c.show_toast(n, None);
+    }
 
     // Theme and room hue live on <html>, where tokens.css looks for them.
     platform::on_theme_change(move |dark| c.dark.set(dark));
@@ -577,11 +593,22 @@ fn SidebarPane() -> impl IntoView {
 
 #[component]
 fn SignOut() -> impl IntoView {
-    let csrf = platform::csrf();
+    let csrf = backend::csrf();
+    let field = NodeRef::<html::Input>::new();
     csrf.map(|token| {
         view! {
-            <form class="sign-out" method="post" action="/auth/logout">
-                <input type="hidden" name="csrf" value=token/>
+            <form
+                class="sign-out"
+                method="post"
+                action="/auth/logout"
+                on:submit=move |_| {
+                    // The token may have changed since the page loaded (see `backend::csrf`).
+                    if let (Some(i), Some(t)) = (field.get(), backend::csrf()) {
+                        i.set_value(&t);
+                    }
+                }
+            >
+                <input type="hidden" name="csrf" value=token node_ref=field/>
                 <button type="submit" class="icon-button" title="Sign out" aria-label="Sign out">
                     {icon(Icon::LogOut)}
                 </button>
@@ -968,7 +995,8 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             <div class="row-main">
                 <span class="row-title">{row.title.clone()}</span>
                 <span class="meta">
-                    <span class="due-slot">{due_view("due")}</span>
+                    // Only with a date: without one the chips start flush with the title.
+                    {due_view("due").map(|d| view! { <span class="due-slot">{d}</span> })}
                     {row.chip.clone().map(|ch| chip(ch.label, ch.hue))}
                     {row.steps.map(|(d, t)| view! { <span class="steps">{bars(d, t)}{format!("{d}/{t}")}</span> })}
                     {row.tags.iter().map(|t| view! { <span class="tag">{format!("#{t}")}</span> }).collect_view()}
@@ -1153,15 +1181,52 @@ fn FinishedDay() -> impl IntoView {
 #[component]
 fn DetailPane() -> impl IntoView {
     let c = ctx();
+    // Mounted once per task: a live update of the same task changes the fields in place, so an
+    // editor being typed in keeps its draft (and its focus).
+    let id = Memo::new(move |_| c.detail.with(|d| d.as_ref().map(|d| d.id)));
     view! {
         <section class="detail" aria-label="Task detail">
-            {move || c.detail.get().map(|d| view! { <DetailBody d=d/> })}
+            {move || id.get().map(|id| view! { <DetailBody id=id/> })}
         </section>
     }
 }
 
 #[component]
-fn DetailBody(d: Detail) -> impl IntoView {
+fn DetailBody(id: TaskId) -> impl IntoView {
+    let c = ctx();
+    let d = Memo::new(move |_| c.detail.get().filter(|d| d.id == id));
+    let field = move |f: fn(&Detail) -> String| {
+        Signal::derive(move || d.with(|d| d.as_ref().map(f).unwrap_or_default()))
+    };
+    let title = field(|d| d.title.clone());
+    let notes = field(|d| d.notes.clone());
+    let done = move || d.with(|d| d.as_ref().is_some_and(|d| d.done));
+    view! {
+        {move || d.get().map(|d| view! { <DetailTop d=d/> })}
+        <div class="detail-body">
+            <div class="d-head" class:done=done>
+                {move || d.get().map(|d| view! { <DetailCheck d=d/> })}
+                <TitleEditor id=id title=title/>
+            </div>
+            {move || d.get().map(|d| view! { <p class="stamps">{d.stamps.clone()}</p> })}
+
+            <section class="d-section">
+                {move || d.get().map(|d| view! { <DetailSteps d=d/> })}
+                <AddStep id=id/>
+            </section>
+
+            <section class="d-section">
+                <h3 class="caps d-caps">"Notes"</h3>
+                <NotesEditor id=id notes=notes/>
+            </section>
+
+            {move || d.get().map(|d| view! { <DetailRest d=d/> })}
+        </div>
+    }
+}
+
+#[component]
+fn DetailTop(d: Detail) -> impl IntoView {
     let c = ctx();
     let id = d.id;
     let important = d.important;
@@ -1184,21 +1249,6 @@ fn DetailBody(d: Detail) -> impl IntoView {
         let date = (!my_day).then(|| c.now.get_untracked().today());
         c.submit(Command::SetMyDay { id, date });
     };
-    let done = d.done;
-    let check_row = c
-        .shown
-        .with_untracked(|rows| rows.iter().find(|s| s.row.id == id).map(|s| s.row.clone()));
-    let on_check = move |_| {
-        if done {
-            c.uncomplete(id);
-        } else if let Some(r) = check_row.clone() {
-            c.complete(&r);
-        } else {
-            c.submit(Command::CompleteTask { id });
-        }
-    };
-    let steps_done = d.steps.iter().filter(|s| s.done).count();
-    let steps_total = d.steps.len();
     view! {
         <div class="detail-top">
             <button class="icon-button back" aria-label="Back" on:click=move |_| c.select(None)>
@@ -1232,160 +1282,180 @@ fn DetailBody(d: Detail) -> impl IntoView {
                 {icon(Icon::X)}
             </button>
         </div>
-        <div class="detail-body">
-            <div class="d-head" class:done=done>
-                <button
-                    class="check big"
-                    role="checkbox"
-                    aria-checked=done.to_string()
-                    aria-label=if done { "Reopen" } else { "Complete" }
-                    on:click=on_check
-                >
-                    {tick_svg()}
-                </button>
-                <TitleEditor id=id title=d.title.clone()/>
-            </div>
-            <p class="stamps">{d.stamps.clone()}</p>
+    }
+}
 
-            <section class="d-section">
-                <h3 class="caps d-caps">
-                    "Steps"
-                    {(steps_total > 0)
-                        .then(|| view! { <span class="steps">{bars(steps_done, steps_total)}{format!("{steps_done}/{steps_total}")}</span> })}
-                </h3>
-                <ul class="step-rows">
-                    {d
-                        .steps
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| {
-                            let sid = s.id;
-                            let sdone = s.done;
-                            view! {
-                                <li class="step" class:done=sdone>
-                                    <button
-                                        class="check small"
-                                        role="checkbox"
-                                        aria-checked=sdone.to_string()
-                                        aria-label=format!("Step {}", i + 1)
-                                        on:click=move |_| {
-                                            let cmd = if sdone {
-                                                Command::UncompleteStep { id: sid }
-                                            } else {
-                                                Command::CompleteStep { id: sid }
-                                            };
-                                            c.submit(cmd);
-                                        }
-                                    >
-                                        {tick_svg()}
-                                    </button>
-                                    <span class="step-title">{s.title.clone()}</span>
-                                    <span class="step-n">{format!("{:02}", i + 1)}</span>
-                                </li>
-                            }
-                        })
-                        .collect_view()}
-                </ul>
-                <AddStep id=id/>
-            </section>
+#[component]
+fn DetailCheck(d: Detail) -> impl IntoView {
+    let c = ctx();
+    let id = d.id;
+    let done = d.done;
+    let check_row = c
+        .shown
+        .with_untracked(|rows| rows.iter().find(|s| s.row.id == id).map(|s| s.row.clone()));
+    let on_check = move |_| {
+        if done {
+            c.uncomplete(id);
+        } else if let Some(r) = check_row.clone() {
+            c.complete(&r);
+        } else {
+            c.submit(Command::CompleteTask { id });
+        }
+    };
+    view! {
+        <button
+            class="check big"
+            role="checkbox"
+            aria-checked=done.to_string()
+            aria-label=if done { "Reopen" } else { "Complete" }
+            on:click=on_check
+        >
+            {tick_svg()}
+        </button>
+    }
+}
 
-            <section class="d-section">
-                <h3 class="caps d-caps">"Notes"</h3>
-                <NotesEditor id=id notes=d.notes.clone()/>
-            </section>
-
-            <dl class="props">
-                <div class="prop">
-                    <dt>{icon(Icon::Calendar)}"Due"</dt>
-                    <dd class="mono">{d.due.clone().unwrap_or_else(|| "—".to_owned())}</dd>
-                </div>
-                <div class="prop">
-                    <dt>{icon(Icon::Bell)}"Reminder"</dt>
-                    <dd class="mono">{d.reminder.clone().unwrap_or_else(|| "—".to_owned())}</dd>
-                </div>
-                <div class="prop">
-                    <dt>{icon(Icon::Repeat)}"Repeat"</dt>
-                    <dd>{d.repeat.clone()}</dd>
-                </div>
-                <div class="prop">
-                    <dt>{icon(Icon::Hash)}"Tags"</dt>
-                    <dd class="mono">
-                        {if d.tags.is_empty() {
-                            "—".to_owned()
-                        } else {
-                            d.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join("  ")
-                        }}
-                    </dd>
-                </div>
-            </dl>
-
-            {(!d.sources.is_empty())
-                .then(|| {
+#[component]
+fn DetailSteps(d: Detail) -> impl IntoView {
+    let c = ctx();
+    let steps_done = d.steps.iter().filter(|s| s.done).count();
+    let steps_total = d.steps.len();
+    view! {
+        <h3 class="caps d-caps">
+            "Steps"
+            {(steps_total > 0)
+                .then(|| view! { <span class="steps">{bars(steps_done, steps_total)}{format!("{steps_done}/{steps_total}")}</span> })}
+        </h3>
+        <ul class="step-rows">
+            {d
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let sid = s.id;
+                    let sdone = s.done;
                     view! {
-                        <section class="d-section">
-                            <h3 class="caps d-caps">"Source"</h3>
-                            {d.sources.clone().into_iter().map(source_card).collect_view()}
-                        </section>
+                        <li class="step" class:done=sdone>
+                            <button
+                                class="check small"
+                                role="checkbox"
+                                aria-checked=sdone.to_string()
+                                aria-label=format!("Step {}", i + 1)
+                                on:click=move |_| {
+                                    let cmd = if sdone {
+                                        Command::UncompleteStep { id: sid }
+                                    } else {
+                                        Command::CompleteStep { id: sid }
+                                    };
+                                    c.submit(cmd);
+                                }
+                            >
+                                {tick_svg()}
+                            </button>
+                            <span class="step-title">{s.title.clone()}</span>
+                            <span class="step-n">{format!("{:02}", i + 1)}</span>
+                        </li>
                     }
-                })}
+                })
+                .collect_view()}
+        </ul>
+    }
+}
 
-            {(!d.attachments.is_empty())
-                .then(|| {
-                    view! {
-                        <section class="d-section">
-                            <h3 class="caps d-caps">"Attachments"</h3>
-                            <ul class="files">
-                                {d
-                                    .attachments
-                                    .clone()
-                                    .into_iter()
-                                    .map(|a| {
-                                        let (aid, name) = (a.id.clone(), a.name.clone());
-                                        view! {
-                                            <li>
-                                                <button
-                                                    class="file"
-                                                    on:click=move |_| {
-                                                        let (aid, name) = (aid.clone(), name.clone());
-                                                        leptos::task::spawn_local(platform::download(aid, name));
-                                                    }
-                                                >
-                                                    {icon(Icon::Paperclip)}
-                                                    <span class="file-name">{a.name.clone()}</span>
-                                                    <span class="file-size">{a.size.clone()}</span>
-                                                    {icon(Icon::Download)}
-                                                </button>
-                                            </li>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </ul>
-                        </section>
-                    }
-                })}
-
-            <section class="d-section">
-                <h3 class="caps d-caps">"Activity"</h3>
-                <ul class="activity">
-                    {d
-                        .activity
-                        .iter()
-                        .map(|a| {
-                            view! {
-                                <li>
-                                    {match &a.mark {
-                                        Some(m) => mark(m).into_any(),
-                                        None => you_mark().into_any(),
-                                    }}
-                                    <span class="act-text"><b>{a.who.clone()}</b>" "{a.what.clone()}</span>
-                                    <span class="act-when">{a.when.clone()}</span>
-                                </li>
-                            }
-                        })
-                        .collect_view()}
-                </ul>
-            </section>
+#[component]
+fn DetailRest(d: Detail) -> impl IntoView {
+    view! {
+    <dl class="props">
+        <div class="prop">
+            <dt>{icon(Icon::Calendar)}"Due"</dt>
+            <dd class="mono">{d.due.clone().unwrap_or_else(|| "—".to_owned())}</dd>
         </div>
+        <div class="prop">
+            <dt>{icon(Icon::Bell)}"Reminder"</dt>
+            <dd class="mono">{d.reminder.clone().unwrap_or_else(|| "—".to_owned())}</dd>
+        </div>
+        <div class="prop">
+            <dt>{icon(Icon::Repeat)}"Repeat"</dt>
+            <dd>{d.repeat.clone()}</dd>
+        </div>
+        <div class="prop">
+            <dt>{icon(Icon::Hash)}"Tags"</dt>
+            <dd class="mono">
+                {if d.tags.is_empty() {
+                    "—".to_owned()
+                } else {
+                    d.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join("  ")
+                }}
+            </dd>
+        </div>
+    </dl>
+
+    {(!d.sources.is_empty())
+        .then(|| {
+            view! {
+                <section class="d-section">
+                    <h3 class="caps d-caps">"Source"</h3>
+                    {d.sources.clone().into_iter().map(source_card).collect_view()}
+                </section>
+            }
+        })}
+
+    {(!d.attachments.is_empty())
+        .then(|| {
+            view! {
+                <section class="d-section">
+                    <h3 class="caps d-caps">"Attachments"</h3>
+                    <ul class="files">
+                        {d
+                            .attachments
+                            .clone()
+                            .into_iter()
+                            .map(|a| {
+                                let (aid, name) = (a.id.clone(), a.name.clone());
+                                view! {
+                                    <li>
+                                        <button
+                                            class="file"
+                                            on:click=move |_| {
+                                                let (aid, name) = (aid.clone(), name.clone());
+                                                leptos::task::spawn_local(platform::download(aid, name));
+                                            }
+                                        >
+                                            {icon(Icon::Paperclip)}
+                                            <span class="file-name">{a.name.clone()}</span>
+                                            <span class="file-size">{a.size.clone()}</span>
+                                            {icon(Icon::Download)}
+                                        </button>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                </section>
+            }
+        })}
+
+    <section class="d-section">
+        <h3 class="caps d-caps">"Activity"</h3>
+        <ul class="activity">
+            {d
+                .activity
+                .iter()
+                .map(|a| {
+                    view! {
+                        <li>
+                            {match &a.mark {
+                                Some(m) => mark(m).into_any(),
+                                None => you_mark().into_any(),
+                            }}
+                            <span class="act-text"><b>{a.who.clone()}</b>" "{a.what.clone()}</span>
+                            <span class="act-when">{a.when.clone()}</span>
+                        </li>
+                    }
+                })
+                .collect_view()}
+        </ul>
+    </section>
     }
 }
 
@@ -1417,19 +1487,55 @@ fn source_card(s: Source) -> impl IntoView {
     }
 }
 
+/// An editor's draft over a field that live updates may change: while the draft is dirty (typed
+/// in and not yet saved) it is kept; otherwise it follows the field.
+#[derive(Clone, Copy)]
+struct Draft {
+    text: RwSignal<String>,
+    dirty: RwSignal<bool>,
+}
+
+impl Draft {
+    fn new(field: Signal<String>) -> Self {
+        let d = Self {
+            text: RwSignal::new(field.get_untracked()),
+            dirty: RwSignal::new(false),
+        };
+        Effect::new(move |_| {
+            let v = field.get();
+            if !d.dirty.get_untracked() {
+                d.text.set(v);
+            }
+        });
+        d
+    }
+
+    fn input(self, v: String) {
+        self.text.set(v);
+        self.dirty.set(true);
+    }
+
+    /// Back to the field's value.
+    fn reset(self, field: Signal<String>) {
+        self.dirty.set(false);
+        self.text.set(field.get_untracked());
+    }
+}
+
 #[component]
-fn TitleEditor(id: TaskId, title: String) -> impl IntoView {
+fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
     let c = ctx();
     let input = NodeRef::<html::Input>::new();
-    let draft = RwSignal::new(title.clone());
-    let original = title.clone();
+    let draft = Draft::new(title);
     let commit = move || {
         if !c.editing.get_untracked() {
             return;
         }
         c.editing.set(false);
-        let t = draft.get_untracked().trim().to_owned();
-        if !t.is_empty() && t != original {
+        let t = draft.text.get_untracked().trim().to_owned();
+        let current = title.get_untracked();
+        draft.dirty.set(false);
+        if !t.is_empty() && t != current {
             c.submit(Command::UpdateTask {
                 id,
                 patch: TaskPatch {
@@ -1438,6 +1544,7 @@ fn TitleEditor(id: TaskId, title: String) -> impl IntoView {
                 },
             });
         }
+        draft.reset(title);
     };
     Effect::new(move |_| {
         if c.editing.get()
@@ -1447,43 +1554,39 @@ fn TitleEditor(id: TaskId, title: String) -> impl IntoView {
             i.select();
         }
     });
-    let shown = title.clone();
     view! {
         {move || {
             if c.editing.get() {
-                let commit_key = commit.clone();
-                let commit_blur = commit.clone();
-                let reset = shown.clone();
                 view! {
                     <input
                         class="title-input"
                         node_ref=input
                         aria-label="Title"
-                        prop:value=move || draft.get()
-                        on:input=move |ev| draft.set(event_target_value(&ev))
+                        prop:value=move || draft.text.get()
+                        on:input=move |ev| draft.input(event_target_value(&ev))
                         on:keydown=move |ev| {
                             match ev.key().as_str() {
                                 "Enter" => {
                                     ev.prevent_default();
-                                    commit_key();
+                                    commit();
                                 }
                                 "Escape" => {
                                     ev.prevent_default();
                                     ev.stop_propagation();
-                                    draft.set(reset.clone());
+                                    draft.reset(title);
                                     c.editing.set(false);
                                 }
                                 _ => {}
                             }
                         }
-                        on:blur=move |_| commit_blur()
+                        on:blur=move |_| commit()
                     />
                 }
                     .into_any()
             } else {
                 view! {
                     <h2 class="d-title" title="Edit (E)" on:click=move |_| c.editing.set(true)>
-                        {shown.clone()}
+                        {move || title.get()}
                     </h2>
                 }
                     .into_any()
@@ -1493,19 +1596,21 @@ fn TitleEditor(id: TaskId, title: String) -> impl IntoView {
 }
 
 #[component]
-fn NotesEditor(id: TaskId, notes: String) -> impl IntoView {
+fn NotesEditor(id: TaskId, notes: Signal<String>) -> impl IntoView {
     let c = ctx();
-    let original = notes.clone();
+    let draft = Draft::new(notes);
     view! {
         <textarea
             class="notes"
             aria-label="Notes"
             placeholder="Add a note"
             rows="3"
-            prop:value=notes
-            on:change=move |ev| {
-                let v = event_target_value(&ev);
-                if v != original {
+            prop:value=move || draft.text.get()
+            on:input=move |ev| draft.input(event_target_value(&ev))
+            on:change=move |_| {
+                let v = draft.text.get_untracked();
+                draft.dirty.set(false);
+                if v != notes.get_untracked() {
                     c.submit(Command::UpdateTask {
                         id,
                         patch: TaskPatch {

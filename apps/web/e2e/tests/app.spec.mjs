@@ -51,6 +51,26 @@ test("completing a task holds, collapses, moves the sun, and can be undone", asy
   await w.check();
 });
 
+test("completing a recurring task offers no Undo, so no extra occurrence can be left behind", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  // Weekly, with a due date: completing it schedules the next one, which reopening would not remove.
+  const title = "Prepare the November board update";
+  await expect(row(page, title)).toHaveCount(1);
+  await row(page, title).locator(".check").click();
+  await expect(page.locator(".toast")).toContainText(title);
+  await expect(page.locator(".toast")).toContainText("next one is scheduled");
+  await expect(page.locator(".toast-undo")).toHaveCount(0);
+  // Ctrl+Z does nothing either: the task leaves My Day completed.
+  await page.keyboard.press("Control+z");
+  await expect(row(page, title)).toHaveCount(0, { timeout: 3000 });
+  await expect(page.locator(".summary")).toContainText("4 of 12 done");
+  // Its list has exactly one open copy: the next occurrence.
+  await page.locator(".sidebar").getByRole("link", { name: /^Planning/ }).click();
+  await expect(row(page, title)).toHaveCount(1);
+  await w.check();
+});
+
 test("the title is edited in the detail pane", async ({ page }) => {
   const w = watch(page);
   await open(page);
