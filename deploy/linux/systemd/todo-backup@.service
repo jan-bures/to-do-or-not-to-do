@@ -1,0 +1,62 @@
+# Installed by deploy/linux/provision.sh. Started by todo-backup-frequent.timer and
+# todo-backup-daily.timer; the instance is the kind (frequent or daily).
+[Unit]
+Description=todo encrypted backup (%i)
+After=network-online.target todo-server.service
+Wants=network-online.target
+# Backups stay off until they are configured.
+ConditionPathExists=/etc/todo/backup.toml
+ConditionPathExists=/usr/local/bin/todo-backup
+
+[Service]
+Type=oneshot
+User=todo
+Group=todo
+Environment=TODO_BACKUP_CONFIG=/etc/todo/backup.toml
+Environment=NO_COLOR=1
+WorkingDirectory=/var/lib/todo
+# One run at a time: the tool refuses to start while another run holds its state lock, so a daily
+# run that coincides with a frequent one waits here instead of failing. A run that changed nothing
+# sends no request at all (see docs/hosting-linux.md); --force is never passed.
+ExecStart=/usr/bin/flock --wait 1800 /var/lib/todo/backup-run.lock /usr/local/bin/todo-backup run --kind %i
+# Like the pilot: a run that takes longer than an hour is killed and counts as failed.
+TimeoutStartSec=1h
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+
+MemoryHigh=192M
+MemoryMax=256M
+MemorySwapMax=128M
+TasksMax=64
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/todo
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+DevicePolicy=closed
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM

@@ -83,6 +83,48 @@ jobs:
       - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target wasm32-unknown-unknown
       - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target aarch64-linux-android
 
+  deploy-scripts:
+    name: deploy scripts (shellcheck, systemd units)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --version
+      - run: shellcheck deploy/probe.sh deploy/linux/*.sh
+      # `systemd-analyze verify` exits 0 on unknown keys, so any output fails the step. It needs the
+      # executables the units name, so stand-ins are put there; the template gets its two instances.
+      - name: Verify the systemd units
+        run: |
+          for b in /usr/local/bin/todo-server /usr/local/bin/todo-backup /usr/bin/cloudflared; do
+            [ -e "$b" ] || sudo install -m 0755 /bin/true "$b"
+          done
+          d="$(mktemp -d)"
+          install -m 0644 deploy/linux/systemd/* "$d/"
+          for kind in frequent daily; do cp "$d/todo-backup@.service" "$d/todo-backup@$kind.service"; done
+          cd "$d"
+          systemd-analyze verify todo-server.service todo-tunnel.service todo-backup@frequent.service \
+            todo-backup@daily.service todo-backup-frequent.timer todo-backup-daily.timer > out.txt 2>&1 || true
+          cat out.txt
+          [ ! -s out.txt ]
+
+  linux-release:
+    name: Linux release binaries (built, not published)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release
+      # The script deploy-linux.ps1 runs in WSL; here with the workspace target dir, so the cache covers it.
+      - run: CARGO_TARGET_DIR="$PWD/target" bash deploy/linux/build-release.sh "$RUNNER_TEMP/linux-release"
+      - name: Check the output
+        working-directory: ${{ runner.temp }}/linux-release
+        run: |
+          sha256sum --check --strict SHA256SUMS
+          ./todo-server --version
+          ./todo-backup --version
+
   email-worker:
     name: email worker tests (Node)
     runs-on: ubuntu-latest

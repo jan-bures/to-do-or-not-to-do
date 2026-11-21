@@ -1,0 +1,11 @@
+# Installed by deploy/linux/provision.sh. Every 15 minutes, like the Windows pilot.
+[Unit]
+Description=todo backup every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+Unit=todo-backup@frequent.service
+
+[Install]
+WantedBy=timers.target

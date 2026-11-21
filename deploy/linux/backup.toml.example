@@ -1,0 +1,22 @@
+# /etc/todo/backup.toml for a Linux host (see docs/hosting-linux.md). Every value here is a placeholder.
+#
+#   sudo install -m 0640 -o root -g todo backup.toml.example /etc/todo/backup.toml
+#   sudoedit /etc/todo/backup.toml
+#
+# The todo-backup@ timers start running backups as soon as this file and /usr/local/bin/todo-backup exist.
+
+db_path = "/var/lib/todo/todo.sqlite3"
+# Budget counters, the upload record, the lock file and temporary snapshots. It is created owner-only.
+state_dir = "/var/lib/todo/backup-state"
+# The public half of the backup key (`todo-backup keygen`). The identity never lives on the VM.
+recipient = "age1..."
+# R2 credentials scoped to the backup bucket, root:todo 0640:
+#   {"endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "<bucket>",
+#    "access_key_id": "<access-key-id>", "secret_access_key": "<secret-access-key>"}
+credentials_file = "/etc/todo/r2-backups.json"
+
+# Optional; these are the defaults. A run that changed nothing sends no request, as long as the last
+# upload of its kind is younger than these.
+[dedupe]
+frequent_max_age_hours = 72
+daily_max_age_hours = 720

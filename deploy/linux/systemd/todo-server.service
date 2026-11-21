@@ -1,0 +1,67 @@
+# Installed by deploy/linux/provision.sh (see docs/hosting-linux.md). Edit the copy in the repository
+# and provision again.
+[Unit]
+Description=todo-server (REST, SSE, MCP)
+After=network-online.target
+Wants=network-online.target
+# Give up for a while if it keeps crashing; install-release.sh resets this before each start.
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=todo
+Group=todo
+Environment=TODO_SERVER_CONFIG=/etc/todo/server.toml
+# Plain log lines in the journal.
+Environment=NO_COLOR=1
+WorkingDirectory=/var/lib/todo
+ExecStart=/usr/local/bin/todo-server serve
+# The server drains in-flight requests on Ctrl+C (SIGINT). SIGTERM would end it at once.
+KillSignal=SIGINT
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+# Resources, sized for a 1 GB VM with 1 GB of swap.
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=256M
+TasksMax=256
+LimitNOFILE=4096
+
+# Hardening. The server only needs its data directory, loopback listeners and outbound HTTPS (R2).
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/todo
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+DevicePolicy=closed
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

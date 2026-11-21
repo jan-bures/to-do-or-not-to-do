@@ -1,0 +1,40 @@
+# /etc/todo/server.toml for a Linux host (see docs/hosting-linux.md). Every value here is a placeholder.
+#
+#   sudo install -m 0640 -o root -g todo server.toml.example /etc/todo/server.toml
+#   sudoedit /etc/todo/server.toml
+#
+# Every key, with its default, is documented in crates/todo-server/src/config.rs.
+
+# Loopback only. Traffic arrives through the Cloudflare Tunnel connector on the same host, which the
+# tunnel's public hostname points at (http://127.0.0.1:47320). The VM opens no inbound port.
+bind = "127.0.0.1:47320"
+# Must be absolute; install-release.sh copies the databases from here before each deploy.
+data_dir = "/var/lib/todo"
+# Your IANA time zone, for "today" in smart lists.
+time_zone = "UTC"
+# The public URL. Passkeys are bound to its host, so it must stay the same when the server moves.
+public_origin = "https://todo.example.com"
+# The server is reachable only through the tunnel: the TCP peer is always cloudflared on loopback,
+# and CF-Connecting-IP is the real client address.
+trust_cloudflare_headers = true
+
+# Attachments: an R2 bucket. The credentials file is root:todo 0640. The master key is generated as
+# /var/lib/todo/attachments.key on the first start; keep a copy in the password manager.
+[attachments]
+# Or store = "local" (encrypted objects under data_dir/blobs), which needs no credentials.
+store = "r2"
+credentials_file = "/etc/todo/r2-attachments.json"
+
+# Email to task. The secret file must be owned by todo with mode 0600 (the server checks):
+#   sudo install -m 0600 -o todo -g todo <file> /etc/todo/ingest-email-hmac.secret
+[ingest]
+email_hmac_secret_file = "/etc/todo/ingest-email-hmac.secret"
+allowed_senders = ["you@example.com"]
+
+# The local admin API. Loopback only (the server refuses anything else); reach it over SSH:
+#   gcloud compute ssh <instance> --tunnel-through-iap -- -L 47321:127.0.0.1:47321
+# `todo-server admin-token --out <file>` makes a token and prints this hash. Keep the token itself on
+# the machine you administer from, not on the VM.
+[admin]
+bind = "127.0.0.1:47321"
+token_sha256 = "<hex SHA-256 of the admin token>"

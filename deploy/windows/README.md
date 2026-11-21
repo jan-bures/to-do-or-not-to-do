@@ -11,6 +11,7 @@ window appears.
 | `stop-pilot.ps1` | Stops the tunnel first, then the server, then the supervisor. The task stays registered. |
 | `uninstall-pilot.ps1` | Stops everything and removes the task. Data, logs and secrets stay. |
 | `deploy-local.ps1` | Builds a release, swaps it in and restarts the pilot, and rolls back if `/health` doesn't come up. See [Deploying](#deploying). |
+| `../deploy-linux.ps1` | Deploys to a Linux VM instead. Moving the pilot there is in [`docs/hosting-linux.md`](../../docs/hosting-linux.md). |
 | `../probe.ps1`, `../probe.sh` | Probe a deployment from the outside, without credentials. See [Probing from outside](#probing-from-outside). |
 
 ## Layout

@@ -7,6 +7,8 @@
 #
 # Environment: DELAY (seconds between requests, default 0.25), TIMEOUT (per request, default 15).
 # Exit code: 0 if every check passed, 1 if any failed.
+# `result` always succeeds, so `test && result PASS || result FAIL` never runs both.
+# shellcheck disable=SC2015
 set -u
 
 allow_http=0
