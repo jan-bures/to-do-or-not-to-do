@@ -226,7 +226,7 @@ pub fn router(state: AppState) -> Router {
         .authsvc
         .origin()
         .is_some_and(crate::config::PublicOrigin::is_https);
-    Router::new()
+    let limited = Router::new()
         .route("/health", get(health))
         .merge(crate::web::router(state.clone()))
         .merge(crate::mcp::router(state.clone()))
@@ -234,9 +234,12 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/v1", api::router(state.clone()))
         .layer(from_fn_with_state(limits.request_timeout(), deadline))
         .layer(DefaultBodyLimit::max(limits.max_body_bytes))
-        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
-        // Uploads: their own body cap and deadline instead of the two above (see `api::attachments`).
-        .merge(api::attachments::upload_router(state.clone()))
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
+    // The upload route has its own body cap and deadline instead of the ones above (see
+    // `api::attachments`). Merging `limited` into it, not the other way round, keeps `limited`'s
+    // fallback (with the limits) as the app's fallback.
+    api::attachments::upload_router(state.clone())
+        .merge(limited)
         .layer(map_response(json_413))
         .layer(SetSensitiveRequestHeadersLayer::new([
             AUTHORIZATION,

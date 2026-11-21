@@ -262,12 +262,32 @@ pub fn content_disposition(name: &str) -> String {
 /// `max_upload_bytes` itself while streaming, and the deadline is `upload_timeout_ms`.
 pub fn upload_router(state: AppState) -> Router<AppState> {
     let timeout = state.attachments.config().upload_timeout();
+    let max = state.attachments.config().max_upload_bytes;
     Router::new()
         .route("/api/v1/tasks/{id}/attachments", post(upload))
         // Route layers only: a `layer` would also wrap this router's fallback, which becomes the app's.
         .route_layer(from_fn_with_state(state, crate::auth::require_auth))
         .route_layer(from_fn(super::tag_route))
         .route_layer(from_fn_with_state(timeout, crate::app::deadline))
+        // Like the global limit, an announced oversized body is refused before authentication.
+        .route_layer(from_fn_with_state(max, refuse_announced_oversize))
+}
+
+/// 413 for a `Content-Length` over the upload cap, before anything else runs.
+async fn refuse_announced_oversize(
+    State(max): State<u64>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let declared = req
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    if declared.is_some_and(|n| n > max) {
+        return too_large(max).into_response();
+    }
+    next.run(req).await
 }
 
 fn attachments(app: &AppState) -> Arc<Attachments> {

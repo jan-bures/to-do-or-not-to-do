@@ -6,7 +6,7 @@
 //! | Anonymous access | Every method (HEAD, OPTIONS and unknown ones too) on every other route and on unknown paths is refused: 401, 403, 404 or 405, or a redirect to sign-in for a page load. Nothing is written. |
 //! | Public routes | They answer without credentials and reveal nothing: `/health` is an empty 200 without a version, and no response names the server or its version. |
 //! | Token scope | Agents at none, read, capture and plan stay inside their grants across REST reads, queries, smart lists, task detail, activity, the event log and stream, commands, undo and every MCP tool. Hidden lists, tasks, steps, tags and events look missing. |
-//! | Request limits | Oversized bodies get 413 on every route, with or without credentials, announced or chunked. Slow request heads are dropped and the connection cap holds. |
+//! | Request limits | Oversized bodies get 413 on every route, with or without credentials, announced or chunked (the attachment upload route has its own, larger cap; `tests/attachments.rs` covers its chunked case). Slow request heads are dropped and the connection cap holds. |
 //! | Headers | HTML pages carry the CSP (`frame-ancestors 'none'`), `X-Frame-Options`, `nosniff` and `no-referrer`; HSTS is on every response when the origin is HTTPS and never otherwise. Every cookie is `__Host-`, `Secure`, `HttpOnly` and `SameSite=Strict`. |
 //! | Email ingest | The one public write route takes no token: only a request signed with the Worker's secret, within the timestamp window and with an unused nonce gets in. A bad, missing or repeated signature, a tampered body, a stale or future timestamp, a replay and a bearer token in place of a signature are all 401 and store nothing. |
 //! | Logs | Tokens, session cookies, codes and task content never reach the log at `info` or above. |
@@ -222,10 +222,20 @@ fn registrations() -> BTreeSet<(String, String, String)> {
 fn the_inventory_matches_the_router_source() {
     let regs = registrations();
     // Every API route is in the OpenAPI document, and the other way round.
+    // `api/attachments.rs` registers the upload route with its full path (it is mounted outside the
+    // global body limit).
+    let api = |f: &str, c: &str| (f == "api/mod.rs" || f == "api/attachments.rs") && c == "route";
     let in_source: BTreeSet<String> = regs
         .iter()
-        .filter(|(f, c, _)| f == "api/mod.rs" && c == "route")
-        .map(|(_, _, a)| format!("/api/v1{}", a.trim_matches('"')))
+        .filter(|(f, c, _)| api(f, c))
+        .map(|(f, _, a)| {
+            let a = a.trim_matches('"');
+            if f == "api/mod.rs" {
+                format!("/api/v1{a}")
+            } else {
+                a.to_owned()
+            }
+        })
         .collect();
     let documented: BTreeSet<String> = openapi()["paths"]
         .as_object()
@@ -236,10 +246,8 @@ fn the_inventory_matches_the_router_source() {
     assert_eq!(in_source, documented, "API routes vs the OpenAPI document");
     // Everything else is one of these. A new registration anywhere fails here: add it to
     // `inventory()` (and to `PUBLIC` if it is meant to be open).
-    let others: BTreeSet<(String, String, String)> = regs
-        .into_iter()
-        .filter(|(f, c, _)| !(f == "api/mod.rs" && c == "route"))
-        .collect();
+    let others: BTreeSet<(String, String, String)> =
+        regs.into_iter().filter(|(f, c, _)| !api(f, c)).collect();
     let expected: BTreeSet<(String, String, String)> = [
         ("app.rs", "route", "\"/health\""),
         ("app.rs", "nest", "\"/api/v1\""),
@@ -1410,11 +1418,17 @@ async fn oversized_bodies_are_rejected_on_every_route() {
     }
     targets.extend(UNKNOWN.iter().map(|p| ("POST".to_owned(), (*p).to_owned())));
     for (method, path) in &targets {
+        // Uploads have their own, larger cap (`attachments.max_upload_bytes`), checked the same way.
+        let limit = if method == "POST" && path.ends_with("/attachments") {
+            usize::try_from(todo_server::blobs::MAX_UPLOAD_BYTES).unwrap()
+        } else {
+            LIMIT
+        };
         for extra in [
             vec![],
             vec![("Authorization", bearer.as_str()), ("Origin", SITE)],
         ] {
-            let r = raw::oversized(addr, method, path, LIMIT + 1, &extra).await;
+            let r = raw::oversized(addr, method, path, limit + 1, &extra).await;
             let what = format!("{method} {path} {extra:?}: {} {}", r.status, r.body);
             assert_eq!(r.status, 413, "{what}");
             let v: Value = serde_json::from_str(r.body.trim()).unwrap_or(Value::Null);
