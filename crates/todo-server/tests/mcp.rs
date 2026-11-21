@@ -1482,3 +1482,49 @@ async fn the_implicit_inbox_is_one_the_agent_can_capture_into() {
     let e = fails(&c, "create_task", json!({ "title": "y" })).await;
     assert_eq!(e["code"], "inbox_not_found", "{e}");
 }
+
+#[tokio::test]
+async fn a_taken_derived_id_answers_the_same_whoever_holds_it() {
+    let env = Env::start().await;
+    let visible = env.t.create_list("Visible").await;
+    let hidden = env.t.create_list("Hidden").await;
+    let mine = env.t.create_task(&visible, "mine", json!({})).await;
+    let theirs = env.t.create_task(&hidden, "theirs", json!({})).await;
+    // `add_link` derives the link's ID from the caller's `command_id`. The owner takes three of those
+    // IDs: one on a task the agent can see, one in a list it cannot, and one held only by the undo
+    // journal.
+    let commands: Vec<uuid::Uuid> = (0..3).map(|_| uuid::Uuid::new_v4()).collect();
+    let link_of = |c: &uuid::Uuid| todo_server::mcp::tools::derived_id(*c, "link").to_string();
+    let link = |id: &str, task: &str| {
+        json!({ "cmd": "add_link", "id": id, "task": task,
+                "kind": { "type": "web", "url": "https://todo.example.com/", "title": null } })
+    };
+    env.t.ok(link(&link_of(&commands[0]), &mine)).await;
+    env.t.ok(link(&link_of(&commands[1]), &theirs)).await;
+    let withdrawn = env.t.ok(link(&link_of(&commands[2]), &theirs)).await;
+    let (s, v) = env.t.undo(first_seq(&withdrawn), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let (_, token) = env.agent(
+        "linker",
+        &grants(AccessLevel::None, &[(&visible, AccessLevel::Capture)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    let mut answers = Vec::new();
+    for command in &commands {
+        let e = fails(
+            &c,
+            "add_link",
+            json!({ "task_id": mine, "url": "https://todo.example.com/x", "command_id": command }),
+        )
+        .await;
+        assert_eq!(e["code"], "id_unavailable", "{e}");
+        answers.push(same_shape(&e, &link_of(command)));
+    }
+    assert_eq!(
+        answers[0], answers[1],
+        "visible and hidden holders look alike"
+    );
+    assert_eq!(answers[0], answers[2], "and so does the undo journal");
+}
