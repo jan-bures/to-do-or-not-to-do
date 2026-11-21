@@ -261,3 +261,46 @@ fn server_origins_are_checked_with_one_parser() {
     assert!(HttpTransport::anonymous("http://todo.example.com").is_err());
     assert!(HttpTransport::new("https://u:p@todo.example.com", "t").is_err());
 }
+
+#[tokio::test]
+async fn a_request_path_can_never_leave_the_server() {
+    let ok = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let server = Fake::start(Behaviour::Answer(ok.into())).await;
+    let elsewhere = Fake::start(Behaviour::Answer(ok.into())).await;
+    let other = format!("localhost:{}", elsewhere.port);
+    let authed = HttpTransport::new(&server.url(), "s3cret-device-token").unwrap();
+    let hostile = [
+        // Without a leading slash the path becomes part of the authority.
+        format!("@{other}/api/v1/sync"),
+        format!(".{other}/api/v1/sync"),
+        format!(":{}/api/v1/sync", elsewhere.port),
+        "api/v1/sync".to_string(),
+        String::new(),
+        // A network-path reference, a backslash (read as a slash) and control characters.
+        format!("//{other}/api/v1/sync"),
+        format!("/\\{other}/api/v1/sync"),
+        "/api/v1/sync\r\nHost: evil.example".to_string(),
+    ];
+    for path in &hostile {
+        let err = authed.send(Request::get(path.clone())).await.unwrap_err();
+        assert!(
+            matches!(err, TransportError::Protocol(_)),
+            "{path:?}: {err:?}"
+        );
+        let opened = authed.open_stream(Request::get(path.clone())).await;
+        assert!(
+            matches!(opened, Err(TransportError::Protocol(_))),
+            "{path:?}"
+        );
+    }
+    assert!(server.requests().is_empty(), "nothing was sent at all");
+    assert!(elsewhere.requests().is_empty());
+
+    // A normal path still works, and stays under a base path prefix.
+    authed.send(Request::get("/api/v1/sync")).await.unwrap();
+    assert_eq!(server.requests().len(), 1);
+    let prefixed =
+        HttpTransport::new(&format!("{}/todo", server.url()), "s3cret-device-token").unwrap();
+    prefixed.send(Request::get("/api/v1/sync")).await.unwrap();
+    assert!(server.requests()[1].starts_with("GET /todo/api/v1/sync "));
+}

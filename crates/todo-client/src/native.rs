@@ -153,8 +153,41 @@ impl HttpTransport {
         self
     }
 
-    fn builder(&self, request: &Request) -> reqwest::RequestBuilder {
-        let url = format!("{}{}", self.base, request.path);
+    /// The request's URL on the configured server, or an error if it would be anywhere else. The path must
+    /// start with exactly one `/`; the resulting URL must keep the base's scheme, host, port and path
+    /// prefix. Checked before the bearer token is attached, so a path like `@evil.example/x` or
+    /// `.evil.example/x` can never carry it to another host.
+    fn url_for(&self, path: &str) -> Result<url::Url, TransportError> {
+        let refuse = || {
+            TransportError::Protocol(format!(
+                "refusing a request path that could leave the server: {path:?}"
+            ))
+        };
+        if !path.starts_with('/')
+            || path.starts_with("//")
+            || path.contains('\\')
+            || path.chars().any(char::is_control)
+        {
+            return Err(refuse());
+        }
+        let base = url::Url::parse(&self.base).map_err(|_| refuse())?;
+        let url = url::Url::parse(&format!("{}{path}", self.base)).map_err(|_| refuse())?;
+        let same_origin = url.scheme() == base.scheme()
+            && url.host() == base.host()
+            && url.port_or_known_default() == base.port_or_known_default()
+            && url.username().is_empty()
+            && url.password().is_none();
+        let prefix = base.path().trim_end_matches('/');
+        let under_base =
+            url.path().starts_with(prefix) && url.path()[prefix.len()..].starts_with('/');
+        if !same_origin || !under_base {
+            return Err(refuse());
+        }
+        Ok(url)
+    }
+
+    fn builder(&self, request: &Request) -> Result<reqwest::RequestBuilder, TransportError> {
+        let url = self.url_for(&request.path)?;
         let mut b = match request.method {
             Method::Get => self.client.get(url),
             Method::Post => self.client.post(url),
@@ -167,7 +200,7 @@ impl HttpTransport {
                 .header(CONTENT_TYPE, "application/json")
                 .body(body.clone());
         }
-        b
+        Ok(b)
     }
 }
 
@@ -253,7 +286,7 @@ impl Transport for HttpTransport {
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
         // The timeout covers the body as well: a server that stalls mid-answer can't hang a request.
         let res = self
-            .builder(&request)
+            .builder(&request)?
             .timeout(self.request_timeout)
             .send()
             .await
@@ -269,7 +302,7 @@ impl Transport for HttpTransport {
         // idle timeout.
         let res = tokio::time::timeout(
             self.request_timeout,
-            self.builder(&request)
+            self.builder(&request)?
                 .header(ACCEPT, "text/event-stream")
                 .send(),
         )
