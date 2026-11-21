@@ -417,6 +417,14 @@ fn protected_routes() -> Vec<(Method, String, Option<Value>)> {
         (Method::GET, "/api/v1/smart-lists".into(), None),
         (Method::GET, "/api/v1/smart-lists/my_day/tasks".into(), None),
         (Method::GET, "/api/v1/no-such-route".into(), None),
+        (
+            Method::POST,
+            "/mcp".into(),
+            Some(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_lists", "arguments": {} } }),
+            ),
+        ),
+        (Method::GET, "/mcp".into(), None),
     ]
 }
 

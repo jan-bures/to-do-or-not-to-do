@@ -35,6 +35,7 @@
 //! header_read_timeout_ms = 5000
 //! write_stall_timeout_ms = 30000
 //! shutdown_drain_ms = 10000
+//! max_mcp_requests_per_token = 4
 //!
 //! [auth]
 //! session_idle_timeout_mins = 60
@@ -150,6 +151,9 @@ pub struct Limits {
     pub write_stall_timeout_ms: u64,
     /// On shutdown, how long in-flight requests may take to finish before their connections are closed.
     pub shutdown_drain_ms: u64,
+    /// Most MCP requests one token may have in flight at once (MCP is served statelessly, so this is
+    /// the per-token session cap). Further requests get 429 `too_many_mcp_requests`.
+    pub max_mcp_requests_per_token: usize,
 }
 
 impl Default for Limits {
@@ -170,6 +174,7 @@ impl Default for Limits {
             header_read_timeout_ms: 5_000,
             write_stall_timeout_ms: 30_000,
             shutdown_drain_ms: 10_000,
+            max_mcp_requests_per_token: 4,
         }
     }
 }
@@ -413,6 +418,10 @@ impl Config {
         limit!("TODO_SERVER_HEADER_READ_TIMEOUT_MS", header_read_timeout_ms);
         limit!("TODO_SERVER_WRITE_STALL_TIMEOUT_MS", write_stall_timeout_ms);
         limit!("TODO_SERVER_SHUTDOWN_DRAIN_MS", shutdown_drain_ms);
+        limit!(
+            "TODO_SERVER_MAX_MCP_REQUESTS_PER_TOKEN",
+            max_mcp_requests_per_token
+        );
         if let Some(v) = get("TODO_SERVER_OWNER_TOKEN_SHA256") {
             let device = DeviceId::new(ENV_TOKEN_DEVICE).map_err(|e| ConfigError::Env {
                 var: "TODO_SERVER_OWNER_TOKEN_SHA256",
@@ -503,6 +512,7 @@ impl Config {
             ),
             ("sse_connect_burst", l.sse_connect_burst as usize),
             ("max_connections", l.max_connections),
+            ("max_mcp_requests_per_token", l.max_mcp_requests_per_token),
             (
                 "header_read_timeout_ms",
                 usize::try_from(l.header_read_timeout_ms).unwrap_or(usize::MAX),

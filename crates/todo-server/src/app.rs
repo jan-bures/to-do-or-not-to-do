@@ -2,7 +2,7 @@
 //!
 //! Middleware, outermost first: access log, security headers, sensitive-header marking, JSON 413s,
 //! body limits, the request deadline; then per route: the route label, authentication (bearer tokens
-//! for `/api/v1`, sessions for the admin pages), the handler.
+//! for `/api/v1` and `/mcp`, sessions for the admin pages), the handler.
 //!
 //! # Routes reachable without authentication
 //!
@@ -212,6 +212,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .merge(crate::web::router(state.clone()))
+        .merge(crate::mcp::router(state.clone()))
         .route_layer(from_fn(api::tag_route))
         .nest("/api/v1", api::router(state.clone()))
         .layer(from_fn_with_state(limits.request_timeout(), deadline))
@@ -265,6 +266,7 @@ pub struct Server {
     listener: TcpListener,
     router: Router,
     engine: Arc<Engine>,
+    authsvc: Arc<AuthService>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -311,7 +313,7 @@ impl Server {
         let state = AppState {
             engine: engine.clone(),
             auth,
-            authsvc,
+            authsvc: authsvc.clone(),
             zone,
             limits: config.limits.clone(),
             sse_slots: Arc::new(Semaphore::new(config.limits.max_sse_connections)),
@@ -328,6 +330,7 @@ impl Server {
             listener,
             router: router(state),
             engine,
+            authsvc,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -347,6 +350,12 @@ impl Server {
     #[must_use]
     pub fn engine(&self) -> Arc<Engine> {
         self.engine.clone()
+    }
+
+    /// The authentication service (tokens, grants, revocation).
+    #[must_use]
+    pub fn auth_service(&self) -> Arc<AuthService> {
+        self.authsvc.clone()
     }
 
     /// Serves until `signal` completes, then ends event streams and drains connections (see
@@ -376,6 +385,7 @@ impl Server {
     pub fn spawn(self) -> Result<RunningServer, ServerError> {
         let addr = self.local_addr()?;
         let engine = self.engine();
+        let authsvc = self.auth_service();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(self.run_until(async move {
             let _ = stopped.await;
@@ -383,6 +393,7 @@ impl Server {
         Ok(RunningServer {
             addr,
             engine,
+            authsvc,
             stop,
             task,
         })
@@ -396,6 +407,8 @@ pub struct RunningServer {
     pub addr: SocketAddr,
     /// The engine.
     pub engine: Arc<Engine>,
+    /// The authentication service (tokens, grants, revocation).
+    pub authsvc: Arc<AuthService>,
     stop: tokio::sync::oneshot::Sender<()>,
     task: JoinHandle<Result<(), ServerError>>,
 }

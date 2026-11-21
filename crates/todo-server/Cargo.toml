@@ -24,7 +24,7 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
-uuid = { workspace = true, features = ["std", "v4"] }
+uuid = { workspace = true, features = ["std", "v4", "v8"] }
 axum.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -44,6 +44,8 @@ tokio-stream.workspace = true
 webauthn-rs.workspace = true
 getrandom.workspace = true
 todo-fs.workspace = true
+rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server"] }
+schemars.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }
@@ -52,6 +54,7 @@ tempfile.workspace = true
 rusqlite.workspace = true
 proptest.workspace = true
 webauthn-authenticator-rs.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [lints]
 workspace = true

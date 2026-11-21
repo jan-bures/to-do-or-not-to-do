@@ -9,6 +9,7 @@
 //! | [`auth`] | passkeys, sessions, device pairing, agent tokens, share links, rate limits, audit log |
 //! | [`web`] | server-rendered sign-in, setup, pairing and admin pages, share pages, static assets |
 //! | [`api`] | REST handlers, the SSE stream, typed errors, the OpenAPI document |
+//! | [`mcp`] | the MCP server at `/mcp`: agent tools over the REST handlers |
 //! | [`app`] | router, middleware (body limit, timeouts, tracing) and the server lifecycle |
 //! | [`conn`] | the accept loop: connection cap, header-read timeout, write-progress watchdog, drain |
 //! | [`summary`] | one-line summaries for responses and the activity feed |
@@ -24,6 +25,7 @@ pub mod config;
 pub mod conn;
 pub mod db;
 pub mod engine;
+pub mod mcp;
 pub mod ratelimit;
 pub mod scope;
 pub mod summary;

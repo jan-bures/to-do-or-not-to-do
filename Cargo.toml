@@ -67,6 +67,9 @@ webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation
 # Software authenticator for driving passkey ceremonies in tests.
 webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
 getrandom = "0.4"
+# MCP server at /mcp (server only); the client half is used by the tests.
+rmcp = { version = "3.11", default-features = false }
+schemars = { version = "1", features = ["uuid1"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
