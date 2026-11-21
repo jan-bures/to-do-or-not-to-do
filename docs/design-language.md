@@ -601,6 +601,10 @@ Completing a task is the one choreographed moment in the app.
 
 - **Navigation drawer:** Edge swipe tracks the finger **1:1**, coupling scrim opacity directly to drawer progress
   `0..1`. Release settles open (`PANEL` 200 ms, `ENTER`) or closed (`PANEL` 200 ms, `EXIT`).
+- **Collapsing room header (scroll-linked):** Scrolling the task list collapses the expanded Daybreak header into
+  the compact title bar **1:1 with scroll offset** (fading the landscape, date eyebrow and room-pill strip
+  proportionally so nothing snaps mid-scroll); releasing midway settles cleanly to either expanded or collapsed
+  over `PANEL` (`200 ms`, `STANDARD`).
 - **Predictive back (Android 14+ / `PredictiveBackHandler`):** Gesture progress `0..1` continuously scales the
   outgoing surface down (`1.0 → 0.92`), rounds its corners to `radius::CARD`, and shifts it toward the swipe edge
   while revealing the previous screen underneath. Commit finishes over `PANEL` (`200 ms`, `EXIT`); cancel returns
@@ -614,8 +618,9 @@ Completing a task is the one choreographed moment in the app.
 - **Haptics:** Restraint matches motion — confirm on task completion (`Confirm`), pickup on drag (`LongPress`),
   and subtle tick on reorder slot cross (`TextHandleMove`). Never vibrate on room switch, scroll, or tap.
 - **Reduced motion (`ANIMATOR_DURATION_SCALE == 0`):** Button-triggered drawer snaps (`0 ms`; drag still tracks
-  finger 1:1); predictive back falls back to instant back on commit; shared-element bounds morphs disable in
-  favour of `REDUCED_FADE` (`100 ms`) crossfades.
+  finger 1:1); header scroll collapse remains scroll-linked without settle bounce (or snaps on threshold);
+  predictive back falls back to instant back on commit; shared-element bounds morphs disable in favour of
+  `REDUCED_FADE` (`100 ms`) crossfades.
 
 #### 15. Web transitions (View Transitions API)
 
@@ -657,6 +662,20 @@ Completing a task is the one choreographed moment in the app.
 7. **No backdrop blur transitions.** Elevation forbids blur everywhere; modal scrims fade opacity only.
 8. **No per-frame landscape rebuilds at rest.** `todo_design::landscape` paths stay cached; only interpolate
    progress during an active `SUN_TRAVEL` or `DUSK` transition and re-cache as soon as it settles.
+
+### Rollout priorities
+
+Implementation order across clients follows the comprehension gaps identified in `docs/ux-review.md`:
+
+1. **Task completion & sun arc advance** (`CHECK_FILL`, `CHECK_TICK`, `COMPLETE_HOLD`, `ROW_COLLAPSE`,
+   `SUN_TRAVEL`) across Desktop, Web and Android.
+2. **Room switching & OKLCH sky hue morph** (`ROOM_HUE`, `CONTENT_SWAP`).
+3. **Detail pane open/close/task-switch** (`PANEL`, `CONTENT_SWAP`), including Web's medium-viewport scrim and
+   Desktop's empty-detail collapse on finished My Day.
+4. **Sidebar collection collapse/expand & overlay scrollbar fade** (`PANEL`, `SCROLLBAR_HOLD`, `SCROLLBAR_OUT`).
+5. **Android scroll-linked header collapse, drawer & predictive back** (`PANEL`).
+6. **My Day dusk transition** (`DUSK`) and **toasts / live-sync highlights** (`TOAST_IN`, `TOAST_OUT`,
+   `UNDO_WINDOW`, `SYNC_HIGHLIGHT`).
 
 ## Iconography
 
