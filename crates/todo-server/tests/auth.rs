@@ -1648,6 +1648,186 @@ async fn history_from_a_private_list_stays_hidden_after_a_task_moves_out() {
 }
 
 #[tokio::test]
+async fn undo_conflicts_name_only_later_events_the_agent_could_read() {
+    let f = fixture("").await;
+    let (plan_list, task) = f.lists["plan"].clone();
+    let (hidden_list, _) = f.hidden();
+    let hidden_list = hidden_list.to_owned();
+    let r = f
+        .env
+        .command(
+            &f.token,
+            json!({ "cmd": "update_task", "id": task, "patch": { "title": "agent title" } }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+    let own = r.json["events"][0]["seq"].as_u64().unwrap();
+    // The owner edits the same field while the task is in a private list.
+    let mut private = Vec::new();
+    for c in [
+        json!({ "cmd": "move_task", "id": task, "list": hidden_list }),
+        json!({ "cmd": "update_task", "id": task, "patch": { "title": "private title" } }),
+        json!({ "cmd": "move_task", "id": task, "list": plan_list }),
+    ] {
+        let r = f.env.command(TOKEN_A, c.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{c}: {}", r.json);
+        private.push(r.json["events"][0].clone());
+    }
+    let private_edit = &private[1];
+    let (private_id, private_seq) = (
+        private_edit["id"].as_str().unwrap().to_owned(),
+        private_edit["seq"].as_u64().unwrap(),
+    );
+    // The conflict is reported, without naming the private edit.
+    let r = f.env.undo(&f.token, own).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], "undo_conflict");
+    let text = r.json.to_string();
+    assert!(!text.contains(&private_id), "{text}");
+    assert!(
+        r.json["error"]["details"].get("conflicts").is_none(),
+        "{text}"
+    );
+    assert!(!text.contains(&format!("\"seq\":{private_seq}")), "{text}");
+    // The owner sees it.
+    let r = f.env.undo(TOKEN_A, own).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json);
+    assert!(r.json.to_string().contains(&private_id), "{}", r.json);
+
+    // A later edit the agent can read is named; the private one still is not.
+    let r = f
+        .env
+        .command(
+            TOKEN_A,
+            json!({ "cmd": "update_task", "id": task, "patch": { "title": "visible title" } }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+    let visible_id = r.json["events"][0]["id"].as_str().unwrap().to_owned();
+    let r = f.env.undo(&f.token, own).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json);
+    let later = &r.json["error"]["details"]["conflicts"][0]["later_events"];
+    assert_eq!(later.as_array().unwrap().len(), 1, "{}", r.json);
+    assert_eq!(later[0]["id"], visible_id.as_str());
+    assert!(!r.json.to_string().contains(&private_id), "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_creation_in_a_readable_list_is_hidden_once_the_task_is_private() {
+    let f = fixture("").await;
+    let read_list = f.lists["read"].0.clone();
+    let (hidden_list, _) = f.hidden();
+    let hidden_list = hidden_list.to_owned();
+    let (task, step, link) = (id(), id(), id());
+    for c in [
+        json!({ "cmd": "create_task", "id": task, "list": read_list, "title": "TITLE-LATER-PRIVATE",
+                "notes": "NOTES-LATER-PRIVATE" }),
+        json!({ "cmd": "create_step", "id": step, "task": task, "title": "STEP-LATER-PRIVATE" }),
+        json!({ "cmd": "add_link", "id": link, "task": task,
+                "kind": { "type": "web", "url": "https://example.com/LINK-LATER-PRIVATE", "title": null } }),
+        json!({ "cmd": "move_task", "id": task, "list": hidden_list }),
+    ] {
+        let r = f.env.command(TOKEN_A, c.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{c}: {}", r.json);
+    }
+    // JSON pages, the activity feed and an SSE replay.
+    let history = agent_history(&f).await;
+    for leak in [
+        "TITLE-LATER-PRIVATE",
+        "NOTES-LATER-PRIVATE",
+        "STEP-LATER-PRIVATE",
+        "LINK-LATER-PRIVATE",
+        task.as_str(),
+        step.as_str(),
+        link.as_str(),
+    ] {
+        assert!(
+            !history.contains(leak),
+            "{leak} leaked:
+{history}"
+        );
+    }
+
+    // Live frames: the creation is taken back (forced past the later changes) while the task is in
+    // the private list. The withdrawal carries where the task was made; it was in the private list.
+    let head = f.env.t.server.engine.head_seq();
+    let mut live = f.env.t.sse(&f.token, Some(head)).await;
+    // Owner's view of the log: the seq of the event mentioning `needle`.
+    let seq_of = async |needle: &str| {
+        let r = f
+            .env
+            .api(
+                Method::GET,
+                "/api/v1/events?since=0&limit=1000",
+                TOKEN_A,
+                None,
+            )
+            .await;
+        r.json["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| {
+                let text = e.to_string();
+                text.contains(needle) && text.contains(r#""op":"created""#)
+            })
+            .unwrap()["seq"]
+            .as_u64()
+            .unwrap()
+    };
+    // The link and the step first: the task cannot be withdrawn while they exist.
+    for needle in [
+        "LINK-LATER-PRIVATE",
+        "STEP-LATER-PRIVATE",
+        "NOTES-LATER-PRIVATE",
+    ] {
+        let seq = seq_of(needle).await;
+        let expected = f.env.event_id(seq).await;
+        let r = f
+            .env
+            .api(
+                Method::POST,
+                &format!("/api/v1/events/{seq}/undo"),
+                TOKEN_A,
+                Some(json!({ "command_id": id(), "expected_event_id": expected, "force": true })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{needle}: {}", r.json);
+    }
+    assert!(f.env.t.server.engine.head_seq() > head);
+    // A visible change afterwards, so the stream has something to deliver.
+    let r = f
+        .env
+        .command(
+            TOKEN_A,
+            json!({ "cmd": "update_task", "id": f.lists["read"].1, "patch": { "title": "LIVE-VISIBLE" } }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+    let mut seen = String::new();
+    while let Some(frame) = live.next_event(Duration::from_millis(500)).await {
+        seen.push_str(&frame.data);
+    }
+    assert!(seen.contains("LIVE-VISIBLE"), "{seen}");
+    for leak in ["TITLE-LATER-PRIVATE", "NOTES-LATER-PRIVATE", task.as_str()] {
+        assert!(
+            !seen.contains(leak),
+            "{leak} leaked live:
+{seen}"
+        );
+    }
+    // The task, step and link are gone, and their last known place was the private list: still
+    // hidden, also after a restart (which rebuilds last known places from the log).
+    let gone = [task.as_str(), step.as_str(), link.as_str(), "LATER-PRIVATE"];
+    let history = agent_history(&f).await;
+    assert!(gone.iter().all(|g| !history.contains(g)), "{history}");
+    let f = f.restart_with(|_| {}).await;
+    let history = agent_history(&f).await;
+    assert!(gone.iter().all(|g| !history.contains(g)), "{history}");
+    assert!(history.contains("LIVE-VISIBLE"));
+}
+
+#[tokio::test]
 async fn history_stays_hidden_after_a_list_moves_into_a_readable_collection() {
     let env = Env::start().await;
     let owner = env.owner().await;
@@ -2133,6 +2313,43 @@ async fn pages_have_strict_security_headers() {
         env.browser().get("/assets/nope.js").await.status,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn hsts_is_sent_on_api_json_and_event_streams_with_an_https_origin() {
+    let env = Env::start().await;
+    let r = env.api(Method::GET, "/api/v1/lists", TOKEN_A, None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.headers.get(STRICT_TRANSPORT_SECURITY).unwrap(),
+        todo_server::web::HSTS
+    );
+    // Errors too.
+    let r = env.api(Method::GET, "/api/v1/lists", "nope", None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(r.headers.get(STRICT_TRANSPORT_SECURITY).is_some());
+    let stream = env
+        .t
+        .client
+        .get(format!("{}/api/v1/events", env.t.url))
+        .bearer_auth(TOKEN_A)
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    assert_eq!(
+        stream.headers().get(STRICT_TRANSPORT_SECURITY).unwrap(),
+        todo_server::web::HSTS
+    );
+    drop(stream);
+    // Without an HTTPS origin (local development over plain HTTP), no HSTS anywhere.
+    let plain = TestServer::start().await;
+    let (status, headers, _) = plain
+        .request(Method::GET, "/api/v1/lists", Some(TOKEN_A), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get(STRICT_TRANSPORT_SECURITY).is_none());
 }
 
 /// Exactly these routes answer without a session or token.

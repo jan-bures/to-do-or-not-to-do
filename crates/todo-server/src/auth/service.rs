@@ -113,6 +113,11 @@ struct BearerEntry {
     last_touch: AtomicI64,
 }
 
+/// A principal's access as of one moment (see [`AuthService::standing`]): an agent's grants, or
+/// nothing for the owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Standing(Option<Grants>);
+
 /// What bearer authentication reads: the valid device and agent tokens and the agents' grants,
 /// published together as one value ([`AuthService::publish`]).
 #[derive(Debug, Default)]
@@ -527,6 +532,7 @@ impl AuthService {
         Ok(())
     }
 
+    /// Wakes event streams to re-check their caller (see [`standing`](Self::standing)).
     fn revoked(&self) {
         self.revocations.send_modify(|n| *n = n.wrapping_add(1));
     }
@@ -535,6 +541,20 @@ impl AuthService {
     #[must_use]
     pub fn revocations(&self) -> watch::Receiver<u64> {
         self.revocations.subscribe()
+    }
+
+    /// What `principal` may do now: `None` once its token is revoked or expired; otherwise, for an
+    /// agent, its current grants. An event stream compares this with what it started with and closes
+    /// on any change, so frames filtered under older grants are never delivered.
+    #[must_use]
+    pub fn standing(&self, principal: &Principal) -> Option<Standing> {
+        if !self.is_active(principal) {
+            return None;
+        }
+        Some(Standing(match principal {
+            Principal::Owner { .. } => None,
+            Principal::Agent { agent, .. } => self.snapshot().grants.get(agent).cloned(),
+        }))
     }
 
     /// True while `principal` may still use the API (its token is neither revoked nor expired).

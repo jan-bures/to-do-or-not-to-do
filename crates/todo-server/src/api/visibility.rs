@@ -9,15 +9,19 @@
 //! Events are visible when the agent can read **every** list or collection the event touched, both
 //! where it happened (its [scope](crate::scope), recorded when it was written, with each list's
 //! collection at that time) and where those entities are now (for a move or a merge, both ends). So
-//! notes written in a private list stay hidden after the task moves to a readable one. An event about
-//! an entity that no longer resolves to a list (its creation was undone), or without a recorded
+//! notes written in a private list stay hidden after the task moves to a readable one, and a task's
+//! creation in a readable list is hidden once the task is in a private one.
+//!
+//! "Now" is resolved from the current state for every kind of event, creations included, never from
+//! the entity value an event carries. An entity no longer in the state (its creation was undone) is
+//! where it was last seen ([`Whereabouts`]). An event whose entity has neither, or without a recorded
 //! scope, is hidden from agents.
 
-use crate::scope::{EventScope, readable};
+use crate::scope::{EventScope, Whereabouts, current_location, readable};
 use std::collections::BTreeSet;
-use todo_core::access::{Target, entity_target, level_on, undo_requirements};
-use todo_core::event::{Event, EventPayload};
-use todo_core::ids::{CollectionId, EntityId, ListId, TagId};
+use todo_core::access::{Target, level_on, undo_requirements};
+use todo_core::event::Event;
+use todo_core::ids::{CollectionId, ListId, TagId};
 use todo_core::model::{Collection, List, Tag, Task};
 use todo_core::{AccessLevel, Actor, State};
 
@@ -100,10 +104,12 @@ pub fn tag_in(visible: Option<&BTreeSet<TagId>>, t: &Tag) -> bool {
     visible.is_none_or(|v| v.contains(&t.id))
 }
 
-/// True if `actor` may see `event`, which was written with `scope` (see the module docs).
+/// True if `actor` may see `event`, which was written with `scope`. `gone` holds the last known
+/// locations of entities no longer in `state` (see the module docs).
 #[must_use]
 pub fn event_visible(
     state: &State,
+    gone: &Whereabouts,
     actor: &Actor,
     event: &Event,
     scope: Option<&EventScope>,
@@ -114,20 +120,13 @@ pub fn event_visible(
     if !scope.is_some_and(|s| readable(state, actor, s)) {
         return false;
     }
-    let target = event.payload.target();
-    let carries_entity = matches!(
-        event.payload,
-        EventPayload::Created { .. } | EventPayload::Withdrawn { .. }
-    );
-    if !carries_entity
-        && !matches!(target, EntityId::Tag(_))
-        && entity_target(state, target) == Target::Global
-    {
+    let Some(here) = current_location(state, gone, event.payload.target()) else {
         return false;
-    }
-    undo_requirements(state, &event.payload)
-        .into_iter()
-        .all(|(_, t)| can_read(state, actor, t))
+    };
+    readable(state, actor, &EventScope::from([here]))
+        && undo_requirements(state, &event.payload)
+            .into_iter()
+            .all(|(_, t)| can_read(state, actor, t))
 }
 
 #[cfg(test)]
@@ -161,7 +160,7 @@ mod tests {
     }
 
     fn sees(s: &State, a: &Actor, e: &(Event, EventScope)) -> bool {
-        event_visible(s, a, &e.0, Some(&e.1))
+        event_visible(s, &Whereabouts::new(), a, &e.0, Some(&e.1))
     }
 
     fn list(n: u8) -> ListId {
@@ -209,10 +208,26 @@ mod tests {
             !sees(&s, &bot, &moved[0]),
             "a move into a hidden list is hidden"
         );
-        // Its creation in the open list stays visible: the event carries the list it was made in.
-        assert!(sees(&s, &bot, &e_open[0]));
-        // Without a recorded scope, agents see nothing.
-        assert!(!event_visible(&s, &bot, &e_open[0].0, None));
+        // Its creation in the open list is hidden too: the task is in the hidden list now, and
+        // the list the creation event carries does not count for where it is.
+        assert!(!sees(&s, &bot, &e_open[0]));
+        // A task that stays in the open list is visible, but not without a recorded scope.
+        let stays = run(
+            &mut s,
+            Command::CreateTask(Box::new(NewTask::new(
+                TaskId::new_v7(1, [5; 10]),
+                open,
+                "c",
+            ))),
+        );
+        assert!(sees(&s, &bot, &stays[0]));
+        assert!(!event_visible(
+            &s,
+            &Whereabouts::new(),
+            &bot,
+            &stays[0].0,
+            None
+        ));
         assert!(visible_tags(&s, &bot).unwrap().is_empty());
         let owner = Actor::owner("pc").unwrap();
         assert!(sees(&s, &owner, &e_hidden[0]));

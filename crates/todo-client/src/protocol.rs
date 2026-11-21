@@ -96,8 +96,9 @@ pub struct EventPage {
 pub struct Hello {
     /// The log epoch the stream's sequence numbers belong to.
     pub epoch: Epoch,
-    /// The newest sequence number when the stream opened.
-    pub head_seq: u64,
+    /// The newest sequence number when the stream opened. Servers leave it out for agent tokens.
+    #[serde(default)]
+    pub head_seq: Option<u64>,
 }
 
 /// Data of the `catch_up` SSE frame.

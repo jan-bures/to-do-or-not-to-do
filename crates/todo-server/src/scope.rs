@@ -14,12 +14,16 @@
 //! Scopes live in the `event_scopes` table, written in the same transaction as the event. Logs written
 //! before the table existed are backfilled once at startup by folding the log
 //! ([`crate::db::backfill_scopes`]).
+//!
+//! An event is also checked against where its entity is **now** ([`location`]). An entity that is no
+//! longer in the state (its creation was undone) has a last known location instead
+//! ([`Whereabouts`]), kept by the engine and rebuilt from the log at startup.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use todo_core::access::{Target, undo_requirements};
+use std::collections::{BTreeMap, BTreeSet};
+use todo_core::access::{Target, entity_target, undo_requirements};
 use todo_core::event::EventPayload;
-use todo_core::ids::{CollectionId, ListId};
+use todo_core::ids::{CollectionId, EntityId, ListId};
 use todo_core::{AccessLevel, Actor, State};
 
 /// One place an event touched.
@@ -46,6 +50,68 @@ pub enum ScopeEntry {
 /// Everything an event touched.
 pub type EventScope = BTreeSet<ScopeEntry>;
 
+/// The last known location of entities that are no longer in the state.
+pub type Whereabouts = BTreeMap<EntityId, ScopeEntry>;
+
+/// Where `id` is in `state`: its list (with that list's collection), its collection, or global for a
+/// tag. `None` if it is not in the state (or hangs off something that is not).
+#[must_use]
+pub fn location(state: &State, id: EntityId) -> Option<ScopeEntry> {
+    match id {
+        EntityId::Tag(t) => state.tags.contains_key(&t).then_some(ScopeEntry::Global),
+        EntityId::Collection(c) => state
+            .collections
+            .contains_key(&c)
+            .then_some(ScopeEntry::Collection { c }),
+        _ => match entity_target(state, id) {
+            Target::List(l) => state.lists.get(&l).map(|list| ScopeEntry::List {
+                l,
+                c: list.collection,
+            }),
+            Target::Collection(c) => Some(ScopeEntry::Collection { c }),
+            Target::Global => None,
+        },
+    }
+}
+
+/// Where `id` is now: in `state`, or else where it was last seen.
+#[must_use]
+pub fn current_location(state: &State, gone: &Whereabouts, id: EntityId) -> Option<ScopeEntry> {
+    location(state, id).or_else(|| gone.get(&id).copied())
+}
+
+/// The change to [`Whereabouts`] after an event about `id`, which was at `before` and is now in
+/// `after` (or not): `Some(Some(loc))` to record a last location, `Some(None)` to forget one.
+#[must_use]
+pub fn whereabouts_change(
+    before: Option<ScopeEntry>,
+    after: &State,
+    id: EntityId,
+) -> Option<Option<ScopeEntry>> {
+    match (before, location(after, id)) {
+        (Some(was), None) => Some(Some(was)),
+        (_, Some(_)) => Some(None),
+        (None, None) => None,
+    }
+}
+
+/// Applies a [`whereabouts_change`].
+pub fn record_whereabouts(
+    gone: &mut Whereabouts,
+    id: EntityId,
+    change: Option<Option<ScopeEntry>>,
+) {
+    match change {
+        Some(Some(loc)) => {
+            gone.insert(id, loc);
+        }
+        Some(None) => {
+            gone.remove(&id);
+        }
+        None => {}
+    }
+}
+
 /// Collects an event's scope across the state before and after it.
 #[derive(Debug, Default)]
 pub struct ScopeBuilder {
@@ -56,6 +122,10 @@ pub struct ScopeBuilder {
 impl ScopeBuilder {
     /// Adds the places `payload` touches in `state` (call once before applying and once after).
     pub fn observe(&mut self, state: &State, payload: &EventPayload) {
+        // Where the entity actually is (for a withdrawal, where it was taken from).
+        if let Some(here) = location(state, payload.target()) {
+            self.scope.insert(here);
+        }
         for (_, target) in undo_requirements(state, payload) {
             match target {
                 Target::Global => {

@@ -63,7 +63,7 @@ use super::dto::{EventPage, EventsParams};
 use super::error::{ApiError, ErrorBody};
 use super::{ApiQuery, Work, blocking, visibility};
 use crate::app::AppState;
-use crate::auth::service::AuthService;
+use crate::auth::service::{AuthService, Standing};
 use crate::auth::{Authenticated, Principal};
 use crate::db::CappedEvents;
 use crate::engine::{Engine, LiveEvent};
@@ -112,8 +112,10 @@ pub const LOG_EPOCH_HEADER: &str = "log-epoch";
 pub struct Hello {
     /// The log epoch (see the module documentation). Sequence numbers belong to it.
     pub epoch: uuid::Uuid,
-    /// The newest sequence number when the stream opened.
-    pub head_seq: u64,
+    /// The newest sequence number when the stream opened. Absent for agents: the newest event of the
+    /// whole log would tell them how busy lists they cannot read are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_seq: Option<u64>,
 }
 
 /// True if the client asked for an event stream.
@@ -229,10 +231,11 @@ pub async fn get_events(
         let scanned = page.events.len();
         if !visibility::sees_all(&actor) {
             let state = engine.state();
+            let gone = engine.whereabouts();
             let scopes = std::mem::take(&mut page.scopes);
             page.events.retain(|e| {
                 let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
-                visibility::event_visible(&state, &actor, &e.event, scope)
+                visibility::event_visible(&state, &gone, &actor, &e.event, scope)
             });
         }
         Ok::<_, crate::db::StoreError>((page, next_since, scanned))
@@ -264,11 +267,21 @@ fn check_epoch(engine: &Engine, epoch: Option<uuid::Uuid>) -> Result<(), ApiErro
 type Tx = mpsc::Sender<Result<SseEvent, Infallible>>;
 
 /// The SSE response body. It owns the stream slot, so the slot is freed exactly when the body is
-/// dropped, however the connection ends. Once `revoked` is set it ends, dropping any queued frames.
+/// dropped, however the connection ends. Once `revoked` is set it ends, dropping any queued frames;
+/// and before handing out a frame it re-checks the caller (`access`), so a frame the pump filtered
+/// under grants that have since changed is never delivered, even before the pump notices.
 struct Body {
     rx: ReceiverStream<Result<SseEvent, Infallible>>,
     revoked: Arc<AtomicBool>,
+    access: Option<Caller>,
     _slot: OwnedSemaphorePermit,
+}
+
+/// Whose stream it is, and the access it started with.
+struct Caller {
+    authsvc: Arc<AuthService>,
+    principal: Principal,
+    standing: Option<Standing>,
 }
 
 impl Stream for Body {
@@ -279,19 +292,36 @@ impl Stream for Body {
         if this.revoked.load(Ordering::Acquire) {
             return Poll::Ready(None);
         }
-        Pin::new(&mut this.rx).poll_next(cx)
+        let next = Pin::new(&mut this.rx).poll_next(cx);
+        if let (Poll::Ready(Some(_)), Some(c)) = (&next, &this.access)
+            && lost_access(&c.authsvc, &c.principal, c.standing.as_ref())
+        {
+            this.revoked.store(true, Ordering::Release);
+            return Poll::Ready(None);
+        }
+        next
     }
 }
 
-/// Resolves once `principal` loses access (its token is revoked; checked at every revocation
-/// notice), or if notices stop.
+/// True if `principal` lost access since the stream started with `at_start`: its token was revoked
+/// or expired, or (for an agent) its grants changed in any way.
+fn lost_access(authsvc: &AuthService, principal: &Principal, at_start: Option<&Standing>) -> bool {
+    match (authsvc.standing(principal), at_start) {
+        (Some(now), Some(then)) => now != *then,
+        _ => true,
+    }
+}
+
+/// Resolves once `principal` loses access (see [`lost_access`]; checked at every revocation or
+/// grant change notice), or if notices stop.
 async fn until_revoked(
     notices: &mut watch::Receiver<u64>,
     authsvc: &AuthService,
     principal: &Principal,
+    at_start: Option<&Standing>,
 ) {
     loop {
-        if notices.changed().await.is_err() || !authsvc.is_active(principal) {
+        if notices.changed().await.is_err() || lost_access(authsvc, principal, at_start) {
             return;
         }
     }
@@ -327,6 +357,8 @@ struct Pump {
     reads: Arc<Semaphore>,
     marks: Arc<CatchUpMarks>,
     principal: Principal,
+    /// The principal's access when the stream was opened; any change ends the stream.
+    standing: Option<Standing>,
     actor: Actor,
     authsvc: Arc<AuthService>,
     revocations: watch::Receiver<u64>,
@@ -342,6 +374,10 @@ struct Pump {
 }
 
 impl Pump {
+    fn lost(&self) -> bool {
+        lost_access(&self.authsvc, &self.principal, self.standing.as_ref())
+    }
+
     /// Ends the stream for a caller that lost access, dropping queued frames.
     fn revoke(&self) {
         tracing::debug!("event stream closed: the caller's access changed");
@@ -351,7 +387,7 @@ impl Pump {
     async fn send(&mut self, frame: SseEvent) -> bool {
         let sent = tokio::select! {
             r = send_frame(&self.tx, &mut self.shutdown, self.stall, frame) => r,
-            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal, self.standing.as_ref()) => {
                 self.revoke();
                 return false;
             }
@@ -379,7 +415,7 @@ impl Pump {
             p = self.reads.clone().acquire_owned() => p.ok()?,
             () = self.tx.closed() => return None,
             _ = self.shutdown.changed() => return None,
-            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal, self.standing.as_ref()) => {
                 self.revoke();
                 return None;
             }
@@ -404,7 +440,7 @@ impl Pump {
             },
             () = self.tx.closed() => None,
             _ = self.shutdown.changed() => None,
-            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal) => {
+            () = until_revoked(&mut self.revocations, &self.authsvc, &self.principal, self.standing.as_ref()) => {
                 self.revoke();
                 None
             }
@@ -452,10 +488,11 @@ impl Pump {
             };
             let full = page.events.len() == want;
             let state = self.engine.state();
+            let gone = self.engine.whereabouts();
             for ev in &page.events {
                 let Some(seq) = ev.event.seq else { continue };
-                if !visibility::event_visible(&state, &self.actor, &ev.event, page.scopes.get(&seq))
-                {
+                let scope = page.scopes.get(&seq);
+                if !visibility::event_visible(&state, &gone, &self.actor, &ev.event, scope) {
                     events += 1;
                     self.last = seq;
                     continue;
@@ -496,13 +533,13 @@ impl Pump {
         // Revocation notices are subscribed already (in `stream`): a revocation since the caller was
         // authenticated shows here, and any later one wakes the waits below. Nothing, not even the
         // hello frame, is sent before this check.
-        if !self.authsvc.is_active(&self.principal) {
+        if self.lost() {
             self.revoke();
             return;
         }
         let hello = Hello {
             epoch: self.engine.epoch(),
-            head_seq: self.engine.head_seq(),
+            head_seq: visibility::sees_all(&self.actor).then(|| self.engine.head_seq()),
         };
         let Ok(data) = serde_json::to_string(&hello) else {
             return;
@@ -520,14 +557,14 @@ impl Pump {
                 () = self.tx.closed() => return,
                 _ = self.shutdown.changed() => return,
                 r = self.revocations.changed() => {
-                    if r.is_err() || !self.authsvc.is_active(&self.principal) {
+                    if r.is_err() || self.lost() {
                         self.revoke();
                         return;
                     }
                 }
                 _ = beat.tick() => {
                     // Expiry is not announced: check it with every heartbeat.
-                    if !self.authsvc.is_active(&self.principal) {
+                    if self.lost() {
                         self.revoke();
                         return;
                     }
@@ -551,6 +588,7 @@ impl Pump {
                         }
                         if !visibility::event_visible(
                             &self.engine.state(),
+                            &self.engine.whereabouts(),
                             &self.actor,
                             &ev.event,
                             Some(&live_event.scope),
@@ -609,10 +647,17 @@ fn stream(
     let revoked = Arc::new(AtomicBool::new(false));
     let mut shutdown = app.shutdown.clone();
     shutdown.mark_unchanged();
+    let standing = app.authsvc.standing(&principal);
+    let caller = Caller {
+        authsvc: app.authsvc.clone(),
+        principal: principal.clone(),
+        standing: standing.clone(),
+    };
     let pump = Pump {
         engine: app.engine.clone(),
         reads: app.reads.clone(),
         marks: app.catch_up_marks.clone(),
+        standing,
         principal,
         actor,
         authsvc: app.authsvc.clone(),
@@ -637,6 +682,7 @@ fn stream(
         Sse::new(Body {
             rx: ReceiverStream::new(rx),
             revoked,
+            access: Some(caller),
             _slot: slot,
         }),
     )
@@ -721,6 +767,7 @@ mod tests {
             engine: r.engine.clone(),
             reads: Arc::new(Semaphore::new(4)),
             marks: Arc::new(CatchUpMarks::default()),
+            standing: r.svc.standing(&r.principal),
             principal: r.principal.clone(),
             actor: Actor::agent("bot").unwrap(),
             authsvc: r.svc.clone(),
@@ -751,6 +798,21 @@ mod tests {
         .unwrap();
         assert!(revoked.load(Ordering::Acquire));
         assert!(rx.try_recv().is_err(), "nothing was sent, not even hello");
+    }
+
+    #[tokio::test]
+    async fn agents_get_no_log_head_in_hello() {
+        let r = rig(3);
+        let (tx, mut rx) = mpsc::channel(64);
+        let (pump, _, live) = pump(&r, tx, Duration::from_secs(3600));
+        let task = tokio::spawn(pump.run(live, Duration::from_secs(3600)));
+        let hello = rx.recv().await.unwrap().unwrap();
+        let text = format!("{hello:?}");
+        assert!(
+            text.contains("epoch") && !text.contains("head_seq"),
+            "{text}"
+        );
+        task.abort();
     }
 
     #[tokio::test]
@@ -787,11 +849,66 @@ mod tests {
         let mut body = Body {
             rx: ReceiverStream::new(rx),
             revoked: revoked.clone(),
+            access: None,
             _slot: slot,
         };
         assert!(body.next().await.is_some());
         revoked.store(true, Ordering::Release);
         assert!(body.next().await.is_none(), "queued frames are dropped");
+    }
+
+    #[tokio::test]
+    async fn lowering_grants_drops_frames_already_queued() {
+        use futures_util::StreamExt as _;
+        let r = rig(0);
+        let (tx, rx) = mpsc::channel(4);
+        for i in 0..3 {
+            tx.send(Ok(SseEvent::default().data(i.to_string())))
+                .await
+                .unwrap();
+        }
+        let slot = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let mut body = Body {
+            rx: ReceiverStream::new(rx),
+            revoked: Arc::new(AtomicBool::new(false)),
+            access: Some(Caller {
+                authsvc: r.svc.clone(),
+                principal: r.principal.clone(),
+                standing: r.svc.standing(&r.principal),
+            }),
+            _slot: slot,
+        };
+        assert!(body.next().await.is_some());
+        // Filtered under Read everywhere; now the agent may read nothing. Nothing else is delivered,
+        // although no pump has noticed yet.
+        let none = todo_core::Grants {
+            default: todo_core::AccessLevel::None,
+            ..todo_core::Grants::default()
+        };
+        assert!(r.svc.set_grants(r.token_id, &none, None).unwrap());
+        assert!(body.next().await.is_none(), "queued frames are dropped");
+    }
+
+    #[tokio::test]
+    async fn a_grant_change_ends_the_stream() {
+        let r = rig(1);
+        let (tx, mut rx) = mpsc::channel(64);
+        let (pump, revoked, live) = pump(&r, tx, Duration::from_secs(3600));
+        let task = tokio::spawn(pump.run(live, Duration::from_secs(3600)));
+        // The hello frame and the replay arrive; then the stream waits for live events.
+        assert!(rx.recv().await.is_some());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!task.is_finished());
+        let more = todo_core::Grants {
+            default: todo_core::AccessLevel::Plan,
+            ..todo_core::Grants::default()
+        };
+        assert!(r.svc.set_grants(r.token_id, &more, None).unwrap());
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the stream ended at the grant change")
+            .unwrap();
+        assert!(revoked.load(Ordering::Acquire));
     }
 
     #[tokio::test]

@@ -1,16 +1,20 @@
 //! Writes: commands and undo.
 
 use super::dto::{CommandRequest, CommandResponse, UndoRequest};
-use super::error::{ApiError, ErrorBody};
+use super::error::{ApiError, ErrorBody, undo_error};
 use super::{ApiJson, ApiPath, RequestCancel, Work, blocking};
 use crate::app::AppState;
 use crate::auth::Authenticated;
-use crate::engine::{EngineError, Outcome, UndoExpect};
+use crate::engine::{Engine, EngineError, Outcome, UndoExpect};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use std::collections::BTreeMap;
+use todo_core::Actor;
+use todo_core::error::{UndoConflict, UndoError};
+use todo_core::ids::EventId;
 
 /// Header set on a response that replays the stored result of a retried command.
 pub const REPLAYED_HEADER: &str = "idempotent-replayed";
@@ -119,24 +123,64 @@ pub async fn post_undo(
     let agent = matches!(auth.actor, todo_core::Actor::Agent { .. });
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
-        engine.undo_expecting(
+        let done = engine.undo_expecting(
             &auth.actor,
             seq,
             req.force,
             Some(command_id),
             Some(expect),
             &cancel,
-        )
+        );
+        done.map_err(|e| match e {
+            EngineError::UndoTargetMismatch { seq, .. } if agent => ApiError::new(
+                StatusCode::CONFLICT,
+                "event_mismatch",
+                format!("event {seq} is not the expected event"),
+            )
+            .with_details(serde_json::json!({ "seq": seq })),
+            EngineError::Undo {
+                error: UndoError::Conflict(c),
+                seqs,
+            } if agent => visible_conflict(&engine, &auth.actor, c, &seqs),
+            e => e.into(),
+        })
     })
-    .await?
-    .map_err(|e| match e {
-        EngineError::UndoTargetMismatch { seq, .. } if agent => ApiError::new(
-            StatusCode::CONFLICT,
-            "event_mismatch",
-            format!("event {seq} is not the expected event"),
-        )
-        .with_details(serde_json::json!({ "seq": seq })),
-        e => e.into(),
-    })?;
+    .await??;
     Ok(outcome_response(outcome, app.engine.epoch()))
+}
+
+/// An undo conflict as an agent may see it: only the later events it could read in the event log.
+/// If it could read none, the conflict is reported without any references.
+fn visible_conflict(
+    engine: &Engine,
+    actor: &Actor,
+    mut conflict: UndoConflict,
+    seqs: &BTreeMap<EventId, u64>,
+) -> ApiError {
+    let state = engine.state();
+    let gone = engine.whereabouts();
+    let visible = |id: &EventId| {
+        let Some(&seq) = seqs.get(id) else {
+            return false;
+        };
+        match engine.event_with_scope(seq) {
+            Ok(Some((event, scope))) => {
+                super::visibility::event_visible(&state, &gone, actor, &event, scope.as_ref())
+            }
+            _ => false,
+        }
+    };
+    for f in &mut conflict.conflicts {
+        f.later_events.retain(&visible);
+    }
+    conflict.conflicts.retain(|f| !f.later_events.is_empty());
+    if conflict.conflicts.is_empty() {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "undo_conflict",
+            "later changes conflict with this undo".to_owned(),
+        )
+        .with_details(serde_json::json!({ "hint": "retry with force: true to override" }));
+    }
+    undo_error(&UndoError::Conflict(conflict), seqs)
 }

@@ -6,7 +6,9 @@
 //! in the same transaction as the events that changed them, and can always be rebuilt by folding the
 //! log with [`todo_core::apply`].
 
-use crate::scope::{EventScope, ScopeBuilder};
+use crate::scope::{
+    EventScope, ScopeBuilder, Whereabouts, location, record_whereabouts, whereabouts_change,
+};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -708,7 +710,14 @@ pub fn head_seq(conn: &Connection) -> Result<u64> {
 
 /// Folds the whole log into a fresh state.
 pub fn fold_log(conn: &Connection) -> Result<State> {
+    Ok(fold_history(conn)?.0)
+}
+
+/// Folds the event log, also collecting the last known location of every entity that is no longer
+/// in the state (see [`crate::scope::Whereabouts`]).
+pub fn fold_history(conn: &Connection) -> Result<(State, Whereabouts)> {
     let mut state = State::new();
+    let mut gone = Whereabouts::new();
     let mut after = 0;
     loop {
         let page = events_after(conn, after, 1000)?;
@@ -716,13 +725,20 @@ pub fn fold_log(conn: &Connection) -> Result<State> {
             break;
         };
         for e in &page {
+            let target = e.payload.target();
+            let before = location(&state, target);
             apply(&mut state, e).map_err(|err| {
                 StoreError::Corrupt(format!("event seq {:?} does not apply: {err}", e.seq))
             })?;
+            record_whereabouts(
+                &mut gone,
+                target,
+                whereabouts_change(before, &state, target),
+            );
         }
         after = last;
     }
-    Ok(state)
+    Ok((state, gone))
 }
 
 // ---- idempotency records --------------------------------------------------------------------------

@@ -863,6 +863,7 @@ pub async fn activity(
             return Err(ApiError::item_too_large("next_before", json!(seq)));
         }
         let s = engine.state();
+        let gone = engine.whereabouts();
         let j = &s.journal;
         let more = page.truncated || page.events.len() == limit;
         // The oldest event read (visible or not) is where the next page continues.
@@ -873,7 +874,7 @@ pub async fn activity(
             .into_iter()
             .filter(|e| {
                 let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
-                visibility::event_visible(&s, &auth.actor, &e.event, scope)
+                visibility::event_visible(&s, &gone, &auth.actor, &e.event, scope)
             })
             .map(|event| {
                 let root = j.root_of(event.event.id);

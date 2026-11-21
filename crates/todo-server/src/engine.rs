@@ -27,7 +27,9 @@
 
 pub use crate::cancel::{Cancel, CancelOnDrop};
 use crate::db::{self, CommandRecord, LogEvent, StoreError};
-use crate::scope::{EventScope, ScopeBuilder};
+use crate::scope::{
+    EventScope, ScopeBuilder, Whereabouts, location, record_whereabouts, whereabouts_change,
+};
 use crate::summary;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -159,6 +161,8 @@ struct Writer {
 pub struct Engine {
     path: PathBuf,
     state: RwLock<Arc<State>>,
+    /// Last known locations of entities no longer in `state` (see [`crate::scope`]).
+    gone: RwLock<Arc<Whereabouts>>,
     writer: Mutex<Writer>,
     readers: Mutex<Vec<Connection>>,
     live: broadcast::Sender<Arc<LiveEvent>>,
@@ -280,7 +284,7 @@ impl Engine {
         if backfilled > 0 {
             tracing::info!(events = backfilled, "recorded the scopes of earlier events");
         }
-        let state = db::fold_log(&conn)?;
+        let (state, gone) = db::fold_history(&conn)?;
         let head = db::head_seq(&conn)?;
         let projected = db::load_projections(&conn)?;
         let proj_seq = db::projection_seq(&conn)?;
@@ -309,6 +313,7 @@ impl Engine {
         Ok(Self {
             path: path.to_owned(),
             state: RwLock::new(Arc::new(state)),
+            gone: RwLock::new(Arc::new(gone)),
             writer: Mutex::new(Writer {
                 conn: Some(conn),
                 last_ms,
@@ -381,6 +386,17 @@ impl Engine {
     #[must_use]
     pub fn state(&self) -> Arc<State> {
         self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The last known locations of entities that are no longer in the state (see
+    /// [`crate::scope::Whereabouts`]). Read it after [`state`](Self::state): an entity removed by a
+    /// commit in between is then in neither, and history about it is hidden rather than shown.
+    #[must_use]
+    pub fn whereabouts(&self) -> Arc<Whereabouts> {
+        self.gone
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -467,6 +483,19 @@ impl Engine {
         max_bytes: usize,
     ) -> Result<db::CappedEvents, StoreError> {
         db::events_after_capped(&*self.reader()?, since, limit, max_bytes)
+    }
+
+    /// The event at `seq` with its recorded scope (see [`crate::scope`]).
+    pub fn event_with_scope(
+        &self,
+        seq: u64,
+    ) -> Result<Option<(Event, Option<EventScope>)>, StoreError> {
+        let conn = self.reader()?;
+        let Some(event) = db::event_by_seq(&conn, seq)? else {
+            return Ok(None);
+        };
+        let scope = db::scopes_between(&conn, seq, seq)?.remove(&seq);
+        Ok(Some((event, scope)))
     }
 
     /// Events before `before`, newest first, within a byte budget.
@@ -704,6 +733,7 @@ impl Engine {
     ) -> Result<Outcome, EngineError> {
         let mut next = base.clone();
         let mut scopes = Vec::with_capacity(events.len());
+        let mut moves = Vec::new();
         let command_id = p.command_id;
         let cid = command_id.to_string();
         let head_before = self.head_seq();
@@ -720,9 +750,14 @@ impl Engine {
                 e.seq = Some(seq);
                 let mut scope = ScopeBuilder::default();
                 scope.observe(&next, &e.payload);
+                let target = e.payload.target();
+                let before = location(&next, target);
                 apply(&mut next, e).map_err(|err| {
                     StoreError::Corrupt(format!("decided event does not apply: {err}"))
                 })?;
+                if let Some(change) = whereabouts_change(before, &next, target) {
+                    moves.push((target, change));
+                }
                 scope.observe(&next, &e.payload);
                 let scope = scope.finish();
                 db::insert_scope(&tx, seq, &scope)?;
@@ -772,6 +807,20 @@ impl Engine {
                 return Err(e);
             }
         };
+        if !moves.is_empty() {
+            let mut gone = self.gone.write().unwrap_or_else(PoisonError::into_inner);
+            let changes_anything = moves.iter().any(|(id, change)| match change {
+                Some(_) => true,
+                None => gone.contains_key(id),
+            });
+            if changes_anything {
+                let mut next_gone = (**gone).clone();
+                for (id, change) in moves {
+                    record_whereabouts(&mut next_gone, id, Some(change));
+                }
+                *gone = Arc::new(next_gone);
+            }
+        }
         *self.state.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);

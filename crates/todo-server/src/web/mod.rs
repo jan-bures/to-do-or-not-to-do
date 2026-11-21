@@ -17,7 +17,8 @@
 //!   sign-ins lock an IP out for a while.
 //! - Every HTML response gets a strict CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 //!   no-referrer` and `Cache-Control: no-store` ([`security_headers`], applied to the whole app).
-//!   When `public_origin` is `https://`, HTML responses also get [`HSTS`].
+//!   When `public_origin` is `https://`, every response (pages, API JSON, event streams, assets) also
+//!   gets [`HSTS`].
 //!
 //! [`OwnerSession`]: crate::auth::session::OwnerSession
 
@@ -39,7 +40,7 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 
-/// `Strict-Transport-Security` on HTML responses when the public origin is HTTPS: one year. No
+/// `Strict-Transport-Security` on every response when the public origin is HTTPS: one year. No
 /// `includeSubDomains`: the server does not know what else runs under its domain.
 pub const HSTS: &str = "max-age=31536000";
 
@@ -111,7 +112,7 @@ pub async fn ip_limit(State(app): State<AppState>, req: Request, next: Next) -> 
 }
 
 /// Security headers on every response; the strict CSP on every HTML response that has none yet, and
-/// [`HSTS`] on every HTML response when `https` (the public origin is HTTPS).
+/// [`HSTS`] on every response when `https` (the public origin is HTTPS).
 pub async fn security_headers(State(https): State<bool>, req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
@@ -129,9 +130,9 @@ pub async fn security_headers(State(https): State<bool>, req: Request, next: Nex
             h.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
         }
         h.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-        if https {
-            h.insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static(HSTS));
-        }
+    }
+    if https {
+        h.insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static(HSTS));
     }
     res
 }
