@@ -1,46 +1,33 @@
-//! Small building blocks shared by the views. Every value comes from `theme`.
+//! Small building blocks shared by the views. Every value comes from `theme` (that is, `todo_design`).
 
-use gpui::{Div, FontWeight, Hsla, SharedString, Styled, Svg, div, prelude::*, px, svg};
+use gpui::{
+    Div, Hsla, IntoElement, PathBuilder, SharedString, Styled, Svg, canvas, div, point, prelude::*,
+    px, svg,
+};
 
+use crate::assets::{glyph_path, icon_path};
 use crate::fixtures::ListRef;
-use crate::theme::{self, Agent, Palette, Theme, font, radius, text, weight};
+use crate::theme::{
+    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, elevation, radius, space, ty,
+};
 
-/// Typography shortcuts: family, size, line height and weight in one call.
-pub trait Type: Styled + Sized {
-    fn ui(self, (size, line): (f32, f32), w: f32) -> Self {
-        self.font_family(font::UI)
-            .text_size(px(size))
-            .line_height(px(line))
-            .font_weight(FontWeight(w))
-    }
-    fn mono(self, (size, line): (f32, f32), w: f32) -> Self {
-        self.font_family(font::MONO)
-            .text_size(px(size))
-            .line_height(px(line))
-            .font_weight(FontWeight(w))
-    }
-    fn display(self, (size, line): (f32, f32), w: f32) -> Self {
-        self.font_family(font::DISPLAY)
-            .text_size(px(size))
-            .line_height(px(line))
-            .font_weight(FontWeight(w))
-    }
-}
-
-impl<T: Styled> Type for T {}
-
-/// A single-colour stroke icon from `assets/icons`.
-pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
+/// A Lucide icon, tinted like text. `size` is `component::ICON` (18) in toolbars and rows and
+/// `component::ICON_SMALL` (14) in chips and metadata.
+pub fn icon(icon: Icon, size: f32, color: Hsla) -> Svg {
     svg()
-        .path(SharedString::from(format!("icons/{name}.svg")))
+        .path(icon_path(icon))
         .size(px(size))
         .flex_none()
         .text_color(color)
 }
 
-/// A hand-drawn list glyph.
-pub fn glyph(name: &str, size: f32, color: Hsla) -> Svg {
-    icon(&format!("glyph-{name}"), size, color)
+/// A hand-drawn list glyph at `component::GLYPH`.
+pub fn glyph(glyph: Glyph, color: Hsla) -> Svg {
+    svg()
+        .path(glyph_path(glyph))
+        .size(px(component::GLYPH))
+        .flex_none()
+        .text_color(color)
 }
 
 /// The round checkbox. Overdue tasks get the danger ring and wash.
@@ -54,27 +41,55 @@ pub fn checkbox(p: &Palette, overdue: bool, size: f32) -> Div {
         .size(px(size))
         .flex_none()
         .rounded_full()
-        .border(px(1.5))
+        .border(px(component::CHECKBOX_RING))
         .border_color(border)
         .bg(bg)
 }
 
-/// An agent's round letter mark.
-pub fn agent_mark(theme: Theme, agent: Agent, size: f32) -> Div {
-    let (bg, ink, ring) = theme::agent_colors(theme, agent);
+/// A checked checkbox. On a selected (`wash`) row it uses `check_selected`, which keeps 3:1 there.
+pub fn checked(p: &Palette, on_wash: bool, size: f32) -> Div {
     div()
         .size(px(size))
         .flex_none()
         .rounded_full()
-        .bg(bg)
-        .border_1()
-        .border_color(ring)
+        .bg(if on_wash { p.check_selected } else { p.accent })
         .flex()
         .items_center()
         .justify_center()
-        .mono((size * 0.5, size), weight::SEMIBOLD)
-        .text_color(ink)
+        .child(icon(Icon::Check, size * 0.75, p.on_accent))
+}
+
+/// An agent's round letter mark: the letter at half the mark's size, with a 1 px inset ring.
+pub fn agent_mark(theme: Theme, agent: Agent, size: f32) -> Div {
+    let c = theme::agent_colors(theme, agent);
+    let letter = ty::AGENT_LETTER;
+    div()
+        .size(px(size))
+        .flex_none()
+        .rounded_full()
+        .bg(c.bg)
+        .border(px(elevation::HAIRLINE))
+        .border_color(c.ring)
+        .flex()
+        .items_center()
+        .justify_center()
+        .style(letter)
+        .text_size(px(size * letter.size / component::AGENT_MARK))
+        .text_color(c.ink)
         .child(agent.letter())
+}
+
+/// A pill: list chips and the overdue badge (the only pills on the desktop).
+fn pill(bg: Hsla) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(component::CHIP_GAP))
+        .h(px(component::CHIP))
+        .px(px(component::CHIP_PAD_X))
+        .rounded(px(radius::CHIP))
+        .bg(bg)
 }
 
 /// A list chip: dot plus "Collection · List" (smart lists) or just the list name.
@@ -85,35 +100,41 @@ pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
     } else {
         list.name.into()
     };
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .h(px(20.))
-        .px(px(8.))
-        .rounded(px(radius::CHIP))
-        .bg(c.tint)
+    pill(c.tint)
         .text_color(c.ink)
-        .ui((12.0, 20.0), 550.0)
-        .child(div().size(px(6.)).rounded_full().bg(c.dot))
+        .style(ty::CHIP)
+        .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(c.dot))
         .child(label)
+}
+
+/// A filled diamond, `size` across (the overdue badge's mark).
+fn diamond(size: f32, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let c = bounds.center();
+            let r = px(size / 2.);
+            let mut b = PathBuilder::fill();
+            b.move_to(point(c.x, c.y - r));
+            b.line_to(point(c.x + r, c.y));
+            b.line_to(point(c.x, c.y + r));
+            b.line_to(point(c.x - r, c.y));
+            b.close();
+            if let Ok(path) = b.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .size(px(size))
+    .flex_none()
 }
 
 /// The overdue badge.
 pub fn overdue_badge(p: &Palette, label: &'static str) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .h(px(20.))
-        .px(px(8.))
-        .rounded(px(radius::CHIP))
-        .bg(p.danger_bg)
+    pill(p.danger_bg)
         .text_color(p.danger_ink)
-        .mono((12.0, 20.0), weight::SEMIBOLD)
-        .child(icon("diamond", 7., p.danger))
+        .style(ty::OVERDUE_BADGE)
+        .child(diamond(component::CHIP_DOT + 1., p.danger))
         .child(label)
 }
 
@@ -121,40 +142,40 @@ pub fn overdue_badge(p: &Palette, label: &'static str) -> Div {
 pub fn kbd(p: &Palette, label: &'static str) -> Div {
     div()
         .flex_none()
-        .px(px(5.))
-        .h(px(18.))
+        .px(px(space::S1 + 1.))
+        .h(px(ty::KEYCAP.line_height + 2.))
         .flex()
         .items_center()
         .rounded(px(radius::SM))
-        .border_1()
+        .border(px(elevation::HAIRLINE))
         .border_b_2()
         .border_color(p.line_strong)
         .bg(p.raised)
         .text_color(p.ink_3)
-        .mono((10.5, 14.0), weight::MEDIUM)
+        .style(ty::KEYCAP)
         .child(label)
 }
 
-/// `!`, `!!` or `!!!`, stepping from ink-3 to ink.
+/// `!`, `!!` or `!!!`, stepping from ink-3 to ink. GPUI has no letter spacing, so the marks are laid out
+/// one by one with the style's (negative) tracking.
 pub fn priority(p: &Palette, level: u8) -> Div {
-    let (color, w, label) = match level {
-        1 => (p.ink_3, weight::SEMIBOLD, "!"),
-        2 => (p.ink_2, weight::BOLD, "!!"),
-        3 => (p.ink, weight::BOLD, "!!!"),
-        _ => (p.ink_4, weight::REGULAR, ""),
+    let (color, style, label) = match level {
+        1 => (p.ink_3, ty::PRIORITY.with_weight(600), "!"),
+        2 => (p.ink_2, ty::PRIORITY, "!!"),
+        3 => (p.ink, ty::PRIORITY, "!!!"),
+        _ => (p.ink_4, ty::PRIORITY, ""),
     };
-    // The marks sit tight together, as in the mockup's -1.5 px tracking.
+    let tracking = style.tracking_px();
     div()
         .flex()
         .flex_none()
         .text_color(color)
-        .mono((13.0, 20.0), w)
-        .children(
-            label
-                .chars()
-                .enumerate()
-                .map(|(i, c)| div().when(i > 0, |d| d.ml(px(-2.5))).child(c.to_string())),
-        )
+        .style(style)
+        .children(label.chars().enumerate().map(|(i, c)| {
+            div()
+                .when(i > 0, |d| d.ml(px(tracking)))
+                .child(c.to_string())
+        }))
 }
 
 /// (bars, lit bars) for step progress: one bar per step, at most five, lit in proportion.
@@ -168,28 +189,29 @@ pub fn meter_bars(done: u32, total: u32) -> (u32, u32) {
     (bars, lit)
 }
 
-/// Step progress: one bar per step (up to five), the done ones in the accent.
+/// Step progress: one bar per step (up to five), the done ones in the accent. Each bar is a 3 × 10 tick
+/// with a 2 px gap, as in the design.
 pub fn meter(p: &Palette, done: u32, total: u32) -> Div {
     let (bars, lit) = meter_bars(done, total);
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(2.))
+        .gap(px(space::S1 / 2.))
         .children((0..bars).map(|i| {
-            div().w(px(3.)).h(px(10.)).rounded(px(1.)).bg(if i < lit {
-                p.accent
-            } else {
-                p.line_strong
-            })
+            div()
+                .w(px(elevation::SELECTION_BAR))
+                .h(px(component::ICON_SMALL - space::S1))
+                .rounded(px(elevation::HAIRLINE))
+                .bg(if i < lit { p.accent } else { p.line_strong })
         }))
 }
 
-/// The small mono capitals used for section labels.
+/// A section label in mono capitals.
 pub fn label(p: &Palette, s: &'static str) -> Div {
     div()
         .text_color(p.ink_3)
-        .mono(text::LABEL, weight::SEMIBOLD)
+        .style(ty::CAPS_LABEL)
         .child(s.to_uppercase())
 }
 

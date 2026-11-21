@@ -9,11 +9,13 @@ use gpui::{
 };
 
 use super::input::{InputEvent, TextInput};
-use super::kit::{self, Type};
-use super::landscape::{LandscapeCache, landscape};
+use super::kit;
+use super::landscape::{LandscapeCache, Sky, landscape};
 use super::shell::quick_add_colors;
 use crate::fixtures::Room;
-use crate::theme::{self, Palette, Theme, radius, space, text, weight};
+use crate::theme::{
+    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
+};
 
 /// The window's logical size.
 pub const SIZE: Size<Pixels> = Size {
@@ -36,6 +38,8 @@ pub struct QuickAddView {
     total: u32,
     input: Entity<TextInput>,
     landscape: LandscapeCache,
+    /// Whether Ctrl+Alt+Space is registered; the hint is dropped when another app owns it.
+    hotkey: bool,
 }
 
 impl EventEmitter<QuickAddEvent> for QuickAddView {}
@@ -45,6 +49,7 @@ impl QuickAddView {
         room: &Room,
         theme: Theme,
         typed: Option<&str>,
+        hotkey: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -81,6 +86,7 @@ impl QuickAddView {
             total: room.total,
             input,
             landscape: LandscapeCache::default(),
+            hotkey,
         }
     }
 
@@ -101,32 +107,37 @@ impl Render for QuickAddView {
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let typed = !self.input.read(cx).content.is_empty();
         let active = focused || typed;
-        let bar = || div().w(px(1.)).h(px(10.)).bg(p.line_strong);
+        let bar = || {
+            div()
+                .w(px(elevation::HAIRLINE))
+                .h(px(ty::CAPS_LABEL.size - 0.5))
+                .bg(p.line_strong)
+        };
         let summary = if self.total == 0 {
             "nothing planned yet".to_string()
         } else {
             format!("{} of {} done", self.done, self.total)
         };
         let field = div()
-            .h(px(space::QUICK_ADD_H))
+            .h(px(desktop::QUICK_ADD))
             .flex()
             .items_center()
-            .gap(px(12.))
-            .pl(px(14.))
-            .pr(px(10.))
-            .rounded(px(radius::LG))
-            .border_1()
+            .gap(px(space::S3))
+            .pl(px(space::S3 + 2.))
+            .pr(px(space::S2 + 2.))
+            .rounded(px(radius::QUICK_ADD))
+            .border(px(elevation::HAIRLINE))
             .border_color(if active { p.accent } else { p.control })
             .bg(p.raised)
-            .ui(text::QUICK_ADD, weight::REGULAR)
-            .child(kit::icon("plus", 18., p.accent_strong))
+            .style(ty::QUICK_ADD)
+            .child(kit::icon(Icon::Plus, component::ICON, p.accent_strong))
             .child(self.input.clone())
             .child(kit::kbd(&p, "Enter"));
         let hint = |key: &'static str, what: &'static str| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(px(component::CHIP_GAP))
                 .child(kit::kbd(&p, key))
                 .child(what)
         };
@@ -136,9 +147,9 @@ impl Render for QuickAddView {
             .flex()
             .flex_col()
             .bg(p.pane)
-            .border_1()
+            .border(px(elevation::HAIRLINE))
             .border_color(p.line_strong)
-            .font_family(theme::font::UI)
+            .style(ty::BODY)
             .text_color(p.ink)
             .child(
                 div()
@@ -146,8 +157,8 @@ impl Render for QuickAddView {
                     .bg(p.sky)
                     .child(
                         div()
-                            .pt(px(14.))
-                            .px(px(20.))
+                            .pt(px(space::S3 + 2.))
+                            .px(px(space::S5))
                             .flex()
                             .items_center()
                             .justify_between()
@@ -155,65 +166,65 @@ impl Render for QuickAddView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(10.))
-                                    .h(px(22.))
+                                    .gap(px(space::S2 + 2.))
+                                    .h(px(ty::EYEBROW_DAY.line_height))
                                     .child(
                                         div()
-                                            .display(text::EYEBROW_DOW, weight::REGULAR)
-                                            .italic()
+                                            .style(ty::EYEBROW_DAY)
                                             .text_color(p.ink_2)
                                             .child("Quick add"),
                                     )
                                     .child(bar())
                                     .child(
-                                        div()
-                                            .mono(text::EYEBROW_MONO, weight::REGULAR)
-                                            .text_color(p.ink_3)
-                                            .child(
-                                                format!("to {}", self.room_title).to_uppercase(),
-                                            ),
+                                        div().style(ty::EYEBROW_META).text_color(p.ink_3).child(
+                                            format!("to {}", self.room_title).to_uppercase(),
+                                        ),
                                     ),
                             )
                             .child(
                                 div()
-                                    .mono((12., 16.), weight::REGULAR)
+                                    .style(ty::SUMMARY_FIGURES)
                                     .text_color(p.ink_2)
                                     .child(summary),
                             ),
                     )
                     .child(landscape(
                         &self.landscape,
-                        p,
+                        Sky::Slim(p),
                         self.done,
                         self.total,
-                        self.total == 0,
                     )),
             )
-            .child(div().h(px(1.)).bg(p.line))
+            .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
             .child(
-                div().px(px(13.)).pt(px(13.)).child(
-                    div()
-                        .p(px(3.))
-                        .rounded(px(radius::LG + 3.))
-                        .bg(if active {
-                            p.tint
-                        } else {
-                            gpui::transparent_black()
-                        })
-                        .child(field),
-                ),
+                div()
+                    .px(px(space::S4 - elevation::FOCUS_RING))
+                    .pt(px(space::S4 - elevation::FOCUS_RING))
+                    .child(
+                        div()
+                            .p(px(elevation::FOCUS_RING))
+                            .rounded(px(radius::QUICK_ADD + elevation::FOCUS_RING))
+                            .bg(if active {
+                                p.tint
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .child(field),
+                    ),
             )
             .child(
                 div()
-                    .px(px(20.))
-                    .pt(px(8.))
+                    .px(px(space::S5))
+                    .pt(px(space::S2))
                     .flex()
-                    .gap(px(18.))
-                    .ui((12., 16.), weight::REGULAR)
+                    .gap(px(space::S4 + 2.))
+                    .style(ty::META)
                     .text_color(p.ink_3)
                     .child(hint("Enter", "add"))
                     .child(hint("Esc", "close"))
-                    .child(hint("Ctrl Alt Space", "from anywhere")),
+                    .when(self.hotkey, |row| {
+                        row.child(hint("Ctrl Alt Space", "from anywhere"))
+                    }),
             )
     }
 }

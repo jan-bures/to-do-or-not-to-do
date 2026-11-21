@@ -3,9 +3,10 @@
 Renders the screenshot gallery: every shell fixture in light and dark, at 100 % and 150 %.
 
 .DESCRIPTION
-Builds the desktop app in release mode (unless -NoBuild), makes sure the bundled fonts are available, then runs
-`todo-desktop --screenshot` once per fixture, theme and scale. The PNGs land in apps/desktop/target/gallery
-(git ignores target/). Compare them against the chosen mockups before calling a UI change done.
+Builds the desktop app in release mode (unless -NoBuild), then runs `todo-desktop --screenshot` once per
+fixture, theme and scale, and checks that every image has exactly the expected pixel size. The PNGs land in
+apps/desktop/target/gallery (git ignores target/). Compare them against the chosen mockups before calling a UI
+change done.
 
 .EXAMPLE
 pwsh apps/desktop/scripts/gallery.ps1
@@ -14,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'empty', 'quick-add'),
+    [string[]]$Fixtures = @('my-day', 'work', 'empty', 'finished', 'quick-add'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )
@@ -34,16 +35,17 @@ if (-not $NoBuild) {
 $exe = Join-Path $app 'target/release/todo-desktop.exe'
 if (-not (Test-Path $exe)) { throw "missing $exe; build first" }
 
-# Fonts: the shared assets/fonts directory once it exists, otherwise the stopgap download in target/fonts.
-$repo = Resolve-Path (Join-Path $app '../..')
-$shared = Join-Path $repo 'assets/fonts'
-$stopgap = Join-Path $app 'target/fonts'
-$haveShared = (Test-Path $shared) -and (Get-ChildItem $shared -Include *.ttf, *.otf -Recurse -ErrorAction SilentlyContinue)
-$haveStopgap = (Test-Path $stopgap) -and (Get-ChildItem $stopgap -Filter *.ttf -ErrorAction SilentlyContinue)
-if (-not $haveShared -and -not $haveStopgap) {
-    Write-Host 'Fetching fonts into target/fonts...'
-    python (Join-Path $PSScriptRoot 'fetch_fonts.py') $stopgap
-    if ($LASTEXITCODE -ne 0) { throw 'fetching fonts failed' }
+# The expected logical size of each fixture's window; the captured PNG must be exactly this times the scale.
+function Get-ExpectedSize([string]$fixture, [double]$scale) {
+    $logical = if ($fixture -eq 'quick-add') { @(640, 196) } else { @(1440, 900) }
+    return @([int][math]::Round($logical[0] * $scale), [int][math]::Round($logical[1] * $scale))
+}
+
+# Width and height from the PNG's IHDR chunk (big-endian, at bytes 16 and 20).
+function Get-PngSize([string]$path) {
+    $b = [System.IO.File]::ReadAllBytes($path)
+    $be = { param($o) ([int]$b[$o] -shl 24) -bor ([int]$b[$o + 1] -shl 16) -bor ([int]$b[$o + 2] -shl 8) -bor [int]$b[$o + 3] }
+    return @((& $be 16), (& $be 20))
 }
 
 $failed = 0
@@ -52,10 +54,17 @@ foreach ($fixture in $Fixtures) {
         foreach ($scale in $Scales) {
             $pct = [int]([double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture) * 100)
             $out = Join-Path $OutDir "$fixture-$theme-$pct.png"
-            $argList = @('--screenshot', "`"$out`"", '--fixture', $fixture, '--theme', $theme, '--scale', $scale)
+            $argList = @('--screenshot', "`"$out`"", '--fixture', $fixture, '--theme', $theme, '--scale', $scale, '--overwrite')
             $p = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru -NoNewWindow
             if ($p.ExitCode -ne 0) {
                 Write-Warning "$fixture $theme ${pct}%: exit code $($p.ExitCode)"
+                $failed++
+                continue
+            }
+            $want = Get-ExpectedSize $fixture ([double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
+            $got = Get-PngSize $out
+            if ($got[0] -ne $want[0] -or $got[1] -ne $want[1]) {
+                Write-Warning "$fixture $theme ${pct}%: image is $($got[0])x$($got[1]), expected $($want[0])x$($want[1])"
                 $failed++
             }
         }

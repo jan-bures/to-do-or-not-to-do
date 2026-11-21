@@ -2,6 +2,8 @@
 //! Start with Windows. Also the `--bench` modes, which run exactly this code and time it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -100,13 +102,13 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("todo-desktop.exe"));
     let (tx, mut rx) = unbounded::<ShellEvent>();
-    let background = opts.background || bench.as_ref().is_some_and(|b| b.kind == BenchKind::Hotkey);
+    let bench_hidden = bench.as_ref().is_some_and(|b| b.kind == BenchKind::Hotkey);
 
     application().with_assets(Assets).run(move |cx: &mut App| {
         if bench.is_some() {
             metrics.ms("gpui_ready_ms", win::process_age_ms());
         }
-        let missing = fonts::load(cx, opts.fonts_dir.as_deref());
+        let missing = fonts::load(cx);
         if !missing.is_empty() {
             tracing::warn!("fonts missing: {:?}", missing);
         }
@@ -115,6 +117,27 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
         let theme = theme_for(cx.window_appearance());
         let (weekday, date, week) = today();
         let startup = fixtures::startup(weekday, date, week);
+
+        // The hotkey and the tray come first: whether they work decides what the windows offer. The hotkey
+        // handler learns the quick-add window's handle once that window exists.
+        let quick_hwnd = Arc::new(AtomicIsize::new(0));
+        let hotkey_tx = tx.clone();
+        let hotkey_hwnd = quick_hwnd.clone();
+        let hotkey =
+            hotkey::register(move || on_hotkey(hotkey_hwnd.load(Ordering::Acquire), &hotkey_tx))
+                .map_err(|e| tracing::warn!("Ctrl+Alt+Space is unavailable: {e:#}"))
+                .ok();
+        let autostart_enabled = Autostart::current_user().is_enabled(&exe);
+        let tray_tx = tx.clone();
+        let tray = tray::create(autostart_enabled, hotkey.is_some(), move |action| {
+            let _ = tray_tx.unbounded_send(ShellEvent::Tray(action));
+        })
+        .map_err(|e| tracing::error!("tray icon failed: {e:#}"))
+        .ok();
+        // Without a tray there is no way back to a hidden window and no Quit, so the window shows and
+        // Close quits.
+        let background = bench_hidden || (opts.background && tray.is_some());
+        let hotkey_ok = hotkey.is_some();
 
         let main = match cx.open_window(main_window_options(cx, !background), |window, cx| {
             cx.new(|cx| ShellView::new(startup.clone(), theme, window, cx))
@@ -127,7 +150,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
             }
         };
         let quick = match cx.open_window(quick_add::window_options(cx, false), |window, cx| {
-            cx.new(|cx| QuickAddView::new(&startup.room, theme, None, window, cx))
+            cx.new(|cx| QuickAddView::new(&startup.room, theme, None, hotkey_ok, window, cx))
         }) {
             Ok(w) => w,
             Err(e) => {
@@ -144,20 +167,15 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
                 .update(cx, |_, window, _| win::hwnd_of(window))
                 .unwrap_or_default(),
         };
-        wire_windows(main, quick, hwnds, cx);
+        quick_hwnd.store(hwnds.quick, Ordering::Release);
+        let close = if tray.is_some() {
+            OnClose::HideToTray
+        } else {
+            OnClose::Quit
+        };
+        wire_windows(main, quick, hwnds, close, cx);
 
         // Tray, hotkey and second launches all feed one channel, drained on the UI thread.
-        let autostart_enabled = Autostart::current_user().is_enabled(&exe);
-        let tray_tx = tx.clone();
-        let tray = tray::create(autostart_enabled, move |action| {
-            let _ = tray_tx.unbounded_send(ShellEvent::Tray(action));
-        })
-        .map_err(|e| tracing::error!("tray icon failed: {e:#}"))
-        .ok();
-        let hotkey_tx = tx.clone();
-        let hotkey = hotkey::register(move || on_hotkey(hwnds.quick, &hotkey_tx))
-            .map_err(|e| tracing::warn!("Ctrl+Alt+Space is unavailable: {e:#}"))
-            .ok();
         let activate_tx = tx.clone();
         primary.listen(move || {
             let _ = activate_tx.unbounded_send(ShellEvent::Activate);
@@ -198,17 +216,34 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Close hides to the tray; the quick-add window reports what was typed and hides when it loses focus.
+/// What closing the main window does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnClose {
+    /// The usual: hide to the tray, which has Show and Quit.
+    HideToTray,
+    /// No tray icon (it failed to register): quit, or the process would linger with no way back.
+    Quit,
+}
+
+/// Close hides to the tray (or quits without one); the quick-add window reports what was typed and hides
+/// when it loses focus.
 fn wire_windows(
     main: WindowHandle<ShellView>,
     quick: WindowHandle<QuickAddView>,
     hwnds: Hwnds,
+    close: OnClose,
     cx: &mut App,
 ) {
     let _ = main.update(cx, |_, window, cx| {
-        window.on_window_should_close(cx, move |_, _| {
-            win::hide(hwnds.main);
-            false
+        window.on_window_should_close(cx, move |_, cx| match close {
+            OnClose::HideToTray => {
+                win::hide(hwnds.main);
+                false
+            }
+            OnClose::Quit => {
+                cx.quit();
+                true
+            }
         });
     });
     let _ = quick.update(cx, |_, window, cx| {

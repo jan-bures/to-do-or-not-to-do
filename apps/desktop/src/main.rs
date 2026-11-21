@@ -7,7 +7,6 @@ mod args;
 mod assets;
 mod fixtures;
 mod fonts;
-mod geometry;
 mod metrics;
 mod theme;
 mod ui;
@@ -52,10 +51,7 @@ fn main() -> ExitCode {
         }
         Command::Screenshot(opts) => screenshot::run(opts),
         Command::Bench(opts) => {
-            let run = args::RunOptions {
-                background: false,
-                fonts_dir: opts.fonts_dir.clone(),
-            };
+            let run = args::RunOptions { background: false };
             app::run(run, Some(opts)).map(|()| 0)
         }
         Command::Run(opts) => app::run(opts, None).map(|()| 0),

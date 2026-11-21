@@ -102,6 +102,12 @@ impl WindowsDisplay {
 
     /// Check if the center point of given bounds is inside this monitor
     pub fn check_given_bounds(&self, bounds: Bounds<Pixels>) -> bool {
+        // TO-DO PATCH (screenshots): with a forced scale factor the window is usually larger than the
+        // screen (a 1440 x 900 window at 150 % on a 1024 x 768 runner), and its centre can fall off the
+        // display. Keep the requested bounds instead of falling back to the default size.
+        if crate::todo_patch::scale_factor_override().is_some() {
+            return true;
+        }
         let center = bounds.center();
         let center = POINT {
             x: (center.x.as_f32() * self.scale_factor) as i32,

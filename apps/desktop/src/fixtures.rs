@@ -5,7 +5,7 @@
 
 use gpui::SharedString;
 
-use crate::theme::{Agent, hue};
+use crate::theme::{Agent, Glyph, Hue, Icon, hues, swatch};
 
 /// The line above the room title.
 #[derive(Clone, Debug, PartialEq)]
@@ -24,7 +24,7 @@ pub enum Eyebrow {
 pub struct ListRef {
     pub collection: &'static str,
     pub name: &'static str,
-    pub hue: u16,
+    pub hue: Hue,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +54,7 @@ pub struct Task {
 pub struct Room {
     pub title: &'static str,
     pub eyebrow: Eyebrow,
-    pub hue: u16,
+    pub hue: Hue,
     /// Smart lists show the list's collection in chips ("Work · Finance"); collections only the list.
     pub smart: bool,
     pub done: u32,
@@ -67,13 +67,28 @@ pub struct Room {
     /// Text typed into the quick-add, for fixtures that show it focused.
     pub quick_add_text: Option<&'static str>,
     pub completed: u32,
+    /// My Day: finishing every task turns the header into the dusk scene.
+    pub finishes_day: bool,
+    /// What the finished day hands over to.
+    pub tomorrow: Option<Tomorrow>,
+}
+
+/// The finished day's hand-over: tomorrow's first task, the rest of tomorrow and the rest of the week.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tomorrow {
+    pub weekday: &'static str,
+    pub first: Task,
+    pub first_when: &'static str,
+    pub also: Vec<Task>,
+    pub week: Vec<Task>,
+    pub more: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
-    pub icon: &'static str,
+    pub icon: Icon,
     pub label: &'static str,
-    pub hue: u16,
+    pub hue: Hue,
     pub count: Option<u32>,
     /// "3 new" pip instead of a count.
     pub pip: Option<&'static str>,
@@ -81,11 +96,11 @@ pub struct NavItem {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Collection {
-    pub glyph: &'static str,
+    pub glyph: Glyph,
     pub name: &'static str,
-    pub hue: u16,
+    pub hue: Hue,
     pub count: u32,
-    pub lists: Vec<(ListRef, &'static str, u32)>,
+    pub lists: Vec<(ListRef, Glyph, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,7 +140,7 @@ pub struct Detail {
     pub subtitle: &'static str,
     pub steps: Vec<Step>,
     pub notes: &'static str,
-    pub fields: Vec<(&'static str, &'static str, &'static str)>,
+    pub fields: Vec<(Icon, &'static str, &'static str)>,
 }
 
 /// Everything one window shows.
@@ -138,7 +153,7 @@ pub struct Shell {
     pub selected_task: Option<usize>,
 }
 
-const fn list(collection: &'static str, name: &'static str, hue: u16) -> ListRef {
+const fn list(collection: &'static str, name: &'static str, hue: Hue) -> ListRef {
     ListRef {
         collection,
         name,
@@ -146,17 +161,22 @@ const fn list(collection: &'static str, name: &'static str, hue: u16) -> ListRef
     }
 }
 
-const PLANNING: ListRef = list("Work", "Planning", hue::PLANNING);
-const FINANCE: ListRef = list("Work", "Finance", hue::FINANCE);
-const OFFICE: ListRef = list("Work", "Office", hue::OFFICE);
-const EVENTS: ListRef = list("Work", "Events", hue::EVENTS);
-const TODO_APP: ListRef = list("Projects", "To-do app", hue::TODO_APP);
-const HOME: ListRef = list("Projects", "Home renovation", hue::HOME);
-const READING: ListRef = list("Projects", "Reading list", hue::READING);
-const ERRANDS: ListRef = list("Personal", "Errands", hue::ERRANDS);
-const HEALTH: ListRef = list("Personal", "Health", hue::HEALTH);
-const TRAVEL: ListRef = list("Personal", "Travel", hue::TRAVEL);
-const ADMIN: ListRef = list("Personal", "Admin", hue::ADMIN);
+/// Collection hues: list swatches, as the owner would pick them.
+const WORK: Hue = swatch("lagoon");
+const PROJECTS: Hue = swatch("fern");
+const PERSONAL: Hue = swatch("rose");
+
+const PLANNING: ListRef = list("Work", "Planning", swatch("azure"));
+const FINANCE: ListRef = list("Work", "Finance", swatch("teal"));
+const OFFICE: ListRef = list("Work", "Office", swatch("cornflower"));
+const EVENTS: ListRef = list("Work", "Events", swatch("jade"));
+const TODO_APP: ListRef = list("Projects", "To-do app", swatch("fern"));
+const HOME: ListRef = list("Projects", "Home renovation", swatch("olive"));
+const READING: ListRef = list("Projects", "Reading list", swatch("jade"));
+const ERRANDS: ListRef = list("Personal", "Errands", swatch("coral"));
+const HEALTH: ListRef = list("Personal", "Health", swatch("pink"));
+const TRAVEL: ListRef = list("Personal", "Travel", swatch("clay"));
+const ADMIN: ListRef = list("Personal", "Admin", swatch("orchid"));
 
 fn task(title: &'static str, list: ListRef) -> Task {
     Task {
@@ -181,52 +201,52 @@ fn sidebar(selected: Selected) -> Sidebar {
     };
     Sidebar {
         smart: vec![
-            nav("sun", "My Day", hue::MY_DAY, 9),
-            nav("star", "Important", hue::IMPORTANT, 4),
-            nav("cal", "Planned", hue::PLANNED, 17),
-            nav("list", "All", hue::ALL, 38),
-            nav("done", "Completed", hue::COMPLETED, 112),
+            nav(Icon::Sun, "My Day", hues::MY_DAY, 9),
+            nav(Icon::Star, "Important", hues::IMPORTANT, 4),
+            nav(Icon::Calendar, "Planned", hues::PLANNED, 17),
+            nav(Icon::List, "All", hues::ALL, 38),
+            nav(Icon::CircleCheck, "Completed", hues::COMPLETED, 112),
             NavItem {
-                icon: "spark",
+                icon: Icon::Sparkles,
                 label: "Agent activity",
-                hue: hue::AGENT,
+                hue: hues::AGENT_ACTIVITY,
                 count: None,
                 pip: Some("3 new"),
             },
         ],
         collections: vec![
             Collection {
-                glyph: "work",
+                glyph: Glyph::Briefcase,
                 name: "Work",
-                hue: hue::WORK,
+                hue: WORK,
                 count: 15,
                 lists: vec![
-                    (PLANNING, "planning", 6),
-                    (FINANCE, "finance", 3),
-                    (OFFICE, "office", 4),
-                    (EVENTS, "events", 2),
+                    (PLANNING, Glyph::Flag, 6),
+                    (FINANCE, Glyph::Coin, 3),
+                    (OFFICE, Glyph::Paperclip, 4),
+                    (EVENTS, Glyph::CalendarStar, 2),
                 ],
             },
             Collection {
-                glyph: "projects",
+                glyph: Glyph::Layers,
                 name: "Projects",
-                hue: hue::PROJECTS,
+                hue: PROJECTS,
                 count: 16,
                 lists: vec![
-                    (TODO_APP, "todoapp", 9),
-                    (HOME, "home", 5),
-                    (READING, "reading", 2),
+                    (TODO_APP, Glyph::Code, 9),
+                    (HOME, Glyph::Wrench, 5),
+                    (READING, Glyph::Book, 2),
                 ],
             },
             Collection {
-                glyph: "personal",
+                glyph: Glyph::House,
                 name: "Personal",
-                hue: hue::PERSONAL,
+                hue: PERSONAL,
                 count: 9,
                 lists: vec![
-                    (ERRANDS, "errands", 3),
-                    (HEALTH, "health", 2),
-                    (TRAVEL, "travel", 4),
+                    (ERRANDS, Glyph::Basket, 3),
+                    (HEALTH, Glyph::Heart, 2),
+                    (TRAVEL, Glyph::PaperPlane, 4),
                 ],
             },
         ],
@@ -281,10 +301,10 @@ fn detail() -> Detail {
         ],
         notes: "Keep it to one page. Compare against the Q3 goals and flag anything that slipped, with a one-line reason each.",
         fields: vec![
-            ("cal", "Due", "Sat 21 Nov, 17:00"),
-            ("bell", "Reminder", "Today, 15:30"),
-            ("repeat", "Repeat", "Every Monday"),
-            ("hash", "Tags", "#planning #q4"),
+            (Icon::Calendar, "Due", "Sat 21 Nov, 17:00"),
+            (Icon::Bell, "Reminder", "Today, 15:30"),
+            (Icon::Repeat, "Repeat", "Every Monday"),
+            (Icon::Hash, "Tags", "#planning #q4"),
         ],
     }
 }
@@ -357,7 +377,7 @@ pub fn my_day() -> Shell {
                 date: "21 Nov 2026".into(),
                 week: "W47".into(),
             },
-            hue: hue::MY_DAY,
+            hue: hues::MY_DAY,
             smart: true,
             done: 3,
             total: 12,
@@ -367,6 +387,8 @@ pub fn my_day() -> Shell {
             quick_add_placeholder: "Add a task…",
             quick_add_text: None,
             completed: 3,
+            finishes_day: true,
+            tomorrow: None,
         },
         sidebar: sidebar(Selected::Smart(0)),
         detail: Some(detail()),
@@ -440,7 +462,7 @@ pub fn work() -> Shell {
                 kind: "Collection",
                 detail: "4 lists".into(),
             },
-            hue: hue::WORK,
+            hue: WORK,
             smart: false,
             done: 7,
             total: 22,
@@ -450,6 +472,8 @@ pub fn work() -> Shell {
             quick_add_placeholder: "Add a task to Work…",
             quick_add_text: Some("Draft the changelog for 0.4 tomorrow"),
             completed: 3,
+            finishes_day: false,
+            tomorrow: None,
         },
         sidebar: sidebar(Selected::Collection("Work")),
         detail: Some(detail()),
@@ -466,7 +490,7 @@ pub fn empty() -> Shell {
                 kind: "Projects",
                 detail: "0 open".into(),
             },
-            hue: hue::READING,
+            hue: READING.hue,
             smart: false,
             done: 0,
             total: 0,
@@ -476,6 +500,8 @@ pub fn empty() -> Shell {
             quick_add_placeholder: "Add a book or an article…",
             quick_add_text: None,
             completed: 2,
+            finishes_day: false,
+            tomorrow: None,
         },
         sidebar: {
             // The shelf is empty here, so the sidebar agrees.
@@ -531,8 +557,54 @@ pub fn by_name(name: &str) -> Option<Shell> {
         "my-day" | "quick-add" => Some(my_day()),
         "work" => Some(work()),
         "empty" => Some(empty()),
+        "finished" => Some(finished()),
         _ => None,
     }
+}
+
+/// My Day at the end of the day: every task done, the dusk scene, and tomorrow's plan.
+pub fn finished() -> Shell {
+    let mut shell = my_day();
+    let room = &mut shell.room;
+    room.done = 12;
+    room.total = 12;
+    room.estimate = None;
+    room.tasks.clear();
+    room.completed = 12;
+    room.tomorrow = Some(Tomorrow {
+        weekday: "Sunday",
+        first: Task {
+            priority: 1,
+            ..task("Renew passport appointment", ADMIN)
+        },
+        first_when: "Sun 22 Nov, 09:00",
+        also: vec![Task {
+            due: Due::Plain("15:00"),
+            ..task("Call Alex about the venue", EVENTS)
+        }],
+        week: vec![
+            Task {
+                due: Due::Plain("Mon 23 Nov"),
+                ..task("Vyřídit žádost o přeplatek na zdravotním pojištění", HEALTH)
+            },
+            Task {
+                due: Due::Plain("Tue 24 Nov"),
+                ..task("Book a room for the retro", EVENTS)
+            },
+            Task {
+                due: Due::Plain("Fri 27 Nov"),
+                ..task("Pack the weekend bag", TRAVEL)
+            },
+        ],
+        more: 3,
+    });
+    shell.detail = None;
+    shell.selected_task = None;
+    // Nothing is left open today, so My Day's count in the sidebar is zero too.
+    if let Some(item) = shell.sidebar.smart.iter_mut().find(|i| i.label == "My Day") {
+        item.count = Some(0);
+    }
+    shell
 }
 
 /// Header summary numbers: (done, total, open).
@@ -612,6 +684,19 @@ mod tests {
             .expect("reading list");
         assert_eq!(reading.2, 0);
         assert_eq!(projects.count, 14);
+    }
+
+    #[test]
+    fn the_finished_day_has_nothing_open_anywhere() {
+        let shell = finished();
+        assert_eq!(summary(&shell.room).2, 0);
+        let my_day = shell
+            .sidebar
+            .smart
+            .iter()
+            .find(|i| i.label == "My Day")
+            .expect("my day");
+        assert_eq!(my_day.count, Some(0));
     }
 
     #[test]

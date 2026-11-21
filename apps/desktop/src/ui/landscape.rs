@@ -1,27 +1,33 @@
-//! The header landscape: the sky strip with two flat hills and the sun on its arc.
+//! The header landscape: the sky with two flat hills and the sun on its arc, or the finished day's dusk.
 //!
-//! A handful of single-colour paths, built from `geometry` and cached per strip bounds and progress. They are
-//! rebuilt when the window is resized or the count changes, never per frame. No clipping, blur or masks.
+//! The geometry is `todo_design::landscape::Landscape`, the same shapes Compose and the web draw. Here it
+//! becomes a handful of single-colour GPUI paths, cached per bounds and progress: they are rebuilt when the
+//! window is resized or the count changes, never per frame. No clipping, blur or masks.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
     Bounds, Hsla, LineCap, LineJoin, Path, PathBuilder, PathStyle, Pixels, StrokeOptions, Window,
-    canvas, fill, point, prelude::*, px,
+    canvas, fill, linear_color_stop, linear_gradient, point, prelude::*, px,
 };
 
-use crate::geometry::{self, Pt, STARS, sun};
-use crate::theme::{Palette, with_alpha};
+use crate::theme::landscape::{
+    self as geo, ARC_STROKE, HALO_OPACITY, Landscape, MOON_OPACITY, PathEl, RAY_STROKE,
+    RING_STROKE, STAR_OPACITY, Scene, TRAVELLED_STROKE, TRAVELLED_STROKE_FINISHED,
+};
+use crate::theme::{Dusk, Palette, with_alpha};
 
-/// Which colour a cached path is painted with; resolved against the palette at paint time, so switching
+/// Which colour a cached path is painted with. Resolved against the palette at paint time, so switching
 /// themes doesn't rebuild paths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ink {
     Star,
+    Moon,
     Arc,
     Travelled,
     SunHalo,
+    SunRing(u8),
     Sun,
     HillFar,
     HillNear,
@@ -32,8 +38,7 @@ struct Key {
     bounds: Bounds<Pixels>,
     done: u32,
     total: u32,
-    /// Scenery only: no arc and no sun (an empty list has nothing to keep score of).
-    scenery: bool,
+    scene: Scene,
     stars: bool,
 }
 
@@ -53,7 +58,22 @@ impl std::fmt::Debug for LandscapeCache {
     }
 }
 
-fn to_px(origin: gpui::Point<Pixels>, p: Pt) -> gpui::Point<Pixels> {
+/// What the header shows.
+#[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "made once per header render and moved into its paint closure; a box would only add an allocation"
+)]
+pub enum Sky {
+    /// The everyday strip in the room's palette.
+    Slim(Palette),
+    /// My Day is done: the tall dusk scene.
+    Finished(Dusk),
+}
+
+type Origin = gpui::Point<Pixels>;
+
+fn at(origin: Origin, p: geo::Point) -> Origin {
     point(origin.x + px(p.x), origin.y + px(p.y))
 }
 
@@ -66,124 +86,173 @@ fn stroke(width: f32) -> PathBuilder {
     }))
 }
 
-fn polyline(origin: gpui::Point<Pixels>, pts: &[Pt], width: f32) -> Option<Path> {
+fn polyline(origin: Origin, pts: &[geo::Point], width: f32) -> Option<Path> {
     let (first, rest) = pts.split_first()?;
     let mut b = stroke(width);
-    b.move_to(to_px(origin, *first));
+    b.move_to(at(origin, *first));
     for p in rest {
-        b.line_to(to_px(origin, *p));
+        b.line_to(at(origin, *p));
     }
     b.build().ok()
 }
 
-fn circle(origin: gpui::Point<Pixels>, c: Pt, r: f32) -> Option<Path> {
-    let mut b = PathBuilder::fill();
-    let r_px = px(r);
-    b.move_to(to_px(origin, geometry::pt(c.x + r, c.y)));
-    b.arc_to(
-        point(r_px, r_px),
-        px(0.),
-        false,
-        true,
-        to_px(origin, geometry::pt(c.x - r, c.y)),
-    );
-    b.arc_to(
-        point(r_px, r_px),
-        px(0.),
-        false,
-        true,
-        to_px(origin, geometry::pt(c.x + r, c.y)),
-    );
+fn circle_into(mut b: PathBuilder, origin: Origin, c: geo::Point, r: f32) -> Option<Path> {
+    let radii = point(px(r), px(r));
+    let east = at(origin, geo::Point { x: c.x + r, y: c.y });
+    let west = at(origin, geo::Point { x: c.x - r, y: c.y });
+    b.move_to(east);
+    b.arc_to(radii, px(0.), false, true, west);
+    b.arc_to(radii, px(0.), false, true, east);
     b.close();
     b.build().ok()
 }
 
-fn hill(origin: gpui::Point<Pixels>, hill: &geometry::Hill, w: f32, h: f32) -> Option<Path> {
+fn disc(origin: Origin, c: geo::Point, r: f32) -> Option<Path> {
+    circle_into(PathBuilder::fill(), origin, c, r)
+}
+
+fn ring(origin: Origin, c: geo::Point, r: f32, width: f32) -> Option<Path> {
+    circle_into(stroke(width), origin, c, r)
+}
+
+/// A closed shape from the design's path elements.
+fn shape(origin: Origin, els: &[PathEl]) -> Option<Path> {
     let mut b = PathBuilder::fill();
-    b.move_to(to_px(origin, geometry::pt(0.0, h)));
-    b.line_to(to_px(origin, hill.start));
-    for c in &hill.curves {
-        b.cubic_bezier_to(
-            to_px(origin, c.to),
-            to_px(origin, c.c1),
-            to_px(origin, c.c2),
-        );
+    for el in els {
+        match *el {
+            PathEl::MoveTo(p) => b.move_to(at(origin, p)),
+            PathEl::LineTo(p) => b.line_to(at(origin, p)),
+            PathEl::CubicTo { c1, c2, to } => {
+                b.cubic_bezier_to(at(origin, to), at(origin, c1), at(origin, c2));
+            }
+            PathEl::ArcTo {
+                radius,
+                large_arc,
+                sweep,
+                to,
+            } => b.arc_to(
+                point(px(radius), px(radius)),
+                px(0.),
+                large_arc,
+                sweep,
+                at(origin, to),
+            ),
+            PathEl::Close => b.close(),
+        }
     }
-    b.line_to(to_px(origin, geometry::pt(w, h)));
-    b.close();
     b.build().ok()
 }
 
 fn build(key: Key) -> Vec<(Path, Ink)> {
     let origin = key.bounds.origin;
-    let (w, h) = (
-        f32::from(key.bounds.size.width),
-        f32::from(key.bounds.size.height),
-    );
+    let width = f32::from(key.bounds.size.width);
+    let height = f32::from(key.bounds.size.height);
+    let land = match key.scene {
+        Scene::Slim => Landscape::slim(width, height),
+        Scene::Finished => Landscape::finished(width),
+    };
+    let finished = key.scene == Scene::Finished;
+    let progress = Landscape::progress(key.done as usize, key.total as usize);
     let mut out = Vec::new();
     let mut push = |path: Option<Path>, ink| {
         if let Some(path) = path {
             out.push((path, ink));
         }
     };
-    if key.stars {
-        for (fx, fy, r) in STARS {
-            push(circle(origin, geometry::pt(w * fx, h * fy), r), Ink::Star);
+    if key.stars || finished {
+        for s in land.stars() {
+            push(disc(origin, s.center, s.radius), Ink::Star);
         }
     }
-    if !key.scenery {
-        let (travelled, remaining) = geometry::split_arc(key.done, key.total, w, h);
-        push(polyline(origin, &remaining, 1.0), Ink::Arc);
-        push(polyline(origin, &travelled, 1.5), Ink::Travelled);
-        let s = geometry::sun_position(key.done, key.total, w, h);
-        push(circle(origin, s, sun::HALO), Ink::SunHalo);
-        for i in 0..sun::RAYS {
-            let a = i as f32 * std::f32::consts::TAU / sun::RAYS as f32;
-            let (dx, dy) = (a.sin(), -a.cos());
-            let r0 = sun::RAY_OUTER - sun::RAY_LEN;
-            let ray = [
-                geometry::pt(s.x + dx * r0, s.y + dy * r0),
-                geometry::pt(s.x + dx * sun::RAY_OUTER, s.y + dy * sun::RAY_OUTER),
-            ];
-            push(polyline(origin, &ray, sun::RAY_WIDTH), Ink::Sun);
-        }
-        push(circle(origin, s, sun::DISC), Ink::Sun);
+    if let Some(moon) = land.moon() {
+        push(shape(origin, &moon), Ink::Moon);
     }
-    let (far, near) = geometry::hills(w, h);
-    push(hill(origin, &far, w, h), Ink::HillFar);
-    push(hill(origin, &near, w, h), Ink::HillNear);
+    if Landscape::shows_sun(key.total as usize) || finished {
+        if finished {
+            push(
+                polyline(origin, &land.travelled(1.0), TRAVELLED_STROKE_FINISHED),
+                Ink::Travelled,
+            );
+        } else {
+            push(
+                polyline(origin, &land.remaining(progress), ARC_STROKE),
+                Ink::Arc,
+            );
+            push(
+                polyline(origin, &land.travelled(progress), TRAVELLED_STROKE),
+                Ink::Travelled,
+            );
+        }
+        let sun = land.sun(progress);
+        for (i, (r, _)) in sun.rings.iter().enumerate() {
+            push(
+                ring(origin, sun.center, *r, RING_STROKE),
+                Ink::SunRing(i as u8),
+            );
+        }
+        push(disc(origin, sun.center, sun.halo_radius), Ink::SunHalo);
+        for (a, b) in sun.rays {
+            push(polyline(origin, &[a, b], RAY_STROKE), Ink::Sun);
+        }
+        push(disc(origin, sun.center, sun.disc_radius), Ink::Sun);
+    }
+    push(shape(origin, &land.far_hill()), Ink::HillFar);
+    push(shape(origin, &land.near_hill()), Ink::HillNear);
     out
 }
 
-fn color(p: &Palette, ink: Ink) -> Hsla {
-    match ink {
-        Ink::Star => with_alpha(p.star.unwrap_or(p.sky), 0.7),
-        Ink::Arc => p.arc,
-        Ink::Travelled => p.sun_ink,
-        Ink::SunHalo => with_alpha(p.sun, 0.22),
-        Ink::Sun => p.sun,
-        Ink::HillFar => p.hill_far,
-        Ink::HillNear => p.hill_near,
+fn ring_opacity(i: u8) -> f32 {
+    // The setting sun's rings fade outwards; the opacities are the design's.
+    Landscape::finished(0.0)
+        .sun(1.0)
+        .rings
+        .get(usize::from(i))
+        .map_or(0.0, |r| r.1)
+}
+
+fn color(sky: &Sky, ink: Ink) -> Hsla {
+    match sky {
+        Sky::Slim(p) => match ink {
+            Ink::Star | Ink::Moon => with_alpha(p.star, STAR_OPACITY),
+            Ink::Arc => p.arc,
+            Ink::Travelled => p.sun_ink,
+            Ink::SunHalo => with_alpha(p.sun, HALO_OPACITY),
+            Ink::SunRing(i) => with_alpha(p.sun, ring_opacity(i)),
+            Ink::Sun => p.sun,
+            Ink::HillFar => p.hill_far,
+            Ink::HillNear => p.hill_near,
+        },
+        Sky::Finished(d) => match ink {
+            Ink::Star => with_alpha(d.star, STAR_OPACITY),
+            Ink::Moon => with_alpha(d.star, MOON_OPACITY),
+            Ink::Arc => d.sun,
+            // The finished scene's travelled path is drawn at half opacity.
+            Ink::Travelled => with_alpha(d.sun, 0.5),
+            Ink::SunHalo => with_alpha(d.sun, HALO_OPACITY),
+            Ink::SunRing(i) => with_alpha(d.sun, ring_opacity(i)),
+            Ink::Sun => d.sun,
+            Ink::HillFar => d.silhouette_far,
+            Ink::HillNear => d.silhouette_near,
+        },
     }
 }
 
-/// The landscape strip. It fills its parent's width; give it the strip's height.
-pub fn landscape(
-    cache: &LandscapeCache,
-    palette: Palette,
-    done: u32,
-    total: u32,
-    scenery: bool,
-) -> impl IntoElement {
+/// The landscape. It fills its parent's width; its height is the scene's (`desktop::LANDSCAPE` or
+/// `landscape::HEIGHT_FINISHED`). In the finished scene the dusk gradient also runs behind the header text,
+/// so the parent paints `dusk.top` above it.
+pub fn landscape(cache: &LandscapeCache, sky: Sky, done: u32, total: u32) -> impl IntoElement {
     let cache = cache.clone();
-    let stars = palette.star.is_some();
+    let (scene, stars, height) = match sky {
+        Sky::Slim(p) => (Scene::Slim, p.night(), crate::theme::desktop::LANDSCAPE),
+        Sky::Finished(_) => (Scene::Finished, true, geo::HEIGHT_FINISHED),
+    };
     canvas(
         move |bounds, _window, _cx| {
             let key = Key {
                 bounds,
                 done,
                 total,
-                scenery,
+                scene,
                 stars,
             };
             let mut cached = cache.0.borrow_mut();
@@ -194,20 +263,58 @@ pub fn landscape(
             cached.paths.clone()
         },
         move |bounds, paths, window: &mut Window, _cx| {
-            window.paint_quad(fill(bounds, palette.sky));
-            if let Some(horizon) = palette.horizon {
-                let top = geometry::horizon_top(f32::from(bounds.size.height));
-                let band = Bounds::new(
-                    point(bounds.origin.x, bounds.origin.y + px(top)),
-                    gpui::size(bounds.size.width, bounds.size.height - px(top)),
-                );
-                window.paint_quad(fill(band, horizon));
+            match sky {
+                Sky::Slim(p) => {
+                    window.paint_quad(fill(bounds, p.sky));
+                    if p.night() {
+                        let land = Landscape::slim(
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                        );
+                        let top = px(land.horizon_top());
+                        let band = Bounds::new(
+                            point(bounds.origin.x, bounds.origin.y + top),
+                            gpui::size(bounds.size.width, bounds.size.height - top),
+                        );
+                        window.paint_quad(fill(band, p.horizon));
+                    }
+                }
+                Sky::Finished(d) => window.paint_quad(fill(
+                    bounds,
+                    linear_gradient(
+                        180.,
+                        linear_color_stop(d.top, 0.),
+                        linear_color_stop(d.low, 1.),
+                    ),
+                )),
             }
             for (path, ink) in paths {
-                window.paint_path(path, color(&palette, ink));
+                window.paint_path(path, color(&sky, ink));
             }
         },
     )
     .w_full()
-    .h(px(crate::theme::space::LAND_H))
+    .h(px(height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sun_sits_at_done_over_total_on_the_mockup_strip() {
+        // The F2 mockup's list column: 800 wide, sun at 3 of 12 done.
+        let land = Landscape::slim(800.0, crate::theme::desktop::LANDSCAPE);
+        let sun = land.sun(Landscape::progress(3, 12));
+        assert!((sun.center.x - 214.0).abs() < 0.5, "{}", sun.center.x);
+        // An empty list keeps score of nothing: hills only.
+        assert!(!Landscape::shows_sun(0));
+    }
+
+    #[test]
+    fn the_finished_rings_fade_outwards() {
+        assert!(ring_opacity(0) > ring_opacity(1) && ring_opacity(1) > ring_opacity(2));
+        assert!(ring_opacity(2) > 0.0);
+        assert_eq!(ring_opacity(9), 0.0);
+    }
 }

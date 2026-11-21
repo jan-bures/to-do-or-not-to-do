@@ -50,13 +50,23 @@ impl Tray {
     }
 }
 
+/// The Quick add item advertises the shortcut only when it is actually registered; another app may own it.
+pub fn quick_add_label(hotkey_registered: bool) -> &'static str {
+    if hotkey_registered {
+        "Quick add\tCtrl+Alt+Space"
+    } else {
+        "Quick add (Ctrl+Alt+Space is taken by another app)"
+    }
+}
+
 /// Creates the tray icon. `on_action` runs on the UI thread, inside the message loop.
 pub fn create(
     autostart_enabled: bool,
+    hotkey_registered: bool,
     on_action: impl Fn(TrayAction) + Send + Sync + 'static,
 ) -> anyhow::Result<Tray> {
     let show = MenuItem::new("Show or hide To-do", true, None);
-    let quick_add = MenuItem::new("Quick add\tCtrl+Alt+Space", true, None);
+    let quick_add = MenuItem::new(quick_add_label(hotkey_registered), true, None);
     let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled, None);
     let quit = MenuItem::new("Quit", true, None);
     let menu = Menu::new();
@@ -108,12 +118,12 @@ pub fn create(
 
 const ICON_SIZE: u32 = 32;
 
-/// The app mark, drawn in code: the F2 sun over two hills on the sky, in a rounded square.
+/// The app mark, drawn in code: the sun over two hills on My Day's light sky, in a rounded square. The
+/// colours are the design tokens'.
 pub fn icon_rgba(size: u32) -> Vec<u8> {
-    const SKY: [f32; 3] = [255.0, 239.0, 225.0]; // #ffefe1
-    const SUN: [f32; 3] = [245.0, 174.0, 57.0]; // #f5ae39
-    const FAR: [f32; 3] = [243.0, 173.0, 102.0]; // #f3ad66
-    const NEAR: [f32; 3] = [176.0, 102.0, 12.0]; // #b0660c
+    let p = todo_design::palette(todo_design::Theme::Light, todo_design::hues::MY_DAY);
+    let rgb = |c: todo_design::Rgb| [f32::from(c.r), f32::from(c.g), f32::from(c.b)];
+    let (sky_c, sun_c, far_c, near_c) = (rgb(p.sky), rgb(p.sun), rgb(p.hill_far), rgb(p.sun_ink));
     const SAMPLES: u32 = 4;
     let s = size as f32;
     let mut out = Vec::with_capacity((size * size * 4) as usize);
@@ -132,13 +142,13 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
                     let far = y > 0.62 + 0.06 * (x * 4.1 + 2.2).sin();
                     let sun = (x - 0.56).powi(2) + (y - 0.46).powi(2) < 0.16f32.powi(2);
                     let color = if near {
-                        NEAR
+                        near_c
                     } else if far {
-                        FAR
+                        far_c
                     } else if sun {
-                        SUN
+                        sun_c
                     } else {
-                        SKY
+                        sky_c
                     };
                     for (a, c) in acc.iter_mut().zip(color) {
                         *a += c;
@@ -179,5 +189,13 @@ mod tests {
         assert_eq!(alpha(0, 0), 0);
         assert_eq!(alpha(31, 31), 0);
         assert_eq!(alpha(16, 16), 255);
+    }
+
+    #[test]
+    fn the_menu_only_promises_a_registered_shortcut() {
+        assert!(quick_add_label(true).ends_with("Ctrl+Alt+Space"));
+        assert!(quick_add_label(true).contains("\tCtrl"));
+        assert!(!quick_add_label(false).contains("\tCtrl"));
+        assert!(quick_add_label(false).contains("taken"));
     }
 }

@@ -11,7 +11,7 @@ Every change is marked `TO-DO PATCH` in the sources:
 | WARP fallback | `src/directx_devices.rs` | Upstream fails when no hardware adapter gives a Direct3D 11 device. We fall back to WARP, the software rasterizer, so the app runs on VMs, Dev Boxes and CI runners without a GPU. `TODO_FORCE_WARP=1` forces WARP. |
 | Frame capture | `src/todo_patch.rs`, `src/directx_renderer.rs` | `todo_patch::request_capture(hwnd)` makes the next `draw` copy the finished render target into a staging texture before presenting it. The `--screenshot` mode uses it; there is no screen capture and no input. (Upstream's `render_to_image` does the same but is compiled only with GPUI's `test-support`, which we don't want in the app.) |
 | Present timestamps | `src/todo_patch.rs`, `src/directx_renderer.rs` | `todo_patch::first_present` and `last_present` report when a window presented a frame. The cold-start and hotkey benchmarks measure against them. |
-| Scale factor override | `src/todo_patch.rs`, `src/window.rs`, `src/display.rs`, `src/events.rs` | `todo_patch::set_scale_factor_override` lets the screenshot mode render at 150 % on a 100 % monitor, and lifts the maximum window size so it may exceed the screen. |
+| Scale factor override | `src/todo_patch.rs`, `src/window.rs`, `src/display.rs`, `src/events.rs` | `todo_patch::set_scale_factor_override` lets the screenshot mode render at 150 % on a 100 % monitor, lifts the maximum window size so it may exceed the screen, and keeps the requested bounds even when their centre is off the display. |
 
 To upgrade GPUI: copy `crates/gpui_windows/src` from the new Zed revision, re-apply the `TO-DO PATCH` hunks (search
 for the marker in this copy), update the revision here and in `apps/desktop/Cargo.toml`, and rerun the spike's

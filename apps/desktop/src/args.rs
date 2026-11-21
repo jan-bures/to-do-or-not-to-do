@@ -3,23 +3,22 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, parse_theme};
 
 pub const USAGE: &str = "\
 Usage:
-  todo-desktop [--background] [--fonts-dir <dir>]
+  todo-desktop [--background]
   todo-desktop --screenshot <out.png> --fixture <name> [--theme light|dark] [--scale 1|1.25|1.5|2]
-               [--fonts-dir <dir>]
-  todo-desktop --bench <startup|hotkey> --metrics <out.txt> [--fonts-dir <dir>]
+               [--overwrite]
+  todo-desktop --bench <startup|hotkey> --metrics <out.txt>
 
 Options:
   --background      Start in the tray without showing the window (used by Start with Windows).
-  --fonts-dir       Directory with the bundled fonts (default: an assets/fonts directory next to or
-                    above the executable).
   --screenshot      Render a fixture into its own window, save that window to a PNG and exit.
-  --fixture         Fixture to render: my-day, work, empty or quick-add.
+  --fixture         Fixture to render: my-day, work, empty, finished or quick-add.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
+  --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
   --bench           Measure cold start or hotkey-to-visible latency, write the numbers and exit.
   --metrics         Where --bench writes its numbers.
   -h, --help        Show this help.
@@ -27,7 +26,7 @@ Options:
 ";
 
 /// The fixtures `--screenshot` can render. Invented sample data only.
-pub const FIXTURES: &[&str] = &["my-day", "work", "empty", "quick-add"];
+pub const FIXTURES: &[&str] = &["my-day", "work", "empty", "finished", "quick-add"];
 
 /// What to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,7 +42,6 @@ pub enum Command {
 pub struct RunOptions {
     /// Start hidden in the tray.
     pub background: bool,
-    pub fonts_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,7 +50,8 @@ pub struct ScreenshotOptions {
     pub fixture: String,
     pub theme: Theme,
     pub scale: f32,
-    pub fonts_dir: Option<PathBuf>,
+    /// Replace an existing file at `out`.
+    pub overwrite: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +66,6 @@ pub enum BenchKind {
 pub struct BenchOptions {
     pub kind: BenchKind,
     pub metrics: PathBuf,
-    pub fonts_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -110,7 +108,7 @@ const SCALES: &[(&str, f32)] = &[
 #[derive(Default)]
 struct Raw {
     background: bool,
-    fonts_dir: Option<PathBuf>,
+    overwrite: bool,
     screenshot: Option<PathBuf>,
     fixture: Option<String>,
     theme: Option<String>,
@@ -155,11 +153,7 @@ where
         };
         match flag.as_str() {
             "--background" => raw.background = true,
-            "--fonts-dir" => set(
-                &mut raw.fonts_dir,
-                "--fonts-dir",
-                value("--fonts-dir")?.into(),
-            )?,
+            "--overwrite" => raw.overwrite = true,
             "--screenshot" => set(
                 &mut raw.screenshot,
                 "--screenshot",
@@ -201,7 +195,7 @@ fn build(raw: Raw) -> Result<Command, ArgError> {
         }
         let theme = match raw.theme {
             None => Theme::Light,
-            Some(t) => Theme::parse(&t).ok_or(ArgError::UnknownTheme(t))?,
+            Some(t) => parse_theme(&t).ok_or(ArgError::UnknownTheme(t))?,
         };
         let scale = match raw.scale {
             None => 1.0,
@@ -216,13 +210,14 @@ fn build(raw: Raw) -> Result<Command, ArgError> {
             fixture,
             theme,
             scale,
-            fonts_dir: raw.fonts_dir,
+            overwrite: raw.overwrite,
         }));
     }
     for (present, flag) in [
         (raw.fixture.is_some(), "--fixture"),
         (raw.theme.is_some(), "--theme"),
         (raw.scale.is_some(), "--scale"),
+        (raw.overwrite, "--overwrite"),
     ] {
         if present {
             return Err(ArgError::Orphan(flag, "--screenshot"));
@@ -238,18 +233,13 @@ fn build(raw: Raw) -> Result<Command, ArgError> {
             _ => return Err(ArgError::UnknownBench(kind)),
         };
         let metrics = raw.metrics.ok_or(ArgError::BenchNeedsMetrics)?;
-        return Ok(Command::Bench(BenchOptions {
-            kind,
-            metrics,
-            fonts_dir: raw.fonts_dir,
-        }));
+        return Ok(Command::Bench(BenchOptions { kind, metrics }));
     }
     if raw.metrics.is_some() {
         return Err(ArgError::Orphan("--metrics", "--bench"));
     }
     Ok(Command::Run(RunOptions {
         background: raw.background,
-        fonts_dir: raw.fonts_dir,
     }))
 }
 
@@ -267,13 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn background_and_fonts_dir() {
+    fn background() {
         assert_eq!(
-            p(&["--background", "--fonts-dir", "x/fonts"]),
-            Ok(Command::Run(RunOptions {
-                background: true,
-                fonts_dir: Some("x/fonts".into())
-            }))
+            p(&["--background"]),
+            Ok(Command::Run(RunOptions { background: true }))
+        );
+        // The fonts are embedded now; the old option is gone.
+        assert_eq!(
+            p(&["--fonts-dir", "x"]),
+            Err(ArgError::Unknown("--fonts-dir".into()))
         );
     }
 
@@ -286,7 +278,7 @@ mod tests {
                 fixture: "my-day".into(),
                 theme: Theme::Light,
                 scale: 1.0,
-                fonts_dir: None,
+                overwrite: false,
             }))
         );
     }
@@ -300,14 +292,15 @@ mod tests {
                 "dark",
                 "--fixture=work",
                 "--screenshot",
-                "g/work.png"
+                "g/work.png",
+                "--overwrite"
             ]),
             Ok(Command::Screenshot(ScreenshotOptions {
                 out: "g/work.png".into(),
                 fixture: "work".into(),
                 theme: Theme::Dark,
                 scale: 1.5,
-                fonts_dir: None,
+                overwrite: true,
             }))
         );
     }
@@ -368,6 +361,10 @@ mod tests {
             p(&["--scale", "1.5"]),
             Err(ArgError::Orphan("--scale", "--screenshot"))
         );
+        assert_eq!(
+            p(&["--overwrite"]),
+            Err(ArgError::Orphan("--overwrite", "--screenshot"))
+        );
     }
 
     #[test]
@@ -396,7 +393,6 @@ mod tests {
             Ok(Command::Bench(BenchOptions {
                 kind: BenchKind::Hotkey,
                 metrics: "m.txt".into(),
-                fonts_dir: None
             }))
         );
         assert_eq!(p(&["--bench", "startup"]), Err(ArgError::BenchNeedsMetrics));

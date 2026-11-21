@@ -19,12 +19,14 @@ use gpui_windows::todo_patch;
 use crate::args::ScreenshotOptions;
 use crate::assets::Assets;
 use crate::platform::win;
+use crate::theme::desktop;
 use crate::ui::quick_add::{self, QuickAddView};
 use crate::ui::shell::{self, ShellView};
 use crate::{fixtures, fonts, ui};
 
-/// The main window's size in the fixtures: the mockups' 1440 × 900.
-const MAIN_SIZE: (f32, f32) = (1440., 900.);
+/// The main window's size in the fixtures: the design's reference window, 1440 × 900 (the three panes side by
+/// side).
+const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAIL, 900.);
 
 /// Typed into the quick-add fixture, to show its focused state.
 const QUICK_ADD_TYPED: &str = "Call the venue about Friday's room";
@@ -57,22 +59,56 @@ fn options(width: f32, height: f32, quick: bool) -> WindowOptions {
     }
 }
 
+/// Exit code when the fonts are missing.
+pub const EXIT_FONTS: i32 = 3;
+/// Exit code when the output exists and `--overwrite` wasn't given.
+pub const EXIT_EXISTS: i32 = 4;
+
+/// The image size a window of `logical` size renders to at `scale`.
+pub fn expected_size(logical: (f32, f32), scale: f32) -> (u32, u32) {
+    let px = |v: f32| (v * scale).round() as u32;
+    (px(logical.0), px(logical.1))
+}
+
+/// Writes the PNG, refusing to replace an existing file unless `overwrite`.
+fn save(image: &image::RgbaImage, out: &std::path::Path, overwrite: bool) -> anyhow::Result<()> {
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(!overwrite)
+        .create(overwrite)
+        .truncate(overwrite)
+        .open(out)
+        .with_context(|| format!("creating {}", out.display()))?;
+    let mut w = std::io::BufWriter::new(file);
+    image
+        .write_to(&mut w, image::ImageFormat::Png)
+        .with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
 /// Renders the fixture and writes the PNG. Returns the process exit code.
 pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
     let shell_data = fixtures::by_name(&opts.fixture)
         .with_context(|| format!("unknown fixture {}", opts.fixture))?;
+    if !opts.overwrite && opts.out.exists() {
+        eprintln!(
+            "error: {} exists; pass --overwrite to replace it",
+            opts.out.display()
+        );
+        return Ok(EXIT_EXISTS);
+    }
     todo_patch::set_scale_factor_override(Some(opts.scale));
     let code = Arc::new(AtomicI32::new(1));
     let code_in = code.clone();
 
     application().with_assets(Assets).run(move |cx: &mut App| {
-        let missing = fonts::load(cx, opts.fonts_dir.as_deref());
+        let missing = fonts::load(cx);
         if !missing.is_empty() {
-            eprintln!(
-                "error: fonts missing: {:?}. Run apps/desktop/scripts/fetch_fonts.py or pass --fonts-dir.",
-                missing
-            );
-            code_in.store(3, Ordering::SeqCst);
+            eprintln!("error: fonts missing: {missing:?}");
+            code_in.store(EXIT_FONTS, Ordering::SeqCst);
             cx.quit();
             return;
         }
@@ -80,17 +116,41 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
         cx.bind_keys(shell::key_bindings());
         let theme = opts.theme;
         let quick = opts.fixture == "quick-add";
+        let logical = if quick {
+            (
+                f32::from(quick_add::SIZE.width),
+                f32::from(quick_add::SIZE.height),
+            )
+        } else {
+            MAIN_SIZE
+        };
+        let expected = expected_size(logical, opts.scale);
         let opened = if quick {
-            let (w, h) = (f32::from(quick_add::SIZE.width), f32::from(quick_add::SIZE.height));
+            let (w, h) = logical;
             cx.open_window(options(w, h, true), |window, cx| {
-                cx.new(|cx| QuickAddView::new(&shell_data.room, theme, Some(QUICK_ADD_TYPED), window, cx))
+                cx.new(|cx| {
+                    QuickAddView::new(
+                        &shell_data.room,
+                        theme,
+                        Some(QUICK_ADD_TYPED),
+                        true,
+                        window,
+                        cx,
+                    )
+                })
             })
-            .map(|w| w.update(cx, |_, window, _| win::hwnd_of(window)).unwrap_or_default())
+            .map(|w| {
+                w.update(cx, |_, window, _| win::hwnd_of(window))
+                    .unwrap_or_default()
+            })
         } else {
             cx.open_window(options(MAIN_SIZE.0, MAIN_SIZE.1, false), |window, cx| {
                 cx.new(|cx| ShellView::new(shell_data.clone(), theme, window, cx))
             })
-            .map(|w| w.update(cx, |_, window, _| win::hwnd_of(window)).unwrap_or_default())
+            .map(|w| {
+                w.update(cx, |_, window, _| win::hwnd_of(window))
+                    .unwrap_or_default()
+            })
         };
         let hwnd = match opened {
             Ok(h) if h != 0 => h,
@@ -106,14 +166,22 @@ pub fn run(opts: ScreenshotOptions) -> anyhow::Result<i32> {
             }
         };
         let out = opts.out.clone();
+        let overwrite = opts.overwrite;
         let code = code_in.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
             let result = capture(cx, hwnd).await.and_then(|image| {
-                if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
-                    std::fs::create_dir_all(dir)?;
-                }
-                image.save(&out).with_context(|| format!("writing {}", out.display()))?;
-                Ok((image.width(), image.height()))
+                let got = (image.width(), image.height());
+                // A window the system clamped (to a small screen, say) must not pass as the real thing.
+                anyhow::ensure!(
+                    got == expected,
+                    "captured {}x{}, expected {}x{}",
+                    got.0,
+                    got.1,
+                    expected.0,
+                    expected.1
+                );
+                save(&image, &out, overwrite)?;
+                Ok(got)
             });
             match result {
                 Ok((w, h)) => {
@@ -160,5 +228,29 @@ async fn capture(cx: &mut AsyncApp, hwnd: isize) -> anyhow::Result<image::RgbaIm
         }
         anyhow::ensure!(Instant::now() < deadline, "no frame was captured");
         sleep(cx, 16).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expected_sizes_follow_the_scale() {
+        assert_eq!(expected_size(MAIN_SIZE, 1.0), (1440, 900));
+        assert_eq!(expected_size(MAIN_SIZE, 1.5), (2160, 1350));
+        assert_eq!(expected_size((640., 196.), 1.25), (800, 245));
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_unless_asked() {
+        let dir = std::env::temp_dir().join(format!("todo-shot-{}", std::process::id()));
+        let out = dir.join("x.png");
+        let _ = std::fs::remove_file(&out);
+        let img = image::RgbaImage::new(2, 2);
+        save(&img, &out, false).expect("first write");
+        assert!(save(&img, &out, false).is_err());
+        save(&img, &out, true).expect("overwrite");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

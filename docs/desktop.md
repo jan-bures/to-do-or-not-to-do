@@ -9,7 +9,6 @@ doesn't talk to the server yet.
 
 ```sh
 cd apps/desktop
-python scripts/fetch_fonts.py          # once; needs fontTools (pip install fonttools==4.65.0)
 cargo run --release                    # the app; --background starts it in the tray
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
@@ -29,8 +28,8 @@ pwsh scripts/gallery.ps1               # screenshot gallery, see below
 - **The Linux CI jobs stay as they were**: `cargo … --workspace` at the root doesn't see the desktop app. A
   separate Windows job builds, lints and tests it.
 
-The app will depend on `todo-core` and `todo-client` by path once it syncs. Both crates stay portable, so
-that works from this workspace too.
+It depends on `todo-design` by path (with `embed-fonts`), and will depend on `todo-core` and `todo-client`
+the same way once it syncs. The shared crates stay portable, so that works from this workspace too.
 
 The toolchain comes from the root `rust-toolchain.toml` (1.98.1), which is pinned to what GPUI needs.
 
@@ -44,8 +43,10 @@ The toolchain comes from the root `rust-toolchain.toml` (1.98.1), which is pinne
 - **Frame capture.** A window can request a readback of its next frame, which is taken from its own
   render target before it's presented. The screenshot mode uses it.
 - **Present timestamps.** The time of each window's first and latest present, for the benchmarks.
-- **Scale factor override.** Lets the screenshot mode render at 150 % on a 100 % monitor, and lets the
-  window grow larger than the screen.
+- **Scale factor override.** Lets the screenshot mode render at 150 % on a 100 % monitor. While it's set,
+  the window keeps the bounds it asked for even when they don't fit on the display, and
+  `WM_GETMINMAXINFO` lifts the maximum track size, so a 2160 × 1350 capture works on a 1024 × 768 CI
+  screen.
 
 ## gpui-component: not adopted
 
@@ -76,49 +77,48 @@ same snapshot crates), adopting it then is cheap.
 | Feature | Where | Notes |
 |---|---|---|
 | Tray icon and menu | `src/platform/tray.rs` | Show or hide, quick add, "Start with Windows" (checkbox), quit. A left click toggles the window. The icon is drawn in code (sun over hills). |
-| Close hides to tray | `src/app.rs` | Closing the main window hides it. Only "Quit" ends the app. |
-| Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. Both live in the session's `Local\` namespace. |
-| Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to the main window's list. Esc or clicking away dismisses it. |
+| Close hides to tray | `src/app.rs` | Closing the main window hides it. Only "Quit" ends the app. If the tray icon can't be created, the window is shown even with `--background`, and closing it quits, so the process is never left running invisibly. |
+| Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. |
+| Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to the main window's list. Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
 | Window skeleton | `src/ui/shell.rs` | Custom title bar with search, sidebar, list, detail pane and status bar, as in F2. |
-| Header landscape | `src/ui/landscape.rs`, `src/geometry.rs` | The sky with two flat hills and the sun on its arc at *done / total*. The paths are built once per size and progress, and are cached. |
+| Header landscape | `src/ui/landscape.rs` | The sky with two flat hills and the sun on its arc at *done / total*, or the tall dusk scene once My Day is done. The geometry is `todo_design::landscape`; the paths are built once per size and progress, and are cached. |
 
 ### Design tokens
 
-Every visual value (colours per theme and room hue, type sizes, weights, spacing, radii) lives in
-`src/theme.rs`, so the switch to the shared design-tokens crate is a change to one file. The palettes are
-the F2 values for the rooms that the fixtures use (My Day, Work, Reading, Personal). Other hues fall back
-to My Day until the token crate computes them.
+Every visual value comes from `todo-design` (see `docs/design-language.md`): palettes per theme and room
+hue, list and agent colours, the dusk scene, text styles, spacing, radii and the desktop geometry.
+`src/theme.rs` is a thin adapter that turns token colours into GPUI colours and applies text styles; the
+views never hard-code a colour or a size. GPUI has no letter spacing at the pinned revision, so tracking is
+only faked where it matters (the priority marks). A checked box on a selected row uses `check_selected`.
+
+Icons are the shared Lucide subset and list glyphs (`todo_design::Icon` and `Glyph`), served to GPUI by
+`src/assets.rs`.
 
 ### Fonts
 
-The app loads its fonts from files at startup and never uses system fonts. The families are Fraunces (room
-titles and italic eyebrows), Schibsted Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
-The directory is resolved in this order:
-
-1. `--fonts-dir <dir>`;
-2. the `TODO_FONTS_DIR` environment variable;
-3. an `assets/fonts` directory next to the executable or in any directory above it. This is the shared
-   assets directory, once it lands;
-4. `apps/desktop/target/fonts`, which `scripts/fetch_fonts.py` fills in the meantime.
-
-The script downloads the variable fonts from a pinned google/fonts commit and cuts the static instances the
-design uses (for example, Fraunces at opsz 144, SOFT 100, weight 360). It also deletes the `STAT` table:
-with it, DirectWrite names the family "Fraunces 144pt SuperSoft NonWonky".
+The fonts are the shared static instances in `assets/fonts`, embedded in the binary through
+`todo_design::fonts::FACES` (the `embed-fonts` feature) and registered at startup. The app never uses system
+fonts. The families are Fraunces Display and Fraunces Text (room titles, italic eyebrows), Schibsted
+Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 
 ## Screenshots
 
 ```sh
-todo-desktop --screenshot <out.png> --fixture <my-day|work|empty|quick-add> [--theme light|dark] [--scale 1|1.25|1.5|2]
+todo-desktop --screenshot <out.png> --fixture <my-day|work|empty|finished|quick-add> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
 The screenshot mode opens one window with a fixture (invented sample data and a fixed date), waits for it to
 settle, reads back its next frame from the window's own render target and exits. It doesn't capture the
-screen and doesn't send any input. Exit code 0 means the PNG was written, and 3 means fonts are missing.
+screen and doesn't send any input. It refuses to replace an existing file unless `--overwrite` is given,
+and it checks that the captured image is the window's logical size times the scale. Exit code 0 means the
+PNG was written, 3 means a font family is missing, 4 means the output exists, and 1 is any other failure
+(including a wrong image size).
 
 `scripts/gallery.ps1` renders every fixture in both themes at 100 % and 150 % into
-`apps/desktop/target/gallery/` (`<fixture>-<theme>-<pct>.png`, git ignores it). CI runs it and uploads the
-gallery as the `desktop-gallery` artifact. Compare the images with the F2 mockups before calling a UI change
+`apps/desktop/target/gallery/` (`<fixture>-<theme>-<pct>.png`, git ignores it), passing `--overwrite`. It
+reads each PNG's size back and fails if it isn't 1440 × 900 (main window) or 640 × 196 (quick add) times the
+scale. CI runs it and uploads the gallery as the `desktop-gallery` artifact. Compare the images with the F2 mockups before calling a UI change
 done.
 
 ## Benchmarks
