@@ -61,6 +61,38 @@ pub fn verify_private(path: &Path, kind: Private) -> io::Result<()> {
     imp::verify_private(path, kind)
 }
 
+/// Reads a secret from an owner-only file: at most `max_len` bytes, or an `InvalidData` error.
+///
+/// The file is opened once, and every check is made on that open handle before reading from it, so
+/// the file can't be swapped between the checks and the read. Refused, with `InvalidData`:
+///
+/// - a symlink, junction or other reparse point as the last path component (it is not followed);
+/// - anything that isn't a regular file (a directory, FIFO or device);
+/// - a file owned by another account than the one running the process (Unix: the file's uid is not
+///   the effective uid; Windows: the owner SID is not the token user's);
+/// - broader access than the owner's: on Unix any group or other permission bit, on Windows any
+///   DACL other than [`verify_private`] accepts for [`Private::AnyFile`].
+///
+/// Only the last component is checked for links: the directories above it are the owner's to
+/// arrange, and anyone who can replace them already has the owner's account.
+pub fn read_private_file(path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+    imp::read_private_file(path, max_len)
+}
+
+/// Reads at most `max_len` bytes of an already checked file.
+fn read_capped(file: File, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    file.take(max_len.saturating_add(1)).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is larger than {max_len} bytes", path.display()),
+        ));
+    }
+    Ok(buf)
+}
+
 /// True for a directory entry that isn't a symlink, junction or any other reparse point.
 pub fn is_plain(metadata: &Metadata) -> bool {
     !metadata.file_type().is_symlink() && !imp::is_reparse_point(metadata)
@@ -164,6 +196,51 @@ mod imp {
     pub fn is_reparse_point(_metadata: &Metadata) -> bool {
         false
     }
+
+    #[allow(unsafe_code)]
+    fn effective_uid() -> u32 {
+        // SAFETY: geteuid has no preconditions and always succeeds.
+        unsafe { libc::geteuid() }
+    }
+
+    pub fn read_private_file(path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        use std::os::unix::fs::MetadataExt;
+        // O_NOFOLLOW: a symlink is refused (ELOOP), not followed. O_NONBLOCK: opening a FIFO doesn't
+        // wait for a writer; it is then refused as not a regular file.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open(path)
+            .map_err(|e| {
+                if e.raw_os_error() == Some(libc::ELOOP) {
+                    super::not_private(path, "it is a symbolic link")
+                } else {
+                    e
+                }
+            })?;
+        let m = file.metadata()?;
+        if !m.file_type().is_file() {
+            return Err(super::not_private(path, "it is not a regular file"));
+        }
+        let me = effective_uid();
+        if m.uid() != me {
+            return Err(super::not_private(
+                path,
+                format_args!(
+                    "it is owned by uid {}, not by this process's uid {me}",
+                    m.uid()
+                ),
+            ));
+        }
+        let mode = m.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(super::not_private(
+                path,
+                format_args!("mode {mode:o}; group and others must have no access (chmod 600)"),
+            ));
+        }
+        super::read_capped(file, path, max_len)
+    }
 }
 
 #[cfg(windows)]
@@ -194,14 +271,14 @@ mod imp {
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetTokenInformation, INHERIT_ONLY_ACE, INHERITED_ACE,
-        OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, GetVolumeInformationW,
-        GetVolumePathNameW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        READ_CONTROL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ, GetVolumeInformationW, GetVolumePathNameW, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -440,29 +517,32 @@ mod imp {
         Ok(())
     }
 
-    /// The DACL of `path`, with the descriptor that owns it. `dacl` points into `_sd`.
-    struct Dacl {
+    /// The owner and DACL of an open file, with the descriptor that owns them. `owner` (null unless
+    /// requested) and `dacl` point into `_sd`.
+    struct Security {
         _sd: LocalBox,
         sd: PSECURITY_DESCRIPTOR,
+        owner: PSID,
         dacl: *mut ACL,
     }
 
-    fn read_dacl(path: &Path) -> io::Result<Dacl> {
-        // Reading the DACL needs only READ_CONTROL, which the owner always has. Backup semantics lets the
-        // same call open directories.
-        let file = std::fs::OpenOptions::new()
-            .access_mode(READ_CONTROL)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)?;
+    /// Reads the DACL (and with `owner`, the owner SID) of a handle opened with `READ_CONTROL`.
+    fn security(file: &File, owner: bool) -> io::Result<Security> {
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         let mut dacl: *mut ACL = null_mut();
+        let mut owner_sid: PSID = null_mut();
+        let info = if owner {
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION
+        } else {
+            DACL_SECURITY_INFORMATION
+        };
         // SAFETY: the handle is open with READ_CONTROL; out pointers are valid or null.
         let rc = unsafe {
             GetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
+                info,
+                if owner { &mut owner_sid } else { null_mut() },
                 null_mut(),
                 &mut dacl,
                 null_mut(),
@@ -472,20 +552,31 @@ mod imp {
         if rc != 0 {
             return Err(io::Error::from_raw_os_error(rc as i32));
         }
-        Ok(Dacl {
+        Ok(Security {
             _sd: LocalBox(sd),
             sd,
+            owner: owner_sid,
             dacl,
         })
     }
 
-    pub fn describe_access(path: &Path) -> io::Result<String> {
-        let d = read_dacl(path)?;
+    fn read_dacl(path: &Path) -> io::Result<Security> {
+        // Reading the DACL needs only READ_CONTROL, which the owner always has. Backup semantics lets the
+        // same call open directories.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        security(&file, false)
+    }
+
+    /// The DACL of a descriptor as SDDL.
+    fn sddl(sd: PSECURITY_DESCRIPTOR) -> io::Result<String> {
         let mut s: *mut u16 = null_mut();
-        // SAFETY: `d.sd` is a valid descriptor; `s` is a valid out pointer.
+        // SAFETY: `sd` is a valid descriptor; `s` is a valid out pointer.
         if unsafe {
             ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                d.sd,
+                sd,
                 SDDL_REVISION_1,
                 DACL_SECURITY_INFORMATION,
                 &mut s,
@@ -500,12 +591,51 @@ mod imp {
         Ok(unsafe { from_wide(s) })
     }
 
+    pub fn describe_access(path: &Path) -> io::Result<String> {
+        sddl(read_dacl(path)?.sd)
+    }
+
     pub fn verify_private(path: &Path, kind: Private) -> io::Result<()> {
+        check_dacl(path, &read_dacl(path)?, kind)
+    }
+
+    pub fn read_private_file(path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        // FILE_FLAG_OPEN_REPARSE_POINT opens a symlink or junction itself rather than its target, so
+        // the attribute check below sees it and refuses it. Others may read while we do, nothing else.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(GENERIC_READ | READ_CONTROL)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let m = file.metadata()?;
+        if is_reparse_point(&m) {
+            return Err(super::not_private(
+                path,
+                "it is a symbolic link, junction or other reparse point",
+            ));
+        }
+        if !m.is_file() {
+            return Err(super::not_private(path, "it is not a regular file"));
+        }
+        let s = security(&file, true)?;
+        let me = TokenUserBuf::current()?;
+        // SAFETY: both SIDs are valid: one inside the descriptor, one inside `me`. A null owner (none
+        // recorded) is checked first.
+        if s.owner.is_null() || unsafe { EqualSid(s.owner, me.sid()) } == 0 {
+            return Err(super::not_private(
+                path,
+                "it is owned by another account (take ownership: icacls <file> /setowner %USERNAME%)",
+            ));
+        }
+        check_dacl(path, &s, Private::AnyFile)?;
+        super::read_capped(file, path, max_len)
+    }
+
+    fn check_dacl(path: &Path, d: &Security, kind: Private) -> io::Result<()> {
         let fail = |why: String| {
-            let sddl = describe_access(path).unwrap_or_default();
+            let sddl = sddl(d.sd).unwrap_or_default();
             Err(super::not_private(path, format_args!("{why} ({sddl})")))
         };
-        let d = read_dacl(path)?;
         if d.dacl.is_null() {
             return fail("there is no DACL, so everyone has access".into());
         }
@@ -660,6 +790,65 @@ mod tests {
                 not_private(&path, Private::File);
                 not_private(&path, Private::AnyFile);
             }
+        }
+    }
+
+    #[test]
+    fn private_files_are_read_through_one_checked_handle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let refused = |path: &Path, why: &str| {
+            let err = read_private_file(path, 64).expect_err("refused");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+            assert!(err.to_string().contains(why), "{why}: {err}");
+        };
+        let file = tmp.path().join("secret");
+        create_private_file(&file)
+            .expect("file")
+            .write_all(b"s3cret\n")
+            .expect("write");
+        assert_eq!(read_private_file(&file, 64).expect("read"), b"s3cret\n");
+        let err = read_private_file(&file, 3).expect_err("too large");
+        assert!(err.to_string().contains("larger than 3 bytes"), "{err}");
+        // A directory, even a private one.
+        let dir = tmp.path().join("d");
+        create_private_dir(&dir).expect("dir");
+        let err = read_private_file(&dir, 64).expect_err("a directory");
+        // Windows can refuse to open a directory without backup semantics; either way it's refused.
+        assert!(
+            err.kind() == io::ErrorKind::InvalidData || cfg!(windows),
+            "{err}"
+        );
+        // Broader access than the owner's.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let open = tmp.path().join("open");
+            std::fs::write(&open, b"x").expect("write");
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+            refused(&open, "group and others");
+            // Owner read-only is fine.
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o400)).expect("chmod");
+            assert_eq!(read_private_file(&open, 64).expect("read"), b"x");
+        }
+        #[cfg(windows)]
+        {
+            let me = imp::sid_for_tests();
+            let path = tmp.path().join("everyone");
+            drop(
+                imp::create_file_with(&path, &format!("D:P(A;;FA;;;{me})(A;;FR;;;WD)"))
+                    .expect("create"),
+            );
+            refused(&path, "ACEs");
+        }
+        // A symlink to the private file is refused, not followed. Creating one on Windows needs a
+        // privilege (or developer mode), so the check is skipped where it can't be made.
+        let link = tmp.path().join("link");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&file, &link);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&file, &link);
+        if linked.is_ok() {
+            refused(&link, "link");
         }
     }
 

@@ -11,12 +11,13 @@ use crate::scope::{
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
+use sha2::Digest as _;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use todo_core::event::{Event, EventPayload};
-use todo_core::ids::{EntityId, EventId};
+use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::model::{Entity, LinkKind};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply};
@@ -218,6 +219,37 @@ CREATE TRIGGER event_scopes_append_only_update BEFORE UPDATE ON event_scopes
     BEGIN SELECT RAISE(ABORT, 'event scopes are append-only'); END;
 CREATE TRIGGER event_scopes_append_only_delete BEFORE DELETE ON event_scopes
     BEGIN SELECT RAISE(ABORT, 'event scopes are append-only'); END;
+",
+    // Email ingest (step 9, see `crate::ingest`). Times are Unix milliseconds.
+    r"
+-- Request nonces seen with a valid signature. The primary key makes reserving one atomic; rows older
+-- than the timestamp window are pruned.
+CREATE TABLE ingest_nonces (
+    nonce   TEXT    PRIMARY KEY,
+    seen_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX ingest_nonces_seen ON ingest_nonces (seen_at);
+-- One row per ingested Message-ID: the SHA-256 of the Message-ID stored in the task's email link
+-- (see `message_key`), written in the same transaction as the task. It is derived from the event log
+-- (`ledger_entry`), and checked against it, and rebuilt if it differs, at startup and by
+-- `rebuild-projections`.
+CREATE TABLE ingest_messages (
+    mid_hash TEXT PRIMARY KEY,
+    task_id  TEXT NOT NULL
+) WITHOUT ROWID;
+-- The sender allowlist, managed by the owner on the admin page.
+CREATE TABLE ingest_senders (
+    address  TEXT    PRIMARY KEY,
+    added_at INTEGER NOT NULL,
+    source   TEXT    NOT NULL
+) WITHOUT ROWID;
+-- Short names of lists (`todo+<key>@`), set by the owner on the admin page. Several keys may name one
+-- list. The Inbox is the list ID in `meta` under `ingest_inbox_list`.
+CREATE TABLE list_keys (
+    key     TEXT    PRIMARY KEY,
+    list_id TEXT    NOT NULL,
+    set_at  INTEGER NOT NULL
+) WITHOUT ROWID;
 ",
 ];
 
@@ -716,8 +748,16 @@ pub fn fold_log(conn: &Connection) -> Result<State> {
 /// Folds the event log, also collecting the last known location of every entity that is no longer
 /// in the state (see [`crate::scope::Whereabouts`]).
 pub fn fold_history(conn: &Connection) -> Result<(State, Whereabouts)> {
+    let (state, gone, _) = fold_all(conn)?;
+    Ok((state, gone))
+}
+
+/// Everything derived from the log in one pass: the state, the whereabouts of removed entities and
+/// the Message-ID ledger (sorted by key; the first event wins for a key).
+pub fn fold_all(conn: &Connection) -> Result<(State, Whereabouts, Vec<LedgerRow>)> {
     let mut state = State::new();
     let mut gone = Whereabouts::new();
+    let mut ledger = BTreeMap::<String, LedgerRow>::new();
     let mut after = 0;
     loop {
         let page = events_after(conn, after, 1000)?;
@@ -735,10 +775,13 @@ pub fn fold_history(conn: &Connection) -> Result<(State, Whereabouts)> {
                 target,
                 whereabouts_change(before, &state, target),
             );
+            if let Some(r) = ledger_entry(e) {
+                ledger.entry(r.key.clone()).or_insert(r);
+            }
         }
         after = last;
     }
-    Ok((state, gone))
+    Ok((state, gone, ledger.into_values().collect()))
 }
 
 // ---- idempotency records --------------------------------------------------------------------------
@@ -1052,6 +1095,117 @@ pub fn sync_entities(
     Ok(())
 }
 
+/// The dedupe key of an ingested email: the lowercase hex SHA-256 of the `Message-ID` exactly as its
+/// email link stores it.
+#[must_use]
+pub fn message_key(stored_message_id: &str) -> String {
+    hex::encode(sha2::Sha256::digest(stored_message_id.as_bytes()))
+}
+
+/// A row of the Message-ID ledger (`ingest_messages`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LedgerRow {
+    /// [`message_key`] of the Message-ID.
+    pub key: String,
+    /// The task created for it.
+    pub task: TaskId,
+}
+
+/// The ledger row an event implies: an email link created by email ingest (the event that
+/// [`crate::engine::Engine::execute_unique`] stores with the row). Undoing the task does not remove
+/// it, so a Message-ID stays taken.
+#[must_use]
+pub fn ledger_entry(e: &Event) -> Option<LedgerRow> {
+    if !matches!(e.actor, Actor::EmailIngest) || e.undoes.is_some() {
+        return None;
+    }
+    let EventPayload::Created {
+        entity: Entity::Link(l),
+    } = &e.payload
+    else {
+        return None;
+    };
+    let LinkKind::Email(m) = &l.kind else {
+        return None;
+    };
+    Some(LedgerRow {
+        key: message_key(&m.message_id),
+        task: l.task,
+    })
+}
+
+/// The task recorded with a unique key (see [`crate::engine::Engine::execute_unique`]).
+pub fn unique_task(conn: &Connection, key: &str) -> Result<Option<TaskId>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT task_id FROM ingest_messages WHERE mid_hash = ?1",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    id.map(|s| s.parse().map_err(corrupt("ingest_messages.task_id")))
+        .transpose()
+}
+
+/// Records a unique key with its task. `false` if the key is already taken (nothing is written).
+pub fn insert_unique(tx: &Connection, key: &str, task: TaskId) -> Result<bool> {
+    match tx.execute(
+        "INSERT INTO ingest_messages (mid_hash, task_id) VALUES (?1, ?2)",
+        params![key, task.to_string()],
+    ) {
+        Ok(_) => Ok(true),
+        Err(e) if is_constraint(&e) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The Message-ID ledger, sorted by key.
+pub fn load_ledger(conn: &Connection) -> Result<Vec<LedgerRow>> {
+    let mut stmt =
+        conn.prepare("SELECT mid_hash, task_id FROM ingest_messages ORDER BY mid_hash")?;
+    let raw = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    raw.into_iter()
+        .map(|(key, task)| {
+            Ok(LedgerRow {
+                key,
+                task: task.parse().map_err(corrupt("ingest_messages.task_id"))?,
+            })
+        })
+        .collect()
+}
+
+/// Replaces the Message-ID ledger with `rows`.
+pub fn write_ledger(conn: &mut Connection, rows: &[LedgerRow]) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM ingest_messages", [])?;
+    for r in rows {
+        insert_unique(&tx, &r.key, r.task)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Checks the Message-ID ledger against the one derived from the log, rewriting it if they differ.
+/// Returns whether it was rewritten.
+pub fn sync_ledger(conn: &mut Connection, derived: &[LedgerRow]) -> Result<bool> {
+    if load_ledger(conn)? == derived {
+        return Ok(false);
+    }
+    write_ledger(conn, derived)?;
+    Ok(true)
+}
+
+/// True for a unique or primary-key constraint violation.
+#[must_use]
+pub fn is_constraint(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
+
 /// The log epoch: a random ID of this event log, created with the database. A restore from a backup
 /// must rotate it (`todo-server rotate-log-epoch`) so that clients notice the log is not the one they
 /// followed.
@@ -1168,11 +1322,13 @@ pub fn write_all_projections(conn: &mut Connection, state: &State, seq: u64) -> 
     Ok(())
 }
 
-/// Rebuilds the projection tables from the event log. Returns the folded state.
+/// Rebuilds the projection tables and the Message-ID ledger from the event log. Returns the folded
+/// state.
 pub fn rebuild_projections(conn: &mut Connection) -> Result<State> {
-    let state = fold_log(conn)?;
+    let (state, _, ledger) = fold_all(conn)?;
     let head = head_seq(conn)?;
     write_all_projections(conn, &state, head)?;
+    write_ledger(conn, &ledger)?;
     Ok(state)
 }
 

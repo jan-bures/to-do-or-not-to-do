@@ -18,6 +18,7 @@ use crate::cancel::Cancel;
 use crate::config::{Config, ConfigError, Limits};
 use crate::db::StoreError;
 use crate::engine::{Clock, Engine, system_clock};
+use crate::ingest::{Ingest, IngestInitError};
 use crate::ratelimit::{CatchUpMarks, ConnectLimiter};
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -63,6 +64,8 @@ pub struct AppState {
     pub catch_up_marks: Arc<CatchUpMarks>,
     /// Becomes `true` when the server shuts down (ends event streams).
     pub shutdown: watch::Receiver<bool>,
+    /// Email ingest (the secret, nonces, the sender allowlist and list keys).
+    pub ingest: Arc<Ingest>,
 }
 
 impl AppState {
@@ -87,6 +90,9 @@ pub enum ServerError {
     /// Authentication could not be set up.
     #[error(transparent)]
     Auth(#[from] AuthInitError),
+    /// Email ingest could not be set up.
+    #[error(transparent)]
+    Ingest(#[from] IngestInitError),
     /// I/O failed (binding, creating the data directory).
     #[error("{context}: {source}")]
     Io {
@@ -192,6 +198,8 @@ pub fn public_routes() -> Vec<(String, String)> {
         ("GET".to_owned(), "/health".to_owned()),
         ("POST".to_owned(), "/api/v1/pair/start".to_owned()),
         ("POST".to_owned(), "/api/v1/pair/poll".to_owned()),
+        // Authenticated by its HMAC signature instead (see `crate::ingest`).
+        ("POST".to_owned(), "/api/v1/ingest/email".to_owned()),
     ];
     v.extend(
         crate::web::routes()
@@ -267,6 +275,7 @@ pub struct Server {
     router: Router,
     engine: Arc<Engine>,
     authsvc: Arc<AuthService>,
+    ingest: Arc<Ingest>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -299,6 +308,30 @@ impl Server {
                 })??
         };
         let authsvc = Arc::new(authsvc);
+        let ingest = {
+            let (config, svc) = (config.clone(), authsvc.clone());
+            let db = config.database_path();
+            tokio::task::spawn_blocking(move || -> Result<Ingest, IngestInitError> {
+                let ingest = Ingest::new(&config, &db)?;
+                if let Some(n) = ingest.seed(&config.ingest, svc.now())? {
+                    // Audited by the store, in the same transaction.
+                    tracing::info!(
+                        count = n,
+                        "seeded the email sender allowlist from the config"
+                    );
+                }
+                Ok(ingest)
+            })
+            .await
+            .map_err(|e| ServerError::Io {
+                context: "starting email ingest".into(),
+                source: std::io::Error::other(e.to_string()),
+            })??
+        };
+        if ingest.enabled() {
+            tracing::info!("email ingest is enabled");
+        }
+        let ingest = Arc::new(ingest);
         let auth: Arc<dyn Authenticator> = match options.auth {
             Some(a) => a,
             None => authsvc.clone(),
@@ -325,12 +358,14 @@ impl Server {
             )),
             catch_up_marks: Arc::new(CatchUpMarks::default()),
             shutdown: shutdown_rx,
+            ingest: ingest.clone(),
         };
         Ok(Self {
             listener,
             router: router(state),
             engine,
             authsvc,
+            ingest,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -386,6 +421,7 @@ impl Server {
         let addr = self.local_addr()?;
         let engine = self.engine();
         let authsvc = self.auth_service();
+        let ingest = self.ingest.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(self.run_until(async move {
             let _ = stopped.await;
@@ -394,6 +430,7 @@ impl Server {
             addr,
             engine,
             authsvc,
+            ingest,
             stop,
             task,
         })
@@ -409,6 +446,8 @@ pub struct RunningServer {
     pub engine: Arc<Engine>,
     /// The authentication service (tokens, grants, revocation).
     pub authsvc: Arc<AuthService>,
+    /// Email ingest (its store holds the allowlist, list keys and the Inbox).
+    pub ingest: Arc<Ingest>,
     stop: tokio::sync::oneshot::Sender<()>,
     task: JoinHandle<Result<(), ServerError>>,
 }

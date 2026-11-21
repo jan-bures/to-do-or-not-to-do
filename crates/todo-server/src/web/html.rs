@@ -48,7 +48,7 @@ pub fn page(title: &str, chrome: &Chrome<'_>, body: &str) -> String {
     if let Some(csrf) = chrome.csrf {
         let _ = write!(
             nav,
-            r#"<nav><a href="/admin">Overview</a><a href="/admin/devices">Devices</a><a href="/admin/agents">Agents</a><a href="/admin/shares">Share links</a><a href="/admin/audit">Audit log</a>
+            r#"<nav><a href="/admin">Overview</a><a href="/admin/devices">Devices</a><a href="/admin/agents">Agents</a><a href="/admin/shares">Share links</a><a href="/admin/ingest">Email</a><a href="/admin/audit">Audit log</a>
 <form method="post" action="/auth/logout" class="inline"><input type="hidden" name="csrf" value="{}"><button type="submit" class="link">Sign out</button></form></nav>"#,
             esc(csrf)
         );

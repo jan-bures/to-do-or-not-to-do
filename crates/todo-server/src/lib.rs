@@ -9,6 +9,7 @@
 //! | [`auth`] | passkeys, sessions, device pairing, agent tokens, share links, rate limits, audit log |
 //! | [`web`] | server-rendered sign-in, setup, pairing and admin pages, share pages, static assets |
 //! | [`api`] | REST handlers, the SSE stream, typed errors, the OpenAPI document |
+//! | [`ingest`] | email to task: the HMAC-signed endpoint the Email Worker calls, its allowlist and list keys |
 //! | [`mcp`] | the MCP server at `/mcp`: agent tools over the REST handlers |
 //! | [`app`] | router, middleware (body limit, timeouts, tracing) and the server lifecycle |
 //! | [`conn`] | the accept loop: connection cap, header-read timeout, write-progress watchdog, drain |
@@ -25,6 +26,7 @@ pub mod config;
 pub mod conn;
 pub mod db;
 pub mod engine;
+pub mod ingest;
 pub mod mcp;
 pub mod ratelimit;
 pub mod scope;

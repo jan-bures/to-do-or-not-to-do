@@ -155,6 +155,26 @@ pub struct AuditRow {
     pub detail: String,
 }
 
+/// Appends an audit entry through any connection to the database (so a change and its audit entry
+/// can share one transaction), and drops the oldest beyond [`AUDIT_KEEP`].
+pub fn insert_audit(
+    conn: &Connection,
+    at: i64,
+    kind: &str,
+    ip: Option<&str>,
+    detail: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO audit (at, kind, ip, detail) VALUES (?1, ?2, ?3, ?4)",
+        params![at, kind, ip, detail],
+    )?;
+    let id = conn.last_insert_rowid();
+    if id % 512 == 0 {
+        conn.execute("DELETE FROM audit WHERE id <= ?1", [id - AUDIT_KEEP])?;
+    }
+    Ok(())
+}
+
 /// The authentication store.
 pub struct AuthStore {
     conn: Mutex<Connection>,
@@ -645,16 +665,7 @@ impl AuthStore {
 
     /// Appends an audit entry and drops the oldest beyond [`AUDIT_KEEP`].
     pub fn audit(&self, at: i64, kind: &str, ip: Option<&str>, detail: &str) -> Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO audit (at, kind, ip, detail) VALUES (?1, ?2, ?3, ?4)",
-            params![at, kind, ip, detail],
-        )?;
-        let id = conn.last_insert_rowid();
-        if id % 512 == 0 {
-            conn.execute("DELETE FROM audit WHERE id <= ?1", [id - AUDIT_KEEP])?;
-        }
-        Ok(())
+        insert_audit(&self.conn(), at, kind, ip, detail)
     }
 
     /// The newest audit entries, newest first.

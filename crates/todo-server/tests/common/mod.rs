@@ -2,6 +2,7 @@
 //! JSON client, and a minimal SSE reader.
 #![allow(dead_code, clippy::unwrap_used)]
 
+pub mod ingest;
 pub mod mcp;
 pub mod raw;
 pub mod web;

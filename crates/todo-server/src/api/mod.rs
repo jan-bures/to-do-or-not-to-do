@@ -120,11 +120,13 @@ async fn not_found() -> ApiError {
 }
 
 /// The API router, to be nested at `/api/v1`. Everything needs a bearer token except the two pairing
-/// endpoints.
+/// endpoints and the email ingest endpoint (HMAC-signed).
 pub fn router(state: AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/pair/start", post(pair::start))
-        .route("/pair/poll", post(pair::poll));
+        .route("/pair/poll", post(pair::poll))
+        // No bearer token: signed with HMAC instead, and 404 unless configured (see `crate::ingest`).
+        .route("/ingest/email", post(crate::ingest::post_email));
     Router::new()
         .route("/openapi.json", get(openapi::document))
         .route("/commands", post(commands::post_command))

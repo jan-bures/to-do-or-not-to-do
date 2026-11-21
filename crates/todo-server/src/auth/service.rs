@@ -91,6 +91,18 @@ pub mod audit {
     pub const SHARE_REVOKED: &str = "share_revoked";
     /// A share link got a new token.
     pub const SHARE_ROTATED: &str = "share_rotated";
+    /// The email sender allowlist was seeded from the config.
+    pub const INGEST_SENDERS_SEEDED: &str = "ingest_senders_seeded";
+    /// An address was added to the email sender allowlist.
+    pub const INGEST_SENDER_ADDED: &str = "ingest_sender_added";
+    /// An address was removed from the email sender allowlist.
+    pub const INGEST_SENDER_REMOVED: &str = "ingest_sender_removed";
+    /// A list key was set (`todo+<key>@`).
+    pub const LIST_KEY_ADDED: &str = "list_key_added";
+    /// A list key was removed.
+    pub const LIST_KEY_REMOVED: &str = "list_key_removed";
+    /// The email Inbox list was set or unset.
+    pub const INGEST_INBOX_SET: &str = "ingest_inbox_set";
 }
 
 /// Receives the setup code instead of the log (for embedding and tests).

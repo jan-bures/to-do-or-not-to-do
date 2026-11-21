@@ -2,8 +2,8 @@
 
 A Cloudflare Email Worker that turns forwarded emails into tasks.
 
-- **Address.** Mail to `todo@in.example.com` goes to the Inbox, and mail to `todo+<list>@in.example.com` goes
-  to that list.
+- **Address.** Mail to `todo@in.example.com` goes to the Inbox, and mail to `todo+<key>@in.example.com` goes
+  to the list the owner gave that key on the server's admin page.
 - **Checks.** It accepts mail only from allowlisted senders whose DKIM or SPF passed for exactly the From
   domain. Optionally, the address also carries a secret: `todo-<secret>@in.example.com`.
 - **What it sends.** Metadata only (and a capped text body with `#keep`), POSTed to the server with an HMAC
@@ -184,10 +184,49 @@ Cloudflare account.
 You can also do this in the dashboard: Email Service → Email Routing → Routing rules → Custom address →
 "Send to a Worker".
 
-### 4. Check it
+### 4. Connect the server
 
-1. Set the same `INGEST_HMAC_SECRET` and allowlist on the server.
-2. Forward a test email from an allowed address.
+The server's half is `POST /api/v1/ingest/email` in `todo-server` (`crates/todo-server/src/ingest`). It
+is off (404) until it has the secret.
+
+1. Put the same secret in an owner-only file on the server host, owned by and readable only by the
+   account the server runs as. The server refuses to start if anyone else can read it, if another
+   account owns it, or if it is a symlink rather than a regular file.
+
+   ```sh
+   # Linux: create it owner-only, then paste the value the Worker got as INGEST_HMAC_SECRET.
+   (umask 077; read -rs s && printf '%s\n' "$s" > /etc/todo/ingest-email-hmac.secret)
+   # Windows (PowerShell, as the server's account): write it, then drop inherited access.
+   #   Set-Content C:\todo\ingest-email-hmac.secret -NoNewline -Value (Read-Host -MaskInput)
+   #   icacls C:\todo\ingest-email-hmac.secret /inheritance:r /grant:r "${env:USERNAME}:F"
+   ```
+
+2. Point the server config at it, and seed the allowlist (used once; afterwards the admin page is
+   the server's source of truth):
+
+   ```toml
+   [ingest]
+   email_hmac_secret_file = "/etc/todo/ingest-email-hmac.secret"
+   allowed_senders = ["you@example.com", "work@example.org"]
+   ```
+
+   Or set `TODO_SERVER_INGEST_EMAIL_HMAC_SECRET_FILE`. Restart the server; it logs
+   `email ingest is enabled`.
+3. Set the Worker's `INGEST_URL` to `https://todo.example.com/api/v1/ingest/email` (the server's
+   public origin plus that path) and deploy it.
+4. On the server's admin page, **Email** (`/admin/ingest`): **pick the Inbox** (until you do, the server
+   answers 503 and the Worker keeps retrying), check the allowed senders, and give lists keys for
+   `todo+<key>@`. Only keys set there work; list names are never matched, and a key that names no list
+   (or a deleted one) goes to the Inbox with a note. Agents that can read a list see the subject, sender
+   and kept body of email tasks in it. Changes need a fresh passkey check and are audit-logged.
+
+Keep the Worker's `ALLOWED_SENDERS` and the server's allowlist in step: the Worker drops strangers at
+SMTP time, and the server re-checks, so a leaked HMAC secret alone can't create tasks for other
+senders.
+
+### 5. Check it
+
+1. Forward a test email from an allowed address.
 3. Watch the logs with `npx wrangler@4.158.0 tail todo-email-ingest`, or in the dashboard. You should see
    `{"evt":"delivered",…}`.
 

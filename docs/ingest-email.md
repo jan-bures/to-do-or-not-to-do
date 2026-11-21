@@ -1,7 +1,7 @@
 # Email ingest: Worker → server contract
 
 Forwarding an email to `todo@in.example.com` creates a task in the Inbox. Forwarding it to
-`todo+<list>@in.example.com` creates it in the list named `<list>`. No app needs to be running. With the
+`todo+<key>@in.example.com` creates it in the list the owner gave that key. No app needs to be running. With the
 optional recipient secret, the addresses become `todo-<secret>@in.example.com` and
 `todo-<secret>+<list>@in.example.com` (see [Who gets in](#who-gets-in)).
 
@@ -23,7 +23,7 @@ mail client ──► Cloudflare Email Routing ──► Email Worker (workers/e
 ```
 
 This document is the contract between the Worker (this repo, `workers/email-ingest`) and the server
-endpoint (a later PR). The shared signing test vector is
+endpoint (`crates/todo-server/src/ingest`). The shared signing test vector is
 [`ingest-email-signature.json`](ingest-email-signature.json).
 
 ## Request
@@ -80,7 +80,9 @@ message = timestamp ‖ 0x0A ‖ nonce ‖ 0x0A ‖ body
 6. **Schema.** Parse the JSON and check it against the schema below. If it doesn't match, respond `422`.
 7. **Sender.** Check `forwarded_by` against the server's own allowlist. If it isn't on it, respond
    `403`. The Worker checks its copy first; the server re-checks so that a leaked HMAC secret alone
-   can't create tasks for arbitrary senders.
+   can't create tasks for arbitrary senders. The server checks it once more inside the transaction of
+   step 8, after the `message_id` row has taken the write lock, so a sender removed while the request
+   waited is refused too.
 8. **Dedupe and create, in one transaction.** Retries reuse the same `message_id` with a new timestamp,
    nonce and signature, so `message_id` is what makes them safe.
    - Store `message_id` in a table with a **unique constraint**, and create the task in the **same
@@ -162,20 +164,65 @@ is evidence of a forwarded header block: a separator line (`---------- Forwarded
 lines before it, or another header line (`Date:`, `Sent:`, `To:`, `Subject:` …) directly before or after it. A
 lone `From: …` sentence in someone's text is ignored.
 
-### Suggested task mapping (server PR)
+### Task mapping (what the server stores)
 
 - **Title** is `title`.
-- **List.** `list` is resolved by list key. If it is `null`, or no list has that key, the task goes to the
-  Inbox, and the notes say the requested list wasn't found.
-- **Notes.** A short plain-text block, followed by `body.text` when `keep` is true:
+- **List.** Routing is explicit and never looks at list names, so renaming, deleting or adding a list
+  can't silently send mail somewhere else. On the admin page (**Email**) the owner picks the Inbox and
+  gives lists keys; each key names one list by ID.
+  - `null` (plain `todo@`) and the reserved key `inbox` go to the Inbox.
+  - A key the owner set goes to its list.
+  - A key nobody set, or one whose list was deleted since, goes to the Inbox, with a line in the notes
+    saying the key didn't match. The admin page flags keys whose list is gone.
+  - With no Inbox picked, or a deleted one, the server answers `503 inbox_not_found` and stores
+    nothing, so the Worker keeps retrying until the owner picks one; the admin page says so.
+- **Who can see it.** An email task is an ordinary task: an agent that can read its list sees the
+  subject, the sender and any kept body. That is the owner's choice of list; the admin page says so
+  next to the Inbox and key pickers. Share pages never show notes or links.
+- **Notes.** A short plain-text block, followed by `body.text` only when `keep` is true:
 
   ```text
   From: Alice Example <alice@example.org>
-  Forwarded by you@example.com on 2025-11-21 09:00 (owner's time zone)
+  Forwarded by you@example.com on 2025-11-21 08:00 (UTC)
   Subject: Fwd: Nákup – mléko #2 #keep
   ```
 
-- **Link.** An email link carrying `message_id`, so the desktop app can match it later.
+  The time is `received_at` in the owner's time zone. A cut body (`body.truncated` or `raw_truncated`)
+  ends with a line saying so, and `parse_failed` adds a line too.
+- **Link.** An email link (the same kind the Microsoft To Do importer makes for Flagged Emails) with the
+  original subject, the original sender's address, `received_at` and `message_id`, so the desktop app
+  can match it later.
+- **Actor and undo.** The task and its link are one event group with actor `email-ingest`: they show in
+  the activity feed, and one undo removes both. The `message_id` stays recorded, so forwarding the same
+  message again afterwards is still a duplicate.
+- **Dedupe key.** The SHA-256 of `message_id` as the link stores it (trimmed, at most 2048 bytes). The
+  table of keys is derived from the event log: every email link created by `email-ingest` is one row.
+  The server checks it against the log at startup, and rebuilds it then if it differs, and
+  `todo-server rebuild-projections` rebuilds it too.
+- **Restoring a snapshot.** After the database is restored from a backup, deliveries still queued in the
+  Worker (or re-ingested from the dead-letter archive) are retried against the restored log. One whose
+  task was stored after the snapshot was taken creates that task again, and that is correct: the
+  restored database lost it. One whose task is in the snapshot is still a duplicate.
+- **Response.** `201 {"status":"created","task_id":"…"}` or `200 {"status":"duplicate","task_id":"…"}`.
+  Errors are the server's usual `{"error":{"code","message"}}` with fixed messages; they never echo the
+  request.
+
+### Server configuration
+
+```toml
+[ingest]
+# The shared secret; without it the route answers 404. A regular file (not a link), owned by the
+# account running the server and readable only by it, checked and read through one open handle.
+email_hmac_secret_file = "/etc/todo/ingest-email-hmac.secret"
+# Seeds the allowlist on the first start; the admin page manages it afterwards.
+allowed_senders = ["you@example.com"]
+# Per client IP (the TCP peer, or CF-Connecting-IP with trust_cloudflare_headers).
+requests_per_minute = 60
+request_burst = 20
+```
+
+Failed signatures also spend the client IP's budget of failed authentications (`auth.bearer_failures_*`),
+like bad API tokens do; an IP that used it up gets `429` before its signature is checked.
 
 ## Who gets in
 
@@ -460,17 +507,13 @@ addresses, subjects, bodies, list names, the recipient secret or the HMAC secret
 
 ## Follow-ups
 
-- **Server endpoint (next PR).** It must:
-  - reject repeated `X-Todo-*` headers;
-  - verify the signature before touching storage;
-  - reserve the nonce with an atomic unique-key `INSERT`;
-  - enforce `message_id` uniqueness with a unique constraint in the same transaction as the task
-    creation;
-  - re-check the allowlist.
-
-  See [What the server must check](#what-the-server-must-check-in-this-order).
+- **Server endpoint.** Done in `crates/todo-server/src/ingest`, following
+  [What the server must check](#what-the-server-must-check-in-this-order). Its tests include one that
+  runs this Worker's `postPayload` from Node against the real server.
 - **Attachments.** Store attachments of `#keep` mails in R2, at most 10 MB per message. That means
   streaming the parts past the 256 KiB parse window without decoding them in the Worker, and
   probably a separate upload endpoint. Not in this PR.
-- **One allowlist.** Manage the allowlist on the admin page and have the server be the single source of
-  truth. The Worker's copy would then be only an early filter.
+- **One allowlist.** The server's allowlist is managed on the admin page now (with the Inbox and the
+  list keys, every change audited in the same transaction). The Worker still has its
+  own copy (`ALLOWED_SENDERS`), which it needs to reject strangers at SMTP time; syncing it from the
+  server is left for later.

@@ -24,6 +24,7 @@
 
 pub mod ceremony;
 pub mod html;
+pub mod ingest;
 pub mod pages;
 pub mod share;
 
@@ -325,6 +326,48 @@ fn table() -> Vec<Route> {
             Session,
             false,
             post(pages::share_revoke),
+        ),
+        r(
+            Method::GET,
+            "/admin/ingest",
+            Session,
+            false,
+            get(ingest::page),
+        ),
+        r(
+            Method::POST,
+            "/admin/ingest/senders",
+            Session,
+            false,
+            post(ingest::sender_add),
+        ),
+        r(
+            Method::POST,
+            "/admin/ingest/senders/remove",
+            Session,
+            false,
+            post(ingest::sender_remove),
+        ),
+        r(
+            Method::POST,
+            "/admin/ingest/inbox",
+            Session,
+            false,
+            post(ingest::inbox_set),
+        ),
+        r(
+            Method::POST,
+            "/admin/ingest/keys",
+            Session,
+            false,
+            post(ingest::key_add),
+        ),
+        r(
+            Method::POST,
+            "/admin/ingest/keys/remove",
+            Session,
+            false,
+            post(ingest::key_remove),
         ),
         r(
             Method::GET,

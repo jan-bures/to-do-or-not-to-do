@@ -43,6 +43,7 @@ impl Modify for BearerAuth {
         read::smart_list_tasks,
         pair::start,
         pair::poll,
+        crate::ingest::post_email,
         document,
     ),
     components(schemas(

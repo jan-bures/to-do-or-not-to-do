@@ -31,7 +31,7 @@ use crate::scope::{
     EventScope, ScopeBuilder, Whereabouts, location, record_whereabouts, whereabouts_change,
 };
 use crate::summary;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use todo_core::command::Command;
 use todo_core::error::{DomainError, UndoError};
 use todo_core::event::Event;
-use todo_core::ids::{EntityId, EventId};
+use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::time::Timestamp;
 use todo_core::undo::{UndoOptions, undo_batch};
 use todo_core::{Actor, AgentId, Grants, State, apply, decide};
@@ -144,6 +144,42 @@ pub enum EngineError {
     /// Storage failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// The unique key of an [`Engine::execute_unique`] write was already taken. Handled inside the
+    /// engine (the caller gets [`UniqueOutcome::Duplicate`]); never returned.
+    #[error("the unique key is already taken")]
+    DuplicateKey,
+    /// The admission check of an [`Engine::execute_unique`] write said no. Handled inside the engine
+    /// (the caller gets [`UniqueOutcome::Refused`]); never returned.
+    #[error("the write was refused")]
+    Refused,
+}
+
+/// What [`Engine::execute_unique`] stores: commands that create one task, applied as one group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UniquePlan {
+    /// The task the commands create (recorded with the key).
+    pub task: TaskId,
+    /// The commands, decided in order against the state the previous ones produce.
+    pub commands: Vec<Command>,
+}
+
+/// The result of [`Engine::execute_unique`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UniqueOutcome {
+    /// The key was new: the commands were stored.
+    Created {
+        /// The created task.
+        task: TaskId,
+        /// The stored events.
+        result: CommandResult,
+    },
+    /// The key was taken: nothing was stored.
+    Duplicate {
+        /// The task stored with the key the first time.
+        task: TaskId,
+    },
+    /// The admission check, made inside the transaction, refused the write: nothing was stored.
+    Refused,
 }
 
 struct Writer {
@@ -284,7 +320,7 @@ impl Engine {
         if backfilled > 0 {
             tracing::info!(events = backfilled, "recorded the scopes of earlier events");
         }
-        let (state, gone) = db::fold_history(&conn)?;
+        let (state, gone, ledger) = db::fold_all(&conn)?;
         let head = db::head_seq(&conn)?;
         let projected = db::load_projections(&conn)?;
         let proj_seq = db::projection_seq(&conn)?;
@@ -295,6 +331,12 @@ impl Engine {
                 "projections do not match the event log; rebuilding them"
             );
             db::write_all_projections(&mut conn, &state, head)?;
+        }
+        if db::sync_ledger(&mut conn, &ledger)? {
+            tracing::warn!(
+                messages = ledger.len(),
+                "the email Message-ID ledger did not match the event log; rebuilt it"
+            );
         }
         let epoch = match db::log_epoch(&conn)? {
             Some(e) => e,
@@ -598,7 +640,97 @@ impl Engine {
             },
             events,
             |s, ev| summary::command(s, command, ev),
+            |_| Ok(()),
         )
+    }
+
+    /// Stores the commands of `plan` as one undoable group, at most once per `key`.
+    ///
+    /// Inside the single writer: if `key` is already recorded, nothing is decided or stored and the
+    /// task recorded with it is returned. Otherwise `plan` builds the commands from the current state
+    /// (and the writer connection, for server-side lookups); they are decided in order, each against
+    /// the state the previous ones produce. The key is then inserted first in the same transaction as
+    /// the events, under a unique constraint, so two writes with one key can never both commit.
+    ///
+    /// `admit` runs in that transaction right after the key is inserted. The insert has taken the
+    /// database's write lock, so `admit` reads every change committed before it (also through other
+    /// connections, like the admin pages'), and none can commit until this write has: a check there
+    /// cannot go stale before the commit. If it returns `false`, nothing is stored.
+    pub fn execute_unique<F, G>(
+        &self,
+        actor: &Actor,
+        key: &str,
+        cancel: &Cancel,
+        plan: F,
+        admit: G,
+    ) -> Result<UniqueOutcome, EngineError>
+    where
+        F: FnOnce(&State, &Connection) -> Result<UniquePlan, EngineError>,
+        G: FnOnce(&Connection) -> Result<bool, StoreError>,
+    {
+        let mut w = self.writer(cancel)?;
+        if let Some(task) = db::unique_task(w.conn()?, key)? {
+            return Ok(UniqueOutcome::Duplicate { task });
+        }
+        let now = self.next_now(&mut w);
+        let base = self.state();
+        let plan = plan(&base, w.conn()?)?;
+        let mut sim = (*base).clone();
+        let mut events = Vec::new();
+        for c in &plan.commands {
+            let decided = decide(&sim, actor, c, now)?;
+            for e in &decided {
+                apply(&mut sim, e).map_err(|err| {
+                    StoreError::Corrupt(format!("decided event does not apply: {err}"))
+                })?;
+            }
+            events.extend(decided);
+        }
+        if let Some(first) = events.first().map(|e| e.id) {
+            for e in &mut events {
+                e.group = first;
+            }
+        }
+        let command_id = Uuid::new_v4();
+        let hash = request_hash("unique", actor, &(key, &plan.commands))?;
+        let first = plan.commands.first().cloned();
+        let task = plan.task;
+        let stored = self.commit(
+            &mut w,
+            &base,
+            Pending {
+                actor,
+                command_id,
+                now,
+                kind: "unique",
+                request_hash: hash,
+                cancel,
+            },
+            events,
+            |s, ev| first.map_or_else(String::new, |c| summary::command(s, &c, ev)),
+            |tx| {
+                if !db::insert_unique(tx, key, task)? {
+                    return Err(EngineError::DuplicateKey);
+                }
+                if !admit(tx)? {
+                    return Err(EngineError::Refused);
+                }
+                Ok(())
+            },
+        );
+        match stored {
+            Ok(o) => Ok(UniqueOutcome::Created {
+                task,
+                result: o.result,
+            }),
+            Err(EngineError::DuplicateKey) => {
+                let task = db::unique_task(w.conn()?, key)?
+                    .ok_or_else(|| StoreError::Corrupt("a taken unique key has no row".into()))?;
+                Ok(UniqueOutcome::Duplicate { task })
+            }
+            Err(EngineError::Refused) => Ok(UniqueOutcome::Refused),
+            Err(e) => Err(e),
+        }
     }
 
     /// Undoes the command group that the event `seq` belongs to. Undoing a compensating event redoes
@@ -695,6 +827,7 @@ impl Engine {
             },
             comp,
             summary::undo,
+            |_| Ok(()),
         )
     }
 
@@ -738,6 +871,7 @@ impl Engine {
 
     /// Stores `events`: applies them to a copy of `base`, writes events, projections and the
     /// idempotency record in one transaction, and swaps the copy in only after `COMMIT` succeeded.
+    /// `first` runs at the start of the transaction; an error from it rolls everything back.
     fn commit(
         &self,
         w: &mut Writer,
@@ -745,6 +879,7 @@ impl Engine {
         p: Pending<'_>,
         mut events: Vec<Event>,
         summarize: impl FnOnce(&State, &[Event]) -> String,
+        first: impl FnOnce(&Transaction<'_>) -> Result<(), EngineError>,
     ) -> Result<Outcome, EngineError> {
         let mut next = base.clone();
         let mut scopes = Vec::with_capacity(events.len());
@@ -759,6 +894,7 @@ impl Engine {
                 .ok_or(EngineError::Unavailable)?
                 .transaction()
                 .map_err(StoreError::from)?;
+            first(&tx)?;
             let mut touched = BTreeSet::<EntityId>::new();
             for (i, e) in events.iter_mut().enumerate() {
                 let seq = db::insert_event(&tx, e, &cid, i)?;
@@ -816,7 +952,10 @@ impl Engine {
                     // is unknown. Refuse all further work until a restart re-reads the log.
                     self.poisoned.store(true, Ordering::Release);
                     tracing::error!(error = %e, "write failed and could not be rolled back; engine poisoned");
-                } else if !matches!(e, EngineError::Cancelled) {
+                } else if !matches!(
+                    e,
+                    EngineError::Cancelled | EngineError::DuplicateKey | EngineError::Refused
+                ) {
                     tracing::error!(error = %e, "write failed; nothing was stored");
                 }
                 return Err(e);

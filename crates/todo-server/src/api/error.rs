@@ -461,6 +461,8 @@ impl From<EngineError> for ApiError {
             EngineError::Cancelled => Self::timeout(),
             EngineError::Unavailable => Self::unavailable(),
             EngineError::Store(s) => s.into(),
+            // Handled inside the engine; never reaches a handler.
+            EngineError::DuplicateKey | EngineError::Refused => Self::internal(),
         }
     }
 }

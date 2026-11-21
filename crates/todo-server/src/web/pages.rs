@@ -1,8 +1,9 @@
 //! Server-rendered pages: sign-in, setup, device pairing, and the owner's admin sections.
 //!
 //! Admin pages need a signed-in session. Every form posts the session's CSRF token, and every
-//! owner-only change (devices, agent tokens and grants, share links, pairing approval) also needs a
-//! passkey verification within the last five minutes (step-up).
+//! owner-only change (devices, agent tokens and grants, share links, pairing approval, the email
+//! allowlist and list keys in [`super::ingest`]) also needs a passkey verification within the last
+//! five minutes (step-up).
 
 use super::html::{Chrome, PageError, esc, html, page, time};
 use super::safe_next;
@@ -23,9 +24,9 @@ use std::fmt::Write as _;
 use todo_core::ids::{CollectionId, ListId};
 use todo_core::{AccessLevel, AgentId, Grants, State as CoreState};
 
-type PageResult = Result<Response, PageError>;
+pub(super) type PageResult = Result<Response, PageError>;
 
-fn owner_chrome<'a>(svc: &AuthService, s: &'a OwnerSession) -> Chrome<'a> {
+pub(super) fn owner_chrome<'a>(svc: &AuthService, s: &'a OwnerSession) -> Chrome<'a> {
     Chrome {
         csrf: Some(&s.row.csrf),
         script: true,
@@ -33,15 +34,15 @@ fn owner_chrome<'a>(svc: &AuthService, s: &'a OwnerSession) -> Chrome<'a> {
     }
 }
 
-fn ok_page(title: &str, chrome: &Chrome<'_>, body: &str) -> PageResult {
+pub(super) fn ok_page(title: &str, chrome: &Chrome<'_>, body: &str) -> PageResult {
     Ok(html(StatusCode::OK, page(title, chrome, body)))
 }
 
-fn not_found() -> PageError {
+pub(super) fn not_found() -> PageError {
     PageError(ApiError::not_found("there is nothing here"))
 }
 
-fn csrf_field(s: &OwnerSession) -> String {
+pub(super) fn csrf_field(s: &OwnerSession) -> String {
     format!(
         r#"<input type="hidden" name="csrf" value="{}">"#,
         esc(&s.row.csrf)
@@ -49,7 +50,12 @@ fn csrf_field(s: &OwnerSession) -> String {
 }
 
 /// Checks the CSRF token and the step-up window of a form post.
-fn guard(app: &AppState, s: &OwnerSession, csrf: &str, step_up: bool) -> Result<(), PageError> {
+pub(super) fn guard(
+    app: &AppState,
+    s: &OwnerSession,
+    csrf: &str,
+    step_up: bool,
+) -> Result<(), PageError> {
     check_csrf(&s.row, Some(csrf))?;
     if step_up {
         app.authsvc.require_step_up(&s.row)?;
@@ -448,7 +454,7 @@ pub struct NewAgentForm {
     expires_in_days: String,
 }
 
-fn bad_input(msg: &str) -> PageError {
+pub(super) fn bad_input(msg: &str) -> PageError {
     PageError(ApiError::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "invalid",
@@ -518,12 +524,12 @@ pub async fn agent_revoke(
     Ok(Redirect::to("/admin/agents").into_response())
 }
 
-type Structure = (
+pub(super) type Structure = (
     Vec<(CollectionId, String)>,
     Vec<(ListId, Option<CollectionId>, String)>,
 );
 
-fn sorted_structure(state: &CoreState) -> Structure {
+pub(super) fn sorted_structure(state: &CoreState) -> Structure {
     let mut cols: Vec<_> = state
         .collections
         .values()

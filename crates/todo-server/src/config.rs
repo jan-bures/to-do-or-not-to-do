@@ -63,6 +63,18 @@
 //! [[auth.owner_tokens]]
 //! device = "desktop"
 //! sha256 = "<hex SHA-256 of the bearer token>"
+//!
+//! [ingest]
+//! # Email to task (`POST /api/v1/ingest/email`, see docs/ingest-email.md). The route answers 404 unless
+//! # this names an owner-only file holding the HMAC secret shared with the Email Worker (at least 32
+//! # characters; surrounding whitespace is ignored). Also `TODO_SERVER_INGEST_EMAIL_HMAC_SECRET_FILE`.
+//! email_hmac_secret_file = "/etc/todo/ingest-email-hmac.secret"
+//! # Seeds the sender allowlist once, on the first start that finds it never seeded. After that the
+//! # allowlist is managed on the admin page (`/admin/ingest`) only.
+//! allowed_senders = ["you@example.com"]
+//! # Ingest requests per client IP.
+//! requests_per_minute = 60
+//! request_burst = 20
 //! ```
 
 use jiff::tz::TimeZone;
@@ -307,6 +319,34 @@ pub struct Config {
     pub limits: Limits,
     /// Authentication.
     pub auth: AuthConfig,
+    /// Email ingest.
+    pub ingest: IngestConfig,
+}
+
+/// Email ingest settings (see the module docs and `docs/ingest-email.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct IngestConfig {
+    /// An owner-only file holding the HMAC secret shared with the Email Worker. Without it the ingest
+    /// route answers 404.
+    pub email_hmac_secret_file: Option<PathBuf>,
+    /// Addresses that seed the sender allowlist on the first start (see the module docs).
+    pub allowed_senders: Vec<String>,
+    /// Sustained ingest requests per minute per client IP.
+    pub requests_per_minute: u32,
+    /// Ingest request burst per client IP.
+    pub request_burst: u32,
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
+            email_hmac_secret_file: None,
+            allowed_senders: Vec::new(),
+            requests_per_minute: 60,
+            request_burst: 20,
+        }
+    }
 }
 
 impl Default for Config {
@@ -319,6 +359,7 @@ impl Default for Config {
             trust_cloudflare_headers: false,
             limits: Limits::default(),
             auth: AuthConfig::default(),
+            ingest: IngestConfig::default(),
         }
     }
 }
@@ -422,6 +463,10 @@ impl Config {
             "TODO_SERVER_MAX_MCP_REQUESTS_PER_TOKEN",
             max_mcp_requests_per_token
         );
+        if let Some(v) = get("TODO_SERVER_INGEST_EMAIL_HMAC_SECRET_FILE") {
+            let v = v.trim();
+            self.ingest.email_hmac_secret_file = (!v.is_empty()).then(|| PathBuf::from(v));
+        }
         if let Some(v) = get("TODO_SERVER_OWNER_TOKEN_SHA256") {
             let device = DeviceId::new(ENV_TOKEN_DEVICE).map_err(|e| ConfigError::Env {
                 var: "TODO_SERVER_OWNER_TOKEN_SHA256",
@@ -439,6 +484,20 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.zone()?;
         self.origin()?;
+        let i = &self.ingest;
+        if i.requests_per_minute == 0 || i.request_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "ingest.requests_per_minute and ingest.request_burst must be > 0".into(),
+            ));
+        }
+        for a in &i.allowed_senders {
+            if crate::ingest::normalize_address(a).is_none() {
+                // Never echo the value: it is an email address.
+                return Err(ConfigError::Invalid(
+                    "ingest.allowed_senders holds an entry that is not an email address".into(),
+                ));
+            }
+        }
         let a = &self.auth;
         for (name, value) in [
             ("session_idle_timeout_mins", a.session_idle_timeout_mins),

@@ -458,6 +458,269 @@ async fn admin_actions_need_a_recent_passkey_verification() {
     assert_eq!(p.status, StatusCode::FORBIDDEN);
 }
 
+/// The email allowlist and list keys: owner-only, step-up, audited, and in effect at once.
+#[tokio::test]
+async fn email_allowlist_inbox_and_list_keys_need_step_up_and_are_audited() {
+    const INGEST_SECRET: &str = "test-only-ingest-secret-0123456789abcdef";
+    let env = Env::start_with(|cfg| {
+        let path = cfg.data_dir.join("ingest.secret");
+        let mut f = todo_fs::create_private_file(&path).unwrap();
+        std::io::Write::write_all(&mut f, INGEST_SECRET.as_bytes()).unwrap();
+        cfg.ingest.email_hmac_secret_file = Some(path);
+    })
+    .await;
+    let mut b = env.owner().await;
+    let inbox = create_list(&env, "Inbox").await;
+    let errands = create_list(&env, "Errands").await;
+    let ingest = |forwarded_by: &str, list: Option<&str>| {
+        let body = json!({
+            "version": 1, "message_id": format!("<{}@mail.example.org>", id()), "list": list,
+            "title": "EMAIL-TITLE", "subject": "EMAIL-SUBJECT", "keep": true,
+            "original_sender": { "address": "sender-secret@example.org", "name": null, "source": "from" },
+            "forwarded_by": forwarded_by, "received_at": "2025-11-21T08:00:00.000Z",
+            "body": { "text": "KEPT-BODY", "source": "text", "truncated": false },
+            "raw_truncated": false,
+        })
+        .to_string();
+        // The server's clock, which the test moves forward.
+        let ms = Timestamp::now().as_millisecond() + env.offset.load(Ordering::SeqCst);
+        let ts = (ms / 1000).to_string();
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let mut m =
+            <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(INGEST_SECRET.as_bytes())
+                .unwrap();
+        hmac::Mac::update(&mut m, format!("{ts}\n{nonce}\n{body}").as_bytes());
+        let sig = hex::encode(hmac::Mac::finalize(m).into_bytes());
+        let req = env
+            .t
+            .client
+            .post(format!("{}/api/v1/ingest/email", env.t.url))
+            .header("x-todo-timestamp", ts)
+            .header("x-todo-nonce", nonce)
+            .header("x-todo-signature", sig)
+            .body(body);
+        async move {
+            let res = req.send().await.unwrap();
+            let status = res.status();
+            (status, res.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let list_of = |r: Value| {
+        let env = &env;
+        async move {
+            let d = env
+                .api(
+                    Method::GET,
+                    &format!("/api/v1/tasks/{}", r["task_id"].as_str().unwrap()),
+                    TOKEN_A,
+                    None,
+                )
+                .await;
+            d.json["task"]["list"].as_str().unwrap().to_owned()
+        }
+    };
+    assert_eq!(
+        ingest("you@example.com", None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Not fresh: every change needs a passkey check first.
+    env.advance(6 * MINUTE);
+    let page = b.get("/admin/ingest").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("<strong>on</strong>"), "{}", page.body);
+    assert!(page.body.contains("No Inbox is set."), "{}", page.body);
+    let attempts: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        (
+            "/admin/ingest/senders",
+            vec![("address", "you@example.com")],
+        ),
+        (
+            "/admin/ingest/senders/remove",
+            vec![("address", "you@example.com")],
+        ),
+        ("/admin/ingest/inbox", vec![("list", inbox.as_str())]),
+        (
+            "/admin/ingest/keys",
+            vec![("key", "shop"), ("list", errands.as_str())],
+        ),
+        ("/admin/ingest/keys/remove", vec![("key", "shop")]),
+    ];
+    for (path, fields) in &attempts {
+        let p = b.post_form(path, fields).await;
+        assert_eq!(p.status, StatusCode::FORBIDDEN, "{path}: {}", p.body);
+        assert!(p.body.contains("data-action=\"step-up\""), "{path}");
+    }
+    // With a wrong CSRF token, even when fresh.
+    b.step_up().await;
+    for (path, fields) in &attempts {
+        let mut form = vec![("csrf", "wrong")];
+        form.extend(fields.iter().copied());
+        let p = b
+            .send(
+                Method::POST,
+                path,
+                Some(SITE),
+                Body::Form(form_encode(&form)),
+            )
+            .await;
+        assert_eq!(p.status, StatusCode::FORBIDDEN, "{path}: {}", p.body);
+    }
+
+    // Fresh: add a sender (normalized), pick the Inbox and add a list key; all take effect at once.
+    let p = b
+        .post_form("/admin/ingest/senders", &[("address", " You@Example.com ")])
+        .await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    let p = b
+        .post_form("/admin/ingest/senders", &[("address", "not an address")])
+        .await;
+    assert_eq!(p.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        ingest("you@example.com", None).await.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no Inbox yet"
+    );
+    let p = b
+        .post_form("/admin/ingest/inbox", &[("list", inbox.as_str())])
+        .await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    let p = b
+        .post_form(
+            "/admin/ingest/keys",
+            &[("key", "shop"), ("list", errands.as_str())],
+        )
+        .await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    for (key, list) in [
+        ("shop", errands.as_str()),
+        ("inbox", errands.as_str()),
+        ("Bad Key", errands.as_str()),
+        ("other", "not-a-list"),
+        ("other", ""),
+    ] {
+        let p = b
+            .post_form("/admin/ingest/keys", &[("key", key), ("list", list)])
+            .await;
+        assert_eq!(p.status, StatusCode::UNPROCESSABLE_ENTITY, "{key} {list}");
+    }
+    let page = b.get("/admin/ingest").await.body;
+    assert!(page.contains("<td>you@example.com</td>"), "{page}");
+    assert!(
+        page.contains("The Inbox is <strong>Inbox</strong>."),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            "Agents that can read this list see the email's subject, sender and any kept body."
+        ),
+        "{page}"
+    );
+    assert!(
+        page.contains("<td><code>shop</code></td><td>Errands</td>"),
+        "{page}"
+    );
+    let (s, r) = ingest("you@example.com", Some("shop")).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    assert_eq!(list_of(r).await, errands);
+    let (s, r) = ingest("you@example.com", None).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    assert_eq!(list_of(r).await, inbox);
+
+    // A share page of the list shows the email task's title only: no subject, sender or body.
+    let p = b
+        .post_form("/admin/shares", &[("target", &format!("list:{errands}"))])
+        .await;
+    assert_eq!(p.status, StatusCode::OK, "{}", p.body);
+    let link = attr_after(&p.body, SECRET_VALUE).unwrap().to_owned();
+    let share = env.browser().get(link.strip_prefix(SITE).unwrap()).await;
+    assert_eq!(share.status, StatusCode::OK);
+    assert!(share.body.contains("EMAIL-TITLE"), "{}", share.body);
+    for leak in [
+        "EMAIL-SUBJECT",
+        "sender-secret",
+        "KEPT-BODY",
+        "you@example.com",
+        "Forwarded",
+        "mail.example.org",
+    ] {
+        assert!(!share.body.contains(leak), "{leak} leaked:\n{}", share.body);
+    }
+
+    // The keyed list is deleted: the page flags the key, and its mail goes to the Inbox.
+    let r = env
+        .command(
+            TOKEN_A,
+            json!({ "cmd": "delete", "id": { "kind": "list", "id": errands } }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+    let page = b.get("/admin/ingest").await.body;
+    assert!(page.contains("<strong>list deleted</strong>"), "{page}");
+    let (s, r) = ingest("you@example.com", Some("shop")).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    assert_eq!(list_of(r).await, inbox);
+    let p = b
+        .post_form("/admin/ingest/keys/remove", &[("key", "shop")])
+        .await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    let p = b
+        .post_form("/admin/ingest/keys/remove", &[("key", "shop")])
+        .await;
+    assert_eq!(p.status, StatusCode::NOT_FOUND);
+
+    // Removing the sender shuts it out again.
+    let p = b
+        .post_form(
+            "/admin/ingest/senders/remove",
+            &[("address", "you@example.com")],
+        )
+        .await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    let p = b
+        .post_form(
+            "/admin/ingest/senders/remove",
+            &[("address", "you@example.com")],
+        )
+        .await;
+    assert_eq!(p.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        ingest("you@example.com", None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // A deleted Inbox is flagged; unsetting it is a change too.
+    let r = env
+        .command(
+            TOKEN_A,
+            json!({ "cmd": "delete", "id": { "kind": "list", "id": inbox } }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+    let page = b.get("/admin/ingest").await.body;
+    assert!(page.contains("The Inbox list was deleted."), "{page}");
+    let p = b.post_form("/admin/ingest/inbox", &[("list", "")]).await;
+    assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
+    assert!(
+        b.get("/admin/ingest")
+            .await
+            .body
+            .contains("No Inbox is set.")
+    );
+
+    let audit = b.get("/admin/audit").await.body;
+    for kind in [
+        "ingest_sender_added",
+        "ingest_sender_removed",
+        "list_key_added",
+        "list_key_removed",
+        "ingest_inbox_set",
+    ] {
+        assert!(audit.contains(kind), "{kind} missing:\n{audit}");
+    }
+    assert_eq!(audit.matches("ingest_inbox_set").count(), 2, "{audit}");
+}
+
 #[tokio::test]
 async fn another_passkey_can_be_added_and_used() {
     let env = Env::start().await;

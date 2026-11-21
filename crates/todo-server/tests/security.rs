@@ -8,11 +8,13 @@
 //! | Token scope | Agents at none, read, capture and plan stay inside their grants across REST reads, queries, smart lists, task detail, activity, the event log and stream, commands, undo and every MCP tool. Hidden lists, tasks, steps, tags and events look missing. |
 //! | Request limits | Oversized bodies get 413 on every route, with or without credentials, announced or chunked. Slow request heads are dropped and the connection cap holds. |
 //! | Headers | HTML pages carry the CSP (`frame-ancestors 'none'`), `X-Frame-Options`, `nosniff` and `no-referrer`; HSTS is on every response when the origin is HTTPS and never otherwise. Every cookie is `__Host-`, `Secure`, `HttpOnly` and `SameSite=Strict`. |
+//! | Email ingest | The one public write route takes no token: only a request signed with the Worker's secret, within the timestamp window and with an unused nonce gets in. A bad, missing or repeated signature, a tampered body, a stale or future timestamp, a replay and a bearer token in place of a signature are all 401 and store nothing. |
 //! | Logs | Tokens, session cookies, codes and task content never reach the log at `info` or above. |
 #![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 mod common;
 
+use common::ingest;
 use common::mcp::{ALL_TOOLS, Client, agent, call, connect, fails, ok};
 use common::raw::{self, health, read_until_closed};
 use common::web::{Env, Page, SITE, assert_session_cookie};
@@ -51,6 +53,8 @@ const PUBLIC: &[(&str, &str)] = &[
     ("POST", "/auth/setup/finish"),
     ("GET", "/assets/{file}"),
     ("GET", "/s/{token}"),
+    // Authenticated by an HMAC signature instead (see `email_ingest_needs_a_fresh_signature_and_an_unused_nonce`).
+    ("POST", "/api/v1/ingest/email"),
 ];
 
 /// The MCP endpoint is a service mounted for every method.
@@ -386,7 +390,8 @@ async fn every_method_outside_the_public_set_is_refused_without_credentials() {
                 assert!(refused(&a), "{what}");
                 // The API and MCP turn every method away at authentication.
                 let behind_tokens = (template.starts_with("/api/v1/")
-                    && !template.starts_with("/api/v1/pair/"))
+                    && !template.starts_with("/api/v1/pair/")
+                    && !template.starts_with("/api/v1/ingest/"))
                     || template == "/mcp";
                 if behind_tokens {
                     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "{what}");
@@ -1199,6 +1204,105 @@ async fn an_agent_at_plan_plans_its_list_and_nothing_else() {
     check_level(&s, AccessLevel::Plan).await;
 }
 
+// ---- email ingest ---------------------------------------------------------------------------------
+
+/// `POST /api/v1/ingest/email` is the one public route that writes. Only a request signed with the
+/// Worker's secret, within the timestamp window and with a nonce never seen before gets in; anything
+/// else is a content-free 401 and stores nothing. (Order of the checks, races, limits and the
+/// allowlist: `tests/ingest.rs`.)
+#[tokio::test]
+async fn email_ingest_needs_a_fresh_signature_and_an_unused_nonce() {
+    let t = ingest::server().await;
+    ingest::make_inbox(&t).await;
+    let head = t.server.engine.head_seq();
+    let mid = "<security-mid@mail.example.org>";
+    let body = serde_json::to_vec(&ingest::payload(mid)).unwrap();
+    let now = ingest::now_secs();
+    let window = todo_server::ingest::WINDOW_SECS;
+    let refused = |what: &str, (s, r): (StatusCode, Value)| {
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{what}: {r}");
+        assert_eq!(r["error"]["code"], "unauthorized", "{what}: {r}");
+        let text = r.to_string();
+        assert!(
+            !text.contains("security-mid") && !text.contains(ingest::OWNER),
+            "{what}: the error echoes the request: {text}"
+        );
+    };
+    let headers = |ts: i64, nonce: &str, sig: &str| {
+        vec![
+            ("x-todo-timestamp".to_owned(), ts.to_string()),
+            ("x-todo-nonce".to_owned(), nonce.to_owned()),
+            ("x-todo-signature".to_owned(), sig.to_owned()),
+        ]
+    };
+    let post = |h: Vec<(String, String)>, body: Vec<u8>| {
+        let t = &t;
+        async move {
+            let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            ingest::post_raw(t, &h, body).await
+        }
+    };
+
+    // No signature at all, and a valid owner token in place of one.
+    refused("unsigned", post(vec![], body.clone()).await);
+    let res = t
+        .client
+        .post(format!("{}{}", t.url, ingest::PATH))
+        .bearer_auth(TOKEN_A)
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "a bearer token");
+    // A bad signature: another secret, a body changed after signing, a signature for another nonce.
+    let n = ingest::nonce();
+    let wrong_key = ingest::sign(
+        "another-secret-0123456789abcdef0123",
+        &now.to_string(),
+        &n,
+        &body,
+    );
+    refused(
+        "another secret",
+        post(headers(now, &n, &wrong_key), body.clone()).await,
+    );
+    let good = ingest::sign(ingest::SECRET, &now.to_string(), &n, &body);
+    let mut tampered = body.clone();
+    let at = tampered.len() - 2;
+    tampered[at] = b' ';
+    refused(
+        "tampered body",
+        post(headers(now, &n, &good), tampered).await,
+    );
+    refused(
+        "signature for another nonce",
+        post(headers(now, &ingest::nonce(), &good), body.clone()).await,
+    );
+    // Correctly signed, but stale or from the future.
+    for ts in [now - window - 5, now + window + 5] {
+        let n = ingest::nonce();
+        let sig = ingest::sign(ingest::SECRET, &ts.to_string(), &n, &body);
+        refused(
+            &format!("timestamp {ts}"),
+            post(headers(ts, &n, &sig), body.clone()).await,
+        );
+    }
+    assert_eq!(t.server.engine.head_seq(), head, "nothing was stored");
+
+    // The genuine request gets in once. Replaying it, or reusing its nonce for another (correctly
+    // signed) email, is refused.
+    let (s, r) = post(headers(now, &n, &good), body.clone()).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    let after = t.server.engine.head_seq();
+    refused("replay", post(headers(now, &n, &good), body.clone()).await);
+    let other = serde_json::to_vec(&ingest::payload("<another@mail.example.org>")).unwrap();
+    let sig = ingest::sign(ingest::SECRET, &now.to_string(), &n, &other);
+    refused("reused nonce", post(headers(now, &n, &sig), other).await);
+    assert_eq!(t.server.engine.head_seq(), after);
+    assert_eq!(ingest::live_tasks(&t).len(), 1);
+}
+
 // ---- request limits -------------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1423,6 +1527,7 @@ async fn html_pages_carry_strict_security_headers() {
         "/admin/agents".to_owned(),
         format!("/admin/agents/{agent_row}"),
         "/admin/shares".to_owned(),
+        "/admin/ingest".to_owned(),
         "/admin/audit".to_owned(),
         "/pair".to_owned(),
     ] {

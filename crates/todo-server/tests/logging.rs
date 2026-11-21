@@ -116,3 +116,90 @@ async fn access_log_uses_route_templates_and_keeps_rejections_at_debug() {
         assert!(!debug.contains(secret), "`{secret}` in debug log:\n{debug}");
     }
 }
+
+/// Email ingest logs outcomes and the short Message-ID hash, never subjects, addresses, bodies or the
+/// secret (at `info`, and not at `debug` either).
+#[tokio::test]
+async fn ingest_logs_carry_no_content() {
+    use hmac::Mac;
+    const SECRET: &str = "test-only-ingest-secret-0123456789abcdef";
+    let all = Capture::default();
+    let subscriber = {
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(all.clone())
+                .with_filter(tracing_subscriber::filter::LevelFilter::DEBUG),
+        )
+    };
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let t = TestServer::start_with(|cfg| {
+        let path = cfg.data_dir.join("ingest.secret");
+        let mut f = todo_fs::create_private_file(&path).unwrap();
+        f.write_all(SECRET.as_bytes()).unwrap();
+        cfg.ingest.email_hmac_secret_file = Some(path);
+        cfg.ingest.allowed_senders = vec!["owner-addr@example.com".into()];
+    })
+    .await;
+    let inbox = t.create_list("Inbox").await;
+    t.server
+        .ingest
+        .store
+        .set_inbox(
+            Some(inbox.parse().unwrap()),
+            todo_server::ingest::store::By { at: 0, ip: None },
+        )
+        .unwrap();
+    let send = |forwarded_by: &str| {
+        let body = serde_json::json!({
+            "version": 1, "message_id": "<secret-mid@mail.example.org>", "list": "secret-list",
+            "title": "secret-title", "subject": "Fwd: secret-subject", "keep": true,
+            "original_sender": { "address": "secret-author@example.org", "name": "Secret Name", "source": "from" },
+            "forwarded_by": forwarded_by, "received_at": "2025-11-21T08:00:00.000Z",
+            "body": { "text": "secret-body", "source": "text", "truncated": false },
+            "raw_truncated": false,
+        })
+        .to_string();
+        let ts = todo_core::time::Timestamp::now().as_second().to_string();
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
+        m.update(format!("{ts}\n{nonce}\n{body}").as_bytes());
+        let sig = hex::encode(m.finalize().into_bytes());
+        t.client
+            .post(format!("{}/api/v1/ingest/email", t.url))
+            .header("x-todo-timestamp", ts)
+            .header("x-todo-nonce", nonce)
+            .header("x-todo-signature", sig)
+            .body(body)
+            .send()
+    };
+    assert_eq!(
+        send("stranger-addr@example.net").await.unwrap().status(),
+        403
+    );
+    assert_eq!(send("owner-addr@example.com").await.unwrap().status(), 201);
+    assert_eq!(send("owner-addr@example.com").await.unwrap().status(), 200);
+    t.stop().await;
+
+    let log = all.text();
+    let mid = todo_server::ingest::mid_hash("<secret-mid@mail.example.org>");
+    assert!(log.contains(&format!("mid={mid}")), "{log}");
+    assert!(log.contains("email ingested"), "{log}");
+    for secret in [
+        "secret-mid",
+        "secret-list",
+        "secret-title",
+        "secret-subject",
+        "secret-author",
+        "Secret Name",
+        "secret-body",
+        "owner-addr",
+        "stranger-addr",
+        SECRET,
+    ] {
+        assert!(!log.contains(secret), "`{secret}` in the log:\n{log}");
+    }
+}
