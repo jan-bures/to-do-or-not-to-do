@@ -17,7 +17,6 @@ use crate::graph::{DateTimeTz, Export};
 use crate::mapping;
 use base64::Engine;
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -244,9 +243,10 @@ mod source {
         if name.eq_ignore_ascii_case("utc") {
             return Some(TimeZone::UTC);
         }
-        TimeZone::get(name)
-            .ok()
-            .or_else(|| crate::windows_zones::iana(name).and_then(|iana| TimeZone::get(iana).ok()))
+        crate::windows_zones::lookup(name).ok().or_else(|| {
+            crate::windows_zones::iana(name)
+                .and_then(|iana| crate::windows_zones::lookup(iana).ok())
+        })
     }
 
     /// The instant of a Graph `dateTimeTimeZone` (a wall-clock time without offset, plus a zone).
@@ -407,7 +407,7 @@ pub fn verify(
     show_names: bool,
 ) -> VerifyReport {
     let mut rep = VerifyReport::default();
-    let tz = match TimeZone::get(&bundle.time_zone) {
+    let tz = match crate::windows_zones::lookup(&bundle.time_zone) {
         Ok(tz) => tz,
         Err(e) => {
             rep.problems

@@ -168,6 +168,22 @@ fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
         .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
 }
 
+/// Looks up an IANA time zone: in the system's database first, then in the copy bundled into the
+/// binary.
+///
+/// The fallback matters on Linux, where distributions move legacy links such as
+/// `America/Buenos_Aires` (which the CLDR table above uses) into an optional package, so the
+/// system database may lack names that Graph exports rely on.
+pub fn lookup(iana: &str) -> Result<jiff::tz::TimeZone, jiff::Error> {
+    static BUNDLED: std::sync::OnceLock<jiff::tz::TimeZoneDatabase> = std::sync::OnceLock::new();
+    jiff::tz::db().get(iana).or_else(|err| {
+        BUNDLED
+            .get_or_init(jiff::tz::TimeZoneDatabase::bundled)
+            .get(iana)
+            .map_err(|_| err)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +196,11 @@ mod tests {
                 .all(|w| cmp_ignore_case(w[0].0, w[1].0).is_lt())
         );
         for (w, i) in WINDOWS_TO_IANA {
-            assert!(jiff::tz::TimeZone::get(i).is_ok(), "{w} -> {i}");
+            assert!(lookup(i).is_ok(), "{w} -> {i}");
+            assert!(
+                jiff::tz::TimeZoneDatabase::bundled().get(i).is_ok(),
+                "bundled: {w} -> {i}"
+            );
         }
     }
 

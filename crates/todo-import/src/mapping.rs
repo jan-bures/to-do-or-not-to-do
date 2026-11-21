@@ -39,7 +39,8 @@ pub fn zone(name: &str) -> Result<TimeZone, MapError> {
         return Ok(TimeZone::UTC);
     }
     let iana = crate::windows_zones::iana(name).unwrap_or(name);
-    TimeZone::get(iana).map_err(|_| MapError(format!("unsupported time zone `{name}`")))
+    crate::windows_zones::lookup(iana)
+        .map_err(|_| MapError(format!("unsupported time zone `{name}`")))
 }
 
 /// The instant a Graph `dateTimeTimeZone` denotes.
@@ -320,7 +321,7 @@ mod tests {
 
     #[test]
     fn due_dates_are_taken_in_the_owner_zone() {
-        let berlin = TimeZone::get("Europe/Berlin").unwrap();
+        let berlin = crate::windows_zones::lookup("Europe/Berlin").unwrap();
         let v = DateTimeTz {
             date_time: "2026-01-31T23:00:00.0000000".into(),
             time_zone: "UTC".into(),

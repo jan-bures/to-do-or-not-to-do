@@ -25,7 +25,9 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 base64.workspace = true
-jiff = { workspace = true, features = ["tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
+# The bundled tz database on every platform: Linux distributions move legacy zone links such as
+# America/Buenos_Aires (which the CLDR Windows-zone table uses) into an optional package.
+jiff = { workspace = true, features = ["tz-system", "tzdb-bundle-always"] }
 uuid = { workspace = true, features = ["std"] }
 rusqlite.workspace = true
 ureq = { workspace = true, features = ["json"] }

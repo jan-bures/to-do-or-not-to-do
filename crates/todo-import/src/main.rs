@@ -130,8 +130,8 @@ fn git_work_tree(path: &Path) -> Option<PathBuf> {
 fn time_zone(name: Option<&str>) -> Result<(jiff::tz::TimeZone, String)> {
     match name {
         Some(n) => {
-            let tz =
-                jiff::tz::TimeZone::get(n).with_context(|| format!("unknown time zone `{n}`"))?;
+            let tz = todo_import::windows_zones::lookup(n)
+                .with_context(|| format!("unknown time zone `{n}`"))?;
             Ok((tz, n.to_owned()))
         }
         None => {
