@@ -69,7 +69,8 @@ pub fn verify_private(path: &Path, kind: Private) -> io::Result<()> {
 /// - a symlink, junction or other reparse point as the last path component (it is not followed);
 /// - anything that isn't a regular file (a directory, FIFO or device);
 /// - a file owned by another account than the one running the process (Unix: the file's uid is not
-///   the effective uid; Windows: the owner SID is not the token user's);
+///   the effective uid; Windows: the owner SID is neither the token user's nor the token's default
+///   owner, which for an elevated administrator is `BUILTIN\Administrators`);
 /// - broader access than the owner's: on Unix any group or other permission bit, on Windows any
 ///   DACL other than [`verify_private`] accepts for [`Private::AnyFile`].
 ///
@@ -272,7 +273,8 @@ mod imp {
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetTokenInformation, INHERIT_ONLY_ACE, INHERITED_ACE,
         OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY,
+        TOKEN_USER, TokenOwner, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
@@ -326,14 +328,19 @@ mod imp {
         String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) })
     }
 
-    /// The current process token's `TOKEN_USER`, in a buffer of `u64`s so that it is suitably aligned.
-    struct TokenUserBuf(Vec<u64>);
+    /// A `GetTokenInformation` result for the current process token, in a buffer of `u64`s so that
+    /// the structure at its start is suitably aligned.
+    struct TokenInfo(Vec<u64>);
 
-    // The buffer's element alignment must cover TOKEN_USER's, so reading it in place is aligned.
-    const _: () = assert!(std::mem::align_of::<TOKEN_USER>() <= std::mem::align_of::<u64>());
+    // The buffer's element alignment must cover the structures read from it, so reading them in place
+    // is aligned.
+    const _: () = assert!(
+        std::mem::align_of::<TOKEN_USER>() <= std::mem::align_of::<u64>()
+            && std::mem::align_of::<TOKEN_OWNER>() <= std::mem::align_of::<u64>()
+    );
 
-    impl TokenUserBuf {
-        fn current() -> io::Result<Self> {
+    impl TokenInfo {
+        fn current(class: TOKEN_INFORMATION_CLASS) -> io::Result<Self> {
             let mut token: HANDLE = null_mut();
             // SAFETY: GetCurrentProcess returns a pseudo-handle; `token` is a valid out pointer.
             if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -342,26 +349,50 @@ mod imp {
             let _token = HandleGuard(token);
             let mut len = 0u32;
             // SAFETY: a size query with a null buffer of length 0; it fails and reports the needed size.
-            unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len) };
+            unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut len) };
             if len == 0 {
                 return Err(io::Error::last_os_error());
             }
             let mut buf = vec![0u64; (len as usize).div_ceil(8)];
             // SAFETY: `buf` holds at least `len` bytes.
-            if unsafe {
-                GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
-            } == 0
+            if unsafe { GetTokenInformation(token, class, buf.as_mut_ptr().cast(), len, &mut len) }
+                == 0
             {
                 return Err(io::Error::last_os_error());
             }
             Ok(Self(buf))
+        }
+    }
+
+    /// The current process token's `TOKEN_USER`.
+    struct TokenUserBuf(TokenInfo);
+
+    impl TokenUserBuf {
+        fn current() -> io::Result<Self> {
+            TokenInfo::current(TokenUser).map(Self)
         }
 
         /// The user's SID. It points into the buffer, so it is valid while `self` lives.
         fn sid(&self) -> PSID {
             // SAFETY: the buffer starts with a TOKEN_USER written by GetTokenInformation, and is aligned
             // for it (see the assertion above).
-            unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+            unsafe { (*self.0.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+        }
+    }
+
+    /// The current process token's `TOKEN_OWNER`: the default owner of the objects it creates.
+    struct TokenOwnerBuf(TokenInfo);
+
+    impl TokenOwnerBuf {
+        fn current() -> io::Result<Self> {
+            TokenInfo::current(TokenOwner).map(Self)
+        }
+
+        /// The default owner's SID. It points into the buffer, so it is valid while `self` lives.
+        fn sid(&self) -> PSID {
+            // SAFETY: the buffer starts with a TOKEN_OWNER written by GetTokenInformation, and is
+            // aligned for it (see the assertion above).
+            unsafe { (*self.0.0.as_ptr().cast::<TOKEN_OWNER>()).Owner }
         }
     }
 
@@ -618,10 +649,17 @@ mod imp {
             return Err(super::not_private(path, "it is not a regular file"));
         }
         let s = security(&file, true)?;
-        let me = TokenUserBuf::current()?;
-        // SAFETY: both SIDs are valid: one inside the descriptor, one inside `me`. A null owner (none
-        // recorded) is checked first.
-        if s.owner.is_null() || unsafe { EqualSid(s.owner, me.sid()) } == 0 {
+        // The owner is either the token user, or the token's default owner. They differ for an
+        // elevated administrator: its new files are owned by `BUILTIN\Administrators` (the default
+        // owner), not by the user. Any other owner is refused.
+        let (user, default_owner) = (TokenUserBuf::current()?, TokenOwnerBuf::current()?);
+        // SAFETY: all SIDs are valid: one inside the descriptor, the others inside `user` and
+        // `default_owner`. A null owner (none recorded) is checked first.
+        let ours = !s.owner.is_null()
+            && unsafe {
+                EqualSid(s.owner, user.sid()) != 0 || EqualSid(s.owner, default_owner.sid()) != 0
+            };
+        if !ours {
             return Err(super::not_private(
                 path,
                 "it is owned by another account (take ownership: icacls <file> /setowner %USERNAME%)",

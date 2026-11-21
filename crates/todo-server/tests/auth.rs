@@ -483,7 +483,8 @@ async fn email_allowlist_inbox_and_list_keys_need_step_up_and_are_audited() {
         })
         .to_string();
         // The server's clock, which the test moves forward.
-        let ms = Timestamp::now().as_millisecond() + env.offset.load(Ordering::SeqCst);
+        let ms = todo_core::time::Timestamp::now().as_millisecond()
+            + env.offset.load(std::sync::atomic::Ordering::SeqCst);
         let ts = (ms / 1000).to_string();
         let nonce = uuid::Uuid::new_v4().simple().to_string();
         let mut m =
