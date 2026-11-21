@@ -14,7 +14,11 @@
 //!
 //! **Retries.** Pass your own `attachment_id` (a UUID) to make an upload retryable: once it has been
 //! stored, the same `attachment_id` returns the stored attachment (`idempotent-replayed: true`) without
-//! reading the body or touching storage again.
+//! reading the body or touching storage again. While an upload with that ID is still in flight, a
+//! concurrent retry gets 409 `upload_in_progress` (with `Retry-After`) without its body being read.
+//!
+//! **IDs.** A taken `attachment_id` is 409 `already_exists` for the owner and the generic
+//! `id_unavailable` for agents, the same whoever holds the ID (see [`super::hidden`]).
 //!
 //! **Costs.** Every upload and download is an R2 operation counted in the monthly budget (see
 //! [`crate::blobs`]); downloads are also rate-limited per token, and both have concurrency caps.
@@ -28,7 +32,10 @@ use super::{ApiPath, ApiQuery, RequestCancel, Work, blocking, hidden, visibility
 use crate::app::AppState;
 use crate::auth::Authenticated;
 use crate::blobs::registry::Refusal;
-use crate::blobs::{AttachmentError, Attachments, seconds_to_next_month, store, upload_command_id};
+use crate::blobs::{
+    AttachmentError, Attachments, InFlight, UploadSlot, seconds_to_next_month, store,
+    upload_command_id,
+};
 use crate::engine::CommandResult;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -92,6 +99,7 @@ fn attachment_error(att: &Attachments, e: AttachmentError) -> ApiError {
             refusal_error(&r, att)
         }
         AttachmentError::Store(store::StoreError::NotFound { .. }) => content_unavailable(),
+        AttachmentError::Engine(e) => e.into(),
         AttachmentError::Store(e) => {
             tracing::error!(error = %e, "attachment store failed");
             ApiError::new(
@@ -298,8 +306,8 @@ fn attachments(app: &AppState) -> Arc<Attachments> {
 enum Plan {
     /// The attachment is already stored (a retry): return it.
     Replay(Box<AttachmentRef>, CommandResult),
-    /// Go ahead.
-    Upload,
+    /// Go ahead, holding the reservation of the ID.
+    Upload(Option<UploadSlot>),
 }
 
 /// Uploads an attachment to a task.
@@ -320,7 +328,7 @@ enum Plan {
         (status = 403, description = "No capture access on the task's list", body = ErrorBody),
         (status = 404, description = "No such task (or one you cannot see)", body = ErrorBody),
         (status = 408, description = "The deadline passed before the attachment was recorded", body = ErrorBody),
-        (status = 409, description = "The task is deleted, or `attachment_id` is taken", body = ErrorBody),
+        (status = 409, description = "The task is deleted; `attachment_id` is taken (`already_exists`, or `id_unavailable` for agents, whoever holds it); or an upload with this `attachment_id` is still in progress (`upload_in_progress`, see `Retry-After`)", body = ErrorBody),
         (status = 413, description = "Larger than the limit (`payload_too_large`)", body = ErrorBody),
         (status = 422, description = "Bad file name or media type", body = ErrorBody),
         (status = 429, description = "Rate limit, write quota (`quota_exceeded`) or this month's storage operations (`r2_budget_exhausted`); see `Retry-After`", body = ErrorBody),
@@ -379,36 +387,55 @@ pub async fn upload(
         att.clone(),
     );
     let plan = blocking(&app, Work::Read, move || -> Result<Plan, ApiError> {
-        let state = engine.state();
-        hidden::check_command(&state, &actor, &probe)?;
-        // A retry of an upload this caller completed: same attachment, same task, stored content.
-        if let Some(existing) = state.attachments.get(&id)
-            && existing.task == task
-            && let Some((stored, _)) = engine.stored_command(&actor, upload_command_id(id))?
-            && a.find(id, &existing.storage_key)
-                .map_err(|e| attachment_error(&a, e))?
-                .is_some()
-        {
-            return Ok(Plan::Replay(Box::new(existing.clone()), stored));
+        let dry_run = |state: &todo_core::State| -> Result<Plan, ApiError> {
+            // A retry of an upload this caller completed: same attachment, same task, stored content.
+            if let Some(existing) = state.attachments.get(&id)
+                && existing.task == task
+                && let Some((stored, _)) = engine.stored_command(&actor, upload_command_id(id))?
+                && a.find(id, &existing.storage_key)
+                    .map_err(|e| attachment_error(&a, e))?
+                    .is_some()
+            {
+                return Ok(Plan::Replay(Box::new(existing.clone()), stored));
+            }
+            authorize(state, &actor, &probe)
+                .map_err(|d| super::error::domain_error(&todo_core::DomainError::Denied(d)))?;
+            todo_core::decide(state, &actor, &probe, engine.now())
+                .map_err(|e| hidden::domain_write_error(&actor, &e))?;
+            Ok(Plan::Upload(None))
+        };
+        hidden::check_command(&engine.state(), &actor, &probe)?;
+        let first = dry_run(&engine.state())?;
+        if let Plan::Replay(..) = first {
+            return Ok(first);
         }
-        authorize(&state, &actor, &probe)
-            .map_err(|d| super::error::domain_error(&todo_core::DomainError::Denied(d)))?;
-        todo_core::decide(&state, &actor, &probe, engine.now())
-            .map_err(|e| super::error::domain_error(&e))?;
-        Ok(Plan::Upload)
+        // One upload per ID at a time, so concurrent retries cannot each store (and pay for) a copy.
+        // Taken after the access checks, so it answers nothing an agent could not learn anyway.
+        let slot = a.reserve_id(id, &actor).map_err(|busy| match busy {
+            InFlight::SameCaller => ApiError::new(
+                StatusCode::CONFLICT,
+                "upload_in_progress",
+                "an upload with this attachment_id is in progress; retry when it has finished",
+            )
+            .with_retry_after(5),
+            InFlight::OtherCaller if visibility::sees_all(&actor) => {
+                super::error::domain_error(&todo_core::DomainError::AlreadyExists(id.into()))
+            }
+            InFlight::OtherCaller => hidden::id_unavailable(id.into()),
+        })?;
+        // Again, holding the reservation: an upload that finished meanwhile is now a replay (or taken).
+        match dry_run(&engine.state())? {
+            Plan::Upload(_) => Ok(Plan::Upload(Some(slot))),
+            replay => Ok(replay),
+        }
     })
     .await??;
-    if let Plan::Replay(attachment, result) = plan {
-        let mut res = Json200(UploadResponse {
-            attachment: *attachment,
-            result,
-            epoch: app.engine.epoch(),
-        })
-        .into_response();
-        res.headers_mut()
-            .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
-        return Ok(res);
-    }
+    let slot = match plan {
+        Plan::Upload(slot) => slot,
+        Plan::Replay(attachment, result) => {
+            return Ok(replayed(attachment, result, app.engine.epoch()));
+        }
+    };
 
     auth.take_write(&app)?;
     let permit = att
@@ -467,20 +494,26 @@ pub async fn upload(
         .map_err(|e| attachment_error(&att, e))?;
 
     let (a, key) = (att.clone(), object_key.clone());
+    // The reservation moves with the work: if the request is abandoned (its deadline), the blocking
+    // tasks still finish, and the ID stays reserved until they have.
     let stored = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        a.store(&key, id, &key, &sealed).map(|_| sealed.plain)
+        a.store(&key, id, &key, &sealed)
+            .map(|_| (sealed.plain, slot))
     })
     .await
     .map_err(|_| ApiError::internal())?
-    .map_err(|e| attachment_error(&att, e))?;
+    .map_err(|e| attachment_error(&att, e));
+    let (stored, slot) = stored?;
 
     let (engine, actor, cmd) = (app.engine.clone(), auth.actor.clone(), command(stored));
     let (outcome, attachment) = blocking(&app, Work::Write, move || {
+        // Held until the reference is recorded (or refused).
+        let _slot = slot;
         hidden::check_command(&engine.state(), &actor, &cmd)?;
         let o = engine
             .execute_cancellable(&actor, upload_command_id(id), &cmd, &cancel)
-            .map_err(ApiError::from)?;
+            .map_err(|e| hidden::write_error(&actor, e))?;
         let a = engine.state().attachments.get(&id).cloned();
         Ok::<_, ApiError>((o, a))
     })
@@ -500,6 +533,18 @@ pub async fn upload(
             .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
     }
     Ok(res)
+}
+
+fn replayed(attachment: Box<AttachmentRef>, result: CommandResult, epoch: uuid::Uuid) -> Response {
+    let mut res = Json200(UploadResponse {
+        attachment: *attachment,
+        result,
+        epoch,
+    })
+    .into_response();
+    res.headers_mut()
+        .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
+    res
 }
 
 struct Json200<T>(T);

@@ -15,6 +15,7 @@ const START_MS: i64 = 1_795_000_000_000; // November 2026
 struct Counting {
     inner: store::LocalStore,
     ops: Mutex<Vec<&'static str>>,
+    fail_deletes: std::sync::atomic::AtomicBool,
 }
 
 impl Counting {
@@ -34,6 +35,12 @@ impl BlobStore for Counting {
     }
     fn delete(&self, key: &str) -> Result<(), StoreError> {
         self.ops.lock().unwrap().push("DELETE");
+        if self.fail_deletes.load(Ordering::SeqCst) {
+            return Err(StoreError::Transport {
+                op: "DELETE",
+                message: "connection reset".into(),
+            });
+        }
         self.inner.delete(key)
     }
     fn kind(&self) -> &'static str {
@@ -71,6 +78,7 @@ impl Env {
         let store = Arc::new(Counting {
             inner: store::LocalStore::open(&dir.path().join("blobs")).unwrap(),
             ops: Mutex::default(),
+            fail_deletes: Default::default(),
         });
         let att = Attachments::with_store(&cfg, dir.path(), engine.clone(), store.clone()).unwrap();
         let owner = Actor::owner("pc").unwrap();
@@ -205,6 +213,7 @@ fn collection_waits_out_the_retention_window_and_respects_undo() {
     assert_eq!(
         env.gc(),
         GcReport {
+            scanned: 2,
             kept: 2,
             ..GcReport::default()
         }
@@ -245,6 +254,168 @@ fn collection_waits_out_the_retention_window_and_respects_undo() {
         )
         .unwrap();
     assert!(env.content(b).is_none());
+}
+
+fn on_gc(env: &Env, hook: impl FnMut(GcStage, &BlobRow) + Send + 'static) {
+    *env.att.gc_hook.lock().unwrap() = Some(Box::new(hook));
+}
+
+fn deleted_long_ago(env: &Env) -> (AttachmentId, u64) {
+    let (a, _) = env.upload(b"precious");
+    let del = env.delete(EntityId::Attachment(a));
+    env.gc();
+    env.advance(31 * DAY_MS);
+    (a, del)
+}
+
+fn try_undo(engine: &Engine, owner: &Actor, seq: u64) -> Result<(), crate::engine::EngineError> {
+    engine.undo(owner, seq, false, Some(cid())).map(drop)
+}
+
+#[test]
+fn a_restore_committed_after_the_snapshot_keeps_the_bytes() {
+    let env = Env::new(cfg());
+    let (a, del) = deleted_long_ago(&env);
+    // The run has decided from its snapshot that the object is doomed; the undo commits before the
+    // claim.
+    let (engine, owner) = (env.engine.clone(), env.owner.clone());
+    on_gc(&env, move |stage, _| {
+        if stage == GcStage::Doomed {
+            try_undo(&engine, &owner, del).unwrap();
+        }
+    });
+    let r = env.gc();
+    assert_eq!((r.deleted, r.kept), (0, 1), "{r:?}");
+    assert!(!env.store.ops().contains(&"DELETE"));
+    assert_eq!(env.content(a).unwrap(), b"precious");
+    // And it stays referenced: later runs keep it.
+    *env.att.gc_hook.lock().unwrap() = None;
+    assert_eq!(env.gc().kept, 1);
+}
+
+#[test]
+fn a_restore_while_the_object_is_claimed_is_refused() {
+    let env = Env::new(cfg());
+    let (a, del) = deleted_long_ago(&env);
+    // Also through the task: deleting and restoring it must not revive the attachment either.
+    let task_del = env.delete(EntityId::Task(env.task));
+    let refusals = Arc::new(Mutex::new(Vec::new()));
+    let (engine, owner, seen) = (env.engine.clone(), env.owner.clone(), refusals.clone());
+    on_gc(&env, move |stage, _| {
+        if stage == GcStage::Claimed {
+            seen.lock()
+                .unwrap()
+                .push(try_undo(&engine, &owner, task_del).map_err(|e| e.to_string()));
+            seen.lock()
+                .unwrap()
+                .push(try_undo(&engine, &owner, del).map_err(|e| e.to_string()));
+        }
+    });
+    // The task restore (undo of its deletion) does not revive `a` (it is deleted itself), so it goes
+    // through; the attachment's own undo is refused.
+    let r = env.gc();
+    assert_eq!(r.deleted, 1);
+    let seen = refusals.lock().unwrap().clone();
+    assert!(seen[0].is_ok(), "{seen:?}");
+    assert!(
+        seen[1].as_ref().is_err_and(|e| e.contains("being deleted")),
+        "{seen:?}"
+    );
+    assert!(!env.engine.state().is_live(EntityId::Attachment(a)));
+    assert_eq!(env.objects(), 0);
+    // Once the purge is over, the claim is gone: the attachment can be restored (without content).
+    try_undo(&env.engine, &env.owner, del).unwrap();
+    assert!(env.content(a).is_none());
+}
+
+#[test]
+fn a_claim_survives_a_failed_delete_and_a_restart() {
+    let env = Env::new(cfg());
+    let (a, del) = deleted_long_ago(&env);
+    env.store.fail_deletes.store(true, Ordering::SeqCst);
+    assert!(env.att.collect_garbage().is_err());
+    assert_eq!(env.att.registry().purging().unwrap().len(), 1);
+    let refused = try_undo(&env.engine, &env.owner, del).unwrap_err();
+    assert!(matches!(
+        refused,
+        crate::engine::EngineError::ContentPurging(EntityId::Attachment(x)) if x == a
+    ));
+    // A new instance (a restart) loads the claim and finishes the delete.
+    let again = Attachments::with_store(
+        &cfg(),
+        env._dir.path(),
+        env.engine.clone(),
+        env.store.clone(),
+    )
+    .unwrap();
+    assert!(
+        try_undo(&env.engine, &env.owner, del).is_err(),
+        "still claimed"
+    );
+    env.store.fail_deletes.store(false, Ordering::SeqCst);
+    assert_eq!(again.collect_garbage().unwrap().deleted, 1);
+    assert!(again.registry().all().unwrap().is_empty());
+    try_undo(&env.engine, &env.owner, del).unwrap();
+}
+
+#[test]
+fn a_budget_refusal_gives_the_claim_back() {
+    let env = Env::new(AttachmentsConfig {
+        gc_retention_days: 1,
+        budget: BudgetCaps {
+            class_a_monthly: 1,
+            ..BudgetCaps::default()
+        },
+        ..cfg()
+    });
+    // The upload used November's only Class A operation, so the delete cannot be sent this month.
+    let (a, _) = env.upload(b"x");
+    let del = env.delete(EntityId::Attachment(a));
+    env.gc();
+    env.advance(2 * DAY_MS);
+    let r = env.gc();
+    assert!(r.stopped_early && r.deleted == 0, "{r:?}");
+    assert!(env.att.registry().purging().unwrap().is_empty());
+    try_undo(&env.engine, &env.owner, del).unwrap();
+    assert_eq!(env.content(a).unwrap(), b"x");
+}
+
+#[test]
+fn runs_scan_a_bounded_page_and_resume_after_it() {
+    let env = Env::new(AttachmentsConfig {
+        gc_max_scans_per_run: 2,
+        ..cfg()
+    });
+    for _ in 0..5 {
+        env.upload(b"p");
+    }
+    let scans: Vec<_> = (0..4).map(|_| env.gc().scanned).collect();
+    assert_eq!(scans, [2, 2, 1, 2], "pages, then back to the start");
+    let kept: usize = (0..3).map(|_| env.gc().kept).sum();
+    assert_eq!(kept, 5, "a full cycle sees every object once");
+}
+
+#[test]
+fn one_upload_per_attachment_id_at_a_time() {
+    let env = Env::new(cfg());
+    let att = Arc::new(env.att);
+    let id = AttachmentId::from_uuid(cid());
+    let agent = Actor::agent("bot").unwrap();
+    let slot = att.reserve_id(id, &env.owner).unwrap();
+    assert_eq!(
+        att.reserve_id(id, &env.owner).unwrap_err(),
+        InFlight::SameCaller
+    );
+    assert_eq!(
+        att.reserve_id(id, &agent).unwrap_err(),
+        InFlight::OtherCaller
+    );
+    let other = att
+        .reserve_id(AttachmentId::from_uuid(cid()), &env.owner)
+        .unwrap();
+    drop(slot);
+    drop(att.reserve_id(id, &agent).unwrap());
+    drop(other);
 }
 
 #[test]

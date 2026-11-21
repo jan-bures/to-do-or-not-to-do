@@ -513,3 +513,111 @@ async fn both_endpoints_are_in_the_openapi_document() {
             .is_object()
     );
 }
+
+/// Replaces `probe` everywhere in `v`, so responses about different IDs can be compared.
+fn without(v: &Value, probe: &str) -> Value {
+    serde_json::from_str(&v.to_string().replace(probe, "<probe>")).unwrap()
+}
+
+#[tokio::test]
+async fn a_taken_attachment_id_answers_the_same_whoever_holds_it() {
+    let t = server().await;
+    let visible = t.create_list("Visible").await;
+    let hidden = t.create_list("Hidden").await;
+    let mine = t.create_task(&visible, "mine", json!({})).await;
+    let theirs = t.create_task(&hidden, "theirs", json!({})).await;
+    let capturer = agent(&t, "capturer", &visible, AccessLevel::Capture).await;
+    let owned = |b: &Upload| b.body["attachment"]["id"].as_str().unwrap().to_owned();
+    // An attachment the agent can see, one in a list it cannot see, and an ID held only by the undo
+    // journal (its creation was undone).
+    let seen = owned(&upload(&t, &mine, "seen.txt", None, b"s").await);
+    let unseen = owned(&upload(&t, &theirs, "unseen.txt", None, b"u").await);
+    let withdrawn = upload(&t, &theirs, "gone.txt", None, b"g").await;
+    let (s, v) = t
+        .undo(common::first_seq(&withdrawn.body["result"]), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let withdrawn = owned(&withdrawn);
+
+    let mut answers = Vec::new();
+    for probe in [&seen, &unseen, &withdrawn] {
+        let extra = [("attachment_id", probe.as_str())];
+        let up = upload_as(&t, &capturer, &mine, "p.txt", None, b"p".to_vec(), &extra).await;
+        answers.push((up.status, without(&up.body, probe)));
+        let (s, _, v) = t
+            .command_with_id(
+                &capturer,
+                &id(),
+                json!({ "cmd": "add_attachment", "id": probe, "task": mine, "file_name": "p.txt",
+                        "media_type": "text/plain", "size_bytes": 1, "storage_key": "k" }),
+            )
+            .await;
+        answers.push((s, without(&v, probe)));
+    }
+    assert_eq!(answers[0].0, StatusCode::CONFLICT, "{}", answers[0].1);
+    assert_eq!(answers[0].1["error"]["code"], "id_unavailable");
+    for a in &answers {
+        assert_eq!(a, &answers[0]);
+    }
+    // The owner still gets the precise answer.
+    let extra = [("attachment_id", unseen.as_str())];
+    let up = upload_as(&t, TOKEN_A, &mine, "p.txt", None, b"p".to_vec(), &extra).await;
+    assert_eq!(up.body["error"]["code"], "already_exists", "{}", up.body);
+}
+
+#[tokio::test]
+async fn concurrent_uploads_with_one_attachment_id_store_and_charge_once() {
+    let t = server().await;
+    let (_, task) = inbox_task(&t).await;
+    let att = id();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let body = reqwest::Body::wrap_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv()
+            .await
+            .map(|chunk| (Ok::<_, std::io::Error>(chunk), rx))
+    }));
+    let first = {
+        let (client, url, task, att) = (t.client.clone(), t.url.clone(), task.clone(), att.clone());
+        tokio::spawn(async move {
+            let res = client
+                .post(format!("{url}/api/v1/tasks/{task}/attachments"))
+                .header(AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+                .query(&[("file_name", "slow.bin"), ("attachment_id", att.as_str())])
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            res.status()
+        })
+    };
+    tx.send(vec![1; 1000]).await.unwrap();
+    // Wait until the first upload is sealing (its spool file exists).
+    let spool = t.dir.path().join("attachments-spool");
+    // Only counted: an open file cannot be read on every platform.
+    let sealing = || std::fs::read_dir(&spool).unwrap().count() > 0;
+    for _ in 0..500 {
+        if sealing() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(sealing(), "the first upload started");
+
+    let extra = [("attachment_id", att.as_str())];
+    let second = upload_as(&t, TOKEN_A, &task, "slow.bin", None, vec![1; 2000], &extra).await;
+    assert_eq!(second.status, StatusCode::CONFLICT, "{}", second.body);
+    assert_eq!(second.body["error"]["code"], "upload_in_progress");
+    assert!(second.headers.contains_key("retry-after"));
+
+    tx.send(vec![1; 1000]).await.unwrap();
+    drop(tx);
+    assert_eq!(first.await.unwrap(), StatusCode::CREATED);
+    let third = upload_as(&t, TOKEN_A, &task, "slow.bin", None, vec![1; 2000], &extra).await;
+    assert_eq!(third.status, StatusCode::OK, "{}", third.body);
+    assert_eq!(third.headers["idempotent-replayed"], "true");
+
+    let a = &t.server.attachments;
+    let usage = a.registry().usage(&a.month()).unwrap();
+    assert_eq!((usage.class_a, usage.objects), (1, 1), "exactly one PUT");
+    assert_eq!(files_in(&t.dir.path().join("blobs")).len(), 1);
+}

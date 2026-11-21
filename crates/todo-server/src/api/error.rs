@@ -458,6 +458,16 @@ impl From<EngineError> for ApiError {
                 format!("event {seq} is not the expected event"),
             )
             .with_details(json!({ "seq": seq, "expected": expected, "found": found })),
+            EngineError::ContentPurging(id) => Self::new(
+                StatusCode::CONFLICT,
+                "attachment_purging",
+                format!(
+                    "the stored content of {id} is being deleted (it stayed unreferenced past the \
+                     retention window); this write would make it live again without its content"
+                ),
+            )
+            .with_details(json!({ "entity": id }))
+            .with_retry_after(60),
             EngineError::Cancelled => Self::timeout(),
             EngineError::Unavailable => Self::unavailable(),
             EngineError::Store(s) => s.into(),

@@ -290,6 +290,7 @@ pub struct Server {
     engine: Arc<Engine>,
     authsvc: Arc<AuthService>,
     ingest: Arc<Ingest>,
+    attachments: Arc<crate::blobs::Attachments>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -388,7 +389,7 @@ impl Server {
             catch_up_marks: Arc::new(CatchUpMarks::default()),
             shutdown: shutdown_rx,
             ingest: ingest.clone(),
-            attachments,
+            attachments: attachments.clone(),
         };
         Ok(Self {
             listener,
@@ -396,6 +397,7 @@ impl Server {
             engine,
             authsvc,
             ingest,
+            attachments,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -452,6 +454,7 @@ impl Server {
         let engine = self.engine();
         let authsvc = self.auth_service();
         let ingest = self.ingest.clone();
+        let attachments = self.attachments.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(self.run_until(async move {
             let _ = stopped.await;
@@ -461,6 +464,7 @@ impl Server {
             engine,
             authsvc,
             ingest,
+            attachments,
             stop,
             task,
         })
@@ -478,6 +482,8 @@ pub struct RunningServer {
     pub authsvc: Arc<AuthService>,
     /// Email ingest (its store holds the allowlist, list keys and the Inbox).
     pub ingest: Arc<Ingest>,
+    /// Attachment content (registry and budget).
+    pub attachments: Arc<crate::blobs::Attachments>,
     stop: tokio::sync::oneshot::Sender<()>,
     task: JoinHandle<Result<(), ServerError>>,
 }

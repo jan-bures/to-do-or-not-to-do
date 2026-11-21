@@ -152,7 +152,15 @@ pub enum EngineError {
     /// (the caller gets [`UniqueOutcome::Refused`]); never returned.
     #[error("the write was refused")]
     Refused,
+    /// The write would make an attachment live again whose content the garbage collector is deleting
+    /// (see [`Engine::set_commit_check`] and [`crate::blobs`]).
+    #[error("the content of {0} is being deleted; it cannot be restored now")]
+    ContentPurging(EntityId),
 }
+
+/// A last check of every write, inside the writer, against the state before and after it. An error
+/// rolls the write back. See [`Engine::set_commit_check`].
+pub type CommitCheck = Arc<dyn Fn(&State, &State) -> Result<(), EngineError> + Send + Sync>;
 
 /// What [`Engine::execute_unique`] stores: commands that create one task, applied as one group.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,6 +218,8 @@ pub struct Engine {
     poisoned: AtomicBool,
     /// Test hook: milliseconds to sleep between claiming a commit and committing.
     commit_delay_ms: AtomicU64,
+    /// See [`Engine::set_commit_check`].
+    commit_check: RwLock<Option<CommitCheck>>,
 }
 
 /// Holds the writer lock (see [`Engine::hold_writer`]).
@@ -369,6 +379,7 @@ impl Engine {
             clock,
             poisoned: AtomicBool::new(false),
             commit_delay_ms: AtomicU64::new(0),
+            commit_check: RwLock::new(None),
         })
     }
 
@@ -478,6 +489,26 @@ impl Engine {
             u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );
+    }
+
+    /// Installs a check that every write (command, undo, unique write) must pass, run inside the
+    /// writer with the state before and after the write. Used by [`crate::blobs`] so that no write can
+    /// make an attachment live again while its content is being deleted.
+    pub fn set_commit_check(&self, check: CommitCheck) {
+        let _w = lock(&self.writer);
+        *self
+            .commit_check
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(check);
+    }
+
+    /// Runs `f` on the current state while holding the writer, so no write can commit until it
+    /// returns. For decisions that must not go stale, like the garbage collector's last check before
+    /// it deletes an object. Keep `f` short: every write waits for it.
+    pub fn with_writer<R>(&self, f: impl FnOnce(&State) -> R) -> Result<R, EngineError> {
+        let _w = self.writer(&Cancel::new())?;
+        let state = self.state();
+        Ok(f(&state))
     }
 
     /// Blocks every write until the returned guard is dropped. For tests that need a slow writer.
@@ -915,6 +946,14 @@ impl Engine {
                 scopes.push(scope);
                 touched.insert(e.payload.target());
             }
+            let check = self
+                .commit_check
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(check) = check {
+                check(base, &next)?;
+            }
             db::sync_entities(&tx, &next, touched.iter().copied())?;
             let head = events.last().and_then(|e| e.seq).unwrap_or(head_before);
             db::set_projection_seq(&tx, head)?;
@@ -954,7 +993,10 @@ impl Engine {
                     tracing::error!(error = %e, "write failed and could not be rolled back; engine poisoned");
                 } else if !matches!(
                     e,
-                    EngineError::Cancelled | EngineError::DuplicateKey | EngineError::Refused
+                    EngineError::Cancelled
+                        | EngineError::DuplicateKey
+                        | EngineError::Refused
+                        | EngineError::ContentPurging(_)
                 ) {
                     tracing::error!(error = %e, "write failed; nothing was stored");
                 }

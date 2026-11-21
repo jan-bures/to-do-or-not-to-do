@@ -4,6 +4,12 @@
 //!
 //! Stores only move ciphertext (see [`super::crypto`]) and do no accounting: every call is charged to the
 //! budget by [`super::Attachments`] *before* it is made.
+//!
+//! **The bucket must use the Standard storage class.** The budget assumes Standard pricing: no minimum
+//! storage duration and no retrieval fees. Infrequent Access bills every GET's bytes and a 30-day
+//! minimum, which the budget does not count. So every PUT asks for `STANDARD` explicitly (signed, so it
+//! cannot be stripped), whatever the bucket's default class is, and a GET of an object that reports
+//! another class is refused (logged at `warn`, with the class only) instead of served.
 
 use rusty_s3::{Bucket, S3Action, UrlStyle};
 use serde::Deserialize;
@@ -72,7 +78,19 @@ pub enum StoreError {
     /// Bad configuration or key.
     #[error("attachment store: {0}")]
     Config(String),
+    /// The object is not in the Standard storage class (see the module docs).
+    #[error("{op}: object is in storage class {class}, not STANDARD")]
+    StorageClass {
+        /// The operation.
+        op: &'static str,
+        /// The class the store reported (at most 40 characters).
+        class: String,
+    },
 }
+
+/// The one storage class objects may be in (see the module docs).
+pub const STORAGE_CLASS: &str = "STANDARD";
+const STORAGE_CLASS_HEADER: &str = "x-amz-storage-class";
 
 /// A bucket of sealed objects. Blocking: call from the blocking pool.
 pub trait BlobStore: Send + Sync + std::fmt::Debug + 'static {
@@ -264,11 +282,15 @@ impl std::fmt::Debug for R2Store {
 impl R2Store {
     /// A store for the bucket in `creds`.
     pub fn new(creds: &Credentials) -> Result<Self, StoreError> {
+        Self::build(creds, false)
+    }
+
+    fn build(creds: &Credentials, allow_http: bool) -> Result<Self, StoreError> {
         let endpoint: url::Url = creds
             .endpoint
             .parse()
             .map_err(|e| StoreError::Config(format!("endpoint is not a URL: {e}")))?;
-        if endpoint.scheme() != "https" {
+        if endpoint.scheme() != "https" && !(allow_http && endpoint.scheme() == "http") {
             return Err(StoreError::Config("endpoint must be https".into()));
         }
         let bucket = Bucket::new(
@@ -323,6 +345,25 @@ impl R2Store {
     }
 }
 
+/// Refuses a response for an object outside the Standard class. S3 leaves the header out for
+/// Standard objects; R2 may send it.
+fn standard_only(op: &'static str, headers: &ureq::http::HeaderMap) -> Result<(), StoreError> {
+    let Some(v) = headers.get(STORAGE_CLASS_HEADER) else {
+        return Ok(());
+    };
+    let class = v.to_str().unwrap_or("<not text>").trim();
+    if class.eq_ignore_ascii_case(STORAGE_CLASS) {
+        return Ok(());
+    }
+    let class: String = class.chars().take(40).collect();
+    tracing::warn!(
+        op,
+        storage_class = %class,
+        "attachment object is not in the Standard storage class; refusing to serve it"
+    );
+    Err(StoreError::StorageClass { op, class })
+}
+
 /// ureq errors can quote the request URL, whose query string carries the signature.
 fn transport(op: &'static str, e: &dyn std::fmt::Display) -> StoreError {
     StoreError::Transport {
@@ -369,14 +410,17 @@ impl BlobStore for R2Store {
         if actual != len {
             return Err(StoreError::Config("spool file has the wrong length".into()));
         }
-        let url = self
-            .bucket
-            .put_object(Some(&self.credentials), key)
-            .sign(SIGN_TTL);
+        let mut action = self.bucket.put_object(Some(&self.credentials), key);
+        // Signed, so the request is refused if the header is lost on the way.
+        action
+            .headers_mut()
+            .insert(STORAGE_CLASS_HEADER, STORAGE_CLASS);
+        let url = action.sign(SIGN_TTL);
         let resp = self
             .agent
             .put(url.as_str())
             .header("content-type", "application/octet-stream")
+            .header(STORAGE_CLASS_HEADER, STORAGE_CLASS)
             // A file body is sent with its length (S3 does not take chunked uploads).
             .send(body)
             .map_err(|e| transport("PUT", &e))?;
@@ -395,6 +439,7 @@ impl BlobStore for R2Store {
             .call()
             .map_err(|e| transport("GET", &e))?;
         let resp = Self::check("GET", resp)?;
+        standard_only("GET", resp.headers())?;
         Ok(Box::new(Redacted(Box::new(resp.into_body().into_reader()))))
     }
 
@@ -477,5 +522,91 @@ mod tests {
             ..c
         };
         assert!(R2Store::new(&plain).is_err(), "plain http");
+    }
+
+    /// A fake S3 endpoint on loopback: answers each request with the next canned response and
+    /// returns the request heads it saw.
+    fn fake_s3(responses: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut heads = Vec::new();
+            for canned in responses {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = Vec::new();
+                let mut byte = [0u8; 1];
+                while !buf.ends_with(b"\r\n\r\n") {
+                    conn.read_exact(&mut byte).unwrap();
+                    buf.push(byte[0]);
+                }
+                let head = String::from_utf8(buf).unwrap();
+                let len = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut body = vec![0u8; len];
+                conn.read_exact(&mut body).unwrap();
+                conn.write_all(canned.as_bytes()).unwrap();
+                heads.push(head);
+            }
+            heads
+        });
+        (url, handle)
+    }
+
+    fn fake_store(url: &str) -> R2Store {
+        R2Store::build(
+            &Credentials {
+                endpoint: url.into(),
+                bucket: "b".into(),
+                access_key_id: "AKID".into(),
+                secret_access_key: "SECRET".into(),
+                region: "auto".into(),
+            },
+            true,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn puts_ask_for_the_standard_class_and_other_classes_are_not_served() {
+        const OK: &str = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        const STANDARD: &str = "HTTP/1.1 200 OK\r\nx-amz-storage-class: STANDARD\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
+        const IA: &str = "HTTP/1.1 200 OK\r\nx-amz-storage-class: STANDARD_IA\r\ncontent-length: 2\r\nconnection: close\r\n\r\nno";
+        let (url, server) = fake_s3(vec![OK, STANDARD, OK, IA]);
+        let store = fake_store(&url);
+        let key = new_object_key().unwrap();
+        let mut f = tempfile::tempfile().unwrap();
+        f.write_all(b"sealed").unwrap();
+        f.rewind().unwrap();
+        store.put(&key, &f, 6).unwrap();
+        let mut got = Vec::new();
+        store.get(&key).unwrap().read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"ok");
+        // Without the header (what S3 does for Standard objects) the object is served too.
+        assert!(store.get(&key).is_ok());
+        match store.get(&key) {
+            Err(StoreError::StorageClass { op: "GET", class }) => assert_eq!(class, "STANDARD_IA"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("served an object outside the Standard class"),
+        }
+        let heads = server.join().unwrap();
+        let put = heads[0].to_ascii_lowercase();
+        assert!(put.starts_with("put "), "{put}");
+        assert!(
+            put.contains("\r\nx-amz-storage-class: standard\r\n"),
+            "{put}"
+        );
+        // Signed: the presigned URL lists the header, so it cannot be dropped on the way.
+        let signed = put.lines().next().unwrap();
+        assert!(
+            signed.contains("x-amz-signedheaders=host%3bx-amz-storage-class"),
+            "{signed}"
+        );
+        assert!(heads[1].to_ascii_lowercase().starts_with("get "));
     }
 }

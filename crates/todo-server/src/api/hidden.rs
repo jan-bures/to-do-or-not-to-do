@@ -26,11 +26,18 @@
 //! Imports (`import_entity`, owner-only) are refused for agents here with one fixed `forbidden`,
 //! whatever list they name.
 //!
+//! IDs a command *creates* are global, so a colliding one is refused whatever list holds the entity
+//! that has it, and even if that entity's creation was undone (IDs are never reused). For agents the
+//! refusal is one generic 409 `id_unavailable` ([`write_error`], [`domain_write_error`]): it carries
+//! only the ID the agent chose and reads the same for an entity they can see, one they cannot, and an
+//! ID held only by the undo journal, so it never depends on hidden state.
+//!
 //! Only agents are filtered (see [`visibility::sees_all`]); the helpers there decide what is readable.
 
 use super::error::{ApiError, domain_error};
 use super::visibility;
 use crate::engine::{Engine, EngineError};
+use axum::http::StatusCode;
 use todo_core::AccessLevel;
 use todo_core::access::entity_target;
 use todo_core::command::{Command, Placement};
@@ -146,6 +153,36 @@ fn readable(state: &State, actor: &Actor, id: EntityId) -> bool {
             visibility::visible_tags(state, actor).is_none_or(|visible| visible.contains(&t))
         }
         other => visibility::can_read(state, actor, entity_target(state, other)),
+    }
+}
+
+/// 409 `id_unavailable`: the ID an agent chose for a new entity cannot be used. The same for every
+/// collision, whoever holds the ID and whether the agent can see it.
+#[must_use]
+pub fn id_unavailable(id: EntityId) -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "id_unavailable",
+        "this ID cannot be used; choose another",
+    )
+    .with_details(serde_json::json!({ "entity": id }))
+}
+
+/// [`domain_error`], with ID collisions answered as [`id_unavailable`] for agents.
+#[must_use]
+pub fn domain_write_error(actor: &Actor, e: &DomainError) -> ApiError {
+    match e {
+        DomainError::AlreadyExists(id) if !visibility::sees_all(actor) => id_unavailable(*id),
+        e => domain_error(e),
+    }
+}
+
+/// The response to a failed write, with ID collisions answered as [`id_unavailable`] for agents.
+#[must_use]
+pub fn write_error(actor: &Actor, e: EngineError) -> ApiError {
+    match e {
+        EngineError::Domain(d) => domain_write_error(actor, &d),
+        e => e.into(),
     }
 }
 

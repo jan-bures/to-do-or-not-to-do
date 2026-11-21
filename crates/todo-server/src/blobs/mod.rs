@@ -19,11 +19,33 @@
 //!    GET is charged; the object is decrypted and checked chunk by chunk while it streams to the client.
 //! 3. **Delete.** Deleting the attachment (or its task) only writes a tombstone; the object stays, so undo
 //!    and restore bring the content back.
-//! 4. **Collection.** The garbage collector (at most hourly, a bounded number of deletes per run) notes when
-//!    an object stops being referenced by a live attachment, and deletes it once it has stayed that way for
-//!    `gc_retention_days`. An object is referenced when the attachment it was sealed for exists, is not
-//!    deleted (nor is its task or list), and still carries the object's `storage_key`. Undo or restore
-//!    within the window makes it referenced again and resets the clock.
+//! 4. **Collection.** The garbage collector (at most hourly; each run scans at most
+//!    `gc_max_scans_per_run` registry rows, resuming where the last run stopped, and deletes at most
+//!    `gc_max_deletes_per_run` objects) notes when an object stops being referenced by a live attachment,
+//!    and deletes it once it has stayed that way for `gc_retention_days`. An object is referenced when the
+//!    attachment it was sealed for exists, is not deleted (nor is its task or list), and still carries the
+//!    object's `storage_key`. Undo or restore within the window makes it referenced again and resets the
+//!    clock.
+//!
+//! # Collection versus undo and restore
+//!
+//! The collector decides from a snapshot, and an undo or restore may commit after it. So before each
+//! delete it **claims** the object: holding the engine's writer (no write can commit meanwhile), it checks
+//! once more that the object is unreferenced and marks it `purging` in the registry (durably) and in
+//! memory. From then on, every write that would make that attachment live again (an undo of its
+//! deletion, restoring it, its task or its list) is refused inside the writer with 409
+//! `attachment_purging` (see [`crate::engine::Engine::set_commit_check`]), instead of succeeding with its
+//! bytes about to disappear. The claim ends when the object and its registry row are gone, or is given
+//! back if the delete is not sent (the budget refused it). A claim left by a crash is kept at startup and
+//! finished by the next run. After the purge the attachment can be made live again, and its download is
+//! 404 `content_unavailable`: past the retention window that is the documented outcome.
+//!
+//! # Concurrent uploads with one `attachment_id`
+//!
+//! Only one upload per `attachment_id` is in flight at a time ([`Attachments::reserve_id`]). A concurrent
+//! retry by the same caller gets 409 `upload_in_progress` with `Retry-After` before its body is read or
+//! anything is charged; the reservation is taken after the access checks, and the replay check is made
+//! again once it is held, so a retry that arrives just after the first upload finished replays it.
 //!
 //! # Backups and restores
 //!
@@ -46,6 +68,10 @@
 //! refusal of each month adds one warning task to the owner's Inbox, created by `System`. Nothing is ever
 //! sent to the bucket without being charged first, so the free tier cannot be exceeded silently. The
 //! counts cover attachments only; `todo-backup` keeps its own, much smaller budget for its bucket.
+//!
+//! The budget assumes the **Standard storage class** (no retrieval fees, no minimum storage duration),
+//! so the bucket must be Standard. Every PUT asks for `STANDARD` explicitly, and an object that reports
+//! another class is not served (see [`store`]).
 
 pub mod crypto;
 pub mod registry;
@@ -53,15 +79,15 @@ pub mod store;
 
 use crate::auth::Principal;
 use crate::auth::limits::KeyedLimiter;
-use crate::engine::Engine;
+use crate::engine::{Engine, EngineError};
 use crypto::{CryptoError, KeyRing, Opener, Sealer};
 use registry::{BlobRow, BudgetCaps, OpClass, Refusal, Registry, RegistryError};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use store::{BlobStore, StoreError};
 use todo_core::command::{Command, NewTask};
@@ -104,6 +130,7 @@ pub enum StoreKind {
 /// gc_retention_days = 30
 /// gc_interval_mins = 60             # at least 60
 /// gc_max_deletes_per_run = 100
+/// gc_max_scans_per_run = 1000
 ///
 /// [attachments.budget]
 /// max_storage_bytes = 8000000000
@@ -137,6 +164,8 @@ pub struct AttachmentsConfig {
     pub gc_interval_mins: u64,
     /// Most objects deleted per run.
     pub gc_max_deletes_per_run: usize,
+    /// Most registry rows looked at per run; the next run continues after the last one.
+    pub gc_max_scans_per_run: usize,
     /// The R2 budget.
     pub budget: BudgetCaps,
 }
@@ -156,6 +185,7 @@ impl Default for AttachmentsConfig {
             gc_retention_days: 30,
             gc_interval_mins: 60,
             gc_max_deletes_per_run: 100,
+            gc_max_scans_per_run: 1000,
             budget: BudgetCaps::default(),
         }
     }
@@ -183,6 +213,7 @@ impl AttachmentsConfig {
             ("download_burst", u64::from(self.download_burst)),
             ("gc_retention_days", self.gc_retention_days),
             ("gc_max_deletes_per_run", self.gc_max_deletes_per_run as u64),
+            ("gc_max_scans_per_run", self.gc_max_scans_per_run as u64),
         ] {
             if v == 0 {
                 return Err(format!("attachments.{name} must be > 0"));
@@ -219,6 +250,9 @@ pub enum AttachmentError {
     /// Local I/O failed.
     #[error("attachment spool: {0}")]
     Io(#[from] std::io::Error),
+    /// The engine refused (closed, or failed).
+    #[error(transparent)]
+    Engine(#[from] EngineError),
 }
 
 impl From<RegistryError> for AttachmentError {
@@ -233,6 +267,8 @@ impl From<RegistryError> for AttachmentError {
 /// What a garbage-collection run did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcReport {
+    /// Registry rows looked at.
+    pub scanned: usize,
     /// Objects still referenced.
     pub kept: usize,
     /// Unreferenced objects still inside the retention window.
@@ -326,6 +362,77 @@ pub struct Attachments {
     pub downloads: Arc<Semaphore>,
     /// Downloads per token.
     pub download_limiter: KeyedLimiter<Principal>,
+    /// Objects claimed for deletion, by (attachment, `ref_key`); shared with the engine's commit check.
+    claims: Arc<PurgeClaims>,
+    /// Where the next collection run starts (an object key; empty for the start).
+    gc_cursor: Mutex<String>,
+    /// Uploads in flight, by attachment ID, with who is uploading.
+    in_flight: Mutex<BTreeMap<AttachmentId, Actor>>,
+    #[cfg(test)]
+    gc_hook: Mutex<Option<GcHook>>,
+}
+
+#[cfg(test)]
+type GcHook = Box<dyn FnMut(GcStage, &BlobRow) + Send>;
+
+/// Where the collector calls the test hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GcStage {
+    /// The object was found doomed in the snapshot; not claimed yet.
+    Doomed,
+    /// Claimed; the delete is about to be sent.
+    Claimed,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Attachment references whose content is being deleted (see the module docs).
+#[derive(Debug, Default)]
+struct PurgeClaims(Mutex<BTreeSet<(uuid::Uuid, String)>>);
+
+impl PurgeClaims {
+    /// Refuses a write that makes a claimed reference live.
+    fn check(&self, before: &State, after: &State) -> Result<(), EngineError> {
+        for (att, ref_key) in lock(&self.0).iter() {
+            let id = AttachmentId::from_uuid(*att);
+            if live_ref(after, id, ref_key) && !live_ref(before, id, ref_key) {
+                return Err(EngineError::ContentPurging(EntityId::Attachment(id)));
+            }
+        }
+        Ok(())
+    }
+
+    fn insert(&self, row: &BlobRow) {
+        lock(&self.0).insert((row.attachment, row.ref_key.clone()));
+    }
+
+    fn remove(&self, row: &BlobRow) {
+        lock(&self.0).remove(&(row.attachment, row.ref_key.clone()));
+    }
+}
+
+/// Another upload with this `attachment_id` is in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InFlight {
+    /// By the same caller (a concurrent retry).
+    SameCaller,
+    /// By someone else.
+    OtherCaller,
+}
+
+/// An `attachment_id` reserved for one upload; dropping it ends the reservation.
+#[derive(Debug)]
+pub struct UploadSlot {
+    owner: Arc<Attachments>,
+    id: AttachmentId,
+}
+
+impl Drop for UploadSlot {
+    fn drop(&mut self) {
+        lock(&self.owner.in_flight).remove(&self.id);
+    }
 }
 
 impl std::fmt::Debug for Attachments {
@@ -372,15 +479,19 @@ pub fn upload_command_id(attachment: AttachmentId) -> uuid::Uuid {
     deterministic(&format!("todo-server attachment upload {attachment}"))
 }
 
-/// True if `row`'s attachment exists, is live (with its task and list), and still names `row`'s key.
-fn referenced(state: &State, row: &BlobRow) -> bool {
-    let id = AttachmentId::from_uuid(row.attachment);
+/// True if the attachment exists, is live (with its task and list), and names `ref_key`.
+fn live_ref(state: &State, id: AttachmentId, ref_key: &str) -> bool {
     // `is_live` also checks the task and its list.
     state
         .attachments
         .get(&id)
-        .is_some_and(|a| a.storage_key == row.ref_key)
+        .is_some_and(|a| a.storage_key == ref_key)
         && state.is_live(EntityId::Attachment(id))
+}
+
+/// True if `row`'s attachment exists, is live (with its task and list), and still names `row`'s key.
+fn referenced(state: &State, row: &BlobRow) -> bool {
+    live_ref(state, AttachmentId::from_uuid(row.attachment), &row.ref_key)
 }
 
 impl Attachments {
@@ -427,8 +538,19 @@ impl Attachments {
         } else {
             todo_fs::create_private_dir(&spool_dir)?;
         }
+        let claims = Arc::new(PurgeClaims::default());
+        for row in registry.purging()? {
+            claims.insert(&row);
+        }
+        let check = claims.clone();
+        engine.set_commit_check(Arc::new(move |before, after| check.check(before, after)));
         tracing::info!(store = store.kind(), "attachment store ready");
         Ok(Self {
+            claims,
+            gc_cursor: Mutex::new(String::new()),
+            in_flight: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            gc_hook: Mutex::new(None),
             uploads: Arc::new(Semaphore::new(cfg.max_concurrent_uploads)),
             downloads: Arc::new(Semaphore::new(cfg.max_concurrent_downloads)),
             download_limiter: KeyedLimiter::new(cfg.downloads_per_minute, cfg.download_burst),
@@ -467,6 +589,27 @@ impl Attachments {
 
     fn now_ms(&self) -> i64 {
         self.engine.now().as_millisecond()
+    }
+
+    /// Reserves `id` for one upload by `actor` until the slot is dropped.
+    pub fn reserve_id(
+        self: &Arc<Self>,
+        id: AttachmentId,
+        actor: &Actor,
+    ) -> Result<UploadSlot, InFlight> {
+        let mut m = lock(&self.in_flight);
+        if let Some(holder) = m.get(&id) {
+            return Err(if holder == actor {
+                InFlight::SameCaller
+            } else {
+                InFlight::OtherCaller
+            });
+        }
+        m.insert(id, actor.clone());
+        Ok(UploadSlot {
+            owner: self.clone(),
+            id,
+        })
     }
 
     /// Fails if an upload of at most `plain` bytes would be refused now. Blocking.
@@ -520,6 +663,7 @@ impl Attachments {
             stored: false,
             created_ms: self.now_ms(),
             gone_since_ms: None,
+            purging: false,
         };
         self.registry.reserve_upload(&self.month(), &row)?;
         if let Err(e) = self.store.put(object_key, file, sealed.len) {
@@ -653,33 +797,36 @@ impl Attachments {
         let retention = i64::try_from(self.cfg.gc_retention_days)
             .unwrap_or(i64::MAX / 86_400_000)
             .saturating_mul(86_400_000);
+        let limit = self.cfg.gc_max_scans_per_run;
+        let rows = {
+            let mut cursor = lock(&self.gc_cursor);
+            let rows = self.registry.page_after(&cursor, limit)?;
+            // A short page reached the end: the next run starts over.
+            *cursor = match rows.last() {
+                Some(last) if rows.len() >= limit => last.object_key.clone(),
+                _ => String::new(),
+            };
+            rows
+        };
+        let mut report = GcReport {
+            scanned: rows.len(),
+            ..GcReport::default()
+        };
         let state = self.engine.state();
-        let rows = self.registry.all()?;
-        // The newest stored object of each reference; older ones (a re-upload) are superseded.
-        let mut newest: BTreeMap<(uuid::Uuid, &str), &BlobRow> = BTreeMap::new();
-        for r in rows.iter().filter(|r| r.stored) {
-            newest
-                .entry((r.attachment, r.ref_key.as_str()))
-                .and_modify(|n| {
-                    if (r.created_ms, &r.object_key) > (n.created_ms, &n.object_key) {
-                        *n = r;
-                    }
-                })
-                .or_insert(r);
-        }
-        let mut report = GcReport::default();
         let mut doomed = Vec::new();
-        for r in &rows {
+        for r in rows {
+            if r.purging {
+                // Claimed by an earlier run (or before a restart): finish it.
+                doomed.push(r);
+                continue;
+            }
             if !r.stored {
                 if now.saturating_sub(r.created_ms) >= ABANDONED_AFTER_MS {
                     doomed.push(r);
                 }
                 continue;
             }
-            let current = newest
-                .get(&(r.attachment, r.ref_key.as_str()))
-                .is_some_and(|n| n.object_key == r.object_key);
-            if current && referenced(&state, r) {
+            if self.is_current(&r)? && referenced(&state, &r) {
                 report.kept += 1;
                 if r.gone_since_ms.is_some() {
                     self.registry.set_gone_since(&r.object_key, None)?;
@@ -695,19 +842,35 @@ impl Attachments {
                 Some(_) => report.waiting += 1,
             }
         }
+        drop(state);
         let month = self.month();
         for r in doomed {
             if report.deleted >= self.cfg.gc_max_deletes_per_run {
                 report.stopped_early = true;
                 break;
             }
+            self.gc_hook(GcStage::Doomed, &r);
+            // Only the current object of a stored reference can be served; claim it so no write can
+            // make it live while it is deleted. Superseded and abandoned objects need no claim.
+            let claim = !r.purging && r.stored && self.is_current(&r)?;
+            if claim && !self.claim(&r)? {
+                report.kept += 1;
+                continue;
+            }
+            self.gc_hook(GcStage::Claimed, &r);
             if let Err(e) = self.registry.charge(&month, OpClass::A) {
+                // Nothing is sent: give the claim back, so the attachment can be restored meanwhile.
+                if claim || r.purging {
+                    self.release(&r)?;
+                }
                 tracing::warn!(error = %e, "attachment collection paused by the budget");
                 report.stopped_early = true;
                 break;
             }
+            // On failure the claim stays; the next run retries the delete.
             self.store.delete(&r.object_key)?;
             self.registry.remove(&r.object_key)?;
+            self.claims.remove(&r);
             report.deleted += 1;
         }
         if report.deleted > 0 || report.waiting > 0 {
@@ -715,11 +878,53 @@ impl Attachments {
                 deleted = report.deleted,
                 waiting = report.waiting,
                 kept = report.kept,
+                scanned = report.scanned,
                 "attachment garbage collection"
             );
         }
         Ok(report)
     }
+
+    /// True if `row` is the newest stored object of its reference (older ones are superseded).
+    fn is_current(&self, row: &BlobRow) -> Result<bool, AttachmentError> {
+        let attachment = AttachmentId::from_uuid(row.attachment);
+        Ok(self
+            .find(attachment, &row.ref_key)?
+            .is_some_and(|n| n.object_key == row.object_key))
+    }
+
+    /// Claims `row` for deletion if it is still unreferenced, deciding inside the engine's writer so no
+    /// write can commit in between. False if a write made it referenced again.
+    fn claim(&self, row: &BlobRow) -> Result<bool, AttachmentError> {
+        self.engine
+            .with_writer(|state| -> Result<bool, AttachmentError> {
+                if referenced(state, row) {
+                    self.registry.set_gone_since(&row.object_key, None)?;
+                    return Ok(false);
+                }
+                // Durable first: a claim must survive a crash between here and the delete.
+                self.registry.set_purging(&row.object_key, true)?;
+                self.claims.insert(row);
+                Ok(true)
+            })?
+    }
+
+    fn release(&self, row: &BlobRow) -> Result<(), AttachmentError> {
+        self.registry.set_purging(&row.object_key, false)?;
+        self.claims.remove(row);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn gc_hook(&self, stage: GcStage, row: &BlobRow) {
+        if let Some(h) = lock(&self.gc_hook).as_mut() {
+            h(stage, row);
+        }
+    }
+
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    fn gc_hook(&self, _: GcStage, _: &BlobRow) {}
 
     /// Runs [`collect_garbage_if_due`](Self::collect_garbage_if_due) every few minutes until shutdown.
     pub fn spawn_collector(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) {

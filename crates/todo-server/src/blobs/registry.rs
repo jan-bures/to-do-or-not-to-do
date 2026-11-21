@@ -130,6 +130,9 @@ pub struct BlobRow {
     pub created_ms: i64,
     /// When the garbage collector first saw it unreferenced (Unix ms).
     pub gone_since_ms: Option<i64>,
+    /// Claimed by the garbage collector for deletion: no write may make its attachment live again
+    /// (see [`super::Attachments::collect_garbage`]).
+    pub purging: bool,
 }
 
 /// This month's use.
@@ -163,7 +166,8 @@ CREATE TABLE IF NOT EXISTS blobs (
     stored_size INTEGER NOT NULL,
     stored INTEGER NOT NULL DEFAULT 0,
     created_ms INTEGER NOT NULL,
-    gone_since_ms INTEGER
+    gone_since_ms INTEGER,
+    purging INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS blobs_by_attachment ON blobs (attachment_id, ref_key);
 CREATE TABLE IF NOT EXISTS budget (
@@ -200,10 +204,11 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlobRow> {
         stored: r.get::<_, i64>(5)? != 0,
         created_ms: r.get(6)?,
         gone_since_ms: r.get(7)?,
+        purging: r.get::<_, i64>(8)? != 0,
     })
 }
 
-const COLUMNS: &str = "object_key, attachment_id, ref_key, plain_size, stored_size, stored, created_ms, gone_since_ms";
+const COLUMNS: &str = "object_key, attachment_id, ref_key, plain_size, stored_size, stored, created_ms, gone_since_ms, purging";
 
 impl Registry {
     /// Opens (creating) the registry.
@@ -346,7 +351,7 @@ impl Registry {
         self.check_upload_in(&tx, month, blob.stored_size)?;
         self.charge_in(&tx, month, OpClass::A)?;
         tx.execute(
-            &format!("INSERT INTO blobs ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL)"),
+            &format!("INSERT INTO blobs ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, NULL, 0)"),
             params![
                 blob.object_key,
                 blob.attachment.to_string(),
@@ -395,7 +400,41 @@ impl Registry {
             .optional()?)
     }
 
-    /// Every object, oldest first.
+    /// Up to `limit` objects with keys after `cursor` (`""` for the start), in key order.
+    pub fn page_after(&self, cursor: &str, limit: usize) -> Result<Vec<BlobRow>, RegistryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM blobs WHERE object_key > ?1 ORDER BY object_key LIMIT ?2"
+        ))?;
+        let rows = stmt
+            .query_map(
+                params![cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every object claimed for deletion.
+    pub fn purging(&self) -> Result<Vec<BlobRow>, RegistryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM blobs WHERE purging = 1 ORDER BY object_key"
+        ))?;
+        let rows = stmt.query_map([], row)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Claims an object for deletion, or gives the claim back.
+    pub fn set_purging(&self, object_key: &str, purging: bool) -> Result<(), RegistryError> {
+        self.lock().execute(
+            "UPDATE blobs SET purging = ?2 WHERE object_key = ?1",
+            params![object_key, i64::from(purging)],
+        )?;
+        Ok(())
+    }
+
+    /// Every object, oldest first. For tests and tools; the garbage collector pages instead.
     pub fn all(&self) -> Result<Vec<BlobRow>, RegistryError> {
         let conn = self.lock();
         let mut stmt = conn.prepare(&format!(
@@ -469,6 +508,7 @@ mod tests {
             stored: false,
             created_ms: 1,
             gone_since_ms: None,
+            purging: false,
         }
     }
 
@@ -511,6 +551,26 @@ mod tests {
         drop(r);
         let r = Registry::open(&dir.path().join(REGISTRY_FILE), caps).unwrap();
         assert_eq!(r.usage("2026-11").unwrap().class_a, 2, "persisted");
+    }
+
+    #[test]
+    fn pages_resume_after_the_cursor_and_claims_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(REGISTRY_FILE);
+        let r = Registry::open(&path, BudgetCaps::default()).unwrap();
+        for k in ["k3", "k1", "k2", "k4"] {
+            r.reserve_upload("2026-11", &blob(k, 1)).unwrap();
+        }
+        let keys = |rows: Vec<BlobRow>| rows.into_iter().map(|b| b.object_key).collect::<Vec<_>>();
+        assert_eq!(keys(r.page_after("", 3).unwrap()), ["k1", "k2", "k3"]);
+        assert_eq!(keys(r.page_after("k3", 3).unwrap()), ["k4"]);
+        assert!(r.page_after("k4", 3).unwrap().is_empty());
+        r.set_purging("k2", true).unwrap();
+        drop(r);
+        let r = Registry::open(&path, BudgetCaps::default()).unwrap();
+        assert_eq!(keys(r.purging().unwrap()), ["k2"]);
+        r.set_purging("k2", false).unwrap();
+        assert!(r.purging().unwrap().is_empty());
     }
 
     #[test]
