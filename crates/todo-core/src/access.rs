@@ -131,7 +131,10 @@ pub enum Need {
     Capture,
     /// At least `Plan` on the target.
     Plan,
-    /// `Plan` on at least one target (used for creating tags, see [`tag_creation`]).
+    /// `Plan`, effectively, on at least one live list (used for creating tags, see
+    /// [`tag_creation`]). The level is each list's effective one (list override, then its collection's,
+    /// then the default), never a raw grant: a `Plan` grant on an empty collection, or on one whose
+    /// every list is overridden lower, gives no list `Plan`.
     PlanAnywhere,
     /// Owner-level: structural changes agents may never make.
     Structure,
@@ -165,14 +168,22 @@ fn agent_level(state: &State, agent: &AgentId, target: Target) -> AccessLevel {
     }
 }
 
+/// The highest effective level `actor` has on any live list (`None` without lists).
+fn best_list_level(state: &State, actor: &Actor) -> AccessLevel {
+    state
+        .lists
+        .keys()
+        .filter(|l| state.is_live((**l).into()))
+        .map(|l| level_on(state, actor, Target::List(*l)))
+        .max()
+        .unwrap_or(AccessLevel::None)
+}
+
 /// Checks one requirement. Pure: reads only `state`.
 pub fn check(state: &State, actor: &Actor, need: Need, target: Target) -> Result<(), AccessDenied> {
     let full = matches!(actor, Actor::Owner { .. } | Actor::Importer | Actor::System);
     let have = match (need, actor) {
-        (Need::PlanAnywhere, Actor::Agent { agent_id }) => state
-            .grants
-            .get(agent_id)
-            .map_or(AccessLevel::None, Grants::max_level),
+        (Need::PlanAnywhere, Actor::Agent { .. }) => best_list_level(state, actor),
         _ => level_on(state, actor, target),
     };
     let (needed, ok, owner_only) = match need {
@@ -234,8 +245,9 @@ fn structural(id: EntityId) -> bool {
     )
 }
 
-/// What creating a tag (or undoing a tag's withdrawal) needs: `Plan` on at least one list, and at least
-/// `Read` at the global level (an agent's default level), in that order.
+/// What creating a tag (or undoing a tag's withdrawal) needs: `Plan` on at least one live list (its
+/// effective level, see [`Need::PlanAnywhere`]), and at least `Read` at the global level (an agent's
+/// default level), in that order.
 ///
 /// Tags are global, and an agent below `Read` there sees only the tags on tasks it can read. Without the
 /// second requirement such an agent could create a tag it can't see, and the unique-name check would tell
@@ -522,49 +534,6 @@ mod tests {
             Command::CreateTask(Box::new(n))
         };
         assert!(authorize(&st, &agent, &tagged).is_err());
-    }
-
-    #[test]
-    fn creating_a_tag_needs_plan_somewhere_and_read_globally() {
-        use crate::ids::TagId;
-        let mut st = State::new();
-        let agent = Actor::agent("bot").unwrap();
-        let mk = Command::CreateTag {
-            id: TagId::new_v7(1, [1; 10]),
-            name: "t".into(),
-            color: None,
-        };
-        let rename = Command::UpdateTag {
-            id: TagId::new_v7(1, [1; 10]),
-            name: Some("u".into()),
-            color: None,
-        };
-        let denied = |st: &State, cmd: &Command| authorize(st, &agent, cmd).unwrap_err();
-        let bot_id = AgentId::new("bot").unwrap();
-        // Plan on one list, nothing by default: read is what's missing.
-        let mut g = Grants::with_default(AccessLevel::None);
-        g.lists.insert(lid(1), AccessLevel::Plan);
-        st.grants.insert(bot_id.clone(), g.clone());
-        let e = denied(&st, &mk);
-        assert_eq!(
-            (e.needed, e.have, e.owner_only),
-            (AccessLevel::Read, AccessLevel::None, false)
-        );
-        // Read by default, but plan nowhere.
-        st.grants
-            .insert(bot_id.clone(), Grants::with_default(AccessLevel::Read));
-        let e = denied(&st, &mk);
-        assert_eq!((e.needed, e.have), (AccessLevel::Plan, AccessLevel::Read));
-        // Both: allowed.
-        g.default = AccessLevel::Read;
-        st.grants.insert(bot_id.clone(), g);
-        assert!(authorize(&st, &agent, &mk).is_ok());
-        // Renaming stays the owner's, even with plan everywhere.
-        st.grants
-            .insert(bot_id, Grants::with_default(AccessLevel::Plan));
-        assert!(authorize(&st, &agent, &mk).is_ok());
-        assert!(denied(&st, &rename).owner_only);
-        assert!(authorize(&st, &Actor::owner("pc").unwrap(), &rename).is_ok());
     }
 
     #[test]

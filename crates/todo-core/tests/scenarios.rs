@@ -1885,3 +1885,85 @@ fn agents_create_tags_only_where_they_can_see_every_tag() {
         Err(UndoError::Denied(_))
     ));
 }
+
+/// Review finding: "plan somewhere" is the effective level on a live list, not the highest raw grant. A
+/// plan grant on an empty collection, on a collection whose lists are all overridden lower, or on a
+/// deleted list gives no list plan, so no tag; the answer doesn't depend on the name.
+#[test]
+fn creating_a_tag_needs_effective_plan_on_a_live_list() {
+    let mut w = World::new();
+    let elsewhere = w.list(None, "Elsewhere");
+    let empty = w.collection("Empty");
+    let overridden = w.collection("Overridden");
+    let a = w.list(Some(overridden), "A");
+    let b = w.list(Some(overridden), "B");
+    let gone = w.list(None, "Gone");
+    w.run(Command::Delete { id: gone.into() });
+    let taken_tag = w.ids.tag();
+    w.run(Command::CreateTag {
+        id: taken_tag,
+        name: "taken".into(),
+        color: None,
+    });
+    let bot = Actor::agent("bot").unwrap();
+    let try_both = |w: &mut World| {
+        let [taken, free] = ["taken", "free"].map(|name| {
+            let id = w.ids.tag();
+            w.run_as(
+                &bot,
+                Command::CreateTag {
+                    id,
+                    name: name.into(),
+                    color: None,
+                },
+            )
+        });
+        (taken, free)
+    };
+    let denied_plan = |r: Result<Vec<todo_core::Event>, DomainError>| match r {
+        Err(DomainError::Denied(d)) => {
+            assert_eq!((d.needed, d.have), (AccessLevel::Plan, AccessLevel::Read));
+        }
+        other => panic!("{other:?}"),
+    };
+
+    let base = Grants::with_default(AccessLevel::Read);
+    let cases: [(&str, Grants); 3] = [
+        ("an empty plan collection", {
+            let mut g = base.clone();
+            g.collections.insert(empty, AccessLevel::Plan);
+            g
+        }),
+        ("a plan collection whose lists are all read", {
+            let mut g = base.clone();
+            g.collections.insert(overridden, AccessLevel::Plan);
+            g.lists.insert(a, AccessLevel::Read);
+            g.lists.insert(b, AccessLevel::Read);
+            g
+        }),
+        ("plan on a deleted list", {
+            let mut g = base.clone();
+            g.lists.insert(gone, AccessLevel::Plan);
+            g
+        }),
+    ];
+    for (what, g) in cases {
+        w.grant("bot", g);
+        let (taken, free) = try_both(&mut w);
+        assert_eq!(taken, free, "{what}");
+        denied_plan(taken);
+    }
+
+    // One list left at the collection's plan is enough, and then names are checked.
+    let mut g = base;
+    g.collections.insert(overridden, AccessLevel::Plan);
+    g.lists.insert(a, AccessLevel::Read);
+    w.grant("bot", g);
+    let (taken, free) = try_both(&mut w);
+    assert!(
+        matches!(taken, Err(DomainError::DuplicateName(_))),
+        "{taken:?}"
+    );
+    assert!(free.is_ok(), "{free:?}");
+    let _ = elsewhere;
+}

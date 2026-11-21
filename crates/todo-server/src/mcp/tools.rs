@@ -1264,7 +1264,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Take a tag off a task (plan level). The tag itself stays. Untagging a task that doesn't have the tag changes nothing.",
+        description = "Take a tag off a task (plan level). The tag itself stays. Untagging a task that doesn't have the tag changes nothing. If that was the last task through which you saw the tag, a retry gets not_found: confirm with get_task on the task instead.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1285,7 +1285,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Create a tag (needs plan level on at least one list and a default level of at least read). Returns tag_id. Check list_tags first: names are unique. Renaming and deleting tags is the owner's.",
+        description = "Create a tag (needs plan level on at least one existing list and a default level of at least read). Returns tag_id. Check list_tags first: names are unique. Renaming and deleting tags is the owner's.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

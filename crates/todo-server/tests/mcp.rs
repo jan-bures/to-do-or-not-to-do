@@ -706,6 +706,131 @@ async fn creating_a_tag_needs_read_by_default_and_never_reveals_hidden_names() {
 }
 
 #[tokio::test]
+async fn a_plan_grant_that_reaches_no_list_creates_no_tag() {
+    let env = Env::start().await;
+    env.t.create_list("Inbox").await;
+    let empty = id();
+    env.t
+        .ok(json!({ "cmd": "create_collection", "id": empty, "name": "Empty" }))
+        .await;
+    let full = id();
+    env.t
+        .ok(json!({ "cmd": "create_collection", "id": full, "name": "Full" }))
+        .await;
+    let mut lists = Vec::new();
+    for name in ["A", "B"] {
+        let l = id();
+        env.t
+            .ok(json!({ "cmd": "create_list", "id": l, "collection": full, "name": name }))
+            .await;
+        lists.push(l);
+    }
+    env.t
+        .ok(json!({ "cmd": "create_tag", "id": id(), "name": "taken" }))
+        .await;
+    let head = env.t.server.engine.head_seq();
+    let collection = |c: &str| serde_json::from_value(json!(c)).unwrap();
+    let mut on_empty = Grants::with_default(AccessLevel::Read);
+    on_empty
+        .collections
+        .insert(collection(&empty), AccessLevel::Plan);
+    let mut overridden = grants(
+        AccessLevel::Read,
+        &[
+            (&lists[0], AccessLevel::Read),
+            (&lists[1], AccessLevel::Read),
+        ],
+    );
+    overridden
+        .collections
+        .insert(collection(&full), AccessLevel::Plan);
+    for (name, g) in [("on-empty", on_empty), ("overridden", overridden)] {
+        let (_, token) = env.agent(name, &g, None);
+        let c = env.connect(&token).await;
+        let taken = fails(&c, "create_tag", json!({ "name": "Taken" })).await;
+        let free = fails(&c, "create_tag", json!({ "name": "free" })).await;
+        assert_eq!(taken["code"], "forbidden", "{name}: {taken}");
+        assert_eq!(taken["details"]["needed"], "plan", "{name}: {taken}");
+        assert_eq!(taken["details"]["have"], "read", "{name}: {taken}");
+        assert_eq!(taken, free, "{name}");
+        let body = |n: &str| json!({ "command_id": id(), "command": { "cmd": "create_tag", "id": id(), "name": n } });
+        let (hs, hb) = env
+            .rest(
+                &token,
+                Method::POST,
+                "/api/v1/commands",
+                Some(body("Taken")),
+            )
+            .await;
+        let (ms, mb) = env
+            .rest(&token, Method::POST, "/api/v1/commands", Some(body("free")))
+            .await;
+        assert_eq!(
+            (hs, ms),
+            (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN),
+            "{name}"
+        );
+        assert_eq!(hb, mb, "{name}");
+        c.cancel().await.unwrap();
+    }
+    assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+}
+
+/// Review finding: an agent that sees a tag only through one task, and takes it off that task, no
+/// longer sees the tag. A retry of that write (its response was lost) then gets `not_found`, like any
+/// write naming something the agent can't see, and never writes again. The task, still visible, shows
+/// the write went through.
+#[tokio::test]
+async fn a_lost_untag_response_is_confirmed_through_the_task() {
+    let env = Env::start().await;
+    let inbox = env.t.create_list("Inbox").await;
+    let task = env.t.create_task(&inbox, "Call the bank", json!({})).await;
+    let tag = id();
+    env.t
+        .ok(json!({ "cmd": "create_tag", "id": tag, "name": "finance" }))
+        .await;
+    env.t
+        .ok(json!({ "cmd": "add_tag", "task": task, "tag": tag }))
+        .await;
+    let (_, token) = env.agent(
+        "scoped",
+        &grants(AccessLevel::None, &[(&inbox, AccessLevel::Plan)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    assert_eq!(names(&ok(&c, "list_tags", json!({})).await), ["finance"]);
+
+    let args = json!({ "task_id": task, "tag_id": tag, "command_id": id() });
+    let first = ok(&c, "untag_task", args.clone()).await;
+    assert_eq!(first["events"].as_array().unwrap().len(), 1);
+    let head = env.t.server.engine.head_seq();
+    // The response is lost; the retry can't be confirmed, because the tag is now hidden.
+    assert!(names(&ok(&c, "list_tags", json!({})).await).is_empty());
+    let retry = fails(&c, "untag_task", args).await;
+    let missing = id();
+    let m = fails(
+        &c,
+        "untag_task",
+        json!({ "task_id": task, "tag_id": missing }),
+    )
+    .await;
+    assert_eq!(retry["code"], "not_found", "{retry}");
+    assert_eq!(
+        same_shape(&retry, &tag.to_string()),
+        same_shape(&m, &missing)
+    );
+    assert_eq!(
+        env.t.server.engine.head_seq(),
+        head,
+        "the retry wrote nothing"
+    );
+    // The task says it went through.
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["tags"], json!([]), "{detail}");
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_capture_agent_cannot_plan_or_see_outside_its_lists() {
     let env = Env::start().await;
     let inbox = env.t.create_list("Inbox").await;

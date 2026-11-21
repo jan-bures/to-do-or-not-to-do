@@ -17,8 +17,9 @@ your default):
 | plan | Also change, complete, reopen, move, merge and archive tasks; make tasks repeat; add and change steps; put tasks in My Day; tag tasks; add and move reminders (`update_task`, `complete_task`, `move_task`, `merge_tasks`, `archive_task`, `add_step`, `update_step`, `set_my_day`, `tag_task`, `untag_task`, `add_reminder`, `update_reminder`, and `create_task` with `recurrence`). Moving or merging needs plan level on both ends. |
 
 You can never change the structure: collections and lists are the owner's, and so is renaming or deleting
-tags. You may create a tag (`create_tag`) if you have plan level on at least one list **and** your default
-level is at least read, which is also what lets you see every tag. Otherwise `create_tag` fails with
+tags. You may create a tag (`create_tag`) if you have plan level on at least one existing list **and** your
+default level is at least read, which is also what lets you see every tag. It's the list's own level that
+counts: plan on a collection with no lists, or whose lists are all set lower, isn't enough. Otherwise `create_tag` fails with
 `forbidden` (`details.needed` says which level is missing), whatever the name: ask the owner to create
 the tag. When a tool needs a
 higher level than you have, it fails with `forbidden` and `details.needed` / `details.have`. Don't retry
@@ -45,6 +46,11 @@ it; tell the owner what you wanted to do instead.
    `command_id` and the same arguments**. The server returns the original result (`replayed: true`)
    instead of writing twice. Never reuse a `command_id` for a different write: that fails with
    `command_id_reused`. A retry replays even if the Inbox was renamed or the day changed in between.
+   But a retry is checked like a new call first: if the write itself took away your view of something it
+   names, the retry gets `not_found`. For example, with no default level you see a tag only while it's on
+   a task you can read, so after `untag_task` takes it off the last such task, the tag is gone for you. A
+   retry never writes twice. To confirm such a write, read the item that is still visible to you (here
+   `get_task` on the task: the tag is no longer in its `tags`).
 3. **Merge duplicates you find**, if you have plan level: `merge_tasks` with the duplicate as `source`
    and the task to keep as `target`.
 
