@@ -1,18 +1,27 @@
 //! The import bundle: a self-contained, typed and versioned file with everything to import.
 //!
-//! # Format (version 1)
+//! # Format (version 2)
 //!
 //! A JSON object:
 //!
 //! | Field | Contents |
 //! |---|---|
 //! | `format` | always `"todo-import-bundle"` |
-//! | `version` | `1` |
+//! | `version` | `2` |
 //! | `time_zone` | IANA name of the owner's time zone, used for due dates |
 //! | `counts` | aggregate counts of what the items create ([`Counts`]) |
 //! | `items` | the commands, in the order they must be applied ([`Item`]) |
 //! | `blobs` | attachment content, base64, keyed by attachment ID ([`Blob`]) |
-//! | `report` | what was skipped or could not be mapped ([`Report`]) |
+//! | `report` | what was skipped or could not be mapped ([`Report`]), including every date that could not
+//! be read (`report.lossy`) |
+//!
+//! # Dates
+//!
+//! Every date in the export is read strictly: instants as ISO 8601 with an offset, and Graph
+//! `dateTimeTimeZone` values in `UTC`, an IANA zone or a Windows zone (mapped with the CLDR table in
+//! [`crate::windows_zones`]). A date that is missing where one is required, or that cannot be read, is
+//! never replaced silently: [`build`] fails unless [`BuildOptions::allow_lossy`] is set, and then each
+//! one is listed in [`Report::lossy`] with what was used instead.
 //!
 //! Every item is one `todo-core` [`Command::ImportEntity`] with a deterministic `command_id` (see
 //! [`crate::ids`]) and the source object it came from. Items are ordered so that parents come before
@@ -46,7 +55,7 @@ use uuid::Uuid;
 /// Value of the `format` field.
 pub const FORMAT: &str = "todo-import-bundle";
 /// Current bundle format version.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Errors while building, reading or writing a bundle.
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +80,17 @@ pub enum BundleError {
     /// Key generation failed (too many siblings).
     #[error(transparent)]
     Order(#[from] todo_core::ordering::OrderError),
+    /// Dates could not be read, and lossy building was not allowed.
+    #[error(
+        "{} date(s) in the export could not be read, for example {first}; fix the export or pass --allow-lossy to import with the substitutions listed in the report",
+        lossy.len()
+    )]
+    Lossy {
+        /// The first one, as text.
+        first: String,
+        /// All of them.
+        lossy: Vec<Lossy>,
+    },
 }
 
 /// The kind of source object an item came from.
@@ -245,6 +265,35 @@ pub struct Unmapped {
     pub pattern: serde_json::Value,
 }
 
+/// A date that could not be read, and what the bundle uses instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lossy {
+    /// The kind of source object the date belongs to.
+    pub kind: SourceKind,
+    /// Its source ID.
+    pub id: String,
+    /// The Graph (or cache) field name, for example `createdDateTime`.
+    pub field: String,
+    /// What is wrong with it.
+    pub problem: String,
+    /// What the bundle does instead: drops the value, or uses another time.
+    pub instead: String,
+}
+
+impl std::fmt::Display for Lossy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} {}: {} ({})",
+            self.kind.as_str(),
+            crate::label(&self.id),
+            self.field,
+            self.problem,
+            self.instead
+        )
+    }
+}
+
 /// What the builder skipped, ignored or could not map.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
@@ -264,6 +313,8 @@ pub struct Report {
     pub my_day_marks_skipped: usize,
     /// Due dates where the Graph date (in `time_zone`) and the cache date differ.
     pub due_date_mismatches: usize,
+    /// Dates that could not be read (only with [`BuildOptions::allow_lossy`]).
+    pub lossy: Vec<Lossy>,
 }
 
 /// The bundle.
@@ -350,6 +401,8 @@ pub struct BuildOptions {
     pub time_zone: TimeZone,
     /// Its IANA name.
     pub time_zone_name: String,
+    /// Build even if some dates cannot be read, listing each in [`Report::lossy`].
+    pub allow_lossy: bool,
 }
 
 /// The ID of the entity made from a source object.
@@ -376,84 +429,37 @@ fn keys(n: usize) -> Result<Vec<PosKey>, BundleError> {
     Ok(out)
 }
 
-/// The creation time of a Graph task (falls back to `fallback` if unreadable).
+/// The creation time of a Graph task, for ordering and for derived times. An unreadable one falls
+/// back to `fallback`; [`Builder::task`] records it in [`Report::lossy`].
 fn task_created(t: &GraphTask, fallback: Timestamp) -> Timestamp {
     mapping::instant(&t.created_date_time).unwrap_or(fallback)
 }
 
-/// Mapped values of one Graph task, shared by the builder and the verifier.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TaskFields {
-    /// Title.
-    pub title: String,
-    /// Notes.
-    pub notes: String,
-    /// Due date.
-    pub due: Option<jiff::civil::Date>,
-    /// Priority.
-    pub priority: Priority,
-    /// Completion time.
-    pub completed_at: Option<Timestamp>,
-    /// Creation time.
-    pub created: Timestamp,
-    /// Last modification time.
-    pub updated: Timestamp,
-}
-
-/// Maps the scalar fields of a Graph task. Problems are appended to `warnings`.
-pub fn task_fields(
-    t: &GraphTask,
-    tz: &TimeZone,
-    fallback: Timestamp,
-    warnings: &mut Vec<String>,
-) -> TaskFields {
-    let label = crate::label(&t.id);
-    let created = task_created(t, fallback);
-    let updated = t
-        .last_modified_date_time
-        .as_deref()
-        .and_then(|s| mapping::instant(s).ok())
-        .unwrap_or(created);
+/// Task notes as imported, and whether they had to be cut to the domain's size limit.
+#[must_use]
+pub fn task_notes(t: &GraphTask) -> (String, bool) {
     let body = t.body.clone().unwrap_or_default();
     let mut notes = mapping::notes(&body.content, &body.content_type);
-    if !mapping::notes_fit(&notes) {
-        warnings.push(format!("task {label}: notes cut to the size limit"));
-        let mut cut = todo_core::decide::MAX_NOTES;
-        while !notes.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        notes.truncate(cut);
+    if mapping::notes_fit(&notes) {
+        return (notes, false);
     }
-    let due = t
-        .due_date_time
-        .as_ref()
-        .and_then(|d| match mapping::due_date(d, tz) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                warnings.push(format!("task {label}: due date dropped: {e}"));
-                None
-            }
-        });
-    let completed_at = t.is_completed().then(|| {
-        t.completed_date_time
-            .as_ref()
-            .and_then(|c| mapping::date_time(c).ok())
-            .unwrap_or_else(|| {
-                warnings.push(format!(
-                    "task {label}: completed without a readable completion time; using its last modification"
-                ));
-                updated
-            })
-    });
-    TaskFields {
-        title: mapping::title(t.title.as_deref()),
-        notes,
-        due,
-        priority: mapping::priority(&t.importance),
-        completed_at,
-        created,
-        updated,
+    let mut cut = todo_core::decide::MAX_NOTES;
+    while !notes.is_char_boundary(cut) {
+        cut -= 1;
     }
+    notes.truncate(cut);
+    (notes, true)
+}
+
+/// Mapped scalar fields of one Graph task.
+struct TaskFields {
+    title: String,
+    notes: String,
+    due: Option<jiff::civil::Date>,
+    priority: Priority,
+    completed_at: Option<Timestamp>,
+    created: Timestamp,
+    updated: Timestamp,
 }
 
 /// The link of a linked resource, if it is an `http` or `https` URL within the domain's limit.
@@ -473,11 +479,13 @@ pub fn clip_field(s: &str) -> String {
 }
 
 /// Maps a linked resource to a link kind, using the cache's email metadata when there is some.
+///
+/// For an email link the received time comes from the cache: `Ok(at)`, or `Err(problem)` when the cache
+/// has none or it cannot be read. The caller decides what to use instead.
 pub fn link_kind(
     lr: &LinkedResource,
     cache: &Cache,
-    fallback_received: Timestamp,
-) -> Option<LinkKind> {
+) -> Option<(LinkKind, Option<Result<Timestamp, String>>)> {
     let web = web_url(lr);
     let subject = lr.display_name.clone().unwrap_or_default();
     let meta = lr.external_id.as_ref().and_then(|x| cache.emails.get(x));
@@ -488,23 +496,28 @@ pub fn link_kind(
             .clone()
             .or_else(|| m.sender_name.clone())
             .unwrap_or_else(|| "unknown sender".to_owned());
-        let received_at = m
-            .received
-            .as_deref()
-            .and_then(|r| mapping::instant(r).ok())
-            .unwrap_or(fallback_received);
+        let received = match (meta, m.received.as_deref()) {
+            (None, _) => Err("no email metadata in the cache".to_owned()),
+            (Some(_), None) => Err("no received time in the cache".to_owned()),
+            (Some(_), Some(r)) => mapping::instant(r).map_err(|e| e.0),
+        };
         let message_id = lr.external_id.clone().unwrap_or_else(|| lr.id.clone());
-        return Some(LinkKind::Email(EmailLink {
+        let kind = LinkKind::Email(EmailLink {
             subject: clip_field(&subject),
             sender: clip_field(&sender),
-            received_at,
+            // Set by the caller.
+            received_at: Timestamp::UNIX_EPOCH,
             message_id: clip_field(&message_id),
             web_link: web,
-        }));
+        });
+        return Some((kind, Some(received)));
     }
-    web.map(|url| LinkKind::Web {
-        url,
-        title: Some(subject.trim().to_owned()).filter(|s| !s.is_empty() && s.len() <= MAX_URL),
+    web.map(|url| {
+        let kind = LinkKind::Web {
+            url,
+            title: Some(subject.trim().to_owned()).filter(|s| !s.is_empty() && s.len() <= MAX_URL),
+        };
+        (kind, None)
     })
 }
 
@@ -519,6 +532,126 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
+    /// Records a date that could not be read.
+    fn lossy(
+        &mut self,
+        kind: SourceKind,
+        id: &str,
+        field: &str,
+        problem: impl Into<String>,
+        instead: &str,
+    ) {
+        self.report.lossy.push(Lossy {
+            kind,
+            id: id.to_owned(),
+            field: field.to_owned(),
+            problem: problem.into(),
+            instead: instead.to_owned(),
+        });
+    }
+
+    /// Maps the scalar fields of a Graph task. Unreadable dates go to [`Report::lossy`].
+    fn task_fields(&mut self, t: &GraphTask, fallback: Timestamp) -> TaskFields {
+        const TASK: SourceKind = SourceKind::Task;
+        let label = crate::label(&t.id);
+        let created = match mapping::instant(&t.created_date_time) {
+            Ok(at) => at,
+            Err(e) => {
+                self.lossy(
+                    TASK,
+                    &t.id,
+                    "createdDateTime",
+                    e.0,
+                    "used the earliest readable creation time in the export",
+                );
+                fallback
+            }
+        };
+        let updated = match t.last_modified_date_time.as_deref().map(mapping::instant) {
+            Some(Ok(at)) => at,
+            Some(Err(e)) => {
+                self.lossy(
+                    TASK,
+                    &t.id,
+                    "lastModifiedDateTime",
+                    e.0,
+                    "used the creation time",
+                );
+                created
+            }
+            None => {
+                self.lossy(
+                    TASK,
+                    &t.id,
+                    "lastModifiedDateTime",
+                    "missing",
+                    "used the creation time",
+                );
+                created
+            }
+        };
+        let (notes, cut) = task_notes(t);
+        if cut {
+            self.report
+                .warnings
+                .push(format!("task {label}: notes cut to the size limit"));
+        }
+        let due = match &t.due_date_time {
+            None => None,
+            Some(d) => match mapping::due_date(d, &self.opts.time_zone) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    self.lossy(
+                        TASK,
+                        &t.id,
+                        "dueDateTime",
+                        e.0,
+                        "imported without a due date",
+                    );
+                    None
+                }
+            },
+        };
+        let completed_at = if t.is_completed() {
+            Some(
+                match t.completed_date_time.as_ref().map(mapping::date_time) {
+                    Some(Ok(at)) => at,
+                    Some(Err(e)) => {
+                        self.lossy(
+                            TASK,
+                            &t.id,
+                            "completedDateTime",
+                            e.0,
+                            "used the last modification time",
+                        );
+                        updated
+                    }
+                    None => {
+                        self.lossy(
+                            TASK,
+                            &t.id,
+                            "completedDateTime",
+                            "missing on a completed task",
+                            "used the last modification time",
+                        );
+                        updated
+                    }
+                },
+            )
+        } else {
+            None
+        };
+        TaskFields {
+            title: mapping::title(t.title.as_deref()),
+            notes,
+            due,
+            priority: mapping::priority(&t.importance),
+            completed_at,
+            created,
+            updated,
+        }
+    }
+
     fn push(&mut self, kind: SourceKind, id: &str, entity: Entity) {
         self.items.push(Item {
             command_id: command_id(kind.as_str(), id, "entity"),
@@ -738,9 +871,8 @@ impl Builder<'_> {
         position: PosKey,
         fallback: Timestamp,
     ) -> Result<(), BundleError> {
-        let tz = self.opts.time_zone.clone();
         let label = crate::label(&t.id);
-        let f = task_fields(t, &tz, fallback, &mut self.report.warnings);
+        let f = self.task_fields(t, fallback);
         if let (Some(due), Some(cached)) = (f.due, self.cache.task_due.get(&t.id))
             && cached.parse::<jiff::civil::Date>().ok() != Some(due)
         {
@@ -814,13 +946,47 @@ impl Builder<'_> {
         known.extend(unknown);
         for (i, key) in known.into_iter().zip(keys(ch.checklist_items.len())?) {
             let s = &ch.checklist_items[i];
-            let created = mapping::instant(&s.created_date_time).unwrap_or(f.created);
-            let completed_at = s.is_checked.then(|| {
-                s.checked_date_time
-                    .as_deref()
-                    .and_then(|c| mapping::instant(c).ok())
-                    .unwrap_or(created)
-            });
+            const STEP: SourceKind = SourceKind::Step;
+            let created = match mapping::instant(&s.created_date_time) {
+                Ok(at) => at,
+                Err(e) => {
+                    self.lossy(
+                        STEP,
+                        &s.id,
+                        "createdDateTime",
+                        e.0,
+                        "used the task's creation time",
+                    );
+                    f.created
+                }
+            };
+            let completed_at = if s.is_checked {
+                Some(match s.checked_date_time.as_deref().map(mapping::instant) {
+                    Some(Ok(at)) => at,
+                    Some(Err(e)) => {
+                        self.lossy(
+                            STEP,
+                            &s.id,
+                            "checkedDateTime",
+                            e.0,
+                            "used the step's creation time",
+                        );
+                        created
+                    }
+                    None => {
+                        self.lossy(
+                            STEP,
+                            &s.id,
+                            "checkedDateTime",
+                            "missing on a checked step",
+                            "used the step's creation time",
+                        );
+                        created
+                    }
+                })
+            } else {
+                None
+            };
             self.push(
                 SourceKind::Step,
                 &s.id,
@@ -837,7 +1003,25 @@ impl Builder<'_> {
         }
 
         for lr in &ch.linked_resources {
-            match link_kind(lr, self.cache, f.created) {
+            let kind = link_kind(lr, self.cache).map(|(mut kind, received)| {
+                if let (LinkKind::Email(m), Some(received)) = (&mut kind, received) {
+                    m.received_at = match received {
+                        Ok(at) => at,
+                        Err(problem) => {
+                            self.lossy(
+                                SourceKind::Link,
+                                &lr.id,
+                                "receivedDateTime",
+                                problem,
+                                "used the task's creation time",
+                            );
+                            f.created
+                        }
+                    };
+                }
+                kind
+            });
+            match kind {
                 Some(kind) => self.push(
                     SourceKind::Link,
                     &lr.id,
@@ -857,11 +1041,29 @@ impl Builder<'_> {
         }
 
         for a in &ch.attachments {
-            let created = a
-                .last_modified_date_time
-                .as_deref()
-                .and_then(|s| mapping::instant(s).ok())
-                .unwrap_or(f.created);
+            let created = match a.last_modified_date_time.as_deref().map(mapping::instant) {
+                Some(Ok(at)) => at,
+                Some(Err(e)) => {
+                    self.lossy(
+                        SourceKind::Attachment,
+                        &a.id,
+                        "lastModifiedDateTime",
+                        e.0,
+                        "used the task's creation time",
+                    );
+                    f.created
+                }
+                None => {
+                    self.lossy(
+                        SourceKind::Attachment,
+                        &a.id,
+                        "lastModifiedDateTime",
+                        "missing",
+                        "used the task's creation time",
+                    );
+                    f.created
+                }
+            };
             let aid = AttachmentId::from_uuid(uuid_for(SourceKind::Attachment, &a.id, created));
             let content = self.export.attachment_content(a)?;
             let (storage_key, size_bytes) = match &content {
@@ -909,10 +1111,12 @@ impl Builder<'_> {
             );
         }
 
-        if t.is_reminder_on
-            && let Some(r) = &t.reminder_date_time
-        {
-            match mapping::date_time(r) {
+        if t.is_reminder_on {
+            let at = match &t.reminder_date_time {
+                Some(r) => mapping::date_time(r).map_err(|e| e.0),
+                None => Err("missing on a task whose reminder is on".to_owned()),
+            };
+            match at {
                 Ok(at) => self.push(
                     SourceKind::Reminder,
                     &t.id,
@@ -924,10 +1128,13 @@ impl Builder<'_> {
                         deleted: None,
                     }),
                 ),
-                Err(e) => self
-                    .report
-                    .warnings
-                    .push(format!("task {label}: reminder dropped: {e}")),
+                Err(problem) => self.lossy(
+                    SourceKind::Task,
+                    &t.id,
+                    "reminderDateTime",
+                    problem,
+                    "imported without the reminder",
+                ),
             }
         }
         Ok(())
@@ -958,6 +1165,14 @@ pub fn build(export: &Export, cache: &Cache, opts: &BuildOptions) -> Result<Bund
         for (ti, key) in order.into_iter().zip(keys(l.tasks.len())?) {
             b.task(l, list, &l.tasks[ti], key, fallback)?;
         }
+    }
+    if !opts.allow_lossy
+        && let Some(first) = b.report.lossy.first()
+    {
+        return Err(BundleError::Lossy {
+            first: first.to_string(),
+            lossy: b.report.lossy,
+        });
     }
     let counts = Counts::of(&b.items, &b.blobs);
     Ok(Bundle {

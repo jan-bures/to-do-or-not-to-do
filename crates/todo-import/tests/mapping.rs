@@ -236,7 +236,7 @@ fn fields_keep_their_history() {
 fn verify_passes_and_catches_differences() {
     let export = common::export();
     let b = common::bundle();
-    let rep = verify(&export, &b, false);
+    let rep = verify(&export, None, &b, false);
     assert!(rep.ok(), "{}", rep.render());
     assert_eq!(rep.rows.len(), 5);
     assert!(
@@ -255,7 +255,7 @@ fn verify_passes_and_catches_differences() {
     }
     let step = bad.items.iter().position(|i| i.source.id == "S-1").unwrap();
     bad.items.remove(step);
-    let rep = verify(&export, &bad, false);
+    let rep = verify(&export, None, &bad, false);
     assert!(!rep.ok());
     let text = rep.render();
     assert!(text.contains("title differs"), "{text}");
@@ -291,4 +291,233 @@ fn the_cache_loads_from_a_file_copy() {
     assert_eq!(c.groups.len(), 2);
     assert_eq!(c.orphan_steps, 2);
     assert!(todo_import::cache::Cache::load(&dir.path().join("missing.db")).is_err());
+}
+
+fn graph_task<'a>(
+    export: &'a mut todo_import::graph::Export,
+    id: &str,
+) -> &'a mut todo_import::graph::GraphTask {
+    export
+        .lists
+        .iter_mut()
+        .flat_map(|l| &mut l.tasks)
+        .find(|t| t.id == id)
+        .unwrap()
+}
+
+fn cache() -> todo_import::cache::Cache {
+    todo_import::cache::Cache::read(&common::cache_conn()).unwrap()
+}
+
+fn strict() -> todo_import::bundle::BuildOptions {
+    todo_import::bundle::BuildOptions {
+        allow_lossy: false,
+        ..common::options()
+    }
+}
+
+fn lossy_fields(b: &[todo_import::bundle::Lossy]) -> Vec<(SourceKind, &str, &str)> {
+    b.iter()
+        .map(|l| (l.kind, l.id.as_str(), l.field.as_str()))
+        .collect()
+}
+
+#[test]
+fn an_unreadable_date_fails_a_strict_build_and_is_reported_when_lossy_is_allowed() {
+    use todo_import::bundle::{BundleError, build};
+    // The fixture's one gap: an Outlook link whose email the cache does not know.
+    let err = build(&common::export(), &cache(), &strict()).unwrap_err();
+    let BundleError::Lossy { lossy, first } = &err else {
+        panic!("{err}")
+    };
+    assert_eq!(
+        lossy_fields(lossy),
+        [(SourceKind::Link, "LR-2", "receivedDateTime")]
+    );
+    assert!(err.to_string().contains("--allow-lossy"), "{err}");
+    assert!(first.contains("receivedDateTime"), "{first}");
+
+    let b = common::bundle();
+    assert_eq!(lossy_fields(&b.report.lossy), lossy_fields(lossy));
+    // Verify accepts it because it is reported, and with the cache it checks the other email's time.
+    let rep = verify(&common::export(), Some(&cache()), &b, false);
+    assert!(rep.ok(), "{}", rep.render());
+    assert!(rep.render().contains("1 date(s) could not be read"));
+}
+
+#[test]
+fn windows_zone_names_map_and_broken_dates_are_never_replaced_silently() {
+    use todo_import::bundle::{BundleError, build};
+    use todo_import::graph::DateTimeTz;
+    let mut export = common::export();
+    // T-1: due at local midnight in a Windows zone (the cache-mismatch check still agrees).
+    graph_task(&mut export, "T-1").due_date_time = Some(DateTimeTz {
+        date_time: "2026-03-02T00:00:00.0000000".into(),
+        time_zone: "W. Europe Standard Time".into(),
+    });
+    // T-2: an unreadable creation time; T-3: a zone nobody knows; G-1: a completed task without a
+    // completion time.
+    graph_task(&mut export, "T-2").created_date_time = "last Tuesday".into();
+    graph_task(&mut export, "T-3")
+        .due_date_time
+        .as_mut()
+        .unwrap()
+        .time_zone = "Mars Standard Time".into();
+    let g1 = graph_task(&mut export, "G-1");
+    g1.status = "completed".into();
+    g1.completed_date_time = None;
+
+    let err = build(&export, &cache(), &strict()).unwrap_err();
+    let BundleError::Lossy { lossy, .. } = &err else {
+        panic!("{err}")
+    };
+    let mut got = lossy_fields(lossy);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            (SourceKind::Task, "G-1", "completedDateTime"),
+            (SourceKind::Task, "T-2", "createdDateTime"),
+            (SourceKind::Task, "T-3", "dueDateTime"),
+            (SourceKind::Link, "LR-2", "receivedDateTime"),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+    );
+
+    let b = build(&export, &cache(), &common::options()).unwrap();
+    assert_eq!(b.report.lossy.len(), 4);
+    assert_eq!(task(&b, "T-1").due, Some(Date::constant(2026, 3, 2)));
+    assert_eq!(b.report.due_date_mismatches, 0);
+    assert_eq!(
+        task(&b, "T-3").due,
+        None,
+        "an unreadable due date is dropped"
+    );
+    let rep = verify(&export, Some(&cache()), &b, false);
+    assert!(rep.ok(), "{}", rep.render());
+    assert!(rep.render().contains("4 date(s) could not be read"));
+
+    // A substitution the report does not own up to fails verification.
+    let mut hidden = b.clone();
+    hidden.report.lossy.retain(|l| l.id != "T-2");
+    let rep = verify(&export, Some(&cache()), &hidden, false);
+    assert!(!rep.ok());
+    assert!(
+        rep.render().contains(
+            "createdDateTime: unreadable or missing in the export, and not reported as lossy"
+        ),
+        "{}",
+        rep.render()
+    );
+}
+
+#[test]
+fn verify_reads_dates_itself_and_catches_a_wrong_one() {
+    let export = common::export();
+    let b = common::bundle();
+    let set = |b: &mut Bundle, id: &str, f: &dyn Fn(&mut Entity)| {
+        let i = b
+            .items
+            .iter()
+            .position(|i| i.source.id == id && i.source.kind != SourceKind::Reminder)
+            .unwrap();
+        if let todo_core::Command::ImportEntity { entity } = &mut b.items[i].command {
+            f(entity.as_mut());
+        }
+    };
+    type Change = Box<dyn Fn(&mut Entity)>;
+    let cases: [(&str, &str, Change); 6] = [
+        (
+            "T-1",
+            "createdDateTime differs",
+            Box::new(|e| {
+                if let Entity::Task(t) = e {
+                    t.created.at = ts("2026-01-10T08:00:01Z")
+                }
+            }),
+        ),
+        (
+            "T-1",
+            "lastModifiedDateTime differs",
+            Box::new(|e| {
+                if let Entity::Task(t) = e {
+                    t.updated.at = t.created.at
+                }
+            }),
+        ),
+        (
+            "T-1",
+            "dueDateTime differs",
+            Box::new(|e| {
+                if let Entity::Task(t) = e {
+                    t.due = Some(Date::constant(2026, 3, 1))
+                }
+            }),
+        ),
+        (
+            "T-2",
+            "completedDateTime differs",
+            Box::new(|e| {
+                if let Entity::Task(t) = e {
+                    t.completed_at = Some(ts("2026-01-04T23:00:00Z"))
+                }
+            }),
+        ),
+        (
+            "S-2",
+            "checkedDateTime differs",
+            Box::new(|e| {
+                if let Entity::Step(s) = e {
+                    s.completed_at = Some(ts("2026-01-09T10:00:00Z"))
+                }
+            }),
+        ),
+        (
+            "A-1",
+            "lastModifiedDateTime differs",
+            Box::new(|e| {
+                if let Entity::Attachment(a) = e {
+                    a.created.at = ts("2000-01-01T00:00:00Z")
+                }
+            }),
+        ),
+    ];
+    for (id, want, f) in cases {
+        let mut bad = b.clone();
+        set(&mut bad, id, &*f);
+        let text = verify(&export, None, &bad, false).render();
+        assert!(
+            text.contains(want) && text.contains("verify: FAIL"),
+            "{id}: {text}"
+        );
+    }
+    // The reminder time, and (with the cache) an email's received time.
+    let mut bad = b.clone();
+    let i = bad
+        .items
+        .iter()
+        .position(|i| i.source.kind == SourceKind::Reminder)
+        .unwrap();
+    if let todo_core::Command::ImportEntity { entity } = &mut bad.items[i].command
+        && let Entity::Reminder(r) = entity.as_mut()
+    {
+        r.at = ts("2026-03-02T06:00:00Z");
+    }
+    set(&mut bad, "LR-1", &|e| {
+        if let Entity::Link(l) = e
+            && let LinkKind::Email(m) = &mut l.kind
+        {
+            m.received_at = ts("2026-01-20T11:59:00Z");
+        }
+    });
+    let text = verify(&export, Some(&cache()), &bad, false).render();
+    assert!(text.contains("reminderDateTime differs"), "{text}");
+    assert!(text.contains("receivedDateTime differs"), "{text}");
+    // Without the cache the received time is only noted as unchecked.
+    let text = verify(&export, None, &b, false).render();
+    assert!(text.contains("verify: PASS"), "{text}");
+    assert!(text.contains("pass --cache to check them"), "{text}");
 }

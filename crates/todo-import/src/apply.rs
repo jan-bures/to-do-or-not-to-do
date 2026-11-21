@@ -10,10 +10,25 @@
 //! # Resume journal
 //!
 //! To avoid re-sending thousands of commands after a crash, `apply` keeps a journal: a header naming
-//! the bundle digest and the server, then one acknowledged `command_id` per line. Lines are written and
-//! synced to disk at the end of every batch. Commands acknowledged after the last sync are simply sent
-//! again on resume, and the server replays them. A journal for another bundle or another server is
-//! refused.
+//! the bundle digest, the server and the server's log epoch, then one acknowledged `command_id` per
+//! line. Lines are written and synced to disk at the end of every batch, and before `apply` returns an
+//! error. Commands acknowledged after the last sync are simply sent again on resume, and the server
+//! replays them. A journal for another bundle or another server is refused.
+//!
+//! The header is written to a temporary file, synced, and renamed into place before any command is
+//! sent, so a crash can never leave a half-written header behind.
+//!
+//! A command counts as acknowledged only when the server answers 2xx with a command result for that
+//! `command_id`: the result names the command, lists its events (an import always stores one), and
+//! names the log epoch. Anything else (an empty body, another ID, no events) is an error, and nothing
+//! is journaled for it.
+//!
+//! # Log epoch
+//!
+//! The server rotates its log epoch when it is restored from a backup, and a restore can lose
+//! commands it had acknowledged. So the journal records the epoch it was written in, and `apply`
+//! refuses a journal from another epoch, and stops if the epoch changes during a run. Deleting the
+//! journal and running again is always safe.
 
 use crate::bundle::{Bundle, BundleError, Item};
 use crate::http::{Client, HttpError};
@@ -23,7 +38,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-const JOURNAL_MAGIC: &str = "todo-import-journal 1";
+const JOURNAL_MAGIC: &str = "todo-import-journal 2";
 
 /// Errors from `apply`.
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +65,31 @@ pub enum ApplyError {
         path: String,
         /// What is wrong.
         reason: String,
+    },
+    /// The server answered 2xx without acknowledging the command.
+    #[error("item {index} ({kind} {label}): not acknowledged: {reason}")]
+    NotAcknowledged {
+        /// Position in the bundle.
+        index: usize,
+        /// Source kind.
+        kind: &'static str,
+        /// Source label.
+        label: String,
+        /// What was wrong with the response.
+        reason: String,
+    },
+    /// The server's log epoch is not the one the journal was written in (it was restored from a
+    /// backup, which may have lost acknowledged commands).
+    #[error(
+        "the server's log epoch changed (restored from a backup?): journal {journal} has {had}, the server {now}; delete the journal and run again (re-sending is safe)"
+    )]
+    EpochChanged {
+        /// The journal file.
+        journal: String,
+        /// The journal's epoch.
+        had: Uuid,
+        /// The server's.
+        now: Uuid,
     },
     /// Stopped on purpose after the given number of commands (tests simulate a crash with this).
     #[error("stopped after {0} commands")]
@@ -91,34 +131,74 @@ pub fn default_journal(bundle: &Path, server: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn header(digest: &str, server: &str) -> String {
-    format!("{JOURNAL_MAGIC} {digest} {}", crate::label(server))
+fn header_prefix(digest: &str, server: &str) -> String {
+    format!("{JOURNAL_MAGIC} {digest} {} ", crate::label(server))
 }
 
-/// Reads the IDs a journal records, after checking its header. A missing file is an empty journal.
-pub fn read_journal(path: &Path, digest: &str, server: &str) -> Result<BTreeSet<Uuid>, ApplyError> {
+fn header(digest: &str, server: &str, epoch: Uuid) -> String {
+    format!("{}{epoch}", header_prefix(digest, server))
+}
+
+/// What a journal records.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Journal {
+    /// The server's log epoch when it was written (`None` for a new journal).
+    pub epoch: Option<Uuid>,
+    /// Acknowledged command IDs.
+    pub done: BTreeSet<Uuid>,
+}
+
+/// The temporary file a journal header is written to before it is renamed into place.
+fn journal_tmp(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// Reads a journal, after checking its header. A missing or empty file is a new journal.
+pub fn read_journal(path: &Path, digest: &str, server: &str) -> Result<Journal, ApplyError> {
     let bad = |reason: String| ApplyError::Journal {
         path: path.display().to_string(),
         reason,
     };
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Journal::default()),
         Err(e) => return Err(bad(e.to_string())),
     };
     let mut lines = text.lines();
-    match lines.next() {
-        None => return Ok(BTreeSet::new()),
-        Some(h) if h == header(digest, server) => {}
-        Some(_) => {
-            return Err(bad(
-                "it belongs to another bundle or server; pass another --journal, or delete it (re-sending is safe)"
-                    .into(),
-            ));
-        }
-    }
+    let epoch = match lines.next() {
+        None => return Ok(Journal::default()),
+        Some(h) => h
+            .strip_prefix(&header_prefix(digest, server))
+            .and_then(|e| e.parse::<Uuid>().ok())
+            .ok_or_else(|| {
+                bad("it belongs to another bundle or server; pass another --journal, or delete it (re-sending is safe)".into())
+            })?,
+    };
     // A torn last line (crash mid-write) is not a valid UUID and is ignored.
-    Ok(lines.filter_map(|l| l.trim().parse().ok()).collect())
+    Ok(Journal {
+        epoch: Some(epoch),
+        done: lines.filter_map(|l| l.trim().parse().ok()).collect(),
+    })
+}
+
+/// Creates a journal holding only its header: written to a temporary file, synced, then renamed into
+/// place, so the journal is never half-written.
+fn create_journal(path: &Path, header: &str) -> std::io::Result<()> {
+    let tmp = journal_tmp(path);
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        writeln!(f, "{header}")?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    // Make the rename itself durable where the platform allows syncing a directory.
+    #[cfg(unix)]
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// The plan: what `apply` would send. Prints no task content.
@@ -128,7 +208,7 @@ pub fn plan(
     server: &str,
     batch_size: usize,
 ) -> Result<String, ApplyError> {
-    let done = read_journal(journal, &bundle.digest()?, server)?;
+    let done = read_journal(journal, &bundle.digest()?, server)?.done;
     let pending = bundle
         .items
         .iter()
@@ -203,14 +283,73 @@ fn sync(
     Ok(())
 }
 
-fn send(client: &Client, index: usize, item: &Item) -> Result<bool, ApplyError> {
+/// The part of the server's command result that acknowledges a command.
+#[derive(serde::Deserialize)]
+struct CommandAck {
+    command_id: Uuid,
+    events: Vec<EventAck>,
+    epoch: Uuid,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)] // Parsed to check the shape; only the count is used.
+struct EventAck {
+    seq: u64,
+    id: Uuid,
+}
+
+/// The part of an event page that names the log epoch.
+#[derive(serde::Deserialize)]
+struct EpochPage {
+    epoch: Uuid,
+}
+
+/// The server's current log epoch.
+pub fn server_epoch(client: &Client) -> Result<Uuid, HttpError> {
+    let page: EpochPage = client.get("GET /api/v1/events", "/api/v1/events?limit=1")?;
+    Ok(page.epoch)
+}
+
+/// Sends one command. Returns whether the server replayed it, after checking that the response
+/// acknowledges this command in `epoch`.
+fn send(
+    client: &Client,
+    index: usize,
+    item: &Item,
+    epoch: Uuid,
+    journal: &Path,
+) -> Result<bool, ApplyError> {
     let body = CommandRequest {
         command_id: item.command_id,
         command: &item.command,
     };
     tracing::debug!(index, kind = item.source.kind.as_str(), "sending");
+    let not_acked = |reason: String| ApplyError::NotAcknowledged {
+        index,
+        kind: item.source.kind.as_str(),
+        label: crate::label(&item.source.id),
+        reason,
+    };
     match client.post("POST /api/v1/commands", "/api/v1/commands", &body) {
-        Ok(reply) => Ok(reply.replayed),
+        Ok(reply) => {
+            let ack: CommandAck = serde_json::from_value(reply.body)
+                .map_err(|e| not_acked(format!("the response is not a command result: {e}")))?;
+            if ack.command_id != item.command_id {
+                return Err(not_acked("the result is for another command_id".to_owned()));
+            }
+            if ack.events.is_empty() {
+                // An import always stores exactly one event; an empty list would mean a no-op.
+                return Err(not_acked("the result has no events".to_owned()));
+            }
+            if ack.epoch != epoch {
+                return Err(ApplyError::EpochChanged {
+                    journal: journal.display().to_string(),
+                    had: epoch,
+                    now: ack.epoch,
+                });
+            }
+            Ok(reply.replayed)
+        }
         Err(source) => {
             if let HttpError::Status { message, .. } = &source {
                 tracing::debug!(index, %message, "command rejected");
@@ -233,25 +372,38 @@ pub fn apply(
 ) -> Result<ApplySummary, ApplyError> {
     let digest = bundle.digest()?;
     let server = client.base().to_owned();
-    let done = read_journal(&opts.journal, &digest, &server)?;
+    let journal = read_journal(&opts.journal, &digest, &server)?;
     let jerr = |e: std::io::Error| ApplyError::Journal {
         path: opts.journal.display().to_string(),
         reason: e.to_string(),
     };
-    if let Some(dir) = opts.journal.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(jerr)?;
+    let epoch = server_epoch(client).map_err(|source| ApplyError::Http {
+        index: 0,
+        kind: "epoch",
+        label: "-".to_owned(),
+        source: Box::new(source),
+    })?;
+    match journal.epoch {
+        Some(had) if had != epoch => {
+            return Err(ApplyError::EpochChanged {
+                journal: opts.journal.display().to_string(),
+                had,
+                now: epoch,
+            });
+        }
+        Some(_) => {}
+        None => {
+            if let Some(dir) = opts.journal.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir).map_err(jerr)?;
+            }
+            create_journal(&opts.journal, &header(&digest, &server, epoch)).map_err(jerr)?;
+        }
     }
-    let fresh =
-        !opts.journal.exists() || std::fs::metadata(&opts.journal).map_err(jerr)?.len() == 0;
+    let done = journal.done;
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
         .append(true)
         .open(&opts.journal)
         .map_err(jerr)?;
-    if fresh {
-        writeln!(file, "{}", header(&digest, &server)).map_err(jerr)?;
-        file.sync_data().map_err(jerr)?;
-    }
 
     let batch = opts.batch_size.max(1);
     let mut sum = ApplySummary {
@@ -266,7 +418,17 @@ pub fn apply(
             sum.skipped += 1;
             continue;
         }
-        let replayed = send(client, index, item)?;
+        let replayed = match send(client, index, item, epoch, &opts.journal) {
+            Ok(r) => r,
+            Err(e) => {
+                // Keep what was acknowledged before the failure, unless the epoch moved under us
+                // (then those acknowledgements may be gone, and the journal is refused anyway).
+                if !matches!(e, ApplyError::EpochChanged { .. }) {
+                    sync(&mut file, &mut pending, &opts.journal)?;
+                }
+                return Err(e);
+            }
+        };
         if replayed {
             sum.replayed += 1;
         } else {

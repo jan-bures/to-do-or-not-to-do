@@ -42,6 +42,10 @@ enum Cmd {
         /// The owner's IANA time zone for due dates (default: this machine's).
         #[arg(long)]
         time_zone: Option<String>,
+        /// Build even if some dates cannot be read; each one is listed in the report with what is
+        /// used instead. Without it, any unreadable date is an error.
+        #[arg(long)]
+        allow_lossy: bool,
     },
     /// Compares a bundle with the raw Graph export. Exits 1 on any mismatch.
     Verify {
@@ -51,6 +55,9 @@ enum Cmd {
         /// The bundle.
         #[arg(long)]
         bundle: PathBuf,
+        /// The cache copy the bundle was built from, to check email received times too.
+        #[arg(long)]
+        cache: Option<PathBuf>,
         /// Show list names in the report (personal data: keep the output private).
         #[arg(long)]
         show_names: bool,
@@ -75,6 +82,10 @@ enum Cmd {
         /// Resume journal (default: next to the bundle, one per server).
         #[arg(long)]
         journal: Option<PathBuf>,
+        /// The longest to wait, in seconds, when the server asks to retry later (429 or 503 with
+        /// Retry-After). Past it, apply stops with a resumable error.
+        #[arg(long, default_value_t = todo_import::http::DEFAULT_MAX_WAIT.as_secs())]
+        max_wait: u64,
     },
     /// Reads everything back from the server and checks it against the bundle. Exits 1 on mismatch.
     VerifyServer {
@@ -87,6 +98,9 @@ enum Cmd {
         /// File holding an owner API token (or set TODO_IMPORT_TOKEN).
         #[arg(long)]
         token_file: Option<PathBuf>,
+        /// The longest to wait, in seconds, when the server asks to retry later.
+        #[arg(long, default_value_t = todo_import::http::DEFAULT_MAX_WAIT.as_secs())]
+        max_wait: u64,
     },
 }
 
@@ -138,6 +152,7 @@ fn run(cli: Cli) -> Result<bool> {
             cache,
             out,
             time_zone: tz,
+            allow_lossy,
         } => {
             if let Some(repo) = git_work_tree(&out) {
                 bail!(
@@ -154,13 +169,14 @@ fn run(cli: Cli) -> Result<bool> {
                 &BuildOptions {
                     time_zone: tz,
                     time_zone_name: tz_name,
+                    allow_lossy,
                 },
             )?;
             bundle.write(&out)?;
             let c = &bundle.counts;
             let r = &bundle.report;
             println!(
-                "bundle: {} commands -> {}\n  {} collections, {} lists, {} tags, {} tasks ({} open, {} completed), {} steps, {} links ({} email), {} attachments ({} bytes), {} reminders\n  {} due dates, {} high priority, {} with notes, {} recurring\n  ignored: {} orphan cache steps, {} cache-only lists, {} stale My Day marks; {} tasks and {} steps without cache order; {} due-date mismatches with the cache\n  unmapped recurrence: {}; warnings: {}",
+                "bundle: {} commands -> {}\n  {} collections, {} lists, {} tags, {} tasks ({} open, {} completed), {} steps, {} links ({} email), {} attachments ({} bytes), {} reminders\n  {} due dates, {} high priority, {} with notes, {} recurring\n  ignored: {} orphan cache steps, {} cache-only lists, {} stale My Day marks; {} tasks and {} steps without cache order; {} due-date mismatches with the cache\n  unmapped recurrence: {}; lossy dates: {}; warnings: {}",
                 bundle.items.len(),
                 out.display(),
                 c.collections,
@@ -186,8 +202,12 @@ fn run(cli: Cli) -> Result<bool> {
                 r.steps_without_cache_order,
                 r.due_date_mismatches,
                 r.unmapped_recurrence.len(),
+                r.lossy.len(),
                 r.warnings.len()
             );
+            for l in &r.lossy {
+                println!("  lossy date: {l}");
+            }
             for w in &r.warnings {
                 println!("  warning: {w}");
             }
@@ -203,11 +223,15 @@ fn run(cli: Cli) -> Result<bool> {
         Cmd::Verify {
             export,
             bundle,
+            cache,
             show_names,
         } => {
             let export = Export::load(&export).context("reading the export")?;
             let bundle = Bundle::read(&bundle)?;
-            let rep = todo_import::verify::verify(&export, &bundle, show_names);
+            let cache = cache
+                .map(|c| Cache::load(&c).context("reading the cache copy"))
+                .transpose()?;
+            let rep = todo_import::verify::verify(&export, cache.as_ref(), &bundle, show_names);
             print!("{}", rep.render());
             Ok(rep.ok())
         }
@@ -218,6 +242,7 @@ fn run(cli: Cli) -> Result<bool> {
             dry_run,
             batch_size,
             journal,
+            max_wait,
         } => {
             let bundle = Bundle::read(&path)?;
             let base = todo_import::http::check_base_url(&server)?;
@@ -227,7 +252,8 @@ fn run(cli: Cli) -> Result<bool> {
                 println!("dry run: nothing sent");
                 return Ok(true);
             }
-            let client = Client::new(&base, token(token_file.as_deref())?)?;
+            let mut client = Client::new(&base, token(token_file.as_deref())?)?;
+            client.max_wait = std::time::Duration::from_secs(max_wait);
             let sum = apply(
                 &bundle,
                 &client,
@@ -247,9 +273,11 @@ fn run(cli: Cli) -> Result<bool> {
             bundle,
             server,
             token_file,
+            max_wait,
         } => {
             let bundle = Bundle::read(&bundle)?;
-            let client = Client::new(&server, token(token_file.as_deref())?)?;
+            let mut client = Client::new(&server, token(token_file.as_deref())?)?;
+            client.max_wait = std::time::Duration::from_secs(max_wait);
             let rep = todo_import::verify_server::verify_server(&bundle, &client)?;
             print!("{}", rep.render());
             Ok(rep.ok())

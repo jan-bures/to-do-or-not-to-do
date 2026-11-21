@@ -91,6 +91,8 @@ pub fn options() -> BuildOptions {
     BuildOptions {
         time_zone: jiff::tz::TimeZone::get(TZ).unwrap(),
         time_zone_name: TZ.to_owned(),
+        // The fixture has one Outlook link without cache metadata: its received time is lossy.
+        allow_lossy: true,
     }
 }
 

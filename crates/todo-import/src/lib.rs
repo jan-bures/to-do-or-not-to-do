@@ -21,6 +21,7 @@
 //! | [`http`] | the blocking REST client with retries |
 //! | [`apply`] | sending the bundle, with a resume journal |
 //! | [`verify_server`] | server versus bundle |
+//! | [`windows_zones`] | the CLDR table of Windows time zone names |
 //!
 //! Task content (titles, notes, email metadata) is personal. Nothing here logs it above `debug`; reports
 //! name lists and tasks by a short hash of their Graph ID unless asked to show names.
@@ -36,6 +37,7 @@ pub mod ids;
 pub mod mapping;
 pub mod verify;
 pub mod verify_server;
+pub mod windows_zones;
 
 /// A short, stable, non-reversible label for a source ID, for reports and logs.
 #[must_use]

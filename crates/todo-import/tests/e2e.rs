@@ -147,7 +147,10 @@ async fn apply_verify_reapply_and_resume() {
     assert!(matches!(err, ApplyError::Aborted(7)));
     let digest = bundle.digest().unwrap();
     let base = todo_import::http::check_base_url(&url).unwrap();
-    assert_eq!(read_journal(&journal, &digest, &base).unwrap().len(), 5);
+    assert_eq!(
+        read_journal(&journal, &digest, &base).unwrap().done.len(),
+        5
+    );
     let partial = run_verify(&url, &bundle).await;
     assert!(!partial.ok(), "a partial import must not verify");
     // Resume: the journal skips 5, the server replays the 2 unsynced ones, the rest is stored.

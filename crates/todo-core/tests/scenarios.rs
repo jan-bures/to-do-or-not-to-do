@@ -1707,21 +1707,32 @@ mod import {
     fn is_owner_only_and_validates_like_a_create() {
         let mut w = World::new();
         w.grant_default("bot", AccessLevel::Plan);
-        let bot = Actor::agent("bot").unwrap();
         let list = w.list(None, "Inbox");
         let t = imported_task(&mut w, list, "V");
-        assert!(matches!(
-            w.run_as(&bot, import(Entity::Task(t.clone()))),
-            Err(DomainError::Denied(_))
-        ));
-        // Importer and system actors have owner rights.
+        // Only the owner: not an agent with Plan everywhere, and not the importer, system or
+        // email-ingest actors either.
+        for actor in [
+            Actor::agent("bot").unwrap(),
+            Actor::Importer,
+            Actor::System,
+            Actor::EmailIngest,
+        ] {
+            assert!(
+                matches!(
+                    w.run_as(&actor, import(Entity::Task(t.clone()))),
+                    Err(DomainError::Denied(ref d)) if d.owner_only
+                ),
+                "{actor:?}"
+            );
+        }
+        let owner = w.owner.clone();
         let mut deleted = t.clone();
         deleted.deleted = Some(todo_core::model::Tombstone {
             at: ts(-1),
             by: Actor::System,
         });
         assert!(matches!(
-            w.run_as(&Actor::Importer, import(Entity::Task(deleted))),
+            w.run_as(&owner, import(Entity::Task(deleted))),
             Err(DomainError::Invalid {
                 field: "deleted",
                 ..
@@ -1730,7 +1741,7 @@ mod import {
         let mut merged = t.clone();
         merged.merged_into = Some(w.ids.task());
         assert!(matches!(
-            w.run_as(&Actor::Importer, import(Entity::Task(merged))),
+            w.run_as(&owner, import(Entity::Task(merged))),
             Err(DomainError::Invalid {
                 field: "merged_into",
                 ..
@@ -1739,7 +1750,7 @@ mod import {
         let mut no_due = t.clone();
         no_due.due = None;
         assert!(matches!(
-            w.run_as(&Actor::Importer, import(Entity::Task(no_due))),
+            w.run_as(&owner, import(Entity::Task(no_due))),
             Err(DomainError::Invalid {
                 field: "recurrence",
                 ..
@@ -1748,14 +1759,13 @@ mod import {
         let mut orphan = t.clone();
         orphan.list = w.ids.list();
         assert!(matches!(
-            w.run_as(&Actor::Importer, import(Entity::Task(orphan))),
+            w.run_as(&owner, import(Entity::Task(orphan))),
             Err(DomainError::NotFound(_))
         ));
-        w.run_as(&Actor::Importer, import(Entity::Task(t.clone())))
-            .unwrap();
-        assert_eq!(w.state.tasks[&t.id].created.by, Actor::Importer);
+        w.run_as(&owner, import(Entity::Task(t.clone()))).unwrap();
+        assert_eq!(w.state.tasks[&t.id].created.by, owner);
         assert!(matches!(
-            w.run_as(&Actor::Importer, import(Entity::Task(t))),
+            w.run_as(&owner, import(Entity::Task(t))),
             Err(DomainError::AlreadyExists(_))
         ));
     }

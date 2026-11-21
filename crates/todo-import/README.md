@@ -18,7 +18,7 @@ Copy-Item "$acct\todosqlite.db*" "$work\cache\"
 
 # 2. Build and check the bundle.
 todo-import bundle --export <export-dir> --cache "$work\cache\todosqlite.db" --out "$work\bundle.json"
-todo-import verify --export <export-dir> --bundle "$work\bundle.json"
+todo-import verify --export <export-dir> --bundle "$work\bundle.json" --cache "$work\cache\todosqlite.db"
 
 # 3. Apply (dry run first), then read everything back.
 todo-import apply --bundle "$work\bundle.json" --server https://todo.example.com --dry-run
@@ -28,11 +28,21 @@ todo-import verify-server --bundle "$work\bundle.json" --server https://todo.exa
 
 - `--time-zone <IANA name>` sets the owner's time zone for due dates (default: this machine's). `bundle`
   cross-checks every due date with the cache and warns if they differ.
+- Dates are read strictly. Graph time zones may be `UTC`, IANA names or Windows names (mapped with the CLDR
+  `windowsZones` table). If any date can't be read, or a required one is missing, `bundle` fails and names
+  it. With `--allow-lossy` it builds anyway and lists each one in the report, with what was used instead
+  (the value dropped, or another time). `verify` reads every date again with its own parser. Any date it
+  can't read must be one the bundle lists as lossy.
+- `verify --cache` also checks the received times of email links, which come from the cache.
 - The token comes from `--token-file` or `TODO_IMPORT_TOKEN`, never from the command line. Plain `http://`
   is accepted only for `localhost`.
 - `verify` and `verify-server` exit with 1 on any mismatch. Reports name lists and tasks by a short hash of
   their Graph ID; `verify --show-names` adds list names.
-- `apply` is safe to re-run and resumes after a crash: see the `apply` module documentation.
+- `apply` is safe to re-run and resumes after a crash: see the `apply` module documentation. Its journal is
+  tied to the server's log epoch, so after a server restore it refuses the old journal. Delete it and run
+  again: re-sending is safe.
+- `apply` and `verify-server` wait as long as `Retry-After` asks, up to `--max-wait` seconds in total
+  (default 900). Past that they stop with an error, and a later run resumes.
 
 ## Mapping
 

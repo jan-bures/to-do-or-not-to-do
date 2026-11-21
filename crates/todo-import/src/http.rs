@@ -1,21 +1,32 @@
 //! A small blocking REST client for the server, with retries.
 //!
-//! Retries: `429` and `503` wait for `Retry-After` (or back off exponentially without one); `408`,
-//! `500`, `502`, `504` and transport errors back off exponentially. Every other status is returned to
-//! the caller. Commands are safe to retry because each carries its own `command_id`.
+//! Retries: `429` and `503` wait for exactly as long as `Retry-After` says (seconds or an HTTP-date),
+//! or back off exponentially without one; `408`, `500`, `502`, `504` and transport errors back off
+//! exponentially. The status is classified before the body is read, so a broken error body cannot hide
+//! a `Retry-After`. Every other status is returned to the caller. Commands are safe to retry because
+//! each carries its own `command_id`.
+//!
+//! The client never waits longer than its budget ([`Client::max_wait`]) in total for one request. If the
+//! server asks for more, the request fails at once with [`HttpError::WaitTooLong`]; `apply` resumes
+//! from its journal when it is run again.
 //!
 //! The token is sent only over HTTPS, or over plain HTTP to a loopback address. It is never logged and
 //! never part of an error.
 
+use jiff::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Header the server sets on a replayed command result.
 pub const REPLAYED_HEADER: &str = "idempotent-replayed";
 
-/// Longest wait honoured from a `Retry-After` header.
-pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+/// Default for [`Client::max_wait`].
+pub const DEFAULT_MAX_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// How the client waits between attempts. Tests replace it to record waits instead.
+pub type Sleeper = Arc<dyn Fn(Duration) + Send + Sync>;
 
 /// Errors from the client.
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +55,22 @@ pub enum HttpError {
         code: String,
         /// The server's message (may mention entity IDs; never logged above debug).
         message: String,
+    },
+    /// The server asked to wait longer than the client's budget.
+    #[error(
+        "{what}: the server asks to wait {}s more (HTTP {status}), past the budget of {}s; nothing is lost, run again later to resume",
+        wait.as_secs(),
+        budget.as_secs()
+    )]
+    WaitTooLong {
+        /// The request.
+        what: String,
+        /// The status that asked for the wait.
+        status: u16,
+        /// What the server asked for.
+        wait: Duration,
+        /// [`Client::max_wait`].
+        budget: Duration,
     },
     /// The body could not be parsed.
     #[error("{what}: unexpected response body: {error}")]
@@ -75,6 +102,9 @@ pub struct Client {
     pub max_busy_attempts: u32,
     /// Base delay of the exponential back-off.
     pub base_delay: Duration,
+    /// The longest the client waits in total, over all retries of one request.
+    pub max_wait: Duration,
+    sleep: Sleeper,
 }
 
 impl std::fmt::Debug for Client {
@@ -117,16 +147,27 @@ pub fn check_base_url(url: &str) -> Result<String, HttpError> {
     }
 }
 
-/// Parses a `Retry-After` value in seconds, capped at [`MAX_RETRY_AFTER`].
+/// Parses a `Retry-After` value (RFC 9110): delay seconds, or an HTTP-date, which is turned into the
+/// time from `now` until then (zero if it has passed). Nothing is capped.
 #[must_use]
-pub fn retry_after(value: Option<&str>) -> Option<Duration> {
-    let secs: u64 = value?.trim().parse().ok()?;
-    Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
+pub fn retry_after(value: Option<&str>, now: Timestamp) -> Option<Duration> {
+    let v = value?.trim();
+    if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) {
+        // More digits than a u64 holds: wait "forever", which the budget then refuses.
+        return Some(Duration::from_secs(v.parse().unwrap_or(u64::MAX)));
+    }
+    let at = jiff::fmt::rfc2822::DateTimeParser::new()
+        .parse_timestamp(v)
+        .ok()?;
+    let ms = at.as_millisecond().saturating_sub(now.as_millisecond());
+    Some(Duration::from_millis(u64::try_from(ms).unwrap_or(0)))
 }
 
 enum Attempt {
     Done(u16, bool, String),
-    Retry(Option<Duration>, bool, String),
+    /// Retry after the given wait (`None`: back off); true if the server is busy; the status if any;
+    /// a description.
+    Retry(Option<Duration>, bool, Option<u16>, String),
 }
 
 impl Client {
@@ -146,7 +187,16 @@ impl Client {
             max_attempts: 8,
             max_busy_attempts: 30,
             base_delay: Duration::from_millis(500),
+            max_wait: DEFAULT_MAX_WAIT,
+            sleep: Arc::new(std::thread::sleep),
         })
+    }
+
+    /// Replaces how the client waits between attempts.
+    #[must_use]
+    pub fn with_sleeper(mut self, sleep: Sleeper) -> Self {
+        self.sleep = sleep;
+        self
     }
 
     /// The base URL.
@@ -169,7 +219,7 @@ impl Client {
         };
         let mut resp = match result {
             Ok(r) => r,
-            Err(e) => return Attempt::Retry(None, false, format!("transport: {e}")),
+            Err(e) => return Attempt::Retry(None, false, None, format!("transport: {e}")),
         };
         let status = resp.status().as_u16();
         let header = |name: &str| {
@@ -178,27 +228,33 @@ impl Client {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         };
+        // Classify before touching the body: a retry needs only the status and `Retry-After`.
+        match status {
+            429 | 503 => {
+                let wait = retry_after(header("retry-after").as_deref(), Timestamp::now());
+                return Attempt::Retry(wait, true, Some(status), format!("HTTP {status}"));
+            }
+            408 | 500 | 502 | 504 => {
+                return Attempt::Retry(None, false, Some(status), format!("HTTP {status}"));
+            }
+            _ => {}
+        }
         let replayed = header(REPLAYED_HEADER).as_deref() == Some("true");
-        let wait = retry_after(header("retry-after").as_deref());
-        let text = match resp
+        match resp
             .body_mut()
             .with_config()
             .limit(64 * 1024 * 1024)
             .read_to_string()
         {
-            Ok(t) => t,
-            Err(e) => return Attempt::Retry(None, false, format!("reading body: {e}")),
-        };
-        match status {
-            429 | 503 => Attempt::Retry(wait, true, format!("HTTP {status}")),
-            408 | 500 | 502 | 504 => Attempt::Retry(None, false, format!("HTTP {status}")),
-            _ => Attempt::Done(status, replayed, text),
+            Ok(text) => Attempt::Done(status, replayed, text),
+            Err(e) => Attempt::Retry(None, false, Some(status), format!("reading body: {e}")),
         }
     }
 
     fn request(&self, what: &str, path: &str, body: Option<&[u8]>) -> Result<Reply, HttpError> {
         let mut attempts = 0u32;
         let mut busy = 0u32;
+        let mut waited = Duration::ZERO;
         loop {
             match self.once(path, body) {
                 Attempt::Done(status, replayed, text) => {
@@ -224,7 +280,7 @@ impl Client {
                         message: s("message"),
                     });
                 }
-                Attempt::Retry(wait, is_busy, last) => {
+                Attempt::Retry(wait, is_busy, status, last) => {
                     let (n, max) = if is_busy {
                         busy += 1;
                         (busy, self.max_busy_attempts)
@@ -244,8 +300,17 @@ impl Client {
                         .saturating_mul(1 << n.min(6))
                         .min(Duration::from_secs(30));
                     let delay = wait.unwrap_or(backoff);
+                    if waited.saturating_add(delay) > self.max_wait {
+                        return Err(HttpError::WaitTooLong {
+                            what: what.to_owned(),
+                            status: status.unwrap_or(0),
+                            wait: delay,
+                            budget: self.max_wait.saturating_sub(waited),
+                        });
+                    }
                     tracing::warn!(%what, %last, delay_ms = delay.as_millis(), "retrying");
-                    std::thread::sleep(delay);
+                    (self.sleep)(delay);
+                    waited += delay;
                 }
             }
         }
@@ -290,10 +355,29 @@ mod tests {
 
     #[test]
     fn retry_after_values() {
-        assert_eq!(retry_after(Some("3")), Some(Duration::from_secs(3)));
-        assert_eq!(retry_after(Some("99999")), Some(MAX_RETRY_AFTER));
-        assert_eq!(retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT")), None);
-        assert_eq!(retry_after(None), None);
+        let now: Timestamp = "2015-10-21T07:20:00Z".parse().unwrap();
+        let secs = |s| Some(Duration::from_secs(s));
+        assert_eq!(retry_after(Some("3"), now), secs(3));
+        assert_eq!(retry_after(Some(" 0 "), now), secs(0));
+        // Not capped.
+        assert_eq!(retry_after(Some("99999"), now), secs(99_999));
+        assert_eq!(
+            retry_after(Some("99999999999999999999999"), now),
+            secs(u64::MAX)
+        );
+        // An HTTP-date: the time until then, or zero once it has passed.
+        assert_eq!(
+            retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT"), now),
+            secs(480)
+        );
+        assert_eq!(
+            retry_after(Some("Wed, 21 Oct 2015 07:00:00 GMT"), now),
+            secs(0)
+        );
+        assert_eq!(retry_after(Some("soon"), now), None);
+        assert_eq!(retry_after(Some("-5"), now), None);
+        assert_eq!(retry_after(Some(""), now), None);
+        assert_eq!(retry_after(None, now), None);
     }
 
     #[test]

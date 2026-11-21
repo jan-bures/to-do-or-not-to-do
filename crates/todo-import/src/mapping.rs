@@ -1,7 +1,8 @@
 //! Field conversions from Graph values to `todo-core` values.
 //!
-//! [`verify`](crate::verify) uses the same conversions to compute what the bundle should contain, so
-//! each one is small, documented and unit-tested here.
+//! Each one is small, documented and unit-tested here. [`verify`](crate::verify) reuses the text
+//! conversions (titles, notes, priority, recurrence) but reads every date on its own, so a date this
+//! module gets wrong cannot also pass verification.
 
 use crate::graph::DateTimeTz;
 use jiff::Timestamp;
@@ -28,13 +29,17 @@ pub fn instant(s: &str) -> Result<Timestamp, MapError> {
         .map_err(|e| MapError(format!("bad timestamp: {e}")))
 }
 
-/// Resolves a Graph time zone name: `UTC` or an IANA name. (Windows names are not supported; the
-/// exports seen so far use `UTC` throughout.)
+/// Resolves a Graph time zone name: `UTC`, a Windows zone name (through the CLDR table in
+/// [`crate::windows_zones`]) or an IANA name.
+///
+/// See <https://learn.microsoft.com/en-us/graph/api/resources/datetimetimezone>.
 pub fn zone(name: &str) -> Result<TimeZone, MapError> {
+    let name = name.trim();
     if name.eq_ignore_ascii_case("utc") {
         return Ok(TimeZone::UTC);
     }
-    TimeZone::get(name).map_err(|_| MapError(format!("unsupported time zone `{name}`")))
+    let iana = crate::windows_zones::iana(name).unwrap_or(name);
+    TimeZone::get(iana).map_err(|_| MapError(format!("unsupported time zone `{name}`")))
 }
 
 /// The instant a Graph `dateTimeTimeZone` denotes.
@@ -327,6 +332,37 @@ mod tests {
             time_zone: "UTC".into(),
         };
         assert_eq!(due_date(&summer, &berlin).unwrap(), d(2026, 7, 1));
+    }
+
+    #[test]
+    fn zones_may_be_utc_windows_or_iana() {
+        let at = |dt: &str, tz: &str| {
+            date_time(&DateTimeTz {
+                date_time: dt.into(),
+                time_zone: tz.into(),
+            })
+            .map(|t| t.to_string())
+        };
+        let noon = "2026-07-01T12:00:00.0000000";
+        assert_eq!(at(noon, "UTC").unwrap(), "2026-07-01T12:00:00Z");
+        assert_eq!(at(noon, "utc").unwrap(), "2026-07-01T12:00:00Z");
+        // Windows names, through the CLDR table; daylight saving time applies.
+        assert_eq!(
+            at(noon, "W. Europe Standard Time").unwrap(),
+            "2026-07-01T10:00:00Z"
+        );
+        assert_eq!(
+            at(noon, "Pacific Standard Time").unwrap(),
+            "2026-07-01T19:00:00Z"
+        );
+        assert_eq!(
+            at("2026-01-15T12:00:00", "Tokyo Standard Time").unwrap(),
+            "2026-01-15T03:00:00Z"
+        );
+        assert_eq!(at(noon, "Europe/Prague").unwrap(), "2026-07-01T10:00:00Z");
+        let err = at(noon, "Mars Standard Time").unwrap_err();
+        assert!(err.0.contains("unsupported time zone"), "{err}");
+        assert!(at("not a date", "UTC").is_err());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 [
   {"id": "G-1", "title": "Milk", "status": "notStarted", "importance": "normal",
-   "createdDateTime": "2026-01-05T09:00:00Z", "hasAttachments": false},
+   "createdDateTime": "2026-01-05T09:00:00Z", "lastModifiedDateTime": "2026-01-05T09:00:00Z", "hasAttachments": false},
   {"id": "G-2", "title": "Bread", "status": "notStarted", "importance": "low",
-   "createdDateTime": "2026-01-06T09:00:00Z", "hasAttachments": true},
+   "createdDateTime": "2026-01-06T09:00:00Z", "lastModifiedDateTime": "2026-01-06T09:00:00Z", "hasAttachments": true},
   {"id": "G-3", "title": "Apples", "status": "notStarted", "importance": "normal",
-   "createdDateTime": "2026-01-07T09:00:00Z", "hasAttachments": false}
+   "createdDateTime": "2026-01-07T09:00:00Z", "lastModifiedDateTime": "2026-01-07T09:00:00Z", "hasAttachments": false}
 ]

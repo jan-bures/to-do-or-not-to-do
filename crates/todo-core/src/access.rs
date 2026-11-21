@@ -133,6 +133,10 @@ pub enum Need {
     PlanAnywhere,
     /// Owner-level: structural changes agents may never make.
     Structure,
+    /// The owner in person, and no other actor: not agents, and not the `Importer` or `System`
+    /// actors either. Used for [`Command::ImportEntity`], which writes historical stamps and is
+    /// run by the owner's own import tool over the owner's token.
+    OwnerOnly,
 }
 
 /// The level an actor has on a target. Agents get their grant; others get a fixed level.
@@ -173,6 +177,7 @@ pub fn check(state: &State, actor: &Actor, need: Need, target: Target) -> Result
         Need::Capture => (AccessLevel::Capture, have >= AccessLevel::Capture, false),
         Need::Plan | Need::PlanAnywhere => (AccessLevel::Plan, have >= AccessLevel::Plan, false),
         Need::Structure => (AccessLevel::Plan, full, true),
+        Need::OwnerOnly => (AccessLevel::Plan, actor.is_owner(), true),
     };
     if ok {
         Ok(())
@@ -270,7 +275,7 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
         }
         C::CreateTag { .. } => vec![(Need::PlanAnywhere, Target::Global)],
         C::UpdateTag { .. } => vec![(Need::Structure, Target::Global)],
-        C::ImportEntity { entity } => vec![(Need::Structure, value_target(state, entity))],
+        C::ImportEntity { entity } => vec![(Need::OwnerOnly, value_target(state, entity))],
         C::Reorder { id, .. } | C::Delete { id } | C::Restore { id } => {
             let need = if structural(*id) {
                 Need::Structure
@@ -520,5 +525,41 @@ mod tests {
         assert!(authorize(&st, &Actor::owner("pc").unwrap(), &mk).is_ok());
         assert!(authorize(&st, &Actor::Importer, &mk).is_ok());
         assert!(authorize(&st, &Actor::EmailIngest, &mk).is_err());
+    }
+
+    #[test]
+    fn import_is_for_the_owner_alone() {
+        let mut st = State::new();
+        let list = crate::model::List {
+            id: lid(1),
+            name: "l".into(),
+            collection: None,
+            color: None,
+            position: crate::ordering::PosKey::new("V").unwrap(),
+            created: crate::model::Stamp {
+                at: crate::time::Timestamp::UNIX_EPOCH,
+                by: Actor::System,
+            },
+            deleted: None,
+        };
+        let cmd = Command::ImportEntity {
+            entity: Box::new(crate::model::Entity::List(list)),
+        };
+        assert!(authorize(&st, &Actor::owner("pc").unwrap(), &cmd).is_ok());
+        for actor in [
+            Actor::agent("bot").unwrap(),
+            Actor::Importer,
+            Actor::System,
+            Actor::EmailIngest,
+        ] {
+            let err = authorize(&st, &actor, &cmd).unwrap_err();
+            assert!(err.owner_only, "{actor:?}");
+        }
+        // Even an agent with Plan everywhere is refused.
+        st.grants.insert(
+            crate::actor::AgentId::new("bot").unwrap(),
+            Grants::with_default(AccessLevel::Plan),
+        );
+        assert!(authorize(&st, &Actor::agent("bot").unwrap(), &cmd).is_err());
     }
 }

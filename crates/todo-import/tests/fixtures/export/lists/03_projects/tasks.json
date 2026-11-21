@@ -1,7 +1,7 @@
 [
   {"id": "P-1", "title": "Write the proposal", "status": "notStarted", "importance": "normal",
-   "createdDateTime": "2026-01-08T09:00:00Z", "hasAttachments": false},
+   "createdDateTime": "2026-01-08T09:00:00Z", "lastModifiedDateTime": "2026-01-08T09:00:00Z", "hasAttachments": false},
   {"id": "P-2", "title": "Review the budget", "status": "notStarted", "importance": "normal",
    "body": {"content": "<p>Check &amp; compare</p><div>line two</div>", "contentType": "html"},
-   "createdDateTime": "2026-01-09T09:00:00Z", "hasAttachments": false}
+   "createdDateTime": "2026-01-09T09:00:00Z", "lastModifiedDateTime": "2026-01-09T09:00:00Z", "hasAttachments": false}
 ]
