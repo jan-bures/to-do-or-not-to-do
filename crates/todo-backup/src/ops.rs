@@ -8,7 +8,7 @@ use std::path::Path;
 use age::x25519::Identity;
 use jiff::Timestamp;
 
-use crate::budget::{Budget, OpClass};
+use crate::budget::{Budget, Clock, OpClass};
 use crate::config::{Config, UploadOptions};
 use crate::snapshot::{self, DbInfo};
 use crate::state::{self, State, StateLock, UploadRecord};
@@ -53,20 +53,24 @@ pub enum RunOutcome {
     Unchanged(UploadRecord),
 }
 
-/// Takes a snapshot, checks it, and uploads it unless it is identical to the last upload of `kind`.
+/// Takes a snapshot, checks it, and uploads it unless it is identical to a recent enough upload of `kind`.
+///
+/// `clock` names the object and dates the record; the budget asks it again right before each request.
 pub fn run(
     cfg: &Config,
     store: &dyn ObjectStore,
     kind: Kind,
     force: bool,
-    now: Timestamp,
+    clock: impl Clock,
 ) -> Result<RunOutcome> {
+    let clock: &dyn Clock = &clock;
+    let now = clock.now();
     let recipient = cfg.recipient()?;
     let _lock = StateLock::acquire(&cfg.state_dir)?;
-    state::remove_stale_scratch(&cfg.state_dir);
+    state::clean_leftovers(&cfg.state_dir);
     let mut budget = Budget::open(&cfg.state_dir, cfg.budget, now)?;
     // Refuse up front, before doing any work, if the month's budget cannot fit even one upload.
-    budget.check(OpClass::A, 1)?;
+    budget.check(OpClass::A, 1, now)?;
 
     let scratch = state::scratch_dir(&cfg.state_dir)?;
     let snap = scratch.path().join("snapshot.sqlite3");
@@ -81,14 +85,32 @@ pub fn run(
         && prev.max_seq == info.max_seq
         && prev.snapshot_sha256 == sha256
     {
-        tracing::info!(%kind, last = %prev.key, "unchanged since the last backup; skipping the upload");
-        return Ok(RunOutcome::Unchanged(prev.clone()));
+        // The bucket expires old objects, so an unchanged database still needs a fresh copy now and then, or
+        // every copy of this kind would eventually expire. An unreadable or future date counts as too old.
+        let age = prev
+            .uploaded_at
+            .parse::<Timestamp>()
+            .ok()
+            .map(|t| now.duration_since(t));
+        let max_age = cfg.dedupe.max_age(kind);
+        match age {
+            Some(age) if age >= jiff::SignedDuration::ZERO && age < max_age => {
+                tracing::info!(%kind, last = %prev.key, "unchanged since the last backup; skipping the upload");
+                return Ok(RunOutcome::Unchanged(prev.clone()));
+            }
+            _ => tracing::info!(
+                %kind,
+                last = %prev.key,
+                max_age_hours = max_age.as_hours(),
+                "unchanged, but the last upload is too old to rely on; uploading a fresh copy"
+            ),
+        }
     }
 
     let sealed = scratch.path().join("snapshot.sqlite3.zst.age");
     let object_bytes = crypto::seal(&snap, &sealed, &recipient, cfg.upload.zstd_level)?;
     let key = object_key(kind, now, info.max_seq);
-    let mut metered = Metered::new(store, &mut budget);
+    let mut metered = Metered::new(store, &mut budget, clock);
     upload(&mut metered, &key, &sealed, &cfg.upload)?;
     tracing::info!(%kind, %key, object_bytes, "uploaded");
 
@@ -196,26 +218,39 @@ pub fn restore(
     target: &Target,
     identities: &[Identity],
     out: &Path,
-    now: Timestamp,
+    clock: impl Clock,
 ) -> Result<Restored> {
+    let clock: &dyn Clock = &clock;
     // Check before spending any operation; the final rename re-checks atomically.
     if out.exists() {
         return Err(Error::OutputExists(out.to_path_buf()));
     }
     let _lock = StateLock::acquire(&cfg.state_dir)?;
-    state::remove_stale_scratch(&cfg.state_dir);
-    let mut budget = Budget::open(&cfg.state_dir, cfg.budget, now)?;
-    let mut metered = Metered::new(store, &mut budget);
+    state::clean_leftovers(&cfg.state_dir);
+    let mut budget = Budget::open(&cfg.state_dir, cfg.budget, clock.now())?;
+    let mut metered = Metered::new(store, &mut budget, clock);
     let key = match target {
         Target::Key(k) => k.clone(),
         Target::Latest(kind) => latest_key(&mut metered, &[*kind])?,
     };
     let scratch = state::scratch_dir(&cfg.state_dir)?;
-    restore_key(&mut metered, scratch.path(), &key, identities, out)
+    restore_key(
+        &mut metered,
+        &cfg.state_dir,
+        scratch.path(),
+        &key,
+        identities,
+        out,
+    )
 }
 
+/// Downloads `key` into `scratch` (still encrypted), then decrypts it into an owner-only, marked staging
+/// directory next to `out`, checks it, and publishes it with a no-clobber rename. A killed restore leaves
+/// plaintext only in that staging directory, which is registered in the state directory and removed by the
+/// next restore or drill.
 fn restore_key<S: ObjectStore + ?Sized>(
     metered: &mut Metered<'_, S>,
+    state_dir: &Path,
     scratch: &Path,
     key: &str,
     identities: &[Identity],
@@ -236,12 +271,14 @@ fn restore_key<S: ObjectStore + ?Sized>(
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
+    let staging = state::Staging::begin(state_dir, out_dir)?;
+    // Declared after `staging`, so it is dropped (and deleted) first on every error path.
     let mut tmp = tempfile::Builder::new()
-        .prefix(".todo-restore-")
-        .tempfile_in(out_dir)
+        .prefix("restore-")
+        .tempfile_in(staging.path())
         .map_err(Error::io(format!(
             "creating a temporary file in {}",
-            out_dir.display()
+            staging.path().display()
         )))?;
     let bytes = crypto::open(&encrypted, tmp.as_file_mut(), identities)?;
     // Close our handle so SQLite (and Windows) can open and rename the file.
@@ -362,10 +399,11 @@ pub fn drill(
     store: &dyn ObjectStore,
     identities: &[Identity],
     kind: Option<Kind>,
-    now: Timestamp,
+    clock: impl Clock,
 ) -> Result<DrillReport> {
+    let clock: &dyn Clock = &clock;
     let _lock = StateLock::acquire(&cfg.state_dir)?;
-    state::remove_stale_scratch(&cfg.state_dir);
+    state::clean_leftovers(&cfg.state_dir);
     let st = State::load(&cfg.state_dir)?;
     let record = match kind {
         Some(k) => st.get(k),
@@ -373,8 +411,8 @@ pub fn drill(
     }
     .cloned();
 
-    let mut budget = Budget::open(&cfg.state_dir, cfg.budget, now)?;
-    let mut metered = Metered::new(store, &mut budget);
+    let mut budget = Budget::open(&cfg.state_dir, cfg.budget, clock.now())?;
+    let mut metered = Metered::new(store, &mut budget, clock);
     let key = match &record {
         Some(r) => r.key.clone(),
         None => {
@@ -385,7 +423,14 @@ pub fn drill(
 
     let scratch = state::scratch_dir(&cfg.state_dir)?;
     let out = scratch.path().join("drill.sqlite3");
-    let restored = restore_key(&mut metered, scratch.path(), &key, identities, &out)?;
+    let restored = restore_key(
+        &mut metered,
+        &cfg.state_dir,
+        scratch.path(),
+        &key,
+        identities,
+        &out,
+    )?;
     let info = restored.info;
 
     let mut checks = vec![Check {

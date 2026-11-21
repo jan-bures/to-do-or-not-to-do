@@ -15,6 +15,7 @@ pub mod config;
 pub mod crypto;
 mod error;
 pub mod ops;
+pub mod secure;
 pub mod snapshot;
 pub mod state;
 pub mod store;

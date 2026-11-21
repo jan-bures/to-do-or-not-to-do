@@ -20,6 +20,20 @@ struct Inner {
     next_upload: u64,
     log: Vec<String>,
     page_size: usize,
+    complete_mode: CompleteMode,
+}
+
+/// How the fake answers CompleteMultipartUpload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompleteMode {
+    #[default]
+    Normal,
+    /// 200 with an empty body.
+    Empty,
+    /// 200 whose body is cut off before its Content-Length, then the connection closes.
+    Truncated,
+    /// 200 carrying an S3 error document, as real S3 sometimes does.
+    ErrorIn200,
 }
 
 #[derive(Clone)]
@@ -74,6 +88,10 @@ impl FakeS3 {
         self.inner.lock().unwrap().page_size = n;
     }
 
+    pub fn set_complete_mode(&self, mode: CompleteMode) {
+        self.inner.lock().unwrap().complete_mode = mode;
+    }
+
     pub fn open_uploads(&self) -> usize {
         self.inner.lock().unwrap().uploads.len()
     }
@@ -83,6 +101,8 @@ struct Response {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// Send only this many body bytes (after announcing the full length), then close.
+    truncate_at: Option<usize>,
 }
 
 impl Response {
@@ -91,6 +111,7 @@ impl Response {
             status,
             headers: Vec::new(),
             body: body.into(),
+            truncate_at: None,
         }
     }
 
@@ -161,8 +182,13 @@ fn serve(stream: TcpStream, inner: &Mutex<Inner>) {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
         head.push_str("\r\n");
-        if writer.write_all(head.as_bytes()).is_err() || writer.write_all(&resp.body).is_err() {
+        let body = &resp.body[..resp.truncate_at.unwrap_or(resp.body.len())];
+        if writer.write_all(head.as_bytes()).is_err() || writer.write_all(body).is_err() {
             return;
+        }
+        if resp.truncate_at.is_some() {
+            let _ = writer.flush();
+            return; // closes the connection mid-body
         }
     }
 }
@@ -220,6 +246,12 @@ fn handle(method: &str, target: &str, body: Vec<u8>, inner: &Mutex<Inner>) -> Re
     };
     let key = decode(rest.trim_start_matches('/'));
     let mut s = inner.lock().unwrap();
+
+    // Any key under redirect/ answers with a redirect, to check that clients don't follow it.
+    if key.starts_with("redirect/") {
+        s.log.push(format!("{method} REDIRECT {key}"));
+        return Response::new(302, "").header("Location", &format!("/{BUCKET}/elsewhere/{key}"));
+    }
 
     match method {
         "GET" if q.get("list-type").map(String::as_str) == Some("2") => {
@@ -307,6 +339,19 @@ fn handle(method: &str, target: &str, body: Vec<u8>, inner: &Mutex<Inner>) -> Re
             }
             if k != key {
                 return Response::error(400, "InvalidPart");
+            }
+            match s.complete_mode {
+                CompleteMode::Normal => {}
+                CompleteMode::Empty => return Response::new(200, ""),
+                CompleteMode::ErrorIn200 => return Response::error(200, "InternalError"),
+                CompleteMode::Truncated => {
+                    let mut r = Response::new(
+                        200,
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUploadResult>padding",
+                    );
+                    r.truncate_at = Some(30);
+                    return r;
+                }
             }
             let obj: Vec<u8> = parts.into_values().flatten().collect();
             s.objects.insert(key.clone(), obj);

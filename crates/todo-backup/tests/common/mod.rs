@@ -119,6 +119,21 @@ pub fn counters(path: &Path) -> (i64, Option<i64>, i64) {
     (count, max, tally)
 }
 
+/// Asserts that only the current user has access to the file `path`: exactly one allow ACE, for the current
+/// user's SID, on Windows (inherited or not); mode 0600 on Unix.
+pub fn assert_owner_only_file(path: &Path) {
+    let access = todo_backup::secure::describe_access(path).unwrap();
+    match todo_backup::secure::expected_private_sddl(false).unwrap() {
+        Some(expected) => {
+            let sid = expected.rsplit(";;;").next().unwrap().trim_end_matches(')');
+            assert_eq!(access.matches("(A;").count(), 1, "{access}");
+            assert!(access.contains(&format!(";FA;;;{sid})")), "{access}");
+            assert!(!access.contains("(D;"), "{access}");
+        }
+        None => assert_eq!(access, "mode=600"),
+    }
+}
+
 pub fn ts(s: &str) -> jiff::Timestamp {
     s.parse().unwrap()
 }

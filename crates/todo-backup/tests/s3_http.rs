@@ -7,12 +7,71 @@ mod common;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use common::fake_s3::{FakeS3, SECRET_ACCESS_KEY};
+use common::fake_s3::{CompleteMode, FakeS3, SECRET_ACCESS_KEY};
 use common::{Fixture, counters, ts};
+use todo_backup::budget::{Budget, BudgetCaps};
 use todo_backup::config::Credentials;
 use todo_backup::ops::{self, RunOutcome, Target};
-use todo_backup::store::{ObjectStore, S3Store, StoreError};
+use todo_backup::state::State;
+use todo_backup::store::{Metered, ObjectStore, S3Store, StoreError};
 use todo_backup::{Error, Kind};
+
+#[test]
+fn redirects_are_not_followed_and_cost_exactly_one_request() {
+    let fake = FakeS3::start();
+    let store = s3(&fake);
+    let err = store.put("redirect/a", b"body").unwrap_err();
+    assert!(matches!(err, StoreError::Http { status: 302, .. }), "{err}");
+    let err = store.get("redirect/b", &mut Vec::new()).unwrap_err();
+    assert!(matches!(err, StoreError::Http { status: 302, .. }), "{err}");
+    assert_eq!(
+        fake.log(),
+        ["PUT REDIRECT redirect/a", "GET REDIRECT redirect/b"]
+    );
+
+    // Through the meter: one charge, one request, an error.
+    let dir = tempfile::tempdir().unwrap();
+    let now = ts("2026-11-21T00:00:00Z");
+    let mut budget = Budget::open(dir.path(), BudgetCaps::default(), now).unwrap();
+    let mut metered = Metered::new(&store, &mut budget, &now);
+    assert!(matches!(
+        metered.put("redirect/c", b"x"),
+        Err(Error::Store(StoreError::Http { status: 302, .. }))
+    ));
+    assert_eq!(metered.budget().usage().class_a, 1);
+    assert_eq!(fake.log().len(), 3);
+}
+
+#[test]
+fn multipart_completion_needs_a_complete_parsed_result() {
+    for mode in [
+        CompleteMode::Empty,
+        CompleteMode::Truncated,
+        CompleteMode::ErrorIn200,
+    ] {
+        let fake = FakeS3::start();
+        fake.set_complete_mode(mode);
+        let f = Fixture::new();
+        common::fill_incompressible(&f, 32);
+        std::fs::write(f.dir.path().join("r2.json"), fake.credentials_json()).unwrap();
+        let cfg = f.config_with(
+            "[upload]\nmultipart_threshold_bytes = 65536\npart_size_bytes = 65536\nzstd_level = 1\n",
+        );
+        let store = S3Store::new(&cfg.credentials().unwrap()).unwrap();
+        let err =
+            ops::run(&cfg, &store, Kind::Daily, false, ts("2026-11-21T00:00:00Z")).unwrap_err();
+        assert!(matches!(err, Error::Store(_)), "{mode:?}: {err}");
+        assert!(
+            fake.log().iter().any(|l| l.starts_with("POST COMPLETE")),
+            "{mode:?}"
+        );
+        // Not recorded as a backup, so the next run tries again.
+        assert!(
+            State::load(&cfg.state_dir).unwrap().daily.is_none(),
+            "{mode:?}"
+        );
+    }
+}
 
 fn s3(fake: &FakeS3) -> S3Store {
     let creds: Credentials = serde_json::from_str(&fake.credentials_json()).unwrap();

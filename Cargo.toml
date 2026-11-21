@@ -55,6 +55,7 @@ rusty-s3 = "0.12"
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 url = "2"
 zstd = "0.14"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

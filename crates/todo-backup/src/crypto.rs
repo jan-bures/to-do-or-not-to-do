@@ -87,27 +87,47 @@ pub fn load_identities(path: &Path) -> Result<Vec<Identity>> {
 }
 
 /// Generates a new identity and writes it to `path`, which must not exist. Returns the public recipient.
+///
+/// The file is created owner-only (see [`crate::secure`]) before any byte is written, and removed again if
+/// writing fails, so a partial key never lingers.
 pub fn keygen(path: &Path, created: jiff::Timestamp) -> Result<Recipient> {
     let identity = Identity::generate();
     let recipient = identity.to_public();
-    let ctx = || format!("writing identity file {}", path.display());
-    let mut file = File::create_new(path).map_err(|e| {
+    let secret = identity.to_string();
+    // Zeroized on drop, like the identity itself.
+    let body = age::secrecy::SecretString::from(format!(
+        "# todo-backup identity. Store it in a password manager, then delete this file from the backup host.\n\
+         # created: {}\n# public key: {recipient}\n{}\n",
+        created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        secret.expose_secret()
+    ));
+    write_new_private(path, body.expose_secret().as_bytes())?;
+    Ok(recipient)
+}
+
+/// Creates `path` owner-only and writes `bytes` to it; on any failure after creation the file is removed.
+pub(crate) fn write_new_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let ctx = || format!("writing {}", path.display());
+    let file = crate::secure::create_private_file(path).map_err(|e| {
         if e.kind() == io::ErrorKind::AlreadyExists {
             Error::OutputExists(path.to_path_buf())
         } else {
             Error::io(ctx())(e)
         }
     })?;
-    let secret = identity.to_string();
-    let body = format!(
-        "# todo-backup identity. Store it in a password manager, then delete this file from the backup host.\n\
-         # created: {}\n# public key: {recipient}\n{}\n",
-        created.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        secret.expose_secret()
-    );
-    file.write_all(body.as_bytes()).map_err(Error::io(ctx()))?;
-    file.sync_all().map_err(Error::io(ctx()))?;
-    Ok(recipient)
+    let written = (|| {
+        let mut file = file;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = written {
+        // The handle is closed by now, so the file can be removed on Windows too.
+        if let Err(rm) = std::fs::remove_file(path) {
+            tracing::warn!(path = %path.display(), error = %rm, "could not remove a partially written file");
+        }
+        return Err(Error::io(ctx())(e));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -174,5 +194,29 @@ mod tests {
         assert_eq!(ids.len(), 1);
         assert_eq!(ids[0].to_public().to_string(), recipient.to_string());
         assert!(matches!(keygen(&path, now), Err(Error::OutputExists(_))));
+
+        // Owner-only from creation, whatever the destination directory would have granted.
+        let access = crate::secure::describe_access(&path).expect("access");
+        match crate::secure::expected_private_sddl(false).expect("sddl") {
+            Some(sddl) => assert_eq!(access, sddl),
+            None => assert_eq!(access, "mode=600"),
+        }
+    }
+
+    #[test]
+    fn failed_private_write_leaves_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Writing into a path whose parent is missing fails at creation: nothing to clean up, and an error.
+        let missing = dir.path().join("no-such-dir").join("id.txt");
+        assert!(write_new_private(&missing, b"x").is_err());
+        assert!(!missing.exists());
+        // An existing file is never touched.
+        let existing = dir.path().join("taken");
+        std::fs::write(&existing, b"keep").expect("write");
+        assert!(matches!(
+            write_new_private(&existing, b"x"),
+            Err(Error::OutputExists(_))
+        ));
+        assert_eq!(std::fs::read(&existing).expect("read"), b"keep");
     }
 }

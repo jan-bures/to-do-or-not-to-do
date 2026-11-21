@@ -27,7 +27,7 @@ secrets.
 | `bin\todo-backup.exe` | Optional: the backup tool. If it and `backup.toml` exist, backups run on a schedule. |
 | `backup.toml` | Backup config, passed to `todo-backup --config`. |
 | `r2-backups.json` | R2 credentials scoped to the backup bucket. Any name works; `backup.toml` points to it. |
-| `backup-state\` | The tool's state: monthly operation counts, the record of past uploads, a lock file and scratch space. |
+| `backup-state\` | The tool's state: monthly operation counts, the record of past uploads, a lock file, and a private `scratch\` directory. It's created readable only by you. |
 | `backup-schedule.json` | When the supervisor last started and last completed each kind of backup. |
 
 `cloudflared` is found on `PATH`. A per-user install, for example with scoop, needs no admin rights either.
@@ -75,9 +75,19 @@ $data = "$env:LOCALAPPDATA\todo"
 Copy-Item target\release\todo-backup.exe "$data\bin\"
 
 # Make a key pair. It prints the public recipient (age1...), which is all the config needs.
-& "$data\bin\todo-backup.exe" keygen --out "$env:USERPROFILE\Desktop\todo-backup-identity.txt"
-# Store the identity file's contents in your password manager, then delete the file.
+& "$data\bin\todo-backup.exe" keygen --out "$data\backup-identity.txt"
 ```
+
+`keygen` creates the identity file readable only by you, before it writes the key. On Windows it gets a
+protected ACL with a single entry for your account; on Unix it gets mode 0600. If writing fails, the file is
+removed.
+
+1. Copy the file's contents into your password manager.
+2. Delete the file: `Remove-Item "$data\backup-identity.txt"`.
+
+Backups never need the identity on this PC. Only restores and drills do, and you can paste it into a
+temporary file for those. Don't write the identity into the Desktop, Documents or any other folder that
+OneDrive or another service syncs.
 
 Write `backup.toml` in the data directory. Relative paths are resolved against the config file's directory.
 
@@ -91,6 +101,12 @@ credentials_file = 'r2-backups.json'
 [budget]
 class_a_monthly = 20000
 class_b_monthly = 200000
+
+# Optional. How long an unchanged database may go without a fresh upload (see Schedule).
+# Each must stay at least a day below the bucket's retention: 144 for frequent, 2136 for daily.
+[dedupe]
+frequent_max_age_hours = 72    # 3 days, against 7 days of retention
+daily_max_age_hours = 720      # 30 days, against 90 days of retention
 ```
 
 Then write `r2-backups.json` with an R2 API token that is limited to the backup bucket:
@@ -118,14 +134,18 @@ When `bin\todo-backup.exe` and `backup.toml` both exist, the supervisor:
 
 - runs `run --kind frequent` every 6 hours (`-FrequentBackupMinutes`) and `run --kind daily` once per calendar
   day. The first check comes 5 minutes after the supervisor starts (`-BackupStartDelayMinutes`).
-- runs one backup at a time, as a separate process. The supervisor loop only polls it, so supervising the
-  server never waits on a backup. A run that takes longer than an hour is stopped (`-BackupTimeoutMinutes`).
+- runs one backup at a time, as a separate process. The supervisor loop only polls it and never waits on
+  it, so supervising the server never stalls. A run that takes longer than an hour is killed through its
+  process handle (`-BackupTimeoutMinutes`). It stays tracked until it has really exited, so no second
+  backup starts next to it, and it's never counted as a success.
 - records start and completion times in `backup-schedule.json`, so restarts and reboots don't back up again
   straight away. A failed run is retried after 30 minutes (`-BackupRetryMinutes`).
 - appends each run's output to `logs\backup-<date>.log`.
 
-A run sends no request at all if nothing changed since the last backup of the same kind: the same `max(seq)`
-and the same snapshot SHA-256.
+A run sends no request at all if nothing changed since the last backup of the same kind, as long as that
+backup is recent. "Nothing changed" means the same `max(seq)` and the same snapshot SHA-256. "Recent" means
+younger than 3 days for `frequent` and 30 days for `daily` (`[dedupe]`). After that, an unchanged database
+is uploaded again, so an idle period never lets every copy of a kind expire.
 
 The bucket's lifecycle rules do the pruning: `frequent/` expires after 7 days and `daily/` after 90, and
 incomplete multipart uploads are aborted after a day. The tool never deletes anything, and normal runs never
@@ -136,6 +156,16 @@ list.
 The tool counts every request it sends, per calendar month (UTC), in `backup-state\budget.json`. It charges
 each request before sending it, so a failed request still counts. Once a cap would be exceeded, it refuses to
 run and exits with code 3.
+
+- **Durable.** Each charge is on disk before its request goes out. The counter is written to a temporary
+  file, which is flushed and then renamed over `budget.json`. On Windows the rename uses `MoveFileExW` with
+  `MOVEFILE_WRITE_THROUGH`, which returns only once the rename is on disk. On Unix it's `rename` followed by
+  an fsync of the directory. A crash or power cut therefore never undercounts. At worst, a charged request
+  was never sent.
+- **The right month.** The month is resolved again right before each request, so a run that crosses midnight
+  at the end of a month charges each request to the month it was actually sent in.
+- **No redirects.** Redirects are never followed. A 3xx response is an error, so every request on the wire
+  has been paid for.
 
 - **Class A:** PUT, LIST and the multipart calls.
 - **Class B:** GET and HEAD.
@@ -162,6 +192,18 @@ todo-backup restore --latest --kind daily --identity <file> --out D:\restore\tod
 
 Restore downloads, decrypts and decompresses the backup, and checks its integrity, before the file appears at
 `--out`. It never overwrites an existing file.
+
+The plaintext is staged in a hidden `.todo-restore-...` directory next to `--out`, so the final no-clobber
+rename stays on one volume. That directory is readable only by you, and it's recorded in `backup-state`
+before it's created. If a restore is killed half-way, the next `restore` or `drill` finds that directory and
+deletes it.
+
+### Temporary files
+
+Snapshots and drill copies live in `backup-state\scratch\`, which is readable only by you. Each run gets its
+own subdirectory, and each one, like each restore staging directory, holds a marker file that the tool
+wrote. Cleanup deletes only directories that carry that exact marker. It never follows links, and it
+deletes nothing else, wherever it is.
 
 To put a backup back in place:
 

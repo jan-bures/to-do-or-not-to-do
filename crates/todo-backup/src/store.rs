@@ -9,7 +9,7 @@ use std::time::Duration;
 use rusty_s3::{Bucket, S3Action, UrlStyle};
 
 use crate::Result;
-use crate::budget::{Budget, OpClass};
+use crate::budget::{Budget, Clock, OpClass};
 use crate::config::Credentials;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,35 +66,52 @@ pub trait ObjectStore {
     fn list_page(&self, prefix: &str, continuation: Option<&str>) -> Result<ListPage, StoreError>;
 }
 
-/// The only way the rest of the crate reaches a store: every call charges the budget first, and refuses
-/// without sending anything when the cap is reached.
-#[derive(Debug)]
+/// The only way the rest of the crate reaches a store: every call charges the budget first, against the UTC
+/// month of that moment, and refuses without sending anything when the cap is reached. The charge is on disk
+/// before the request goes out.
 pub struct Metered<'a, S: ObjectStore + ?Sized> {
     store: &'a S,
     budget: &'a mut Budget,
+    clock: &'a dyn Clock,
+}
+
+impl<S: ObjectStore + ?Sized> std::fmt::Debug for Metered<'_, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Metered")
+            .field("budget", &self.budget)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, S: ObjectStore + ?Sized> Metered<'a, S> {
-    pub fn new(store: &'a S, budget: &'a mut Budget) -> Self {
-        Self { store, budget }
+    pub fn new(store: &'a S, budget: &'a mut Budget, clock: &'a dyn Clock) -> Self {
+        Self {
+            store,
+            budget,
+            clock,
+        }
     }
 
     pub fn budget(&self) -> &Budget {
         self.budget
     }
 
-    /// Fails unless `n` more operations of `class` fit in the budget.
-    pub fn check(&self, class: OpClass, n: u64) -> Result<()> {
-        self.budget.check(class, n)
+    /// Fails unless `n` more operations of `class` fit in this month's budget.
+    pub fn check(&mut self, class: OpClass, n: u64) -> Result<()> {
+        self.budget.check(class, n, self.clock.now())
+    }
+
+    fn charge(&mut self, class: OpClass) -> Result<()> {
+        self.budget.charge(class, 1, self.clock.now())
     }
 
     pub fn put(&mut self, key: &str, body: &[u8]) -> Result<()> {
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.put(key, body)?)
     }
 
     pub fn create_multipart(&mut self, key: &str) -> Result<String> {
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.create_multipart(key)?)
     }
 
@@ -105,7 +122,7 @@ impl<'a, S: ObjectStore + ?Sized> Metered<'a, S> {
         part_number: u16,
         body: &[u8],
     ) -> Result<String> {
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.upload_part(key, upload_id, part_number, body)?)
     }
 
@@ -115,23 +132,23 @@ impl<'a, S: ObjectStore + ?Sized> Metered<'a, S> {
         upload_id: &str,
         etags: &[String],
     ) -> Result<()> {
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.complete_multipart(key, upload_id, etags)?)
     }
 
     pub fn abort_multipart(&mut self, key: &str, upload_id: &str) -> Result<()> {
         // R2 may not bill aborts, but count them as Class A to stay conservative.
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.abort_multipart(key, upload_id)?)
     }
 
     pub fn get(&mut self, key: &str, out: &mut dyn Write) -> Result<u64> {
-        self.budget.charge(OpClass::B, 1)?;
+        self.charge(OpClass::B)?;
         Ok(self.store.get(key, out)?)
     }
 
     pub fn list_page(&mut self, prefix: &str, continuation: Option<&str>) -> Result<ListPage> {
-        self.budget.charge(OpClass::A, 1)?;
+        self.charge(OpClass::A)?;
         Ok(self.store.list_page(prefix, continuation)?)
     }
 }
@@ -179,6 +196,9 @@ impl S3Store {
         );
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            // Every request is paid for before it is sent; a followed redirect would be a second, unpaid
+            // request (and could send a presigned URL elsewhere). A 3xx is an error instead.
+            .max_redirects(0)
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_global(Some(Duration::from_secs(30 * 60)))
             .build();
@@ -332,19 +352,33 @@ impl ObjectStore for S3Store {
             .send(body.as_bytes())
             .map_err(|e| transport("CompleteMultipartUpload", key, e))?;
         let mut resp = Self::check("CompleteMultipartUpload", key, resp)?;
-        // S3 can answer 200 with an error document.
+        // S3 can answer 200 and still fail, with an error document in the body, and a cut-off body means we
+        // don't know the outcome. Only a complete, parsed CompleteMultipartUploadResult counts as success.
         let text = resp
             .body_mut()
             .with_config()
             .limit(ERROR_BODY_LIMIT)
             .read_to_string()
-            .unwrap_or_default();
+            .map_err(|e| transport("CompleteMultipartUpload", key, e))?;
         if text.contains("<Error>") {
             return Err(StoreError::Http {
                 op: "CompleteMultipartUpload",
                 key: key.to_owned(),
                 status: 200,
                 code: xml_element(&text, "Code"),
+            });
+        }
+        let parsed =
+            rusty_s3::actions::CompleteMultipartUploadResponse::parse(&text).map_err(|e| {
+                StoreError::InvalidResponse {
+                    op: "CompleteMultipartUpload",
+                    message: format!("no CompleteMultipartUploadResult: {e}"),
+                }
+            })?;
+        if parsed.etag().is_empty() {
+            return Err(StoreError::InvalidResponse {
+                op: "CompleteMultipartUpload",
+                message: "empty ETag".into(),
             });
         }
         Ok(())

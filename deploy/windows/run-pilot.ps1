@@ -96,6 +96,8 @@ function Start-Child($Child) {
     $err = Join-Path $logDir "$($Child.Name)-$stamp.err.log"
     $Child.Process = Start-Process -FilePath $Child.Exe -ArgumentList $Child.Arguments `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    # Touching Handle now keeps ExitCode readable after the process exits.
+    $null = $Child.Process.Handle
     $Child.StartedAt = Get-Date
     Write-PilotLog "started $($Child.Name) (pid $($Child.Process.Id))"
 }
@@ -193,6 +195,7 @@ function Start-BackupJob([string]$Kind, $Schedule, [datetime]$NowUtc) {
     $null = $p.Handle
     $script:backupJob = [pscustomobject]@{
         Kind = $Kind; Process = $p; StartedAt = $NowUtc; Out = $out; Err = $err
+        KilledAt = $null; LastKillAttempt = $null
     }
     Write-PilotLog "started backup $Kind (pid $($p.Id))"
 }
@@ -214,19 +217,30 @@ function Invoke-BackupScheduler {
     $nowUtc = (Get-Date).ToUniversalTime()
     $job = $script:backupJob
     if ($job) {
+        # This runs on every supervisor tick, so it never waits: it looks at the job and returns.
         if (-not $job.Process.HasExited) {
             if (($nowUtc - $job.StartedAt).TotalMinutes -lt $BackupTimeoutMinutes) { return }
-            Write-PilotLog "backup $($job.Kind) ran longer than $BackupTimeoutMinutes min; stopping it"
-            Stop-Process -Id $job.Process.Id -ErrorAction SilentlyContinue
-            $job.Process.WaitForExit(10000) | Out-Null
-            Complete-BackupJob $job 'timed out'
-            $script:backupJob = $null
+            # Too slow. Kill it through the handle kept since it started (immune to PID reuse), then keep
+            # tracking it until it has really exited, so a second backup never starts next to a live one.
+            # Retry the kill at most once a minute.
+            if ($null -eq $job.LastKillAttempt -or ($nowUtc - $job.LastKillAttempt).TotalSeconds -ge 60) {
+                if ($null -eq $job.KilledAt) {
+                    Write-PilotLog "backup $($job.Kind) ran longer than $BackupTimeoutMinutes min; killing it"
+                    $job.KilledAt = $nowUtc
+                } else {
+                    Write-PilotLog "backup $($job.Kind) (pid $($job.Process.Id)) is still running after a kill; retrying"
+                }
+                $job.LastKillAttempt = $nowUtc
+                try { $job.Process.Kill() } catch { Write-PilotLog "could not kill backup $($job.Kind): $_" }
+            }
             return
         }
-        $job.Process.WaitForExit()
         $code = $job.Process.ExitCode
         Write-PilotLog "backup $($job.Kind) exited with code $code"
-        if ($code -eq 0) {
+        if ($null -ne $job.KilledAt) {
+            # Whatever the exit code says, a killed run is not a success.
+            Complete-BackupJob $job "timed out after $BackupTimeoutMinutes min and was killed"
+        } elseif ($code -eq 0) {
             $schedule = Read-BackupSchedule
             # Count from the start, so the cadence doesn't drift by the run time.
             $schedule["$($job.Kind)LastSuccess"] = $job.StartedAt
@@ -254,10 +268,14 @@ function Stop-BackupJob {
     $job = $script:backupJob
     if ($job -and -not $job.Process.HasExited) {
         # Safe to interrupt: nothing is recorded until an upload completes, and the next run cleans up.
+        # Only on shutdown, outside the supervision loop, is a short wait acceptable.
         Write-PilotLog "stopping backup $($job.Kind) (pid $($job.Process.Id))"
-        Stop-Process -Id $job.Process.Id -ErrorAction SilentlyContinue
-        $job.Process.WaitForExit(10000) | Out-Null
-        Complete-BackupJob $job 'stopped with the supervisor'
+        try { $job.Process.Kill() } catch { Write-PilotLog "could not kill backup $($job.Kind): $_" }
+        if ($job.Process.WaitForExit(10000)) {
+            Complete-BackupJob $job 'stopped with the supervisor'
+        } else {
+            Write-PilotLog "backup $($job.Kind) (pid $($job.Process.Id)) did not exit; the next start cleans up after it"
+        }
     }
     $script:backupJob = $null
 }

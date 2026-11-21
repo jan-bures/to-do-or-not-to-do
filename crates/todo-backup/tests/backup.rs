@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{Fixture, counters, ts};
-use todo_backup::budget::{Budget, OpClass};
+use todo_backup::budget::{Budget, BudgetCaps, Clock, OpClass};
 use todo_backup::ops::{self, RunOutcome, Target};
-use todo_backup::state::State;
-use todo_backup::store::MemoryStore;
+use todo_backup::state::{SCRATCH_DIR, State};
+use todo_backup::store::{MemoryStore, Metered};
 use todo_backup::{Error, Kind, snapshot};
 
 #[test]
@@ -409,12 +409,122 @@ fn drill_passes_on_a_good_backup() {
     assert_eq!(daily.restored.info.max_seq, Some(5));
 
     // The scratch copy is cleaned up.
-    let leftovers: Vec<_> = std::fs::read_dir(&cfg.state_dir)
+    // The scratch copy is cleaned up.
+    let leftovers: Vec<_> = std::fs::read_dir(cfg.state_dir.join(SCRATCH_DIR))
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with(".todo-backup-"))
         .collect();
-    assert!(leftovers.is_empty());
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn unchanged_database_is_uploaded_again_before_retention_could_expire_it() {
+    let f = Fixture::new();
+    f.append(2);
+    let cfg = f.config();
+    let store = MemoryStore::new();
+    let run = |kind, t: &str| ops::run(&cfg, &store, kind, false, ts(t)).unwrap();
+    let uploaded = |o: &RunOutcome| matches!(o, RunOutcome::Uploaded(_));
+
+    // frequent: a copy younger than 3 days is relied on; at 3 days a fresh one goes up.
+    assert!(uploaded(&run(Kind::Frequent, "2026-11-01T00:00:00Z")));
+    assert!(!uploaded(&run(Kind::Frequent, "2026-11-03T23:00:00Z")));
+    assert!(uploaded(&run(Kind::Frequent, "2026-11-04T00:00:00Z")));
+    assert!(!uploaded(&run(Kind::Frequent, "2026-11-04T06:00:00Z")));
+
+    // daily: the same with 30 days.
+    assert!(uploaded(&run(Kind::Daily, "2026-11-01T00:00:00Z")));
+    assert!(!uploaded(&run(Kind::Daily, "2026-11-30T23:00:00Z")));
+    assert!(uploaded(&run(Kind::Daily, "2026-12-01T00:00:00Z")));
+
+    // A record dated in the future (the clock went back) is not trusted.
+    assert!(uploaded(&run(Kind::Daily, "2026-11-20T00:00:00Z")));
+
+    // With a maximum age of zero, every run uploads.
+    let always = f.config_with("[dedupe]\nfrequent_max_age_hours = 0\n");
+    assert!(matches!(
+        ops::run(
+            &always,
+            &store,
+            Kind::Frequent,
+            false,
+            ts("2026-11-04T06:00:01Z")
+        )
+        .unwrap(),
+        RunOutcome::Uploaded(_)
+    ));
+}
+
+struct Settable(std::sync::Mutex<jiff::Timestamp>);
+
+impl Clock for Settable {
+    fn now(&self) -> jiff::Timestamp {
+        *self.0.lock().unwrap()
+    }
+}
+
+#[test]
+fn each_request_is_charged_to_the_month_it_is_sent_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let caps = BudgetCaps {
+        class_a_monthly: 1,
+        class_b_monthly: 1,
+    };
+    let clock = Settable(std::sync::Mutex::new(ts("2026-11-30T23:59:59Z")));
+    let mut budget = Budget::open(dir.path(), caps, clock.now()).unwrap();
+    let store = MemoryStore::new();
+    let mut metered = Metered::new(&store, &mut budget, &clock);
+    metered.put("a", b"1").unwrap();
+    assert!(matches!(
+        metered.put("b", b"2"),
+        Err(Error::BudgetExceeded { .. })
+    ));
+    // Midnight passes during the run: the next request belongs to December.
+    *clock.0.lock().unwrap() = ts("2026-12-01T00:00:00Z");
+    metered.put("b", b"2").unwrap();
+    assert_eq!(store.ops(), ["PUT", "PUT"]);
+    let saved = Budget::open(dir.path(), caps, ts("2026-12-15T00:00:00Z")).unwrap();
+    assert_eq!(
+        (saved.usage().month.as_str(), saved.usage().class_a),
+        ("2026-12", 1)
+    );
+}
+
+#[test]
+fn restore_stages_privately_and_leaves_nothing_behind() {
+    let f = Fixture::new();
+    f.append(3);
+    let cfg = f.config();
+    let store = MemoryStore::new();
+    let RunOutcome::Uploaded(rec) =
+        ops::run(&cfg, &store, Kind::Daily, false, ts("2026-11-21T00:00:00Z")).unwrap()
+    else {
+        panic!()
+    };
+    let dest = f.out("restore-here");
+    std::fs::create_dir(&dest).unwrap();
+    let out = dest.join("todo.sqlite3");
+    ops::restore(
+        &cfg,
+        &store,
+        &Target::Key(rec.key),
+        std::slice::from_ref(&f.identity),
+        &out,
+        ts("2026-11-21T01:00:00Z"),
+    )
+    .unwrap();
+    assert_eq!(counters(&out), (3, Some(3), 3));
+    // Only the published file is left next to it, and nothing stays registered.
+    let names: Vec<String> = std::fs::read_dir(&dest)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["todo.sqlite3"]);
+    let registry = cfg.state_dir.join("restore-staging.json");
+    assert_eq!(std::fs::read_to_string(registry).unwrap().trim(), "[]");
+    // The restored file is readable only by the current user.
+    common::assert_owner_only_file(&out);
 }
 
 #[test]

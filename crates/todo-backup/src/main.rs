@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
+use todo_backup::budget::SystemClock;
 use todo_backup::config::Config;
 use todo_backup::ops::{self, RunOutcome, Target};
 use todo_backup::store::S3Store;
@@ -137,7 +138,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Run { kind, force } => {
             let cfg = load_config(cli.config)?;
             let store = store(&cfg)?;
-            match ops::run(&cfg, &store, kind, force, now)? {
+            match ops::run(&cfg, &store, kind, force, SystemClock)? {
                 RunOutcome::Uploaded(r) => {
                     println!("uploaded {} ({} bytes)", r.key, r.object_bytes)
                 }
@@ -160,7 +161,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 _ => anyhow::bail!("pass --object <key>, or --latest --kind <kind>"),
             };
             let store = store(&cfg)?;
-            let r = ops::restore(&cfg, &store, &target, &identities, &out, now)?;
+            let r = ops::restore(&cfg, &store, &target, &identities, &out, SystemClock)?;
             println!(
                 "restored {} to {} ({} bytes, integrity ok, max(seq) {:?}, {:?} events)",
                 r.key,
@@ -175,8 +176,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let cfg = load_config(cli.config)?;
             let identities = crypto::load_identities(&identity)?;
             let store = store(&cfg)?;
-            let report =
-                ops::drill(&cfg, &store, &identities, kind, now).context("restore drill FAILED")?;
+            let report = ops::drill(&cfg, &store, &identities, kind, SystemClock)
+                .context("restore drill FAILED")?;
             print!("{report}");
             Ok(if report.passed() {
                 ExitCode::SUCCESS

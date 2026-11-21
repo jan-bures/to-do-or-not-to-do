@@ -143,8 +143,20 @@ impl Budget {
         self.caps
     }
 
-    /// Fails if `n` more operations of `class` would exceed the cap. Charges nothing.
-    pub fn check(&self, class: OpClass, n: u64) -> Result<()> {
+    /// Moves the counter to the month of `now` (UTC), starting from zero when the month changed.
+    fn roll(&mut self, now: Timestamp) {
+        let month = month_of(now);
+        if self.usage.month != month {
+            self.usage = Usage {
+                month,
+                ..Usage::default()
+            };
+        }
+    }
+
+    /// Fails if `n` more operations of `class` would exceed the cap for the month of `now`. Charges nothing.
+    pub fn check(&mut self, class: OpClass, n: u64, now: Timestamp) -> Result<()> {
+        self.roll(now);
         let used = self.usage.used(class);
         let cap = self.caps.cap(class);
         if used.saturating_add(n) > cap {
@@ -159,11 +171,39 @@ impl Budget {
         Ok(())
     }
 
-    /// Records `n` operations of `class` and persists the counter, or refuses if that would exceed the cap.
-    pub fn charge(&mut self, class: OpClass, n: u64) -> Result<()> {
-        self.check(class, n)?;
-        *self.usage.used_mut(class) += n;
-        write_json_atomic(&self.path, &self.usage)
+    /// Records `n` operations of `class` against the month of `now`, or refuses if that would exceed the
+    /// cap. The new count is on disk before this returns (see [`write_json_atomic`]); if it can't be written,
+    /// nothing is charged and the caller must not send the request.
+    pub fn charge(&mut self, class: OpClass, n: u64, now: Timestamp) -> Result<()> {
+        self.check(class, n, now)?;
+        let mut next = self.usage.clone();
+        *next.used_mut(class) += n;
+        write_json_atomic(&self.path, &next)?;
+        self.usage = next;
+        Ok(())
+    }
+}
+
+/// Where the current time comes from. The budget asks it right before every request, so each request is
+/// attributed to the UTC month it is actually sent in.
+pub trait Clock {
+    fn now(&self) -> Timestamp;
+}
+
+/// The system clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Timestamp {
+        Timestamp::now()
+    }
+}
+
+/// A fixed instant is a clock that never moves (handy in tests).
+impl Clock for Timestamp {
+    fn now(&self) -> Timestamp {
+        *self
     }
 }
 
@@ -188,10 +228,10 @@ mod tests {
         };
         let now = ts("2026-11-21T10:00:00Z");
         let mut b = Budget::open(dir.path(), caps, now).expect("open");
-        b.charge(OpClass::A, 2).expect("2 of 3");
-        b.charge(OpClass::B, 1).expect("1 of 1");
+        b.charge(OpClass::A, 2, now).expect("2 of 3");
+        b.charge(OpClass::B, 1, now).expect("1 of 1");
         assert!(matches!(
-            b.charge(OpClass::B, 1),
+            b.charge(OpClass::B, 1, now),
             Err(Error::BudgetExceeded {
                 class: OpClass::B,
                 ..
@@ -201,8 +241,8 @@ mod tests {
         // Reloading keeps the counts; the refused charge was not recorded.
         let mut b = Budget::open(dir.path(), caps, now).expect("reopen");
         assert_eq!((b.usage().class_a, b.usage().class_b), (2, 1));
-        b.charge(OpClass::A, 1).expect("3 of 3");
-        let err = b.charge(OpClass::A, 1).expect_err("over");
+        b.charge(OpClass::A, 1, now).expect("3 of 3");
+        let err = b.charge(OpClass::A, 1, now).expect_err("over");
         assert!(err.to_string().contains("Class A"), "{err}");
     }
 
@@ -213,13 +253,44 @@ mod tests {
             class_a_monthly: 1,
             class_b_monthly: 1,
         };
-        let mut b = Budget::open(dir.path(), caps, ts("2026-11-30T23:59:59Z")).expect("open");
-        b.charge(OpClass::A, 1).expect("charge");
-        let b = Budget::open(dir.path(), caps, ts("2026-11-30T23:59:59Z")).expect("same month");
-        assert!(b.check(OpClass::A, 1).is_err());
-        let b = Budget::open(dir.path(), caps, ts("2026-12-01T00:00:00Z")).expect("next month");
+        let (nov, dec) = (ts("2026-11-30T23:59:59Z"), ts("2026-12-01T00:00:00Z"));
+        let mut b = Budget::open(dir.path(), caps, nov).expect("open");
+        b.charge(OpClass::A, 1, nov).expect("charge");
+        let mut b = Budget::open(dir.path(), caps, nov).expect("same month");
+        assert!(b.check(OpClass::A, 1, nov).is_err());
+        let b = Budget::open(dir.path(), caps, dec).expect("next month");
         assert_eq!(b.usage().month, "2026-12");
-        b.check(OpClass::A, 1).expect("fresh month");
+    }
+
+    #[test]
+    fn month_is_resolved_at_each_charge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let caps = BudgetCaps {
+            class_a_monthly: 1,
+            class_b_monthly: 1,
+        };
+        let (nov, dec) = (ts("2026-11-30T23:59:59Z"), ts("2026-12-01T00:00:00Z"));
+        // Opened in November, the run crosses midnight before its request goes out.
+        let mut b = Budget::open(dir.path(), caps, nov).expect("open");
+        b.charge(OpClass::A, 1, nov).expect("november");
+        b.charge(OpClass::A, 1, dec)
+            .expect("december has its own allowance");
+        assert!(b.charge(OpClass::A, 1, dec).is_err());
+        let saved: Usage = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(Budget::FILE)).expect("read"),
+        )
+        .expect("json");
+        assert_eq!((saved.month.as_str(), saved.class_a), ("2026-12", 1));
+    }
+
+    #[test]
+    fn a_charge_that_cannot_be_saved_is_not_counted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = ts("2026-11-21T00:00:00Z");
+        let mut b =
+            Budget::open(&dir.path().join("missing"), BudgetCaps::default(), now).expect("open");
+        assert!(b.charge(OpClass::A, 1, now).is_err());
+        assert_eq!(b.usage().class_a, 0);
     }
 
     #[test]
