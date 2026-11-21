@@ -4,8 +4,9 @@
 #
 #   bash deploy/linux/build-release.sh OUT_DIR
 #
-# It uses the toolchain pinned in rust-toolchain.toml, installing rustup (into ~/.cargo, for this user
-# only) and that toolchain if they are missing. The build directory defaults to
+# It needs rustup and a C compiler on the build host and installs nothing but the toolchain pinned in
+# rust-toolchain.toml (through rustup). Setting up rustup is a one-time manual step; see
+# docs/hosting-linux.md, "The build host". Cargo runs under nice. The build directory defaults to
 # ~/.cache/to-do-or-not-to-do/target-linux, on the Linux file system: building under /mnt/c is slow and
 # would mix with the Windows build. Set CARGO_TARGET_DIR to use another one.
 #
@@ -28,11 +29,9 @@ if ! command -v rustup > /dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
     . "$HOME/.cargo/env"
 fi
 if ! command -v rustup > /dev/null 2>&1; then
-    echo "==> installing rustup for $(id -un) (into ~/.cargo)"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-        sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
-    # shellcheck source=/dev/null
-    . "$HOME/.cargo/env"
+    echo "rustup is not installed for $(id -un). Set it up once (docs/hosting-linux.md, \"The build host\")," >&2
+    echo "then run this again." >&2
+    exit 1
 fi
 if ! command -v cc > /dev/null 2>&1; then
     echo "no C compiler (SQLite, zstd and ring need one): sudo apt-get install build-essential" >&2
@@ -47,7 +46,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/to-do-or-not-to-do/tar
 echo "==> building in $CARGO_TARGET_DIR"
 build_args=()
 for b in "${BINARIES[@]}"; do build_args+=(-p "$b"); done
-cargo "+$channel" build --release --locked --target "$TARGET" \
+nice -n 10 cargo "+$channel" build --release --locked --target "$TARGET" \
     --manifest-path "$repo/Cargo.toml" "${build_args[@]}"
 
 mkdir -p "$out"

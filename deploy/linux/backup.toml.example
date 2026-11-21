@@ -3,7 +3,7 @@
 #   sudo install -m 0640 -o root -g todo backup.toml.example /etc/todo/backup.toml
 #   sudoedit /etc/todo/backup.toml
 #
-# The todo-backup@ timers start running backups as soon as this file and /usr/local/bin/todo-backup exist.
+# Once the timers are enabled (at the cutover), they run backups as soon as this file and a release exist.
 
 db_path = "/var/lib/todo/todo.sqlite3"
 # Budget counters, the upload record, the lock file and temporary snapshots. It is created owner-only.

@@ -728,6 +728,13 @@ impl Config {
     pub fn database_path(&self) -> PathBuf {
         self.data_dir.join("todo.sqlite3")
     }
+
+    /// The database path as the server resolves it when it runs in `cwd`: a relative `data_dir` is
+    /// relative to the working directory, so this is the file a server started there opens.
+    #[must_use]
+    pub fn database_path_in(&self, cwd: &Path) -> PathBuf {
+        cwd.join(self.database_path())
+    }
 }
 
 /// The public origin: `https://host[:port]`, or `http://` for loopback development hosts only.
@@ -887,6 +894,25 @@ mod tests {
             sha256: "abc".into(),
         });
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn database_path_resolves_a_relative_data_dir_against_the_working_directory() {
+        let cwd = Path::new("/var/lib/todo");
+        let relative = Config::default();
+        assert_eq!(
+            relative.database_path_in(cwd),
+            cwd.join("data").join("todo.sqlite3")
+        );
+        let absolute = Config {
+            data_dir: std::env::temp_dir().join("todo-data"),
+            ..Config::default()
+        };
+        assert_eq!(
+            absolute.database_path_in(cwd),
+            std::env::temp_dir().join("todo-data").join("todo.sqlite3"),
+            "an absolute data_dir ignores the working directory"
+        );
     }
 
     const HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";

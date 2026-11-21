@@ -8,12 +8,15 @@
     up with deploy/linux/provision.sh and have /etc/todo/server.toml (see docs/hosting-linux.md).
 
     1. Builds release x86_64-unknown-linux-gnu binaries inside WSL with deploy/linux/build-release.sh,
-       which installs rustup and the toolchain pinned in rust-toolchain.toml if they are missing. The
-       binaries and a SHA256SUMS file land in -ArtifactDir. -SkipBuild deploys what is already there.
+       which needs rustup there (a one-time setup, see the runbook) and installs the toolchain pinned
+       in rust-toolchain.toml if it is missing. The binaries and a SHA256SUMS file land in
+       -ArtifactDir. -SkipBuild deploys what is already there.
     2. Copies them, with deploy/linux/install-release.sh, to a new directory in the remote user's home.
-    3. Runs install-release.sh there with sudo. It checks the checksums, stops the backups and the
-       server, copies the databases, swaps the binaries atomically, starts the server and waits for
-       /health on the VM itself, and rolls back if it doesn't answer. See that script for the details.
+    3. Runs install-release.sh there with sudo. It installs the binaries as a new release directory,
+       stops the backups and the server behind a durable deploy marker, copies the databases, switches
+       the current release atomically, starts the server and waits for /health on the VM itself, and
+       rolls back if it doesn't answer. See that script for the details, and the runbook ("An
+       interrupted deploy") for what to do if the connection drops or the VM loses power meanwhile.
     4. Removes the uploaded files, and with -PublicHealthUrl checks /health from outside too.
 
     The transport is pluggable:
@@ -57,6 +60,10 @@
 .PARAMETER NoStart
     Install the binaries and leave the server stopped (for the move from the pilot).
 
+.PARAMETER AllowEmptyDatabase
+    Deploy although a release is installed and there is no database to copy first. Without it, such a
+    deploy stops before it changes anything, because the database was expected to be there.
+
 .PARAMETER PublicHealthUrl
     Also check this URL from the PC after the deploy, for example https://todo.example.com/health.
 
@@ -80,6 +87,7 @@ param(
     [string]$ArtifactDir = '',
     [switch]$SkipBuild,
     [switch]$NoStart,
+    [switch]$AllowEmptyDatabase,
     [int]$HealthTimeoutSeconds = 60,
     [int]$KeepSnapshots = 3,
     [string]$PublicHealthUrl = ''
@@ -188,6 +196,7 @@ try {
 
 $installArgs = "--health-timeout $HealthTimeoutSeconds --keep $KeepSnapshots"
 if ($NoStart) { $installArgs += ' --no-start' }
+if ($AllowEmptyDatabase) { $installArgs += ' --allow-empty-database' }
 # The upload is removed whatever happens; the script's exit code is passed back.
 $remote = "sudo bash $remoteDir/install-release.sh $installArgs $remoteDir; rc=`$?; rm -rf $remoteDir; exit `$rc"
 Write-Host 'Installing on the VM' -ForegroundColor Cyan
@@ -197,8 +206,8 @@ switch ($code) {
     0 { if ($NoStart) { Write-Host 'Installed; the server stays stopped.' -ForegroundColor Green } else { Write-Host 'Deployed.' -ForegroundColor Green } }
     1 { Write-Host 'Nothing changed on the VM.' -ForegroundColor Yellow; exit 1 }
     2 { Write-Host 'The new release failed its health check and was rolled back; the previous release runs.' -ForegroundColor Yellow; exit 2 }
-    3 { Write-Host 'The rollback failed: the server is down. See sudo journalctl -u todo-server on the VM.' -ForegroundColor Red; exit 3 }
-    default { Write-Host "The install ended with exit code $code (the connection may have dropped). Check the VM." -ForegroundColor Red; exit 1 }
+    3 { Write-Host 'The server is down and the deploy is unfinished. See the runbook, "An interrupted deploy".' -ForegroundColor Red; exit 3 }
+    default { Write-Host "The install ended with exit code $code (the connection may have dropped). On the VM, run: sudo /usr/local/lib/todo/install-release --status" -ForegroundColor Red; exit 1 }
 }
 
 # ---- 4. check from outside ----------------------------------------------------------------------

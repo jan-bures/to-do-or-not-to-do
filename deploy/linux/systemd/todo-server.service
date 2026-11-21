@@ -5,6 +5,7 @@ Description=todo-server (REST, SSE, MCP)
 After=network-online.target
 Wants=network-online.target
 # Give up for a while if it keeps crashing; install-release.sh resets this before each start.
+# Stays disabled until cutover (docs/hosting-linux.md); a deploy starts it, a reboot doesn't.
 StartLimitIntervalSec=10min
 StartLimitBurst=10
 
@@ -16,7 +17,10 @@ Environment=TODO_SERVER_CONFIG=/etc/todo/server.toml
 # Plain log lines in the journal.
 Environment=NO_COLOR=1
 WorkingDirectory=/var/lib/todo
-ExecStart=/usr/local/bin/todo-server serve
+# Refuses to start while a deploy is unfinished (see deploy-guard.sh). '+' runs it as root, outside the
+# sandbox, so it can check that the deploy script allowing the start is still running.
+ExecStartPre=+/usr/local/lib/todo/deploy-guard todo-server
+ExecStart=/opt/todo/current/todo-server serve
 # The server drains in-flight requests on Ctrl+C (SIGINT). SIGTERM would end it at once.
 KillSignal=SIGINT
 TimeoutStopSec=30s

@@ -6,7 +6,7 @@ After=network-online.target todo-server.service
 Wants=network-online.target
 # Backups stay off until they are configured.
 ConditionPathExists=/etc/todo/backup.toml
-ConditionPathExists=/usr/local/bin/todo-backup
+ConditionPathExists=/opt/todo/current/todo-backup
 
 [Service]
 Type=oneshot
@@ -18,7 +18,9 @@ WorkingDirectory=/var/lib/todo
 # One run at a time: the tool refuses to start while another run holds its state lock, so a daily
 # run that coincides with a frequent one waits here instead of failing. A run that changed nothing
 # sends no request at all (see docs/hosting-linux.md); --force is never passed.
-ExecStart=/usr/bin/flock --wait 1800 /var/lib/todo/backup-run.lock /usr/local/bin/todo-backup run --kind %i
+# Never while a deploy is unfinished: the databases may be half restored (see deploy-guard.sh).
+ExecStartPre=+/usr/local/lib/todo/deploy-guard todo-backup@%i
+ExecStart=/usr/bin/flock --wait 1800 /var/lib/todo/backup-run.lock /opt/todo/current/todo-backup run --kind %i
 # Like the pilot: a run that takes longer than an hour is killed and counts as failed.
 TimeoutStartSec=1h
 UMask=0077

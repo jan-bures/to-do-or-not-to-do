@@ -13,11 +13,13 @@
 #   - cloudflared from Cloudflare's apt repository, and the todo-tunnel service once a token is given
 #     (the file must be root-only; it is installed as /etc/cloudflared/todo-tunnel.token, root:cloudflared
 #     0640);
-#   - the systemd units: todo-server, todo-backup@ with its two timers, todo-tunnel.
+#   - the systemd units: todo-server, todo-backup@ with its two timers, todo-tunnel; and the deploy
+#     guard and install-release.sh in /usr/local/lib/todo (see install-release.sh).
 #
-# It never starts todo-server for the first time (a deploy does) but restarts it after a unit change if
-# it runs. It never prints the tunnel token. Nothing here is provider-specific and nothing opens an
-# inbound port. See docs/hosting-linux.md.
+# It never enables or starts todo-server or the backup timers: a deploy starts the server, and the
+# runbook enables both at cutover, so a staging VM that reboots stays quiet. It restarts the server after
+# a unit change if it runs. It never prints the tunnel token. Nothing here is provider-specific and nothing
+# opens an inbound port. See docs/hosting-linux.md.
 set -euo pipefail
 set +x
 umask 022
@@ -41,6 +43,8 @@ UNITS=(todo-server.service todo-backup@.service todo-backup-frequent.timer todo-
 CLOUDFLARE_KEY_URL=https://pkg.cloudflare.com/cloudflare-main.gpg
 CLOUDFLARE_KEYRING=/usr/share/keyrings/cloudflare-main.gpg
 CLOUDFLARE_KEY_FINGERPRINT="${CLOUDFLARE_KEY_FINGERPRINT:-CC94B39C77AE7342A68B89628A682D308D4E5E73}"
+# For tests: a local key file to use instead of the download.
+CLOUDFLARE_KEY_FILE="${CLOUDFLARE_KEY_FILE:-}"
 
 token_src=""
 swap_size=1G
@@ -70,6 +74,9 @@ done
 for u in "${UNITS[@]}"; do
     [ -f "$script_dir/systemd/$u" ] || die "missing $script_dir/systemd/$u; copy the whole deploy/linux directory"
 done
+for f in deploy-guard.sh install-release.sh; do
+    [ -f "$script_dir/$f" ] || die "missing $script_dir/$f; copy the whole deploy/linux directory"
+done
 
 # systemd may be absent (a plain container): then files are written but no service is touched.
 have_systemd=0
@@ -84,12 +91,12 @@ fi
 # Checks the tunnel token file before anything changes: root-owned, a regular file, no group or other
 # access, and plausibly a token. Its contents are never printed.
 if [ -n "$token_src" ]; then
-    [ -f "$token_src" ] && [ ! -L "$token_src" ] || die "$token_src is not a regular file"
+    if [ ! -f "$token_src" ] || [ -L "$token_src" ]; then die "$token_src is not a regular file"; fi
     [ "$(stat -c %u "$token_src")" -eq 0 ] || die "$token_src must be owned by root (sudo chown root: $token_src)"
     mode="$(stat -c %a "$token_src")"
     [ $((8#$mode & 8#077)) -eq 0 ] || die "$token_src has mode $mode; make it readable by root only (chmod 600)"
     size="$(stat -c %s "$token_src")"
-    [ "$size" -ge 32 ] && [ "$size" -le 4096 ] || die "$token_src doesn't look like a tunnel token ($size bytes)"
+    if [ "$size" -lt 32 ] || [ "$size" -gt 4096 ]; then die "$token_src doesn't look like a tunnel token ($size bytes)"; fi
     [ "$(tr -d '\r\n' < "$token_src" | LC_ALL=C tr -d 'A-Za-z0-9+/=_-' | wc -c)" -eq 0 ] ||
         die "$token_src doesn't look like a tunnel token (unexpected characters)"
 fi
@@ -125,34 +132,37 @@ apt-get install -y -qq --no-install-recommends \
 # gpg only inspects keys here; a throwaway home keeps it from creating /root/.gnupg.
 key_tmp="$(mktemp -d)"
 trap 'rm -rf "$key_tmp"' EXIT
-# Prints the fingerprints of the keys in a keyring file, one per line, and nothing if it isn't one.
-key_fingerprints() {
+# Prints the fingerprints of the primary keys in a keyring file (not their subkeys), one per line, and
+# nothing if it isn't one.
+primary_fingerprints() {
     gpg --homedir "$key_tmp" --batch --quiet --with-colons --show-keys "$1" 2> /dev/null |
-        awk -F: '$1 == "fpr" { print $10 }' || true
+        awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10 } { want = 0 }' || true
 }
-# True if the fingerprint list in $1 holds the pinned one.
-has_pinned_key() {
-    case "$(printf '\n%s\n' "$1")" in *"
-$CLOUDFLARE_KEY_FINGERPRINT
-"*) return 0 ;; esac
-    return 1
-}
-installed="$(if [ -f "$CLOUDFLARE_KEYRING" ]; then key_fingerprints "$CLOUDFLARE_KEYRING"; fi)"
-if has_pinned_key "$installed"; then
+# apt trusts every key in a signed-by keyring, so the keyring must hold the pinned key and nothing else.
+installed="$(if [ -f "$CLOUDFLARE_KEYRING" ]; then primary_fingerprints "$CLOUDFLARE_KEYRING"; fi)"
+if [ "$installed" = "$CLOUDFLARE_KEY_FINGERPRINT" ]; then
     log "Cloudflare's apt key is already installed"
 else
     log "adding Cloudflare's apt key"
-    curl -fsSL --proto '=https' --tlsv1.2 -o "$key_tmp/key" "$CLOUDFLARE_KEY_URL"
-    # The file may be armored or binary; dearmor only if needed.
-    if grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$key_tmp/key"; then
-        gpg --homedir "$key_tmp" --batch --quiet --dearmor -o "$key_tmp/key.gpg" "$key_tmp/key"
+    if [ -n "$CLOUDFLARE_KEY_FILE" ]; then
+        cp -- "$CLOUDFLARE_KEY_FILE" "$key_tmp/key"
     else
-        cp "$key_tmp/key" "$key_tmp/key.gpg"
+        curl -fsSL --proto '=https' --tlsv1.2 -o "$key_tmp/key" "$CLOUDFLARE_KEY_URL"
     fi
-    fingerprints="$(key_fingerprints "$key_tmp/key.gpg")"
-    if ! has_pinned_key "$fingerprints"; then
-        die "the key at $CLOUDFLARE_KEY_URL has fingerprint(s) [$(printf '%s' "$fingerprints" | tr '\n' ' ')], but $CLOUDFLARE_KEY_FINGERPRINT was expected"
+    # Exactly the pinned key: a download with another primary key in it is refused, since apt would
+    # trust that key to sign packages too.
+    fingerprints="$(primary_fingerprints "$key_tmp/key")"
+    if [ "$fingerprints" != "$CLOUDFLARE_KEY_FINGERPRINT" ]; then
+        die "the key file at $CLOUDFLARE_KEY_URL holds the primary key(s) [$(printf '%s' "$fingerprints" | tr '\n' ' ')], but exactly $CLOUDFLARE_KEY_FINGERPRINT was expected"
     fi
+    # Import it into a throwaway home and export it again by fingerprint: the keyring then holds only that
+    # key (with its subkeys), as a binary keyring, whatever the download's format.
+    gpg --homedir "$key_tmp" --batch --quiet --no-autostart --import "$key_tmp/key" 2> /dev/null ||
+        die "gpg could not import the key from $CLOUDFLARE_KEY_URL"
+    gpg --homedir "$key_tmp" --batch --quiet --no-autostart --export -o "$key_tmp/key.gpg" "$CLOUDFLARE_KEY_FINGERPRINT"
+    exported="$(primary_fingerprints "$key_tmp/key.gpg")"
+    [ "$exported" = "$CLOUDFLARE_KEY_FINGERPRINT" ] ||
+        die "the exported keyring holds [$(printf '%s' "$exported" | tr '\n' ' ')], not exactly $CLOUDFLARE_KEY_FINGERPRINT"
     install -d -m 0755 /usr/share/keyrings
     put_file "$CLOUDFLARE_KEYRING" 0644 root:root < "$key_tmp/key.gpg"
 fi
@@ -253,7 +263,7 @@ chmod 0750 "$CONFIG_DIR"
 # the service account with mode 0600, or the server refuses them.
 shopt -s nullglob
 for f in "$CONFIG_DIR"/*; do
-    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
     case "$f" in
         *.example) want_owner="root:root"; want_mode=644 ;;
         *.secret) want_owner="$TODO_USER:$TODO_USER"; want_mode=600 ;;
@@ -276,7 +286,8 @@ done
 # The connector runs as its own system user, which may read the token but not change it.
 if ! id "$TUNNEL_USER" > /dev/null 2>&1; then
     log "creating the $TUNNEL_USER system user"
-    useradd --system --user-group --home-dir /nonexistent --no-create-home         --shell /usr/sbin/nologin --comment "Cloudflare Tunnel connector" "$TUNNEL_USER"
+    useradd --system --user-group --home-dir /nonexistent --no-create-home \
+        --shell /usr/sbin/nologin --comment "Cloudflare Tunnel connector" "$TUNNEL_USER"
 fi
 install -d -m 0750 -o root -g "$TUNNEL_USER" "$TOKEN_DIR"
 chown "root:$TUNNEL_USER" "$TOKEN_DIR"
@@ -297,7 +308,13 @@ if [ -f "$TOKEN_FILE" ]; then
     chmod 0640 "$TOKEN_FILE"
 fi
 
-# ---- systemd units --------------------------------------------------------------------------------
+# ---- deploy helpers and systemd units -------------------------------------------------------------
+
+# The deploy guard runs before the services start (see deploy-guard.sh). install-release.sh is kept here
+# for --recover, which runs after the deploy's upload is gone; each deploy refreshes it.
+install -d -m 0755 /usr/local/lib/todo
+put_file /usr/local/lib/todo/deploy-guard 0755 root:root < "$script_dir/deploy-guard.sh"
+put_file /usr/local/lib/todo/install-release 0755 root:root < "$script_dir/install-release.sh"
 
 log "installing systemd units"
 changed_units=()
@@ -321,16 +338,14 @@ if systemctl list-unit-files cloudflared.service > /dev/null 2>&1 &&
     warn "disable the other one: sudo cloudflared service uninstall"
 fi
 
-# The server is enabled for boot but only started by a deploy. A unit change restarts it if it runs.
-systemctl enable todo-server.service > /dev/null 2>&1
+# The server and the backup timers are neither enabled nor started here: a deploy starts the server, and
+# the runbook enables both once the data is in (docs/hosting-linux.md, "Cutover"). A unit change
+# restarts the server if it runs.
 for u in "${changed_units[@]}"; do
     case "$u" in
         todo-server.service) systemctl try-restart todo-server.service ;;
     esac
 done
-
-# Timers run from the start; their service does nothing until /etc/todo/backup.toml and the binary exist.
-systemctl enable --now todo-backup-frequent.timer todo-backup-daily.timer > /dev/null 2>&1
 
 if [ -f "$TOKEN_FILE" ]; then
     systemctl enable todo-tunnel.service > /dev/null 2>&1

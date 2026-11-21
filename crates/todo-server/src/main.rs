@@ -31,6 +31,9 @@ enum Cmd {
     RotateLogEpoch,
     /// Read a token from stdin and print the SHA-256 hash to put in the config.
     HashToken,
+    /// Check the config and print the absolute path of the database a server started in this
+    /// working directory would open, then exit. Deploy scripts use it to find what to back up.
+    DatabasePath,
     /// Make a new token for the local admin API: write it to a new owner-only file and print the
     /// config lines with its hash. Works while the server runs (it touches neither the database nor
     /// the config); restart the server after changing the config.
@@ -74,6 +77,12 @@ fn main() -> anyhow::Result<()> {
                 out.display()
             );
             println!("[admin]\nbind = \"127.0.0.1:47321\"\ntoken_sha256 = \"{hash}\"");
+            Ok(())
+        }
+        Cmd::DatabasePath => {
+            let config = Config::load(cli.config.as_deref())?;
+            let cwd = std::env::current_dir().context("reading the working directory")?;
+            println!("{}", config.database_path_in(&cwd).display());
             Ok(())
         }
         Cmd::RebuildProjections => {
