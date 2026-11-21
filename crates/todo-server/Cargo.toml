@@ -47,6 +47,11 @@ getrandom.workspace = true
 todo-fs.workspace = true
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server"] }
 schemars.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+rusty-s3.workspace = true
+ureq.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }

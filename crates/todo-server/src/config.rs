@@ -60,6 +60,11 @@
 //! # normally pair (`POST /api/v1/pair/start`) and get revocable tokens.
 //! allow_config_owner_tokens = false
 //!
+//! # Attachment content (see `todo_server::blobs` for every key).
+//! [attachments]
+//! store = "r2"
+//! credentials_file = "/etc/todo/r2-attachments.json"
+//!
 //! [[auth.owner_tokens]]
 //! device = "desktop"
 //! sha256 = "<hex SHA-256 of the bearer token>"
@@ -321,6 +326,8 @@ pub struct Config {
     pub auth: AuthConfig,
     /// Email ingest.
     pub ingest: IngestConfig,
+    /// Attachment content.
+    pub attachments: crate::blobs::AttachmentsConfig,
 }
 
 /// Email ingest settings (see the module docs and `docs/ingest-email.md`).
@@ -360,6 +367,7 @@ impl Default for Config {
             limits: Limits::default(),
             auth: AuthConfig::default(),
             ingest: IngestConfig::default(),
+            attachments: crate::blobs::AttachmentsConfig::default(),
         }
     }
 }
@@ -498,6 +506,7 @@ impl Config {
                 ));
             }
         }
+        self.attachments.validate().map_err(ConfigError::Invalid)?;
         let a = &self.auth;
         for (name, value) in [
             ("session_idle_timeout_mins", a.session_idle_timeout_mins),

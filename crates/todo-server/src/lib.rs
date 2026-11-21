@@ -10,6 +10,7 @@
 //! | [`web`] | server-rendered sign-in, setup, pairing and admin pages, share pages, static assets |
 //! | [`api`] | REST handlers, the SSE stream, typed errors, the OpenAPI document |
 //! | [`ingest`] | email to task: the HMAC-signed endpoint the Email Worker calls, its allowlist and list keys |
+//! | [`blobs`] | attachment content: encryption, the bucket, the R2 budget, garbage collection |
 //! | [`mcp`] | the MCP server at `/mcp`: agent tools over the REST handlers |
 //! | [`app`] | router, middleware (body limit, timeouts, tracing) and the server lifecycle |
 //! | [`conn`] | the accept loop: connection cap, header-read timeout, write-progress watchdog, drain |
@@ -21,6 +22,7 @@
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod blobs;
 pub mod cancel;
 pub mod config;
 pub mod conn;

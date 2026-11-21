@@ -66,6 +66,8 @@ pub struct AppState {
     pub shutdown: watch::Receiver<bool>,
     /// Email ingest (the secret, nonces, the sender allowlist and list keys).
     pub ingest: Arc<Ingest>,
+    /// Attachment content (see [`crate::blobs`]).
+    pub attachments: Arc<crate::blobs::Attachments>,
 }
 
 impl AppState {
@@ -93,6 +95,9 @@ pub enum ServerError {
     /// Email ingest could not be set up.
     #[error(transparent)]
     Ingest(#[from] IngestInitError),
+    /// Attachment storage could not be set up.
+    #[error(transparent)]
+    Attachments(#[from] crate::blobs::AttachmentError),
     /// I/O failed (binding, creating the data directory).
     #[error("{context}: {source}")]
     Io {
@@ -140,7 +145,11 @@ async fn json_413(res: Response) -> Response {
 ///   retry with the same `command_id` (which returns the stored result if the commit landed).
 ///
 /// If the request future is dropped (the client went away), the guard cancels the work too.
-async fn deadline(State(limit): State<Duration>, mut req: Request, next: Next) -> Response {
+pub(crate) async fn deadline(
+    State(limit): State<Duration>,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let at = tokio::time::Instant::now() + limit;
     let cancel = Cancel::with_deadline(at.into_std());
     req.extensions_mut().insert(cancel.clone());
@@ -226,6 +235,8 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(limits.request_timeout(), deadline))
         .layer(DefaultBodyLimit::max(limits.max_body_bytes))
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
+        // Uploads: their own body cap and deadline instead of the two above (see `api::attachments`).
+        .merge(api::attachments::upload_router(state.clone()))
         .layer(map_response(json_413))
         .layer(SetSensitiveRequestHeadersLayer::new([
             AUTHORIZATION,
@@ -332,6 +343,20 @@ impl Server {
             tracing::info!("email ingest is enabled");
         }
         let ingest = Arc::new(ingest);
+        let attachments = {
+            let (cfg, dir, engine) = (
+                config.attachments.clone(),
+                config.data_dir.clone(),
+                engine.clone(),
+            );
+            tokio::task::spawn_blocking(move || crate::blobs::Attachments::open(&cfg, &dir, engine))
+                .await
+                .map_err(|e| ServerError::Io {
+                    context: "opening attachment storage".into(),
+                    source: std::io::Error::other(e.to_string()),
+                })??
+        };
+        let attachments = Arc::new(attachments);
         let auth: Arc<dyn Authenticator> = match options.auth {
             Some(a) => a,
             None => authsvc.clone(),
@@ -343,6 +368,7 @@ impl Server {
                 source,
             })?;
         let (shutdown, shutdown_rx) = watch::channel(false);
+        attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
             engine: engine.clone(),
             auth,
@@ -359,6 +385,7 @@ impl Server {
             catch_up_marks: Arc::new(CatchUpMarks::default()),
             shutdown: shutdown_rx,
             ingest: ingest.clone(),
+            attachments,
         };
         Ok(Self {
             listener,

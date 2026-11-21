@@ -1,5 +1,6 @@
 //! The REST API under `/api/v1`.
 
+pub mod attachments;
 pub mod commands;
 pub mod dto;
 pub mod error;
@@ -138,6 +139,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/lists/{id}/tasks", get(read::list_tasks))
         .route("/tasks", get(read::query_tasks))
         .route("/tasks/{id}", get(read::task_detail))
+        .route("/attachments/{id}", get(attachments::download))
         .route("/tags", get(read::tags))
         .route("/smart-lists", get(read::smart_lists))
         .route("/smart-lists/{id}/tasks", get(read::smart_list_tasks))
