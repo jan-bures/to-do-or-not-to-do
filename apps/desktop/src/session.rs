@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::platform::Request;
 use todo_client::protocol::error_detail;
-use todo_client::sqlite::{Salvaged, SqliteStorage};
+use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::StorageOp;
 use todo_client::{ClientConfig, Storage as _, StorageError, SyncClient, Transport};
 use todo_core::Actor;
@@ -583,7 +583,8 @@ fn write_record(data: &DataDir, record: &RecoveryRecord) -> Result<(), OpenError
 ///
 /// 1. **Copying:** the damaged cache and its log are copied aside (again, from the untouched original).
 /// 2. **Copied:** the original and its log are removed.
-/// 3. **Cleared:** the unsent changes are read from the copy. With no cache in place they are written to
+/// 3. **Cleared:** the unsent changes are read from the copy, and any read error stops here to be retried
+///    (never taken as "nothing to keep"). With no cache in place they are written to
 ///    `cache.recovering.sqlite` (rebuilt from scratch every time), which is then moved into place. A
 ///    cache already in place can only be that rebuilt one (the record removal failed), so they are
 ///    written into it again; entries are keyed by command ID, so nothing is doubled.
@@ -613,10 +614,16 @@ fn finish_recovery(
         record.phase = Phase::Cleared;
         write_record(data, &record)?;
     }
-    let salvaged = SqliteStorage::salvage(&quarantined).unwrap_or_else(|e| {
-        tracing::warn!("nothing could be read back from the damaged cache: {e}");
-        Salvaged::default()
-    });
+    // Every read must succeed: an error here (the copy is locked, the disk fails, a page can't be read)
+    // stops the recovery with the record and the copy kept, so the next start tries again. Only a copy
+    // that reads cleanly to the end and has no unsent changes counts as empty.
+    step("salvaging")?;
+    let salvaged = SqliteStorage::salvage_all(&quarantined).map_err(|e| {
+        OpenError::Unavailable(format!(
+            "the unsent changes couldn't be read back from {} yet: {e}",
+            record.quarantined
+        ))
+    })?;
     let ops: Vec<StorageOp<'_>> = salvaged
         .outbox
         .iter()
@@ -643,10 +650,21 @@ fn finish_recovery(
     }))
 }
 
-/// The saved sign-in couldn't be removed: the device is still signed in.
+/// Signing out stopped before anything was removed: the device is still signed in, and signing out
+/// can simply be tried again.
 #[derive(Debug, thiserror::Error)]
-#[error("the saved sign-in couldn't be removed: {0}")]
+#[error("{0}")]
 pub struct StillSignedIn(String);
+
+impl StillSignedIn {
+    /// What the status bar says.
+    pub fn notice(&self) -> String {
+        format!(
+            "Couldn't sign out: {}. You're still signed in; try again.",
+            self.0
+        )
+    }
+}
 
 /// How a sign-out ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -664,8 +682,9 @@ pub enum SignedOut {
 /// drops the last handles on the cache), then removes the data, retrying while files are still being
 /// closed (`wait` between attempts), and the record last.
 ///
-/// If the sign-in can't be removed, the record is withdrawn, nothing else is touched, and the device
-/// stays signed in.
+/// If the record can't be written and flushed, nothing is removed and the device stays signed in. If
+/// the sign-in can't be removed, the record is withdrawn, nothing else is touched, and the device stays
+/// signed in. Either way signing out can be tried again.
 pub async fn sign_out<W: Future<Output = ()>>(
     stopped: impl Future<Output = ()>,
     paths: &Paths,
@@ -675,13 +694,19 @@ pub async fn sign_out<W: Future<Output = ()>>(
 ) -> Result<SignedOut, StillSignedIn> {
     stopped.await;
     if let Err(e) = config::mark_signed_out(data) {
-        tracing::warn!("the data to remove couldn't be recorded: {e}");
+        // Without the record a crash later on could leave the data behind for good: stop while
+        // nothing is removed yet.
+        return Err(StillSignedIn(format!(
+            "the data to remove couldn't be recorded: {e}"
+        )));
     }
     if let Err(e) = config::forget_pairing(paths) {
         // Removing the config failed after the token went: that is signed out already.
         if !matches!(config::load(paths), Ok(None)) {
             config::unmark_signed_out(data);
-            return Err(StillSignedIn(format!("{e:#}")));
+            return Err(StillSignedIn(format!(
+                "the saved sign-in couldn't be removed: {e:#}"
+            )));
         }
     }
     release();

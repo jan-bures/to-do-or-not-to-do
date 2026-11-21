@@ -605,4 +605,53 @@ fn a_file_that_is_not_a_database_is_corrupt_not_unavailable() {
         Err(StorageError::Corrupt(_))
     ));
     assert!(SqliteStorage::salvage(&db).is_err());
+    assert!(SqliteStorage::salvage_all(&db).is_err());
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn a_full_salvage_fails_rather_than_come_back_short() {
+    use todo_client::sqlite::SqliteStorage;
+
+    let dir = tempfile::tempdir().unwrap();
+    // An outbox spread over many pages, whose last page is then damaged: the scan stops partway.
+    let db = dir.path().join("partway.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "PRAGMA page_size = 4096;
+         CREATE TABLE outbox (pos INTEGER PRIMARY KEY, entry TEXT NOT NULL);
+         CREATE TABLE failed (pos INTEGER PRIMARY KEY, entry TEXT NOT NULL);",
+    )
+    .unwrap();
+    for pos in 0..200 {
+        conn.execute(
+            "INSERT INTO outbox (pos, entry) VALUES (?1, ?2)",
+            rusqlite::params![pos, "x".repeat(500)],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let mut bytes = std::fs::read(&db).unwrap();
+    let len = bytes.len();
+    assert!(len >= 4096 * 10, "the outbox spans pages");
+    bytes[len - 4096..].fill(0xff);
+    std::fs::write(&db, bytes).unwrap();
+    let lenient = SqliteStorage::salvage(&db).unwrap();
+    assert!(lenient.lost >= 1, "the lenient salvage stops at the damage");
+    assert!(SqliteStorage::salvage_all(&db).is_err());
+
+    // A table that can't be read at all is an error too, not an empty list.
+    let db = dir.path().join("no-failed-table.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("CREATE TABLE outbox (pos INTEGER PRIMARY KEY, entry TEXT NOT NULL);")
+        .unwrap();
+    drop(conn);
+    assert!(SqliteStorage::salvage(&db).is_ok());
+    assert!(SqliteStorage::salvage_all(&db).is_err());
+
+    // A database that reads cleanly and has no unsent changes is empty.
+    let db = dir.path().join("empty.db");
+    drop(SqliteStorage::open(&db).unwrap());
+    let empty = SqliteStorage::salvage_all(&db).unwrap();
+    assert!(empty.outbox.is_empty() && empty.failed.is_empty() && empty.lost == 0);
 }

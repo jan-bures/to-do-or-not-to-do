@@ -107,9 +107,10 @@ and with a roaming profile they travel with it. Each pairing's data lives under 
 pairing never picks up an old cache and cleaning up an old one can't touch the current one.
 
 **Sign out** (the gear in the sidebar footer) runs in order: syncing stops and downloads in flight are
-cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory; the
-token and the config are removed (if that fails, the record is withdrawn, the app says so and stays signed
-in, syncing again); the shell lets go of the cache, and the directory (cache and downloads) is removed; the
+cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory and
+flushed to disk (if it can't be, nothing is removed: the app says so and stays signed in, syncing again, and
+signing out can be tried again); the token and the config are removed (if that fails, the record is
+withdrawn, and the app says so and stays signed in the same way); the shell lets go of the cache, and the directory (cache and downloads) is removed; the
 record goes last. Only then is pairing shown. A directory still in use is removed at the next start, which
 only ever removes directories that have a record, named exactly by a pairing ID, and never the current one.
 
@@ -131,8 +132,10 @@ Direct3D and DirectWrite, so a warm start draws real data in its first frame. Op
 - **A damaged cache** (SQLite reports it malformed or not a database, or stored data doesn't decode) is
   recovered in steps, each recorded in `recovery.json` before the next one starts: the cache and its
   write-ahead log are copied aside as `cache.damaged-<ms>.sqlite` and flushed, then the original is removed.
-  The copy's outbox and "couldn't sync" list are read back (`SqliteStorage::salvage`) into a new cache built
-  as `cache.recovering.sqlite`, which then replaces `cache.sqlite`; the record goes last. A crash or a
+  The copy's outbox and "couldn't sync" list are read back (`SqliteStorage::salvage_all`, which fails on any
+  read error rather than come back short) into a new cache built as `cache.recovering.sqlite`, which then
+  replaces `cache.sqlite`; the record goes last. A copy that can't be read stops the recovery behind the
+  "couldn't be opened" screen, keeping the record and the copy for the next try. A crash or a
   failure at any step leaves the record, and the next start finishes the recovery from there, so an unsent
   edit is never lost. The confirmed state is loaded from the server again. The status bar says how many
   unsent changes were kept.

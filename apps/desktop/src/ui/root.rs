@@ -308,7 +308,7 @@ impl RootView {
                                     the next time the app starts.";
                         this.show_pairing(Some(server), Some(note.into()), window, cx);
                     }
-                    Err(e) => this.still_signed_in(&e.to_string(), window, cx),
+                    Err(e) => this.still_signed_in(&e, window, cx),
                 }
             });
         })
@@ -316,9 +316,14 @@ impl RootView {
     }
 
     /// Signing out stopped before anything was removed: open the session again and say why.
-    fn still_signed_in(&mut self, why: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn still_signed_in(
+        &mut self,
+        why: &session::StillSignedIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         tracing::error!("signing out failed: {why}");
-        let text = format!("Couldn't sign out: {why}. You're still signed in.");
+        let text = why.notice();
         let reopened = config::load(&self.paths)
             .ok()
             .flatten()

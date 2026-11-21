@@ -81,21 +81,19 @@ impl SqliteStorage {
     ///
     /// The file can't be opened, or neither table can be read.
     pub fn salvage(path: &Path) -> Result<Salvaged, StorageError> {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(backend)?;
+        let conn = Self::open_read_only(path)?;
         let mut out = Salvaged::default();
         let outbox = salvage_rows(
             &conn,
             "SELECT entry FROM outbox ORDER BY pos",
             &mut out.lost,
+            false,
         );
         let failed = salvage_rows(
             &conn,
             "SELECT entry FROM failed ORDER BY pos",
             &mut out.lost,
+            false,
         );
         match (outbox, failed) {
             (Err(e), Err(_)) => Err(e),
@@ -105,6 +103,40 @@ impl SqliteStorage {
                 Ok(out)
             }
         }
+    }
+
+    /// Like [`salvage`](Self::salvage), but every read must succeed: a result means both tables were
+    /// read to the end, so an empty one really had no rows. Only rows that read but don't decode are
+    /// skipped (and counted in [`Salvaged::lost`]). Use it when the caller can retry and would rather
+    /// wait than lose unsent changes to an error that may pass (a locked file, a failing disk).
+    ///
+    /// # Errors
+    ///
+    /// The file can't be opened, either table can't be read, or a scan stops partway.
+    pub fn salvage_all(path: &Path) -> Result<Salvaged, StorageError> {
+        let conn = Self::open_read_only(path)?;
+        let mut out = Salvaged::default();
+        out.outbox = salvage_rows(
+            &conn,
+            "SELECT entry FROM outbox ORDER BY pos",
+            &mut out.lost,
+            true,
+        )?;
+        out.failed = salvage_rows(
+            &conn,
+            "SELECT entry FROM failed ORDER BY pos",
+            &mut out.lost,
+            true,
+        )?;
+        Ok(out)
+    }
+
+    fn open_read_only(path: &Path) -> Result<Connection, StorageError> {
+        Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(backend)
     }
 
     fn init(conn: Connection) -> Result<Self, StorageError> {
@@ -132,6 +164,7 @@ fn salvage_rows<T: serde::de::DeserializeOwned>(
     conn: &Connection,
     sql: &str,
     lost: &mut usize,
+    strict: bool,
 ) -> Result<Vec<T>, StorageError> {
     let mut stmt = conn.prepare(sql).map_err(backend)?;
     let mut rows = stmt.query([]).map_err(backend)?;
@@ -147,6 +180,7 @@ fn salvage_rows<T: serde::de::DeserializeOwned>(
                 None => *lost += 1,
             },
             Ok(None) => break,
+            Err(e) if strict => return Err(backend(e)),
             // A damaged page ends the scan; keep what came before it.
             Err(_) => {
                 *lost += 1;

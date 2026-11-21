@@ -130,6 +130,11 @@ impl DataDir {
 
     /// Checks that the directories this pairing's data hangs from are plain directories, not junctions
     /// or links that would lead removal (or writes) somewhere else. Missing ones are fine.
+    ///
+    /// Only the app directory and `pairings` are checked, not the directories above them. A junction
+    /// above (a redirected profile or `%LOCALAPPDATA%`, say) means the app directory itself lives at the
+    /// junction's target, so everything removed below it is still our own data there. Refusing those
+    /// would break users with redirected profiles and protect nothing.
     pub fn check_ancestors(&self) -> std::io::Result<()> {
         for dir in [self.app.clone(), self.pairings()] {
             match std::fs::symlink_metadata(&dir) {
@@ -286,13 +291,25 @@ pub fn forget_pairing(paths: &Paths) -> anyhow::Result<()> {
 }
 
 /// Records that a pairing's data is to be removed, beside its directory (never inside it), so a removal
-/// that fails or is cut short is finished at the next start.
+/// that fails or is cut short is finished at the next start. The record is on disk when this returns:
+/// it is written as a flushed temporary file and moved into place durably (write-through on Windows,
+/// the directory flushed elsewhere). Sign-out doesn't go ahead without it.
 pub fn mark_signed_out(data: &DataDir) -> std::io::Result<()> {
     data.check_ancestors()?;
     if !data.pairings().exists() {
         return Ok(()); // No data at all.
     }
-    std::fs::write(data.signed_out_record(), b"")
+    let record = data.signed_out_record();
+    let tmp = data
+        .pairings()
+        .join(format!("{}{SIGNED_OUT}.tmp", data.id.as_str()));
+    let written = std::fs::File::create(&tmp)
+        .and_then(|f| f.sync_all())
+        .and_then(|()| todo_fs::replace_durably(&tmp, &record));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Withdraws a sign-out record (the sign-in couldn't be removed after all, so the data stays).

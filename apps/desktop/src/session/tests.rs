@@ -478,6 +478,63 @@ fn a_sign_in_that_cant_be_removed_keeps_everything() {
 }
 
 #[test]
+fn a_sign_out_that_cant_be_recorded_removes_nothing() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let data = session.data().clone();
+
+    // A directory where the record goes: writing the record fails.
+    let pairings = paths.cache_dir.join("pairings");
+    let record = pairings.join(format!("{}.signed-out", pairing.config.pairing.as_str()));
+    std::fs::create_dir(&record).expect("blocker");
+    let released = std::cell::Cell::new(false);
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        || released.set(true),
+        || async {},
+    ));
+    let err = result.expect_err("still signed in");
+    let notice = err.notice();
+    assert!(
+        notice.contains("couldn't be recorded") && notice.contains("still signed in"),
+        "the status bar says why: {notice}"
+    );
+    assert!(!released.get(), "the session is kept");
+    assert!(paths.token().exists(), "the token is still there");
+    assert_eq!(config::load(&paths).expect("load"), Some(pairing.clone()));
+    assert!(data.cache().exists(), "and so is the data");
+    assert!(
+        std::fs::read_dir(&pairings).expect("pairings").all(|e| !e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")),
+        "no temporary record is left"
+    );
+
+    // Once the record can be written, signing out again works.
+    std::fs::remove_dir(&record).expect("unblock");
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        move || drop(session),
+        || tokio::time::sleep(Duration::from_millis(100)),
+    ));
+    assert_eq!(result.expect("signed out"), SignedOut::Clean);
+    assert_eq!(config::load(&paths).expect("load"), None);
+    assert!(!data.path().exists() && !record.exists());
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
 fn data_still_in_use_at_sign_out_is_removed_at_the_next_start() {
     let server = TestServer::start();
     let net = runtime().expect("runtime");
@@ -638,7 +695,14 @@ fn damage(data: &config::DataDir) {
 fn an_interrupted_recovery_still_keeps_the_unsent_edit() {
     let server = TestServer::start();
     let net = runtime().expect("runtime");
-    for at in ["recorded", "copied", "cleared", "staged", "swapped"] {
+    for at in [
+        "recorded",
+        "copied",
+        "cleared",
+        "salvaging",
+        "staged",
+        "swapped",
+    ] {
         let home = tempfile::tempdir().expect("home");
         let paths = Paths::in_dir(home.path().to_owned());
         let (pairing, queued) = queued_offline(&server, &net, &paths);
@@ -670,6 +734,68 @@ fn an_interrupted_recovery_still_keeps_the_unsent_edit() {
         net.block_on(session.shutdown());
         drop(session);
     }
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn a_copy_that_cant_be_read_yet_is_retried_not_taken_as_empty() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, queued) = queued_offline(&server, &net, &paths);
+    let data = paths.data(&pairing.config.pairing);
+    damage(&data);
+
+    // Stop once the damaged cache is copied aside, then hold the copy so it can't be read.
+    FAIL_AT.with(|f| f.set(Some("cleared")));
+    let failed = Session::open_or_recover(net.clone(), &paths, &pairing);
+    FAIL_AT.with(|f| f.set(None));
+    assert!(failed.is_err());
+    let copy = std::fs::read_dir(data.path())
+        .expect("data")
+        .map(|e| e.expect("entry").path())
+        .find(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            name.starts_with("cache.damaged-") && name.ends_with(".sqlite")
+        })
+        .expect("the quarantined copy");
+    let held = lock(&copy);
+
+    // The salvage can't read it: the recovery stops, keeping the record and the copy.
+    let failed = Session::open_or_recover(net.clone(), &paths, &pairing);
+    assert!(
+        matches!(&failed, Err(OpenError::Unavailable(why)) if why.contains("couldn't be read back")),
+        "{:?}",
+        failed.as_ref().err()
+    );
+    assert!(
+        data.path().join("recovery.json").exists(),
+        "the record is kept"
+    );
+    assert!(copy.exists(), "the copy is kept");
+    assert!(
+        !data.cache().exists(),
+        "no empty cache was put in its place"
+    );
+
+    // The next start reads it and keeps the edit.
+    drop(held);
+    let (session, recovered) =
+        Session::open_or_recover(net.clone(), &paths, &pairing).expect("recover");
+    assert_eq!(recovered.expect("recovered").kept, 1);
+    assert_eq!(
+        session.client().status().pending,
+        1,
+        "the queued edit survived"
+    );
+    session.start();
+    eventually("the queued list reached the server", || {
+        server.state().lists.contains_key(&queued)
+    });
+    net.block_on(session.shutdown());
+    drop(session);
     drop(server);
     shut_down(net);
 }
