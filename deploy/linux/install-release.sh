@@ -3,7 +3,7 @@
 # server doesn't come up healthy. deploy-linux.ps1 uploads it with the binaries and runs it:
 #
 #   sudo bash install-release.sh [--health-timeout S] [--keep N] [--no-start] [--allow-empty-database] STAGING_DIR
-#   sudo bash install-release.sh --recover finish|rollback [--health-timeout S]
+#   sudo bash install-release.sh --recover finish|rollback [--discard-writes] [--health-timeout S]
 #   sudo bash install-release.sh --status
 #
 # STAGING_DIR holds todo-server, todo-backup and SHA256SUMS. Every run that changes anything holds
@@ -21,23 +21,28 @@
 #              databases with a MANIFEST of exactly the files that existed (/var/lib/todo-deploy/pre-*).
 #   switched   The copy is complete. `current` should be the new release (the rename may not have
 #              happened yet), and the new release may have run. Forward: point `current` at it, check,
-#              start, wait for /health 200.
-#   restoring  A rollback after the new release may have run. The databases may be half restored.
-#              Forward: restore the copy in full, every time.
+#              start, wait for /health 200. The marker's `served` says whether it ever passed that check.
+#   restoring  A rollback after the new release may have run; everything was stopped before this was
+#              written. The databases may be half restored. Forward: restore the copy in full, every time.
 #   restored   The databases are exactly the copy again, durably; the previous release may have run on
 #              them since. Forward: point `current` at the previous release, check, start. Never restores.
 #
 # Every phase begins by stopping everything and re-applying its own state, so each one can run again
 # after an interruption. The last step of every outcome starts the backup timers that were running,
-# then removes the marker.
+# then removes the marker; if a timer won't start, the marker stays and a recovery tries again.
+#
+# Once the new release has answered /health with 200 even once (served=yes, recorded at once), it may
+# have accepted writes, and nothing restores the copy on its own any more: if it later fails, the deploy
+# and --recover finish stop it and keep the marker. Only --recover rollback --discard-writes then
+# restores the copy. A release that never passed the check is rolled back automatically.
 #
 # --no-start leaves the server stopped; the policy is kept in the marker, so a recovery honours it too.
 # --keep N (3) is how many older copies (pre-*), replaced files (failed-*) and older releases to keep.
 #
 # After an interruption (a power cut, a reboot, a kill), the marker stays and nothing starts.
 # --recover finish carries the deploy on from "prepared" or "switched". --recover rollback returns to
-# the previous release from any phase; from "switched" it restores the copy first. Neither needs the
-# staging directory. --status only reads.
+# the previous release from any phase; from "switched" it restores the copy first (with served=yes,
+# only with --discard-writes). Neither needs the staging directory. --status only reads.
 #
 # Exit codes: 0 deployed (or finished); 1 nothing changed; 2 rolled back, the previous release is
 # current; 3 unfinished: see --status.
@@ -73,6 +78,7 @@ no_start=0
 allow_empty=0
 staging=""
 recover=""
+discard_writes=0
 status_only=0
 
 log() { printf '==> %s\n' "$*"; }
@@ -91,6 +97,7 @@ while [ $# -gt 0 ]; do
         --no-start) no_start=1; shift ;;
         --allow-empty-database) allow_empty=1; shift ;;
         --recover) [ $# -ge 2 ] || fail "$1 needs finish or rollback"; recover="$2"; shift 2 ;;
+        --discard-writes) discard_writes=1; shift ;;
         --status) status_only=1; shift ;;
         -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) fail "unknown option: $1" ;;
@@ -103,6 +110,7 @@ case "$recover" in "" | finish | rollback) ;; *) fail "--recover takes finish or
 if [ -n "$recover" ] && { [ "$no_start" -eq 1 ] || [ -n "$staging" ]; }; then
     fail "--recover takes no staging directory and no --no-start: the marker holds the deploy's settings"
 fi
+if [ "$discard_writes" -eq 1 ] && [ "$recover" != rollback ]; then fail "--discard-writes goes with --recover rollback"; fi
 
 [ "$(id -u)" -eq 0 ] || fail "run as root"
 
@@ -170,6 +178,7 @@ write_marker() {
         printf 'data_dir=%s\n' "$data_dir"
         printf 'snapshot=%s\n' "$snapshot"
         printf 'start=%s\n' "$start_policy"
+        printf 'served=%s\n' "$served"
         printf 'timers=%s\n' "$active_timers"
         printf 'nonce=%s\n' "$nonce"
         printf 'started=%s\n' "$stamp"
@@ -285,13 +294,16 @@ stop_all() {
 }
 
 # The last step of every outcome: the timers that were running start again (harmless while the marker
-# exists, because the guard refuses backup runs), and then the marker goes, as the very last step.
+# exists, because the guard refuses backup runs), and then the marker goes, as the very last step. A
+# timer that won't start keeps the marker, so a recovery runs this again.
 finalize() {
     local t
     for t in ${active_timers//,/ }; do
         # A timer that hit its start limit (deploys in quick succession) would otherwise stay off.
         systemctl reset-failed "$t" 2> /dev/null || true
-        systemctl start "$t" || printf 'warning: could not start %s\n' "$t" >&2
+        if ! systemctl start "$t" || ! systemctl is-active --quiet "$t"; then
+            die3 "could not start $t, which ran before the deploy; the backups stay off until it does. Fix it, then run --recover finish (or rollback) to finish again"
+        fi
     done
     crash_point finalizing
     remove_marker
@@ -310,6 +322,12 @@ start_and_finish() {
     fi
     log "starting $SERVICE ($what release $id), waiting up to ${health_timeout}s for HTTP 200 from $health_url"
     if start_server; then
+        if [ "$what" = new ] && [ "$served" != yes ]; then
+            # It answered: from now on it may have accepted writes, so nothing restores on its own.
+            served=yes
+            write_marker "$phase"
+            log "the new release passed its health check; recorded served=yes"
+        fi
         crash_point "started-$what"
         finalize
         log "the $what release runs: $("$CURRENT/todo-server" --version)"
@@ -481,10 +499,23 @@ rollback_from() {
             ;;
         switched | restoring)
             # The new release may have run, and a restore may be half done: restore in full, every time.
-            write_marker restoring
-            crash_point rollback-marked
+            if [ "$1" = switched ] && [ "$served" = yes ]; then
+                printf 'The new release %s passed its health check (served=yes), so it may have accepted writes since\n' "$new_id" >&2
+                printf 'the deploy started (%s). A rollback restores the copy taken before the deploy, %s;\n' "$stamp" "$snapshot" >&2
+                printf 'the live databases move to %s/failed-<time>/ and stay there, and everything written since is lost\n' "$DEPLOY_DIR" >&2
+                printf 'from the running service.\n' >&2
+                if [ "$discard_writes" -ne 1 ]; then
+                    printf 'error: nothing was changed. Run --recover finish to keep those writes, or\n' >&2
+                    printf '  sudo %s --recover rollback --discard-writes\nto discard them.\n' "$SELF_COPY" >&2
+                    exit 1
+                fi
+                log "--discard-writes: going ahead"
+            fi
             stop_all || die3 "could not stop everything; the databases were not touched"
             take_backup_lock || die3 "could not take the backup lock; the databases were not touched"
+            # Only now, with everything stopped and nothing able to start, does the restore begin.
+            write_marker restoring
+            crash_point rollback-marked
             restore_snapshot || die3 "the restore did not complete; run --recover rollback again"
             write_marker restored
             crash_point restored
@@ -524,6 +555,11 @@ deploy_from() {
             if ! start_and_finish 0 new; then
                 printf 'error: the new release did not become healthy. Its last log lines:\n' >&2
                 journalctl -u "$SERVICE" -n 30 --no-pager -o cat >&2 || true
+                if [ "$served" = yes ]; then
+                    # It served before: its writes count. Stop, keep the marker, and leave the choice to the operator.
+                    stop_all || true
+                    die3 "the new release $new_id passed its health check earlier (served=yes), so the copy is not restored automatically. It is stopped. Fix the cause and run --recover finish, or discard its writes with --recover rollback --discard-writes"
+                fi
                 rollback_from switched
             fi
             ;;
@@ -544,10 +580,12 @@ if [ -n "$recover" ]; then
     data_dir="$(marker_get data_dir)"
     snapshot="$(marker_get snapshot)"
     start_policy="$(marker_get start)"
+    served="$(marker_get served)"
     active_timers="$(marker_get timers)"
     nonce="$(marker_get nonce)"
     stamp="$(marker_get started)"
     case "$start_policy" in yes | no) ;; *) die3 "the marker has no start policy" ;; esac
+    case "$served" in yes | no) ;; *) die3 "the marker doesn't say whether the new release served (served=)" ;; esac
     if [ -z "$data_dir" ] || [ -z "$snapshot" ] || [ -z "$new_id" ]; then die3 "the marker is incomplete"; fi
     log "recovering ($recover) a deploy of $new_id interrupted in phase '$phase'"
     if [ "$recover" = rollback ]; then rollback_from "$phase"; fi
@@ -640,6 +678,7 @@ done
 snapshot="$DEPLOY_DIR/pre-$stamp"
 start_policy=yes
 [ "$no_start" -eq 0 ] || start_policy=no
+served=no
 nonce=""
 
 # Keep this script where --recover can find it after the upload is gone.

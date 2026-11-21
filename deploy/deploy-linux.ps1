@@ -27,7 +27,7 @@
     Nothing about a deployment is built in: every name comes from the parameters.
 
     Exit codes: those of install-release.sh (0 deployed; 1 nothing changed; 2 rolled back, the previous
-    release runs; 3 the server is down), or 1 if the build or the copy failed, or 4 if the deploy
+    release is current; 3 unfinished, the marker stays), or 1 if the build or the copy failed, or 4 if the deploy
     succeeded but -PublicHealthUrl didn't answer 200.
 
 .PARAMETER Transport
@@ -206,7 +206,7 @@ switch ($code) {
     0 { if ($NoStart) { Write-Host 'Installed; the server stays stopped.' -ForegroundColor Green } else { Write-Host 'Deployed.' -ForegroundColor Green } }
     1 { Write-Host 'Nothing changed on the VM.' -ForegroundColor Yellow; exit 1 }
     2 { Write-Host 'The new release failed its health check and was rolled back; the previous release runs.' -ForegroundColor Yellow; exit 2 }
-    3 { Write-Host 'The server is down and the deploy is unfinished. See the runbook, "An interrupted deploy".' -ForegroundColor Red; exit 3 }
+    3 { Write-Host 'The deploy is unfinished and its marker stays (on the VM: sudo /usr/local/lib/todo/install-release --status). See the runbook, "An interrupted deploy".' -ForegroundColor Red; exit 3 }
     default { Write-Host "The install ended with exit code $code (the connection may have dropped). On the VM, run: sudo /usr/local/lib/todo/install-release --status" -ForegroundColor Red; exit 1 }
 }
 

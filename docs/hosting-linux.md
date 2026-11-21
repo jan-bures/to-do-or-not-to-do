@@ -226,11 +226,16 @@ From the Windows PC:
       stops the deploy before it switches.
    5. **switched.** It points `/opt/todo/current` at the new release (a new symlink, renamed over the old
       one), checks that it does, starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the
-      unit is active and `/health` answers 200. The server runs pending migrations before it listens.
+      unit is active and `/health` answers 200. The server runs pending migrations before it listens. The
+      moment it first answers, the marker records `served=yes`: from then on it may have accepted writes.
    6. It starts the backup timers that were running before (timers that were off stay off), and then removes
-      the marker, as the very last step. Until then the guard refuses any backup run the timers start.
-4. **Roll back.** If the new release doesn't become healthy, it may already have migrated the databases:
-   1. **restoring.** The script restores the copy, in full, before anything starts. The files in the
+      the marker, as the very last step. Until then the guard refuses any backup run the timers start. If a
+      timer won't start, the marker stays and the deploy exits 3; `--recover finish` tries again.
+4. **Roll back.** If the new release never became healthy, it may still have migrated the databases, so the
+   script rolls back by itself. (A release that answered even once is never rolled back automatically: see
+   [An interrupted deploy](#an-interrupted-deploy).)
+   1. **restoring.** It stops everything and checks that it stopped, and only then writes `restoring` and
+      restores the copy, in full, before anything starts. The files in the
       `MANIFEST` are copied into a fresh root-only directory inside the data directory, given the service
       user and mode 0600, and synced. For each database, every live entry with one of its names (file,
       sidecar, or anything the service user put there, such as a symlink) is moved aside, unread, into
@@ -286,15 +291,15 @@ single rename, and a restore never writes over the live file. To see where the d
 sudo /usr/local/lib/todo/install-release --status
 ```
 
-It only reads. It prints the phase, the new and previous release, the data directory, the copy (`snapshot=`)
-and the start policy (`start=no` after `-NoStart`), and says so if a deploy or recovery is running right now.
-The phases:
+It only reads. It prints the phase, the new and previous release, the data directory, the copy (`snapshot=`),
+the start policy (`start=no` after `-NoStart`) and whether the new release ever answered its health check
+(`served=yes`), and says so if a deploy or recovery is running right now. The phases:
 
 | Phase | What is true |
 |---|---|
 | `prepared` | The previous release is current, and the new one never ran: the databases are as the previous release left it. The copy may be incomplete. |
-| `switched` | The copy is complete. `current` may point at either release (the rename may not have happened), and the new one may have run. |
-| `restoring` | A rollback restore was started; the databases may be a mix of old and new until it completes. |
+| `switched` | The copy is complete. `current` may point at either release (the rename may not have happened), and the new one may have run. With `served=yes` it answered its health check and may have accepted writes. |
+| `restoring` | Everything was stopped, then a rollback restore was started; the databases may be a mix of old and new until it completes. Nothing runs. |
 | `restored` | The databases are exactly the copy again. The previous release may have run on them since. |
 
 Any phase can also end with the server and the timers running and only the marker left: the last step,
@@ -304,13 +309,19 @@ Then choose one:
 
 - **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from `prepared` or
   `switched`: it stops what runs, takes the copy again if the phase is `prepared`, points `current` at the
-  new release and checks it, and starts it. If the new release doesn't become healthy, it rolls back as a
-  normal deploy would. From `restoring` and `restored` only a rollback is possible.
+  new release and checks it, and starts it. If the new release doesn't become healthy and never did
+  (`served=no`), it rolls back as a normal deploy would. With `served=yes` it doesn't: it leaves the server
+  stopped, keeps the marker and exits 3, so its writes are never thrown away without you deciding to. Fix
+  the cause and run `--recover finish` again. From `restoring` and `restored` only a rollback is possible.
 - **Roll back.** `sudo /usr/local/lib/todo/install-release --recover rollback` returns to the previous
   release. From `prepared` it just points `current` back and starts it. From `switched` or `restoring` it first
   restores the copy in full, as above, every time it runs, so the server never starts on a mixed pair of
   databases; anything the new release wrote is then only in `failed-<time>/`. From `restored` it never
   restores again: it only points `current` back and starts the previous release.
+- **Roll back and discard writes.** From `switched` with `served=yes`, a plain rollback changes nothing: it
+  prints what would be lost (everything written since the deploy started) and exits 1. To go ahead, run
+  `sudo /usr/local/lib/todo/install-release --recover rollback --discard-writes`. The live databases are moved
+  to `failed-<time>/`, where they stay, and the copy taken before the deploy is restored.
 
 Every recovery first stops the server and the timers, and puts `current` where its phase says, whatever it
 pointed at, before it starts anything.
