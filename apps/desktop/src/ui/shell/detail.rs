@@ -708,6 +708,7 @@ impl ShellView {
         let has_mail = d.links.iter().any(|l| l.email);
         let step_focused = self.edit.step.read(cx).focus_handle.is_focused(window);
         div()
+            .flex_none()
             .flex()
             .flex_col()
             .child(
@@ -878,12 +879,22 @@ impl ShellView {
             .h_full()
             .flex()
             .flex_col()
-            .overflow_y_scroll()
             .bg(p.pane)
             .border_l_1()
             .border_color(p.line);
         match self.shell.detail.clone() {
-            Some(d) => pane.child(self.detail(&d, window, cx)),
+            Some(d) => pane
+                .child(
+                    div()
+                        .id("detail-scroll")
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.detail_scroll)
+                        .child(self.detail(&d, window, cx)),
+                )
+                .child(self.detail_bar.overlay(&self.detail_scroll, p)),
             None => pane.items_center().justify_center().child(
                 div()
                     .flex()

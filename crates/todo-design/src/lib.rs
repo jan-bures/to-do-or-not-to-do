@@ -29,6 +29,7 @@
 //!
 //! | Module | Contents |
 //! |---|---|
+//! | [`chrome`] | Windows caption and desktop scrollbar colours |
 //! | [`color`] | [`Rgb`], [`Oklch`], WCAG contrast |
 //! | [`palette`] | [`Theme`], [`Palette`], [`ListColors`], [`AgentColors`], [`Dusk`] and their derivation |
 //! | [`hues`] | smart-list hues, the list swatches, agent hues |
@@ -40,6 +41,7 @@
 //! | [`fonts`] | the bundled font files |
 //! | [`export`] | `tokens.css` and `tokens.json` generators |
 
+pub mod chrome;
 pub mod color;
 pub mod export;
 pub mod fonts;

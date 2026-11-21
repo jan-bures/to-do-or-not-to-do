@@ -78,7 +78,7 @@ impl Focusable for FailedView {
 }
 
 impl Render for FailedView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(self.theme, Smart::MyDay.hue());
         let recovery = self.pending == Some(Pending::Recovery);
         let finishing = self.pending == Some(Pending::StartFresh);
@@ -183,7 +183,7 @@ impl Render for FailedView {
                     .flex()
                     .justify_end()
                     .window_control_area(gpui::WindowControlArea::Drag)
-                    .child(kit::window_controls(&p)),
+                    .child(kit::window_controls(&p, window, kit::CaptionPreview::Live)),
             )
             .child(
                 div()

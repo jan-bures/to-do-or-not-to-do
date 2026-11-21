@@ -1,5 +1,11 @@
 //! Small building blocks shared by the views. Every value comes from `theme` (that is, `todo_design`).
 
+mod caption;
+mod scrollbar;
+
+pub use caption::{CaptionPreview, window_controls};
+pub use scrollbar::Scrollbar;
+
 use gpui::{
     Div, Hsla, IntoElement, PathBuilder, SharedString, Styled, Svg, Window, canvas, div, point,
     prelude::*, px, svg,
@@ -392,51 +398,6 @@ pub fn button_quiet(p: &Palette, label: impl Into<SharedString>) -> Div {
         .text_color(p.ink_2)
         .style(ty::BUTTON)
         .child(label.into())
-}
-
-/// The minimise, maximise and close buttons at the right of a custom title bar, after a drag area that
-/// fills the rest of their parent.
-pub fn window_controls(p: &Palette) -> Div {
-    let hover = p.hover;
-    let control = |icon: Icon, area: gpui::WindowControlArea, id: &'static str| {
-        div()
-            .id(id)
-            // Windows caption buttons are 46 px wide; the design has no token for OS chrome.
-            .w(px(46.))
-            .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .window_control_area(area)
-            .hover(move |s| s.bg(hover))
-            .child(self::icon(icon, component::GLYPH, p.ink_2))
-    };
-    div()
-        .flex_1()
-        .h_full()
-        .flex()
-        .justify_end()
-        .child(
-            div()
-                .flex_1()
-                .h_full()
-                .window_control_area(gpui::WindowControlArea::Drag),
-        )
-        .child(control(
-            Icon::Minus,
-            gpui::WindowControlArea::Min,
-            "win-min",
-        ))
-        .child(control(
-            Icon::Square,
-            gpui::WindowControlArea::Max,
-            "win-max",
-        ))
-        .child(control(
-            Icon::X,
-            gpui::WindowControlArea::Close,
-            "win-close",
-        ))
 }
 
 /// A section label in mono capitals.

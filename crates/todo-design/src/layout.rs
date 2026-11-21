@@ -152,6 +152,20 @@ pub mod desktop {
     pub const DETAIL: f32 = 392.0;
     /// Title bar height.
     pub const TITLEBAR: f32 = 36.0;
+    /// Width of a Windows caption button.
+    pub const CAPTION_WIDTH: f32 = 46.0;
+    /// Size of a Windows caption glyph.
+    pub const CAPTION_GLYPH: f32 = 10.0;
+    /// Optical stroke of a Windows caption glyph.
+    pub const CAPTION_STROKE: f32 = 1.0;
+    /// Width of the quiet scrollbar thumb.
+    pub const SCROLLBAR_WIDTH: f32 = 6.0;
+    /// Width of the hovered thumb, and the clickable track.
+    pub const SCROLLBAR_HOVER_WIDTH: f32 = 8.0;
+    /// Gap between the scrollbar and each edge of the viewport.
+    pub const SCROLLBAR_INSET: f32 = 2.0;
+    /// Shortest usable thumb when the content is much taller than the viewport.
+    pub const SCROLLBAR_MIN_THUMB: f32 = 24.0;
     /// Status bar height.
     pub const STATUSBAR: f32 = 28.0;
     /// Horizontal padding of the list column (header, quick-add, rows).
@@ -204,11 +218,18 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 29] = [
+    pub const ALL: [(&str, f32); 36] = [
         ("sidebar", SIDEBAR),
         ("list", LIST),
         ("detail", DETAIL),
         ("titlebar", TITLEBAR),
+        ("caption-width", CAPTION_WIDTH),
+        ("caption-glyph", CAPTION_GLYPH),
+        ("caption-stroke", CAPTION_STROKE),
+        ("scrollbar-width", SCROLLBAR_WIDTH),
+        ("scrollbar-hover-width", SCROLLBAR_HOVER_WIDTH),
+        ("scrollbar-inset", SCROLLBAR_INSET),
+        ("scrollbar-min-thumb", SCROLLBAR_MIN_THUMB),
         ("statusbar", STATUSBAR),
         ("list-pad-x", LIST_PAD_X),
         ("header-pad-top", HEADER_PAD_TOP),

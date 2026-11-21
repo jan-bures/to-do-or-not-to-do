@@ -15,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'empty', 'finished', 'finished-short', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
+    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )

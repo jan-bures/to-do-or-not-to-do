@@ -44,7 +44,7 @@ linear gradient for the dusk sky. Build the paths when the size or the count cha
 
 ### How colours are made
 
-Every colour is **authored in OKLCH** and converted to sRGB. A colour that falls outside the sRGB gamut keeps its
+Room and accent colours are **authored in OKLCH** and converted to sRGB. Windows caption colours specified by the OS use sRGB directly. A colour that falls outside the sRGB gamut keeps its
 lightness and hue and loses chroma. Three kinds of token take their hue from somewhere else:
 
 | Kind | Hue | Dark mode | Used for |
@@ -75,8 +75,8 @@ keys, used in settings, CSS and JSON.
 - **Priority is never colour.** It is `!` / `!!` / `!!!` in Geist Mono. Count, weight and ink step together from
   `ink-3` up to `ink`.
 - **Selection** is a `wash` background plus a 3 px `accent` bar on the left edge.
-- **Translucency** is only used in the landscape: the sun's halo, stars, the moon and the dusk rings. UI surfaces
-  are always opaque.
+- **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings) and in small
+  desktop chrome overlays (caption button tints and scrollbar thumbs). UI surfaces are opaque.
 
 ### Contrast
 
@@ -125,8 +125,11 @@ are 4, 8, 12, 16, 20, 24, 32 and 40.
 **The desktop window** is laid out at the reference size of 1440 × 900:
 
 - three panes: sidebar **248**, list **800** (flexible) and detail **392**;
-- a 36 px title bar and a 28 px status bar;
-- 32 px horizontal padding in the list column.
+- a 36 px title bar and a 28 px status bar. Windows caption buttons are 46 px wide with matching 10 px
+  glyphs and 1 px optical strokes; the close button uses the Windows red on hover;
+- 32 px horizontal padding in the list column;
+- a quiet 6 px scrollbar thumb in the edge gutter of each overflowing pane. It widens and gains contrast
+  on hover or drag, without covering row content.
 
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.
@@ -701,7 +704,8 @@ Implementation order across clients follows the comprehension gaps identified in
 
 - **Interface icons come from one set: Lucide.** They are stroke icons on a 24-unit grid with round caps, and
   they're bundled at stroke 1.6. Draw them at 18 px in toolbars and rows, and at 14 px inside chips and metadata.
-  Never mix in another set, and never use emoji as icons.
+  Never mix in another set, and never use emoji as icons. Windows caption buttons are OS chrome and use
+  a matching set of custom minimize, maximize, restore and close marks.
 - **The hand-drawn list glyphs** are the app's own: sun, briefcase, layers, house, flag, coin, paperclip,
   calendar-star, code, wrench, book, basket, heart, paper-plane and document. They are slightly irregular single
   strokes, drawn at 16 px in the list's `glyph` colour. They give the sidebar and the phone room pills character

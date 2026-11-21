@@ -182,7 +182,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 | Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. If the check can't be set up (an elevated copy created the objects, say), the app logs it and runs standalone: visible, and not listening for second launches. |
 | Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to My Day (before pairing, it shows the pairing window instead). Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
-| Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. |
+| Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. The panes show a quiet scrollbar only when they overflow; drag the thumb or click its gutter to page. The caption buttons keep Windows' native hit testing for Snap Layouts. |
 | Header landscape | `src/ui/landscape.rs` | The sky with two flat hills and the sun on its arc at *done / total*, or the tall dusk scene once My Day is done. The geometry is `todo_design::landscape`; the paths are built once per size and progress, and are cached. |
 
 ### Design tokens
@@ -206,8 +206,8 @@ Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
 ## Screenshots
 
 ```sh
-todo-desktop --screenshot-all <out-dir> [--overwrite]  # all fourteen fixtures × both themes × 100 % and 150 %
-todo-desktop --screenshot <out.png> --fixture <my-day|work|collapsed-collection|long-sidebar|long-names|long-names-narrow|empty|finished|finished-short|quick-add|pairing|pairing-code|open-failed|open-failed-confirm> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
+todo-desktop --screenshot-all <out-dir> [--overwrite]  # all fixtures × both themes × 100 % and 150 %
+todo-desktop --screenshot <out.png> --fixture <name> [--theme light|dark] [--scale 1|1.25|1.5|2] [--overwrite]
 ```
 
 Both modes use the same below-normal-priority fixture runner. It never enters interactive startup: no
@@ -225,6 +225,9 @@ A fixture is a `todo_core::State` built from invented sample data by running com
 window is the real shell on a local store (`src/store.rs`). `pairing` and `pairing-code` show the pairing
 screen before and after asking for a code. `open-failed` and `open-failed-confirm` show the "couldn't be
 opened" screen after a recovery that can't finish, before and while confirming **Start fresh**.
+`long-sidebar` and `long-task-list` show the scrollbar thumbs (the latter also overflows the detail pane).
+`caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
+These states are set by the fixture, not by moving the pointer or maximizing the capture window.
 
 The runner requests five settling frames before reading back the next frame. It doesn't capture the
 screen. It refuses to replace an existing file unless `--overwrite` is given. It checks that each image

@@ -466,31 +466,37 @@ impl ShellView {
             .border_color(p.line)
             .child(
                 div()
-                    .id("sidebar-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
                     .child(
-                        // The rows keep their heights and the pane scrolls when they don't fit: as
-                        // direct children of the height-limited pane they would shrink instead.
                         div()
-                            .flex_none()
-                            .min_h_full()
+                            .id("sidebar-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.sidebar_scroll)
                             .flex()
                             .flex_col()
-                            .pt(px(space::S3))
-                            .px(px(space::S2))
-                            .children(smart)
-                            .children(collections)
-                            .when(!top.is_empty(), |d| {
-                                d.child(div().h(px(space::S3))).children(top)
-                            })
-                            .child(new_list)
-                            .child(div().flex_1().min_h(px(space::S3)))
-                            .children(agents),
-                    ),
+                            .child(
+                                // Rows would shrink as direct children of the height-limited pane.
+                                div()
+                                    .flex_none()
+                                    .min_h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .pt(px(space::S3))
+                                    .pl(px(space::S2))
+                                    .pr(px(space::S3)) // reserve the scrollbar gutter
+                                    .children(smart)
+                                    .children(collections)
+                                    .when(!top.is_empty(), |d| {
+                                        d.child(div().h(px(space::S3))).children(top)
+                                    })
+                                    .child(new_list)
+                                    .child(div().flex_1().min_h(px(space::S3)))
+                                    .children(agents),
+                            ),
+                    )
+                    .child(self.sidebar_bar.overlay(&self.sidebar_scroll, &p)),
             )
             .child(
                 div()

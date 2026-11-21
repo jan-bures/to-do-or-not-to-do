@@ -23,6 +23,7 @@ use crate::platform::win;
 use crate::store::Store;
 use crate::theme::desktop;
 use crate::ui::failed::FailedView;
+use crate::ui::kit::CaptionPreview;
 use crate::ui::pairing::PairingView;
 use crate::ui::quick_add::{self, QuickAddView};
 use crate::ui::shell::{self, ShellView};
@@ -168,6 +169,11 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     todo_patch::set_scale_factor_override(Some(opts.scale));
     let theme = opts.theme;
     let quick = opts.fixture == "quick-add";
+    let caption = match opts.fixture.as_str() {
+        "caption-hover" => CaptionPreview::MaximizeHover,
+        "caption-close-hover" => CaptionPreview::CloseHover,
+        _ => CaptionPreview::Live,
+    };
     // The pairing screen, before (`pairing`) and after (`pairing-code`) asking for a code.
     let pairing = match opts.fixture.as_str() {
         "pairing" => Some(false),
@@ -223,14 +229,16 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             let store = Rc::new(Store::fixture(&fixture));
             cx.open_window(options(logical.0, logical.1, false), |window, cx| {
                 let view = cx.new(|cx| {
-                    ShellView::new(
+                    let mut shell = ShellView::new(
                         store,
                         fixture.ui.clone(),
                         theme,
                         fixture.quick_add_text,
                         window,
                         cx,
-                    )
+                    );
+                    shell.preview_caption(caption);
+                    shell
                 });
                 // GPUI's own focus, inside the window: nothing is activated or shown.
                 let focus = view.read(cx).fixture_focus(cx);

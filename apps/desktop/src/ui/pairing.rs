@@ -591,7 +591,7 @@ impl Focusable for PairingView {
 }
 
 impl Render for PairingView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
         let (title, body) = match self.step.clone() {
             Step::Enter { error } => ("Connect", self.enter(error.as_ref(), false, cx)),
@@ -649,7 +649,7 @@ impl Render for PairingView {
                                     .child("To-do"),
                             ),
                     )
-                    .child(kit::window_controls(&p)),
+                    .child(kit::window_controls(&p, window, kit::CaptionPreview::Live)),
             )
             .child(
                 div()

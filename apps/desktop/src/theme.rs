@@ -7,7 +7,7 @@ use todo_design::Rgb;
 pub use todo_design::Theme;
 pub use todo_design::layout::{component, desktop, elevation, radius, space};
 pub use todo_design::typography as ty;
-pub use todo_design::{Glyph, Icon, hues, landscape, motion};
+pub use todo_design::{Glyph, Icon, chrome, hues, landscape, motion};
 
 /// A hue in OKLCH degrees, as `todo_design` takes it.
 pub type Hue = f64;

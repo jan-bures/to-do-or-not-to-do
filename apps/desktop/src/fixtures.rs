@@ -43,11 +43,12 @@ pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 /// `pairing` is drawn by the pairing view and has no shell.
 pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
-        "my-day" | "quick-add" => Some(my_day()),
+        "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
         "long-sidebar" => Some(long_sidebar()),
         "long-names" | "long-names-narrow" => Some(long_names()),
+        "long-task-list" => Some(long_task_list()),
         "empty" => Some(empty()),
         "finished" | "finished-short" => Some(finished()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
@@ -755,6 +756,51 @@ fn long_names() -> Fixture {
     )
 }
 
+/// Enough rows and steps to overflow both the virtualized list and the detail pane.
+fn long_task_list() -> Fixture {
+    let (mut b, l) = sample();
+    for title in [
+        "Update the project brief",
+        "Check the room capacity",
+        "Send out the agenda",
+        "Sketch the seating plan",
+        "Review printing estimates",
+        "Order spare name badges",
+        "Confirm catering options",
+        "Schedule the rehearsal",
+        "Publish the program",
+        "Test the room microphone",
+        "Gather questions for the panel",
+        "Book a captioner",
+        "Prepare reusable signs",
+        "Draft the follow-up note",
+    ] {
+        b.task(t(l.planning, title));
+    }
+    for i in 1..=24 {
+        let id = StepId::from_uuid(b.uuid());
+        b.run(
+            &owner(),
+            MORNING,
+            Command::CreateStep {
+                id,
+                task: l.q4,
+                title: format!("Review item {i} on the venue checklist"),
+                placement: Placement::Last,
+            },
+        );
+    }
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::List(l.planning),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
 /// A list with nothing open: scenery only, no sun.
 pub fn empty() -> Fixture {
     let (b, l) = sample();
@@ -921,6 +967,13 @@ mod tests {
         let shell = f.shell();
         assert!(shell.room.handover().is_none());
         assert_eq!(shell.nav_tasks().len(), 11);
+    }
+
+    #[test]
+    fn long_task_list_fills_the_room_and_detail_pane() {
+        let shell = long_task_list().shell();
+        assert!(shell.row_count() >= 14);
+        assert!(shell.detail.expect("selected task").steps.len() >= 24);
     }
 
     #[test]

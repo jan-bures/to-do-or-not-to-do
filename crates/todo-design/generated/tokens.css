@@ -213,6 +213,13 @@
   --desktop-list: 800px;
   --desktop-detail: 392px;
   --desktop-titlebar: 36px;
+  --desktop-caption-width: 46px;
+  --desktop-caption-glyph: 10px;
+  --desktop-caption-stroke: 1px;
+  --desktop-scrollbar-width: 6px;
+  --desktop-scrollbar-hover-width: 8px;
+  --desktop-scrollbar-inset: 2px;
+  --desktop-scrollbar-min-thumb: 24px;
   --desktop-statusbar: 28px;
   --desktop-list-pad-x: 32px;
   --desktop-header-pad-top: 20px;
@@ -283,6 +290,15 @@
   --landscape-halo-opacity: 0.22;
   --landscape-star-opacity: 0.7;
   --landscape-moon-opacity: 0.9;
+  --caption-close: #c42b1c;
+  --caption-close-pressed: #a92317;
+  --caption-white: #ffffff;
+  --caption-hover-light: 0.06;
+  --caption-pressed-light: 0.04;
+  --caption-hover-dark: 0.08;
+  --caption-pressed-dark: 0.06;
+  --scrollbar-alpha: 0.26;
+  --scrollbar-hover-alpha: 0.52;
 }
 
 [data-theme="light"] {

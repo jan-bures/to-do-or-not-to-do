@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 
 use serde_json::{Map, Value, json};
 
+use crate::chrome;
 use crate::color::{Rgb, Rgba};
 use crate::fonts;
 use crate::hues::{self, NamedHue};
@@ -169,6 +170,8 @@ pub fn css() -> String {
         let unit = if k.ends_with("opacity") { "" } else { "px" };
         root.push((format!("landscape-{k}"), format!("{v}{unit}")));
     }
+    root.extend(chrome::COLORS.map(|(name, rgb)| (name.into(), rgb.hex())));
+    root.extend(chrome::OPACITIES.map(|(name, alpha)| (name.into(), alpha.to_string())));
     css_block(&mut out, ":root", &root);
 
     for theme in Theme::ALL {
@@ -359,6 +362,10 @@ pub fn json() -> String {
             "agents": hues_json(hues::AGENTS),
         },
         "colors": colors,
+        "chrome": {
+            "colors": colors_json(chrome::COLORS.to_vec()),
+            "opacities": numbers_json(&chrome::OPACITIES),
+        },
         "fonts": { "faces": faces },
         "type": type_scale,
         "space": numbers_json(&space::ALL),

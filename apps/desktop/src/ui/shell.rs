@@ -129,6 +129,13 @@ pub struct ShellView {
     rows: UniformListScrollHandle,
     /// The finished day's hand-over, which scrolls when it's taller than the pane.
     handover_scroll: ScrollHandle,
+    handover_bar: kit::Scrollbar,
+    rows_bar: kit::Scrollbar,
+    sidebar_scroll: ScrollHandle,
+    sidebar_bar: kit::Scrollbar,
+    detail_scroll: ScrollHandle,
+    detail_bar: kit::Scrollbar,
+    caption_preview: kit::CaptionPreview,
     menu: Option<Menu>,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
@@ -215,6 +222,13 @@ impl ShellView {
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
             handover_scroll: ScrollHandle::new(),
+            handover_bar: kit::Scrollbar::default(),
+            rows_bar: kit::Scrollbar::default(),
+            sidebar_scroll: ScrollHandle::new(),
+            sidebar_bar: kit::Scrollbar::default(),
+            detail_scroll: ScrollHandle::new(),
+            detail_bar: kit::Scrollbar::default(),
+            caption_preview: kit::CaptionPreview::Live,
             menu: None,
             inline: None,
             filter,
@@ -510,6 +524,10 @@ impl ShellView {
         self.select_task(Some(tasks[next]), cx);
     }
 
+    pub fn preview_caption(&mut self, preview: kit::CaptionPreview) {
+        self.caption_preview = preview;
+    }
+
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let filtering = !self.ui.filter.is_empty();
@@ -588,7 +606,7 @@ impl ShellView {
                         kit::kbd(p, "Ctrl K").into_any_element()
                     }),
             )
-            .child(kit::window_controls(p))
+            .child(kit::window_controls(p, window, self.caption_preview))
     }
 
     fn eyebrow(&self) -> Div {
@@ -1142,6 +1160,9 @@ impl ShellView {
     fn list(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let room = &self.shell.room;
+        // The list's scrollbar shows only while its rows do.
+        let has_rows =
+            !(room.finished_day() && room.completed.is_empty()) && self.shell.row_count() > 0;
         // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
         let body: AnyElement = if let Some(next) = room.handover() {
             self.tomorrow(next, cx).into_any_element()
@@ -1269,7 +1290,11 @@ impl ShellView {
                     }))
                     .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
                     .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
-                    .child(body),
+                    .child(body)
+                    // Overlay in the task rows' existing right padding.
+                    .when(has_rows, |d| {
+                        d.child(self.rows_bar.for_list(&self.rows, &p))
+                    }),
             )
             .children(completed)
     }
@@ -1394,7 +1419,7 @@ impl ShellView {
                     })),
             );
         // Its children are in the order `handover_child` counts them; it scrolls when taller than the pane.
-        div()
+        let scroll = div()
             .id("handover")
             .size_full()
             .overflow_y_scroll()
@@ -1422,7 +1447,13 @@ impl ShellView {
                         .text_color(p.ink_3)
                         .child(format!("{} more", next.more)),
                 )
-            })
+            });
+        div()
+            .id("handover-pane")
+            .relative()
+            .size_full()
+            .child(scroll)
+            .child(self.handover_bar.overlay(&self.handover_scroll, p))
     }
 
     /// Where the keyboard is, for the status bar's hints.
