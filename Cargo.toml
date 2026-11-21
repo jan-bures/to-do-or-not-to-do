@@ -10,8 +10,9 @@ members = [
     "crates/todo-design",
     "crates/todo-ffi",
 ]
-# Spikes are standalone throwaway projects. The desktop app is its own workspace (GPUI pins and patches).
-exclude = ["spikes", "apps/desktop"]
+# Spikes are standalone throwaway projects. The desktop app (GPUI pins and patches) and the web app
+# (Leptos, wasm32) are their own workspaces.
+exclude = ["spikes", "apps/desktop", "apps/web"]
 
 [workspace.package]
 version = "0.1.0"

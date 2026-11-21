@@ -1,0 +1,62 @@
+[package]
+name = "todo-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license-file = "../../LICENSE.md"
+repository = "https://github.com/jan-bures/to-do-or-not-to-do"
+publish = false
+description = "To-do web client (Leptos, client-side rendering, wasm32)."
+
+# The web app is its own Cargo workspace, outside the root one, like the desktop app: Leptos and its
+# dependencies stay out of the root lockfile, and the shared crates' wasm32/Android checks stay lean.
+# See `docs/web.md`.
+[workspace]
+
+[[bin]]
+name = "todo-web"
+path = "src/main.rs"
+
+[features]
+default = []
+# Built-in sample data and a fixed clock, for the screenshot gallery and the browser tests. Never in a
+# deployed build: `scripts/build.mjs --fixtures` writes it to `dist-fixtures/`, not `dist/`.
+fixtures = []
+
+[dependencies]
+todo-core = { path = "../../crates/todo-core" }
+todo-client = { path = "../../crates/todo-client", features = ["web"] }
+todo-design = { path = "../../crates/todo-design" }
+leptos = { version = "0.8.23", features = ["csr"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = "1"
+jiff = { version = "1", default-features = false, features = ["std", "serde"] }
+thiserror = "2"
+tracing = "0.1"
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+js-sys = "0.3.77"
+web-sys = { version = "0.3.77", features = [
+    "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlTextAreaElement", "HtmlMetaElement",
+    "HtmlAnchorElement", "Window", "Location", "History", "MediaQueryList", "MediaQueryListEvent",
+    "KeyboardEvent", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget",
+    "VisibilityState", "Storage", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
+    "DomRectReadOnly", "Headers", "RequestInit", "RequestCredentials", "Response",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"

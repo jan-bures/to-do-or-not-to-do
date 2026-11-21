@@ -192,6 +192,63 @@ jobs:
             apps/android/app/build/paparazzi/failures
           if-no-files-found: ignore
 
+  web-app:
+    name: web app (wasm, browser tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The web app is its own workspace; the live tests also need the server from the root one.
+          workspaces: |
+            apps/web
+            .
+      - name: Install wasm-bindgen-cli (the version in apps/web/Cargo.lock)
+        run: |
+          v=$(grep -A1 '^name = "wasm-bindgen"$' apps/web/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          if [ "$(wasm-bindgen --version 2>/dev/null | cut -d' ' -f2)" != "$v" ]; then
+            cargo install wasm-bindgen-cli --version "$v" --locked
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # Pinned Node LTS (24.x "Krypton").
+          node-version: 24.15.0
+      - name: fmt, clippy (host and wasm32), unit tests
+        working-directory: apps/web
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --locked
+          cargo clippy --target wasm32-unknown-unknown --locked
+          cargo clippy --target wasm32-unknown-unknown --features fixtures --locked
+          cargo test --locked
+      - name: Build the app and the gallery build
+        run: |
+          node apps/web/scripts/build.mjs
+          node apps/web/scripts/build.mjs --fixtures
+      - run: cargo build -p todo-server --locked
+      - name: Install Playwright and Chromium
+        working-directory: apps/web/e2e
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+      # Interaction tests and the screenshot gallery on the fixtures build, under the server's exact CSP.
+      - name: Browser tests and gallery
+        working-directory: apps/web/e2e
+        run: npx playwright test
+      # The real app against a real server: passkey sign-in, the session + CSRF API, live updates, and an
+      # offline edit that survives a reload.
+      - name: Live tests against todo-server
+        working-directory: apps/web/e2e
+        run: npx playwright test -c live.config.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: web-gallery
+          path: apps/web/e2e/gallery/*.png
+          if-no-files-found: warn
+
   email-worker:
     name: email worker tests (Node)
     runs-on: ubuntu-latest

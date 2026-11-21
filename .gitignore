@@ -29,3 +29,11 @@ Thumbs.db
 /workers/email-ingest/.dev.vars*
 /workers/email-ingest/.wrangler/
 /workers/email-ingest/.cloudflare/
+
+# Web app build output and browser-test artefacts
+/apps/web/dist/
+/apps/web/dist-fixtures/
+/apps/web/e2e/gallery/
+/apps/web/e2e/test-results/
+/apps/web/e2e/playwright-report/
+/apps/web/e2e/.live-data/

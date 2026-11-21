@@ -43,6 +43,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `docs/design-language.md` | The design language. Every UI change follows it and passes the screenshot gate. |
 | `apps/desktop` | GPUI desktop app, Windows only for now. Its own Cargo workspace with a vendored, patched `gpui_windows`. See `docs/desktop.md`. |
 | `apps/android` | Android app (Kotlin, Compose, Gradle). The Rust core comes through `todo-ffi` and cargo-ndk. See `docs/android.md`. |
+| `apps/web` | Web app: Leptos (CSR) on wasm32, served by `todo-server` at `/app`, signed in with the passkey session. Its own Cargo workspace; browser tests and the gallery in `apps/web/e2e`. See `docs/web.md`. |
 | `workers/email-ingest` | Cloudflare Email Worker for email to task (plain JS, Node tests). Contract: `docs/ingest-email.md`. |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
 
@@ -64,6 +65,12 @@ cd apps/desktop && cargo fmt --all && cargo clippy --all-targets -- -D warnings 
 pwsh apps/desktop/scripts/gallery.ps1   # screenshot gallery; look at it after UI changes
 # The Android app (JDK 21, Android SDK, cargo-ndk; see docs/android.md):
 cd apps/android && ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:verifyPaparazziDebug
+# The web app (its own workspace; wasm-bindgen-cli at the version in apps/web/Cargo.lock):
+cd apps/web && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
+cargo clippy --manifest-path apps/web/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+node apps/web/scripts/build.mjs [--fixtures]   # -> apps/web/dist (or dist-fixtures for the gallery)
+cd apps/web/e2e && npm ci && npx playwright test   # browser tests + gallery in apps/web/e2e/gallery/
+npx playwright test -c live.config.mjs             # against a real todo-server (cargo build -p todo-server first)
 ```
 
 For desktop visual checks, agents must use the gallery or screenshot mode. Never launch the interactive app.
