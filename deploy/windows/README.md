@@ -51,7 +51,8 @@ Copy-Item target\release\todo-server.exe "$env:LOCALAPPDATA\todo\bin\"
 - **Stopping is abrupt.** The server is ended with `Stop-Process`, not a console Ctrl+C. SQLite in WAL mode is
   crash-safe, and an interrupted command is retried with its command ID, so nothing is lost.
 - **Leftover processes.** If the supervisor itself is killed, it cleans up the processes it left behind the
-  next time it starts.
+  next time it starts. A backup worker is recorded with its start time as well as its PID, so it's only
+  killed if it is still the same process, never one that happens to reuse the PID.
 - **Starting by hand.** `Start-ScheduledTask` can run an interactive task in another, disconnected session of
   the same user, where it fails with `0xC0000142`. `install-pilot.ps1 -Start` launches the supervisor in the
   current session instead. The logon trigger always uses the session that's logging on.
@@ -137,7 +138,10 @@ When `bin\todo-backup.exe` and `backup.toml` both exist, the supervisor:
 - runs one backup at a time, as a separate process. The supervisor loop only polls it and never waits on
   it, so supervising the server never stalls. A run that takes longer than an hour is killed through its
   process handle (`-BackupTimeoutMinutes`). It stays tracked until it has really exited, so no second
-  backup starts next to it, and it's never counted as a success.
+  backup starts next to it, and it's never counted as a success. If the supervisor stops while a worker
+  won't exit, it leaves that worker's PID and start time in `pilot.pids.json`. The next start, or
+  `stop-pilot.ps1`, stops the worker only if both still match, and the next start runs no backup until the
+  worker has gone.
 - records start and completion times in `backup-schedule.json`, so restarts and reboots don't back up again
   straight away. A failed run is retried after 30 minutes (`-BackupRetryMinutes`).
 - appends each run's output to `logs\backup-<date>.log`.
@@ -196,14 +200,20 @@ Restore downloads, decrypts and decompresses the backup, and checks its integrit
 The plaintext is staged in a hidden `.todo-restore-...` directory next to `--out`, so the final no-clobber
 rename stays on one volume. That directory is readable only by you, and it's recorded in `backup-state`
 before it's created. If a restore is killed half-way, the next `restore` or `drill` finds that directory and
-deletes it.
+deletes it. If that directory can't be checked, or something else is at its path, it stays recorded, and a
+later run looks again.
+
+`--out`, like `backup-state` and the `keygen` output, must be on a volume that stores permissions (NTFS or
+ReFS). FAT and exFAT, which many USB sticks use, can't keep a file owner-only, so the tool refuses to write
+there.
 
 ### Temporary files
 
 Snapshots and drill copies live in `backup-state\scratch\`, which is readable only by you. Each run gets its
 own subdirectory, and each one, like each restore staging directory, holds a marker file that the tool
-wrote. Cleanup deletes only directories that carry that exact marker. It never follows links, and it
-deletes nothing else, wherever it is.
+wrote. Cleanup deletes only directories that carry that exact marker. It never follows symlinks or
+junctions, not even if `scratch` itself has been replaced by one, and it deletes nothing else, wherever it
+is.
 
 To put a backup back in place:
 

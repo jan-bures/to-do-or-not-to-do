@@ -107,8 +107,12 @@ function Save-State($Children) {
     foreach ($c in $Children) {
         if ($c.Process -and -not $c.Process.HasExited) { $pids[$c.Name] = $c.Process.Id }
     }
+    # Backup workers are recorded with their start time, so a later supervisor (or stop-pilot.ps1) only ever
+    # kills the same process, never one that reused the PID.
     if ($script:backupJob -and -not $script:backupJob.Process.HasExited) {
-        $pids['todo-backup'] = $script:backupJob.Process.Id
+        $pids['todo-backup'] = $script:backupJob.Record
+    } elseif ($script:leftoverBackup) {
+        $pids['todo-backup'] = $script:leftoverBackup
     }
     $pids | ConvertTo-Json | Set-Content -Path $stateFile
 }
@@ -124,6 +128,9 @@ function Get-JsonValue($Object, [string]$Name) {
 # --- Backups -------------------------------------------------------------------------------------------
 
 $script:backupJob = $null
+# A worker left by an earlier supervisor that is still running; recorded as { pid, startTime }.
+$script:leftoverBackup = $null
+$script:leftoverKillAttempt = $null
 $backupKinds = @('daily', 'frequent')   # daily first when both are due
 $backupNotBefore = (Get-Date).ToUniversalTime().AddMinutes($BackupStartDelayMinutes)
 
@@ -137,6 +144,25 @@ function ConvertTo-UtcTime($Value) {
     } catch {
         return [datetime]::MinValue
     }
+}
+
+# Identifies a process for a later kill: its PID plus its start time, which a reused PID doesn't share.
+function Get-ProcessRecord($Process) {
+    $start = $null
+    try { $start = $Process.StartTime.ToUniversalTime().ToString('o') } catch { }
+    return [ordered]@{ pid = $Process.Id; startTime = $start }
+}
+
+# The running process a record describes, or $null unless its PID, name and start time all still match.
+function Find-RecordedProcess($Record, [string]$Name) {
+    $procId = Get-JsonValue $Record 'pid'
+    $start = ConvertTo-UtcTime (Get-JsonValue $Record 'startTime')
+    if (-not $procId -or $start -eq [datetime]::MinValue) { return $null }
+    $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    if (-not $p -or $p.ProcessName -ne $Name) { return $null }
+    try { $actual = $p.StartTime.ToUniversalTime() } catch { return $null }
+    if ([Math]::Abs(($actual - $start).TotalSeconds) -ge 1) { return $null }
+    return $p
 }
 
 function Read-BackupSchedule {
@@ -195,7 +221,7 @@ function Start-BackupJob([string]$Kind, $Schedule, [datetime]$NowUtc) {
     $null = $p.Handle
     $script:backupJob = [pscustomobject]@{
         Kind = $Kind; Process = $p; StartedAt = $NowUtc; Out = $out; Err = $err
-        KilledAt = $null; LastKillAttempt = $null
+        KilledAt = $null; LastKillAttempt = $null; Record = (Get-ProcessRecord $p)
     }
     Write-PilotLog "started backup $Kind (pid $($p.Id))"
 }
@@ -254,6 +280,22 @@ function Invoke-BackupScheduler {
         $script:backupJob = $null
         return
     }
+    if ($script:leftoverBackup) {
+        # An earlier supervisor's worker that wouldn't die. Never start a backup next to it; retry the kill at
+        # most once a minute until it's gone.
+        $p = Find-RecordedProcess $script:leftoverBackup 'todo-backup'
+        if (-not $p) {
+            Write-PilotLog 'leftover todo-backup worker has exited'
+            $script:leftoverBackup = $null
+        } elseif ($null -eq $script:leftoverKillAttempt -or ($nowUtc - $script:leftoverKillAttempt).TotalSeconds -ge 60) {
+            $script:leftoverKillAttempt = $nowUtc
+            Write-PilotLog "leftover todo-backup (pid $($p.Id)) is still running; killing it"
+            try { $p.Kill() } catch { Write-PilotLog "could not kill leftover todo-backup: $_" }
+            return
+        } else {
+            return
+        }
+    }
     if ($nowUtc -lt $backupNotBefore) { return }
     $schedule = Read-BackupSchedule
     foreach ($kind in $backupKinds) {
@@ -264,8 +306,11 @@ function Invoke-BackupScheduler {
     }
 }
 
+# Stops the backup worker on shutdown. Returns the { pid, startTime } record of a worker that is still alive
+# afterwards (the kill failed, or it didn't exit in time), so it can be handed to the next supervisor.
 function Stop-BackupJob {
     $job = $script:backupJob
+    $alive = $null
     if ($job -and -not $job.Process.HasExited) {
         # Safe to interrupt: nothing is recorded until an upload completes, and the next run cleans up.
         # Only on shutdown, outside the supervision loop, is a short wait acceptable.
@@ -274,10 +319,15 @@ function Stop-BackupJob {
         if ($job.Process.WaitForExit(10000)) {
             Complete-BackupJob $job 'stopped with the supervisor'
         } else {
-            Write-PilotLog "backup $($job.Kind) (pid $($job.Process.Id)) did not exit; the next start cleans up after it"
+            Write-PilotLog "backup $($job.Kind) (pid $($job.Process.Id)) did not exit; recording it for the next start"
+            $alive = $job.Record
         }
+    } elseif ($script:leftoverBackup -and (Find-RecordedProcess $script:leftoverBackup 'todo-backup')) {
+        Write-PilotLog 'leftover todo-backup worker is still running; recording it for the next start'
+        $alive = $script:leftoverBackup
     }
     $script:backupJob = $null
+    return $alive
 }
 
 function Stop-Children($Children) {
@@ -318,7 +368,7 @@ if (-not $NoTunnel) {
 if (Test-Path $stateFile) {
     try {
         $old = Get-Content -Raw -Path $stateFile | ConvertFrom-Json
-        foreach ($name in @('cloudflared', 'todo-server', 'todo-backup')) {
+        foreach ($name in @('cloudflared', 'todo-server')) {
             $oldPid = Get-JsonValue $old $name
             if ($oldPid) {
                 $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
@@ -326,6 +376,22 @@ if (Test-Path $stateFile) {
                     Write-PilotLog "stopping leftover $name (pid $oldPid)"
                     Stop-Process -Id $oldPid -ErrorAction SilentlyContinue
                 }
+            }
+        }
+        # A backup worker is only killed if PID, name and start time all match, so a reused PID is safe.
+        $record = Get-JsonValue $old 'todo-backup'
+        if ($record) {
+            $p = Find-RecordedProcess $record 'todo-backup'
+            if ($p) {
+                Write-PilotLog "stopping leftover todo-backup (pid $($p.Id))"
+                try { $p.Kill() } catch { Write-PilotLog "could not kill leftover todo-backup: $_" }
+                if (-not $p.WaitForExit(10000)) {
+                    # Keep tracking it; the scheduler retries and starts no backup until it's gone.
+                    $script:leftoverBackup = Get-ProcessRecord $p
+                    $script:leftoverKillAttempt = (Get-Date).ToUniversalTime()
+                }
+            } else {
+                Write-PilotLog 'recorded todo-backup worker is no longer running'
             }
         }
     } catch {
@@ -382,9 +448,22 @@ try {
     }
     Write-PilotLog 'stop requested'
 } finally {
-    Stop-BackupJob
+    $alive = $null
+    try {
+        $alive = Stop-BackupJob
+    } catch {
+        Write-PilotLog "could not stop the backup job: $_"
+        if ($script:backupJob) { $alive = $script:backupJob.Record }
+    }
     Stop-Children $children
-    Remove-Item -Path $stateFile, $stopFile -ErrorAction SilentlyContinue
+    if ($alive) {
+        # Without a supervisor entry, stop-pilot.ps1 sees the pilot as stopped, and the next start (or
+        # stop-pilot.ps1) stops this worker if it is still the same process.
+        @{ 'todo-backup' = $alive } | ConvertTo-Json | Set-Content -Path $stateFile
+        Remove-Item -Path $stopFile -ErrorAction SilentlyContinue
+    } else {
+        Remove-Item -Path $stateFile, $stopFile -ErrorAction SilentlyContinue
+    }
     Write-PilotLog 'supervisor stopped'
     $mutex.ReleaseMutex()
 }

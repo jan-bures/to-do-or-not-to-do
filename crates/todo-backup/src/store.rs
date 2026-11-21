@@ -101,6 +101,14 @@ impl<'a, S: ObjectStore + ?Sized> Metered<'a, S> {
         self.budget.check(class, n, self.clock.now())
     }
 
+    /// Charges one request, against the month the clock shows right now.
+    ///
+    /// The charge is made and saved a moment before the request is sent. If a month boundary (00:00 UTC on
+    /// the 1st) falls in that gap, the request is counted in the old month and R2 may bill it to the new one,
+    /// so the new month can be undercounted. Requests are sent one at a time while holding the state lock, so
+    /// only one can straddle a given boundary: the undercount is at most one request per month boundary. That
+    /// is bounded and negligible against the default caps (2% of the free tier), so it is accepted rather than
+    /// charging both months.
     fn charge(&mut self, class: OpClass) -> Result<()> {
         self.budget.charge(class, 1, self.clock.now())
     }

@@ -196,11 +196,7 @@ mod tests {
         assert!(matches!(keygen(&path, now), Err(Error::OutputExists(_))));
 
         // Owner-only from creation, whatever the destination directory would have granted.
-        let access = crate::secure::describe_access(&path).expect("access");
-        match crate::secure::expected_private_sddl(false).expect("sddl") {
-            Some(sddl) => assert_eq!(access, sddl),
-            None => assert_eq!(access, "mode=600"),
-        }
+        crate::secure::verify_private(&path, crate::secure::Private::File).expect("owner-only");
     }
 
     #[test]
