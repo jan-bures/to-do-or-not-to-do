@@ -6,16 +6,18 @@
 
 #![allow(unsafe_code)] // Plain Win32 calls on a window this module owns; each is commented.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, KillTimer, RegisterClassW,
-    RegisterWindowMessageW, SM_CXSMICON, SetTimer, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_POPUP,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW,
+    KillTimer, MSGFLT_ALLOW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SetTimer,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_POPUP,
 };
 
 /// The DPI at 100 % scaling.
@@ -88,8 +90,18 @@ const RECHECK_MS: u32 = 1000;
 
 thread_local! {
     /// What the window procedure runs; the window lives on the UI thread, so a thread local is enough.
-    static ON_CHANGE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    static ON_CHANGE: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+    /// Set while the callback runs. Windows can deliver another change message from inside the callback (the
+    /// tray's `set_icon` talks to the taskbar, which can send messages back), and the tray library must not be
+    /// re-entered while it is busy.
+    static BUSY: Cell<bool> = const { Cell::new(false) };
+    /// A change arrived while the callback was busy; it is run once more after the callback returns.
+    static PENDING: Cell<bool> = const { Cell::new(false) };
 }
+
+/// The most times one outer call re-runs the callback for changes that arrived meanwhile; the re-check timer
+/// covers anything beyond that.
+const MAX_RERUNS: u32 = 3;
 
 fn taskbar_created_message() -> u32 {
     static MESSAGE: OnceLock<u32> = OnceLock::new();
@@ -100,15 +112,38 @@ fn taskbar_created_message() -> u32 {
     })
 }
 
+/// Clears `BUSY` however the callback ends, even by panicking.
+struct BusyGuard;
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        BUSY.with(|busy| busy.set(false));
+    }
+}
+
+/// Runs the callback, never re-entrantly: a change that arrives while it runs is coalesced into one more run
+/// after it returns. A panic in the callback is logged and stops here; it must not unwind through the window
+/// procedure (that would abort the process).
 fn notify() {
-    ON_CHANGE.with(|slot| {
-        // A callback that pumps messages must not re-enter itself.
-        if let Ok(slot) = slot.try_borrow()
-            && let Some(callback) = slot.as_ref()
-        {
-            callback();
+    if BUSY.with(|busy| busy.replace(true)) {
+        PENDING.with(|pending| pending.set(true));
+        return;
+    }
+    let _guard = BusyGuard;
+    for _ in 0..=MAX_RERUNS {
+        PENDING.with(|pending| pending.set(false));
+        // Clone the callback out, so no borrow is held while it runs.
+        let Some(callback) = ON_CHANGE.with(|slot| slot.borrow().clone()) else {
+            return;
+        };
+        if catch_unwind(AssertUnwindSafe(|| callback())).is_err() {
+            tracing::error!("the tray icon scale callback panicked");
+            return;
         }
-    });
+        if !PENDING.with(Cell::get) {
+            return;
+        }
+    }
 }
 
 unsafe extern "system" fn watch_proc(
@@ -175,7 +210,21 @@ impl DpiWatch {
         if hwnd.is_null() {
             anyhow::bail!("could not create the DPI watch window");
         }
-        ON_CHANGE.with(|slot| *slot.borrow_mut() = Some(Box::new(on_change)));
+        ON_CHANGE.with(|slot| *slot.borrow_mut() = Some(Rc::new(on_change)));
+        // An elevated app only receives messages from lower-integrity processes if they are allowed. Explorer
+        // announces a restart with `TaskbarCreated`, and the tray library lets it through for the same reason.
+        // SAFETY: `hwnd` is the window created above; a null struct pointer is allowed.
+        let allowed = unsafe {
+            ChangeWindowMessageFilterEx(
+                hwnd,
+                taskbar_created_message(),
+                MSGFLT_ALLOW,
+                std::ptr::null_mut(),
+            )
+        };
+        if allowed == 0 {
+            tracing::debug!("TaskbarCreated could not be allowed through the message filter");
+        }
         Ok(Self { hwnd })
     }
 }
@@ -226,7 +275,7 @@ mod tests {
 
     /// The pixel width of the exe's icon resource loaded at `size` (what the tray and the window ask for).
     fn resource_icon_width(size: i32) -> Option<i32> {
-        use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
+        use windows_sys::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetObjectW};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DestroyIcon, GetIconInfo, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
         };
@@ -244,18 +293,21 @@ mod tests {
                 return None;
             }
             let mut info: ICONINFO = std::mem::zeroed();
-            let mut bitmap: BITMAP = std::mem::zeroed();
-            let width = if GetIconInfo(icon, &mut info) != 0
-                && GetObjectW(
+            let mut width = None;
+            if GetIconInfo(icon, &mut info) != 0 {
+                let mut bitmap: BITMAP = std::mem::zeroed();
+                if GetObjectW(
                     info.hbmColor,
                     std::mem::size_of::<BITMAP>() as i32,
                     (&mut bitmap as *mut BITMAP).cast(),
                 ) != 0
-            {
-                Some(bitmap.bmWidth)
-            } else {
-                None
-            };
+                {
+                    width = Some(bitmap.bmWidth);
+                }
+                // GetIconInfo hands over copies of both bitmaps; free them on every path.
+                DeleteObject(info.hbmMask);
+                DeleteObject(info.hbmColor);
+            }
             DestroyIcon(icon);
             width
         }
@@ -297,5 +349,70 @@ mod tests {
         send(taskbar_created_message());
         assert_eq!(count.get(), 3, "Explorer restarting");
         drop(watch);
+    }
+
+    #[test]
+    fn a_change_during_the_callback_runs_it_again_afterwards_not_inside() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        let hwnd = Rc::new(Cell::new(0isize));
+        let (runs, depth, deepest) = (
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+        );
+        let watch = {
+            let (hwnd, runs, depth, deepest) =
+                (hwnd.clone(), runs.clone(), depth.clone(), deepest.clone());
+            DpiWatch::new(move || {
+                runs.set(runs.get() + 1);
+                depth.set(depth.get() + 1);
+                deepest.set(deepest.get().max(depth.get()));
+                if runs.get() == 1 {
+                    // Like the taskbar answering `set_icon` with another change message, twice over.
+                    for msg in [WM_DISPLAYCHANGE, WM_SETTINGCHANGE] {
+                        // SAFETY: the window is alive; sent from its own thread, so it runs at once.
+                        unsafe { SendMessageW(hwnd.get() as HWND, msg, 0, 0) };
+                    }
+                }
+                depth.set(depth.get() - 1);
+            })
+            .expect("creates the window")
+        };
+        hwnd.set(watch.hwnd() as isize);
+        // SAFETY: as above.
+        unsafe { SendMessageW(watch.hwnd(), WM_DISPLAYCHANGE, 0, 0) };
+        assert_eq!(deepest.get(), 1, "the callback was re-entered");
+        assert_eq!(
+            runs.get(),
+            2,
+            "the two nested changes coalesce into one more run"
+        );
+        // The flags are clear again: the next change runs the callback once.
+        // SAFETY: as above.
+        unsafe { SendMessageW(watch.hwnd(), WM_DISPLAYCHANGE, 0, 0) };
+        assert_eq!(runs.get(), 3);
+    }
+
+    #[test]
+    fn a_panicking_callback_does_not_unwind_through_the_window_procedure() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        let runs = Rc::new(Cell::new(0));
+        let watch = {
+            let runs = runs.clone();
+            DpiWatch::new(move || {
+                runs.set(runs.get() + 1);
+                assert!(runs.get() != 1, "the first run fails on purpose");
+            })
+            .expect("creates the window")
+        };
+        // SAFETY: the window is alive; sent from its own thread.
+        unsafe { SendMessageW(watch.hwnd(), WM_DISPLAYCHANGE, 0, 0) };
+        assert_eq!(runs.get(), 1);
+        // The busy flag was released, so the watcher still works.
+        // SAFETY: as above.
+        unsafe { SendMessageW(watch.hwnd(), WM_DISPLAYCHANGE, 0, 0) };
+        assert_eq!(runs.get(), 2);
     }
 }
