@@ -10,6 +10,15 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+serde.workspace = true
+jiff.workspace = true
+uuid.workspace = true
+# Canonical serialization for event fingerprints. Pure Rust; builds for wasm32 and Android.
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
