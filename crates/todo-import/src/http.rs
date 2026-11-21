@@ -25,6 +25,10 @@ pub const REPLAYED_HEADER: &str = "idempotent-replayed";
 /// Default for [`Client::max_wait`].
 pub const DEFAULT_MAX_WAIT: Duration = Duration::from_secs(15 * 60);
 
+/// The longest one attempt of a content upload ([`Client::put_bytes`]) may take: a 25 MiB body over a
+/// slow link needs longer than other requests (the server's own upload deadline is 10 minutes).
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(11 * 60);
+
 /// How the client waits between attempts. Tests replace it to record waits instead.
 pub type Sleeper = Arc<dyn Fn(Duration) + Send + Sync>;
 
@@ -87,8 +91,12 @@ pub enum HttpError {
 pub struct Reply {
     /// The parsed body.
     pub body: serde_json::Value,
-    /// True if the server replayed a stored command result.
+    /// True if the server replayed a stored command result (or found the content stored already).
     pub replayed: bool,
+    /// The HTTP status.
+    pub status: u16,
+    /// `Content-Length`, if the server sent one.
+    pub content_length: Option<u64>,
 }
 
 /// The client. `Debug` does not show the token.
@@ -163,8 +171,18 @@ pub fn retry_after(value: Option<&str>, now: Timestamp) -> Option<Duration> {
     Some(Duration::from_millis(u64::try_from(ms).unwrap_or(0)))
 }
 
+/// What one request sends.
+#[derive(Clone, Copy)]
+enum Outgoing<'a> {
+    Get,
+    Head,
+    Json(&'a [u8]),
+    /// `PUT` with a raw body.
+    Bytes(&'a [u8]),
+}
+
 enum Attempt {
-    Done(u16, bool, String),
+    Done(u16, bool, String, Option<u64>),
     /// Retry after the given wait (`None`: back off); true if the server is busy; the status if any;
     /// a description.
     Retry(Option<Duration>, bool, Option<u16>, String),
@@ -205,17 +223,27 @@ impl Client {
         &self.base
     }
 
-    fn once(&self, path: &str, body: Option<&[u8]>) -> Attempt {
+    fn once(&self, path: &str, send: Outgoing<'_>) -> Attempt {
         let url = format!("{}{path}", self.base);
         let auth = format!("Bearer {}", self.token);
-        let result = match body {
-            Some(b) => self
+        let result = match send {
+            Outgoing::Json(b) => self
                 .agent
                 .post(&url)
                 .header("Authorization", &auth)
                 .header("Content-Type", "application/json")
                 .send(b),
-            None => self.agent.get(&url).header("Authorization", &auth).call(),
+            Outgoing::Bytes(b) => self
+                .agent
+                .put(&url)
+                .config()
+                .timeout_global(Some(UPLOAD_TIMEOUT))
+                .build()
+                .header("Authorization", &auth)
+                .header("Content-Type", "application/octet-stream")
+                .send(b),
+            Outgoing::Get => self.agent.get(&url).header("Authorization", &auth).call(),
+            Outgoing::Head => self.agent.head(&url).header("Authorization", &auth).call(),
         };
         let mut resp = match result {
             Ok(r) => r,
@@ -240,24 +268,28 @@ impl Client {
             _ => {}
         }
         let replayed = header(REPLAYED_HEADER).as_deref() == Some("true");
+        let length = header("content-length").and_then(|v| v.trim().parse().ok());
+        if matches!(send, Outgoing::Head) {
+            return Attempt::Done(status, replayed, String::new(), length);
+        }
         match resp
             .body_mut()
             .with_config()
             .limit(64 * 1024 * 1024)
             .read_to_string()
         {
-            Ok(text) => Attempt::Done(status, replayed, text),
+            Ok(text) => Attempt::Done(status, replayed, text, length),
             Err(e) => Attempt::Retry(None, false, Some(status), format!("reading body: {e}")),
         }
     }
 
-    fn request(&self, what: &str, path: &str, body: Option<&[u8]>) -> Result<Reply, HttpError> {
+    fn request(&self, what: &str, path: &str, send: Outgoing<'_>) -> Result<Reply, HttpError> {
         let mut attempts = 0u32;
         let mut busy = 0u32;
         let mut waited = Duration::ZERO;
         loop {
-            match self.once(path, body) {
-                Attempt::Done(status, replayed, text) => {
+            match self.once(path, send) {
+                Attempt::Done(status, replayed, text, length) => {
                     let value: serde_json::Value = if text.trim().is_empty() {
                         serde_json::Value::Null
                     } else {
@@ -270,6 +302,8 @@ impl Client {
                         return Ok(Reply {
                             body: value,
                             replayed,
+                            status,
+                            content_length: length,
                         });
                     }
                     let s = |k: &str| value["error"][k].as_str().unwrap_or("").to_owned();
@@ -322,12 +356,27 @@ impl Client {
             what: what.to_owned(),
             error: e.to_string(),
         })?;
-        self.request(what, path, Some(&bytes))
+        self.request(what, path, Outgoing::Json(&bytes))
+    }
+
+    /// `PUT path` with a raw body (`application/octet-stream`). Retried like every request, so only for
+    /// idempotent uploads.
+    pub fn put_bytes(&self, what: &str, path: &str, body: &[u8]) -> Result<Reply, HttpError> {
+        self.request(what, path, Outgoing::Bytes(body))
+    }
+
+    /// `HEAD path`: `Some(Content-Length)` on 2xx (0 if none was sent), `None` on 404.
+    pub fn head(&self, what: &str, path: &str) -> Result<Option<u64>, HttpError> {
+        match self.request(what, path, Outgoing::Head) {
+            Ok(r) => Ok(Some(r.content_length.unwrap_or(0))),
+            Err(HttpError::Status { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// `GET path`, parsed as `T`.
     pub fn get<T: DeserializeOwned>(&self, what: &str, path: &str) -> Result<T, HttpError> {
-        let reply = self.request(what, path, None)?;
+        let reply = self.request(what, path, Outgoing::Get)?;
         serde_json::from_value(reply.body).map_err(|e| HttpError::Body {
             what: what.to_owned(),
             error: e.to_string(),

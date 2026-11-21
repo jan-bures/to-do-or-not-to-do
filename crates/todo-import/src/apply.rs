@@ -18,10 +18,23 @@
 //! The header is written to a temporary file, synced, and renamed into place before any command is
 //! sent, so a crash can never leave a half-written header behind.
 //!
+//! Attachment content ([`apply_attachments`]) is recorded in the same journal, as `content <attachment
+//! ID>` lines, each synced as soon as the server holds that content.
+//!
 //! A command counts as acknowledged only when the server answers 2xx with a command result for that
 //! `command_id`: the result names the command, lists its events (an import always stores one), and
 //! names the log epoch. Anything else (an empty body, another ID, no events) is an error, and nothing
 //! is journaled for it.
+//!
+//! # Attachment content
+//!
+//! The commands import attachment *references* (storage key `import/sha256/<hex>`); the bytes stay in
+//! the bundle. With `--attachments`, once every command is acknowledged, [`apply_attachments`] sends each
+//! attachment's content to `PUT /api/v1/attachments/{id}/content` with its size and SHA-256, which the
+//! server checks against the reference and the body before storing anything. Each one is first checked
+//! with a `HEAD` of the download route (which fetches nothing), so content the server already holds is
+//! never sent again, even without a journal. A failure is recorded and the run goes on with the next
+//! attachment; the summary lists every failure, and a re-run retries exactly those.
 //!
 //! # Log epoch
 //!
@@ -39,6 +52,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const JOURNAL_MAGIC: &str = "todo-import-journal 2";
+/// Prefix of a journal line recording stored attachment content.
+const CONTENT_LINE: &str = "content ";
 
 /// Errors from `apply`.
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +161,8 @@ pub struct Journal {
     pub epoch: Option<Uuid>,
     /// Acknowledged command IDs.
     pub done: BTreeSet<Uuid>,
+    /// Attachments whose content the server holds.
+    pub contents: BTreeSet<Uuid>,
 }
 
 /// The temporary file a journal header is written to before it is renamed into place.
@@ -177,10 +194,18 @@ pub fn read_journal(path: &Path, digest: &str, server: &str) -> Result<Journal, 
             })?,
     };
     // A torn last line (crash mid-write) is not a valid UUID and is ignored.
-    Ok(Journal {
+    let mut j = Journal {
         epoch: Some(epoch),
-        done: lines.filter_map(|l| l.trim().parse().ok()).collect(),
-    })
+        ..Journal::default()
+    };
+    for l in lines.map(str::trim) {
+        if let Some(id) = l.strip_prefix(CONTENT_LINE) {
+            j.contents.extend(id.trim().parse::<Uuid>().ok());
+        } else if let Ok(id) = l.parse() {
+            j.done.insert(id);
+        }
+    }
+    Ok(j)
 }
 
 /// Creates a journal holding only its header: written to a temporary file, synced, then renamed into
@@ -249,12 +274,33 @@ pub fn plan(
     );
     let _ = writeln!(
         s,
-        "not imported:  attachment content ({} bytes, stays in the bundle), {} unmapped recurrence(s), {} stale My Day mark(s)",
-        c.attachment_bytes,
+        "not imported:  {} unmapped recurrence(s), {} stale My Day mark(s)",
         bundle.report.unmapped_recurrence.len(),
         bundle.report.my_day_marks_skipped
     );
     Ok(s)
+}
+
+/// The plan for attachment content: what `apply --attachments` would send.
+pub fn plan_attachments(
+    bundle: &Bundle,
+    journal: &Path,
+    server: &str,
+) -> Result<String, ApplyError> {
+    let done = read_journal(journal, &bundle.digest()?, server)?.contents;
+    let pending: Vec<_> = bundle
+        .blobs
+        .iter()
+        .filter(|b| !done.contains(&b.attachment.as_uuid()))
+        .collect();
+    Ok(format!(
+        "content:       {} attachment(s), {} bytes: {} already stored, {} to check and send ({} bytes)\n",
+        bundle.blobs.len(),
+        bundle.counts.attachment_bytes,
+        bundle.blobs.len() - pending.len(),
+        pending.len(),
+        pending.iter().map(|b| b.size_bytes).sum::<u64>()
+    ))
 }
 
 #[derive(serde::Serialize)]
@@ -364,17 +410,18 @@ fn send(
     }
 }
 
-/// Sends every item the journal does not record yet.
-pub fn apply(
+/// Reads the journal (creating it if new) after checking it against the server's log epoch, and opens
+/// it for appending.
+fn open_journal(
     bundle: &Bundle,
     client: &Client,
-    opts: &ApplyOptions,
-) -> Result<ApplySummary, ApplyError> {
+    path: &Path,
+) -> Result<(Journal, Uuid, std::fs::File), ApplyError> {
     let digest = bundle.digest()?;
     let server = client.base().to_owned();
-    let journal = read_journal(&opts.journal, &digest, &server)?;
+    let journal = read_journal(path, &digest, &server)?;
     let jerr = |e: std::io::Error| ApplyError::Journal {
-        path: opts.journal.display().to_string(),
+        path: path.display().to_string(),
         reason: e.to_string(),
     };
     let epoch = server_epoch(client).map_err(|source| ApplyError::Http {
@@ -386,24 +433,34 @@ pub fn apply(
     match journal.epoch {
         Some(had) if had != epoch => {
             return Err(ApplyError::EpochChanged {
-                journal: opts.journal.display().to_string(),
+                journal: path.display().to_string(),
                 had,
                 now: epoch,
             });
         }
         Some(_) => {}
         None => {
-            if let Some(dir) = opts.journal.parent().filter(|d| !d.as_os_str().is_empty()) {
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 std::fs::create_dir_all(dir).map_err(jerr)?;
             }
-            create_journal(&opts.journal, &header(&digest, &server, epoch)).map_err(jerr)?;
+            create_journal(path, &header(&digest, &server, epoch)).map_err(jerr)?;
         }
     }
-    let done = journal.done;
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .append(true)
-        .open(&opts.journal)
+        .open(path)
         .map_err(jerr)?;
+    Ok((journal, epoch, file))
+}
+
+/// Sends every item the journal does not record yet.
+pub fn apply(
+    bundle: &Bundle,
+    client: &Client,
+    opts: &ApplyOptions,
+) -> Result<ApplySummary, ApplyError> {
+    let (journal, epoch, mut file) = open_journal(bundle, client, &opts.journal)?;
+    let done = journal.done;
 
     let batch = opts.batch_size.max(1);
     let mut sum = ApplySummary {
@@ -464,6 +521,150 @@ pub fn apply(
         replayed = sum.replayed,
         skipped = sum.skipped,
         "apply finished"
+    );
+    Ok(sum)
+}
+
+/// Options of [`apply_attachments`].
+#[derive(Clone, Debug)]
+pub struct ContentOptions {
+    /// The journal file (the one `apply` used).
+    pub journal: PathBuf,
+    /// Stop right after this many attachments have been stored or found stored: simulates a crash.
+    #[doc(hidden)]
+    pub abort_after: Option<usize>,
+}
+
+/// What an attachment content run did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContentSummary {
+    /// Attachments with content in the bundle.
+    pub total: usize,
+    /// Skipped because the journal records them as stored.
+    pub skipped: usize,
+    /// Found stored on the server already (by an earlier run without this journal).
+    pub present: usize,
+    /// Sent and stored.
+    pub uploaded: usize,
+    /// Bytes sent and stored.
+    pub uploaded_bytes: u64,
+    /// One line per attachment that failed, naming it by source label. A re-run retries them.
+    pub failed: Vec<String>,
+}
+
+impl ContentSummary {
+    /// True if every attachment's content is on the server.
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        self.failed.is_empty()
+    }
+}
+
+/// Sends the content of every attachment in the bundle that the server does not hold yet (see the
+/// module docs). Run it after [`apply`] has acknowledged every command. Fails only when the journal or
+/// the server's log epoch is unusable; a failed attachment is listed in the summary instead.
+pub fn apply_attachments(
+    bundle: &Bundle,
+    client: &Client,
+    opts: &ContentOptions,
+) -> Result<ContentSummary, ApplyError> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let (journal, _epoch, mut file) = open_journal(bundle, client, &opts.journal)?;
+    let labels: std::collections::BTreeMap<Uuid, String> = bundle
+        .items
+        .iter()
+        .filter_map(|i| match i.entity() {
+            Some(todo_core::model::Entity::Attachment(a)) => {
+                Some((a.id.as_uuid(), crate::label(&i.source.id)))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut sum = ContentSummary {
+        total: bundle.blobs.len(),
+        ..ContentSummary::default()
+    };
+    let mut stored = 0usize;
+    for blob in &bundle.blobs {
+        let id = blob.attachment.as_uuid();
+        if journal.contents.contains(&id) {
+            sum.skipped += 1;
+            continue;
+        }
+        let label = labels.get(&id).cloned().unwrap_or_else(|| id.to_string());
+        let fail = |sum: &mut ContentSummary, why: String| {
+            tracing::warn!(attachment = %label, reason = %why, "attachment content not stored");
+            sum.failed.push(format!("attachment {label}: {why}"));
+        };
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(&blob.content_base64) {
+            Ok(b) => b,
+            Err(e) => {
+                fail(&mut sum, format!("the bundle's content is not base64: {e}"));
+                continue;
+            }
+        };
+        if bytes.len() as u64 != blob.size_bytes
+            || hex::encode(Sha256::digest(&bytes)) != blob.sha256
+        {
+            fail(
+                &mut sum,
+                "the bundle's content does not match its size and SHA-256".to_owned(),
+            );
+            continue;
+        }
+        let what = "HEAD /api/v1/attachments/{id}";
+        match client.head(what, &format!("/api/v1/attachments/{id}")) {
+            Ok(Some(len)) if len == blob.size_bytes => sum.present += 1,
+            Ok(Some(len)) => {
+                fail(
+                    &mut sum,
+                    format!(
+                        "the server holds {len} bytes, the bundle {}",
+                        blob.size_bytes
+                    ),
+                );
+                continue;
+            }
+            Err(e) => {
+                fail(&mut sum, e.to_string());
+                continue;
+            }
+            Ok(None) => {
+                let path = format!(
+                    "/api/v1/attachments/{id}/content?size_bytes={}&sha256={}",
+                    blob.size_bytes, blob.sha256
+                );
+                match client.put_bytes("PUT /api/v1/attachments/{id}/content", &path, &bytes) {
+                    Ok(r) if r.replayed => sum.present += 1,
+                    Ok(_) => {
+                        sum.uploaded += 1;
+                        sum.uploaded_bytes += blob.size_bytes;
+                    }
+                    Err(e) => {
+                        if let HttpError::Status { message, .. } = &e {
+                            tracing::debug!(attachment = %label, %message, "content refused");
+                        }
+                        fail(&mut sum, e.to_string());
+                        continue;
+                    }
+                }
+            }
+        }
+        let mut line = vec![format!("{CONTENT_LINE}{id}")];
+        sync(&mut file, &mut line, &opts.journal)?;
+        stored += 1;
+        if opts.abort_after == Some(stored) {
+            return Err(ApplyError::Aborted(stored));
+        }
+    }
+    tracing::info!(
+        total = sum.total,
+        uploaded = sum.uploaded,
+        present = sum.present,
+        skipped = sum.skipped,
+        failed = sum.failed.len(),
+        "attachment content finished"
     );
     Ok(sum)
 }

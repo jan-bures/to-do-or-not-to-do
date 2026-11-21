@@ -116,8 +116,14 @@ pub async fn tag_route(req: Request, next: Next) -> Response {
     res
 }
 
-async fn not_found() -> ApiError {
+/// The answer for a path no route matches. Owner-only routes give agents exactly this, so they look
+/// absent.
+pub(crate) fn no_such_endpoint() -> ApiError {
     ApiError::not_found("no such endpoint")
+}
+
+async fn not_found() -> ApiError {
+    no_such_endpoint()
 }
 
 /// The API router, to be nested at `/api/v1`. Everything needs a bearer token except the two pairing
@@ -139,7 +145,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/lists/{id}/tasks", get(read::list_tasks))
         .route("/tasks", get(read::query_tasks))
         .route("/tasks/{id}", get(read::task_detail))
-        .route("/attachments/{id}", get(attachments::download))
+        .route(
+            "/attachments/{id}",
+            get(attachments::download).head(attachments::head),
+        )
         .route("/tags", get(read::tags))
         .route("/smart-lists", get(read::smart_lists))
         .route("/smart-lists/{id}/tasks", get(read::smart_list_tasks))

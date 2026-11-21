@@ -163,7 +163,7 @@ impl Item {
     }
 }
 
-/// Content of one attachment. The server has no upload path yet, so the bytes stay in the bundle.
+/// Content of one attachment, sent by `apply --attachments` (see [`crate::apply::apply_attachments`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Blob {
     /// The attachment.

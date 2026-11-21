@@ -641,3 +641,393 @@ async fn concurrent_uploads_with_one_attachment_id_store_and_charge_once() {
     assert_eq!((usage.class_a, usage.objects), (1, 1), "exactly one PUT");
     assert_eq!(files_in(&t.dir.path().join("blobs")).len(), 1);
 }
+
+// ---- filling in imported content (`PUT /api/v1/attachments/{id}/content`) --------------------------
+
+fn sha_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// Imports an attachment reference to `task` as the importer does: `import/sha256/<hex>`, no object.
+async fn import_attachment(t: &TestServer, task: &str, size: u64, sha: &str) -> String {
+    let att = id();
+    let stamp = json!({ "at": "2025-01-02T03:04:05Z", "by": { "type": "importer" } });
+    t.ok(
+        json!({ "cmd": "import_entity", "entity": { "kind": "attachment", "data": {
+        "id": att, "task": task, "file_name": "imported.txt", "media_type": "text/plain",
+        "size_bytes": size, "storage_key": format!("import/sha256/{sha}"), "created": stamp,
+        "deleted": null
+    } } }),
+    )
+    .await;
+    att
+}
+
+async fn fill_as(
+    t: &TestServer,
+    token: Option<&str>,
+    path: &str,
+    query: &[(&str, String)],
+    body: impl Into<reqwest::Body>,
+) -> Result<Upload, reqwest::Error> {
+    let mut req = t
+        .client
+        .put(format!("{}{path}", t.url))
+        .query(query)
+        .body(body);
+    if let Some(token) = token {
+        req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let res = req.send().await?;
+    let status = res.status();
+    let headers = res.headers().clone();
+    let text = res.text().await?;
+    Ok(Upload {
+        status,
+        headers,
+        body: serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    })
+}
+
+fn content_path(att: &str) -> String {
+    format!("/api/v1/attachments/{att}/content")
+}
+
+fn expect(size: usize, sha: &str) -> Vec<(&'static str, String)> {
+    vec![("size_bytes", size.to_string()), ("sha256", sha.to_owned())]
+}
+
+/// PUT of `body` as the owner, expecting the server to answer.
+async fn fill(t: &TestServer, att: &str, size: usize, sha: &str, body: &[u8]) -> Upload {
+    fill_as(
+        t,
+        Some(TOKEN_A),
+        &content_path(att),
+        &expect(size, sha),
+        body.to_vec(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn head_as(t: &TestServer, token: &str, att: &str) -> (StatusCode, HeaderMap) {
+    let res = t
+        .client
+        .head(format!("{}/api/v1/attachments/{att}", t.url))
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    (res.status(), res.headers().clone())
+}
+
+/// Nothing stored, charged or left behind.
+fn assert_nothing_stored(t: &TestServer, what: &str) {
+    let a = &t.server.attachments;
+    let usage = a.registry().usage(&a.month()).unwrap();
+    assert_eq!((usage.class_a, usage.objects), (0, 0), "{what}: charged");
+    assert!(files_in(&t.dir.path().join("blobs")).is_empty(), "{what}");
+    assert!(
+        files_in(&t.dir.path().join("attachments-spool")).is_empty(),
+        "{what}: spool"
+    );
+}
+
+#[tokio::test]
+async fn imported_content_is_verified_stored_and_replayed() {
+    let t = server().await;
+    let (_, task) = inbox_task(&t).await;
+    let content = b"imported attachment content".to_vec();
+    let sha = sha_hex(&content);
+    let att = import_attachment(&t, &task, content.len() as u64, &sha).await;
+    let (s, _, body) = download_as(&t, TOKEN_A, &att).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(json_of(&body)["error"]["code"], "content_unavailable");
+    assert_eq!(head_as(&t, TOKEN_A, &att).await.0, StatusCode::NOT_FOUND);
+
+    // A body that does not hash to `sha256`: 422, and nothing is stored or charged.
+    let mut wrong = content.clone();
+    wrong[0] ^= 1;
+    let r = fill(&t, &att, content.len(), &sha, &wrong).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "content_mismatch");
+    assert_nothing_stored(&t, "wrong hash");
+    // Shorter or longer than `size_bytes` (sent without a Content-Length).
+    for body in [&content[..5], &[&content[..], b"!"].concat()[..]] {
+        let chunked =
+            reqwest::Body::wrap_stream(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                body.to_vec(),
+            )]));
+        let r = fill_as(
+            &t,
+            Some(TOKEN_A),
+            &content_path(&att),
+            &expect(content.len(), &sha),
+            chunked,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+        assert_eq!(r.body["error"]["code"], "content_mismatch");
+    }
+    // A Content-Length other than `size_bytes`.
+    let r = fill(&t, &att, content.len() + 1, &sha, &content).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    // Expectations that do not match the reference: another size, another hash, a bad hash.
+    let r = fill(&t, &att, 3, &sha, b"abc").await;
+    assert_eq!(r.body["error"]["code"], "content_mismatch", "{}", r.body);
+    let r = fill(&t, &att, 3, &sha_hex(b"abc"), b"abc").await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "content_mismatch");
+    let r = fill(&t, &att, content.len(), "nothex", &content).await;
+    assert_eq!(r.body["error"]["code"], "invalid", "{}", r.body);
+    assert_nothing_stored(&t, "mismatches");
+
+    // The right content: stored, encrypted, and served.
+    let r = fill(&t, &att, content.len(), &sha.to_uppercase(), &content).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["attachment"]["id"], att.as_str());
+    assert_eq!(r.body["sha256"], sha.as_str());
+    let (s, h, body) = download_as(&t, TOKEN_A, &att).await;
+    assert_eq!((s, &body), (StatusCode::OK, &content));
+    assert_eq!(h["content-type"], "text/plain");
+    let (s, h) = head_as(&t, TOKEN_A, &att).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h["content-length"], content.len().to_string().as_str());
+    assert_eq!(h["x-content-type-options"], "nosniff");
+    let objects = files_in(&t.dir.path().join("blobs"));
+    assert_eq!(objects.len(), 1);
+    assert!(objects[0].starts_with(b"TODOATT1"));
+    assert!(!contains(&objects[0], b"imported attachment"));
+    // The reference is unchanged: no command was written.
+    let detail = t.get_ok(&format!("/api/v1/tasks/{task}")).await;
+    assert_eq!(
+        detail["attachments"][0]["storage_key"],
+        format!("import/sha256/{sha}").as_str()
+    );
+
+    // The same content again: replayed without reading the body.
+    let r = fill(&t, &att, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.headers["idempotent-replayed"], "true");
+    // Other content for an attachment that has some: 409.
+    let r = fill(&t, &att, 3, &sha_hex(b"abc"), b"abc").await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "content_exists");
+
+    let a = &t.server.attachments;
+    let usage = a.registry().usage(&a.month()).unwrap();
+    assert_eq!((usage.class_a, usage.objects), (1, 1), "exactly one PUT");
+    // A HEAD fetches nothing: no GET was charged by the HEADs above.
+    assert_eq!(usage.class_b, 1, "only the one download");
+
+    // Survives a restart, and the collector keeps it (it is referenced).
+    let t = t.restart().await;
+    let report = t.server.attachments.collect_garbage().unwrap();
+    assert_eq!((report.kept, report.deleted), (1, 0));
+    let (s, _, body) = download_as(&t, TOKEN_A, &att).await;
+    assert_eq!((s, body), (StatusCode::OK, content));
+}
+
+#[tokio::test]
+async fn only_imported_live_attachments_can_be_filled_in() {
+    let t = server().await;
+    let (_, task) = inbox_task(&t).await;
+    let content = b"x".repeat(10);
+    let sha = sha_hex(&content);
+    // Missing.
+    let r = fill(&t, &id(), content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "not_found");
+    // Deleted.
+    let att = import_attachment(&t, &task, content.len() as u64, &sha).await;
+    t.ok(json!({ "cmd": "delete", "id": { "kind": "attachment", "id": att } }))
+        .await;
+    let r = fill(&t, &att, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    // Uploaded (it has content already).
+    let up = upload(&t, &task, "up.txt", None, &content).await;
+    let uploaded = up.body["attachment"]["id"].as_str().unwrap();
+    let r = fill(&t, uploaded, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "content_exists");
+    // A reference that was not imported and has no content.
+    let other = id();
+    t.ok(
+        json!({ "cmd": "add_attachment", "id": other, "task": task, "file_name": "o.txt",
+        "media_type": "text/plain", "size_bytes": 10, "storage_key": "elsewhere/1" }),
+    )
+    .await;
+    let r = fill(&t, &other, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "not_imported");
+    let a = &t.server.attachments;
+    assert_eq!(a.registry().usage(&a.month()).unwrap().objects, 1);
+}
+
+#[tokio::test]
+async fn agents_share_links_and_anonymous_callers_find_no_content_route() {
+    let t = server().await;
+    let (list, task) = inbox_task(&t).await;
+    let content = b"secret imported bytes".to_vec();
+    let sha = sha_hex(&content);
+    let att = import_attachment(&t, &task, content.len() as u64, &sha).await;
+    let planner = agent(&t, "planner", &list, AccessLevel::Plan).await;
+    let share = t
+        .server
+        .authsvc
+        .create_share(ShareTarget::List(list.parse().unwrap()), None)
+        .unwrap();
+    let share_token = share.to_string();
+    let good = expect(content.len(), &sha);
+    let missing_route = |token: Option<&str>| {
+        let (t, token) = (&t, token.map(str::to_owned));
+        async move {
+            fill_as(t, token.as_deref(), "/api/v1/nope", &[], b"x".to_vec())
+                .await
+                .unwrap()
+        }
+    };
+    for (who, token) in [
+        ("agent", Some(planner.as_str())),
+        ("share link", Some(share_token.as_str())),
+        ("anonymous", None),
+    ] {
+        let want = missing_route(token).await;
+        assert!(
+            [StatusCode::NOT_FOUND, StatusCode::UNAUTHORIZED].contains(&want.status),
+            "{who}: {}",
+            want.body
+        );
+        for (path, query) in [
+            (content_path(&att), good.clone()),
+            (content_path(&id()), good.clone()),
+            (content_path("not-a-uuid"), good.clone()),
+            (content_path(&att), vec![("bogus", "1".to_owned())]),
+        ] {
+            let r = fill_as(&t, token, &path, &query, content.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                (r.status, &r.body),
+                (want.status, &want.body),
+                "{who} {path} {query:?}"
+            );
+        }
+    }
+    assert_nothing_stored(&t, "refused callers");
+    // The owner can.
+    let r = fill(&t, &att, content.len(), &sha, &content).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    // An agent that may read the list sees the content like any download, HEAD included.
+    assert_eq!(head_as(&t, &planner, &att).await.0, StatusCode::OK);
+    let outsider = agent(&t, "outsider", &id(), AccessLevel::Plan).await;
+    assert_eq!(head_as(&t, &outsider, &att).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn filling_in_content_is_capped_like_uploads() {
+    let t = server().await;
+    let (_, task) = inbox_task(&t).await;
+    let max = usize::try_from(MAX).unwrap();
+    // A reference larger than the cap: refused before the body is read.
+    let big = import_attachment(&t, &task, MAX + 1, &sha_hex(b"big")).await;
+    let r = fill_as(
+        &t,
+        Some(TOKEN_A),
+        &content_path(&big),
+        &expect(max + 1, &sha_hex(b"big")),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "payload_too_large");
+    // An announced body over the cap.
+    let content = vec![7u8; max];
+    let sha = sha_hex(&content);
+    let att = import_attachment(&t, &task, MAX, &sha).await;
+    let r = fill_as(
+        &t,
+        Some(TOKEN_A),
+        &content_path(&att),
+        &expect(max, &sha),
+        vec![7u8; max + 1],
+    )
+    .await;
+    if let Ok(r) = r {
+        assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.body);
+    }
+    // A chunked body that runs over the cap is cut off while it streams.
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+        vec![Ok(vec![7u8; max / 2]), Ok(vec![7u8; max / 2 + 100])];
+    let r = fill_as(
+        &t,
+        Some(TOKEN_A),
+        &content_path(&att),
+        &expect(max, &sha),
+        reqwest::Body::wrap_stream(futures_util::stream::iter(chunks)),
+    )
+    .await;
+    if let Ok(r) = r {
+        assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.body);
+    }
+    assert_nothing_stored(&t, "over the cap");
+    // Exactly at the cap is fine.
+    let r = fill(&t, &att, max, &sha, &content).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+}
+
+#[tokio::test]
+async fn the_budget_refuses_fills_like_uploads() {
+    let t = TestServer::start_with(|c| c.attachments.budget.class_a_monthly = 1).await;
+    let (inbox, task) = inbox_task(&t).await;
+    let (one, two) = (b"one".to_vec(), b"two".to_vec());
+    let a1 = import_attachment(&t, &task, 3, &sha_hex(&one)).await;
+    let a2 = import_attachment(&t, &task, 3, &sha_hex(&two)).await;
+    assert_eq!(
+        fill(&t, &a1, 3, &sha_hex(&one), &one).await.status,
+        StatusCode::CREATED
+    );
+    for _ in 0..2 {
+        let r = fill(&t, &a2, 3, &sha_hex(&two), &two).await;
+        assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{}", r.body);
+        assert_eq!(r.body["error"]["code"], "r2_budget_exhausted");
+        assert!(r.headers.contains_key("retry-after"));
+    }
+    let w = warning_tasks(&t);
+    assert_eq!(w.len(), 1, "one warning a month");
+    assert_eq!(w[0].list.to_string(), inbox);
+    assert_eq!(files_in(&t.dir.path().join("blobs")).len(), 1);
+
+    let full = TestServer::start_with(|c| c.attachments.budget.max_storage_bytes = 5_000).await;
+    let (_, task) = inbox_task(&full).await;
+    let content = vec![1u8; 10_000];
+    let att = import_attachment(&full, &task, 10_000, &sha_hex(&content)).await;
+    let r = fill(&full, &att, 10_000, &sha_hex(&content), &content).await;
+    assert_eq!(r.status, StatusCode::INSUFFICIENT_STORAGE, "{}", r.body);
+    assert_eq!(r.body["error"]["code"], "storage_budget_exhausted");
+    assert_eq!(warning_tasks(&full).len(), 1);
+    assert_nothing_stored(&full, "storage budget");
+}
+
+#[tokio::test]
+async fn the_content_route_and_head_are_in_the_openapi_document() {
+    let t = server().await;
+    let doc = t.get_ok("/api/v1/openapi.json").await;
+    let put = &doc["paths"]["/api/v1/attachments/{id}/content"]["put"];
+    assert!(put["requestBody"]["content"]["application/octet-stream"].is_object());
+    let params: Vec<&str> = put["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(
+        params.contains(&"size_bytes") && params.contains(&"sha256"),
+        "{params:?}"
+    );
+    assert!(put["responses"]["422"].is_object());
+    assert!(doc["paths"]["/api/v1/attachments/{id}"]["head"].is_object());
+}

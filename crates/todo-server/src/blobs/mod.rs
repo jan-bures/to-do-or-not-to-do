@@ -15,6 +15,10 @@
 //!    only; plaintext never touches the disk), counted against the size cap as it arrives. The registry
 //!    then, in one transaction, checks storage, charges the PUT and records the object; the object is
 //!    put; the `add_attachment` command records the reference, whose `storage_key` is the object key.
+//!    Imported references already exist (storage key `import/sha256/<hex>`) without an object; their
+//!    content is sealed and stored the same way through `PUT /api/v1/attachments/{id}/content`, after
+//!    its size and hash are checked, and recorded for the reference's existing `storage_key`, so no
+//!    command is written.
 //! 2. **Download.** The reference's attachment ID and `storage_key` select the object in the registry; the
 //!    GET is charged; the object is decrypted and checked chunk by chunk while it streams to the client.
 //! 3. **Delete.** Deleting the attachment (or its task) only writes a tombstone; the object stays, so undo

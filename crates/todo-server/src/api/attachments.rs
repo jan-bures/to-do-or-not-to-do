@@ -5,7 +5,17 @@
 //!   `attachments.max_upload_bytes` (25 MiB): a larger `Content-Length` is refused before anything is
 //!   read, and a body without one is counted while it streams and cut off at the cap. Only this route
 //!   has the larger body limit and its own, longer deadline (`attachments.upload_timeout_ms`).
-//! - `GET /api/v1/attachments/{id}`: the content, decrypted while it streams, as a download.
+//! - `GET /api/v1/attachments/{id}`: the content, decrypted while it streams, as a download. `HEAD` gives
+//!   the same headers without fetching anything (nothing is charged): a cheap "is the content stored?".
+//! - `PUT /api/v1/attachments/{id}/content?size_bytes=...&sha256=...`: **owner only.** Fills in the content
+//!   of an imported attachment, whose reference (storage key `import/sha256/<hex>`) already exists
+//!   without a stored object. Same body cap, deadline, sealing and budget as an upload. The size must be
+//!   the reference's and the hash the one in its key; the body is hashed while it is sealed and must
+//!   match both, or nothing is charged or stored (422 `content_mismatch`). The object is recorded for
+//!   the existing reference, so no command is written. The same content again is 200
+//!   `idempotent-replayed: true` without reading the body; other content for an attachment that has
+//!   some is 409 `content_exists`. Agents get exactly what a missing route gives (404 `no such
+//!   endpoint`), before any parameter is looked at.
 //!
 //! **Access.** Uploading is `add_attachment`: the owner, or an agent with capture access on the task's
 //! list, exactly as `todo-core` decides for the command; it counts as one write against an agent's quota.
@@ -47,7 +57,7 @@ use super::error::{ApiError, ErrorBody};
 use super::{ApiPath, ApiQuery, RequestCancel, Work, blocking, hidden, visibility};
 use crate::app::AppState;
 use crate::auth::Authenticated;
-use crate::blobs::registry::Refusal;
+use crate::blobs::registry::{BlobRow, Refusal};
 use crate::blobs::{
     AttachmentError, Attachments, InFlight, UploadSlot, seconds_to_next_month, store,
     upload_command_id,
@@ -63,7 +73,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{post, put};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -282,13 +292,14 @@ pub fn content_disposition(name: &str) -> String {
     format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
-/// The upload route, mounted outside the global body limit and request deadline: the handler enforces
+/// The upload routes, mounted outside the global body limit and request deadline: the handler enforces
 /// `max_upload_bytes` itself while streaming, and the deadline is `upload_timeout_ms`.
 pub fn upload_router(state: AppState) -> Router<AppState> {
     let timeout = state.attachments.config().upload_timeout();
     let max = state.attachments.config().max_upload_bytes;
     Router::new()
         .route("/api/v1/tasks/{id}/attachments", post(upload))
+        .route("/api/v1/attachments/{id}/content", put(fill_content))
         // Route layers only: a `layer` would also wrap this router's fallback, which becomes the app's.
         .route_layer(from_fn_with_state(state, crate::auth::require_auth))
         .route_layer(from_fn(super::tag_route))
@@ -603,6 +614,306 @@ impl<T: Serialize> IntoResponse for Json200<T> {
     }
 }
 
+/// The storage key prefix of imported references: `import/sha256/<hex SHA-256 of the content>`.
+pub const IMPORT_KEY_PREFIX: &str = "import/sha256/";
+
+/// Parameters of [`fill_content`].
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct ContentParams {
+    /// The content's size in bytes. It must equal the attachment's `size_bytes`.
+    pub size_bytes: u64,
+    /// The content's SHA-256, as 64 hex digits. It must be the one in the attachment's storage key.
+    pub sha256: String,
+}
+
+/// The response to [`fill_content`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ContentResponse {
+    /// The attachment, unchanged.
+    pub attachment: AttachmentRef,
+    /// The stored content's size.
+    pub size_bytes: u64,
+    /// The stored content's SHA-256 (hex).
+    pub sha256: String,
+}
+
+/// What the checks of [`fill_content`] found.
+enum Fill {
+    /// The same content is stored already.
+    Replay(Box<AttachmentRef>),
+    /// Go ahead.
+    Store(Box<AttachmentRef>),
+}
+
+fn mismatch(reason: &str, details: serde_json::Value) -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "content_mismatch",
+        format!("the content does not match: {reason}"),
+    )
+    .with_details(details)
+}
+
+/// Decides whether the content of `id` may be filled in with `size` bytes hashing to `sha`.
+fn plan_fill(
+    state: &todo_core::State,
+    att: &Attachments,
+    id: AttachmentId,
+    size: u64,
+    sha: &str,
+) -> Result<Fill, ApiError> {
+    let meta = state
+        .attachments
+        .get(&id)
+        .filter(|_| state.is_live(EntityId::Attachment(id)))
+        .ok_or_else(|| ApiError::not_found(format!("attachment {id} not found")))?;
+    let stored = att
+        .find(id, &meta.storage_key)
+        .map_err(|e| attachment_error(att, e))?
+        .is_some();
+    let referenced = meta.storage_key.strip_prefix(IMPORT_KEY_PREFIX);
+    if referenced == Some(sha) {
+        if size != meta.size_bytes {
+            return Err(mismatch(
+                "size_bytes is not the attachment's size",
+                json!({ "expected_bytes": meta.size_bytes, "size_bytes": size }),
+            ));
+        }
+        return Ok(if stored {
+            Fill::Replay(Box::new(meta.clone()))
+        } else {
+            Fill::Store(Box::new(meta.clone()))
+        });
+    }
+    if stored {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "content_exists",
+            "this attachment already has other content",
+        ));
+    }
+    if referenced.is_some() {
+        return Err(mismatch(
+            "sha256 is not the one the attachment was imported with",
+            json!({ "field": "sha256" }),
+        ));
+    }
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        "not_imported",
+        "only imported attachments (storage key import/sha256/...) can have their content filled in",
+    ))
+}
+
+/// Fills in the content of an imported attachment.
+#[utoipa::path(
+    put,
+    path = "/api/v1/attachments/{id}/content",
+    tag = "attachments",
+    params(("id" = String, Path, format = Uuid, description = "Attachment ID"), ContentParams),
+    request_body(
+        content = Vec<u8>,
+        content_type = "application/octet-stream",
+        description = "The raw content: exactly `size_bytes` bytes hashing to `sha256`. At most 25 MiB."
+    ),
+    responses(
+        (status = 201, description = "Verified and stored", body = ContentResponse),
+        (status = 200, description = "This content is stored already (header `idempotent-replayed: true`); the body was not read", body = ContentResponse),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+        (status = 404, description = "No such attachment (or a deleted one). Agents get the answer of a missing route: owner only.", body = ErrorBody),
+        (status = 408, description = "The deadline passed before the content was stored", body = ErrorBody),
+        (status = 409, description = "The attachment already has other content (`content_exists`), was not imported (`not_imported`), or a fill of it is in progress (`upload_in_progress`, see `Retry-After`)", body = ErrorBody),
+        (status = 413, description = "Larger than the limit (`payload_too_large`)", body = ErrorBody),
+        (status = 422, description = "Bad parameters (`invalid`), or the size or hash does not match the attachment or the body (`content_mismatch`); nothing is stored", body = ErrorBody),
+        (status = 429, description = "Rate limit, or this month's storage operations (`r2_budget_exhausted`); see `Retry-After`", body = ErrorBody),
+        (status = 502, description = "Attachment storage failed (`storage_unavailable`)", body = ErrorBody),
+        (status = 503, description = "Too many uploads at once (`overloaded`)", body = ErrorBody),
+        (status = 507, description = "Attachment storage is full (`storage_budget_exhausted`)", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn fill_content(
+    auth: Authenticated,
+    State(app): State<AppState>,
+    path: Result<ApiPath<AttachmentId>, ApiError>,
+    query: Result<ApiQuery<ContentParams>, ApiError>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    // Owner only. Before anything else (even parameter errors), agents get what a missing route gives.
+    if auth.is_agent() {
+        return Err(super::no_such_endpoint());
+    }
+    let ApiPath(id) = path?;
+    let ApiQuery(q) = query?;
+    let att = attachments(&app);
+    let max = att.config().max_upload_bytes;
+    let sha = q.sha256.trim().to_ascii_lowercase();
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("sha256", "must be 64 hex digits"));
+    }
+    let size = q.size_bytes;
+    if size > max {
+        return Err(too_large(max));
+    }
+    let declared = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Some(n) = declared.filter(|n| *n != size) {
+        return Err(mismatch(
+            "Content-Length is not size_bytes",
+            json!({ "expected_bytes": size, "content_length": n }),
+        ));
+    }
+
+    let (engine, actor, a, s) = (
+        app.engine.clone(),
+        auth.actor.clone(),
+        att.clone(),
+        sha.clone(),
+    );
+    let plan = blocking(&app, Work::Read, move || -> Result<_, ApiError> {
+        let first = plan_fill(&engine.state(), &a, id, size, &s)?;
+        if let Fill::Replay(_) = first {
+            return Ok((first, None));
+        }
+        // One fill (or upload) per ID at a time, so concurrent retries cannot each store a copy.
+        let slot = a.reserve_id(id, &actor).map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "upload_in_progress",
+                "content for this attachment is being stored; retry when it has finished",
+            )
+            .with_retry_after(5)
+        })?;
+        // Again, holding the reservation: a fill that finished meanwhile is now a replay.
+        match plan_fill(&engine.state(), &a, id, size, &s)? {
+            Fill::Store(m) => Ok((Fill::Store(m), Some(slot))),
+            replay => Ok((replay, None)),
+        }
+    })
+    .await??;
+    let (meta, slot) = match plan {
+        (Fill::Replay(meta), _) => {
+            let mut res = Json200(ContentResponse {
+                attachment: *meta,
+                size_bytes: size,
+                sha256: sha,
+            })
+            .into_response();
+            res.headers_mut()
+                .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
+            return Ok(res);
+        }
+        (Fill::Store(meta), slot) => (meta, slot),
+    };
+
+    auth.take_write(&app)?;
+    let permit = att
+        .uploads
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::overloaded())?;
+    let a = att.clone();
+    tokio::task::spawn_blocking(move || a.precheck_upload(size))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|e| attachment_error(&att, e))?;
+
+    // Seal and hash while reading, chunk by chunk, as an upload does; verified before anything is
+    // charged or stored.
+    let object_key = store::new_object_key().map_err(|_| ApiError::internal())?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+    let (a, key) = (att.clone(), object_key.clone());
+    let sealer = tokio::task::spawn_blocking(move || {
+        use sha2::Digest;
+        let mut hash = sha2::Sha256::new();
+        let mut spool = a.spool(&key, id)?;
+        while let Some(chunk) = rx.blocking_recv() {
+            hash.update(&chunk);
+            spool.push(&chunk)?;
+        }
+        Ok::<_, AttachmentError>((spool.finish()?, hex::encode(hash.finalize())))
+    });
+    let mut stream = body.into_data_stream();
+    let mut total: u64 = 0;
+    let mut failed = None;
+    while let Some(frame) = stream.next().await {
+        let Ok(bytes) = frame else {
+            failed = Some(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "body_read_failed",
+                "the upload was interrupted",
+            ));
+            break;
+        };
+        total = total.saturating_add(bytes.len() as u64);
+        if total > max {
+            failed = Some(too_large(max));
+            break;
+        }
+        if total > size {
+            failed = Some(mismatch(
+                "the body is longer than size_bytes",
+                json!({ "expected_bytes": size }),
+            ));
+            break;
+        }
+        if tx.send(bytes).await.is_err() {
+            break;
+        }
+    }
+    drop(tx);
+    if failed.is_none() && total != size {
+        failed = Some(mismatch(
+            "the body is shorter than size_bytes",
+            json!({ "expected_bytes": size, "received_bytes": total }),
+        ));
+    }
+    if let Some(e) = failed {
+        // The sealer ends with the sender; dropping its result removes the spool file before we answer.
+        drop(sealer.await);
+        return Err(e);
+    }
+    let (sealed, digest) = sealer
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|e| attachment_error(&att, e))?;
+    if digest != sha || sealed.plain != size {
+        // Dropping `sealed` removes the spool file: nothing was charged or stored.
+        drop(sealed);
+        return Err(mismatch(
+            "the body's SHA-256 is not sha256",
+            json!({ "field": "sha256" }),
+        ));
+    }
+
+    let (a, ref_key) = (att.clone(), meta.storage_key.clone());
+    // Recorded as the object of the existing reference (its `storage_key`), so downloads and the
+    // collector find it like any upload. No command: the attachment itself does not change.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _slot = slot;
+        a.store(&object_key, id, &ref_key, &sealed)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|e| attachment_error(&att, e))?;
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(ContentResponse {
+            attachment: *meta,
+            size_bytes: size,
+            sha256: sha,
+        }),
+    )
+        .into_response())
+}
+
 /// Downloads an attachment's content.
 #[utoipa::path(
     get,
@@ -629,23 +940,7 @@ pub async fn download(
     att.download_limiter
         .check(&auth.principal)
         .map_err(ApiError::too_many_requests)?;
-    let (engine, actor, a) = (app.engine.clone(), auth.actor.clone(), att.clone());
-    let (meta, row) = blocking(&app, Work::Read, move || {
-        let state = engine.state();
-        let missing = || ApiError::not_found(format!("attachment {id} not found"));
-        let meta = state.attachments.get(&id).ok_or_else(missing)?;
-        let target = entity_target(&state, EntityId::Attachment(id));
-        if !visibility::can_read(&state, &actor, target) || !state.is_live(EntityId::Attachment(id))
-        {
-            return Err(missing());
-        }
-        let row = a
-            .find(id, &meta.storage_key)
-            .map_err(|e| attachment_error(&a, e))?
-            .ok_or_else(content_unavailable)?;
-        Ok((meta.clone(), row))
-    })
-    .await??;
+    let (meta, row) = stored_content(&app, &auth, id).await?;
     let plain_size = row.plain_size;
     let permit = att
         .downloads
@@ -703,8 +998,68 @@ pub async fn download(
     let body = Body::from_stream(
         futures_util::stream::once(async move { Ok::<_, std::io::Error>(first) }).chain(rest),
     );
-    let media = media_type(&meta.media_type).unwrap_or_else(|| FALLBACK_MEDIA_TYPE.to_owned());
     let mut res = Response::new(body);
+    download_headers(&mut res, &meta, plain_size);
+    Ok(res)
+}
+
+/// The visible, live attachment `id` and its stored object: 404 `not_found` for one the caller cannot
+/// see (or a deleted or missing one), 404 `content_unavailable` without stored content.
+async fn stored_content(
+    app: &AppState,
+    auth: &Authenticated,
+    id: AttachmentId,
+) -> Result<(AttachmentRef, BlobRow), ApiError> {
+    let (engine, actor, a) = (
+        app.engine.clone(),
+        auth.actor.clone(),
+        app.attachments.clone(),
+    );
+    blocking(app, Work::Read, move || {
+        let state = engine.state();
+        let missing = || ApiError::not_found(format!("attachment {id} not found"));
+        let meta = state.attachments.get(&id).ok_or_else(missing)?;
+        let target = entity_target(&state, EntityId::Attachment(id));
+        if !visibility::can_read(&state, &actor, target) || !state.is_live(EntityId::Attachment(id))
+        {
+            return Err(missing());
+        }
+        let row = a
+            .find(id, &meta.storage_key)
+            .map_err(|e| attachment_error(&a, e))?
+            .ok_or_else(content_unavailable)?;
+        Ok((meta.clone(), row))
+    })
+    .await?
+}
+
+/// Whether an attachment's content is stored, without fetching it.
+#[utoipa::path(
+    head,
+    path = "/api/v1/attachments/{id}",
+    tag = "attachments",
+    params(("id" = String, Path, format = Uuid, description = "Attachment ID")),
+    responses(
+        (status = 200, description = "The content is stored. The headers are those of a download (`Content-Length` is the content's size), with no body. Nothing is fetched from storage or charged to the budget."),
+        (status = 401, description = "Missing or invalid token"),
+        (status = 404, description = "No such attachment, one you cannot see, a deleted one, or one without stored content"),
+        (status = 429, description = "Rate limit; see `Retry-After`"),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn head(
+    auth: Authenticated,
+    State(app): State<AppState>,
+    ApiPath(id): ApiPath<AttachmentId>,
+) -> Result<Response, ApiError> {
+    let (meta, row) = stored_content(&app, &auth, id).await?;
+    let mut res = Response::new(Body::empty());
+    download_headers(&mut res, &meta, row.plain_size);
+    Ok(res)
+}
+
+fn download_headers(res: &mut Response, meta: &AttachmentRef, plain_size: u64) {
+    let media = media_type(&meta.media_type).unwrap_or_else(|| FALLBACK_MEDIA_TYPE.to_owned());
     let h = res.headers_mut();
     h.insert(
         CONTENT_TYPE,
@@ -727,5 +1082,4 @@ pub async fn download(
         "cross-origin-resource-policy",
         HeaderValue::from_static("same-origin"),
     );
-    Ok(res)
 }

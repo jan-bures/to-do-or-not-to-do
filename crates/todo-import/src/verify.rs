@@ -817,7 +817,7 @@ pub fn verify(
     }
     if bundle.counts.attachments > 0 {
         rep.notes.push(format!(
-            "{} attachment(s): references are imported; content stays in the bundle until the server has an upload path",
+            "{} attachment(s): references are imported by apply; their content is sent by apply --attachments",
             bundle.counts.attachments
         ));
     }

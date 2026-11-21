@@ -4,7 +4,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use todo_import::apply::{ApplyOptions, apply, default_journal, plan};
+use todo_import::apply::{
+    ApplyOptions, ContentOptions, apply, apply_attachments, default_journal, plan, plan_attachments,
+};
 use todo_import::bundle::{BuildOptions, Bundle, build};
 use todo_import::cache::Cache;
 use todo_import::graph::Export;
@@ -86,6 +88,10 @@ enum Cmd {
         /// Retry-After). Past it, apply stops with a resumable error.
         #[arg(long, default_value_t = todo_import::http::DEFAULT_MAX_WAIT.as_secs())]
         max_wait: u64,
+        /// After the commands, upload each attachment's content (skipping what the server holds).
+        /// Exits 1 if any attachment failed; a re-run retries only those.
+        #[arg(long)]
+        attachments: bool,
     },
     /// Reads everything back from the server and checks it against the bundle. Exits 1 on mismatch.
     VerifyServer {
@@ -243,11 +249,20 @@ fn run(cli: Cli) -> Result<bool> {
             batch_size,
             journal,
             max_wait,
+            attachments,
         } => {
             let bundle = Bundle::read(&path)?;
             let base = todo_import::http::check_base_url(&server)?;
             let journal = journal.unwrap_or_else(|| default_journal(&path, &base));
             print!("{}", plan(&bundle, &journal, &base, batch_size)?);
+            if attachments {
+                print!("{}", plan_attachments(&bundle, &journal, &base)?);
+            } else if !bundle.blobs.is_empty() {
+                println!(
+                    "content:       {} attachment(s) not sent; pass --attachments to upload them",
+                    bundle.blobs.len()
+                );
+            }
             if dry_run {
                 println!("dry run: nothing sent");
                 return Ok(true);
@@ -259,7 +274,7 @@ fn run(cli: Cli) -> Result<bool> {
                 &client,
                 &ApplyOptions {
                     batch_size,
-                    journal,
+                    journal: journal.clone(),
                     abort_after: None,
                 },
             )?;
@@ -267,7 +282,33 @@ fn run(cli: Cli) -> Result<bool> {
                 "apply: {} commands: {} stored, {} replayed (already there), {} skipped (journal), {} batches",
                 sum.total, sum.stored, sum.replayed, sum.skipped, sum.batches
             );
-            Ok(true)
+            if !attachments {
+                return Ok(true);
+            }
+            let c = apply_attachments(
+                &bundle,
+                &client,
+                &ContentOptions {
+                    journal,
+                    abort_after: None,
+                },
+            )?;
+            println!(
+                "attachments: {}: {} uploaded ({} bytes), {} already stored, {} skipped (journal), {} failed",
+                c.total,
+                c.uploaded,
+                c.uploaded_bytes,
+                c.present,
+                c.skipped,
+                c.failed.len()
+            );
+            for f in &c.failed {
+                println!("  failed: {f}");
+            }
+            if !c.ok() {
+                println!("run the same command again to retry the failed attachments");
+            }
+            Ok(c.ok())
         }
         Cmd::VerifyServer {
             bundle,

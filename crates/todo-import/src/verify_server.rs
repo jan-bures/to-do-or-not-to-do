@@ -42,6 +42,10 @@ pub struct ServerReport {
     pub matched: usize,
     /// Entities checked.
     pub checked: usize,
+    /// Attachments with content in the bundle whose reference is on the server.
+    pub contents: usize,
+    /// Of those, the ones whose content the server holds.
+    pub contents_stored: usize,
     /// Every problem, naming objects by source label.
     pub problems: Vec<String>,
 }
@@ -59,8 +63,8 @@ impl ServerReport {
         let mut s = String::new();
         let _ = writeln!(
             s,
-            "checked {} entities, {} match",
-            self.checked, self.matched
+            "checked {} entities, {} match; {} attachment contents, {} stored",
+            self.checked, self.matched, self.contents, self.contents_stored
         );
         for p in self.problems.iter().take(100) {
             let _ = writeln!(s, "MISMATCH: {p}");
@@ -324,6 +328,29 @@ pub fn verify_server(bundle: &Bundle, client: &Client) -> Result<ServerReport, H
     for id in missing {
         let l = c.label(id);
         c.rep.problems.push(format!("{l}: not on the server"));
+    }
+
+    // Content: a HEAD of the download route fetches nothing and charges nothing on the server.
+    for blob in &c.bundle.blobs {
+        let id = EntityId::from(blob.attachment);
+        if !c.found.contains(&id) {
+            continue; // Reported above.
+        }
+        c.rep.contents += 1;
+        let l = c.label(id);
+        match client.head(
+            "HEAD /api/v1/attachments/{id}",
+            &format!("/api/v1/attachments/{}", blob.attachment),
+        )? {
+            Some(len) if len == blob.size_bytes => c.rep.contents_stored += 1,
+            Some(len) => c.rep.problems.push(format!(
+                "{l}: the server's content has {len} bytes, the bundle's {}",
+                blob.size_bytes
+            )),
+            None => c.rep.problems.push(format!(
+                "{l}: content missing on the server (run apply --attachments)"
+            )),
+        }
     }
     Ok(c.rep)
 }
