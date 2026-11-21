@@ -126,9 +126,21 @@ pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
 
 /// An exclusive lock on the state directory, held for the whole run. The OS drops it if the process dies,
 /// so a killed run never leaves a stale lock.
+///
+/// Dropping it unlocks explicitly before closing the file. A child process forked at that moment (by this
+/// program or, in tests, by another thread) briefly shares the open file description until it execs, and
+/// with `flock` semantics closing our descriptor alone would leave the lock held by that copy.
 #[derive(Debug)]
 pub struct StateLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        if let Err(e) = self.file.unlock() {
+            tracing::debug!("unlocking the state directory failed: {e}");
+        }
+    }
 }
 
 impl StateLock {
@@ -144,7 +156,7 @@ impl StateLock {
             .open(&path)
             .map_err(Error::io(format!("opening {}", path.display())))?;
         match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
+            Ok(()) => Ok(Self { file }),
             Err(TryLockError::WouldBlock) => Err(Error::Locked(path)),
             Err(TryLockError::Error(e)) => Err(Error::io(format!("locking {}", path.display()))(e)),
         }
