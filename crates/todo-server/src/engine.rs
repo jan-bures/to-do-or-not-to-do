@@ -475,6 +475,21 @@ impl Engine {
         db::events_after(&*self.reader()?, since, limit)
     }
 
+    /// The stored outcome of `command_id` if `actor` sent it, with when it was handled. Lets an
+    /// adapter rebuild request defaults it resolved on the first attempt (see [`crate::mcp::tools`]).
+    pub fn stored_command(
+        &self,
+        actor: &Actor,
+        command_id: Uuid,
+    ) -> Result<Option<(CommandResult, Timestamp)>, StoreError> {
+        let Some(rec) = db::find_command_of(&*self.reader()?, &command_id.to_string(), actor)?
+        else {
+            return Ok(None);
+        };
+        let result: CommandResult = serde_json::from_str(&rec.result)?;
+        Ok(Some((result, rec.received_at)))
+    }
+
     /// Events after `since`, oldest first, within a byte budget (see [`db::events_after_capped`]).
     pub fn events_since_capped(
         &self,

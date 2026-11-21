@@ -111,11 +111,11 @@ A JSON-RPC `result` means it works. `401` means the token is missing, wrong, rev
 | `complete_task` | plan | Complete or reopen |
 | `move_task` | plan (both lists) | Move to another list |
 | `add_step` | plan | New checklist step |
-| `update_step` | plan | Retitle, tick off or reopen a step |
+| `update_step` | plan | Retitle, tick off or reopen a step (one change per call) |
 | `set_my_day` | plan | Add to or remove from My Day |
 | `merge_tasks` | plan (both tasks) | Merge a duplicate into another task |
 | `archive_task` | plan | Hide a task. It's kept, and undo brings it back |
 | `undo_event` | that of the change | Undo one of your own changes |
 
-Lists you have no level on are invisible: they never appear in results, and asking for them by ID gets
-`not_found`.
+Lists you have no level on are invisible: they never appear in results, and reading or writing them by
+ID gets `not_found` (`event_not_found` for an undo), exactly as if they didn't exist.

@@ -5,6 +5,7 @@
 mod common;
 
 use common::{TOKEN_A, TestServer, first_seq, id};
+use reqwest::Method;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN, WWW_AUTHENTICATE};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -13,10 +14,13 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use todo_core::ids::ListId;
+use todo_core::time::Timestamp;
 use todo_core::{AccessLevel, AgentId, Grants};
-use todo_server::Config;
+use todo_server::{Config, Options};
 
 type Client = RunningService<RoleClient, ()>;
 
@@ -33,6 +37,34 @@ impl Env {
         Self {
             t: TestServer::start_with(f).await,
         }
+    }
+
+    /// A server whose clock runs `offset` milliseconds ahead of the real one.
+    async fn start_with_clock(offset: Arc<AtomicI64>) -> Self {
+        let options = Options {
+            clock: Arc::new(move || {
+                Timestamp::from_millisecond(
+                    Timestamp::now().as_millisecond() + offset.load(Ordering::SeqCst),
+                )
+                .unwrap()
+            }),
+            ..Options::default()
+        };
+        Self {
+            t: TestServer::start_with_options(|_| {}, options).await,
+        }
+    }
+
+    /// A REST call with `token`: `(status, body)`.
+    async fn rest(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let (s, _, v) = self.t.request(method, path, Some(token), body).await;
+        (s, v)
     }
 
     /// A real agent token with `grants`; returns `(token row id, token)`.
@@ -103,6 +135,11 @@ async fn fails(c: &Client, tool: &str, a: Value) -> Value {
     let v = r.structured_content.unwrap();
     // The text content carries the same envelope, for clients that only show text.
     v["error"].clone()
+}
+
+/// An error with `id` replaced by a placeholder, to compare the answers for two different IDs.
+fn same_shape(e: &Value, id: &str) -> String {
+    e.to_string().replace(id, "<id>")
 }
 
 fn titles(page: &Value) -> Vec<String> {
@@ -274,13 +311,28 @@ async fn a_plan_level_agent_organises_tasks() {
 
     let step = ok(&c, "add_step", json!({ "task_id": a, "title": "Outline" })).await;
     let step_id = step["step_id"].clone();
-    let both = ok(
+    // One change per call: core has no command that retitles and completes at once.
+    let head = env.t.server.engine.head_seq();
+    let both = fails(
         &c,
         "update_step",
         json!({ "step_id": step_id, "title": "Outline sections", "completed": true }),
     )
     .await;
-    assert_eq!(both["events"].as_array().unwrap().len(), 2);
+    assert_eq!(both["code"], "invalid_body");
+    assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+    ok(
+        &c,
+        "update_step",
+        json!({ "step_id": step_id, "title": "Outline sections" }),
+    )
+    .await;
+    ok(
+        &c,
+        "update_step",
+        json!({ "step_id": step_id, "completed": true }),
+    )
+    .await;
 
     ok(&c, "set_my_day", json!({ "task_id": a })).await;
     let detail = ok(&c, "get_task", json!({ "task_id": a })).await;
@@ -397,15 +449,19 @@ async fn a_capture_agent_cannot_plan_or_see_outside_its_lists() {
     assert!(titles(&ok(&c, "query_tasks", json!({ "query": "secret" })).await).is_empty());
     let e = fails(&c, "get_task", json!({ "task_id": secret })).await;
     assert_eq!(e["code"], "not_found");
+    // Writes on hidden items answer exactly like writes on missing ones.
     let e = fails(&c, "add_note", json!({ "task_id": secret, "text": "hi" })).await;
-    assert!(e["code"] == "forbidden" || e["code"] == "not_found", "{e}");
+    let missing = id();
+    let m = fails(&c, "add_note", json!({ "task_id": missing, "text": "hi" })).await;
+    assert_eq!(e["code"], "not_found", "{e}");
+    assert_eq!(same_shape(&e, &secret), same_shape(&m, &missing));
     let e = fails(
         &c,
         "create_task",
         json!({ "title": "x", "list_id": hidden }),
     )
     .await;
-    assert_eq!(e["code"], "forbidden");
+    assert_eq!(e["code"], "not_found", "{e}");
     let activity = ok(&c, "get_activity", json!({ "limit": 200 })).await;
     let text = activity.to_string();
     assert!(!text.contains(&secret), "{text}");
@@ -484,7 +540,7 @@ async fn retrying_with_the_same_command_id_does_not_write_twice() {
     .await;
     assert_eq!(e["code"], "command_id_reused");
 
-    // Two-part writes replay both parts.
+    // Other writes replay too.
     let step = ok(
         &c,
         "add_step",
@@ -492,8 +548,7 @@ async fn retrying_with_the_same_command_id_does_not_write_twice() {
     )
     .await;
     let cid = id();
-    let a =
-        json!({ "step_id": step["step_id"], "title": "t", "completed": true, "command_id": cid });
+    let a = json!({ "step_id": step["step_id"], "completed": true, "command_id": cid });
     let one = ok(&c, "update_step", a.clone()).await;
     let head = env.t.server.engine.head_seq();
     let two = ok(&c, "update_step", a).await;
@@ -650,4 +705,243 @@ async fn a_token_has_a_bounded_number_of_requests_in_flight() {
     // The slots are free again.
     let res = env.post(Some(&token), &read).await;
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn hidden_targets_answer_exactly_like_missing_ones() {
+    let env = Env::start().await;
+    let open = env.t.create_list("Inbox").await;
+    let hidden = env.t.create_list("Diary").await;
+    let mine = env.t.create_task(&open, "Visible", json!({})).await;
+    let secret = env.t.create_task(&hidden, "Secret", json!({})).await;
+    let owner_visible = env
+        .t
+        .ok(json!({ "cmd": "update_task", "id": mine, "patch": { "title": "Visible!" } }))
+        .await;
+    let owner_hidden = env
+        .t
+        .ok(json!({ "cmd": "update_task", "id": secret, "patch": { "title": "Secret!" } }))
+        .await;
+    // Plan everywhere except the diary.
+    let (_, token) = env.agent(
+        "planner",
+        &grants(AccessLevel::Plan, &[(&hidden, AccessLevel::None)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    let missing = id();
+    let head = env.t.server.engine.head_seq();
+
+    // MCP: every tool that targets a task.
+    for (tool, a) in [
+        ("update_task", json!({ "title": "x" })),
+        ("complete_task", json!({})),
+        ("set_my_day", json!({ "date": "2030-01-01" })),
+        ("archive_task", json!({})),
+        ("add_note", json!({ "text": "x" })),
+        ("add_step", json!({ "title": "x" })),
+        ("move_task", json!({ "list_id": open })),
+    ] {
+        let with = |task: &str| {
+            let mut a = a.clone();
+            a["task_id"] = json!(task);
+            a
+        };
+        let h = fails(&c, tool, with(&secret)).await;
+        let m = fails(&c, tool, with(&missing)).await;
+        assert_eq!(h["code"], "not_found", "{tool}: {h}");
+        assert_eq!(same_shape(&h, &secret), same_shape(&m, &missing), "{tool}");
+    }
+    // A hidden destination, a hidden merge source.
+    let h = fails(
+        &c,
+        "move_task",
+        json!({ "task_id": mine, "list_id": hidden }),
+    )
+    .await;
+    let m = fails(
+        &c,
+        "move_task",
+        json!({ "task_id": mine, "list_id": missing }),
+    )
+    .await;
+    assert_eq!(same_shape(&h, &hidden), same_shape(&m, &missing));
+    let h = fails(
+        &c,
+        "merge_tasks",
+        json!({ "source_task_id": secret, "target_task_id": mine }),
+    )
+    .await;
+    let m = fails(
+        &c,
+        "merge_tasks",
+        json!({ "source_task_id": missing, "target_task_id": mine }),
+    )
+    .await;
+    assert_eq!(same_shape(&h, &secret), same_shape(&m, &missing));
+
+    // REST goes through the same path.
+    let cmd = |task: &str| json!({ "command_id": id(), "command": { "cmd": "complete_task", "id": task } });
+    let (hs, hb) = env
+        .rest(&token, Method::POST, "/api/v1/commands", Some(cmd(&secret)))
+        .await;
+    let (ms, mb) = env
+        .rest(
+            &token,
+            Method::POST,
+            "/api/v1/commands",
+            Some(cmd(&missing)),
+        )
+        .await;
+    assert_eq!((hs, ms), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+    assert_eq!(same_shape(&hb, &secret), same_shape(&mb, &missing));
+
+    // Undo: an event the agent cannot see is a missing one.
+    let hidden_seq = first_seq(&owner_hidden);
+    let missing_seq = 9999;
+    let h = fails(&c, "undo_event", json!({ "seq": hidden_seq })).await;
+    let m = fails(&c, "undo_event", json!({ "seq": missing_seq })).await;
+    assert_eq!(h["code"], "event_not_found", "{h}");
+    assert_eq!(
+        h.to_string().replace(&hidden_seq.to_string(), "<seq>"),
+        m.to_string().replace(&missing_seq.to_string(), "<seq>")
+    );
+    let undo = |seq: u64| {
+        (
+            format!("/api/v1/events/{seq}/undo"),
+            json!({ "command_id": id() }),
+        )
+    };
+    let (p, b) = undo(hidden_seq);
+    let (hs, _) = env.rest(&token, Method::POST, &p, Some(b)).await;
+    let (p, b) = undo(missing_seq);
+    let (ms, _) = env.rest(&token, Method::POST, &p, Some(b)).await;
+    assert_eq!((hs, ms), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+    // A visible event of someone else is still refused as such.
+    let e = fails(
+        &c,
+        "undo_event",
+        json!({ "seq": first_seq(&owner_visible) }),
+    )
+    .await;
+    assert_eq!(e["code"], "not_own_event");
+    // A visible target with too low a level is still `forbidden`.
+    let (_, reader) = env.agent("reader", &Grants::with_default(AccessLevel::Read), None);
+    let r = env.connect(&reader).await;
+    let e = fails(&r, "complete_task", json!({ "task_id": mine })).await;
+    assert_eq!(e["code"], "forbidden");
+    assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+}
+
+#[tokio::test]
+async fn a_retry_after_losing_access_gets_not_found_and_never_writes_twice() {
+    let env = Env::start().await;
+    let work = env.t.create_list("Work").await;
+    let plan = grants(AccessLevel::None, &[(&work, AccessLevel::Plan)]);
+    let (row, token) = env.agent("planner", &plan, None);
+    let c = env.connect(&token).await;
+    let cid = id();
+    let a = json!({ "title": "Draft", "list_id": work, "command_id": cid });
+    let first = ok(&c, "create_task", a.clone()).await;
+    let undo_cid = id();
+    let undo_args = json!({ "seq": first["events"][0]["seq"], "command_id": undo_cid });
+    ok(&c, "undo_event", undo_args.clone()).await;
+    let head = env.t.server.engine.head_seq();
+
+    // The owner takes the list away: retries no longer show the stored results.
+    let svc = &env.t.server.authsvc;
+    assert!(
+        svc.set_grants(row, &grants(AccessLevel::None, &[]), None)
+            .unwrap()
+    );
+    let e = fails(&c, "create_task", a.clone()).await;
+    assert_eq!(e["code"], "not_found", "{e}");
+    let e = fails(&c, "undo_event", undo_args.clone()).await;
+    assert_eq!(e["code"], "event_not_found", "{e}");
+    assert_eq!(env.t.server.engine.head_seq(), head);
+
+    // Given back, the same retries replay: the records were kept and nothing ran twice.
+    assert!(svc.set_grants(row, &plan, None).unwrap());
+    let again = ok(&c, "create_task", a).await;
+    assert_eq!(again["replayed"], true);
+    assert_eq!(again["events"], first["events"]);
+    let again = ok(&c, "undo_event", undo_args).await;
+    assert_eq!(again["replayed"], true);
+    assert_eq!(env.t.server.engine.head_seq(), head);
+}
+
+#[tokio::test]
+async fn retries_replay_even_after_their_defaults_changed() {
+    let offset = Arc::new(AtomicI64::new(0));
+    let env = Env::start_with_clock(offset.clone()).await;
+    let inbox = env.t.create_list("Inbox").await;
+    let (_, token) = env.agent("planner", &Grants::with_default(AccessLevel::Plan), None);
+    let c = env.connect(&token).await;
+
+    // The implicit Inbox: renamed, and another list called Inbox appears, before the retry.
+    let cid = id();
+    let a = json!({ "title": "Call back", "command_id": cid });
+    let first = ok(&c, "create_task", a.clone()).await;
+    assert_eq!(first["list_id"], inbox);
+    env.t
+        .ok(json!({ "cmd": "update_list", "id": inbox, "name": "Old inbox" }))
+        .await;
+    env.t.create_list("Inbox").await;
+    let head = env.t.server.engine.head_seq();
+    let again = ok(&c, "create_task", a).await;
+    assert_eq!(again["replayed"], true, "{again}");
+    assert_eq!(again["list_id"], inbox);
+    assert_eq!(again["events"], first["events"]);
+    // Different arguments under the same ID are still refused.
+    let e = fails(
+        &c,
+        "create_task",
+        json!({ "title": "Other", "command_id": cid }),
+    )
+    .await;
+    assert_eq!(e["code"], "command_id_reused");
+
+    // "Today" in set_my_day: the retry comes after midnight.
+    let task = first["task_id"].clone();
+    let cid = id();
+    let a = json!({ "task_id": task, "command_id": cid });
+    let first = ok(&c, "set_my_day", a.clone()).await;
+    offset.store(36 * 3_600_000, Ordering::SeqCst);
+    let again = ok(&c, "set_my_day", a).await;
+    assert_eq!(again["replayed"], true, "{again}");
+    assert_eq!(again["date"], first["date"]);
+    assert_eq!(again["events"], first["events"]);
+    assert_eq!(
+        env.t.server.engine.head_seq(),
+        head + first["events"].as_array().unwrap().len() as u64
+    );
+}
+
+#[tokio::test]
+async fn the_implicit_inbox_is_one_the_agent_can_capture_into() {
+    let env = Env::start().await;
+    let read_only = env.t.create_list("Inbox").await;
+    let coll = id();
+    env.t
+        .ok(json!({ "cmd": "create_collection", "id": coll, "name": "Home" }))
+        .await;
+    let writable = id();
+    env.t
+        .ok(json!({ "cmd": "create_list", "id": writable, "collection": coll, "name": "inbox" }))
+        .await;
+    let (_, token) = env.agent(
+        "scout",
+        &grants(
+            AccessLevel::None,
+            &[
+                (&read_only, AccessLevel::Read),
+                (&writable, AccessLevel::Capture),
+            ],
+        ),
+        None,
+    );
+    let c = env.connect(&token).await;
+    // The top-level Inbox comes first, but the agent can only read it.
+    let created = ok(&c, "create_task", json!({ "title": "x" })).await;
+    assert_eq!(created["list_id"], writable);
 }

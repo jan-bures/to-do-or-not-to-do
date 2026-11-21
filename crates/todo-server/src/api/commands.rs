@@ -2,7 +2,7 @@
 
 use super::dto::{CommandRequest, CommandResponse, UndoRequest};
 use super::error::{ApiError, ErrorBody, undo_error};
-use super::{ApiJson, ApiPath, RequestCancel, Work, blocking};
+use super::{ApiJson, ApiPath, RequestCancel, Work, blocking, hidden};
 use crate::app::AppState;
 use crate::auth::Authenticated;
 use crate::engine::{Engine, EngineError, Outcome, UndoExpect};
@@ -63,7 +63,11 @@ pub async fn post_command(
     // The deadline middleware owns `cancel`: it either cancels the write before it commits (408) or
     // waits for the commit (see `crate::app`).
     let outcome = blocking(&app, Work::Write, move || {
-        engine.execute_cancellable(&auth.actor, req.command_id, &req.command, &cancel)
+        // Hidden and missing targets look the same (see `hidden`), also for a retry.
+        hidden::check_command(&engine.state(), &auth.actor, &req.command)?;
+        engine
+            .execute_cancellable(&auth.actor, req.command_id, &req.command, &cancel)
+            .map_err(ApiError::from)
     })
     .await??;
     Ok(outcome_response(outcome, app.engine.epoch()))
@@ -123,6 +127,8 @@ pub async fn post_undo(
     let agent = matches!(auth.actor, todo_core::Actor::Agent { .. });
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
+        // Invisible and missing events look the same (see `hidden`), also for a retry.
+        hidden::check_undo(&engine, &auth.actor, seq)?;
         let done = engine.undo_expecting(
             &auth.actor,
             seq,

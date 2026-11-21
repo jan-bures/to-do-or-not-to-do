@@ -42,11 +42,9 @@ async fn ctrl_c() {
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(todo_server::mcp::DEFAULT_LOG_FILTER)
-            }),
-        )
+        .with_env_filter(todo_server::mcp::log_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
     let cli = Cli::parse();
     match cli.command {

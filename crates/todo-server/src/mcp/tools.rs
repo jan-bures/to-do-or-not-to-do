@@ -17,7 +17,7 @@
 //! | `complete_task` | `complete_task` / `uncomplete_task` | plan |
 //! | `move_task` | `move_task` | plan, on both lists |
 //! | `add_step` | `create_step` | plan |
-//! | `update_step` | `update_step`, `complete_step` / `uncomplete_step` | plan |
+//! | `update_step` | `update_step` or `complete_step` / `uncomplete_step` (one per call) | plan |
 //! | `set_my_day` | `set_my_day` | plan |
 //! | `merge_tasks` | `merge_tasks` | plan, on both tasks |
 //! | `archive_task` | `delete` (a tombstone; undo restores it) | plan |
@@ -38,8 +38,14 @@
 //! Every write takes an optional `command_id` (a UUID); without one, a fresh one is generated per call.
 //! The IDs of entities a write creates are derived from the `command_id`, so retrying with the same
 //! `command_id` and arguments sends exactly the same command and returns the stored result
-//! (`replayed: true`) instead of writing twice. A tool that sends two commands (`update_step` with both
-//! a title and a completion change) derives one command ID per part.
+//! (`replayed: true`) instead of writing twice. Defaults a tool resolves itself (the Inbox for
+//! `create_task`, "today" for `set_my_day`) are taken from the stored record on a retry (the list of the
+//! task it created, the day it was handled), so the retry sends the same command even if lists were
+//! renamed or the day changed in between. Other arguments are not: a retry with different arguments
+//! gets `command_id_reused`.
+//!
+//! Hidden targets answer like missing ones (`not_found`, `event_not_found`), also on a retry; see
+//! [`crate::api::hidden`].
 
 use crate::api::commands::{self, REPLAYED_HEADER};
 use crate::api::dto::{
@@ -47,7 +53,7 @@ use crate::api::dto::{
 };
 use crate::api::error::ApiError;
 use crate::api::read::{self, MAX_PAGE_BYTES};
-use crate::api::{ApiJson, ApiPath, ApiQuery, RequestCancel, Work, blocking, visibility};
+use crate::api::{ApiJson, ApiPath, ApiQuery, RequestCancel, Work, blocking};
 use crate::app::AppState;
 use crate::auth::Authenticated;
 use crate::cancel::Cancel;
@@ -67,9 +73,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use todo_core::AccessLevel;
+use todo_core::access::{Target, level_on};
 use todo_core::command::Command;
+use todo_core::event::EventPayload;
 use todo_core::ids::{ListId, TaskId};
+use todo_core::model::Entity;
 use todo_core::query::fold;
+use todo_core::time::Timestamp;
 use uuid::Uuid;
 
 /// What the server tells agents when they connect (the full guide is `docs/agents/`).
@@ -166,7 +177,8 @@ impl PositionArg {
 pub struct CreateTaskArgs {
     /// Title (required, one line).
     pub title: String,
-    /// The list to create it in. Omit to use the Inbox (the list named "Inbox" that you can see).
+    /// The list to create it in. Omit to use the Inbox (the list named "Inbox" that you can capture
+    /// into).
     #[serde(default)]
     pub list_id: Option<Uuid>,
     /// Notes (plain text or Markdown).
@@ -498,8 +510,8 @@ async fn command(
     outcome(res, extra).await
 }
 
-/// The list named "Inbox" (case- and diacritic-insensitively) that the caller can read: a top-level one
-/// first, then by position.
+/// The list named "Inbox" (case- and diacritic-insensitively) that the caller can capture into: a
+/// top-level one first, then by position.
 async fn inbox(app: &AppState, auth: &Authenticated) -> Result<ListId, ApiError> {
     let engine = app.engine.clone();
     let actor = auth.actor.clone();
@@ -510,7 +522,7 @@ async fn inbox(app: &AppState, auth: &Authenticated) -> Result<ListId, ApiError>
             .filter(|l| {
                 s.is_live(l.id.into())
                     && fold(&l.name) == "inbox"
-                    && visibility::list_visible(&s, &actor, l.id)
+                    && level_on(&s, &actor, Target::List(l.id)) >= AccessLevel::Capture
             })
             .min_by_key(|l| (l.collection.is_some(), l.position.to_string(), l.id))
             .map(|l| l.id)
@@ -520,9 +532,48 @@ async fn inbox(app: &AppState, auth: &Authenticated) -> Result<ListId, ApiError>
         ApiError::new(
             StatusCode::NOT_FOUND,
             "inbox_not_found",
-            "no list named Inbox is visible to you; pass list_id (see list_lists)",
+            "no list named Inbox that you can capture into; pass list_id (see list_lists)",
         )
     })
+}
+
+/// The caller's stored command `command_id`, if this is a retry: its result and when it was handled.
+async fn stored(
+    app: &AppState,
+    auth: &Authenticated,
+    command_id: Option<Uuid>,
+) -> Result<Option<(CommandResult, Timestamp)>, ApiError> {
+    let Some(id) = command_id else {
+        return Ok(None);
+    };
+    let engine = app.engine.clone();
+    let actor = auth.actor.clone();
+    Ok(blocking(app, Work::Read, move || engine.stored_command(&actor, id)).await??)
+}
+
+/// The list a stored `create_task` put `task` in (from its `Created` event).
+async fn stored_list(
+    app: &AppState,
+    result: &CommandResult,
+    task: TaskId,
+) -> Result<Option<ListId>, ApiError> {
+    let engine = app.engine.clone();
+    let seqs: Vec<u64> = result.events.iter().map(|e| e.seq).collect();
+    blocking(app, Work::Read, move || -> Result<_, ApiError> {
+        for seq in seqs {
+            for e in engine.events_since(seq.saturating_sub(1), 1)? {
+                if let EventPayload::Created {
+                    entity: Entity::Task(t),
+                } = &e.payload
+                    && t.id == task
+                {
+                    return Ok(Some(t.list));
+                }
+            }
+        }
+        Ok(None)
+    })
+    .await?
 }
 
 // ---- the server ---------------------------------------------------------------------------------------
@@ -701,11 +752,19 @@ impl TodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         self.run("create_task", &ctx, |app, auth, cancel| async move {
             let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            let task = TaskId::from_uuid(derived_id(command_id, "task"));
             let list = match a.list_id {
                 Some(l) => ListId::from_uuid(l),
-                None => inbox(&app, &auth).await?,
+                // A retry uses the Inbox the first attempt resolved, even if lists changed since, so
+                // it sends the same command and replays.
+                None => match stored(&app, &auth, a.command_id).await? {
+                    Some((r, _)) => match stored_list(&app, &r, task).await? {
+                        Some(l) => l,
+                        None => inbox(&app, &auth).await?,
+                    },
+                    None => inbox(&app, &auth).await?,
+                },
             };
-            let task = TaskId::from_uuid(derived_id(command_id, "task"));
             let mut cmd =
                 json!({ "cmd": "create_task", "id": task, "list": list, "title": a.title });
             if let Some(n) = a.notes {
@@ -880,60 +939,21 @@ impl TodoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run("update_step", &ctx, |app, auth, cancel| async move {
-            let base = a.command_id.unwrap_or_else(Uuid::new_v4);
-            let mut parts = Vec::new();
-            if let Some(t) = a.title {
-                parts.push(json!({ "cmd": "update_step", "id": a.step_id, "title": t }));
-            }
-            if let Some(done) = a.completed {
-                let cmd = if done {
-                    "complete_step"
-                } else {
-                    "uncomplete_step"
-                };
-                parts.push(json!({ "cmd": cmd, "id": a.step_id }));
-            }
-            match parts.len() {
-                0 => Err(invalid("nothing to change: give title, completed or both")),
-                1 => {
-                    let cmd = parts.remove(0);
-                    command(&app, auth, cancel, base, cmd, json!({})).await
+            let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
+            // `todo-core` has no single command that retitles and completes a step, and two commands
+            // would be two transactions, two quota charges and two undo groups.
+            let cmd = match (a.title, a.completed) {
+                (Some(_), Some(_)) => {
+                    return Err(invalid(
+                        "give title or completed, not both: make two update_step calls",
+                    ));
                 }
-                _ => {
-                    // Two commands: one derived ID each, so a retry replays both.
-                    let mut results = Vec::new();
-                    for (i, cmd) in parts.into_iter().enumerate() {
-                        let id = derived_id(base, &format!("part{i}"));
-                        match command(&app, auth.clone(), cancel.clone(), id, cmd, json!({})).await
-                        {
-                            Ok(v) => results.push(v),
-                            Err(mut e) if !results.is_empty() => {
-                                let mut d = e.details.take().unwrap_or_else(|| json!({}));
-                                if let Value::Object(m) = &mut d {
-                                    m.insert("applied".into(), json!(results));
-                                }
-                                return Err(e.with_details(d));
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    let events: Vec<Value> = results
-                        .iter()
-                        .flat_map(|r| r["events"].as_array().cloned().unwrap_or_default())
-                        .collect();
-                    let summary: Vec<&str> = results
-                        .iter()
-                        .filter_map(|r| r["summary"].as_str())
-                        .collect();
-                    Ok(json!({
-                        "command_id": base,
-                        "events": events,
-                        "summary": summary.join("; "),
-                        "replayed": results.iter().all(|r| r["replayed"] == true),
-                        "parts": results,
-                    }))
-                }
-            }
+                (Some(t), None) => json!({ "cmd": "update_step", "id": a.step_id, "title": t }),
+                (None, Some(true)) => json!({ "cmd": "complete_step", "id": a.step_id }),
+                (None, Some(false)) => json!({ "cmd": "uncomplete_step", "id": a.step_id }),
+                (None, None) => return Err(invalid("nothing to change: give title or completed")),
+            };
+            command(&app, auth, cancel, command_id, cmd, json!({})).await
         })
         .await
     }
@@ -956,7 +976,14 @@ impl TodoMcp {
             let date = if a.in_my_day {
                 match a.date {
                     Some(d) => json!(d),
-                    None => json!(app.eval_context().today),
+                    // "Today" as of the first attempt, so a retry after midnight replays.
+                    None => {
+                        let now = match stored(&app, &auth, a.command_id).await? {
+                            Some((_, at)) => at,
+                            None => app.engine.now(),
+                        };
+                        json!(jiff::ZonedDateTime::new(now, app.zone.clone()).date())
+                    }
                 }
             } else {
                 Value::Null

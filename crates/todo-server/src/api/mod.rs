@@ -4,6 +4,7 @@ pub mod commands;
 pub mod dto;
 pub mod error;
 pub mod events;
+pub mod hidden;
 pub mod openapi;
 pub mod pair;
 pub mod read;

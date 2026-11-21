@@ -45,9 +45,23 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// Where the MCP endpoint is mounted.
 pub const PATH: &str = "/mcp";
 
-/// The server's default log filter. `rmcp` logs rejected JSON-RPC requests and error responses at
-/// `warn`, and their messages can quote tool arguments (task content), so it is held to `error`.
-pub const DEFAULT_LOG_FILTER: &str = "info,rmcp=error";
+/// Directive appended to every log filter. `rmcp` logs rejected JSON-RPC requests and error responses
+/// at `warn`, and their messages can quote tool arguments (task content), so it is held to `error`.
+pub const RMCP_LOG_DIRECTIVE: &str = "rmcp=error";
+
+/// The server's log filter: `spec` (`RUST_LOG`) if it parses, else `info`, always with
+/// [`RMCP_LOG_DIRECTIVE`] on top, so `RUST_LOG=info` (or even `rmcp=debug`) cannot lift it.
+#[must_use]
+pub fn log_filter(spec: Option<&str>) -> tracing_subscriber::EnvFilter {
+    use tracing_subscriber::EnvFilter;
+    let base = spec
+        .and_then(|s| EnvFilter::try_new(s).ok())
+        .unwrap_or_else(|| EnvFilter::new("info"));
+    match RMCP_LOG_DIRECTIVE.parse() {
+        Ok(d) => base.add_directive(d),
+        Err(_) => base,
+    }
+}
 
 /// Counts each token's MCP requests in flight and refuses those beyond the cap.
 ///
@@ -179,6 +193,21 @@ pub fn router(state: AppState) -> Router<AppState> {
 mod tests {
     use super::*;
     use todo_core::DeviceId;
+
+    #[test]
+    fn the_rmcp_directive_survives_any_rust_log() {
+        for spec in [
+            None,
+            Some("info"),
+            Some("debug"),
+            Some("info,rmcp=debug"),
+            Some("!!bad"),
+        ] {
+            let f = log_filter(spec).to_string();
+            assert!(f.contains("rmcp=error"), "{spec:?}: {f}");
+            assert!(!f.contains("rmcp=debug"), "{spec:?}: {f}");
+        }
+    }
 
     #[test]
     fn slots_are_capped_per_principal_and_released_on_drop() {

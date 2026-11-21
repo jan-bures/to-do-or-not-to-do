@@ -768,6 +768,45 @@ pub fn find_command(conn: &Connection, command_id: &str) -> Result<Option<Comman
         .optional()?)
 }
 
+/// A stored command of a given actor: its kind, result and when it was handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCommand {
+    /// `command` or `undo`.
+    pub kind: String,
+    /// The JSON result returned to the client.
+    pub result: String,
+    /// When it was handled.
+    pub received_at: Timestamp,
+}
+
+/// Looks up a command by its client-chosen ID, only if `actor` sent it.
+pub fn find_command_of(
+    conn: &Connection,
+    command_id: &str,
+    actor: &Actor,
+) -> Result<Option<ActorCommand>> {
+    let row = conn
+        .prepare_cached(
+            "SELECT kind, result, received_at FROM commands WHERE command_id = ?1 AND actor = ?2",
+        )?
+        .query_row(params![command_id, serde_json::to_string(actor)?], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .optional()?;
+    row.map(|(kind, result, at)| {
+        Ok(ActorCommand {
+            kind,
+            result,
+            received_at: at.parse::<Timestamp>().map_err(corrupt("command time"))?,
+        })
+    })
+    .transpose()
+}
+
 /// Records a handled command.
 pub fn insert_command(
     tx: &Transaction<'_>,

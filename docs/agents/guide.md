@@ -11,7 +11,7 @@ your default):
 
 | Level | You may |
 |---|---|
-| none | Nothing. The list and its tasks don't exist for you: they never appear in results, and asking for them by ID gets `not_found`. |
+| none | Nothing. The list and its tasks don't exist for you: they never appear in results, and reading or changing them by ID gets `not_found`, exactly as for an ID that doesn't exist. |
 | read | Read the list and its tasks (`list_lists`, `query_tasks`, `get_task`, `get_activity`). |
 | capture | Also create tasks (`create_task`) and append notes (`add_note`). |
 | plan | Also change, complete, reopen, move, merge and archive tasks; add and change steps; put tasks in My Day (`update_task`, `complete_task`, `move_task`, `merge_tasks`, `archive_task`, `add_step`, `update_step`, `set_my_day`). Moving or merging needs plan level on both ends. |
@@ -23,7 +23,7 @@ it; tell the owner what you wanted to do instead.
 ## Where to put new tasks
 
 - **The Inbox, unless you were told otherwise.** `create_task` without `list_id` uses the list named
-  "Inbox". If you have no Inbox you can capture into, you get `inbox_not_found`: ask which list to use.
+  "Inbox" that you can capture into. If there's none, you get `inbox_not_found`: ask which list to use.
 - Use another list only when the owner named it, or the task obviously belongs to one they pointed you at.
 - Keep titles short and actionable (`Renew passport`, not `I think you should maybe renew…`). Put context,
   links and reasoning in `notes`.
@@ -38,7 +38,7 @@ it; tell the owner what you wanted to do instead.
    times out, fails with `outcome_unknown`, or you're not sure it went through, repeat it with the **same
    `command_id` and the same arguments**. The server returns the original result (`replayed: true`)
    instead of writing twice. Never reuse a `command_id` for a different write: that fails with
-   `command_id_reused`.
+   `command_id_reused`. A retry replays even if the Inbox was renamed or the day changed in between.
 3. **Merge duplicates you find**, if you have plan level: `merge_tasks` with the duplicate as `source`
    and the task to keep as `target`.
 
@@ -55,6 +55,7 @@ it; tell the owner what you wanted to do instead.
 
 ## Limits
 
+- `update_step` makes one change per call: retitle, or tick off / reopen, not both at once.
 - Your token has a **write quota** per rolling hour (`quota_exceeded`, with `retry_after` seconds). Batch
   your work, and don't loop over writes you don't need.
 - Requests are rate-limited per token, and only a few may be in flight at once
