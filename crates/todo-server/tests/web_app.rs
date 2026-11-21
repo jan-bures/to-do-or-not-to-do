@@ -349,7 +349,7 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
         let p = b.get(path).await;
         assert_eq!(p.status, StatusCode::OK, "{path}");
         assert_eq!(p.header(CONTENT_SECURITY_POLICY), APP_CSP, "{path}");
-        assert_eq!(p.header(CACHE_CONTROL), "no-store");
+        assert_eq!(p.header(CACHE_CONTROL), "no-store, no-transform");
         assert!(
             p.body
                 .contains(&format!("<meta name=\"csrf-token\" content=\"{csrf}\">")),
@@ -507,4 +507,95 @@ async fn signing_out_closes_the_apps_event_stream() {
     let p = b.post_form("/auth/logout", &[]).await;
     assert_eq!(p.status, StatusCode::SEE_OTHER);
     assert!(stream.ended(Duration::from_secs(5)).await);
+}
+
+#[tokio::test]
+async fn responses_that_carry_a_secret_are_neither_stored_nor_transformed() {
+    let (env, _dist) = env_with_app().await;
+    let b = env.owner().await;
+    let csrf = b.csrf.clone().unwrap();
+    // The app's page (the CSRF meta), an admin page (CSRF form fields), the token endpoint and API
+    // JSON: a proxy must not compress any of them (BREACH).
+    for path in ["/app", "/app/list/x", "/admin", "/auth/session"] {
+        let p = b.get(path).await;
+        assert_eq!(p.status, StatusCode::OK, "{path}");
+        assert_eq!(p.header(CACHE_CONTROL), "no-store, no-transform", "{path}");
+    }
+    let (s, h, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h[CACHE_CONTROL], "no-store, no-transform");
+    let (s, h, _) = api(&b, Method::GET, "/api/v1/lists", None, None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(h[CACHE_CONTROL], "no-store, no-transform");
+    // The static files carry no secret and keep their revalidation.
+    let p = b.get("/app/boot.js").await;
+    assert_eq!(p.header(CACHE_CONTROL), "private, no-cache");
+}
+
+#[tokio::test]
+async fn the_session_token_endpoint_answers_the_current_token() {
+    let env = Env::start().await;
+    let mut b = env.owner().await;
+    let p = b.get("/auth/session").await;
+    assert_eq!(p.status, StatusCode::OK);
+    assert!(p.header(CONTENT_TYPE).starts_with("application/json"));
+    assert_eq!(p.json()["csrf"], json!(b.csrf.clone().unwrap()));
+
+    // Signing in again (another tab) replaces the cookie: the old token is refused, the endpoint
+    // gives the new one, and that one works.
+    let old = b.csrf.clone().unwrap();
+    b.login().await;
+    let (s, _, v) = api(&b, Method::GET, "/api/v1/lists", Some(&old), None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(v["error"]["code"], "csrf");
+    let fresh = b.get("/auth/session").await.json()["csrf"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(fresh, old);
+    let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&fresh), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Without a session: 401 JSON, never a redirect to the sign-in page.
+    let p = env.browser().get("/auth/session").await;
+    assert_eq!(p.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(p.json()["error"]["code"], "signed_out");
+}
+
+#[tokio::test]
+async fn only_a_request_that_passes_the_csrf_check_keeps_the_session_alive() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let csrf = b.csrf.clone().unwrap();
+    // The idle timeout is an hour. Requests with a wrong token at 40 minutes don't extend it...
+    env.advance(Duration::from_secs(40 * 60));
+    for _ in 0..3 {
+        let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some("wrong"), None, None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    let (s, _, _) = api(
+        &b,
+        Method::POST,
+        "/api/v1/commands",
+        Some(&csrf),
+        Some("https://evil.example.com"),
+        Some(create_list("Nope")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // ...so at 61 minutes the session has ended.
+    env.advance(Duration::from_secs(21 * 60));
+    let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // A good request does extend it.
+    let mut b = b;
+    b.login().await;
+    let csrf = b.csrf.clone().unwrap();
+    env.advance(Duration::from_secs(40 * 60));
+    let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    env.advance(Duration::from_secs(40 * 60));
+    let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
+    assert_eq!(s, StatusCode::OK);
 }

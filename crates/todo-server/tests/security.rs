@@ -1713,7 +1713,7 @@ fn assert_html_headers(what: &str, p: &Page) {
     assert_eq!(p.header(X_FRAME_OPTIONS), "DENY", "{what}");
     assert_eq!(p.header(X_CONTENT_TYPE_OPTIONS), "nosniff", "{what}");
     assert_eq!(p.header(REFERRER_POLICY), "same-origin", "{what}");
-    assert_eq!(p.header(CACHE_CONTROL), "no-store", "{what}");
+    assert_eq!(p.header(CACHE_CONTROL), "no-store, no-transform", "{what}");
     assert_eq!(p.header(STRICT_TRANSPORT_SECURITY), HSTS, "{what}");
     // No external resources.
     for bad in ["http://", "https://", "//"] {
@@ -1776,7 +1776,10 @@ async fn html_pages_carry_strict_security_headers() {
     // Every GET page in the route table is in this list.
     let html_routes: BTreeSet<&str> = todo_server::web::routes()
         .into_iter()
-        .filter(|(m, p, _)| *m == Method::GET && !p.starts_with("/assets/") && *p != "/")
+        // `/auth/session` answers JSON (the app's CSRF token), not a page: `web_app.rs` covers it.
+        .filter(|(m, p, _)| {
+            *m == Method::GET && !p.starts_with("/assets/") && *p != "/" && *p != "/auth/session"
+        })
         .map(|(_, p, _)| p)
         .collect();
     for r in &html_routes {

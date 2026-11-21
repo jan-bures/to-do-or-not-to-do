@@ -271,7 +271,7 @@ async fn sign_in_sets_a_strict_host_cookie_and_sign_out_ends_the_session() {
     assert_eq!(p.json()["redirect"], "/pair");
     let admin = b.get("/admin").await;
     assert_eq!(admin.status, StatusCode::OK);
-    assert_eq!(admin.header(CACHE_CONTROL), "no-store");
+    assert_eq!(admin.header(CACHE_CONTROL), "no-store, no-transform");
 
     // An unknown cookie is no session.
     b.cookie = Some("A".repeat(43));
@@ -2025,7 +2025,7 @@ async fn share_pages_show_titles_completion_due_dates_and_steps_only() {
     );
     assert_eq!(page.header("x-robots-tag"), "noindex, nofollow");
     assert!(body.contains(r#"<meta name="robots" content="noindex, nofollow">"#));
-    assert_eq!(page.header(CACHE_CONTROL), "no-store");
+    assert_eq!(page.header(CACHE_CONTROL), "no-store, no-transform");
     assert_eq!(page.header(REFERRER_POLICY), "same-origin");
     assert_eq!(page.header(X_CONTENT_TYPE_OPTIONS), "nosniff");
     assert_eq!(page.header(X_FRAME_OPTIONS), "DENY");

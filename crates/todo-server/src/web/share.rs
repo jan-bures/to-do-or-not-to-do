@@ -47,7 +47,7 @@ fn with_headers(mut res: Response) -> Response {
         "x-robots-tag",
         HeaderValue::from_static("noindex, nofollow"),
     );
-    h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(CACHE_CONTROL, HeaderValue::from_static(super::NO_STORE));
     res
 }
 

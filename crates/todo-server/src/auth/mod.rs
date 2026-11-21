@@ -180,7 +180,9 @@ pub async fn require_auth_or_session(
     if let Err(wait) = state.authsvc.bearer_admission(ip) {
         return ApiError::too_many_requests(wait).into_response();
     }
-    let row = match session::blocking(&state.authsvc, move |svc| svc.session(&cookie)).await {
+    // Looked up without recording activity: only a request that passes the CSRF and origin checks
+    // keeps the session alive.
+    let row = match session::blocking(&state.authsvc, move |svc| svc.peek_session(&cookie)).await {
         Ok(Ok(Some(row))) => row,
         Ok(Ok(None)) => {
             tracing::debug!("rejected request: unknown or expired session");
@@ -204,6 +206,15 @@ pub async fn require_auth_or_session(
         && let Err(e) = session::check_origin(req.headers(), &state.authsvc)
     {
         return e.into_response();
+    }
+    let touched = row.clone();
+    match session::blocking(&state.authsvc, move |svc| svc.touch_session(&touched)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "session touch failed");
+            return ApiError::internal().into_response();
+        }
+        Err(e) => return e.into_response(),
     }
     let Ok(device) = DeviceId::new(WEB_DEVICE) else {
         return ApiError::internal().into_response();

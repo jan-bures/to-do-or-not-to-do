@@ -16,7 +16,12 @@
 //! - The sign-in, setup and pairing routes are rate-limited per client IP ([`ip_limit`]); failed
 //!   sign-ins lock an IP out for a while.
 //! - Every HTML response gets a strict CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-//!   same-origin` and `Cache-Control: no-store` ([`security_headers`], applied to the whole app).
+//!   same-origin` and `Cache-Control: no-store, no-transform` ([`security_headers`], applied to the
+//!   whole app, so API JSON too). `no-transform` because these responses carry secrets (CSRF tokens,
+//!   pairing and agent tokens, share links): a proxy in front (Cloudflare) must not compress them,
+//!   or an attacker who can inject text into the same response could read a secret from the
+//!   compressed size (BREACH). Only the web app's own static files, which carry no secret, are
+//!   compressed (by the build: see [`spa`]).
 //!   Not `no-referrer`: under it browsers send `Origin: null` with a plain form POST, so the origin
 //!   check would refuse every form on our own pages. `same-origin` still sends nothing to other sites.
 //!   When `public_origin` is `https://`, every response (pages, API JSON, event streams, assets) also
@@ -47,6 +52,10 @@ use axum::routing::{MethodRouter, get, post};
 /// `Strict-Transport-Security` on every response when the public origin is HTTPS: one year. No
 /// `includeSubDomains`: the server does not know what else runs under its domain.
 pub const HSTS: &str = "max-age=31536000";
+
+/// `Cache-Control` of every response that may carry a secret: never stored, never transformed (no
+/// compression on the way, see the module docs).
+pub const NO_STORE: &str = "no-store, no-transform";
 
 /// The content security policy of every HTML page (share pages use a stricter one).
 pub const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
@@ -124,7 +133,7 @@ pub async fn security_headers(State(https): State<bool>, req: Request, next: Nex
     // `same-origin`, never `no-referrer`: see the module docs (form POSTs would carry `Origin: null`).
     h.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
     if !h.contains_key(CACHE_CONTROL) {
-        h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        h.insert(CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
     }
     let is_html = h
         .get(CONTENT_TYPE)
@@ -380,8 +389,15 @@ fn table() -> Vec<Route> {
             false,
             get(pages::audit),
         ),
-        // The web app (see `spa`).
+        // The web app (see `spa`), and its session's CSRF token for a tab whose token went stale.
         r(Method::GET, "/app", Session, false, get(spa::root)),
+        r(
+            Method::GET,
+            "/auth/session",
+            Session,
+            false,
+            get(spa::session_token),
+        ),
         r(Method::GET, "/app/{*path}", Session, false, get(spa::path)),
         // Static assets and share pages.
         r(Method::GET, "/assets/{file}", Public, false, get(asset)),

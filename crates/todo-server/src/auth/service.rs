@@ -1142,6 +1142,17 @@ impl AuthService {
     /// The live session for a cookie value, recording the activity. Expired sessions are deleted.
     /// Blocking.
     pub fn session(&self, cookie: &str) -> Result<Option<SessionRow>, StoreError> {
+        let row = self.peek_session(cookie)?;
+        if let Some(row) = &row {
+            self.touch_session(row)?;
+        }
+        Ok(row)
+    }
+
+    /// The live session for a cookie value **without** recording activity (expired sessions are
+    /// still deleted). For callers that first check something else about the request, such as its
+    /// CSRF token, and then call [`Self::touch_session`]. Blocking.
+    pub fn peek_session(&self, cookie: &str) -> Result<Option<SessionRow>, StoreError> {
         let id_hash = secret::digest_hex(cookie);
         let Some(row) = self.store.session(&id_hash)? else {
             return Ok(None);
@@ -1151,10 +1162,17 @@ impl AuthService {
             self.store.delete_session(&id_hash)?;
             return Ok(None);
         }
-        if now - row.last_seen_at >= TOUCH_INTERVAL_MS {
-            self.store.touch_session(&id_hash, now)?;
-        }
         Ok(Some(row))
+    }
+
+    /// Records activity on a session found by [`Self::peek_session`] (at most once a minute).
+    /// Blocking.
+    pub fn touch_session(&self, row: &SessionRow) -> Result<(), StoreError> {
+        let now = self.now();
+        if now - row.last_seen_at >= TOUCH_INTERVAL_MS {
+            self.store.touch_session(&row.id_hash, now)?;
+        }
+        Ok(())
     }
 
     /// True if the session with this ID hash exists and has timed out neither way (does not touch it).

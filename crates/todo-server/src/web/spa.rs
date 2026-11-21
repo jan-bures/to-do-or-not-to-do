@@ -17,8 +17,17 @@
 //! # Headers
 //!
 //! `index.html` gets [`APP_CSP`]: everything from this origin only, and `'wasm-unsafe-eval'` so the
-//! module can be compiled. No inline script or style is allowed. It is never cached. The other files
-//! are revalidated with an `ETag` (`private, no-cache`).
+//! module can be compiled. No inline script or style is allowed. It carries the CSRF token, so it is
+//! `no-store, no-transform` ([`NO_STORE`]): never cached, and never compressed by a proxy (BREACH).
+//! The other files hold no secret and are revalidated with an `ETag` (`private, no-cache`).
+//!
+//! # A stale token
+//!
+//! `GET /auth/session` ([`session_token`]) answers the session's current CSRF token as JSON (or 401
+//! without a session). A tab whose session changed under it (the owner signed in again in another
+//! tab, replacing the cookie) gets `403 csrf` from the API, fetches the new token there and retries.
+//! Like the page, it needs the cookie, which `SameSite=Strict` keeps off cross-site requests, and
+//! another origin can't read the answer (no CORS).
 //!
 //! # Compression
 //!
@@ -27,7 +36,8 @@
 //! anything itself. The wasm module shrinks from about 4.5 MB to 0.7 MB this way.
 
 use crate::app::AppState;
-use crate::auth::session::OwnerSession;
+use crate::auth::session::{MaybeSession, OwnerSession};
+use crate::web::NO_STORE;
 use axum::extract::{Path, State};
 use axum::http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG,
@@ -233,30 +243,37 @@ fn page_response(app: &WebApp, session: &OwnerSession) -> Response {
                 HeaderValue::from_static("text/html; charset=utf-8"),
             ),
             (CONTENT_SECURITY_POLICY, HeaderValue::from_static(APP_CSP)),
-            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (CACHE_CONTROL, HeaderValue::from_static(NO_STORE)),
         ],
         app.page(&session.row.csrf),
     )
         .into_response()
 }
 
-/// Whether the request accepts gzip (`Accept-Encoding: gzip`, not with `q=0`).
+/// Whether the request accepts gzip: an explicit `gzip` entry decides (refused with `q=0`, even
+/// next to `*;q=1`); without one, a `*` entry does.
 fn accepts_gzip(headers: &HeaderMap) -> bool {
-    headers
+    let (mut gzip, mut any) = (None, None);
+    for enc in headers
         .get_all(ACCEPT_ENCODING)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .any(|enc| {
-            let mut parts = enc.split(';').map(str::trim);
-            let name = parts.next().unwrap_or_default();
-            let refused = parts.any(|p| {
-                p.strip_prefix("q=")
-                    .and_then(|q| q.parse::<f32>().ok())
-                    .is_some_and(|q| q <= 0.0)
-            });
-            (name.eq_ignore_ascii_case("gzip") || name == "*") && !refused
-        })
+    {
+        let mut parts = enc.split(';').map(str::trim);
+        let name = parts.next().unwrap_or_default();
+        let q = parts
+            .find_map(|p| p.strip_prefix("q="))
+            .map_or(Some(1.0), |q| q.trim().parse::<f32>().ok());
+        // An unreadable weight counts as a refusal.
+        let ok = q.is_some_and(|q| q > 0.0);
+        if name.eq_ignore_ascii_case("gzip") || name.eq_ignore_ascii_case("x-gzip") {
+            gzip = Some(gzip.unwrap_or(true) && ok);
+        } else if name == "*" {
+            any = Some(any.unwrap_or(true) && ok);
+        }
+    }
+    gzip.or(any).unwrap_or(false)
 }
 
 fn file_response(f: &File, headers: &HeaderMap) -> Response {
@@ -294,6 +311,20 @@ fn file_response(f: &File, headers: &HeaderMap) -> Response {
             .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
     }
     res
+}
+
+/// `GET /auth/session`: `{"csrf": "<token>"}` for the session, or 401 `signed_out` without one (never
+/// a redirect: only the app's `fetch` asks).
+pub async fn session_token(MaybeSession(session): MaybeSession) -> Response {
+    match session {
+        Some(s) => axum::Json(serde_json::json!({ "csrf": s.row.csrf })).into_response(),
+        None => crate::api::error::ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "signed_out",
+            "sign in first",
+        )
+        .into_response(),
+    }
 }
 
 /// `GET /app`.
@@ -384,6 +415,13 @@ mod tests {
         assert!(accepts_gzip(&h("br;q=1.0, gzip;q=0.8")));
         assert!(accepts_gzip(&h("*")));
         assert!(!accepts_gzip(&h("gzip;q=0")));
+        // An explicit refusal wins over the wildcard, in either order.
+        assert!(!accepts_gzip(&h("gzip;q=0, *;q=1")));
+        assert!(!accepts_gzip(&h("*, gzip;q=0")));
+        assert!(!accepts_gzip(&h("*;q=0")));
+        assert!(accepts_gzip(&h("*;q=0, gzip")));
+        assert!(accepts_gzip(&h("GZIP;q=0.5")));
+        assert!(!accepts_gzip(&h("gzip;q=nope")));
         assert!(!accepts_gzip(&h("br")));
         assert!(!accepts_gzip(&HeaderMap::new()));
     }
