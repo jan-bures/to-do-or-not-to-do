@@ -584,17 +584,25 @@ pub async fn upload(
         .map_err(|_| ApiError::internal())?
         .map_err(|e| attachment_error(&att, e))?;
 
-    let (a, key) = (att.clone(), object_key.clone());
+    let (a, key, claim) = (att.clone(), object_key.clone(), cancel.clone());
     // The reservation moves with the work: if the request is abandoned (its deadline), the blocking
     // tasks still finish, and the ID stays reserved until they have.
+    //
+    // Charging and the PUT start this request's commit: it is claimed first, so an upload past its
+    // deadline (already answered 408) charges and sends nothing, and one that claimed in time is
+    // awaited. The command below then commits under the same claim.
     let stored = tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        a.before_store_commit();
+        if !claim.begin_commit() {
+            return Err(ApiError::timeout());
+        }
         a.store(&key, id, &key, &sealed)
             .map(|_| (sealed.plain, slot))
+            .map_err(|e| attachment_error(&a, e))
     })
     .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|e| attachment_error(&att, e));
+    .map_err(|_| ApiError::internal())?;
     let (stored, slot) = stored?;
 
     let (engine, actor, cmd) = (app.engine.clone(), auth.actor.clone(), command(stored));
@@ -962,7 +970,7 @@ pub async fn fill_content(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let _slot = slot;
-        a.before_fill_commit();
+        a.before_store_commit();
         if !cancel.begin_commit() {
             return Err(ApiError::timeout());
         }

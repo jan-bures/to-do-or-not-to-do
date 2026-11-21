@@ -1067,7 +1067,7 @@ async fn a_fill_past_its_deadline_charges_and_sends_nothing() {
     // The body is read and verified in time; the commit would be claimed only after the deadline.
     t.server
         .attachments
-        .set_fill_delay(std::time::Duration::from_millis(600));
+        .set_store_delay(std::time::Duration::from_millis(600));
     let r = fill(&t, &att, content.len(), &sha, &content).await;
     assert_eq!(r.status, StatusCode::REQUEST_TIMEOUT, "{}", r.body);
     assert_eq!(r.body["error"]["code"], "timeout");
@@ -1078,7 +1078,7 @@ async fn a_fill_past_its_deadline_charges_and_sends_nothing() {
     // A retry in time stores it.
     t.server
         .attachments
-        .set_fill_delay(std::time::Duration::ZERO);
+        .set_store_delay(std::time::Duration::ZERO);
     let r = fill(&t, &att, content.len(), &sha, &content).await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
 }
@@ -1199,4 +1199,64 @@ async fn access_revoked_during_the_blob_lookup_hides_the_content() {
     // A revoked GET answers like a missing attachment and charges no GET.
     let a = &t.server.attachments;
     assert_eq!(a.registry().usage(&a.month()).unwrap().class_b, 1);
+}
+
+#[tokio::test]
+async fn an_upload_past_its_deadline_charges_and_sends_nothing() {
+    let t = TestServer::start_with(|c| {
+        c.attachments.max_upload_bytes = MAX;
+        c.attachments.upload_timeout_ms = 300;
+    })
+    .await;
+    let (_, task) = inbox_task(&t).await;
+    let head = t.server.engine.head_seq();
+    let att = id();
+    let extra = [("attachment_id", att.as_str())];
+    // The body is read and sealed in time; the commit would be claimed only after the deadline.
+    t.server
+        .attachments
+        .set_store_delay(std::time::Duration::from_millis(600));
+    let up = upload_as(
+        &t,
+        TOKEN_A,
+        &task,
+        "late.txt",
+        None,
+        b"late".to_vec(),
+        &extra,
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::REQUEST_TIMEOUT, "{}", up.body);
+    assert_eq!(up.body["error"]["code"], "timeout");
+    // Let the abandoned work finish: it refuses to commit.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_nothing_stored(&t, "upload past the deadline");
+    assert_eq!(t.server.engine.head_seq(), head, "no command was stored");
+    let (s, _) = t.get(&format!("/api/v1/tasks/{task}")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        t.get_ok(&format!("/api/v1/tasks/{task}")).await["attachments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // A retry in time, with the same attachment_id, stores it once.
+    t.server
+        .attachments
+        .set_store_delay(std::time::Duration::ZERO);
+    let up = upload_as(
+        &t,
+        TOKEN_A,
+        &task,
+        "late.txt",
+        None,
+        b"late".to_vec(),
+        &extra,
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::CREATED, "{}", up.body);
+    assert_eq!(download_as(&t, TOKEN_A, &att).await.2, b"late".to_vec());
+    let a = &t.server.attachments;
+    let usage = a.registry().usage(&a.month()).unwrap();
+    assert_eq!((usage.class_a, usage.objects), (1, 1), "exactly one PUT");
 }

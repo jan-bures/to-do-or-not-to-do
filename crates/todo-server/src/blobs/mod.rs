@@ -378,8 +378,8 @@ pub struct Attachments {
     gc_cursor: Mutex<String>,
     /// Uploads in flight, by attachment ID, with who is uploading.
     in_flight: Mutex<BTreeMap<AttachmentId, Actor>>,
-    /// Test hook: milliseconds a content fill sleeps before it claims its commit.
-    fill_delay_ms: std::sync::atomic::AtomicU64,
+    /// Test hook: milliseconds an upload or content fill sleeps before it claims its commit.
+    store_delay_ms: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     gc_hook: Mutex<Option<GcHook>>,
 }
@@ -561,7 +561,7 @@ impl Attachments {
             claims,
             gc_cursor: Mutex::new(String::new()),
             in_flight: Mutex::new(BTreeMap::new()),
-            fill_delay_ms: std::sync::atomic::AtomicU64::new(0),
+            store_delay_ms: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             gc_hook: Mutex::new(None),
             uploads: Arc::new(Semaphore::new(cfg.max_concurrent_uploads)),
@@ -604,20 +604,20 @@ impl Attachments {
         self.engine.now().as_millisecond()
     }
 
-    /// Test hook: a content fill (`PUT /api/v1/attachments/{id}/content`) sleeps this long after its body
-    /// is verified and before it claims its commit, to push it past the request deadline.
+    /// Test hook: an upload or content fill sleeps this long after its body is sealed (and, for a fill,
+    /// verified) and before it claims its request's commit, to push it past the deadline.
     #[doc(hidden)]
-    pub fn set_fill_delay(&self, delay: Duration) {
-        self.fill_delay_ms.store(
+    pub fn set_store_delay(&self, delay: Duration) {
+        self.store_delay_ms.store(
             u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
             std::sync::atomic::Ordering::Relaxed,
         );
     }
 
-    /// Where a content fill waits for [`set_fill_delay`](Self::set_fill_delay). Blocking.
-    pub fn before_fill_commit(&self) {
+    /// Where an upload or content fill waits for [`set_store_delay`](Self::set_store_delay). Blocking.
+    pub fn before_store_commit(&self) {
         let ms = self
-            .fill_delay_ms
+            .store_delay_ms
             .load(std::sync::atomic::Ordering::Relaxed);
         if ms > 0 {
             std::thread::sleep(Duration::from_millis(ms));
