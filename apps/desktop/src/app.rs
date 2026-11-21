@@ -82,6 +82,30 @@ fn today() -> (String, String, String) {
     fixtures::eyebrow_for(y, m, d)
 }
 
+/// What startup does after the single-instance check.
+#[derive(Debug)]
+enum Claim {
+    /// Run. `None` when the check itself failed: the app runs standalone, visible and without listening
+    /// for second launches.
+    Run(Option<single_instance::Primary>),
+    /// Another copy runs and has been asked to show itself.
+    Exit,
+}
+
+/// Interprets the single-instance result. A failure to set the check up (an elevated copy created the
+/// objects at high integrity, say, so this one is denied access) must not leave the user with nothing on
+/// screen, so it degrades to a standalone window.
+fn claim(result: std::io::Result<Instance>) -> Claim {
+    match result {
+        Ok(Instance::Primary(p)) => Claim::Run(Some(p)),
+        Ok(Instance::Secondary) => Claim::Exit,
+        Err(e) => {
+            tracing::warn!("single-instance check failed, running standalone: {e}");
+            Claim::Run(None)
+        }
+    }
+}
+
 /// Runs the app. Returns once the user quits (or immediately, when another copy is already running).
 pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> {
     let tag = if bench.is_some() {
@@ -89,13 +113,14 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
     } else {
         single_instance::APP_TAG.to_string()
     };
-    let primary = match single_instance::acquire(&tag)? {
-        Instance::Primary(p) => p,
-        Instance::Secondary => {
+    let primary = match claim(single_instance::acquire(&tag)) {
+        Claim::Run(p) => p,
+        Claim::Exit => {
             tracing::info!("another copy is running; asked it to show itself");
             return Ok(());
         }
     };
+    let standalone = primary.is_none();
     let mut metrics = Metrics::default();
     if bench.is_some() {
         metrics.ms("main_entered_ms", win::process_age_ms());
@@ -135,8 +160,8 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
         .map_err(|e| tracing::error!("tray icon failed: {e:#}"))
         .ok();
         // Without a tray there is no way back to a hidden window and no Quit, so the window shows and
-        // Close quits.
-        let background = bench_hidden || (opts.background && tray.is_some());
+        // Close quits. A standalone copy can't be brought up by a second launch, so it shows too.
+        let background = bench_hidden || (opts.background && tray.is_some() && !standalone);
         let hotkey_ok = hotkey.is_some();
 
         let main = match cx.open_window(main_window_options(cx, !background), |window, cx| {
@@ -176,10 +201,12 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
         wire_windows(main, quick, hwnds, close, cx);
 
         // Tray, hotkey and second launches all feed one channel, drained on the UI thread.
-        let activate_tx = tx.clone();
-        primary.listen(move || {
-            let _ = activate_tx.unbounded_send(ShellEvent::Activate);
-        });
+        if let Some(primary) = primary {
+            let activate_tx = tx.clone();
+            primary.listen(move || {
+                let _ = activate_tx.unbounded_send(ShellEvent::Activate);
+            });
+        }
 
         let exe_for_events = exe.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -403,5 +430,20 @@ async fn run_bench(
     }
     if let Err(e) = metrics.write(&opts.metrics) {
         tracing::error!("writing {} failed: {e}", opts.metrics.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_instance_check_still_runs_the_app() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(matches!(claim(Err(denied)), Claim::Run(None)));
+        assert!(matches!(claim(Ok(Instance::Secondary)), Claim::Exit));
+        let tag = format!("test-claim-{}", std::process::id());
+        let first = single_instance::acquire(&tag).expect("first");
+        assert!(matches!(claim(Ok(first)), Claim::Run(Some(_))));
     }
 }

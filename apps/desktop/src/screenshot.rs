@@ -86,6 +86,14 @@ fn save(image: &image::RgbaImage, out: &std::path::Path, overwrite: bool) -> any
     image
         .write_to(&mut w, image::ImageFormat::Png)
         .with_context(|| format!("writing {}", out.display()))?;
+    // Dropping a BufWriter swallows the last flush's error, so flush explicitly, then make it durable:
+    // a truncated PNG must not be reported as written.
+    let file = w
+        .into_inner()
+        .map_err(|e| e.into_error())
+        .with_context(|| format!("writing {}", out.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", out.display()))?;
     Ok(())
 }
 
@@ -251,6 +259,11 @@ mod tests {
         save(&img, &out, false).expect("first write");
         assert!(save(&img, &out, false).is_err());
         save(&img, &out, true).expect("overwrite");
+        // The file is complete when save returns: it ends with IEND and decodes.
+        let bytes = std::fs::read(&out).expect("read back");
+        assert!(bytes.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82]));
+        let back = image::load_from_memory(&bytes).expect("decodes");
+        assert_eq!((back.width(), back.height()), (2, 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

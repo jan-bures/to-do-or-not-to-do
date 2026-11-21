@@ -41,9 +41,15 @@ function Get-ExpectedSize([string]$fixture, [double]$scale) {
     return @([int][math]::Round($logical[0] * $scale), [int][math]::Round($logical[1] * $scale))
 }
 
-# Width and height from the PNG's IHDR chunk (big-endian, at bytes 16 and 20).
+# Width and height from the PNG's IHDR chunk (big-endian, at bytes 16 and 20), or $null when the file isn't a
+# complete PNG: the signature at the start and the IEND chunk (with its fixed CRC) at the very end.
 function Get-PngSize([string]$path) {
     $b = [System.IO.File]::ReadAllBytes($path)
+    $signature = [byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+    $iend = [byte[]](0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82)
+    if ($b.Length -lt 45) { return $null }
+    if (Compare-Object $b[0..7] $signature -SyncWindow 0) { return $null }
+    if (Compare-Object $b[($b.Length - 12)..($b.Length - 1)] $iend -SyncWindow 0) { return $null }
     $be = { param($o) ([int]$b[$o] -shl 24) -bor ([int]$b[$o + 1] -shl 16) -bor ([int]$b[$o + 2] -shl 8) -bor [int]$b[$o + 3] }
     return @((& $be 16), (& $be 20))
 }
@@ -63,6 +69,11 @@ foreach ($fixture in $Fixtures) {
             }
             $want = Get-ExpectedSize $fixture ([double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture))
             $got = Get-PngSize $out
+            if ($null -eq $got) {
+                Write-Warning "$fixture $theme ${pct}%: $out is not a complete PNG"
+                $failed++
+                continue
+            }
             if ($got[0] -ne $want[0] -or $got[1] -ne $want[1]) {
                 Write-Warning "$fixture $theme ${pct}%: image is $($got[0])x$($got[1]), expected $($want[0])x$($want[1])"
                 $failed++

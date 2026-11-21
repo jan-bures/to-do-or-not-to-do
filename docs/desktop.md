@@ -78,7 +78,7 @@ same snapshot crates), adopting it then is cheap.
 |---|---|---|
 | Tray icon and menu | `src/platform/tray.rs` | Show or hide, quick add, "Start with Windows" (checkbox), quit. A left click toggles the window. The icon is drawn in code (sun over hills). |
 | Close hides to tray | `src/app.rs` | Closing the main window hides it. Only "Quit" ends the app. If the tray icon can't be created, the window is shown even with `--background`, and closing it quits, so the process is never left running invisibly. |
-| Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. |
+| Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. If the check can't be set up (an elevated copy created the objects, say), the app logs it and runs standalone: visible, and not listening for second launches. |
 | Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to the main window's list. Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
 | Window skeleton | `src/ui/shell.rs` | Custom title bar with search, sidebar, list, detail pane and status bar, as in F2. |
@@ -112,14 +112,14 @@ The screenshot mode opens one window with a fixture (invented sample data and a 
 settle, reads back its next frame from the window's own render target and exits. It doesn't capture the
 screen and doesn't send any input. It refuses to replace an existing file unless `--overwrite` is given,
 and it checks that the captured image is the window's logical size times the scale. Exit code 0 means the
-PNG was written, 3 means a font family is missing, 4 means the output exists, and 1 is any other failure
-(including a wrong image size).
+PNG was written and flushed to disk, 3 means a font family is missing, 4 means the output exists, and 1 is
+any other failure (including a wrong image size).
 
 `scripts/gallery.ps1` renders every fixture in both themes at 100 % and 150 % into
 `apps/desktop/target/gallery/` (`<fixture>-<theme>-<pct>.png`, git ignores it), passing `--overwrite`. It
-reads each PNG's size back and fails if it isn't 1440 × 900 (main window) or 640 × 196 (quick add) times the
-scale. CI runs it and uploads the gallery as the `desktop-gallery` artifact. Compare the images with the F2 mockups before calling a UI change
-done.
+checks that each PNG is complete (the signature and the final `IEND` chunk), and fails if its size isn't
+1440 × 900 (main window) or 640 × 196 (quick add) times the scale. CI runs it and uploads the gallery as the
+`desktop-gallery` artifact. Compare the images with the F2 mockups before calling a UI change done.
 
 ## Benchmarks
 
