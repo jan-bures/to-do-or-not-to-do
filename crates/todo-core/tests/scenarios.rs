@@ -52,6 +52,35 @@ fn create_orders_siblings_and_rejects_duplicates() {
 }
 
 #[test]
+fn a_new_task_takes_at_most_max_task_tags_tags_whatever_the_actor_sees() {
+    use todo_core::decide::{MAX_TASK_TAGS, check_limits};
+    let mut w = World::new();
+    let list = w.list(None, "Inbox");
+    let tags: Vec<_> = (0..=MAX_TASK_TAGS).map(|_| w.ids.tag()).collect();
+    let with = |w: &mut World, n: usize| {
+        let mut t = NewTask::new(w.ids.task(), list, "t");
+        t.tags = tags[..n].to_vec();
+        Command::CreateTask(Box::new(t))
+    };
+    // Over the cap: refused before any lookup (the tags do not even exist), for everyone.
+    let over = with(&mut w, MAX_TASK_TAGS + 1);
+    fn invalid<T>(r: Result<T, DomainError>) -> bool {
+        matches!(r, Err(DomainError::Invalid { field: "tags", .. }))
+    }
+    assert!(invalid(check_limits(&over)));
+    assert!(invalid(decide(&w.state, &w.owner, &over, ts(100))));
+    let nobody = Actor::agent("nobody").unwrap();
+    assert!(invalid(decide(&w.state, &nobody, &over, ts(100))));
+    // At the cap: only the usual checks (here, the tags are missing).
+    let at = with(&mut w, MAX_TASK_TAGS);
+    assert!(check_limits(&at).is_ok());
+    assert!(matches!(
+        decide(&w.state, &w.owner, &at, ts(100)),
+        Err(DomainError::NotFound(EntityId::Tag(_)))
+    ));
+}
+
+#[test]
 fn decide_is_deterministic_for_retries() {
     let mut w = World::new();
     let list = w.list(None, "Inbox");

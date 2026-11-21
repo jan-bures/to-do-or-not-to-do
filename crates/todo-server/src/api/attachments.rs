@@ -414,6 +414,7 @@ pub async fn upload(
                 && a.find(id, &existing.storage_key)
                     .map_err(|e| attachment_error(&a, e))?
                     .is_some()
+                && replay_still_allowed(&engine, &actor, &probe, existing)?
             {
                 return Ok(Plan::Replay(Box::new(existing.clone()), stored));
             }
@@ -557,6 +558,29 @@ pub async fn upload(
             .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
     }
     Ok(res)
+}
+
+/// Whether a replay found on an earlier snapshot may still be returned: decided inside the writer, so
+/// on the state no grant change or write can move until it returns. The lookups before it (the stored
+/// result, the blob) can block, and access may have been revoked meanwhile; a task that became hidden
+/// then gets `not_found`, as if it were missing (see [`hidden`]). The blob I/O stays outside the
+/// writer. Owners see everything, so they skip it.
+fn replay_still_allowed(
+    engine: &crate::engine::Engine,
+    actor: &todo_core::Actor,
+    probe: &Command,
+    existing: &AttachmentRef,
+) -> Result<bool, ApiError> {
+    if visibility::sees_all(actor) {
+        return Ok(true);
+    }
+    engine.with_writer(|now| -> Result<bool, ApiError> {
+        hidden::check_command(now, actor, probe)?;
+        Ok(now
+            .attachments
+            .get(&existing.id)
+            .is_some_and(|a| a.task == existing.task && a.storage_key == existing.storage_key))
+    })?
 }
 
 fn replayed(attachment: Box<AttachmentRef>, result: CommandResult, epoch: uuid::Uuid) -> Response {

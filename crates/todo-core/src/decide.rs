@@ -28,6 +28,21 @@ pub const MAX_NOTES: usize = 100_000;
 pub const MAX_COLOR: usize = 32;
 /// Longest accepted URL, storage key or similar short string.
 pub const MAX_URL: usize = 2048;
+/// Most tags a new task may be created with (more can be added one at a time).
+pub const MAX_TASK_TAGS: usize = 64;
+
+/// Checks the limits a command must meet whatever the state and the actor: how many entities it may
+/// list. Pure and cheap, and [`decide`] runs it first, so a server can run it before anything else
+/// (before any lookup or lock) and give the same answer.
+pub fn check_limits(command: &Command) -> Result<(), DomainError> {
+    match command {
+        Command::CreateTask(n) if n.tags.len() > MAX_TASK_TAGS => Err(DomainError::invalid(
+            "tags",
+            format!("more than {MAX_TASK_TAGS} tags"),
+        )),
+        _ => Ok(()),
+    }
+}
 
 struct Decider<'a> {
     state: &'a State,
@@ -1049,6 +1064,7 @@ pub fn decide(
     command: &Command,
     now: Timestamp,
 ) -> Result<Vec<Event>, DomainError> {
+    check_limits(command)?;
     authorize(state, actor, command)?;
     let mut d = Decider {
         state,

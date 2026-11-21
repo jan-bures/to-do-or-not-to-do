@@ -29,7 +29,19 @@
 //! waited for the writer (its grant was revoked, its list deleted or moved) gets the same answer as a
 //! missing one and nothing is stored. For commands, [`check_command`] also runs before the writer on a
 //! snapshot, as a fast path that refuses without waiting; it is cheap (in memory) and never the last
-//! word. Undo is checked only inside the writer, as its check reads the log.
+//! word. Undo is checked only inside the writer, as its check reads the log. An attachment upload
+//! retry decides its replay inside the writer too, after its (blocking) lookups of the stored result
+//! and the blob, which stay outside it.
+//!
+//! **Cost.** The check holds the single writer, so it stays bounded: the visible tags (a scan of every
+//! task) and collections are built at most once per check, and a command lists at most
+//! [`MAX_TASK_TAGS`](todo_core::decide::MAX_TASK_TAGS) tags, refused with 422 before the writer
+//! ([`check_command`], for every caller, so the answer depends on nothing hidden).
+//!
+//! **Timing.** A hidden target and a missing one get the same response, but not necessarily in the
+//! same time: refusing a hidden one may take a little longer (it is found, then its visibility is
+//! computed). Accepted: the difference is small and noisy next to network latency and the writer
+//! queue, and closing it would mean doing the visibility work for missing targets too.
 //!
 //! Email ingest writes as `email-ingest`, which is not an agent (it sees everything), and picks its list
 //! inside the writer, so it needs none of this.
@@ -51,11 +63,14 @@ use super::visibility;
 use crate::engine::Engine;
 use crate::engine::{EngineError, Locked};
 use axum::http::StatusCode;
+use std::cell::{Cell, OnceCell};
+use std::collections::BTreeSet;
 use todo_core::AccessLevel;
 use todo_core::access::entity_target;
 use todo_core::command::{Command, Placement};
+use todo_core::decide::check_limits;
 use todo_core::error::{AccessDenied, DomainError};
-use todo_core::ids::EntityId;
+use todo_core::ids::{CollectionId, EntityId, TagId};
 use todo_core::{Actor, State};
 
 /// The entities `cmd` refers to and expects to exist (not the IDs it creates).
@@ -156,16 +171,50 @@ fn exists(state: &State, id: EntityId) -> bool {
     }
 }
 
-/// True if `actor` can see the existing entity `id`, by the read rules in [`visibility`].
-fn readable(state: &State, actor: &Actor, id: EntityId) -> bool {
-    match id {
-        EntityId::Collection(c) => {
-            visibility::visible_collections(state, actor).is_none_or(|visible| visible.contains(&c))
+/// What `actor` can read in `state`, by the read rules in [`visibility`]. The visible collections and
+/// tags are each computed at most once (the tags scan every task), however many references a check
+/// looks at.
+struct Readable<'a> {
+    state: &'a State,
+    actor: &'a Actor,
+    collections: OnceCell<Option<BTreeSet<CollectionId>>>,
+    tags: OnceCell<Option<BTreeSet<TagId>>>,
+    /// How many visibility sets were built, for the tests.
+    scans: Cell<usize>,
+}
+
+impl<'a> Readable<'a> {
+    fn new(state: &'a State, actor: &'a Actor) -> Self {
+        Self {
+            state,
+            actor,
+            collections: OnceCell::new(),
+            tags: OnceCell::new(),
+            scans: Cell::new(0),
         }
-        EntityId::Tag(t) => {
-            visibility::visible_tags(state, actor).is_none_or(|visible| visible.contains(&t))
+    }
+
+    fn scanned<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.scans.set(self.scans.get() + 1);
+        f()
+    }
+
+    /// True if the existing entity `id` is readable.
+    fn readable(&self, id: EntityId) -> bool {
+        let (state, actor) = (self.state, self.actor);
+        match id {
+            EntityId::Collection(c) => self
+                .collections
+                .get_or_init(|| self.scanned(|| visibility::visible_collections(state, actor)))
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&c)),
+            EntityId::Tag(t) => self
+                .tags
+                .get_or_init(|| self.scanned(|| visibility::visible_tags(state, actor)))
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&t)),
+            other => visibility::can_read(state, actor, entity_target(state, other)),
         }
-        other => visibility::can_read(state, actor, entity_target(state, other)),
     }
 }
 
@@ -202,6 +251,11 @@ pub fn write_error(actor: &Actor, e: EngineError) -> ApiError {
 /// The error core would give if `cmd` referred to a missing entity, for the first entity it refers to
 /// that is missing or that `actor` cannot read; `Denied` for an import by an agent.
 fn hidden_reference(state: &State, actor: &Actor, cmd: &Command) -> Option<DomainError> {
+    hidden_reference_in(&Readable::new(state, actor), cmd)
+}
+
+fn hidden_reference_in(r: &Readable<'_>, cmd: &Command) -> Option<DomainError> {
+    let (state, actor) = (r.state, r.actor);
     if visibility::sees_all(actor) {
         return None;
     }
@@ -216,13 +270,18 @@ fn hidden_reference(state: &State, actor: &Actor, cmd: &Command) -> Option<Domai
     }
     referenced(cmd)
         .into_iter()
-        .find(|id| !exists(state, *id) || !readable(state, actor, *id))
+        .find(|id| !exists(state, *id) || !r.readable(*id))
         .map(DomainError::NotFound)
 }
 
 /// `not_found` for the first entity `cmd` refers to that is missing or that `actor` cannot read, and
 /// `forbidden` for an import. The fast path before the writer; [`command_check`] decides.
+///
+/// First, for every caller, the limits core checks whatever the state ([`check_limits`]), so that an
+/// oversized command is refused with a 422 that depends on nothing hidden, and never reaches the
+/// writer.
 pub fn check_command(state: &State, actor: &Actor, cmd: &Command) -> Result<(), ApiError> {
+    check_limits(cmd).map_err(|e| domain_error(&e))?;
     hidden_reference(state, actor, cmd).map_or(Ok(()), |e| Err(domain_error(&e)))
 }
 
@@ -261,7 +320,57 @@ pub fn undo_check(
 mod tests {
     use super::*;
     use serde_json::json;
+    use todo_core::{Grants, apply, decide};
     use uuid::Uuid;
+
+    #[test]
+    fn a_check_builds_each_visibility_set_once_however_many_tags() {
+        let owner = Actor::owner("pc").unwrap();
+        let mut state = State::new();
+        let run = |state: &mut State, cmd: serde_json::Value| {
+            let cmd: Command = serde_json::from_value(cmd).unwrap();
+            for e in decide(state, &owner, &cmd, todo_core::time::Timestamp::now()).unwrap() {
+                apply(state, &e).unwrap();
+            }
+        };
+        let (list, task) = (Uuid::new_v4(), Uuid::new_v4());
+        run(
+            &mut state,
+            json!({ "cmd": "create_list", "id": list, "name": "L" }),
+        );
+        let tags: Vec<Uuid> = (0..todo_core::decide::MAX_TASK_TAGS)
+            .map(|_| Uuid::new_v4())
+            .collect();
+        for t in &tags {
+            run(
+                &mut state,
+                json!({ "cmd": "create_tag", "id": t, "name": t.to_string() }),
+            );
+        }
+        run(
+            &mut state,
+            json!({ "cmd": "create_task", "id": task, "list": list, "title": "t", "tags": tags }),
+        );
+        let agent = Actor::agent("scout").unwrap();
+        let mut g = Grants::with_default(AccessLevel::None);
+        g.lists.insert(
+            serde_json::from_value(json!(list)).unwrap(),
+            AccessLevel::Plan,
+        );
+        state.grants.insert(agent.agent_id().unwrap().clone(), g);
+
+        let cmd: Command = serde_json::from_value(json!({
+            "cmd": "create_task", "id": Uuid::new_v4(), "list": list, "title": "u", "tags": tags,
+        }))
+        .unwrap();
+        let r = Readable::new(&state, &agent);
+        assert!(hidden_reference_in(&r, &cmd).is_none());
+        assert_eq!(
+            r.scans.get(),
+            1,
+            "the visible tags are built once per check"
+        );
+    }
 
     #[test]
     fn creations_refer_to_their_parents_not_to_their_new_ids() {

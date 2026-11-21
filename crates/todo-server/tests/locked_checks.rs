@@ -21,6 +21,7 @@ use todo_server::engine::Engine;
 struct Setup {
     t: TestServer,
     shared: String,
+    work_list: String,
     work_task: String,
     tag: String,
     token: String,
@@ -50,6 +51,7 @@ impl Setup {
         Self {
             t,
             shared,
+            work_list: work,
             work_task,
             tag,
             token,
@@ -262,4 +264,130 @@ async fn an_undo_whose_event_is_hidden_while_it_waits_is_event_not_found() {
         "an event hidden during the race must look missing"
     );
     assert_eq!(s.engine().head_seq(), head, "nothing may be committed");
+}
+
+#[tokio::test]
+async fn a_command_over_the_tag_cap_is_refused_before_the_writer() {
+    let s = Setup::new().await;
+    let head = s.engine().head_seq();
+    let over = todo_core::decide::MAX_TASK_TAGS + 1;
+    let create = |tags: Vec<String>| {
+        json!({
+            "command_id": id(),
+            "command": { "cmd": "create_task", "id": id(), "list": s.work_list, "title": "t", "tags": tags },
+        })
+    };
+    // The writer stays held: a command that reached it would never answer.
+    let hold = s.engine().hold_writer();
+    let answer = |body: Value| {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            s.agent_request(Method::POST, "/api/v1/commands", body),
+        )
+    };
+    let (status, visible) = answer(create(vec![s.tag.clone(); over]))
+        .await
+        .expect("refused before the writer");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{visible}");
+    assert_eq!(visible["error"]["code"], "invalid");
+    assert_eq!(s.engine().waiting_writes(), 0);
+    // The same answer for tags that do not exist: it depends on nothing hidden.
+    let (status, missing) = answer(create((0..over).map(|_| id()).collect()))
+        .await
+        .expect("refused before the writer");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{missing}");
+    assert_eq!(missing, visible);
+    drop(hold);
+    assert_eq!(s.engine().head_seq(), head);
+}
+
+impl Setup {
+    /// The agent's upload of `a.txt` to the work task with attachment ID `att`.
+    fn send_upload(
+        &self,
+        att: &str,
+    ) -> tokio::task::JoinHandle<(StatusCode, Option<String>, Value)> {
+        let (client, url, token) = (
+            self.t.client.clone(),
+            self.t.url.clone(),
+            self.token.clone(),
+        );
+        let (task, att) = (self.work_task.clone(), att.to_owned());
+        tokio::spawn(async move {
+            let res = client
+                .post(format!("{url}/api/v1/tasks/{task}/attachments"))
+                .bearer_auth(token)
+                .query(&[("file_name", "a.txt"), ("attachment_id", att.as_str())])
+                .body("once")
+                .send()
+                .await
+                .unwrap();
+            let replayed = res
+                .headers()
+                .get("idempotent-replayed")
+                .map(|v| v.to_str().unwrap().to_owned());
+            (res.status(), replayed, res.json().await.unwrap())
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_upload_retry_whose_task_is_hidden_while_it_waits_is_not_found() {
+    let s = Setup::new().await;
+    let att = id();
+    let (status, _, first) = s.send_upload(&att).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    // What an upload to a task that never existed gets, to compare with.
+    let (client, url, token) = (s.t.client.clone(), s.t.url.clone(), s.token.clone());
+    let nowhere = id();
+    let res = client
+        .post(format!("{url}/api/v1/tasks/{nowhere}/attachments"))
+        .bearer_auth(token)
+        .query(&[("file_name", "a.txt")])
+        .body("once")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let expected: Value = res.json().await.unwrap();
+    let head = s.engine().head_seq();
+
+    let hold = s.engine().hold_writer();
+    let retry = s.send_upload(&att);
+    // The retry found its stored result and blob, and waits to confirm the replay.
+    queued(s.engine(), 1).await;
+    let mut all = s.engine().state().grants.clone();
+    all.get_mut(&AgentId::new("scout").unwrap())
+        .unwrap()
+        .lists
+        .clear();
+    hold.set_grants(all);
+    drop(hold);
+    let (status, replayed, v) = retry.await.unwrap();
+
+    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+    assert_eq!(replayed, None);
+    assert_eq!(v["error"]["code"], expected["error"]["code"]);
+    assert_eq!(
+        same_shape(&v, &s.work_task),
+        same_shape(&expected, &nowhere),
+        "a task hidden during the race must look missing"
+    );
+    assert_eq!(s.engine().head_seq(), head);
+}
+
+#[tokio::test]
+async fn an_upload_retry_that_waits_is_replayed_when_nothing_is_revoked() {
+    let s = Setup::new().await;
+    let att = id();
+    let (status, _, first) = s.send_upload(&att).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let hold = s.engine().hold_writer();
+    let retry = s.send_upload(&att);
+    queued(s.engine(), 1).await;
+    drop(hold);
+    let (status, replayed, v) = retry.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(replayed.as_deref(), Some("true"));
+    assert_eq!(v["attachment"], first["attachment"]);
 }
