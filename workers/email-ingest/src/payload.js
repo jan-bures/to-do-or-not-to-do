@@ -1,6 +1,6 @@
 // Building the request payload (schema version 1) from an accepted message.
 
-import PostalMime from 'postal-mime';
+import PostalMime, { decodeWords } from 'postal-mime';
 import { extractOriginalSender, htmlToText, pickBody } from './body.js';
 import { MAX_MESSAGE_ID_CHARS, MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MAX_RAW_BYTES, PARSER_LIMITS } from './limits.js';
 import { cleanSubject } from './subject.js';
@@ -77,6 +77,22 @@ export async function parseMime(raw) {
 }
 
 /**
+ * A stand-in for a parsed email when postal-mime refuses the message (over a limit, or malformed):
+ * only the decoded subject, from the header Email Routing already parsed. No body is used.
+ * @param {Headers} headers
+ * @returns {import('postal-mime').Email}
+ */
+export function headersOnly(headers) {
+  let subject = headers.get('subject') ?? '';
+  try {
+    subject = decodeWords(subject);
+  } catch {
+    // Keep the raw value.
+  }
+  return { headers: [], headerLines: [], attachments: [], subject };
+}
+
+/**
  * A usable Message-ID from the header, or a deterministic one derived from the raw bytes, so that a
  * redelivery of the same message still dedupes.
  * @param {string | null | undefined} header
@@ -97,6 +113,7 @@ export async function messageIdFor(header, raw) {
  * @property {import('postal-mime').Email} email
  * @property {number} receivedAtMs
  * @property {boolean} rawTruncated
+ * @property {boolean} [parseFailed]
  */
 
 /**
@@ -104,7 +121,7 @@ export async function messageIdFor(header, raw) {
  * @param {PayloadInput} input
  * @returns {Record<string, unknown>}
  */
-export function buildPayload({ messageId, list, from, email, receivedAtMs, rawTruncated }) {
+export function buildPayload({ messageId, list, from, email, receivedAtMs, rawTruncated, parseFailed = false }) {
   const subject = cleanSubject(email.subject);
   const hasText = Boolean(email.text && email.text.trim());
   const htmlText = !hasText && email.html ? htmlToText(email.html) : undefined;
@@ -125,6 +142,7 @@ export function buildPayload({ messageId, list, from, email, receivedAtMs, rawTr
     received_at: new Date(receivedAtMs).toISOString(),
     body,
     raw_truncated: rawTruncated,
+    parse_failed: parseFailed,
   };
 }
 

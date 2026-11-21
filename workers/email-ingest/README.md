@@ -4,11 +4,12 @@ A Cloudflare Email Worker that turns forwarded emails into tasks.
 
 - **Address.** Mail to `todo@in.example.com` goes to the Inbox, and mail to `todo+<list>@in.example.com` goes
   to that list.
-- **Checks.** It accepts mail only from allowlisted senders whose SPF, DKIM or DMARC passed in alignment with
-  the From domain.
+- **Checks.** It accepts mail only from allowlisted senders whose DKIM or SPF passed for exactly the From
+  domain. Optionally, the address also carries a secret: `todo-<secret>@in.example.com`.
 - **What it sends.** Metadata only (and a capped text body with `#keep`), POSTed to the server with an HMAC
   signature.
-- **Failures.** If the server is unreachable, it retries through a Cloudflare Queue for up to 24 h.
+- **Failures.** If the server is unreachable, it retries through a Cloudflare Queue for up to 23 h. When it
+  gives up, a dead-letter queue and a failure notice to the owner make sure nothing disappears silently.
 
 **The contract, the auth research and every limit are in [`docs/ingest-email.md`](../../docs/ingest-email.md).**
 
@@ -48,9 +49,14 @@ npm test
 | `INGEST_HMAC_SECRET` | secret | Shared with the server, at least 32 characters, such as `openssl rand -hex 32` |
 | `ALLOWED_SENDERS` | secret | Comma-separated allowed sender addresses |
 | `INGEST_URL` | var | `https://todo.example.com/api/v1/ingest/email` |
+| `RECIPIENT_SECRET` | secret | Optional, 16 to 64 random lowercase letters and digits (`openssl rand -hex 12`). When set, only `todo-<secret>@` and `todo-<secret>+<list>@` are accepted. See "Allowlist and exact alignment, or a recipient secret too" in the contract doc. |
 | `INGEST_LOCAL_PART` | var | Optional, default `todo` |
+| `MAX_ACCEPTED_PER_DAY` | var | Optional, default 50: accepted emails per isolate in any 24 h window, sized to the Queues free quota |
+| `DEBUG_AUTH_SHAPE` | var | Optional. `"true"` logs which parts of `Authentication-Results` passed and aligned, as booleans only |
+| `DEAD_LETTER_QUEUE` | var | Optional, default `todo-email-ingest-dlq`; only if you rename that queue |
 | `NOTIFY_ADDRESS`, `NOTIFY_FROM` | vars | Optional. Failure notices go to a verified destination address and are sent from the routing domain. |
 | `INGEST_QUEUE` | queue producer | Retry queue, consumed by this same Worker |
+| (consumers) | queue consumers | The retry queue (`max_retries = 30`, `dead_letter_queue` set) and the dead-letter queue, both handled by this Worker |
 | `NOTIFY` | `send_email` binding | Optional, restricted to `NOTIFY_ADDRESS` |
 
 **The real configuration never goes into this repo.** Copy `wrangler.example.toml` to `wrangler.toml` and
@@ -63,6 +69,9 @@ Everything stays on the Workers Free plan:
 
 - Email Routing, Workers, Queues (10,000 operations per day, 24 h retention);
 - `send_email` to a verified destination address.
+
+The Free plan has no payment method, so nothing here can be billed. Running out of a quota only makes
+mail fail temporarily until the daily reset; see "Quota" in the contract doc.
 
 The commands use placeholders. Replace `example.com`, `in.example.com`, `you@example.com` and
 `<account-id>`.
@@ -83,8 +92,9 @@ cf email-routing settings edit -z example.com --support-subaddress
 # The destination address for failure notices. Click the link in the verification email.
 cf email-routing addresses create --email you@example.com
 
-# The retry queue.
+# The retry queue and its dead-letter queue.
 cf queues create --queue-name todo-email-ingest-retry
+cf queues create --queue-name todo-email-ingest-dlq
 ```
 
 ### 2. Deploy the Worker
@@ -110,7 +120,8 @@ cf deploy --dry-run
 
 # Secrets go up with the version. The file never enters the repo; delete it afterwards.
 cat > .secrets.json <<'EOF'
-{ "INGEST_HMAC_SECRET": "<64 hex characters>", "ALLOWED_SENDERS": "you@example.com, work@example.org" }
+{ "INGEST_HMAC_SECRET": "<64 hex characters>", "ALLOWED_SENDERS": "you@example.com, work@example.org",
+  "RECIPIENT_SECRET": "<24 hex characters, optional>" }
 EOF
 cf deploy --secrets-file .secrets.json
 rm .secrets.json
@@ -132,8 +143,9 @@ Run these from `workers/email-ingest`, with the filled-in `wrangler.toml` in pla
 npm ci
 npx wrangler@4.158.0 secret put INGEST_HMAC_SECRET     # prompts for the value
 npx wrangler@4.158.0 secret put ALLOWED_SENDERS
+npx wrangler@4.158.0 secret put RECIPIENT_SECRET       # optional
 npx wrangler@4.158.0 deploy
-# (the queue can also be created with: npx wrangler@4.158.0 queues create todo-email-ingest-retry)
+# (the queues can also be created with: npx wrangler@4.158.0 queues create <name>)
 ```
 
 ### 3. Route mail to the Worker (`cf`)
@@ -148,6 +160,10 @@ cf email-routing rules create -z example.com \
   --actions '[{"type":"worker","value":["todo-email-ingest"]}]'
 ```
 
+With `RECIPIENT_SECRET` set, use `todo-<secret>@in.example.com` as the rule's value instead, and don't
+create a rule for plain `todo@`. The routing rule then holds the secret, which stays inside your
+Cloudflare account.
+
 You can also do this in the dashboard: Email Service → Email Routing → Routing rules → Custom address →
 "Send to a Worker".
 
@@ -158,6 +174,7 @@ You can also do this in the dashboard: Email Service → Email Routing → Routi
 3. Watch the logs with `npx wrangler@4.158.0 tail todo-email-ingest`, or in the dashboard. You should see
    `{"evt":"delivered",…}`.
 
-**Check one real `Authentication-Results` header once.** See "What Cloudflare provides" in the contract
-doc. If a legitimate forward is rejected with `auth_unaligned`, look at the header (temporarily) before
-changing anything.
+**Check one real message once with `DEBUG_AUTH_SHAPE = "true"`.** It logs one `auth_shape` line of booleans,
+such as `"dkim_pass":true,"header_d_aligned":true`, and never the header itself. If a legitimate forward is
+rejected with `auth_unaligned`, this shows which part didn't match. Turn it off again afterwards. See
+"What Cloudflare provides" in the contract doc.

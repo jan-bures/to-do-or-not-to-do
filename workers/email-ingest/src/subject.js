@@ -10,11 +10,28 @@ import { capChars, collapseWhitespace, stripControl } from './text.js';
  */
 const PREFIX_RE = /^(?:fwd?|wg|re|aw)\s*(?:\[\d+\]|\(\d+\))?\s*[:：]\s*/iu;
 
-/** `#keep` as a word of its own, case-insensitive. */
-const KEEP_RE = /(^|\s)#keep(?=$|[\s.,;:!?)\]])/giu;
+/**
+ * `#keep` as a whole whitespace-separated token, case-insensitive, optionally followed by sentence
+ * punctuation (`#keep.`, `#keep!`). `#keeper` and `x#keep` don't count.
+ */
+const KEEP_TOKEN_RE = /^#keep[.,;:!?)\]]*$/i;
 
 /** Title used when nothing is left of the subject. */
 export const EMPTY_TITLE = '(no subject)';
+
+/**
+ * Strips every leading forward or reply prefix.
+ * @param {string} s
+ * @returns {string}
+ */
+function stripPrefixes(s) {
+  let cur = s.trimStart();
+  for (;;) {
+    const next = cur.replace(PREFIX_RE, '');
+    if (next === cur) return cur;
+    cur = next;
+  }
+}
 
 /**
  * @typedef {{ original: string, title: string, keep: boolean }} CleanSubject
@@ -22,22 +39,31 @@ export const EMPTY_TITLE = '(no subject)';
 
 /**
  * Cleans a decoded subject.
+ *
+ * The `#keep` decision is made on the whole subject, after forward prefixes are stripped
+ * (`Fwd:#keep` counts), and before anything is truncated, so a cut can never turn a longer hashtag
+ * into `#keep`. postal-mime bounds the input (all headers together are at most 256 KiB).
  * @param {string | null | undefined} subject
  * @returns {CleanSubject}
  */
 export function cleanSubject(subject) {
-  const original = capChars(collapseWhitespace(stripControl(subject ?? '')), MAX_SUBJECT_CHARS);
+  const full = collapseWhitespace(stripControl(subject ?? ''));
   let keep = false;
-  let s = original.replace(KEEP_RE, (_m, pre) => {
-    keep = true;
-    return pre;
-  });
-  s = collapseWhitespace(s);
-  for (;;) {
-    const next = s.replace(PREFIX_RE, '');
-    if (next === s) break;
-    s = next;
-  }
-  s = collapseWhitespace(s);
-  return { original, title: capChars(s || EMPTY_TITLE, MAX_TITLE_CHARS), keep };
+  // Prefixes can sit on either side of the marker ("Fwd: #keep Re: x"), so strip, drop the marker
+  // tokens, and strip again.
+  const tokens = stripPrefixes(full)
+    .split(' ')
+    .filter((t) => {
+      if (KEEP_TOKEN_RE.test(t)) {
+        keep = true;
+        return false;
+      }
+      return t !== '';
+    });
+  const title = collapseWhitespace(stripPrefixes(tokens.join(' ')));
+  return {
+    original: capChars(full, MAX_SUBJECT_CHARS),
+    title: capChars(title || EMPTY_TITLE, MAX_TITLE_CHARS),
+    keep,
+  };
 }

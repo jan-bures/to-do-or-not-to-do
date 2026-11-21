@@ -15,7 +15,36 @@ const ALLOWED_FIELDS = new Set([
   'keep',
   'body_truncated',
   'raw_truncated',
+  'parse_failed',
   'bytes',
+  // DEBUG_AUTH_SHAPE: booleans only.
+  'ar_present',
+  'authserv_ok',
+  'dkim_pass',
+  'header_d_present',
+  'header_d_aligned',
+  'spf_pass',
+  'mailfrom_present',
+  'mailfrom_aligned',
+  'dmarc_pass',
+]);
+
+/** Fields that may only ever carry a boolean. */
+const BOOLEAN_FIELDS = new Set([
+  'has_list',
+  'keep',
+  'body_truncated',
+  'raw_truncated',
+  'parse_failed',
+  'ar_present',
+  'authserv_ok',
+  'dkim_pass',
+  'header_d_present',
+  'header_d_aligned',
+  'spf_pass',
+  'mailfrom_present',
+  'mailfrom_aligned',
+  'dmarc_pass',
 ]);
 
 /** Shape of the tokens allowed in `reason` and `via`. */
@@ -42,7 +71,9 @@ export function logRecord(event, fields = {}) {
   const rec = { evt: TOKEN_RE.test(event) ? event : 'invalid_event' };
   for (const [k, v] of Object.entries(fields)) {
     if (!ALLOWED_FIELDS.has(k)) continue;
-    if (typeof v === 'number' || typeof v === 'boolean') rec[k] = v;
+    if (BOOLEAN_FIELDS.has(k)) {
+      if (typeof v === 'boolean') rec[k] = v;
+    } else if (typeof v === 'number' || typeof v === 'boolean') rec[k] = v;
     else if (typeof v === 'string' && (k === 'mid' ? /^[0-9a-f]{12}$/.test(v) : TOKEN_RE.test(v))) rec[k] = v;
   }
   return rec;

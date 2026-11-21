@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { describe, it } from 'node:test';
-import { handleEmail, handleQueue } from '../src/index.js';
+import { createAdmission, DEFAULT_DEAD_LETTER_QUEUE, handleEmail, handleQueue } from '../src/index.js';
 import { MAX_PAYLOAD_BYTES, MAX_RAW_BYTES, RETRY_WINDOW_MS } from '../src/limits.js';
 import { fitPayload, readCapped } from '../src/payload.js';
 import { utf8Length } from '../src/text.js';
@@ -17,6 +17,7 @@ function deps(fetch, { now = T0 } = {}) {
     now: () => clock.t,
     nonce: () => (n += 1).toString(16).padStart(32, '0'),
     log: mockLog(),
+    admission: createAdmission(),
     clock,
   };
 }
@@ -57,6 +58,7 @@ describe('email handler: accepted mail', () => {
       received_at: new Date(T0).toISOString(),
       body: null,
       raw_truncated: false,
+      parse_failed: false,
     });
     assert.ok(!f.calls[0].body.includes('report is attached'), 'body dropped by default');
     assertCleanLogs(d, 'quarterly');
@@ -257,13 +259,19 @@ describe('size caps', () => {
     assert.equal(await handleEmail(msg, baseEnv(), deps(mockFetch([201]))), 'rejected:headers_too_large');
   });
 
-  it('rejects a message postal-mime refuses', async () => {
+  it('turns a message postal-mime refuses into a headers-only task', async () => {
     const deep = mime({
       extraHeaders: ['Content-Type: multipart/mixed; boundary="b0"'],
       text: Array.from({ length: 40 }, (_, i) => `--b${i}\r\nContent-Type: multipart/mixed; boundary="b${i + 1}"\r\n`).join('\r\n'),
     });
     const msg = emailMessage({ raw: deep.replace(/Content-Type: text\/plain[^\r]*\r\n/, '') });
-    assert.equal(await handleEmail(msg, baseEnv(), deps(mockFetch([201]))), 'rejected:unparseable');
+    const f = mockFetch([201]);
+    assert.equal(await handleEmail(msg, baseEnv(), deps(f)), 'delivered');
+    const p = verify(f.calls[0]);
+    assert.equal(p.parse_failed, true);
+    assert.equal(p.title, 'Quarterly report');
+    assert.equal(p.body, null);
+    assert.equal(p.original_sender.source, 'from');
   });
 });
 
@@ -303,22 +311,32 @@ describe('queue consumer', () => {
   it('falls back to msg.retry when re-enqueueing fails', async () => {
     const env = baseEnv({ INGEST_QUEUE: mockQueue({ fail: true }) });
     const msg = queueMessage(envelope(3));
-    await handleQueue({ messages: [msg] }, env, deps(mockFetch([502])));
+    await handleQueue({ messages: [msg] }, env, deps(mockFetch([502]), { now: T0 + 300_000 }));
     assert.equal(msg.acked, false);
     assert.deepEqual(msg.retried, { delaySeconds: 300 });
+
+    // The redelivered message keeps envelope attempt 3; the platform's count moves the schedule on.
+    const again = { ...queueMessage(envelope(3)), attempts: 2 };
+    const d = deps(mockFetch([502]), { now: T0 + 1_000_000 });
+    await handleQueue({ messages: [again] }, env, d);
+    assert.deepEqual(again.retried, { delaySeconds: 600 });
+    assert.equal(JSON.parse(d.log.lines.at(-1)).attempt, 5);
   });
 
-  it('gives up after 24 h and notifies the owner', async () => {
+  it('gives up at the deadline without posting, notifies the owner, then acks', async () => {
     const sent = [];
+    const msg = queueMessage(envelope(19));
     const env = baseEnv({
-      NOTIFY: { send: async (m) => sent.push(m) },
+      NOTIFY: { send: async (m) => sent.push({ ...m, ackedBefore: msg.acked }) },
       NOTIFY_ADDRESS: OWNER,
       NOTIFY_FROM: 'todo-notify@in.example.com',
     });
-    const d = deps(mockFetch([new TypeError('down')]), { now: T0 + RETRY_WINDOW_MS });
-    const msg = queueMessage(envelope(19));
+    const f = mockFetch([new TypeError('down')]);
+    const d = deps(f, { now: T0 + RETRY_WINDOW_MS });
     await handleQueue({ messages: [msg] }, env, d);
+    assert.equal(f.calls.length, 0, 'no POST after the deadline');
     assert.ok(msg.acked);
+    assert.equal(sent[0].ackedBefore, false, 'notice sent before the ack');
     assert.equal(env.INGEST_QUEUE.sent.length, 0);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].to, OWNER);
@@ -331,21 +349,36 @@ describe('queue consumer', () => {
     assertCleanLogs(d, 'quarterly');
   });
 
-  it('logs when notification is not configured or fails', async () => {
+  it('gives up when the last POST fails just before the deadline', async () => {
+    const f = mockFetch([503]);
+    const d = deps(f, { now: T0 + RETRY_WINDOW_MS - 500 });
+    const msg = queueMessage(envelope(19));
+    await handleQueue({ messages: [msg] }, baseEnv(), d);
+    assert.equal(f.calls.length, 1);
+    assert.ok(msg.acked);
+    assert.deepEqual(d.log.lines.map((l) => JSON.parse(l).evt), ['final_failure', 'notify_unconfigured']);
+  });
+
+  it('acks when no notice is configured, and retries when the notice fails', async () => {
     const d = deps(mockFetch([500]), { now: T0 + RETRY_WINDOW_MS + 1 });
-    await handleQueue({ messages: [queueMessage(envelope(5))] }, baseEnv(), d);
+    const m1 = queueMessage(envelope(5));
+    await handleQueue({ messages: [m1] }, baseEnv(), d);
     assert.equal(JSON.parse(d.log.lines.at(-1)).evt, 'notify_unconfigured');
+    assert.ok(m1.acked);
 
     const d2 = deps(mockFetch([500]), { now: T0 + RETRY_WINDOW_MS + 1 });
     const env = baseEnv({ NOTIFY: { send: async () => { throw new Error('no'); } }, NOTIFY_ADDRESS: OWNER, NOTIFY_FROM: 'n@in.example.com' });
-    await handleQueue({ messages: [queueMessage(envelope(5))] }, env, d2);
+    const m2 = queueMessage(envelope(5));
+    await handleQueue({ messages: [m2] }, env, d2);
     assert.equal(JSON.parse(d2.log.lines.at(-1)).evt, 'notify_failed');
+    assert.equal(m2.acked, false, 'not acked while the notice is undelivered');
+    assert.deepEqual(m2.retried, { delaySeconds: 300 });
   });
 
   it('a permanent failure is not retried; status and hash are logged and the owner notified', async () => {
     const sent = [];
     const env = baseEnv({ NOTIFY: { send: async (m) => sent.push(m) }, NOTIFY_ADDRESS: OWNER, NOTIFY_FROM: 'n@in.example.com' });
-    const d = deps(mockFetch([401]));
+    const d = deps(mockFetch([401]), { now: T0 + 60_000 });
     const msg = queueMessage(envelope(2));
     await handleQueue({ messages: [msg] }, env, d);
     assert.ok(msg.acked);
@@ -369,7 +402,7 @@ describe('queue consumer', () => {
     const f = mockFetch([200, 503, 400]);
     const env = baseEnv();
     const msgs = [queueMessage(envelope(1)), queueMessage(envelope(1)), queueMessage(envelope(1))];
-    await handleQueue({ messages: msgs }, env, deps(f));
+    await handleQueue({ messages: msgs }, env, deps(f, { now: T0 + 30_000 }));
     assert.ok(msgs.every((m) => m.acked));
     assert.equal(env.INGEST_QUEUE.sent.length, 1);
   });

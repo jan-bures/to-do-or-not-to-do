@@ -1,7 +1,7 @@
 // Address handling: the allowlist, the recipient's plus address, and the sender's From header.
 
 import { addressParser } from 'postal-mime';
-import { MAX_ADDRESS_CHARS } from './limits.js';
+import { MAX_ADDRESS_CHARS, MIN_RECIPIENT_SECRET_CHARS } from './limits.js';
 
 /** A conservative shape check. Real validation happened at SMTP time; this keeps junk out of the payload. */
 const ADDRESS_RE = /^[^\s@<>()[\]\\,;:"]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i;
@@ -56,21 +56,54 @@ export function parseAllowlist(value) {
  * @typedef {{ ok: true, list: string | null } | { ok: false, reason: 'wrong_recipient' | 'bad_list' }} RecipientResult
  */
 
+/** A valid RECIPIENT_SECRET: lowercase letters and digits only, so it survives in a local part. */
+const RECIPIENT_SECRET_RE = new RegExp(`^[a-z0-9]{${MIN_RECIPIENT_SECRET_CHARS},64}$`);
+
+/**
+ * Validates RECIPIENT_SECRET. Unset means the feature is off; set but invalid is a configuration error
+ * (the Worker then rejects all mail rather than fall back to the plain address).
+ * @param {unknown} value
+ * @returns {{ secret: string | null } | { error: true }}
+ */
+export function recipientSecret(value) {
+  if (value === undefined || value === null || value === '') return { secret: null };
+  if (typeof value !== 'string') return { error: true };
+  const s = value.trim().toLowerCase();
+  return RECIPIENT_SECRET_RE.test(s) ? { secret: s } : { error: true };
+}
+
+/**
+ * Compares two strings without an early exit on the first differing character.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function constantTimeEqual(a, b) {
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i += 1) diff |= (a.charCodeAt(i) | 0) ^ (b.charCodeAt(i) | 0);
+  return diff === 0;
+}
+
 /**
  * Reads the envelope recipient. `todo@…` carries no list; `todo+shopping@…` carries `shopping`.
- * The domain isn't checked here: Email Routing only invokes the Worker for its own rules.
+ * With a recipient secret, the local part must be `todo-<secret>` (optionally `+<list>`), and plain
+ * `todo@…` is rejected. The domain isn't checked here: Email Routing only invokes the Worker for its
+ * own rules.
  * @param {string} to Envelope recipient (RCPT TO).
  * @param {string} localPart Expected local part before any `+`, such as `todo`.
+ * @param {string | null} [secret] A validated recipient secret, or null when the feature is off.
  * @returns {RecipientResult}
  */
-export function parseRecipient(to, localPart) {
+export function parseRecipient(to, localPart, secret = null) {
   const addr = normalizeAddress(to ?? '');
   const at = addr.lastIndexOf('@');
   if (at <= 0) return { ok: false, reason: 'wrong_recipient' };
   const local = addr.slice(0, at);
   const plus = local.indexOf('+');
   const base = plus < 0 ? local : local.slice(0, plus);
-  if (base !== localPart.toLowerCase()) return { ok: false, reason: 'wrong_recipient' };
+  const expected = secret ? `${localPart.toLowerCase()}-${secret}` : localPart.toLowerCase();
+  if (!constantTimeEqual(base, expected)) return { ok: false, reason: 'wrong_recipient' };
   if (plus < 0) return { ok: true, list: null };
   const detail = local.slice(plus + 1);
   if (detail === '') return { ok: true, list: null };

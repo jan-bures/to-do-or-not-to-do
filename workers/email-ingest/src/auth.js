@@ -1,4 +1,4 @@
-// Authentication-Results parsing (RFC 8601) and the sender alignment check.
+// Authentication-Results parsing (RFC 8601) and the exact sender alignment check.
 //
 // Cloudflare Email Routing checks SPF, DKIM and DMARC before it invokes the Worker, rejects mail that fails
 // the sender domain's DMARC policy, and prepends its own Authentication-Results header with the
@@ -99,8 +99,9 @@ export function parseAuthResults(value) {
 }
 
 /**
- * Whether an authenticated domain is aligned with the From domain: equal, or one a subdomain of the
- * other (DMARC relaxed alignment, without the public suffix list). Both must contain a dot.
+ * Whether an authenticated domain is aligned with the From domain. Alignment is exact: the two
+ * domains must be equal, ignoring case and a trailing dot. Relaxed (subdomain) alignment is not
+ * accepted, because a sender authorized for a delegated subdomain would then pass for the parent.
  * @param {string} authDomain
  * @param {string} fromDomain
  * @returns {boolean}
@@ -108,36 +109,34 @@ export function parseAuthResults(value) {
 export function aligned(authDomain, fromDomain) {
   const a = authDomain.toLowerCase().replace(/\.$/, '');
   const f = fromDomain.toLowerCase().replace(/\.$/, '');
-  if (!a.includes('.') || !f.includes('.')) return false;
-  return a === f || a.endsWith(`.${f}`) || f.endsWith(`.${a}`);
+  return a.includes('.') && a === f;
 }
 
 /**
- * The domain a property names: `smtp.mailfrom` may be an address or a bare domain; `header.i` is an
- * address-like identity.
+ * The domain of `smtp.mailfrom`, which may be an address or a bare domain.
  * @param {string | undefined} v
  * @returns {string}
  */
-function propDomain(v) {
+function mailfromDomain(v) {
   if (!v) return '';
   const s = normalizeAddress(v);
   return s.includes('@') ? domainOf(s) : s;
 }
 
 /**
- * @typedef {{ ok: true, via: 'dkim' | 'spf' | 'dmarc' }
+ * @typedef {{ ok: true, via: 'dkim' | 'spf' }
  *   | { ok: false, reason: 'auth_missing' | 'auth_untrusted' | 'auth_failed' | 'auth_unaligned' }} AuthVerdict
  */
 
 /**
- * Requires a passing, aligned DKIM, SPF or DMARC result in the trusted Authentication-Results header.
+ * Requires a passing DKIM or SPF result, for exactly the From domain, in the trusted
+ * Authentication-Results header. DKIM is checked first.
  *
- * - DKIM passes if `dkim=pass` and `header.d` (or the domain of `header.i`) is aligned with the From domain.
- * - SPF passes if `spf=pass` and the domain of `smtp.mailfrom` is aligned with the From domain.
- * - DMARC passes if `dmarc=pass` and `header.from` is aligned with the From domain. DMARC itself
- *   only passes when SPF or DKIM passed in alignment with that domain.
+ * - DKIM: `dkim=pass` and `header.d` equal to the From domain.
+ * - SPF: `spf=pass` and the domain of `smtp.mailfrom` equal to the From domain.
  *
- * A pass whose domain isn't aligned (such as a spoofed From with another domain's valid SPF) fails.
+ * `dmarc=pass` alone isn't accepted: DMARC's relaxed alignment lets a subdomain's pass count for its
+ * parent. A pass for any other domain (such as a spoofed From with another domain's valid SPF) fails.
  * @param {string | null | undefined} headerValue The first Authentication-Results header.
  * @param {string} fromDomain
  * @param {string} [trustedId]
@@ -147,18 +146,39 @@ export function checkAuth(headerValue, fromDomain, trustedId = CLOUDFLARE_AUTHSE
   const ar = parseAuthResults(headerValue);
   if (!ar) return { ok: false, reason: 'auth_missing' };
   if (ar.authservId !== trustedId.toLowerCase()) return { ok: false, reason: 'auth_untrusted' };
-  let anyPass = false;
-  for (const r of ar.results) {
-    if (r.result !== 'pass') continue;
-    anyPass = true;
-    if (r.method === 'dkim') {
-      const d = r.props['header.d'] || propDomain(r.props['header.i']);
-      if (aligned(d, fromDomain)) return { ok: true, via: 'dkim' };
-    } else if (r.method === 'spf') {
-      if (aligned(propDomain(r.props['smtp.mailfrom']), fromDomain)) return { ok: true, via: 'spf' };
-    } else if (r.method === 'dmarc') {
-      if (aligned(propDomain(r.props['header.from']), fromDomain)) return { ok: true, via: 'dmarc' };
-    }
+  const passes = ar.results.filter((r) => r.result === 'pass');
+  for (const r of passes) {
+    if (r.method === 'dkim' && aligned(r.props['header.d'] ?? '', fromDomain)) return { ok: true, via: 'dkim' };
   }
-  return { ok: false, reason: anyPass ? 'auth_unaligned' : 'auth_failed' };
+  for (const r of passes) {
+    if (r.method === 'spf' && aligned(mailfromDomain(r.props['smtp.mailfrom']), fromDomain)) return { ok: true, via: 'spf' };
+  }
+  const relevant = passes.some((r) => r.method === 'dkim' || r.method === 'spf');
+  return { ok: false, reason: relevant ? 'auth_unaligned' : 'auth_failed' };
+}
+
+/**
+ * The shape of the trusted Authentication-Results header as booleans only, for the
+ * `DEBUG_AUTH_SHAPE` deploy check. It never returns a domain, an address or any header text.
+ * @param {string | null | undefined} headerValue
+ * @param {string} fromDomain
+ * @param {string} [trustedId]
+ * @returns {Record<string, boolean>}
+ */
+export function authShape(headerValue, fromDomain, trustedId = CLOUDFLARE_AUTHSERV_ID) {
+  const ar = parseAuthResults(headerValue);
+  const results = ar?.results ?? [];
+  const dkim = results.filter((r) => r.method === 'dkim' && r.result === 'pass');
+  const spf = results.filter((r) => r.method === 'spf' && r.result === 'pass');
+  return {
+    ar_present: ar !== null,
+    authserv_ok: ar !== null && ar.authservId === trustedId.toLowerCase(),
+    dkim_pass: dkim.length > 0,
+    header_d_present: dkim.some((r) => Boolean(r.props['header.d'])),
+    header_d_aligned: dkim.some((r) => aligned(r.props['header.d'] ?? '', fromDomain)),
+    spf_pass: spf.length > 0,
+    mailfrom_present: spf.some((r) => Boolean(r.props['smtp.mailfrom'])),
+    mailfrom_aligned: spf.some((r) => aligned(mailfromDomain(r.props['smtp.mailfrom']), fromDomain)),
+    dmarc_pass: results.some((r) => r.method === 'dmarc' && r.result === 'pass'),
+  };
 }

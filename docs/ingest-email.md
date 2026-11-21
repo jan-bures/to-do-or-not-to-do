@@ -1,17 +1,22 @@
 # Email ingest: Worker → server contract
 
 Forwarding an email to `todo@in.example.com` creates a task in the Inbox. Forwarding it to
-`todo+<list>@in.example.com` creates it in the list named `<list>`. No app needs to be running.
+`todo+<list>@in.example.com` creates it in the list named `<list>`. No app needs to be running. With the
+optional recipient secret, the addresses become `todo-<secret>@in.example.com` and
+`todo-<secret>+<list>@in.example.com` (see [Who gets in](#who-gets-in)).
 
 ```text
 mail client ──► Cloudflare Email Routing ──► Email Worker (workers/email-ingest)
-                 SPF/DKIM/DMARC checks          allowlist + aligned auth, metadata only
+                 SPF/DKIM/DMARC checks          allowlist + exact DKIM/SPF alignment, metadata only
                                                     │ POST /api/v1/ingest/email (HMAC)
                                                     ▼
                                                 todo-server ──► task, actor `email-ingest`
                                                     ▲
-                    on network error/5xx/429:       │ retried with backoff for up to 24 h
+                    on network error/5xx/429:       │ retried with backoff for up to 23 h
                     Cloudflare Queue ───────────────┘
+                         │ out of retries
+                         ▼
+                    dead-letter queue ──► failure notice to the owner
 ```
 
 This document is the contract between the Worker (this repo, `workers/email-ingest`) and the server
@@ -40,6 +45,8 @@ X-Todo-Signature: 756c2659…
 | `X-Todo-Signature` | 64 lowercase hex characters: `HMAC-SHA256(key, message)`. |
 | `Content-Type` | `application/json`. The body is UTF-8. |
 
+Each `X-Todo-*` header appears exactly once.
+
 ### Signature
 
 ```text
@@ -56,21 +63,31 @@ message = timestamp ‖ 0x0A ‖ nonce ‖ 0x0A ‖ body
 
 1. **Body size.** Reject bodies over 128 KiB with `413` before reading further. The Worker never sends
    more than 100,000 bytes.
-2. **Headers present and well-formed.** Otherwise `401`.
+2. **Headers present, well-formed and not repeated.** If any of the three `X-Todo-*` headers is missing,
+   malformed or **present more than once**, respond `401`. Never pick one of several values: a proxy
+   may join them, or a parser may take the first while another takes the last.
 3. **Timestamp.** It must be within ±300 seconds of the server's clock. Otherwise `401`.
-4. **Signature.** Compute it and compare in constant time. Otherwise `401`.
-5. **Nonce.** It must not have been used before. Remember accepted nonces for at least 10 minutes, the
-   width of the timestamp window, and reject a reused one with `401`. Only remember nonces whose
-   signature verified, so unauthenticated requests can't fill the store.
+4. **Signature first.** Compute it over the raw body and compare in constant time. Otherwise `401`.
+   Nothing before this step touches storage, so an unauthenticated request can't write anything.
+5. **Nonce, reserved atomically.** Only now, with the signature verified, `INSERT` the nonce into a table
+   with a **unique key** on it (and the time seen). A unique-constraint violation means a replay: respond
+   `401`. Never check-then-insert in two steps, because two copies of the same request racing each
+   other would both pass the check. Keep nonces for at least 10 minutes, the width of the timestamp
+   window; older ones can be pruned, because their timestamps no longer verify.
 6. **Schema.** Parse the JSON and check it against the schema below. If it doesn't match, respond `422`.
 7. **Sender.** Check `forwarded_by` against the server's own allowlist. If it isn't on it, respond
    `403`. The Worker checks its copy first; the server re-checks so that a leaked HMAC secret alone
    can't create tasks for arbitrary senders.
-8. **Dedupe.** Look up `message_id`. If a task was already created from this `message_id`, respond
-   `200` with `{"status":"duplicate"}` and create nothing. Retries reuse the same `message_id` with a
-   new timestamp, nonce and signature, so this is what makes them safe.
-9. **Create the task.** Use actor `email-ingest`, then respond `201` with `{"status":"created"}`. The
-   response body is optional; the Worker reads only the status code.
+8. **Dedupe and create, in one transaction.** Retries reuse the same `message_id` with a new timestamp,
+   nonce and signature, so `message_id` is what makes them safe.
+   - Store `message_id` in a table with a **unique constraint**, and create the task in the **same
+     transaction**. Insert the `message_id` row first; if it violates the constraint, roll back and
+     respond `200` with `{"status":"duplicate"}`.
+   - Otherwise create the task with actor `email-ingest`, commit, and respond `201` with
+     `{"status":"created"}`.
+   - A lookup followed by a separate insert is not enough: a retry that arrives while the first request
+     is still running would create a second task.
+   - The response body is optional; the Worker reads only the status code.
 
 ### How the Worker treats responses
 
@@ -101,7 +118,8 @@ So the server should:
   "forwarded_by": "you@example.com",
   "received_at": "2025-11-21T08:00:00.000Z",
   "body": { "text": "Line one\nLine \"two\" ✓", "source": "text", "truncated": false },
-  "raw_truncated": false
+  "raw_truncated": false,
+  "parse_failed": false
 }
 ```
 
@@ -109,10 +127,10 @@ So the server should:
 |---|---|---|
 | `version` | `1` | Schema version. The server rejects other values with `422`. |
 | `message_id` | string, ≤ 998 chars | The forwarded email's `Message-ID`, angle brackets included. If it was missing or malformed, the Worker uses `<sha256-<hex of the raw bytes>@email-ingest.invalid>`, which stays the same when the same message is redelivered. **The dedupe key.** |
-| `list` | string or `null` | The list key from `todo+<list>@`: lowercase, matching `^[a-z0-9][a-z0-9_-]{0,63}$`. `null` for plain `todo@`, which means the Inbox. |
+| `list` | string or `null` | The list key from `todo+<list>@` (or `todo-<secret>+<list>@`): lowercase, matching `^[a-z0-9][a-z0-9_-]{0,63}$`. `null` for plain `todo@`, which means the Inbox. |
 | `title` | string, 1–500 chars | The subject with `FW:`, `Fwd:`, `WG:`, `Re:` and `AW:` chains (also `Re[2]:`) and `#keep` removed, and whitespace collapsed. `(no subject)` if nothing is left. Fits `todo_core::decide::MAX_TITLE`. |
 | `subject` | string, ≤ 998 chars | The original decoded subject, unchanged apart from collapsed whitespace and removed control characters. |
-| `keep` | boolean | Whether the subject contained `#keep`. |
+| `keep` | boolean | Whether the subject contained the word `#keep` (see below). |
 | `original_sender` | object | Who wrote the forwarded email (see below). |
 | `original_sender.address` | string | Lowercased address. |
 | `original_sender.name` | string or `null` | Display name, ≤ 200 chars. |
@@ -124,9 +142,22 @@ So the server should:
 | `body.source` | `"text"` or `"html"` | Which part the text came from. |
 | `body.truncated` | boolean | Whether the text was cut to fit. |
 | `raw_truncated` | boolean | Whether the message was larger than the 256 KiB the Worker parses. The title and sender are still reliable; a kept body may be cut short. |
+| `parse_failed` | boolean | Whether the MIME parser refused the message (over a structure limit, or malformed). The task is then built from the headers only: `title` and `subject` from the Subject header, `original_sender.source` is `from`, and `body` is `null`. A server that doesn't know this field may ignore it. |
 
-Unknown fields must be ignored, so later versions can add fields without breaking older servers.
-Attachments are never sent; see [Follow-ups](#follow-ups).
+Unknown fields must be ignored, so later versions can add fields without breaking older servers. A
+missing `parse_failed` means `false`. Attachments are never sent; see [Follow-ups](#follow-ups).
+
+**`#keep`.** Forward prefixes are stripped first, so `Fwd: #keep Report` counts. `#keep` must then be a
+whole word, optionally followed by punctuation (`#keep,`, `#keep.` or `#keep)`); `#keeper` and `x#keep` don't
+count.
+The check runs on the whole subject before the title is shortened, so cutting a long subject can neither
+create nor lose it.
+
+**Forwarded sender.** The Worker only reads `From:` (or `Od:`, `Von:` and so on) from the body when there
+is evidence of a forwarded header block: a separator line (`---------- Forwarded message ---------`,
+`Begin forwarded message:`, `-----Original Message-----` and localized forms) within the three non-blank
+lines before it, or another header line (`Date:`, `Sent:`, `To:`, `Subject:` …) directly before or after it. A
+lone `From: …` sentence in someone's text is ignored.
 
 ### Suggested task mapping (server PR)
 
@@ -148,24 +179,51 @@ Attachments are never sent; see [Follow-ups](#follow-ups).
 The Worker rejects the email at SMTP time (`message.setReject(...)`) unless all of these hold:
 
 1. **Recipient.** The envelope recipient's local part is `todo`, optionally with `+<list>`, and the list
-   key is valid. The local part can be changed with `INGEST_LOCAL_PART`.
+   key is valid. With `RECIPIENT_SECRET` set it must be `todo-<secret>` instead, again optionally with
+   `+<list>`, and plain `todo@` is rejected. The local part can be changed with `INGEST_LOCAL_PART`.
 2. **One sender.** The `From` header holds exactly one mailbox.
 3. **Allowlist.** That address is in `ALLOWED_SENDERS`. If `ALLOWED_SENDERS` is empty, everything is
    rejected.
-4. **Aligned authentication.** Cloudflare's `Authentication-Results` header shows a pass whose
-   domain is aligned with the From domain:
-   - `dkim=pass` with `header.d` (or the domain of `header.i`);
-   - `spf=pass` with the domain of `smtp.mailfrom`;
-   - or `dmarc=pass` with `header.from`.
+4. **Exactly aligned authentication.** Cloudflare's `Authentication-Results` header shows a pass whose
+   domain is **exactly** the From domain (case-insensitive, trailing dot ignored):
+   - `dkim=pass` with `header.d` equal to the From domain (checked first); or
+   - `spf=pass` with the domain of `smtp.mailfrom` equal to the From domain.
 
-   Aligned means equal, or one is a subdomain of the other (relaxed alignment). A pass for some other
-   domain doesn't count. That stops a spoofed `From: you@example.com` sent from a domain with valid SPF of
-   its own. A missing header, a header from another authentication service, or only failures are all
-   rejected.
+   Nothing else counts:
+   - not a subdomain or a parent domain. Relaxed alignment would need the Public Suffix List to find
+     the organizational domain, and getting that wrong is how `example.co.uk` ends up "aligned" with
+     `attacker.co.uk`;
+   - not `header.i`;
+   - not `dmarc=pass` on its own, because it doesn't say which identifier passed or with which alignment
+     mode.
+
+   A missing header, a header from another authentication service, or only failures are all rejected.
+
+   The cost: a provider that signs `From: you@example.com` only with `d=mail.example.com`, and sends
+   from a `mail.example.com` envelope, is rejected with `auth_unaligned`. Big mailbox providers sign
+   with the From domain itself. Use `DEBUG_AUTH_SHAPE` (below) to see which part didn't match.
 
 Rejections log one line such as `{"evt":"rejected","reason":"auth_unaligned"}`, with no addresses and
 no content. Nothing from the message is stored or forwarded. The body is not even read: the checks use
 only the headers.
+
+### Allowlist and exact alignment, or a recipient secret too
+
+These are the two ways to run it. **The owner decides.**
+
+- **Default: allowlist plus exact DKIM or SPF alignment.** Anyone who can get a DKIM signature or SPF
+  pass for your exact From domain can create tasks: your mail provider, and anyone with access to your
+  account there. Everyone else is rejected, even if they know the address. The address can be public.
+- **Stronger: add `RECIPIENT_SECRET`.** The ingest address becomes `todo-<secret>@in.example.com`.
+  - A sender now also needs the secret, so a forged or misattributed pass alone isn't enough.
+  - The cost is a long address, which you save as a contact. Anyone who sees a message you forwarded
+    (with its envelope) learns it, so rotate it if it leaks.
+  - Rules for the secret:
+    - 16 to 64 random lowercase letters and digits, such as `openssl rand -hex 12`;
+    - set it as a Worker secret and change the routing rule to the new address;
+    - a malformed value rejects all mail (`config_recipient_secret`) rather than falling back to `todo@`;
+    - the comparison is constant-time;
+    - the secret never appears in logs or in the rejection text.
 
 ### What Cloudflare provides, and what we rely on
 
@@ -187,12 +245,15 @@ only the headers.
   - `Headers.get()` joins repeated headers with `", "`. The Worker parses only up to the first top-level
     comma (comments and quoted strings are skipped). The Authentication-Results grammar has no
     top-level commas, so that is exactly the first header, the one Cloudflare prepended.
-  - The documented example is simplified (`spf=pass; dkim=pass; dmarc=pass`), so the parser also reads
-    the standard RFC 8601 properties `header.d`, `header.i`, `smtp.mailfrom` and `header.from`. It
-    rejects any pass that comes without one of them.
-  - **After deploying, check one real header in the Worker logs** (with `wrangler tail` or the dashboard,
-    temporarily, then remove the log line). If Cloudflare ever omits these properties, every message
-    will fail with `auth_unaligned`: failing closed, not open.
+  - The documented example is simplified (`spf=pass; dkim=pass; dmarc=pass`), so the parser reads the
+    standard RFC 8601 properties `header.d` and `smtp.mailfrom`. It rejects a pass that comes without
+    them.
+  - **After deploying, check one real message with `DEBUG_AUTH_SHAPE=true`.** That logs one
+    `auth_shape` line of **booleans only**: whether the header was present, the authserv-id matched,
+    DKIM passed, `header.d` was present and aligned, SPF passed, `smtp.mailfrom` was present and aligned,
+    and whether DMARC passed. It never logs the header, a domain or an address. Turn it off again
+    afterwards. If Cloudflare ever omits these properties, every message fails with `auth_unaligned`:
+    failing closed, not open.
 - **The authserv-id.** The trusted identifier defaults to `mx.cloudflare.net`. It can be overridden
   with the `TRUSTED_AUTHSERV_ID` variable, for tests only.
 
@@ -204,14 +265,28 @@ only the headers.
   - It accepts the email only once the queue has taken it.
   - Every retry gets a **fresh timestamp, nonce and signature**, with the same `message_id`.
 - **The schedule.** Retry *n* waits 30 s, 1, 2, 5, 10, 20 and 30 min, then 1 h, then every 2 h, until
-  24 h after acceptance. The last delay is shortened so the final attempt lands at 24 h. That makes 19
-  retries; a hard cap of 40 also applies.
-- **How a retry is queued.** The consumer acks the message and enqueues a new one with
-  `attempt + 1` and `delaySeconds`. This resets the queue's own retention clock: 24 h on the Free plan,
-  not configurable. So the Worker's deadline is the one that counts, and a message can't expire
-  silently.
-  - If that enqueue fails, it falls back to `msg.retry({ delaySeconds })`.
-  - If the consumer itself throws, Queues retries the batch up to `max_retries` times.
+  **23 h** after acceptance. The last delay is shortened so the final attempt lands at 23 h. That makes
+  19 retries; a hard cap of 40 also applies.
+- **The deadline is checked before the POST.** A message that is delivered after its deadline (for
+  example, late because of a backlog) is not posted. It only gets its notice.
+- **How a retry is queued.** The consumer enqueues a new message with `attempt + 1` and `delaySeconds`,
+  then acks the old one. This resets the queue's own retention clock: 24 h on the Free plan, not
+  configurable. So the Worker's deadline is the one that counts, and a message can't expire silently.
+  - If that enqueue fails, it falls back to `msg.retry({ delaySeconds })`. That does *not* reset the
+    retention clock, which is why the window is 23 h and not 24 h: the spare hour covers fallbacks and
+    notice retries. The attempt count then also includes the platform's `msg.attempts`, so the backoff
+    keeps growing.
+  - `max_retries = 30` on the consumer only counts these platform retries, never the normal
+    re-enqueues. The 23 h window ends a message first, but 30 is enough for the whole schedule if every
+    re-enqueue fails.
+- **Dead-letter queue.** A message that runs out of platform retries goes to `todo-email-ingest-dlq`. The
+  same Worker consumes it (`batch.queue` tells the two apart) and only sends the failure notice. It
+  never posts.
+- **Notice before ack.** Whenever the Worker gives up on a queued message (expired, refused, or dead
+  letter), it sends the notice **first** and acks only once the notice is sent.
+  - If sending fails, it calls `msg.retry({ delaySeconds: 300 })` instead, so the message isn't lost.
+    In the main queue that eventually moves it to the dead-letter queue, which tries again.
+  - If no notice is configured, there is nothing to wait for, so it acks.
 - **The server is restarting.** Mail accepted while the server restarts is never lost. If neither the
   POST nor the queue succeeds, the email handler throws instead of accepting the message. Cloudflare
   doesn't document what happens to the incoming message then. Either way, it isn't silently accepted.
@@ -221,7 +296,7 @@ only the headers.
     <status>)`, so the forwarder gets a bounce.
   - **From the queue:** a failure notice is sent (below).
 - **Misconfiguration.** A missing or too-short secret, or a missing or non-https `INGEST_URL`, is
-  treated as transient. Mail is queued and goes through once the configuration is fixed, within 24 h.
+  treated as transient. Mail is queued and goes through once the configuration is fixed, within 23 h.
 - **Final failure notice.** It goes to `NOTIFY_ADDRESS` through a `send_email` binding that is restricted
   to that one address. It carries the title, the received time, the reason and the dedupe hash.
   - Sending to a **verified destination address** of the account is free on every plan, including
@@ -229,29 +304,92 @@ only the headers.
     Sources: [Email Service pricing](https://developers.cloudflare.com/email-service/platform/pricing/)
     and [limits](https://developers.cloudflare.com/email-service/platform/limits/#verified-destination-addresses).
   - The sender (`NOTIFY_FROM`) must be on the Email Routing domain.
-  - If the binding isn't configured, or the send fails, the Worker logs `notify_unconfigured` or
-    `notify_failed` and nothing else happens. That is the documented limitation.
+  - Without the binding the Worker logs `notify_unconfigured` and acks. A failed send logs
+    `notify_failed` and is retried as above.
 
 ## Bounds (Workers Free plan)
 
 | What | Bound | Why |
 |---|---|---|
-| Raw message read and parsed | 256 KiB; the rest of the stream is never read | Free-plan CPU is 10 ms per invocation. Parsing 256 KiB took about 5 ms when measured, and 1 MiB about 17 ms. Headers and text parts come first in a forward. Email Routing itself accepts up to 25 MiB. |
+| Raw message read and parsed | 256 KiB; the rest of the stream is never read | Free-plan CPU is 10 ms per invocation; see [CPU budget](#cpu-budget). Headers and text parts come first in a forward. Email Routing itself accepts up to 25 MiB. |
 | Header section | Must end within those 256 KiB, else rejected | No partial header parsing. |
-| MIME structure (postal-mime) | Nesting 32, parts 500, headers 256 KiB, nested messages 3 | Far below postal-mime's defaults. |
+| MIME structure (postal-mime) | Nesting 16, parts 100, headers 256 KiB, nested messages 3, forwarded addresses 500 | Far below postal-mime's defaults. A message over a limit becomes a headers-only task (`parse_failed`). |
 | Original subject | 998 characters | RFC 5322 line limit. |
 | Title | 500 characters | `MAX_TITLE` in `todo-core`. |
 | Kept body | 64 KiB of UTF-8 | |
 | Request body | 100,000 bytes | |
 | Queue message | 120,000 bytes, checked before sending | Queues allow 128 KB. |
-| Text scanned for the forwarded header block | 64 KiB | |
+| Forwarded-sender scan | First 64 KiB and 2,000 lines of the text; lines over 998 characters are skipped | Header labels and separators are matched without backtracking regexes, and the address is found with `indexOf` and one linear scan outward from `@`. |
+| HTML tag scan | 4,096 characters per tag; quote-aware | A stray `<` is kept as text. |
 | POST timeout | 15 s | |
-| Retries | Until 24 h after acceptance, at most 40 | |
+| Retries | Until 23 h after acceptance, at most 40 | |
+| Accepted emails | 50 per isolate in any 24 h window (`MAX_ACCEPTED_PER_DAY`) | See below. |
 
-Every queued email costs at most 3 operations per attempt (write, read and delete) out of the Free
-plan's 10,000 per day, which is about 60 for an email that is retried for the full 24 h (19 retries). See
+### Quota: nothing can be billed, but the quota can run out
+
+A Free-plan account has no payment method, so nothing in this Worker can create a bill. Running out of
+a quota only makes things fail: Queues stop accepting writes until the daily reset, and Workers stop
+running.
+
+The Queues Free plan allows 10,000 operations per day. A write, a read and a delete each count once per
+64 KB of message, and every redelivery is another read. Sources:
 [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/) and
 [limits](https://developers.cloudflare.com/queues/platform/limits/).
+
+| Email retried for the full 23 h (19 queue messages) | Operations |
+|---|---|
+| Small envelope (≤ 64 KB) | 19 × (write + read + delete) = 57 |
+| `#keep` envelope over 64 KB (2 chunks) | 19 × 6 = 114 |
+| Plus the dead-letter path, redeliveries after `msg.retry` fallbacks, and notice retries | a few more |
+
+So the worst case is about **120 operations per email**. If the server is down for a day, 50 accepted
+emails cost about 6,000 of the 10,000, which leaves room for redeliveries. Mail that is delivered on the
+first try costs nothing.
+
+That is where the **admission guard** comes from. Each isolate accepts at most `MAX_ACCEPTED_PER_DAY`
+(default 50) emails in any sliding 24 h window. It counts only mail that passed the sender checks. Over
+that, the email handler throws, so Email Routing reports a temporary failure and the sending server
+tries again later. Nothing is lost silently.
+- The guard is per isolate, kept in memory: no KV or Durable Objects, which would cost operations of
+  their own.
+- Cloudflare may run more than one isolate, and an isolate can be recycled at any time. So it is a cheap
+  brake on a burst, not an exact account-wide limit. The allowlist and aligned authentication are what
+  keep strangers out.
+
+### CPU budget
+
+The Free plan allows 10 ms of CPU per invocation. `test/security.test.js` runs the full email handler on
+three hostile messages just under the 256 KiB read cap:
+
+- 40 headers of 900 characters;
+- `message/rfc822` nested three levels;
+- 990-character adversarial `From:` lines (`a…`, `@…`, `a.a.…`), each after three 990-character dash
+  lines that a backtracking separator regex would choke on;
+- HTML full of unclosed quotes, stray `<` and unclosed `<style>`.
+
+The test asserts a median under a generous 100 ms. That allows for slow, noisy CI runners and catches
+quadratic blowups, which cost seconds rather than milliseconds.
+
+Measured with Node 24 on a desktop machine, warm, as CPU time per email (`process.cpuUsage` over 60
+runs, two runs each):
+
+| Case | CPU per email |
+|---|---|
+| 80 mixed text and HTML parts (within the 100-part limit) | 4.4–6.0 ms |
+| 80 HTML parts only, so all of it goes through `htmlToText` | 3.4–3.6 ms |
+| 300 parts (over the limit, headers-only fallback) | 1.6 ms |
+
+MIME parsing is most of it (about 4 ms for 256 KiB). The forwarded-sender scan and payload building
+together take under 0.5 ms.
+
+- **The margin** is roughly 1.7× to 2× against 10 ms when the isolate is warm.
+- **The first message in a fresh isolate** runs before V8 has optimized the code and was measured at
+  8–22 ms of wall time, so a cold worst case can go over 10 ms.
+- **Typical forwards** are a few tens of KiB. Parsing dominates and grows with size, so they cost
+  proportionally less.
+
+If Cloudflare ever ends an invocation for CPU, the email handler fails and the message is not accepted,
+just like the throw above. If that happens in practice, lower `MAX_RAW_BYTES`.
 
 ## Logging
 
@@ -259,14 +397,25 @@ The Worker logs one JSON line per outcome, with an allowlist of fields enforced 
 
 - `evt`;
 - `reason` and `via`, as fixed tokens;
-- `status`, `attempt` and `delay_s`;
-- the booleans `has_list`, `keep`, `body_truncated` and `raw_truncated`;
+- `status`, `attempt`, `delay_s` and `bytes`;
+- the booleans `has_list`, `keep`, `body_truncated`, `raw_truncated` and `parse_failed`;
+- with `DEBUG_AUTH_SHAPE=true`, the `auth_shape` booleans described above;
 - `mid`: the first 12 hex characters of SHA-256 over the `Message-ID`.
 
-It never logs addresses, subjects, bodies, list names or the secret.
+Fields that are meant to be booleans are dropped unless they are booleans. The Worker never logs
+addresses, subjects, bodies, list names, the recipient secret or the HMAC secret.
 
 ## Follow-ups
 
+- **Server endpoint (next PR).** It must:
+  - reject repeated `X-Todo-*` headers;
+  - verify the signature before touching storage;
+  - reserve the nonce with an atomic unique-key `INSERT`;
+  - enforce `message_id` uniqueness with a unique constraint in the same transaction as the task
+    creation;
+  - re-check the allowlist.
+
+  See [What the server must check](#what-the-server-must-check-in-this-order).
 - **Attachments.** Store attachments of `#keep` mails in R2, at most 10 MB per message. That means
   streaming the parts past the 256 KiB parse window without decoding them in the Worker, and
   probably a separate upload endpoint. Not in this PR.

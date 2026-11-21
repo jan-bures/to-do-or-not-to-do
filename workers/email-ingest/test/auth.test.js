@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { aligned, checkAuth, parseAuthResults } from '../src/auth.js';
+import { aligned, authShape, checkAuth, parseAuthResults } from '../src/auth.js';
 
 // A realistic Email Routing header, with comments, as Cloudflare prepends it.
 const REAL =
@@ -53,17 +53,17 @@ describe('parseAuthResults', () => {
 });
 
 describe('aligned', () => {
-  it('accepts equal domains and subdomains either way', () => {
+  it('accepts only the exact domain, ignoring case and a trailing dot', () => {
     assert.ok(aligned('example.com', 'example.com'));
     assert.ok(aligned('EXAMPLE.com.', 'example.com'));
-    assert.ok(aligned('mail.example.com', 'example.com'));
-    assert.ok(aligned('example.com', 'mail.example.com'));
   });
 
-  it('rejects other domains, lookalikes and dotless names', () => {
+  it('rejects subdomains either way, other domains, lookalikes and dotless names', () => {
+    assert.ok(!aligned('mail.example.com', 'example.com'), 'a delegated subdomain must not pass for its parent');
+    assert.ok(!aligned('example.com', 'mail.example.com'));
     assert.ok(!aligned('evil.example', 'example.com'));
     assert.ok(!aligned('badexample.com', 'example.com'));
-    assert.ok(!aligned('com', 'example.com'));
+    assert.ok(!aligned('com', 'com'));
     assert.ok(!aligned('', 'example.com'));
   });
 });
@@ -73,27 +73,45 @@ describe('checkAuth', () => {
     assert.deepEqual(checkAuth(REAL, 'example.com'), { ok: true, via: 'dkim' });
   });
 
-  it('passes on aligned SPF alone', () => {
-    assert.deepEqual(checkAuth('mx.cloudflare.net; dkim=none; spf=pass smtp.mailfrom=bounce@mail.example.com', 'example.com'), {
+  it('prefers DKIM when both DKIM and SPF are aligned', () => {
+    const ar = 'mx.cloudflare.net; spf=pass smtp.mailfrom=example.com; dkim=pass header.d=example.com';
+    assert.deepEqual(checkAuth(ar, 'example.com'), { ok: true, via: 'dkim' });
+  });
+
+  it('passes on exactly aligned SPF alone', () => {
+    assert.deepEqual(checkAuth('mx.cloudflare.net; dkim=none; spf=pass smtp.mailfrom=bounce@example.com', 'example.com'), {
       ok: true,
       via: 'spf',
     });
+    assert.deepEqual(checkAuth('mx.cloudflare.net; spf=pass smtp.mailfrom=example.com', 'example.com'), { ok: true, via: 'spf' });
   });
 
-  it('passes on aligned DMARC alone', () => {
-    assert.deepEqual(checkAuth('mx.cloudflare.net; dmarc=pass header.from=example.com', 'example.com'), { ok: true, via: 'dmarc' });
+  it('fails a pass for a delegated subdomain of the From domain', () => {
+    const dkimSub = 'mx.cloudflare.net; dkim=pass header.d=mail.example.com; dmarc=pass header.from=example.com';
+    assert.deepEqual(checkAuth(dkimSub, 'example.com'), { ok: false, reason: 'auth_unaligned' });
+    const spfSub = 'mx.cloudflare.net; spf=pass smtp.mailfrom=bounce@mail.example.com';
+    assert.deepEqual(checkAuth(spfSub, 'example.com'), { ok: false, reason: 'auth_unaligned' });
+    const parent = 'mx.cloudflare.net; dkim=pass header.d=example.com';
+    assert.deepEqual(checkAuth(parent, 'mail.example.com'), { ok: false, reason: 'auth_unaligned' });
   });
 
-  it('fails a spoofed From with another domain\'s valid SPF and DKIM', () => {
-    const ar = 'mx.cloudflare.net; dkim=pass header.d=evil.example; spf=pass smtp.mailfrom=x@evil.example; dmarc=none';
-    assert.deepEqual(checkAuth(ar, 'example.com'), { ok: false, reason: 'auth_unaligned' });
+  it('does not accept DMARC alone', () => {
+    assert.deepEqual(checkAuth('mx.cloudflare.net; dmarc=pass header.from=example.com', 'example.com'), {
+      ok: false,
+      reason: 'auth_failed',
+    });
   });
 
-  it('fails a DMARC pass for another From domain', () => {
-    assert.deepEqual(checkAuth('mx.cloudflare.net; dmarc=pass header.from=evil.example', 'example.com'), {
+  it('ignores header.i', () => {
+    assert.deepEqual(checkAuth('mx.cloudflare.net; dkim=pass header.i=@example.com', 'example.com'), {
       ok: false,
       reason: 'auth_unaligned',
     });
+  });
+
+  it("fails a spoofed From with another domain's valid SPF and DKIM", () => {
+    const ar = 'mx.cloudflare.net; dkim=pass header.d=evil.example; spf=pass smtp.mailfrom=x@evil.example; dmarc=none';
+    assert.deepEqual(checkAuth(ar, 'example.com'), { ok: false, reason: 'auth_unaligned' });
   });
 
   it('fails when nothing passed', () => {
@@ -112,12 +130,32 @@ describe('checkAuth', () => {
     assert.deepEqual(checkAuth(forged, 'example.com'), { ok: false, reason: 'auth_untrusted' });
   });
 
-  it('ignores a forged header that comes after Cloudflare\'s', () => {
+  it("ignores a forged header that comes after Cloudflare's", () => {
     const joined = `mx.cloudflare.net; spf=fail smtp.mailfrom=x@evil.example; dkim=none, ${REAL}`;
     assert.deepEqual(checkAuth(joined, 'example.com'), { ok: false, reason: 'auth_failed' });
   });
 
   it('accepts a configured authserv-id', () => {
     assert.ok(checkAuth('mx.test.example; spf=pass smtp.mailfrom=example.com', 'example.com', 'mx.test.example').ok);
+  });
+});
+
+describe('authShape', () => {
+  it('reports the header shape as booleans only', () => {
+    const shape = authShape(REAL, 'example.com');
+    assert.deepEqual(shape, {
+      ar_present: true,
+      authserv_ok: true,
+      dkim_pass: true,
+      header_d_present: true,
+      header_d_aligned: true,
+      spf_pass: true,
+      mailfrom_present: true,
+      mailfrom_aligned: true,
+      dmarc_pass: true,
+    });
+    for (const v of Object.values(authShape('mx.cloudflare.net; spf=pass', 'example.com'))) assert.equal(typeof v, 'boolean');
+    assert.equal(authShape(null, 'example.com').ar_present, false);
+    assert.equal(authShape('mx.cloudflare.net; dkim=pass header.d=mail.example.com', 'example.com').header_d_aligned, false);
   });
 });
