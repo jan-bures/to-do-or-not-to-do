@@ -142,9 +142,12 @@ Direct3D and DirectWrite, so a warm start draws real data in its first frame. Op
   unsent changes were kept.
 - **A recovery that can't finish** (the copy can never be read, say) doesn't lock the app: while
   `recovery.json` is there, the screen also offers **Start fresh (keep the damaged copy)**, after asking,
-  since it gives up on the unsent changes. It moves the damaged cache, its copies, anything rebuilt so far
-  and, last and durably, the record into a new `damaged\<ms>\` folder in the pairing's directory (nothing is
-  deleted), then opens an empty cache and loads from the server. The status bar says the unsent changes
+  since it gives up on the unsent changes. It first records the destination, a new `damaged\<ms>\` folder in
+  the pairing's directory, in `start-fresh.json`, then moves each damaged database with its log files, then
+  `recovery.json`, then `start-fresh.json` last (nothing is deleted), and opens an empty cache that loads
+  from the server. It refuses, moving nothing, if the pairing's directory or any of those files is a link or
+  not a plain file. While `start-fresh.json` is there, nothing opens or salvages the half-moved files: the
+  screen offers only **Finish starting fresh**, which continues into the same folder. The status bar says the unsent changes
   weren't recovered, with **Open folder** for the kept copy. Kept copies are removed with the pairing's data
   at sign-out.
 - **A cache that can't be opened now** (another copy of the app holds it, no permission, disk full) is left

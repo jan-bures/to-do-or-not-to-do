@@ -15,7 +15,7 @@ use super::quick_add::QuickAddView;
 use super::shell::{ShellEvent, ShellView};
 use crate::config::{self, Pairing, Paths};
 use crate::model::{RoomKey, Smart, UiState};
-use crate::session::{self, OpenError, Recovered, Runtime, Session, SignedOut};
+use crate::session::{self, OpenError, Pending, Recovered, Runtime, Session, SignedOut};
 use crate::store::{LiveStore, Store};
 use crate::theme::Theme;
 
@@ -37,8 +37,11 @@ pub enum Opened {
     /// The saved sign-in couldn't be read (or can't be used): pair again. The old data stays.
     PairAgain(SharedString),
     /// Paired, but the cache couldn't be opened now. Nothing was removed; trying again may work.
-    /// `recovery`: a recovery of damaged data couldn't finish, so starting fresh is offered too.
-    Failed { why: SharedString, recovery: bool },
+    /// `pending`: an unfinished recovery or start fresh, which decides what the screen offers.
+    Failed {
+        why: SharedString,
+        pending: Option<Pending>,
+    },
     /// The paired session, opened on its cache (not syncing yet), and what was recovered if the cache
     /// was damaged.
     Session(Box<Session>, Option<Recovered>),
@@ -77,7 +80,7 @@ fn open(rt: &Runtime, paths: &Paths) -> Opened {
                     tracing::warn!("the local data couldn't be opened: {e}");
                     Opened::Failed {
                         why: format!("{}.", capitalized(&e.to_string())).into(),
-                        recovery: Session::recovery_pending(paths, &pairing),
+                        pending: Session::pending(paths, &pairing),
                     }
                 }
             }
@@ -121,18 +124,18 @@ pub const STARTED_FRESH: &str = "Started fresh from the server. Unsent changes i
                                  weren't recovered; a copy is kept.";
 
 /// Opens the saved pairing on an empty cache, the damaged data set aside (`Session::start_fresh`).
-/// On failure, what to show: why, and whether the recovery is still pending.
+/// On failure, what to show: why, and what is still pending.
 fn start_fresh(
     rt: &Runtime,
     paths: &Paths,
-) -> Result<(Session, session::StartedFresh), (SharedString, bool)> {
+) -> Result<(Session, session::StartedFresh), (SharedString, Option<Pending>)> {
     let pairing = match config::load(paths) {
         Ok(Some(p)) => p,
-        Ok(None) => return Err(("The saved sign-in is gone. Restart the app.".into(), false)),
+        Ok(None) => return Err(("The saved sign-in is gone. Restart the app.".into(), None)),
         Err(e) => {
             return Err((
                 format!("The saved sign-in couldn't be read: {e:#}.").into(),
-                false,
+                None,
             ));
         }
     };
@@ -140,7 +143,7 @@ fn start_fresh(
         tracing::warn!("starting fresh failed: {e}");
         (
             format!("Starting fresh didn't work: {e}.").into(),
-            Session::recovery_pending(paths, &pairing),
+            Session::pending(paths, &pairing),
         )
     })
 }
@@ -210,19 +213,19 @@ impl RootView {
             }
             Opened::NotPaired => self.show_pairing(last_server, None, window, cx),
             Opened::PairAgain(why) => self.show_pairing(last_server, Some(why), window, cx),
-            Opened::Failed { why, recovery } => self.show_failed(why, recovery, window, cx),
+            Opened::Failed { why, pending } => self.show_failed(why, pending, window, cx),
         }
     }
 
     fn show_failed(
         &mut self,
         why: SharedString,
-        recovery: bool,
+        pending: Option<Pending>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let theme = self.theme;
-        let view = cx.new(|cx| FailedView::new(theme, why, recovery, cx));
+        let view = cx.new(|cx| FailedView::new(theme, why, pending, cx));
         let sub =
             cx.subscribe_in(
                 &view,
@@ -260,7 +263,7 @@ impl RootView {
                         });
                     }
                 }
-                Err((why, recovery)) => this.show_failed(why, recovery, window, cx),
+                Err((why, pending)) => this.show_failed(why, pending, window, cx),
             });
         })
         .detach();
@@ -417,7 +420,7 @@ impl RootView {
                     shell.update(cx, |s, cx| s.show_notice(text, true, cx));
                 }
             }
-            Err(e) => self.show_failed(format!("{text} ({e})").into(), false, window, cx),
+            Err(e) => self.show_failed(format!("{text} ({e})").into(), None, window, cx),
         }
     }
 

@@ -261,6 +261,12 @@ impl Session {
         let data = paths.data(&pairing.config.pairing);
         data.check_ancestors()
             .map_err(unavailable("checking the data directory"))?;
+        if std::fs::symlink_metadata(data.path().join(START_FRESH_FILE)).is_ok() {
+            // Files are half moved aside: nothing opens or salvages them until starting fresh is done.
+            return Err(OpenError::Unavailable(
+                "starting fresh was interrupted and has to be finished".into(),
+            ));
+        }
         let mut recovered = match read_record(&data)? {
             Some(record) => finish_recovery(&data, record)?,
             None => None,
@@ -564,17 +570,21 @@ fn read_record(data: &DataDir) -> Result<Option<RecoveryRecord>, OpenError> {
 fn write_record(data: &DataDir, record: &RecoveryRecord) -> Result<(), OpenError> {
     let bytes = serde_json::to_vec(record)
         .map_err(|e| OpenError::Unavailable(format!("writing the recovery record: {e}")))?;
-    let path = data.path().join(RECOVERY_FILE);
-    let tmp = data.path().join(format!("{RECOVERY_FILE}.tmp"));
-    std::fs::write(&tmp, bytes)
-        .and_then(|()| {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&tmp)?
-                .sync_all()?;
-            todo_fs::replace_durably(&tmp, &path)
-        })
+    write_durably(&data.path().join(RECOVERY_FILE), &bytes)
         .map_err(unavailable("writing the recovery record"))
+}
+
+/// Writes `bytes` to `path` through `<path>.tmp`, flushed, and moves it into place durably.
+fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)?
+        .sync_all()?;
+    todo_fs::replace_durably(&tmp, path)
 }
 
 /// Replaces a damaged cache, from wherever `record` says an earlier attempt stopped, and removes the
@@ -654,37 +664,60 @@ fn finish_recovery(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartedFresh {
     /// `damaged\<ms>\` in the pairing's directory: the damaged cache, its copy, anything rebuilt so far
-    /// and the recovery record, moved as they were. Removed with the pairing's data at sign-out.
+    /// and the records, moved as they were. Removed with the pairing's data at sign-out.
     pub kept: PathBuf,
+}
+
+/// Something unfinished that opening stopped at, and so what the screen offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pending {
+    /// A recovery of damaged data couldn't finish: try again, or start fresh.
+    Recovery,
+    /// Starting fresh was interrupted with files half moved: it can only be finished.
+    StartFresh,
 }
 
 /// The pairing's folder for damaged data set aside by "Start fresh".
 const DAMAGED_DIR: &str = "damaged";
+/// `start-fresh.json` while the damaged data is being moved aside: the folder it goes to. Written before
+/// anything moves and moved there last, so an interrupted start fresh finishes into the same folder, and
+/// nothing opens or salvages the half-moved files meanwhile.
+const START_FRESH_FILE: &str = "start-fresh.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StartFreshRecord {
+    /// The folder's name under `damaged`: digits only.
+    dest: String,
+}
 
 impl Session {
-    /// Whether a recovery was started and hasn't finished (its record is still there). Only then is
-    /// starting fresh offered.
-    pub fn recovery_pending(paths: &Paths, pairing: &Pairing) -> bool {
-        let record = paths
-            .data(&pairing.config.pairing)
-            .path()
-            .join(RECOVERY_FILE);
-        std::fs::symlink_metadata(record).is_ok()
+    /// What opening stopped at, if anything is unfinished.
+    pub fn pending(paths: &Paths, pairing: &Pairing) -> Option<Pending> {
+        let dir = paths.data(&pairing.config.pairing).path().to_path_buf();
+        let exists = |name: &str| std::fs::symlink_metadata(dir.join(name)).is_ok();
+        if exists(START_FRESH_FILE) {
+            Some(Pending::StartFresh)
+        } else if exists(RECOVERY_FILE) {
+            Some(Pending::Recovery)
+        } else {
+            None
+        }
     }
 
     /// Gives up on a recovery that can't finish: moves the damaged data (never deleting it) to a new
-    /// folder `damaged\<ms>\`, the recovery record last, then opens an empty cache, which loads from the
-    /// server once started. Unsent changes in the damaged copy are not recovered.
+    /// folder `damaged\<ms>\`, then opens an empty cache, which loads from the server once started.
+    /// Unsent changes in the damaged copy are not recovered.
     ///
-    /// Safe to repeat after a failure: until the record has moved, the next start still sees the
-    /// recovery as pending, and whatever wasn't moved yet is moved the next time.
+    /// The folder is recorded in `start-fresh.json` before anything moves. Each database moves with its
+    /// log files, then the recovery record, then `start-fresh.json` last. An interrupted run is finished
+    /// by the next one, into the same folder.
     pub fn start_fresh(
         rt: Runtime,
         paths: &Paths,
         pairing: &Pairing,
     ) -> Result<(Self, StartedFresh), OpenError> {
         let data = paths.data(&pairing.config.pairing);
-        let kept = set_aside(&data).map_err(unavailable("setting the damaged data aside"))?;
+        let kept = set_aside(&data)?;
         tracing::warn!("started fresh; the damaged data was kept aside");
         let session = Self::open_cache(rt, paths, pairing)?;
         Ok((session, StartedFresh { kept }))
@@ -694,62 +727,159 @@ impl Session {
 /// Whether `name` in a pairing's directory is part of a damaged cache or its recovery: the cache, the
 /// quarantined copies, the staged rebuild (each with its log files) and a half-written record.
 fn damaged_name(name: &str) -> bool {
-    let base = name
-        .strip_suffix("-wal")
-        .or_else(|| name.strip_suffix("-shm"))
-        .unwrap_or(name);
+    let base = database_of(name);
     base == config::CACHE_FILE
         || base == STAGED_CACHE
         || (base.starts_with("cache.damaged-") && base.ends_with(".sqlite"))
         || name == format!("{RECOVERY_FILE}.tmp")
 }
 
-fn invalid(what: String) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, what)
+/// The database a file belongs to: its own name, without a `-wal` or `-shm` suffix.
+fn database_of(name: &str) -> &str {
+    name.strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+        .unwrap_or(name)
 }
 
-fn set_aside(data: &DataDir) -> std::io::Result<PathBuf> {
-    data.check_ancestors()?;
-    let damaged = data.path().join(DAMAGED_DIR);
-    match todo_fs::create_private_dir(&damaged) {
-        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
-        _ => {}
-    }
-    let m = std::fs::symlink_metadata(&damaged)?;
-    if !todo_fs::is_plain(&m) || !m.is_dir() {
-        return Err(invalid(format!(
-            "{} is a link or not a directory",
-            damaged.display()
-        )));
-    }
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
-    let kept = damaged.join(ms.to_string());
-    todo_fs::create_private_dir(&kept)?;
-    let plain_file =
-        |path: &Path| std::fs::symlink_metadata(path).map(|m| todo_fs::is_plain(&m) && m.is_file());
-    for entry in std::fs::read_dir(data.path())? {
-        let path = entry?.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+fn aside(e: std::io::Error) -> OpenError {
+    OpenError::Unavailable(format!("setting the damaged data aside: {e}"))
+}
+
+fn refused(what: String) -> OpenError {
+    OpenError::Unavailable(format!("{what}, so nothing was set aside"))
+}
+
+/// The damaged files to move, grouped by database, each group's log files before the database itself.
+/// Every one must be a plain file: anything else (a link, a directory) refuses the whole move.
+fn damaged_files(data: &DataDir) -> Result<Vec<Vec<String>>, OpenError> {
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for entry in std::fs::read_dir(data.path()).map_err(aside)? {
+        let entry = entry.map_err(aside)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if damaged_name(&name) && plain_file(&path)? {
-            todo_fs::replace_durably(&path, &kept.join(&name))?;
+        if !damaged_name(&name) {
+            continue;
+        }
+        let m = std::fs::symlink_metadata(entry.path()).map_err(aside)?;
+        if !todo_fs::is_plain(&m) || !m.is_file() {
+            return Err(refused(format!("{name} is a link or not a file")));
+        }
+        groups
+            .entry(database_of(&name).to_owned())
+            .or_default()
+            .push(name);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(base, mut names)| {
+            names.sort_by_key(|n| (*n == base, n.clone()));
+            names
+        })
+        .collect())
+}
+
+/// Creates an owner-only directory, or accepts one that is already there, as long as it is a plain
+/// directory.
+fn private_dir(dir: &Path) -> Result<(), OpenError> {
+    match todo_fs::create_private_dir(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(aside(e)),
+        _ => {}
+    }
+    let m = std::fs::symlink_metadata(dir).map_err(aside)?;
+    if todo_fs::is_plain(&m) && m.is_dir() {
+        Ok(())
+    } else {
+        Err(refused(format!(
+            "{} is a link or not a directory",
+            dir.display()
+        )))
+    }
+}
+
+/// Reads `start-fresh.json`, if a start fresh is under way.
+fn read_start_fresh(path: &Path) -> Result<Option<String>, OpenError> {
+    let m = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(aside(e)),
+    };
+    if !todo_fs::is_plain(&m) || !m.is_file() {
+        return Err(refused(format!(
+            "{START_FRESH_FILE} is a link or not a file"
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(aside)?;
+    let record: StartFreshRecord = serde_json::from_slice(&bytes)
+        .map_err(|e| OpenError::Unavailable(format!("{START_FRESH_FILE} is unreadable: {e}")))?;
+    let digits = !record.dest.is_empty() && record.dest.bytes().all(|b| b.is_ascii_digit());
+    if !digits {
+        return Err(OpenError::Unavailable(format!(
+            "{START_FRESH_FILE} names an unexpected folder: {:?}",
+            record.dest
+        )));
+    }
+    Ok(Some(record.dest))
+}
+
+/// Moves `from` to `to` if it is there: a plain file, durably. A link or a directory refuses.
+fn move_if_there(from: &Path, to: &Path) -> Result<(), OpenError> {
+    match std::fs::symlink_metadata(from) {
+        Ok(m) if todo_fs::is_plain(&m) && m.is_file() => {
+            todo_fs::replace_durably(from, to).map_err(aside)
+        }
+        Ok(_) => Err(refused(format!(
+            "{} is a link or not a file",
+            from.display()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(aside(e)),
+    }
+}
+
+fn set_aside(data: &DataDir) -> Result<PathBuf, OpenError> {
+    // The pairing's directory itself must be a plain directory before anything is created or listed.
+    data.check().map_err(aside)?;
+    let groups = damaged_files(data)?;
+    let record = data.path().join(START_FRESH_FILE);
+    let dest = match read_start_fresh(&record)? {
+        Some(dest) => dest,
+        None => {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis());
+            let dest = ms.to_string();
+            let bytes = serde_json::to_vec(&StartFreshRecord { dest: dest.clone() })
+                .map_err(|e| OpenError::Unavailable(format!("writing {START_FRESH_FILE}: {e}")))?;
+            write_durably(&record, &bytes).map_err(aside)?;
+            dest
+        }
+    };
+    step("recorded-fresh")?;
+    let damaged = data.path().join(DAMAGED_DIR);
+    private_dir(&damaged)?;
+    let kept = damaged.join(&dest);
+    private_dir(&kept)?;
+    for names in groups {
+        for name in names {
+            todo_fs::replace_durably(&data.path().join(&name), &kept.join(&name)).map_err(aside)?;
+            if name.ends_with("-wal") {
+                step("moved-wal")?;
+            }
         }
     }
-    // Last, and durably: once the record is gone, the next start opens the new cache.
-    let record = data.path().join(RECOVERY_FILE);
-    match plain_file(&record) {
-        Ok(true) => todo_fs::replace_durably(&record, &kept.join(RECOVERY_FILE))?,
-        Ok(false) => {
-            return Err(invalid(
-                "the recovery record is a link or not a file".into(),
-            ));
+    // The live cache must be vacant before the records go, or the next start would open what is there.
+    for suffix in ["", "-wal", "-shm"] {
+        let path = with_suffix(&data.cache(), suffix);
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(aside(e)),
+            Ok(_) => return Err(refused(format!("{} is still there", path.display()))),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
     }
+    move_if_there(&data.path().join(RECOVERY_FILE), &kept.join(RECOVERY_FILE))?;
+    // Last: once this is gone, the next start opens the new cache.
+    move_if_there(&record, &kept.join(START_FRESH_FILE))?;
     Ok(kept)
 }
 

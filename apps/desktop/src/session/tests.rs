@@ -814,7 +814,7 @@ fn a_copy_that_can_never_be_read_can_be_set_aside_to_start_fresh() {
         let _ = std::fs::remove_file(data.path().join(log));
     }
     std::fs::write(data.cache(), vec![0x5a; 8192]).expect("garbage");
-    assert!(!Session::recovery_pending(&paths, &pairing));
+    assert_eq!(Session::pending(&paths, &pairing), None);
     for attempt in ["the start", "Try again"] {
         let failed = Session::open_or_recover(net.clone(), &paths, &pairing);
         assert!(
@@ -822,17 +822,19 @@ fn a_copy_that_can_never_be_read_can_be_set_aside_to_start_fresh() {
             "{attempt} fails: {:?}",
             failed.as_ref().err()
         );
-        assert!(
-            Session::recovery_pending(&paths, &pairing),
+        assert_eq!(
+            Session::pending(&paths, &pairing),
+            Some(Pending::Recovery),
             "{attempt}: start fresh is offered"
         );
     }
 
     let (session, fresh) =
         Session::start_fresh(net.clone(), &paths, &pairing).expect("start fresh");
-    assert!(
-        !Session::recovery_pending(&paths, &pairing),
-        "the record is gone"
+    assert_eq!(
+        Session::pending(&paths, &pairing),
+        None,
+        "the records are gone"
     );
     assert!(!data.path().join("recovery.json").exists());
     // The damaged data is kept, with its record, under the pairing's data.
@@ -886,6 +888,219 @@ fn a_copy_that_can_never_be_read_can_be_set_aside_to_start_fresh() {
     ));
     assert_eq!(result.expect("signed out"), SignedOut::Clean);
     assert!(!fresh.kept.exists() && !data.path().exists());
+    drop(server);
+    shut_down(net);
+}
+
+/// A pairing whose cache is garbage, opened once: a recovery is pending that can never finish.
+fn unreadable_recovery(
+    server: &TestServer,
+    net: &Runtime,
+    paths: &Paths,
+) -> (Pairing, config::DataDir) {
+    let (pairing, _) = queued_offline(server, net, paths);
+    let data = paths.data(&pairing.config.pairing);
+    for log in ["cache.sqlite-wal", "cache.sqlite-shm"] {
+        let _ = std::fs::remove_file(data.path().join(log));
+    }
+    std::fs::write(data.cache(), vec![0x5a; 8192]).expect("garbage");
+    assert!(Session::open_or_recover(net.clone(), paths, &pairing).is_err());
+    assert_eq!(Session::pending(paths, &pairing), Some(Pending::Recovery));
+    (pairing, data)
+}
+
+fn names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn quarantined_name(data: &config::DataDir) -> String {
+    names(data.path())
+        .into_iter()
+        .find(|n| n.starts_with("cache.damaged-") && n.ends_with(".sqlite"))
+        .expect("the quarantined copy")
+}
+
+fn junction(link: &std::path::Path, target: &std::path::Path) {
+    let ok = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("mklink")
+        .status
+        .success();
+    assert!(ok, "mklink /J {}", link.display());
+}
+
+#[test]
+fn start_fresh_refuses_a_pairing_directory_that_is_a_link() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, data) = unreadable_recovery(&server, &net, &paths);
+
+    // The pairing's directory becomes a junction to a directory outside the app's data.
+    let outside = elsewhere.path().join("outside");
+    std::fs::rename(data.path(), &outside).expect("move away");
+    junction(data.path(), &outside);
+    let before = names(&outside);
+
+    let refused = Session::start_fresh(net.clone(), &paths, &pairing);
+    assert!(refused.is_err(), "refused");
+    assert_eq!(
+        names(&outside),
+        before,
+        "nothing outside was created or moved"
+    );
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn an_interrupted_start_fresh_finishes_into_the_same_folder() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, data) = unreadable_recovery(&server, &net, &paths);
+    let copy = quarantined_name(&data);
+    let wal = format!("{copy}-wal");
+    std::fs::write(data.path().join(&wal), b"log").expect("wal");
+
+    // Interrupted after the copy's log moved, before the copy itself.
+    FAIL_AT.with(|f| f.set(Some("moved-wal")));
+    let failed = Session::start_fresh(net.clone(), &paths, &pairing);
+    FAIL_AT.with(|f| f.set(None));
+    assert!(failed.is_err());
+    assert_eq!(
+        Session::pending(&paths, &pairing),
+        Some(Pending::StartFresh)
+    );
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(data.path().join("start-fresh.json")).expect("record"),
+    )
+    .expect("json");
+    let dest = data
+        .path()
+        .join("damaged")
+        .join(record["dest"].as_str().expect("dest"));
+    assert_eq!(
+        names(&dest),
+        vec![wal.clone()],
+        "the log moved, not the copy"
+    );
+
+    // Meanwhile nothing opens or salvages the half-moved set.
+    let blocked = Session::open_or_recover(net.clone(), &paths, &pairing);
+    assert!(
+        matches!(&blocked, Err(OpenError::Unavailable(why)) if why.contains("starting fresh")),
+        "{:?}",
+        blocked.as_ref().err()
+    );
+    assert!(data.path().join(&copy).exists() && data.path().join("recovery.json").exists());
+    assert!(!data.cache().exists(), "no cache was opened");
+
+    // Finishing moves the rest into the same folder, the records last.
+    let (session, fresh) = Session::start_fresh(net.clone(), &paths, &pairing).expect("finish");
+    assert_eq!(fresh.kept, dest);
+    let mut want = vec![
+        copy,
+        wal,
+        "recovery.json".to_string(),
+        "start-fresh.json".to_string(),
+    ];
+    want.sort();
+    assert_eq!(names(&dest), want);
+    assert_eq!(Session::pending(&paths, &pairing), None);
+    assert_eq!(session.client().status().pending, 0);
+    drop(session);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn start_fresh_refuses_a_damaged_entry_that_is_not_a_plain_file() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, data) = unreadable_recovery(&server, &net, &paths);
+    let before = names(data.path());
+
+    // A directory where a staged cache would be.
+    let odd = data.path().join("cache.recovering.sqlite");
+    std::fs::create_dir(&odd).expect("dir");
+    let refused = Session::start_fresh(net.clone(), &paths, &pairing);
+    assert!(
+        matches!(&refused, Err(OpenError::Unavailable(why)) if why.contains("nothing was set aside")),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    let mut after = names(data.path());
+    after.retain(|n| n != "cache.recovering.sqlite");
+    assert_eq!(after, before, "nothing was moved or created");
+    assert_eq!(Session::pending(&paths, &pairing), Some(Pending::Recovery));
+
+    std::fs::remove_dir(&odd).expect("remove");
+    let (session, _) = Session::start_fresh(net.clone(), &paths, &pairing).expect("start fresh");
+    drop(session);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn a_leftover_sign_out_temp_file_is_replaced_only_if_it_is_a_plain_file() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let data = session.data().clone();
+    let tmp = paths.cache_dir.join("pairings").join(format!(
+        "{}.signed-out.tmp",
+        pairing.config.pairing.as_str()
+    ));
+
+    // Not a plain file: signing out stops, and it is left alone.
+    std::fs::create_dir(&tmp).expect("dir");
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        || {},
+        || async {},
+    ));
+    assert!(result.is_err(), "still signed in");
+    assert!(tmp.is_dir(), "not ours to remove");
+    assert!(paths.token().exists());
+
+    // A plain file left over is removed (unlinked, never written through: here it is a hard link to a
+    // file outside), a new one is created, and signing out goes ahead.
+    std::fs::remove_dir(&tmp).expect("remove");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let outside = elsewhere.path().join("keep.txt");
+    std::fs::write(&outside, b"keep").expect("outside");
+    std::fs::hard_link(&outside, &tmp).expect("hard link");
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        move || drop(session),
+        || tokio::time::sleep(Duration::from_millis(100)),
+    ));
+    assert_eq!(result.expect("signed out"), SignedOut::Clean);
+    assert!(!tmp.exists() && !data.path().exists());
+    assert_eq!(std::fs::read(&outside).expect("outside"), b"keep");
     drop(server);
     shut_down(net);
 }

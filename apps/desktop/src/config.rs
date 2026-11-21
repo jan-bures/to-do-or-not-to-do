@@ -136,20 +136,27 @@ impl DataDir {
     /// junction's target, so everything removed below it is still our own data there. Refusing those
     /// would break users with redirected profiles and protect nothing.
     pub fn check_ancestors(&self) -> std::io::Result<()> {
-        for dir in [self.app.clone(), self.pairings()] {
-            match std::fs::symlink_metadata(&dir) {
-                Ok(m) if todo_fs::is_plain(&m) && m.is_dir() => {}
-                Ok(_) => {
-                    return Err(std::io::Error::new(
-                        ErrorKind::InvalidData,
-                        format!("{} is a link or not a directory", dir.display()),
-                    ));
-                }
-                Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
+        check_plain_dir(&self.app)?;
+        check_plain_dir(&self.pairings())
+    }
+
+    /// [`check_ancestors`](Self::check_ancestors), and the pairing's directory itself.
+    pub fn check(&self) -> std::io::Result<()> {
+        self.check_ancestors()?;
+        check_plain_dir(&self.path)
+    }
+}
+
+/// Fails if `dir` exists and is a link (junction, symlink) or not a directory. A missing one is fine.
+pub fn check_plain_dir(dir: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if todo_fs::is_plain(&m) && m.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{} is a link or not a directory", dir.display()),
+        )),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -303,13 +310,36 @@ pub fn mark_signed_out(data: &DataDir) -> std::io::Result<()> {
     let tmp = data
         .pairings()
         .join(format!("{}{SIGNED_OUT}.tmp", data.id.as_str()));
-    let written = std::fs::File::create(&tmp)
-        .and_then(|f| f.sync_all())
-        .and_then(|()| todo_fs::replace_durably(&tmp, &record));
+    let file = match create_new(&tmp) {
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            // Left over from an attempt that was cut short. Only a plain file is ours to remove.
+            let m = std::fs::symlink_metadata(&tmp)?;
+            if !todo_fs::is_plain(&m) || !m.is_file() {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("{} is a link or not a file", tmp.display()),
+                ));
+            }
+            std::fs::remove_file(&tmp)?;
+            create_new(&tmp)?
+        }
+        other => other?,
+    };
+    // Created by this attempt from here on, so it is ours to clean up.
+    let synced = file.sync_all();
+    drop(file);
+    let written = synced.and_then(|()| todo_fs::replace_durably(&tmp, &record));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written
+}
+
+fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// Withdraws a sign-out record (the sign-in couldn't be removed after all, so the data stays).

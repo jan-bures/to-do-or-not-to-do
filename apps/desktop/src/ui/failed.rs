@@ -1,6 +1,7 @@
 //! The screen shown when the paired data couldn't be opened: what happened and **Try again**. When a
 //! recovery of damaged data couldn't finish, it also offers to start fresh from the server, keeping the
-//! damaged copy, after asking: that gives up on the changes that hadn't been sent.
+//! damaged copy, after asking: that gives up on the changes that hadn't been sent. A start fresh that was
+//! interrupted can only be finished.
 
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, prelude::*, px,
@@ -8,6 +9,7 @@ use gpui::{
 
 use super::kit;
 use crate::model::Smart;
+use crate::session::Pending;
 use crate::theme::{self, TextStyled, Theme, elevation, radius, space, ty};
 
 /// What the owner chose.
@@ -15,7 +17,7 @@ use crate::theme::{self, TextStyled, Theme, elevation, radius, space, ty};
 pub enum FailedEvent {
     /// Open the saved pairing again.
     Retry,
-    /// Confirmed: set the damaged data aside and start with an empty cache.
+    /// Confirmed (or already under way): set the damaged data aside and start with an empty cache.
     StartFresh,
 }
 
@@ -27,8 +29,9 @@ pub const START_FRESH: &str = "Start fresh (keep the damaged copy)";
 pub struct FailedView {
     theme: Theme,
     why: SharedString,
-    /// A recovery was started and couldn't finish, so starting fresh is offered.
-    recovery: bool,
+    /// What opening stopped at: a recovery (starting fresh is offered too) or a start fresh (only
+    /// finishing it is offered).
+    pending: Option<Pending>,
     /// Start fresh was chosen and is being confirmed.
     confirming: bool,
     focus: FocusHandle,
@@ -37,11 +40,16 @@ pub struct FailedView {
 impl EventEmitter<FailedEvent> for FailedView {}
 
 impl FailedView {
-    pub fn new(theme: Theme, why: SharedString, recovery: bool, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        theme: Theme,
+        why: SharedString,
+        pending: Option<Pending>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             theme,
             why,
-            recovery,
+            pending,
             confirming: false,
             focus: cx.focus_handle(),
         }
@@ -53,7 +61,7 @@ impl FailedView {
                    cache.damaged-1763721300000.sqlite yet: file is not a database.";
         Self {
             confirming,
-            ..Self::new(theme, why.into(), true, cx)
+            ..Self::new(theme, why.into(), Some(Pending::Recovery), cx)
         }
     }
 
@@ -72,22 +80,40 @@ impl Focusable for FailedView {
 impl Render for FailedView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(self.theme, Smart::MyDay.hue());
-        let hint = if self.recovery {
-            "The local data was damaged, and the changes that hadn't reached the server yet couldn't be \
-             read back from it. Nothing has been removed. Try again, or start fresh from the server."
-        } else {
-            "Nothing was changed or removed. Close other copies of the app and try again."
+        let recovery = self.pending == Some(Pending::Recovery);
+        let finishing = self.pending == Some(Pending::StartFresh);
+        let hint = match self.pending {
+            Some(Pending::Recovery) => {
+                "The local data was damaged, and the changes that hadn't reached the server yet \
+                 couldn't be read back from it. Nothing has been removed. Try again, or start fresh \
+                 from the server."
+            }
+            Some(Pending::StartFresh) => {
+                "Starting fresh was interrupted while the damaged data was being set aside. Finish it \
+                 to open your tasks; the damaged copy is kept."
+            }
+            None => "Nothing was changed or removed. Close other copies of the app and try again.",
         };
         let actions = div()
             .flex()
             .gap(px(space::S3))
-            .child(
-                kit::button(&p, "Try again")
-                    .id("retry")
-                    .cursor_pointer()
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(FailedEvent::Retry))),
-            )
-            .when(self.recovery && !self.confirming, |d| {
+            .when(finishing, |d| {
+                d.child(
+                    kit::button(&p, "Finish starting fresh")
+                        .id("finish-start-fresh")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(FailedEvent::StartFresh))),
+                )
+            })
+            .when(!finishing, |d| {
+                d.child(
+                    kit::button(&p, "Try again")
+                        .id("retry")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(FailedEvent::Retry))),
+                )
+            })
+            .when(recovery && !self.confirming, |d| {
                 d.child(
                     kit::button_quiet(&p, START_FRESH)
                         .id("start-fresh")
@@ -95,7 +121,7 @@ impl Render for FailedView {
                         .on_click(cx.listener(|this, _, _, cx| this.ask(true, cx))),
                 )
             });
-        let confirm = (self.recovery && self.confirming).then(|| {
+        let confirm = (recovery && self.confirming).then(|| {
             div()
                 .id("start-fresh-confirm")
                 .mt(px(space::S2))
