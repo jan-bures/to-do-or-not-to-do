@@ -187,9 +187,9 @@ pub mod desktop {
     /// Toast height.
     pub const TOAST: f32 = 40.0;
     /// Smart-list rows in the sidebar.
-    pub const NAV_ROW: f32 = 32.0;
+    pub const NAV_ROW: f32 = 36.0;
     /// List rows inside a collection, and collection headers.
-    pub const NAV_SUB_ROW: f32 = 28.0;
+    pub const NAV_SUB_ROW: f32 = 32.0;
     /// Sidebar footer (sync state).
     pub const SIDEBAR_FOOTER: f32 = 44.0;
     /// Detail pane top bar (breadcrumb and actions).
