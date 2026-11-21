@@ -227,7 +227,7 @@ senders.
 ### 5. Check it
 
 1. Forward a test email from an allowed address.
-3. Watch the logs with `npx wrangler@4.158.0 tail todo-email-ingest`, or in the dashboard. You should see
+2. Watch the logs with `npx wrangler@4.158.0 tail todo-email-ingest`, or in the dashboard. You should see
    `{"evt":"delivered",…}`.
 
 **Check one real message once with `DEBUG_AUTH_SHAPE = "true"`.** It logs one `auth_shape` line of booleans,

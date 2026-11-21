@@ -227,7 +227,8 @@ $env:TODO_BACKUP_CONFIG = "$data\backup.toml"
 
 When `bin\todo-backup.exe` and `backup.toml` both exist, the supervisor:
 
-- runs `run --kind frequent` every 6 hours (`-FrequentBackupMinutes`) and `run --kind daily` once per calendar
+- runs `run --kind frequent` every 15 minutes (`-FrequentBackupMinutes`), so at most about 15 minutes of
+  changes can be lost, and `run --kind daily` once per calendar
   day. The first check comes 5 minutes after the supervisor starts (`-BackupStartDelayMinutes`).
 - runs one backup at a time, as a separate process. The supervisor loop only polls it and never waits on
   it, so supervising the server never stalls. A run that takes longer than an hour is killed through its
@@ -270,13 +271,14 @@ run and exits with code 3.
 
 | | Class A a month | Class B a month |
 |---|---|---|
-| Default schedule (at most 4 frequent and 1 daily a day) | about 155 | 0 |
+| Default schedule, if the database changes every 15 minutes all month (96 frequent and 1 daily a day) | at most about 3,000 | 0 |
 | Each restore drill | 0, or 1 LIST per kind without a local record | 1 |
 | Each `restore --latest` | 1 LIST | 1 |
 | Default cap | 20,000 | 200,000 |
 | R2 free tier, for the whole account | 1,000,000 | 10,000,000 |
 
-Storage stays small. At most 28 frequent and 90 daily objects exist at a time. A database of a few MB
+Storage stays small. At most 672 frequent (7 days at one every 15 minutes) and 90 daily objects exist at a
+time, and an unchanged database uploads nothing. A database of a few MB
 compresses to well under 1 MB per object, far below the 10 GB free tier.
 
 ### Restore

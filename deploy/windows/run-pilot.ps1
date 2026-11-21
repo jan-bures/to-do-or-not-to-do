@@ -13,7 +13,7 @@
     - Writes process output to dated log files under <DataDir>\logs and prunes logs older than 14 days.
     - A named mutex keeps a single supervisor per data directory. stop-pilot.ps1 stops it cleanly.
     - If <DataDir>\bin\todo-backup.exe and <DataDir>\backup.toml both exist, it also runs encrypted
-      backups: `run --kind frequent` every 6 hours and `run --kind daily` once per calendar day. Each run is
+      backups: `run --kind frequent` every 15 minutes and `run --kind daily` once per calendar day. Each run is
       a separate short-lived process that the loop only polls, so a slow or failing backup never holds up
       supervising the server. The last runs are kept in <DataDir>\backup-schedule.json, so a restart does
       not back up again straight away.
@@ -33,7 +33,7 @@ param(
     [string]$BackupExe = '',
     [string]$BackupConfig = '',
     # Minutes between frequent backups. Each run that changed nothing costs no request at all.
-    [int]$FrequentBackupMinutes = 360,
+    [int]$FrequentBackupMinutes = 15,
     # After a failed run, wait this long before trying the same kind again.
     [int]$BackupRetryMinutes = 30,
     # Give the server time to start (and run migrations) before the first backup.
