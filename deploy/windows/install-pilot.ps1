@@ -1,0 +1,63 @@
+<#
+.SYNOPSIS
+    Registers the per-user logon task that runs the todo pilot (todo-server plus cloudflared).
+
+.DESCRIPTION
+    Needs no admin rights. It registers an interactive, limited-rights scheduled task for the
+    current user at \todo\pilot, triggered at logon. The task runs run-pilot.ps1 in a headless
+    console (conhost --headless), so no window appears.
+
+    The script copies run-pilot.ps1 to <DataDir>\bin so the task doesn't depend on this checkout.
+    Pass -Start to start the pilot right away instead of waiting for the next logon.
+
+.EXAMPLE
+    ./install-pilot.ps1 -Start
+#>
+[CmdletBinding()]
+param(
+    [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'todo'),
+    [switch]$NoTunnel,
+    [switch]$Start
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$binDir = Join-Path $DataDir 'bin'
+New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+$runner = Join-Path $binDir 'run-pilot.ps1'
+Copy-Item -Path (Join-Path $PSScriptRoot 'run-pilot.ps1') -Destination $runner -Force
+
+$serverExe = Join-Path $binDir 'todo-server.exe'
+if (-not (Test-Path $serverExe)) {
+    Write-Warning "todo-server.exe is not in $binDir yet. Copy it there before the pilot starts."
+}
+
+# Windows PowerShell 5.1 is always present at this path. PowerShell 7 installed from the Microsoft Store
+# is an app execution alias, which doesn't start from a scheduled task, so it isn't used here.
+$shell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+$runnerArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$runner`" -DataDir `"$DataDir`""
+if ($NoTunnel) { $runnerArgs += ' -NoTunnel' }
+
+$user = "$env:USERDOMAIN\$env:USERNAME"
+$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\conhost.exe" `
+    -Argument "--headless `"$shell`" $runnerArgs"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+# Interactive and limited: runs as the signed-in user, needs no stored password and no elevation.
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
+    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+
+Register-ScheduledTask -TaskName 'pilot' -TaskPath '\todo\' -Action $action -Trigger $trigger `
+    -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+Write-Host "Registered scheduled task \todo\pilot for $user."
+
+if ($Start) {
+    # Start in this session directly. Start-ScheduledTask can pick another, disconnected session of the
+    # same user, where an interactive task fails with 0xC0000142. The logon trigger always uses the
+    # session that is logging on.
+    Start-Process -FilePath "$env:WINDIR\System32\conhost.exe" -ArgumentList "--headless `"$shell`" $runnerArgs"
+    Write-Host "Started. Logs: $(Join-Path $DataDir 'logs')"
+}
