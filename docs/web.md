@@ -266,6 +266,12 @@ The title and notes editors keep a draft: while it is dirty (typed in and not ye
 touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
 edited follow the update.
 
+**The app icon** is Daybreak, from `assets/brand` (see its README); the build copies it into `dist/brand/`.
+The favicon is the 16 px drawing (`small-16.svg`, since a tab shows it at 16 CSS px and the master must never be
+scaled down that far) with the generated 16 and 32 px PNGs, plus the 180 px `apple-touch-icon.png`. The
+sidebar's mark is the same 16 px drawing, as shipped. There is no web manifest: installing the app (PWA) is out
+of scope for now, and the generated 192 and 512 px and maskable icons are ready for it.
+
 Keyboard: **J/K** or the arrows move the selection, **Space** completes, **E** edits the title, **N** focuses
 quick-add, **Esc** closes the detail.
 

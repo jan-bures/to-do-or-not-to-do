@@ -548,7 +548,7 @@ fn SidebarPane() -> impl IntoView {
     view! {
         <aside class="sidebar" aria-label="Lists">
             <div class="brand">
-                {icon(Icon::CircleCheck)}
+                <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
                 <span>"To-do"</span>
             </div>
             <nav class="nav">

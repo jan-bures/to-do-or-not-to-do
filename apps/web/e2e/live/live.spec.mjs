@@ -207,6 +207,12 @@ test("set up, sign in, and use the app against the server", async () => {
   // Pages that carry the token are never stored or transformed on the way (BREACH).
   const shell = await page.request.get("/app");
   expect(shell.headers()["cache-control"]).toBe("no-store, no-transform");
+  // The real server serves the app icon with its type.
+  for (const [file, type] of [["icon-small.svg", "image/svg+xml"], ["icon-32.png", "image/png"], ["apple-touch-icon.png", "image/png"]]) {
+    const res = await page.request.get(`/app/brand/${file}`);
+    expect(res.status(), file).toBe(200);
+    expect(res.headers()["content-type"], file).toContain(type);
+  }
 
   expect(problems).toEqual([]);
   await page.close();

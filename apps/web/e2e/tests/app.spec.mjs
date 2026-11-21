@@ -152,3 +152,32 @@ test("the page runs under the server's CSP, with no inline script or style", asy
   expect(await page.locator("[style]").count()).toBe(0);
   await w.check();
 });
+
+test("the tab, the home screen and the sidebar show the Daybreak app icon", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  // The links point at the generated assets, each served with its type.
+  const brand = new URL("../../../../assets/brand/", import.meta.url);
+  const expected = {
+    "icon-small.svg": [new URL("small-16.svg", brand), "image/svg+xml"],
+    "icon-16.png": [new URL("generated/icon-16.png", brand), "image/png"],
+    "icon-32.png": [new URL("generated/icon-32.png", brand), "image/png"],
+    "apple-touch-icon.png": [new URL("generated/apple-touch-icon.png", brand), "image/png"],
+  };
+  const hrefs = await page
+    .locator('link[rel="icon"], link[rel="apple-touch-icon"]')
+    .evaluateAll((ls) => ls.map((l) => l.getAttribute("href")));
+  expect(hrefs.sort()).toEqual(Object.keys(expected).map((f) => `/app/brand/${f}`).sort());
+  const { readFileSync } = await import("node:fs");
+  for (const [file, [source, type]] of Object.entries(expected)) {
+    const res = await page.request.get(`/app/brand/${file}`);
+    expect(res.status(), file).toBe(200);
+    expect(res.headers()["content-type"], file).toContain(type);
+    expect(Buffer.compare(await res.body(), readFileSync(source)), file).toBe(0);
+  }
+  // The sidebar's mark is the same 16 px drawing, loaded under the CSP.
+  const mark = page.locator(".sidebar .brand-mark");
+  await expect(mark).toHaveAttribute("src", "/app/brand/icon-small.svg");
+  await expect.poll(() => mark.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
+  await w.check();
+});

@@ -11,7 +11,8 @@
 //
 // No bundler and no Trunk: Trunk injects an inline bootstrap script, and the app's Content-Security-Policy
 // allows none. The output is plain files: index.html, boot.js, the wasm-bindgen glue, the wasm module,
-// app.css, tokens.css and the bundled fonts, plus gzipped copies of the larger ones (`<name>.gz`).
+// app.css, tokens.css, the bundled fonts and the Daybreak app icon (`brand/`, from assets/brand/generated and
+// its 16 px source drawing), plus gzipped copies of the larger ones (`<name>.gz`).
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -54,6 +55,7 @@ run("cargo", cargo);
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(join(out, "fonts"), { recursive: true });
+mkdirSync(join(out, "brand"), { recursive: true });
 
 const wasm = join(web, "target", "wasm32-unknown-unknown", profile, "todo-web.wasm");
 run("wasm-bindgen", ["--target", "web", "--no-typescript", "--out-dir", out, "--out-name", "todo-web", wasm]);
@@ -67,6 +69,17 @@ for (const f of readdirSync(fonts)) {
   if (f.endsWith(".ttf") || f.startsWith("OFL-")) {
     copyFileSync(join(fonts, f), join(out, "fonts", f));
   }
+}
+// The app icon. The favicon is drawn at 16 CSS px, so its SVG is the 16 px drawing (never the master scaled
+// down: see "The app icon" in docs/design-language.md); the PNGs are the generated 16 and 32 px rasters.
+const brand = join(root, "assets", "brand");
+for (const [from, to] of [
+  [join(brand, "small-16.svg"), "icon-small.svg"],
+  [join(brand, "generated", "icon-16.png"), "icon-16.png"],
+  [join(brand, "generated", "icon-32.png"), "icon-32.png"],
+  [join(brand, "generated", "apple-touch-icon.png"), "apple-touch-icon.png"],
+]) {
+  copyFileSync(from, join(out, "brand", to));
 }
 writeFileSync(
   join(out, "fonts", "README.txt"),

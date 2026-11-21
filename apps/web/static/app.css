@@ -202,8 +202,11 @@ a {
   color: var(--color-ink);
 }
 
-.brand .icon {
-  color: var(--color-accent-strong);
+/* The Daybreak app icon, as shipped (assets/brand): never redrawn or recoloured here. */
+.brand-mark {
+  flex: none;
+  width: var(--component-icon);
+  height: var(--component-icon);
 }
 
 .nav {
