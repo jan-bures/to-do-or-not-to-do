@@ -333,6 +333,9 @@ pub fn json() -> String {
             .collect()
     };
 
+    let mut radii = numbers_json(&radius::ALL);
+    // Not a number: checkboxes and agent marks are circles (`CircleShape` in Compose).
+    radii["checkbox"] = json!(radius::CHECKBOX);
     let doc = json!({
         "_comment": HEADER,
         "derivation": {
@@ -359,7 +362,7 @@ pub fn json() -> String {
         "fonts": { "faces": faces },
         "type": type_scale,
         "space": numbers_json(&space::ALL),
-        "radius": numbers_json(&radius::ALL),
+        "radius": radii,
         "elevation": {
             "hairline": num(elevation::HAIRLINE),
             "focusRing": num(elevation::FOCUS_RING),

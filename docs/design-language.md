@@ -67,6 +67,7 @@ keys, used in settings, CSS and JSON.
   bar, sits one step darker in light mode and one step lighter in dark mode.
 - **Colour means something, or it isn't there.**
   - Accent is for the checked box, the selection bar, "due soon" and the primary button.
+  - On a selected row the checked box uses `check-selected` instead, so it still reaches 3:1 on `wash`.
   - Danger is for overdue items.
   - The list hue is for list identity.
   - The sun's amber is for progress.

@@ -141,6 +141,7 @@ const fn kebab(s: &'static str) -> &'static str {
         b"hill_far" => "hill-far",
         b"hill_near" => "hill-near",
         b"sun_ink" => "sun-ink",
+        b"check_selected" => "check-selected",
         b"on_strong" => "on-strong",
         b"silhouette_far" => "silhouette-far",
         b"silhouette_near" => "silhouette-near",
@@ -179,6 +180,9 @@ token_struct! {
         ink_4 = h(0.665, 0.016), h(0.530, 0.016);
         /// The checked checkbox, the selection bar, meters.
         accent = h(0.660, 0.140), h(0.740, 0.105);
+        /// The checked checkbox on a selected (`wash`) row: `accent`, nudged until it meets 3:1 on `wash`. In
+        /// light rooms `accent` itself only reaches about 2.8:1 there.
+        check_selected = h(0.660, 0.140), h(0.740, 0.105);
         /// Accent text: "due soon", the estimate, the quick-add plus.
         accent_strong = h(0.470, 0.110), h(0.830, 0.090);
         /// Primary button fill.
@@ -285,7 +289,7 @@ pub const LIST_ON_STRONG_DARK: (f64, f64) = (0.24, 0.05);
 /// against any of its backgrounds is below the minimum moves away from them in lightness, in steps of
 /// [`GUARD_STEP`], until it passes. Pairs that already pass, including every pair in the approved contrast table,
 /// are untouched.
-pub const GUARDS: [(&str, &[&str], f64); 14] = [
+pub const GUARDS: [(&str, &[&str], f64); 15] = [
     ("ink", &["pane", "canvas", "wash"], 4.5),
     ("ink-2", &["pane", "sky"], 4.5),
     ("ink-3", &["pane", "canvas", "wash"], 4.5),
@@ -296,6 +300,7 @@ pub const GUARDS: [(&str, &[&str], f64); 14] = [
     ("toast-accent", &["toast"], 4.5),
     ("on-accent", &["accent-fill"], 4.5),
     ("accent", &["pane"], 3.0),
+    ("check-selected", &["wash"], 3.0),
     ("control", &["pane", "wash"], 3.0),
     ("danger", &["pane"], 3.0),
     ("arc", &["sky"], 3.0),
@@ -431,11 +436,14 @@ mod tests {
             p.accent.contrast(p.pane) < 3.2,
             "moved only as far as needed"
         );
-        // My Day passes as specified, so nothing moves.
-        assert_eq!(
-            palette(Theme::Light, 65.0),
-            Palette::from_specs(Theme::Light, 65.0, 1.0)
-        );
+        // My Day passes as specified, so nothing moves, except the checked box on a selected row: the
+        // approved accent reaches only about 2.8:1 on `wash`, so that one token is nudged.
+        let guarded = palette(Theme::Light, 65.0);
+        let mut raw = Palette::from_specs(Theme::Light, 65.0, 1.0);
+        assert!(raw.check_selected.contrast(raw.wash) < 3.0);
+        assert!(guarded.check_selected.contrast(guarded.wash) >= 3.0);
+        raw.check_selected = guarded.check_selected;
+        assert_eq!(guarded, raw);
     }
 
     #[test]

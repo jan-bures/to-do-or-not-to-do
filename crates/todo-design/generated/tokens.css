@@ -289,6 +289,7 @@
   --color-ink-3: #6c6158;
   --color-ink-4: #9b928a;
   --color-accent: #cc7d1b;
+  --color-check-selected: #c5770f;
   --color-accent-strong: #824c00;
   --color-accent-fill: #9e5d00;
   --color-on-accent: #ffffff;
@@ -325,6 +326,7 @@
   --color-ink-3: #6e5f5d;
   --color-ink-4: #9d908e;
   --color-accent: #db6d60;
+  --color-check-selected: #d5685c;
   --color-accent-strong: #8e3f36;
   --color-accent-fill: #ab4e44;
   --color-on-accent: #ffffff;
@@ -361,6 +363,7 @@
   --color-ink-3: #5c675d;
   --color-ink-4: #8d978f;
   --color-accent: #42a55e;
+  --color-check-selected: #399d57;
   --color-accent-strong: #206b38;
   --color-accent-fill: #2b8245;
   --color-on-accent: #ffffff;
@@ -397,6 +400,7 @@
   --color-ink-3: #676357;
   --color-ink-4: #979489;
   --color-accent: #ac9000;
+  --color-check-selected: #a28700;
   --color-accent-strong: #6c5900;
   --color-accent-fill: #836d00;
   --color-on-accent: #ffffff;
@@ -433,6 +437,7 @@
   --color-ink-3: #5e665b;
   --color-ink-4: #90968c;
   --color-accent: #67a042;
+  --color-check-selected: #5f983a;
   --color-accent-strong: #3e6822;
   --color-accent-fill: #4d7e2c;
   --color-on-accent: #ffffff;
@@ -469,6 +474,7 @@
   --color-ink-3: #5d646f;
   --color-ink-4: #8e949e;
   --color-accent: #6290e7;
+  --color-check-selected: #5a88df;
   --color-accent-strong: #375998;
   --color-accent-fill: #456cb7;
   --color-on-accent: #ffffff;
@@ -505,6 +511,7 @@
   --color-ink-3: #6e5f61;
   --color-ink-4: #9d9091;
   --color-accent: #d96a7e;
+  --color-check-selected: #d4657a;
   --color-accent-strong: #8d3d4d;
   --color-accent-fill: #aa4b5e;
   --color-on-accent: #ffffff;
@@ -541,6 +548,7 @@
   --color-ink-3: #6e5f5e;
   --color-ink-4: #9d908f;
   --color-accent: #db6c67;
+  --color-check-selected: #d56763;
   --color-accent-strong: #8e3e3b;
   --color-accent-fill: #ab4d4a;
   --color-on-accent: #ffffff;
@@ -577,6 +585,7 @@
   --color-ink-3: #6e605a;
   --color-ink-4: #9d918c;
   --color-accent: #d87248;
+  --color-check-selected: #d16b42;
   --color-accent-strong: #8c4224;
   --color-accent-fill: #a9522e;
   --color-on-accent: #ffffff;
@@ -613,6 +622,7 @@
   --color-ink-3: #636558;
   --color-ink-4: #94958a;
   --color-accent: #939814;
+  --color-check-selected: #8a8f00;
   --color-accent-strong: #5d6000;
   --color-accent-fill: #717500;
   --color-on-accent: #ffffff;
@@ -649,6 +659,7 @@
   --color-ink-3: #5e665b;
   --color-ink-4: #90968c;
   --color-accent: #67a042;
+  --color-check-selected: #5f983a;
   --color-accent-strong: #3e6822;
   --color-accent-fill: #4d7e2c;
   --color-on-accent: #ffffff;
@@ -685,6 +696,7 @@
   --color-ink-3: #5a675f;
   --color-ink-4: #8c9790;
   --color-accent: #25a76c;
+  --color-check-selected: #129d63;
   --color-accent-strong: #006d42;
   --color-accent-fill: #058452;
   --color-on-accent: #ffffff;
@@ -721,6 +733,7 @@
   --color-ink-3: #576764;
   --color-ink-4: #8a9794;
   --color-accent: #00a493;
+  --color-check-selected: #009b8b;
   --color-accent-strong: #006a5e;
   --color-accent-fill: #008173;
   --color-on-accent: #ffffff;
@@ -757,6 +770,7 @@
   --color-ink-3: #566768;
   --color-ink-4: #899797;
   --color-accent: #00a3aa;
+  --color-check-selected: #009aa1;
   --color-accent-strong: #00686c;
   --color-accent-fill: #007e84;
   --color-on-accent: #ffffff;
@@ -793,6 +807,7 @@
   --color-ink-3: #57676a;
   --color-ink-4: #899799;
   --color-accent: #00a1b7;
+  --color-check-selected: #0098ae;
   --color-accent-strong: #006775;
   --color-accent-fill: #007d8e;
   --color-on-accent: #ffffff;
@@ -829,6 +844,7 @@
   --color-ink-3: #5b646f;
   --color-ink-4: #8d959e;
   --color-accent: #4b95e5;
+  --color-check-selected: #428cdb;
   --color-accent-strong: #255d96;
   --color-accent-fill: #3071b5;
   --color-on-accent: #ffffff;
@@ -865,6 +881,7 @@
   --color-ink-3: #6a5f69;
   --color-ink-4: #9a9098;
   --color-accent: #c170bb;
+  --color-check-selected: #bc6bb6;
   --color-accent-strong: #7c4178;
   --color-accent-fill: #965191;
   --color-on-accent: #ffffff;
@@ -901,6 +918,7 @@
   --color-ink-3: #6d5f64;
   --color-ink-4: #9c9095;
   --color-accent: #d16b9b;
+  --color-check-selected: #cc6697;
   --color-accent-strong: #883d61;
   --color-accent-fill: #a44c76;
   --color-on-accent: #ffffff;
@@ -1142,6 +1160,7 @@
   --color-ink-3: #a49992;
   --color-ink-4: #736a63;
   --color-accent: #de9969;
+  --color-check-selected: #de9969;
   --color-accent-strong: #f6b88f;
   --color-accent-fill: #de9969;
   --color-on-accent: #241104;
@@ -1178,6 +1197,7 @@
   --color-ink-3: #a59897;
   --color-ink-4: #756868;
   --color-accent: #e58f92;
+  --color-check-selected: #e58f92;
   --color-accent-strong: #fdb0b1;
   --color-accent-fill: #e58f92;
   --color-on-accent: #250e0f;
@@ -1214,6 +1234,7 @@
   --color-ink-3: #969e95;
   --color-ink-4: #676e65;
   --color-accent: #87bb7b;
+  --color-check-selected: #87bb7b;
   --color-accent-strong: #a9d69e;
   --color-accent-fill: #87bb7b;
   --color-on-accent: #0c1a08;
@@ -1250,6 +1271,7 @@
   --color-ink-3: #a09b90;
   --color-ink-4: #706b62;
   --color-accent: #c9a658;
+  --color-check-selected: #c9a658;
   --color-accent-strong: #e2c382;
   --color-accent-fill: #c9a658;
   --color-on-accent: #1e1400;
@@ -1286,6 +1308,7 @@
   --color-ink-3: #999d93;
   --color-ink-4: #6a6e64;
   --color-accent: #9cb76b;
+  --color-check-selected: #9cb76b;
   --color-accent-strong: #bad291;
   --color-accent-fill: #9cb76b;
   --color-on-accent: #121904;
@@ -1322,6 +1345,7 @@
   --color-ink-3: #949ca5;
   --color-ink-4: #656d75;
   --color-accent: #79afeb;
+  --color-check-selected: #79afeb;
   --color-accent-strong: #9eccff;
   --color-accent-fill: #79afeb;
   --color-on-accent: #071728;
@@ -1358,6 +1382,7 @@
   --color-ink-3: #a4979b;
   --color-ink-4: #74686b;
   --color-accent: #e18ea8;
+  --color-check-selected: #e18ea8;
   --color-accent-strong: #f9afc5;
   --color-accent-fill: #e18ea8;
   --color-on-accent: #240e15;
@@ -1394,6 +1419,7 @@
   --color-ink-3: #a59898;
   --color-ink-4: #756869;
   --color-accent: #e58f97;
+  --color-check-selected: #e58f97;
   --color-accent-strong: #fcb0b6;
   --color-accent-fill: #e58f97;
   --color-on-accent: #250e10;
@@ -1430,6 +1456,7 @@
   --color-ink-3: #a59895;
   --color-ink-4: #756966;
   --color-accent: #e59281;
+  --color-check-selected: #e59281;
   --color-accent-strong: #fcb2a3;
   --color-accent-fill: #e59281;
   --color-on-accent: #250e0a;
@@ -1466,6 +1493,7 @@
   --color-ink-3: #9d9c91;
   --color-ink-4: #6d6c62;
   --color-accent: #b8ad5b;
+  --color-check-selected: #b8ad5b;
   --color-accent-strong: #d3ca84;
   --color-accent-fill: #b8ad5b;
   --color-on-accent: #1a1601;
@@ -1502,6 +1530,7 @@
   --color-ink-3: #999d93;
   --color-ink-4: #6a6e64;
   --color-accent: #9cb76b;
+  --color-check-selected: #9cb76b;
   --color-accent-strong: #bad291;
   --color-accent-fill: #9cb76b;
   --color-on-accent: #121904;
@@ -1538,6 +1567,7 @@
   --color-ink-3: #959e96;
   --color-ink-4: #666e67;
   --color-accent: #7cbd85;
+  --color-check-selected: #7cbd85;
   --color-accent-strong: #9fd8a6;
   --color-accent-fill: #7cbd85;
   --color-on-accent: #081b0b;
@@ -1574,6 +1604,7 @@
   --color-ink-3: #929f9a;
   --color-ink-4: #636f6b;
   --color-accent: #5bc0a3;
+  --color-check-selected: #5bc0a3;
   --color-accent-strong: #88dbc1;
   --color-accent-fill: #5bc0a3;
   --color-on-accent: #001c14;
@@ -1610,6 +1641,7 @@
   --color-ink-3: #919f9d;
   --color-ink-4: #626f6e;
   --color-accent: #4ac0b9;
+  --color-check-selected: #4ac0b9;
   --color-accent-strong: #7ddad4;
   --color-accent-fill: #4ac0b9;
   --color-on-accent: #001b1a;
@@ -1646,6 +1678,7 @@
   --color-ink-3: #909e9f;
   --color-ink-4: #626f70;
   --color-accent: #47bec7;
+  --color-check-selected: #47bec7;
   --color-accent-strong: #7bd9e0;
   --color-accent-fill: #47bec7;
   --color-on-accent: #001a1d;
@@ -1682,6 +1715,7 @@
   --color-ink-3: #939da5;
   --color-ink-4: #646d74;
   --color-accent: #6bb3e7;
+  --color-check-selected: #6bb3e7;
   --color-accent-strong: #92cffd;
   --color-accent-fill: #6bb3e7;
   --color-on-accent: #041826;
@@ -1718,6 +1752,7 @@
   --color-ink-3: #a098a2;
   --color-ink-4: #706972;
   --color-accent: #c895d4;
+  --color-check-selected: #c895d4;
   --color-accent-strong: #e2b5ec;
   --color-accent-fill: #c895d4;
   --color-on-accent: #1e1021;
@@ -1754,6 +1789,7 @@
   --color-ink-3: #a3989e;
   --color-ink-4: #73686e;
   --color-accent: #d990bd;
+  --color-check-selected: #d990bd;
   --color-accent-strong: #f1b0d8;
   --color-accent-fill: #d990bd;
   --color-on-accent: #220e1b;

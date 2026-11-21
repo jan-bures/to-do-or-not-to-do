@@ -12,7 +12,8 @@ fn generated_dir() -> PathBuf {
 
 fn check(file: &str, expected: String) {
     let path = generated_dir().join(file);
-    if std::env::var_os("TODO_DESIGN_BLESS").is_some() {
+    // Only the documented value regenerates; `0` or an empty value must not silently pass a stale file.
+    if std::env::var("TODO_DESIGN_BLESS").as_deref() == Ok("1") {
         std::fs::create_dir_all(generated_dir()).expect("create generated/");
         std::fs::write(&path, &expected).expect("write generated file");
         return;
@@ -46,4 +47,21 @@ fn json_is_valid_and_complete() {
     assert_eq!(v["colors"]["dusk"]["my-day"]["top"], "#0f1727");
     assert_eq!(v["type"]["room-title"]["family"], "Fraunces Display");
     assert_eq!(v["metrics"]["desktop"]["row"], 56.0);
+    // The round checkbox is part of both exports, so no client hard-codes its shape.
+    assert_eq!(v["radius"]["checkbox"], "circle");
+    assert!(todo_design::export::css().contains("--radius-checkbox: 50%;"));
+}
+
+#[test]
+fn a_checked_box_on_a_selected_row_meets_3_to_1() {
+    use todo_design::{Theme, palette_scaled};
+    for theme in [Theme::Light, Theme::Dark] {
+        for k in [1.0, 0.85] {
+            for hue in 0..360 {
+                let p = palette_scaled(theme, f64::from(hue), k);
+                let ratio = p.check_selected.contrast(p.wash);
+                assert!(ratio >= 3.0, "{theme:?} hue {hue} k {k}: {ratio:.2}");
+            }
+        }
+    }
 }
