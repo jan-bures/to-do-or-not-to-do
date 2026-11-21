@@ -742,11 +742,11 @@ impl ShellView {
                             .justify_between()
                             .gap(px(space::S6))
                             .child(
-                                // Long titles end in an ellipsis, but only the sides clip: the display
-                                // face's descenders (the y in "My Day") hang below its tight line box.
+                                // Long titles end in an ellipsis from text layout, with no clipping:
+                                // the display face's descenders (the y in "My Day") hang below its
+                                // tight line box, and GPUI clips both axes even for `overflow_x_hidden`.
                                 div()
                                     .min_w_0()
-                                    .overflow_x_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
                                     .style(ty::ROOM_TITLE)
