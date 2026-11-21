@@ -65,11 +65,20 @@ with GPUI.
 
 ## Merging pull requests
 
-Never merge through the GitHub web UI, and never merge with `gh pr merge` without setting the author. GitHub
-would otherwise use the account's primary email address as the merge-commit author. Always use:
+**Never merge through the GitHub web UI or with `gh pr merge`.** GitHub writes the merge or squash commit with
+the account's primary email address as its author. Passing `--author-email` with the no-reply address doesn't
+work either: GitHub rejects it with "Invalid email address".
 
-```sh
-gh pr merge <n> --squash --author-email 2668168+jan-bures@users.noreply.github.com
-```
+**Merge by fast-forwarding `main` to the PR's head instead.** Every commit on the branch is then exactly as it
+was authored locally, with the no-reply identity, and GitHub marks the PR as merged.
 
-Then run `git fetch` and check `git log --format='%ae %ce' -1 origin/main` before pushing anything else.
+1. **Rebase.** Rebase the PR branch onto the latest `origin/main`. Squash it locally first if you want one
+   commit. Push the branch, and wait for CI to pass on that head.
+2. **Check the identities.** Run `git log --format='%ae %ce' origin/main..origin/<branch>`. Every line must be
+   the no-reply address.
+3. **Fast-forward.** Run `git push origin origin/<branch>:main`. It's rejected unless it's a fast-forward, and
+   that's intended.
+4. **Clean up.** Run `git fetch`, confirm that `gh pr view <n>` shows `MERGED`, and delete the branch.
+
+For stacked PRs, merge the base first. Then rebase the next branch onto `main`, retarget it with
+`gh pr edit <n> --base main`, and repeat.
