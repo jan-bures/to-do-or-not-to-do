@@ -1174,7 +1174,11 @@ fn download_headers(res: &mut Response, meta: &AttachmentRef, plain_size: u64) {
         CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(DOWNLOAD_CSP),
     );
-    h.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    // Private content: never stored, and never transformed (compressed) by a proxy on the way.
+    h.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store, no-transform"),
+    );
     h.insert(
         "cross-origin-resource-policy",
         HeaderValue::from_static("same-origin"),

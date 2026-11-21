@@ -599,3 +599,72 @@ async fn only_a_request_that_passes_the_csrf_check_keeps_the_session_alive() {
     let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
     assert_eq!(s, StatusCode::OK);
 }
+
+/// `GET /auth/session` with the session cookie and optional fetch metadata.
+async fn session_token(
+    b: &Browser,
+    site: Option<&str>,
+    origin: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut req = reqwest::Client::new()
+        .get(format!("{}/auth/session", b.url))
+        .header(
+            COOKIE,
+            format!("__Host-todo_session={}", b.cookie.as_ref().unwrap()),
+        );
+    if let Some(s) = site {
+        req = req.header("sec-fetch-site", s);
+    }
+    if let Some(o) = origin {
+        req = req.header(ORIGIN, o);
+    }
+    let res = req.send().await.unwrap();
+    let status = res.status();
+    (status, res.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn the_session_token_answers_only_this_origin_and_keeps_no_session_alive() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let csrf = b.csrf.clone().unwrap();
+    // This origin's own pages (and clients that send no fetch metadata) get it.
+    for (site, origin) in [
+        (Some("same-origin"), None),
+        (Some("same-origin"), Some(SITE)),
+        (None, None),
+    ] {
+        let (s, v) = session_token(&b, site, origin).await;
+        assert_eq!(s, StatusCode::OK, "{site:?} {origin:?}");
+        assert_eq!(v["csrf"], json!(csrf));
+    }
+    // A sibling origin on the same site, another site, or a navigation from elsewhere does not.
+    for (site, origin) in [
+        (Some("same-site"), None),
+        (Some("cross-site"), None),
+        (Some("none"), None),
+        (Some("same-site"), Some("https://other.todo.example.com")),
+        (None, Some("https://other.todo.example.com")),
+        (Some("same-origin"), Some("https://evil.example.com")),
+    ] {
+        let (s, v) = session_token(&b, site, origin).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{site:?} {origin:?}");
+        assert_eq!(v["error"]["code"], "csrf");
+    }
+
+    // Asking for the token is not activity: at 40 minutes, then every few minutes, it doesn't extend
+    // the hour of idle time, and at 61 minutes the session has ended.
+    env.advance(Duration::from_secs(40 * 60));
+    for _ in 0..4 {
+        let (s, _) = session_token(&b, Some("same-origin"), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = session_token(&b, Some("same-site"), None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        env.advance(Duration::from_secs(5 * 60));
+    }
+    let (s, _, _) = api(&b, Method::GET, "/api/v1/lists", Some(&csrf), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, v) = session_token(&b, Some("same-origin"), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(v["error"]["code"], "signed_out");
+}

@@ -27,7 +27,10 @@
 //! without a session). A tab whose session changed under it (the owner signed in again in another
 //! tab, replacing the cookie) gets `403 csrf` from the API, fetches the new token there and retries.
 //! Like the page, it needs the cookie, which `SameSite=Strict` keeps off cross-site requests, and
-//! another origin can't read the answer (no CORS).
+//! another origin can't read the answer (no CORS). It also answers only this origin's own pages: a
+//! request whose `Sec-Fetch-Site` is anything but `same-origin`, or whose `Origin` is not the public
+//! origin, is `403 csrf` (a sibling origin on the same site would otherwise get the cookie). And it
+//! never counts as activity: only a request that passes the API's CSRF check keeps a session alive.
 //!
 //! # Compression
 //!
@@ -36,7 +39,7 @@
 //! anything itself. The wasm module shrinks from about 4.5 MB to 0.7 MB this way.
 
 use crate::app::AppState;
-use crate::auth::session::{MaybeSession, OwnerSession};
+use crate::auth::session::OwnerSession;
 use crate::web::NO_STORE;
 use axum::extract::{Path, State};
 use axum::http::header::{
@@ -314,16 +317,35 @@ fn file_response(f: &File, headers: &HeaderMap) -> Response {
 }
 
 /// `GET /auth/session`: `{"csrf": "<token>"}` for the session, or 401 `signed_out` without one (never
-/// a redirect: only the app's `fetch` asks).
-pub async fn session_token(MaybeSession(session): MaybeSession) -> Response {
-    match session {
-        Some(s) => axum::Json(serde_json::json!({ "csrf": s.row.csrf })).into_response(),
-        None => crate::api::error::ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "signed_out",
-            "sign in first",
-        )
-        .into_response(),
+/// a redirect: only the app's `fetch` asks). Same-origin requests only, and the session is not
+/// touched (see the module docs).
+pub async fn session_token(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    use crate::api::error::ApiError;
+    use crate::auth::session::{blocking, check_origin, cookie_value, csrf_failed};
+    let cross = headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| v.as_bytes() != b"same-origin");
+    if cross {
+        return csrf_failed().into_response();
+    }
+    if headers.contains_key(axum::http::header::ORIGIN)
+        && let Err(e) = check_origin(&headers, &app.authsvc)
+    {
+        return e.into_response();
+    }
+    let signed_out =
+        || ApiError::new(StatusCode::UNAUTHORIZED, "signed_out", "sign in first").into_response();
+    let Some(cookie) = cookie_value(&headers) else {
+        return signed_out();
+    };
+    match blocking(&app.authsvc, move |svc| svc.peek_session(&cookie)).await {
+        Ok(Ok(Some(row))) => axum::Json(serde_json::json!({ "csrf": row.csrf })).into_response(),
+        Ok(Ok(None)) => signed_out(),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "session lookup failed");
+            ApiError::internal().into_response()
+        }
+        Err(e) => e.into_response(),
     }
 }
 

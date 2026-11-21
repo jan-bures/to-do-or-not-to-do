@@ -175,6 +175,7 @@ async fn upload_and_download_round_trip_encrypted_at_rest() {
         "attachment; filename=\"hello.txt\"; filename*=UTF-8''hello.txt"
     );
     assert_eq!(h["x-content-type-options"], "nosniff");
+    assert_eq!(h["cache-control"], "private, no-store, no-transform");
     assert_eq!(
         h["content-security-policy"],
         "default-src 'none'; sandbox; frame-ancestors 'none'"
