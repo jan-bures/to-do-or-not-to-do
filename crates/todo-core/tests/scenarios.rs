@@ -1830,3 +1830,58 @@ mod import {
         assert!(w.state.tasks[&t.id].tags.contains(&tag.id));
     }
 }
+
+/// An agent creates a tag only with plan level somewhere and read level globally, so it never makes a
+/// tag it can't see, and a duplicate name never tells it about a tag it can't see. Undoing and redoing
+/// its own tag creation needs the same.
+#[test]
+fn agents_create_tags_only_where_they_can_see_every_tag() {
+    let mut w = World::new();
+    let list = w.list(None, "L");
+    let hidden = w.ids.tag();
+    w.run(Command::CreateTag {
+        id: hidden,
+        name: "secret".into(),
+        color: None,
+    });
+    let mut g = Grants::with_default(AccessLevel::None);
+    g.lists.insert(list, AccessLevel::Plan);
+    w.grant("bot", g.clone());
+    let bot = Actor::agent("bot").unwrap();
+    let create = |w: &mut World, name: &str| {
+        let id = w.ids.tag();
+        w.run_as(
+            &bot,
+            Command::CreateTag {
+                id,
+                name: name.into(),
+                color: None,
+            },
+        )
+    };
+    // Refused before the name is looked at: a taken name and a free one get the same answer.
+    let taken = create(&mut w, "Secret").unwrap_err();
+    let free = create(&mut w, "fresh").unwrap_err();
+    assert_eq!(taken, free);
+    let DomainError::Denied(d) = taken else {
+        panic!("{taken:?}")
+    };
+    assert_eq!((d.needed, d.have), (AccessLevel::Read, AccessLevel::None));
+
+    // With read by default it may, and a taken name is then a name it can see.
+    g.default = AccessLevel::Read;
+    w.grant("bot", g.clone());
+    assert!(matches!(
+        create(&mut w, "Secret"),
+        Err(DomainError::DuplicateName(_))
+    ));
+    let made = create(&mut w, "fresh").unwrap();
+    let withdrawn = w.undo_as(&bot, &made[0], false).unwrap();
+    // Losing global read takes the redo away too.
+    g.default = AccessLevel::None;
+    w.grant("bot", g);
+    assert!(matches!(
+        w.undo_as(&bot, &withdrawn[0], false),
+        Err(UndoError::Denied(_))
+    ));
+}

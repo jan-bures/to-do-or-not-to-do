@@ -116,7 +116,7 @@ A JSON-RPC `result` means it works. `401` means the token is missing, wrong, rev
 | `update_step` | plan | Retitle, tick off or reopen a step (one change per call) |
 | `set_my_day` | plan | Add to or remove from My Day |
 | `tag_task` / `untag_task` | plan | Put a tag on a task, or take it off |
-| `create_tag` | plan on at least one list | New tag |
+| `create_tag` | plan on at least one list, and read by default | New tag |
 | `add_reminder` | plan | Remind about a task at a time |
 | `update_reminder` | plan | Move a reminder to another time |
 | `merge_tasks` | plan (both tasks) | Merge a duplicate into another task |

@@ -22,7 +22,7 @@
 //! | `update_step` | `update_step` or `complete_step` / `uncomplete_step` (one per call) | plan |
 //! | `set_my_day` | `set_my_day` | plan |
 //! | `tag_task` / `untag_task` | `add_tag` / `remove_tag` | plan |
-//! | `create_tag` | `create_tag` | plan on at least one list |
+//! | `create_tag` | `create_tag` | plan on at least one list, and read by default |
 //! | `add_reminder` | `add_reminder` | plan |
 //! | `update_reminder` | `update_reminder` | plan |
 //! | `merge_tasks` | `merge_tasks` | plan, on both tasks |
@@ -1285,7 +1285,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Create a tag (needs plan level on at least one list). Returns tag_id. Check list_tags first: names are unique. Renaming and deleting tags is the owner's.",
+        description = "Create a tag (needs plan level on at least one list and a default level of at least read). Returns tag_id. Check list_tags first: names are unique. Renaming and deleting tags is the owner's.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

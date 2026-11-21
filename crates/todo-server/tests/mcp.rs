@@ -610,6 +610,102 @@ async fn read_and_capture_agents_cannot_tag_remind_or_repeat() {
 }
 
 #[tokio::test]
+async fn creating_a_tag_needs_read_by_default_and_never_reveals_hidden_names() {
+    let env = Env::start().await;
+    let inbox = env.t.create_list("Inbox").await;
+    let diary = env.t.create_list("Diary").await;
+    let secret = env.t.create_task(&diary, "Secret", json!({})).await;
+    let hidden_tag = id();
+    env.t
+        .ok(json!({ "cmd": "create_tag", "id": hidden_tag, "name": "therapy" }))
+        .await;
+    env.t
+        .ok(json!({ "cmd": "add_tag", "task": secret, "tag": hidden_tag }))
+        .await;
+    let head = env.t.server.engine.head_seq();
+
+    // Plan on the Inbox only, nothing by default: it can't see the tag, and can't learn its name.
+    let (_, token) = env.agent(
+        "scoped",
+        &grants(AccessLevel::None, &[(&inbox, AccessLevel::Plan)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    assert!(names(&ok(&c, "list_tags", json!({})).await).is_empty());
+    let taken = fails(&c, "create_tag", json!({ "name": "Therapy" })).await;
+    let free = fails(&c, "create_tag", json!({ "name": "errands" })).await;
+    assert_eq!(taken["code"], "forbidden", "{taken}");
+    assert_eq!(taken["details"]["needed"], "read", "{taken}");
+    assert_eq!(taken["details"]["have"], "none", "{taken}");
+    assert_eq!(taken, free);
+    let rest_tag = |name: &str| json!({ "command_id": id(), "command": { "cmd": "create_tag", "id": id(), "name": name } });
+    let (hs, hb) = env
+        .rest(
+            &token,
+            Method::POST,
+            "/api/v1/commands",
+            Some(rest_tag("Therapy")),
+        )
+        .await;
+    let (ms, mb) = env
+        .rest(
+            &token,
+            Method::POST,
+            "/api/v1/commands",
+            Some(rest_tag("errands")),
+        )
+        .await;
+    assert_eq!((hs, ms), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN));
+    assert_eq!(hb, mb);
+    assert_eq!(hb["error"]["details"]["needed"], "read", "{hb}");
+    assert_eq!(env.t.server.engine.head_seq(), head, "nothing was written");
+    c.cancel().await.unwrap();
+
+    // With read by default it sees every tag, so a taken name is one it can see, and the tag it
+    // creates is one it can use.
+    let (_, token) = env.agent(
+        "reader-planner",
+        &grants(AccessLevel::Read, &[(&inbox, AccessLevel::Plan)]),
+        None,
+    );
+    let c = env.connect(&token).await;
+    assert_eq!(names(&ok(&c, "list_tags", json!({})).await), ["therapy"]);
+    let dup = fails(&c, "create_tag", json!({ "name": "Therapy" })).await;
+    assert_eq!(dup["code"], "duplicate_name", "{dup}");
+    let tag = ok(&c, "create_tag", json!({ "name": "errands" })).await["tag_id"].clone();
+    let task = ok(&c, "create_task", json!({ "title": "Post office" })).await["task_id"].clone();
+    ok(&c, "tag_task", json!({ "task_id": task, "tag_id": tag })).await;
+    assert_eq!(
+        names(&ok(&c, "list_tags", json!({})).await),
+        ["errands", "therapy"]
+    );
+    c.cancel().await.unwrap();
+
+    // Renaming a tag is the owner's at any level, so no agent reaches the rename's name check either.
+    let (_, token) = env.agent("planner", &Grants::with_default(AccessLevel::Plan), None);
+    let rename = |name: &str| json!({ "command_id": id(), "command": { "cmd": "update_tag", "id": tag, "name": name } });
+    let (ts, tb) = env
+        .rest(
+            &token,
+            Method::POST,
+            "/api/v1/commands",
+            Some(rename("therapy")),
+        )
+        .await;
+    let (fs, fb) = env
+        .rest(
+            &token,
+            Method::POST,
+            "/api/v1/commands",
+            Some(rename("chores")),
+        )
+        .await;
+    assert_eq!((ts, fs), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN));
+    assert_eq!(tb, fb);
+    assert_eq!(tb["error"]["details"]["owner_only"], true, "{tb}");
+}
+
+#[tokio::test]
 async fn a_capture_agent_cannot_plan_or_see_outside_its_lists() {
     let env = Env::start().await;
     let inbox = env.t.create_list("Inbox").await;

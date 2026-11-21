@@ -4,7 +4,7 @@
 //! attachments), `Plan` (change and organise tasks). A queue level is reserved for later and not
 //! implemented. Agents get a level per list or collection through [`Grants`]; the most specific wins
 //! (list, then collection, then default). Changing the structure (collections, lists, tags) is reserved
-//! for the owner. Non-agent actors have fixed rights: the owner, the importer and the system may do
+//! for the owner, except that an agent may create a tag ([`tag_creation`]). Non-agent actors have fixed rights: the owner, the importer and the system may do
 //! everything, email ingest may capture.
 
 use crate::actor::{Actor, AgentId};
@@ -125,11 +125,13 @@ pub enum Target {
 /// What a command needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Need {
+    /// At least `Read` on the target.
+    Read,
     /// At least `Capture` on the target.
     Capture,
     /// At least `Plan` on the target.
     Plan,
-    /// `Plan` on at least one target (used for creating tags).
+    /// `Plan` on at least one target (used for creating tags, see [`tag_creation`]).
     PlanAnywhere,
     /// Owner-level: structural changes agents may never make.
     Structure,
@@ -174,6 +176,7 @@ pub fn check(state: &State, actor: &Actor, need: Need, target: Target) -> Result
         _ => level_on(state, actor, target),
     };
     let (needed, ok, owner_only) = match need {
+        Need::Read => (AccessLevel::Read, have >= AccessLevel::Read, false),
         Need::Capture => (AccessLevel::Capture, have >= AccessLevel::Capture, false),
         Need::Plan | Need::PlanAnywhere => (AccessLevel::Plan, have >= AccessLevel::Plan, false),
         Need::Structure => (AccessLevel::Plan, full, true),
@@ -231,6 +234,21 @@ fn structural(id: EntityId) -> bool {
     )
 }
 
+/// What creating a tag (or undoing a tag's withdrawal) needs: `Plan` on at least one list, and at least
+/// `Read` at the global level (an agent's default level), in that order.
+///
+/// Tags are global, and an agent below `Read` there sees only the tags on tasks it can read. Without the
+/// second requirement such an agent could create a tag it can't see, and the unique-name check would tell
+/// it which names hidden tags use. Access is checked before that name check, so the agent gets
+/// `forbidden` whatever name it asks for.
+#[must_use]
+pub fn tag_creation() -> Vec<(Need, Target)> {
+    vec![
+        (Need::PlanAnywhere, Target::Global),
+        (Need::Read, Target::Global),
+    ]
+}
+
 /// Everything a command needs, as `(need, target)` pairs.
 #[must_use]
 pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
@@ -273,7 +291,7 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
         C::UpdateReminder { id, .. } => {
             vec![(Need::Plan, entity_target(state, EntityId::Reminder(*id)))]
         }
-        C::CreateTag { .. } => vec![(Need::PlanAnywhere, Target::Global)],
+        C::CreateTag { .. } => tag_creation(),
         C::UpdateTag { .. } => vec![(Need::Structure, Target::Global)],
         C::ImportEntity { entity } => vec![(Need::OwnerOnly, value_target(state, entity))],
         C::Reorder { id, .. } | C::Delete { id } | C::Restore { id } => {
@@ -314,7 +332,7 @@ fn creation_requirements(state: &State, entity: &Entity) -> Vec<(Need, Target)> 
     let target = value_target(state, entity);
     match entity {
         Entity::Collection(_) | Entity::List(_) => vec![(Need::Structure, target)],
-        Entity::Tag(_) => vec![(Need::PlanAnywhere, Target::Global)],
+        Entity::Tag(_) => tag_creation(),
         Entity::Task(t) => {
             let mut v = vec![(Need::Capture, target)];
             if !t.tags.is_empty() || t.my_day.is_some() || t.recurrence.is_some() {
@@ -504,6 +522,49 @@ mod tests {
             Command::CreateTask(Box::new(n))
         };
         assert!(authorize(&st, &agent, &tagged).is_err());
+    }
+
+    #[test]
+    fn creating_a_tag_needs_plan_somewhere_and_read_globally() {
+        use crate::ids::TagId;
+        let mut st = State::new();
+        let agent = Actor::agent("bot").unwrap();
+        let mk = Command::CreateTag {
+            id: TagId::new_v7(1, [1; 10]),
+            name: "t".into(),
+            color: None,
+        };
+        let rename = Command::UpdateTag {
+            id: TagId::new_v7(1, [1; 10]),
+            name: Some("u".into()),
+            color: None,
+        };
+        let denied = |st: &State, cmd: &Command| authorize(st, &agent, cmd).unwrap_err();
+        let bot_id = AgentId::new("bot").unwrap();
+        // Plan on one list, nothing by default: read is what's missing.
+        let mut g = Grants::with_default(AccessLevel::None);
+        g.lists.insert(lid(1), AccessLevel::Plan);
+        st.grants.insert(bot_id.clone(), g.clone());
+        let e = denied(&st, &mk);
+        assert_eq!(
+            (e.needed, e.have, e.owner_only),
+            (AccessLevel::Read, AccessLevel::None, false)
+        );
+        // Read by default, but plan nowhere.
+        st.grants
+            .insert(bot_id.clone(), Grants::with_default(AccessLevel::Read));
+        let e = denied(&st, &mk);
+        assert_eq!((e.needed, e.have), (AccessLevel::Plan, AccessLevel::Read));
+        // Both: allowed.
+        g.default = AccessLevel::Read;
+        st.grants.insert(bot_id.clone(), g);
+        assert!(authorize(&st, &agent, &mk).is_ok());
+        // Renaming stays the owner's, even with plan everywhere.
+        st.grants
+            .insert(bot_id, Grants::with_default(AccessLevel::Plan));
+        assert!(authorize(&st, &agent, &mk).is_ok());
+        assert!(denied(&st, &rename).owner_only);
+        assert!(authorize(&st, &Actor::owner("pc").unwrap(), &rename).is_ok());
     }
 
     #[test]

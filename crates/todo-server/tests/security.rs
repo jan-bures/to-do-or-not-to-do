@@ -1166,20 +1166,47 @@ async fn check_level(s: &Scope, level: AccessLevel) {
         }
         s.assert_clean(&what, &g.1);
     }
-    // create_tag: aimed at nothing, it needs plan level on some list.
+    // create_tag: plan level on some list *and* read by default, which these agents (default none)
+    // lack. So it's refused before the name is checked: a hidden tag's name and a free one get the
+    // same answer, over MCP and REST alike.
     exercised.insert("create_tag");
-    let t = tool(
-        &c,
-        "create_tag",
-        json!({ "name": format!("Agent tag {label}") }),
+    let needed = if level == AccessLevel::Plan {
+        "read"
+    } else {
+        "plan"
+    };
+    let (taken, free) = ("zzhiddentag", "Agent tag");
+    let ht = tool(&c, "create_tag", json!({ "name": taken })).await;
+    let mt = tool(&c, "create_tag", json!({ "name": free })).await;
+    assert_eq!(ht.1["code"], "forbidden", "{label} create_tag: {}", ht.1);
+    assert_eq!(
+        ht.1["details"]["needed"], needed,
+        "{label} create_tag: {}",
+        ht.1
+    );
+    assert_eq!(ht, mt, "{label} create_tag");
+    s.assert_clean(&format!("{label} create_tag"), &ht.1);
+    let tag_cmd = |name: &str| json!({ "command_id": id(), "command": { "cmd": "create_tag", "id": id(), "name": name } });
+    let hr = rest(
+        Method::POST,
+        "/api/v1/commands".into(),
+        Some(tag_cmd(taken)),
     )
     .await;
-    if level == AccessLevel::Plan {
-        assert_eq!(t.0, StatusCode::OK, "{label} create_tag: {}", t.1);
-    } else {
-        assert_eq!(t.1["code"], "forbidden", "{label} create_tag: {}", t.1);
-    }
-    s.assert_clean(&format!("{label} create_tag"), &t.1);
+    let mr = rest(Method::POST, "/api/v1/commands".into(), Some(tag_cmd(free))).await;
+    assert_eq!(
+        hr.0,
+        StatusCode::FORBIDDEN,
+        "{label} REST create_tag: {}",
+        hr.1
+    );
+    assert_eq!(
+        hr.1["error"]["details"]["needed"], needed,
+        "{label}: {}",
+        hr.1
+    );
+    assert_eq!(hr, mr, "{label} REST create_tag");
+    s.assert_clean(&format!("{label} REST create_tag"), &hr.1);
     // undo_event: hidden and missing events answer alike; someone else's visible event is refused;
     // the agent's own write can be undone.
     exercised.insert("undo_event");

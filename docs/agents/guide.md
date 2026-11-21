@@ -17,9 +17,10 @@ your default):
 | plan | Also change, complete, reopen, move, merge and archive tasks; make tasks repeat; add and change steps; put tasks in My Day; tag tasks; add and move reminders (`update_task`, `complete_task`, `move_task`, `merge_tasks`, `archive_task`, `add_step`, `update_step`, `set_my_day`, `tag_task`, `untag_task`, `add_reminder`, `update_reminder`, and `create_task` with `recurrence`). Moving or merging needs plan level on both ends. |
 
 You can never change the structure: collections and lists are the owner's, and so is renaming or deleting
-tags. With plan level on at least one list you may create a tag (`create_tag`), but you only see tags if
-your default level is at least read, or once they're on a task you can read. So with grants on single
-lists only, a tag you create is one you can't use: ask the owner to tag the task instead. When a tool needs a
+tags. You may create a tag (`create_tag`) if you have plan level on at least one list **and** your default
+level is at least read, which is also what lets you see every tag. Otherwise `create_tag` fails with
+`forbidden` (`details.needed` says which level is missing), whatever the name: ask the owner to create
+the tag. When a tool needs a
 higher level than you have, it fails with `forbidden` and `details.needed` / `details.have`. Don't retry
 it; tell the owner what you wanted to do instead.
 
