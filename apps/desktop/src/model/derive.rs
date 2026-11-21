@@ -717,14 +717,19 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
                     .unwrap_or_else(|| host(url))
                     .into(),
                 detail: url.clone().into(),
-                url: Some(url.clone().into()),
+                // Only http(s) opens; anything else is shown as text.
+                url: super::files::openable_link(url).map(Into::into),
                 email: false,
             },
             LinkKind::Email(e) => LinkRow {
                 id: l.id,
                 title: e.subject.clone().into(),
                 detail: format!("{} · {}", e.sender, labels::when(e.received_at, now)).into(),
-                url: e.web_link.clone().map(Into::into),
+                url: e
+                    .web_link
+                    .as_deref()
+                    .and_then(super::files::openable_link)
+                    .map(Into::into),
                 email: true,
             },
         })

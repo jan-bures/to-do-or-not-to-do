@@ -3,7 +3,9 @@
 //! Title and notes are edited directly in the pane and saved when editing ends (Enter or leaving the
 //! title, Escape or leaving the notes). Steps can be added, completed, renamed (click the title), moved and
 //! deleted. The due date is edited by typing a date; reminders and repeats are shown but edited elsewhere
-//! for now. Links open in the browser; an attachment is downloaded to a temporary file and opened.
+//! for now. Web links open in the browser (anything else is shown as text). An attachment is saved where
+//! the owner chooses; documents and images can also be opened, from this pairing's attachments directory
+//! and marked as downloaded from the internet.
 
 use gpui::{
     AnyElement, AsyncApp, Context, Div, Entity, FontWeight, SharedString, Subscription, WeakEntity,
@@ -13,6 +15,8 @@ use todo_core::ids::{AttachmentId, TaskId};
 
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellView, quick_add_colors};
+use crate::model::draft::Draft;
+use crate::model::files;
 use crate::model::{self, Detail, FieldKind, commands, quick_add};
 use crate::theme::{Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
@@ -28,8 +32,8 @@ pub(super) struct Editors {
     pub due: Option<(Entity<TextInput>, [Subscription; 2])>,
     /// The task whose title and notes the editors hold.
     pub loaded: Option<TaskId>,
-    pub title_dirty: bool,
-    pub notes_dirty: bool,
+    pub title_draft: Draft,
+    pub notes_draft: Draft,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -47,14 +51,14 @@ impl Editors {
         subs.push(
             cx.subscribe_in(&title, window, |this, _, e: &InputEvent, window, cx| {
                 match e {
-                    InputEvent::Changed => this.edit.title_dirty = true,
+                    InputEvent::Changed => this.edit.title_draft.edited(),
                     InputEvent::Submit => {
                         this.commit_title(cx);
                         window.focus(&this.list_focus, cx);
                     }
                     InputEvent::Cancel => {
                         // Escape puts the saved title back.
-                        this.edit.title_dirty = false;
+                        this.edit.title_draft.discard();
                         this.edit.loaded = None;
                         this.load_detail(cx);
                         window.focus(&this.list_focus, cx);
@@ -66,7 +70,7 @@ impl Editors {
             &notes,
             window,
             |this, _, e: &InputEvent, window, cx| match e {
-                InputEvent::Changed => this.edit.notes_dirty = true,
+                InputEvent::Changed => this.edit.notes_draft.edited(),
                 InputEvent::Submit | InputEvent::Cancel => {
                     this.commit_notes(cx);
                     window.focus(&this.list_focus, cx);
@@ -88,17 +92,21 @@ impl Editors {
             },
         ));
         let handle = title.read(cx).focus_handle.clone();
-        subs.push(cx.on_blur(&handle, window, |this, _, cx| this.commit_title(cx)));
+        subs.push(cx.on_blur(&handle, window, |this, _, cx| {
+            this.commit_title(cx);
+        }));
         let handle = notes.read(cx).focus_handle.clone();
-        subs.push(cx.on_blur(&handle, window, |this, _, cx| this.commit_notes(cx)));
+        subs.push(cx.on_blur(&handle, window, |this, _, cx| {
+            this.commit_notes(cx);
+        }));
         Self {
             title,
             notes,
             step,
             due: None,
             loaded: None,
-            title_dirty: false,
-            notes_dirty: false,
+            title_draft: Draft::default(),
+            notes_draft: Draft::default(),
             _subscriptions: subs,
         }
     }
@@ -116,52 +124,59 @@ impl ShellView {
         let fresh = self.edit.loaded != Some(d.task);
         if fresh {
             self.edit.loaded = Some(d.task);
-            self.edit.title_dirty = false;
-            self.edit.notes_dirty = false;
+            self.edit.title_draft.discard();
+            self.edit.notes_draft.discard();
             self.edit.due = None;
         }
         let (title, notes) = (d.title.clone(), d.notes.clone());
-        if !self.edit.title_dirty && self.edit.title.read(cx).content != title {
+        if self.edit.title_draft.accepts_incoming() && self.edit.title.read(cx).content != title {
             self.edit.title.update(cx, |a, cx| a.set_text(title, cx));
         }
-        if !self.edit.notes_dirty && self.edit.notes.read(cx).content != notes {
+        if self.edit.notes_draft.accepts_incoming() && self.edit.notes.read(cx).content != notes {
             self.edit.notes.update(cx, |a, cx| a.set_text(notes, cx));
         }
     }
 
-    pub(super) fn commit_title(&mut self, cx: &mut Context<Self>) {
-        if !std::mem::take(&mut self.edit.title_dirty) {
-            return;
-        }
+    /// Saves the title being edited. Returns whether nothing is left unsaved; a failed save keeps the
+    /// text in the editor (and the error in the status bar) for the next attempt.
+    pub(super) fn commit_title(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(id) = self.edit.loaded else {
-            return;
+            return true;
         };
         let text = self.edit.title.read(cx).content.to_string();
-        if let Some(cmd) = commands::retitle(&self.store.view(), id, &text) {
-            self.submit(vec![cmd]);
-        }
+        let mut draft = self.edit.title_draft;
+        let saved = draft.commit(|| {
+            commands::retitle(&self.store.view(), id, &text)
+                .is_none_or(|cmd| self.submit(vec![cmd]))
+        });
+        self.edit.title_draft = draft;
         self.refresh(cx);
+        saved
     }
 
-    pub(super) fn commit_notes(&mut self, cx: &mut Context<Self>) {
-        if !std::mem::take(&mut self.edit.notes_dirty) {
-            return;
-        }
+    /// Saves the notes being edited, like [`commit_title`](Self::commit_title).
+    pub(super) fn commit_notes(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(id) = self.edit.loaded else {
-            return;
+            return true;
         };
         let text = self.edit.notes.read(cx).content.to_string();
-        if let Some(cmd) = commands::set_notes(&self.store.view(), id, &text) {
-            self.submit(vec![cmd]);
-        }
+        let mut draft = self.edit.notes_draft;
+        let saved = draft.commit(|| {
+            commands::set_notes(&self.store.view(), id, &text)
+                .is_none_or(|cmd| self.submit(vec![cmd]))
+        });
+        self.edit.notes_draft = draft;
         self.refresh(cx);
+        saved
     }
 
-    /// Saves whatever is being edited (before another task or room is shown).
-    pub(super) fn commit_edits(&mut self, cx: &mut Context<Self>) {
-        self.commit_title(cx);
-        self.commit_notes(cx);
+    /// Saves whatever is being edited (before another task or room is shown). Returns false when a draft
+    /// couldn't be saved: the caller stays on the task, so the text isn't lost.
+    pub(super) fn commit_edits(&mut self, cx: &mut Context<Self>) -> bool {
+        let title = self.commit_title(cx);
+        let notes = self.commit_notes(cx);
         self.commit_inline(cx);
+        title && notes
     }
 
     fn add_step(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
@@ -251,26 +266,85 @@ impl ShellView {
         self.refresh(cx);
     }
 
-    /// Downloads an attachment to a temporary file and opens it with its app.
+    /// Saves an attachment where the owner chooses (a save dialog, starting in Downloads). The default
+    /// action for every attachment: nothing is run.
+    fn save_attachment(&mut self, id: AttachmentId, name: SharedString, cx: &mut Context<Self>) {
+        if self.store.session().is_none() {
+            self.notice = Some(Notice::info(
+                "Attachments download when connected to a server.",
+            ));
+            cx.notify();
+            return;
+        }
+        let chosen = cx.prompt_for_new_path(&downloads_dir(), Some(&files::safe_file_name(&name)));
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let path = match chosen.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) | Err(_) => return,
+                Ok(Err(e)) => {
+                    let _ = this.update(cx, |v, cx| {
+                        v.notice = Some(Notice::error(format!("Couldn't save {name}: {e}")));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let Ok(Some(job)) = this.update(cx, |v, cx| {
+                v.notice = Some(Notice::info(format!("Downloading {name}…")));
+                cx.notify();
+                v.store.session().map(|s| s.download_to(id, path))
+            }) else {
+                return;
+            };
+            let result = job.await;
+            let _ = this.update(cx, |v, cx| {
+                v.notice = Some(match result {
+                    Ok(path) => Notice::info(format!("Saved {}", path.display())),
+                    Err(e) => {
+                        tracing::warn!("saving an attachment failed: {e:#}");
+                        Notice::error(format!("Couldn't save {name}: {e}"))
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Downloads a document or image (see `files::can_open`) into this pairing's attachments, marked as
+    /// from the internet, and opens it with its app. Anything else can only be saved.
     fn open_attachment(&mut self, id: AttachmentId, name: SharedString, cx: &mut Context<Self>) {
+        if !files::can_open(&name) {
+            self.notice = Some(Notice::info(format!(
+                "{name} can only be saved, not opened here."
+            )));
+            cx.notify();
+            return;
+        }
         let Some(session) = self.store.session() else {
             self.notice = Some(Notice::info("Attachments open when connected to a server."));
             cx.notify();
             return;
         };
-        let dir = std::env::temp_dir()
-            .join("to-do-or-not-to-do")
-            .join("attachments");
-        let job = session.download(id, &name, dir);
+        let job = session.download_to_open(id, &name);
         self.notice = Some(Notice::info(format!("Downloading {name}…")));
         cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = job.await;
             let _ = this.update(cx, |v, cx| {
                 match result {
-                    Ok(path) => {
+                    // Checked once more on the name it was written under.
+                    Ok(path)
+                        if path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(files::can_open) =>
+                    {
                         v.notice = None;
                         cx.open_with_system(&path);
+                    }
+                    Ok(_) => {
+                        v.notice = Some(Notice::error(format!("{name} can only be saved.")));
                     }
                     Err(e) => {
                         tracing::warn!("opening an attachment failed: {e:#}");
@@ -544,9 +618,27 @@ impl ShellView {
                             .text_color(p.ink_3)
                             .child(a.detail.clone()),
                     )
+                    .when(files::can_open(&a.name), |row| {
+                        let name = a.name.clone();
+                        row.child(
+                            div()
+                                .id(("open-attachment", i))
+                                .px(px(space::S2))
+                                .rounded(px(radius::MD))
+                                .style(ty::TAG)
+                                .text_color(p.accent_strong)
+                                .hover(|s| s.bg(p.wash))
+                                .child("Open")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_attachment(id, name.clone(), cx);
+                                })),
+                        )
+                    })
                     .child(kit::icon(Icon::Download, component::ICON_SMALL, p.ink_3))
+                    // Saving is the default for every attachment.
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_attachment(id, name.clone(), cx);
+                        this.save_attachment(id, name.clone(), cx);
                     }))
             })
             .collect();
@@ -794,4 +886,13 @@ fn field_value(p: &Palette, kind: FieldKind, value: SharedString) -> Div {
         FieldKind::Words => v.style(ty::NAV_COLLECTION).text_color(p.ink),
         FieldKind::Empty => v.style(ty::DUE).text_color(p.ink_4),
     }
+}
+
+/// Where the save dialog starts: the user's Downloads folder, or their profile.
+fn downloads_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let downloads = home.join("Downloads");
+    if downloads.is_dir() { downloads } else { home }
 }

@@ -105,6 +105,13 @@ fn after_poll(result: Result<Polled, PairError>, interval: Duration, failures: &
     }
 }
 
+/// The approval page to open: built from the address the owner typed (already checked by
+/// `config::normalize_server`), never taken from the server's answer, which could name another site or a
+/// non-web handler. "Open the page again" reuses it.
+fn approval_page(server: &str, started: &Started) -> String {
+    pairing::approval_url(server, &started.user_code)
+}
+
 fn refused(status: u16, code: &str) -> SharedString {
     match (status, code) {
         (_, "not_configured") => {
@@ -317,11 +324,13 @@ impl PairingView {
                 if v.attempt != attempt {
                     return false;
                 }
-                cx.open_url(&started.verification_uri);
+                // Never the server's `verification_uri`: the page comes from the checked origin.
+                let verify = approval_page(&server, &started);
+                cx.open_url(&verify);
                 v.step = Step::Waiting {
                     server: server.clone(),
                     code: started.user_code.clone().into(),
-                    verify: started.verification_uri.clone(),
+                    verify,
                     expires: Instant::now() + Duration::from_secs(u64::from(started.expires_in)),
                     note: None,
                 };
@@ -386,10 +395,8 @@ impl PairingView {
             }
             Next::Approved(device, token) => {
                 let pairing = Pairing {
-                    config: Config {
-                        server: server.to_string(),
-                        device,
-                    },
+                    // A fresh pairing ID: this pairing's data starts empty.
+                    config: Config::new(server, device),
                     token,
                 };
                 match config::save(paths, &pairing) {
@@ -692,6 +699,25 @@ mod tests {
     use super::*;
 
     const SEC: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn the_approval_page_ignores_the_servers_link() {
+        let started: Started = serde_json::from_str(
+            r#"{"user_code":"ABCD-EFGH","poll_token":"p","verification_uri":"ms-settings:privacy","expires_in":300,"interval":2}"#,
+        )
+        .expect("started");
+        assert_eq!(
+            approval_page("https://todo.example.com", &started),
+            "https://todo.example.com/pair?code=ABCD-EFGH"
+        );
+        let hostile: Started = serde_json::from_str(
+            r#"{"user_code":"x\"&next=https://evil.example","poll_token":"p","verification_uri":"https://evil.example/pair","expires_in":300,"interval":2}"#,
+        )
+        .expect("started");
+        let page = approval_page("https://todo.example.com", &hostile);
+        assert!(page.starts_with("https://todo.example.com/pair?code="));
+        assert!(!page.contains("&next") && !page.contains("evil.example/"));
+    }
 
     #[test]
     fn polling_follows_the_server() {

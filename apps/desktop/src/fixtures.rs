@@ -6,7 +6,9 @@
 //! shows the real views, not a mock-up of them. No server is involved.
 
 use todo_core::command::{Command, NewTask, Placement, TaskPatch};
-use todo_core::ids::{CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId, uuid_v7};
+use todo_core::ids::{
+    AttachmentId, CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId, uuid_v7,
+};
 use todo_core::model::{EmailLink, LinkKind, Priority};
 use todo_core::recurrence::{Recurrence, Rule};
 use todo_core::time::{Date, Timestamp, Weekday};
@@ -236,6 +238,21 @@ impl Builder {
                 },
             );
         }
+        for (file_name, media_type, size_bytes) in t.files {
+            let aid = AttachmentId::from_uuid(self.uuid());
+            self.run(
+                &Actor::EmailIngest,
+                t.created,
+                Command::AddAttachment {
+                    id: aid,
+                    task: id,
+                    file_name: (*file_name).into(),
+                    media_type: (*media_type).into(),
+                    size_bytes: *size_bytes,
+                    storage_key: format!("fixture/{aid}"),
+                },
+            );
+        }
         if let Some((agent_id, at)) = t.edited_by {
             // An agent's later edit: it tidies the title.
             self.run(
@@ -275,6 +292,8 @@ struct T {
     created: &'static str,
     edited_by: Option<(&'static str, &'static str)>,
     mail: Option<(&'static str, &'static str, &'static str)>,
+    /// Attachments that came with the email: (file name, media type, size in bytes).
+    files: &'static [(&'static str, &'static str, u64)],
     done: Option<&'static str>,
 }
 
@@ -295,6 +314,7 @@ fn t(list: ListId, title: &'static str) -> T {
         created: "2026-11-14T08:00:00Z",
         edited_by: None,
         mail: None,
+        files: &[],
         done: None,
     }
 }
@@ -371,6 +391,11 @@ fn sample() -> (Builder, Lists) {
             "dana@example.com",
             "2026-11-20T16:48:00Z",
         )),
+        // A document opens; anything else, like this installer, can only be saved.
+        files: &[
+            ("Q4 agenda.pdf", "application/pdf", 248_000),
+            ("roadmap-tool-setup.exe", "application/octet-stream", 3_400_000),
+        ],
         ..t(planning, "Prepare Q4 roadmap review")
     });
     b.task(T {

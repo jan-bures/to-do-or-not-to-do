@@ -306,6 +306,37 @@ impl ShellView {
         true
     }
 
+    /// Shows a line in the status bar (until the next change replaces it).
+    pub fn show_notice(
+        &mut self,
+        text: impl Into<SharedString>,
+        error: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.notice = Some(if error {
+            Notice::error(text)
+        } else {
+            Notice::info(text)
+        });
+        cx.notify();
+    }
+
+    /// A draft couldn't be saved, so the task stays open with its text: say so, with the reason.
+    fn keep_unsaved(&mut self, cx: &mut Context<Self>) {
+        let why = self
+            .notice
+            .as_ref()
+            .filter(|n| n.error)
+            .map(|n| n.text.to_string())
+            .unwrap_or_default();
+        self.notice = Some(Notice::error(
+            format!("{why} Your text is kept here; it's saved when you try again.")
+                .trim_start()
+                .to_string(),
+        ));
+        cx.notify();
+    }
+
     /// Adds a task typed into a quick-add, to `room`. Returns whether it was added.
     pub fn add_task(&mut self, text: &str, room: RoomKey, cx: &mut Context<Self>) -> bool {
         let now = self.store.now();
@@ -320,7 +351,10 @@ impl ShellView {
     }
 
     pub fn select_room(&mut self, room: RoomKey, cx: &mut Context<Self>) {
-        self.commit_edits(cx);
+        if !self.commit_edits(cx) && self.ui.room != room {
+            self.keep_unsaved(cx);
+            return;
+        }
         if self.ui.room != room {
             self.ui.room = room;
             self.ui.task = None;
@@ -331,8 +365,9 @@ impl ShellView {
     }
 
     fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {
-        if self.ui.task != id {
-            self.commit_edits(cx);
+        if self.ui.task != id && !self.commit_edits(cx) {
+            self.keep_unsaved(cx);
+            return;
         }
         self.ui.task = id;
         self.refresh(cx);

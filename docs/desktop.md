@@ -83,7 +83,10 @@ owner types the server's address, for example `todo.example.com`; `https://` is 
 is refused except for `localhost`, so the token never crosses a network unencrypted. The app calls
 `POST /api/v1/pair/start` with the device name ("To-do on <computer name>", read at run time), shows the
 user code, opens the approval page in the browser and polls `POST /api/v1/pair/poll` at the interval the
-server asks for. Rate limits wait for `Retry-After`; a run of network failures, a denial or an expired code
+server asks for. The address is checked with the transport's own parser (`todo_client::native::server_origin`):
+https, or plain http only for this computer, and no user name, query or fragment. The approval page is built
+from that address (`<server>/pair?code=…`); the `verification_uri` the server sends is never opened. The
+transport follows no redirects and gives every finite request 30 s. Rate limits wait for `Retry-After`; a run of network failures, a denial or an expired code
 go back to the address with a message. Nothing spins while it waits. **The server address is never built
 into the app**: it is learnt here and saved in the user's config.
 
@@ -91,14 +94,20 @@ into the app**: it is learnt here and saved in the user's config.
 
 | File | Where | Contents |
 |---|---|---|
-| `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL and the device ID |
+| `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL, the device ID and a random pairing ID |
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
-| `cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
+| `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
+| `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
 
-`TODO_DESKTOP_HOME` puts all three in one directory instead (tests, benchmarks, a second profile). The token
-is never written in plain text and never logged. **Sign out** (the gear in the sidebar footer) removes the
-token and the config at once, stops syncing, then removes the cache, and shows pairing again. The server
-has no revoke endpoint for a device yet; revoke it there too if the computer is lost.
+`TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile). The token
+is never written in plain text and never logged. Each pairing's data lives under its own pairing ID, so a new
+pairing never picks up an old cache and cleaning up an old one can't touch the current one.
+
+**Sign out** (the gear in the sidebar footer) runs in order: syncing stops; the token and the config are
+removed (if that fails, the app says so and stays signed in, syncing again); the pairing's directory is
+marked signed out, the shell lets go of the cache, and the directory (cache and downloads) is removed; only
+then is pairing shown. A directory still in use is removed at the next start, which only ever removes marked
+directories. The server has no revoke endpoint for a device yet; revoke it there too if the computer is lost.
 
 **Sync** (`src/session.rs`). The app runs `todo_client::SyncClient` with the native HTTP transport and the
 SQLite storage on a small tokio runtime of its own (two worker threads). Initial load, catch-up, the SSE
@@ -108,7 +117,15 @@ command applies to the view at once and is queued for the server; one the domain
 the status bar. Attachments download on the runtime too.
 
 **Startup.** A loader thread reads the config, unseals the token and opens the cache while GPUI sets up
-Direct3D and DirectWrite, so a warm start draws real data in its first frame.
+Direct3D and DirectWrite, so a warm start draws real data in its first frame. Opening never deletes anything:
+
+- **A damaged cache** (SQLite reports it malformed or not a database, or stored data doesn't decode) is moved
+  aside as `cache.damaged-<ms>.sqlite`, with its write-ahead log. Its outbox and "couldn't sync" list are read
+  back (`SqliteStorage::salvage`) into a new cache, and the confirmed state is loaded from the server again.
+  The status bar says how many unsent changes were kept.
+- **A cache that can't be opened now** (another copy of the app holds it, no permission, disk full) is left
+  as it is. A screen says what happened, with **Try again**.
+- **A saved sign-in that can't be used** goes back to pairing with the reason. The old data stays.
 
 ## The views
 
@@ -121,7 +138,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 | Sidebar | Smart lists (My Day, Important, Planned, All, Completed, Agent activity) with counts from the query language's built-in lists, collections and lists in server order with open counts. List colours snap to the design's swatches; glyphs come from the list's name (English and Czech keywords). Double-click or right-click renames; the context menu moves a list up or down or deletes it (after asking); "New list" adds one and starts renaming it. Agents seen in the last week, and the sync state. |
 | Task list | Open tasks in server order (by list, then position, in a collection), virtualized; Completed below, newest first, behind a toggle. Checkbox completes or reopens; a completed task holds its place (fill, tick, dimmed title), fades and leaves. The priority mark cycles on click. **J/K** or arrows move, **Space** completes, **E** edits the title, **D** the due date, **Alt+Up/Down** moves a task in a list. The title-bar field filters (**Ctrl+K**): a query (`tag:docs`, `due:today`) or plain words. |
 | Quick add | In the room (**Ctrl+N**) and global (**Ctrl+Alt+Space**, into My Day). A trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`, `pátek`) and priority (`!`, `!!`, `!!!`) are read off the title; the date shows as a chip while typing. My Day, Important and Planned shape the new task. |
-| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. Links open in the browser; an attachment downloads to a temporary file and opens. |
+| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads). Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. |
 | Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). My Day all done turns the sky to dusk and hands over to tomorrow. |
 
 ## The shell

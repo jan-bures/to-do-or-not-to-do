@@ -5,30 +5,42 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AsyncApp, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, WeakEntity,
-    Window, div, prelude::*,
+    App, AsyncWindowContext, Context, Entity, FocusHandle, Focusable, SharedString, Subscription,
+    WeakEntity, Window, div, prelude::*, px,
 };
 
+use super::kit;
 use super::pairing::{PairingEvent, PairingView};
 use super::quick_add::QuickAddView;
 use super::shell::{ShellEvent, ShellView};
 use crate::config::{self, Pairing, Paths};
 use crate::model::{RoomKey, Smart, UiState};
-use crate::session::{self, Runtime, Session};
+use crate::session::{self, OpenError, Recovered, Runtime, Session, SignedOut};
 use crate::store::{LiveStore, Store};
-use crate::theme::Theme;
+use crate::theme::{self, TextStyled, Theme, space, ty};
 
 /// What startup loads before the first frame, off the UI thread.
 #[allow(missing_debug_implementations)] // Holds the session.
 pub struct Startup {
     pub rt: Runtime,
     pub paths: Paths,
-    /// The paired session, opened on its cache (not syncing yet).
-    pub session: Option<Session>,
+    pub opened: Opened,
     /// The server to prefill when pairing.
     pub last_server: Option<String>,
-    /// Why pairing is shown although a pairing was saved.
-    pub error: Option<SharedString>,
+}
+
+/// What opening the saved pairing gave.
+#[allow(missing_debug_implementations)] // Holds the session.
+pub enum Opened {
+    /// Not paired: show pairing.
+    NotPaired,
+    /// The saved sign-in couldn't be read (or can't be used): pair again. The old data stays.
+    PairAgain(SharedString),
+    /// Paired, but the cache couldn't be opened now. Nothing was changed; trying again may work.
+    Failed(SharedString),
+    /// The paired session, opened on its cache (not syncing yet), and what was recovered if the cache
+    /// was damaged.
+    Session(Session, Option<Recovered>),
 }
 
 /// Loads the saved pairing and opens its cache. Runs on a thread of its own while GPUI starts, so a warm
@@ -36,49 +48,77 @@ pub struct Startup {
 pub fn load() -> anyhow::Result<Startup> {
     let rt = session::runtime()?;
     let paths = Paths::for_user()?;
-    let (session, error) = match config::load(&paths) {
-        Ok(Some(pairing)) => match open(&rt, &paths, &pairing) {
-            Ok(s) => (Some(s), None),
-            Err(e) => (
-                None,
-                Some(format!("The local data couldn't be opened ({e}). Connect again.").into()),
-            ),
-        },
-        Ok(None) => (None, None),
-        Err(e) => {
-            tracing::warn!("the saved pairing couldn't be read: {e:#}");
-            (
-                None,
-                Some("The saved sign-in couldn't be read. Connect again.".into()),
-            )
-        }
-    };
+    let opened = open(&rt, &paths);
     Ok(Startup {
         last_server: config::last_server(&paths),
         rt,
         paths,
-        session,
-        error,
+        opened,
     })
 }
 
-/// Opens the session on its cache. A cache that can't be read is dropped and rebuilt from the server.
-fn open(rt: &Runtime, paths: &Paths, pairing: &Pairing) -> anyhow::Result<Session> {
-    match Session::open(rt.clone(), &paths.cache(), pairing) {
-        Ok(s) => Ok(s),
+/// Opens the saved pairing. Never deletes a cache because it failed to open: a damaged one is set aside
+/// with its unsent changes carried over, anything else is reported and left alone. Only data of pairings
+/// that were signed out is cleaned up here.
+fn open(rt: &Runtime, paths: &Paths) -> Opened {
+    match config::load(paths) {
+        Ok(Some(pairing)) => {
+            config::sweep_signed_out(paths, Some(&pairing.config.pairing));
+            match Session::open_or_recover(rt.clone(), paths, &pairing) {
+                Ok((s, recovered)) => Opened::Session(s, recovered),
+                Err(OpenError::Config(why)) => {
+                    tracing::warn!("the saved sign-in can't be used: {why}");
+                    Opened::PairAgain(
+                        format!("The saved sign-in can't be used ({why}). Connect again.").into(),
+                    )
+                }
+                Err(e) => {
+                    tracing::warn!("the local data couldn't be opened: {e}");
+                    Opened::Failed(format!("{}.", capitalized(&e.to_string())).into())
+                }
+            }
+        }
+        Ok(None) => {
+            config::sweep_signed_out(paths, None);
+            Opened::NotPaired
+        }
         Err(e) => {
-            tracing::warn!("the cache couldn't be opened, starting afresh: {e:#}");
-            config::forget_cache(paths)?;
-            Session::open(rt.clone(), &paths.cache(), pairing)
+            tracing::warn!("the saved pairing couldn't be read: {e:#}");
+            Opened::PairAgain("The saved sign-in couldn't be read. Connect again.".into())
         }
     }
 }
 
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// What the shell says after a damaged cache was rebuilt.
+fn recovered_notice(r: &Recovered) -> String {
+    let kept = match r.kept {
+        0 => String::new(),
+        1 => " 1 unsent change was kept.".into(),
+        n => format!(" {n} unsent changes were kept."),
+    };
+    let lost = match r.lost {
+        0 => String::new(),
+        n => format!(" {n} couldn't be read back."),
+    };
+    format!(
+        "The local data was damaged, so it was set aside and is being loaded again from the server.{kept}{lost}"
+    )
+}
+
 enum Screen {
-    /// Only while `RootView::new` runs.
+    /// While `RootView::new` runs, and while signing out lets go of the shell.
     Starting,
     Pairing(Entity<PairingView>),
     Shell(Entity<ShellView>),
+    /// The paired data couldn't be opened; nothing was changed.
+    Failed(SharedString),
 }
 
 #[allow(missing_debug_implementations)] // Holds GPUI entities.
@@ -89,6 +129,7 @@ pub struct RootView {
     screen: Screen,
     quick: Option<WeakEntity<QuickAddView>>,
     focus: FocusHandle,
+    signing_out: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -102,9 +143,8 @@ impl RootView {
         let Startup {
             rt,
             paths,
-            session,
+            opened,
             last_server,
-            error,
         } = startup;
         let mut this = Self {
             rt,
@@ -113,13 +153,55 @@ impl RootView {
             screen: Screen::Starting,
             quick: None,
             focus: cx.focus_handle(),
+            signing_out: false,
             _subscriptions: Vec::new(),
         };
-        match session {
-            Some(s) => this.show_shell(s, window, cx),
-            None => this.show_pairing(last_server, error, window, cx),
-        }
+        this.show(opened, last_server, window, cx);
         this
+    }
+
+    fn show(
+        &mut self,
+        opened: Opened,
+        last_server: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match opened {
+            Opened::Session(s, recovered) => {
+                self.show_shell(s, window, cx);
+                if let (Some(r), Screen::Shell(shell)) = (recovered, &self.screen) {
+                    let text = recovered_notice(&r);
+                    shell.update(cx, |s, cx| s.show_notice(text, false, cx));
+                }
+            }
+            Opened::NotPaired => self.show_pairing(last_server, None, window, cx),
+            Opened::PairAgain(why) => self.show_pairing(last_server, Some(why), window, cx),
+            Opened::Failed(why) => {
+                self._subscriptions.clear();
+                self.screen = Screen::Failed(why);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens the saved pairing again (after a failure), off the UI thread.
+    fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (rt, paths) = (self.rt.clone(), self.paths.clone());
+        self.screen = Screen::Starting;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let opened = cx
+                .background_executor()
+                .spawn({
+                    let (rt, paths) = (rt.clone(), paths.clone());
+                    async move { open(&rt, &paths) }
+                })
+                .await;
+            let last = config::last_server(&paths);
+            let _ = this.update_in(cx, |this, window, cx| this.show(opened, last, window, cx));
+        })
+        .detach();
     }
 
     fn show_pairing(
@@ -146,14 +228,11 @@ impl RootView {
     }
 
     fn paired(&mut self, pairing: &Pairing, window: &mut Window, cx: &mut Context<Self>) {
-        // A cache left from an earlier pairing belongs to that one.
-        if let Err(e) = config::forget_cache(&self.paths) {
-            tracing::warn!("an old cache couldn't be removed: {e:#}");
-        }
-        match Session::open(self.rt.clone(), &self.paths.cache(), pairing) {
+        // A new pairing has a directory of its own, so nothing of an earlier one is picked up.
+        match Session::open(self.rt.clone(), &self.paths, pairing) {
             Ok(s) => self.show_shell(s, window, cx),
             Err(e) => {
-                tracing::error!("opening the session failed: {e:#}");
+                tracing::error!("opening the session failed: {e}");
                 let server = Some(pairing.config.server.clone());
                 let why = format!("Paired, but the local data couldn't be created ({e}).");
                 self.show_pairing(server, Some(why.into()), window, cx);
@@ -183,41 +262,80 @@ impl RootView {
         cx.notify();
     }
 
-    /// Signs out: forgets the token and the config at once, stops syncing, then removes the cache once
-    /// the sync loops have let go of it.
+    /// Signs out (`session::sign_out`): stops syncing, removes the saved sign-in, then the pairing's
+    /// data, and only then shows pairing. If the sign-in can't be removed, the shell stays, syncing
+    /// again, and says so.
     fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Screen::Shell(shell) = &self.screen else {
             return;
         };
-        let store = shell.read(cx).store().clone();
-        let server = store.session().map(|s| s.server().to_string());
-        let stopped = store.session().map(Session::shutdown);
-        drop(store);
-        if let Err(e) = config::forget_pairing(&self.paths) {
-            tracing::error!("removing the saved sign-in failed: {e:#}");
+        if std::mem::replace(&mut self.signing_out, true) {
+            return;
         }
-        self.show_pairing(server, None, window, cx);
+        let store = shell.read(cx).store().clone();
+        let Some(session) = store.session() else {
+            self.signing_out = false;
+            return;
+        };
+        let stopped = session.shutdown();
+        let server = session.server().to_string();
+        let data = session.data().clone();
+        drop(store);
+        shell.update(cx, |s, cx| s.show_notice("Signing out…", false, cx));
         let paths = self.paths.clone();
-        cx.spawn(async move |_, cx: &mut AsyncApp| {
-            if let Some(stopped) = stopped {
-                stopped.await;
-            }
-            // The shell's last handle on the cache goes when its view is released, just after this.
-            for attempt in 0..50 {
-                match config::forget_cache(&paths) {
-                    Ok(()) => return,
-                    Err(e) if attempt == 49 => {
-                        tracing::warn!("the cache couldn't be removed: {e:#}");
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let executor = cx.background_executor().clone();
+            let weak = this.clone();
+            let mut release_cx = cx.clone();
+            let release = move || {
+                // Drops the shell, and with it the session and its handle on the cache.
+                let _ = weak.update(&mut release_cx, |this, cx| {
+                    this._subscriptions.clear();
+                    this.screen = Screen::Starting;
+                    cx.notify();
+                });
+            };
+            let result = session::sign_out(stopped, &paths, &data, release, || {
+                executor.timer(Duration::from_millis(100))
+            })
+            .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.signing_out = false;
+                match result {
+                    Ok(SignedOut::Clean) => this.show_pairing(Some(server), None, window, cx),
+                    Ok(SignedOut::DataLeft(_)) => {
+                        let note = "Signed out. Some local data was still in use; it's removed \
+                                    the next time the app starts.";
+                        this.show_pairing(Some(server), Some(note.into()), window, cx);
                     }
-                    Err(_) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await;
-                    }
+                    Err(e) => this.still_signed_in(&e.to_string(), window, cx),
                 }
-            }
+            });
         })
         .detach();
+    }
+
+    /// Signing out stopped before anything was removed: open the session again and say why.
+    fn still_signed_in(&mut self, why: &str, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::error!("signing out failed: {why}");
+        let text = format!("Couldn't sign out: {why}. You're still signed in.");
+        let reopened = config::load(&self.paths)
+            .ok()
+            .flatten()
+            .ok_or_else(|| OpenError::Config("the saved sign-in is gone".into()))
+            .and_then(|p| Session::open(self.rt.clone(), &self.paths, &p));
+        match reopened {
+            Ok(s) => {
+                self.show_shell(s, window, cx);
+                if let Screen::Shell(shell) = &self.screen {
+                    shell.update(cx, |s, cx| s.show_notice(text, true, cx));
+                }
+            }
+            Err(e) => {
+                self.screen = Screen::Failed(format!("{text} ({e})").into());
+                cx.notify();
+            }
+        }
     }
 
     /// The quick-add window to keep in step with My Day.
@@ -237,7 +355,7 @@ impl RootView {
     pub fn my_day_progress(&self, cx: &App) -> (u32, u32) {
         match &self.screen {
             Screen::Shell(s) => s.read(cx).my_day_progress(),
-            Screen::Pairing(_) | Screen::Starting => (0, 0),
+            Screen::Pairing(_) | Screen::Starting | Screen::Failed(_) => (0, 0),
         }
     }
 
@@ -248,7 +366,7 @@ impl RootView {
             Screen::Shell(s) => s.update(cx, |s, cx| {
                 s.add_task(text, RoomKey::Smart(Smart::MyDay), cx)
             }),
-            Screen::Pairing(_) | Screen::Starting => false,
+            Screen::Pairing(_) | Screen::Starting | Screen::Failed(_) => false,
         }
     }
 }
@@ -258,16 +376,70 @@ impl Focusable for RootView {
         match &self.screen {
             Screen::Pairing(p) => p.focus_handle(cx),
             Screen::Shell(s) => s.focus_handle(cx),
-            Screen::Starting => self.focus.clone(),
+            Screen::Starting | Screen::Failed(_) => self.focus.clone(),
         }
     }
 }
 
+impl RootView {
+    /// The paired data couldn't be opened: what happened, and a way to try again. Nothing was deleted.
+    fn failed(&self, why: &SharedString, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let p = theme::palette(self.theme, Smart::MyDay.hue());
+        div()
+            .id("failed")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(p.pane)
+            .style(ty::BODY)
+            .text_color(p.ink)
+            .child(
+                div()
+                    .h(px(theme::desktop::TITLEBAR))
+                    .flex_none()
+                    .flex()
+                    .justify_end()
+                    .window_control_area(gpui::WindowControlArea::Drag)
+                    .child(kit::window_controls(&p)),
+            )
+            .child(
+                div()
+                    .w(px(520.))
+                    .mx_auto()
+                    .pt(px(space::S10 * 2.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::S4))
+                    .child(
+                        div()
+                            .style(ty::ROOM_TITLE)
+                            .child("Your tasks couldn't be opened"),
+                    )
+                    .child(div().text_color(p.ink_2).child(why.clone()))
+                    .child(
+                        div()
+                            .text_color(p.ink_3)
+                            .child("Nothing was changed or removed. Close other copies of the app and try again."),
+                    )
+                    .child(
+                        div().flex().child(
+                            kit::button(&p, "Try again")
+                                .id("retry")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| this.retry(window, cx))),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = match &self.screen {
             Screen::Pairing(p) => p.clone().into_any_element(),
             Screen::Shell(s) => s.clone().into_any_element(),
+            Screen::Failed(why) => self.failed(&why.clone(), cx),
             Screen::Starting => div().into_any_element(),
         };
         div().size_full().child(screen)

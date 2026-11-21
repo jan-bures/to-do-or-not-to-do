@@ -17,7 +17,7 @@ use todo_core::query::{EvalContext, fold, parse_date};
 use todo_core::time::{Date, Weekday, add_days};
 
 /// What the quick-add text says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     pub title: String,
     pub due: Option<Date>,

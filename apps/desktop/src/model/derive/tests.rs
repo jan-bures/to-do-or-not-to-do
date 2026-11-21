@@ -245,3 +245,55 @@ fn hosts_for_untitled_links() {
     assert_eq!(host("https://www.example.com/a/b?c"), "example.com");
     assert_eq!(host("example.org"), "example.org");
 }
+
+#[test]
+fn only_web_links_are_clickable() {
+    let mut f = fixtures::my_day();
+    let task = *f.state.tasks.keys().next().expect("a task");
+    let targets = [
+        "https://todo.example.com/docs",
+        "file:///C:/Windows/System32/calc.exe",
+        r"\server\share\setup.exe",
+        "search-ms:query=invoice",
+        "javascript:alert(1)",
+        "not a url",
+    ];
+    for (i, target) in targets.iter().enumerate() {
+        let id = LinkId::from_uuid(todo_core::ids::uuid_v7(1, [i as u8; 10]));
+        run(
+            &mut f.state,
+            "2026-06-15T08:00:00Z",
+            Command::AddLink {
+                id,
+                task,
+                kind: LinkKind::Web {
+                    url: "https://todo.example.com/".into(),
+                    title: Some(format!("link {i}")),
+                },
+            },
+        );
+        // Imports and other clients may have stored anything: put the target in place directly.
+        if let Some(link) = f.state.links.get_mut(&id) {
+            link.kind = LinkKind::Web {
+                url: (*target).to_string(),
+                title: Some(format!("link {i}")),
+            };
+        }
+    }
+    f.ui.task = Some(task);
+    let detail = f.shell().detail.expect("detail");
+    let shown: Vec<(&str, Option<&str>)> = detail
+        .links
+        .iter()
+        .filter(|l| l.title.starts_with("link "))
+        .map(|l| (l.detail.as_ref(), l.url.as_deref()))
+        .collect();
+    assert_eq!(shown.len(), targets.len());
+    for (detail, url) in shown {
+        if detail.starts_with("https://") {
+            assert_eq!(url, Some("https://todo.example.com/docs"));
+        } else {
+            assert_eq!(url, None, "{detail} must not be clickable");
+        }
+    }
+}

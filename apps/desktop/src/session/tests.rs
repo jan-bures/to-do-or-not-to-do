@@ -8,7 +8,7 @@ use todo_client::Connection;
 use todo_client::native::HttpTransport;
 use todo_client::pairing::{self, Polled};
 use todo_core::State;
-use todo_core::ids::{ListId, TaskId};
+use todo_core::ids::{AttachmentId, ListId, TaskId};
 use todo_server::{Config as ServerConfig, Options, RunningServer, Server};
 
 use super::*;
@@ -85,10 +85,7 @@ impl TestServer {
             panic!("expected approval");
         };
         let pairing = Pairing {
-            config: Config {
-                server: self.url(),
-                device: device_id,
-            },
+            config: Config::new(self.url(), device_id),
             token,
         };
         config::save(paths, &pairing).expect("save");
@@ -147,8 +144,8 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let (pair_a, pair_b) = (server.pair(&net, &pa), server.pair(&net, &pb));
     assert_ne!(pair_a.config.device, pair_b.config.device);
 
-    let a = Session::open(net.clone(), &pa.cache(), &pair_a).expect("open a");
-    let b = Session::open(net.clone(), &pb.cache(), &pair_b).expect("open b");
+    let a = Session::open(net.clone(), &pa, &pair_a).expect("open a");
+    let b = Session::open(net.clone(), &pb, &pair_b).expect("open b");
     a.start();
     b.start();
 
@@ -219,7 +216,7 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
 
     // A restarts: the cache shows everything before the network is involved.
     drop(a);
-    let reopened = Session::open(net.clone(), &pa.cache(), &pair_a).expect("reopen");
+    let reopened = Session::open(net.clone(), &pa, &pair_a).expect("reopen");
     let v = reopened.client().view();
     assert_eq!(v.lists[&list].name, "Groceries");
     assert_eq!(order(&v, list), vec![milk, bread]);
@@ -227,10 +224,6 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
     drop(reopened);
     drop(b);
 
-    // Signing out removes everything local.
-    config::forget(&pa).expect("forget");
-    assert!(config::load(&pa).expect("load").is_none());
-    assert!(!pa.cache().exists());
     drop(server);
     if let Ok(rt) = std::sync::Arc::try_unwrap(net) {
         rt.shutdown_timeout(Duration::from_secs(5));
@@ -247,7 +240,7 @@ fn edits_made_offline_sync_once_the_server_is_back() {
     // Point the device at a port nothing listens on: it is offline.
     let real = pairing.config.server.clone();
     pairing.config.server = "http://127.0.0.1:9".into();
-    let offline = Session::open(net.clone(), &paths.cache(), &pairing).expect("open");
+    let offline = Session::open(net.clone(), &paths, &pairing).expect("open");
     offline.start();
     let id = ListId::from_uuid(offline.client().new_uuid());
     offline
@@ -262,7 +255,7 @@ fn edits_made_offline_sync_once_the_server_is_back() {
 
     // Back online (the same cache, the real address): the queued command goes through.
     pairing.config.server = real;
-    let online = Session::open(net.clone(), &paths.cache(), &pairing).expect("open");
+    let online = Session::open(net.clone(), &paths, &pairing).expect("open");
     assert_eq!(
         online.client().status().pending,
         1,
@@ -280,16 +273,307 @@ fn edits_made_offline_sync_once_the_server_is_back() {
     }
 }
 
+/// Opens a file so nothing else can open or delete it until the handle is dropped, the way another
+/// program holding it would.
+fn lock(path: &std::path::Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .expect("lock")
+}
+
+fn shut_down(net: Runtime) {
+    if let Ok(rt) = std::sync::Arc::try_unwrap(net) {
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
+}
+
+/// A paired session that synced one list, then queued another while offline. Returns the pairing (with
+/// the real server address) and the queued list's ID; the session is closed again.
+fn queued_offline(server: &TestServer, net: &Runtime, paths: &Paths) -> (Pairing, ListId) {
+    let mut pairing = server.pair(net, paths);
+    let online = Session::open(net.clone(), paths, &pairing).expect("open");
+    online.start();
+    let synced = ListId::from_uuid(online.client().new_uuid());
+    submit(&online, vec![commands::create_list(synced, None, "Synced")]);
+    eventually("synced", || {
+        server.state().lists.contains_key(&synced) && online.client().status().pending == 0
+    });
+    net.block_on(online.shutdown());
+    drop(online);
+    let real = pairing.config.server.clone();
+    pairing.config.server = "http://127.0.0.1:9".into();
+    let offline = Session::open(net.clone(), paths, &pairing).expect("open");
+    let queued = ListId::from_uuid(offline.client().new_uuid());
+    submit(
+        &offline,
+        vec![commands::create_list(queued, None, "Queued offline")],
+    );
+    assert_eq!(offline.client().status().pending, 1);
+    drop(offline);
+    pairing.config.server = real;
+    (pairing, queued)
+}
+
 #[test]
-fn attachment_names_are_made_safe() {
-    assert_eq!(safe_file_name("report.pdf"), "report.pdf");
-    assert_eq!(safe_file_name("..\\..\\evil.exe"), "evil.exe");
-    assert_eq!(safe_file_name("a/b/c:d?.txt"), "c_d_.txt");
-    assert_eq!(safe_file_name("CON.txt"), "attachment-CON.txt");
-    assert_eq!(safe_file_name("com1"), "attachment-com1");
-    assert_eq!(safe_file_name("notes. "), "notes");
-    assert_eq!(safe_file_name(""), "attachment");
-    assert_eq!(safe_file_name(".."), "attachment");
+fn a_cache_that_cant_be_opened_now_is_left_alone() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, queued) = queued_offline(&server, &net, &paths);
+    let data = paths.data(&pairing.config.pairing);
+
+    // Another program holds the cache: opening fails, and nothing is moved or deleted.
+    let held = lock(&data.cache());
+    let Err(err) = Session::open_or_recover(net.clone(), &paths, &pairing) else {
+        panic!("a locked cache can't be opened");
+    };
+    assert!(matches!(err, OpenError::Unavailable(_)), "{err}");
+    drop(held);
+    let names: Vec<_> = std::fs::read_dir(data.path())
+        .expect("dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.contains("damaged")), "{names:?}");
+
+    // Once it's free, the queued edit is still there and reaches the server.
+    let (session, recovered) =
+        Session::open_or_recover(net.clone(), &paths, &pairing).expect("open");
+    assert_eq!(recovered, None);
+    assert_eq!(session.client().status().pending, 1);
+    session.start();
+    eventually("the queued list reached the server", || {
+        server.state().lists.contains_key(&queued)
+    });
+    drop(session);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn a_damaged_cache_is_set_aside_and_its_unsent_edits_kept() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let (pairing, queued) = queued_offline(&server, &net, &paths);
+    let data = paths.data(&pairing.config.pairing);
+
+    // Damage the confirmed state; the outbox is intact.
+    let conn = rusqlite::Connection::open(data.cache()).expect("sqlite");
+    let damaged = conn
+        .execute("UPDATE snapshot SET state = 'not json'", [])
+        .expect("snapshot")
+        + conn
+            .execute("UPDATE events SET event = 'not json'", [])
+            .expect("events");
+    assert!(damaged > 0);
+    drop(conn);
+    assert!(matches!(
+        Session::open(net.clone(), &paths, &pairing),
+        Err(OpenError::Corrupt(_))
+    ));
+
+    let (session, recovered) =
+        Session::open_or_recover(net.clone(), &paths, &pairing).expect("recover");
+    let recovered = recovered.expect("recovered");
+    assert_eq!((recovered.kept, recovered.lost), (1, 0));
+    assert!(
+        recovered.quarantined.exists(),
+        "the damaged file is kept aside"
+    );
+    assert_eq!(
+        session.client().status().pending,
+        1,
+        "the queued edit survived"
+    );
+    session.start();
+    eventually("the queued list reached the server", || {
+        server.state().lists.contains_key(&queued) && session.client().status().pending == 0
+    });
+    eventually("the rest came back from the server", || {
+        session.client().view().lists.len() == server.state().lists.len()
+    });
+    drop(session);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn signing_out_removes_the_sign_in_then_the_data() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    session.start();
+    let data = session.data().clone();
+    std::fs::create_dir_all(data.attachments().join("x")).expect("dir");
+    std::fs::write(data.attachments().join("x").join("a.pdf"), b"%PDF").expect("file");
+
+    let stopped = session.shutdown();
+    let result = net.block_on(sign_out(
+        stopped,
+        &paths,
+        &data,
+        move || drop(session),
+        || tokio::time::sleep(Duration::from_millis(100)),
+    ));
+    assert_eq!(result.expect("signed out"), SignedOut::Clean);
+    assert_eq!(config::load(&paths).expect("load"), None);
+    assert!(!paths.token().exists() && !paths.config().exists());
+    assert!(!data.path().exists(), "cache and downloads are gone");
+
+    // A new pairing starts with nothing of the old one.
+    let again = server.pair(&net, &paths);
+    assert_ne!(again.config.pairing, pairing.config.pairing);
+    let fresh = Session::open(net.clone(), &paths, &again).expect("open");
+    assert!(fresh.client().view().lists.is_empty());
+    drop(fresh);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn a_sign_in_that_cant_be_removed_keeps_everything() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let data = session.data().clone();
+
+    let held = lock(&paths.token());
+    let released = std::cell::Cell::new(false);
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        || released.set(true),
+        || async {},
+    ));
+    assert!(result.is_err(), "still signed in");
+    assert!(!released.get(), "the session is kept");
+    assert!(data.cache().exists(), "and so is its data");
+    drop(held);
+    assert_eq!(config::load(&paths).expect("load"), Some(pairing));
+    drop(session);
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn data_still_in_use_at_sign_out_is_removed_at_the_next_start() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let data = session.data().clone();
+
+    // The cache stays open (nothing releases it), so the directory can't go yet.
+    let result = net.block_on(sign_out(
+        session.shutdown(),
+        &paths,
+        &data,
+        || {},
+        || async {},
+    ));
+    assert!(matches!(result, Ok(SignedOut::DataLeft(_))), "{result:?}");
+    assert_eq!(config::load(&paths).expect("load"), None, "signed out");
+    drop(session);
+
+    // The next start removes it, and never a current pairing's data.
+    let current = server.pair(&net, &paths);
+    let kept = Session::open(net.clone(), &paths, &current).expect("open");
+    drop(kept);
+    assert_eq!(
+        config::sweep_signed_out(&paths, Some(&current.config.pairing)),
+        1
+    );
+    assert!(!data.path().exists());
+    assert!(paths.data(&current.config.pairing).cache().exists());
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn downloads_carry_the_mark_of_the_web_and_only_documents_open() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    session.start();
+    let list = ListId::from_uuid(session.client().new_uuid());
+    submit(&session, vec![commands::create_list(list, None, "Files")]);
+    let (task, cmds) = commands::add_task(
+        &session.client().view(),
+        RoomKey::List(list),
+        &Parsed {
+            title: "Has a file".into(),
+            ..Parsed::default()
+        },
+        today(),
+        || session.client().new_uuid(),
+    );
+    let task = task.expect("a task");
+    submit(&session, cmds);
+    eventually("synced", || server.state().tasks.contains_key(&task));
+
+    // Upload two files the way email ingest would attach them.
+    let transport = HttpTransport::new(&pairing.config.server, &pairing.token).expect("transport");
+    let upload = |name: &str, body: &[u8]| {
+        let res = net
+            .block_on(transport.send(Request::post(
+                format!("/api/v1/tasks/{task}/attachments?file_name={name}"),
+                body.to_vec(),
+            )))
+            .expect("upload");
+        assert!(
+            res.status == 200 || res.status == 201,
+            "upload: {}",
+            res.status
+        );
+        let v: serde_json::Value = serde_json::from_slice(&res.body).expect("json");
+        let id = v["attachment"]["id"].as_str().expect("id").to_string();
+        AttachmentId::from_uuid(id.parse().expect("uuid"))
+    };
+    let pdf = upload("report.pdf", b"%PDF-1.7 test");
+    let exe = upload("report.pdf.exe", b"MZ test");
+
+    let opened = net
+        .block_on(session.download_to_open(pdf, "report.pdf"))
+        .expect("download");
+    assert!(opened.starts_with(session.data().attachments()));
+    assert_eq!(std::fs::read(&opened).expect("read"), b"%PDF-1.7 test");
+    let zone = |p: &std::path::Path| {
+        let mut s = p.as_os_str().to_owned();
+        s.push(":Zone.Identifier");
+        std::fs::read_to_string(std::path::PathBuf::from(s)).expect("zone identifier")
+    };
+    assert!(zone(&opened).contains("ZoneId=3"));
+
+    // An executable can't be downloaded to be opened (nothing is even fetched), only saved.
+    let refused = net.block_on(session.download_to_open(exe, "report.pdf.exe"));
+    assert!(refused.is_err());
+    let saved_to = home.path().join("saved.pdf.exe");
+    let saved = net
+        .block_on(session.download_to(exe, saved_to.clone()))
+        .expect("save");
+    assert_eq!(saved, saved_to);
+    assert!(zone(&saved).contains("ZoneId=3"));
+
+    drop(session);
+    drop(server);
+    shut_down(net);
 }
 
 /// Builds a paired home with a warm cache of about 600 tasks (mostly completed), for measuring cold start:
@@ -303,11 +587,11 @@ fn make_a_bench_home() {
         panic!("set TODO_BENCH_HOME");
     };
     let paths = Paths::in_dir(home.into());
-    let _ = config::forget(&paths);
+    let _ = config::forget_pairing(&paths);
     let server = TestServer::start();
     let net = runtime().expect("runtime");
     let pairing = server.pair(&net, &paths);
-    let s = Session::open(net.clone(), &paths.cache(), &pairing).expect("open");
+    let s = Session::open(net.clone(), &paths, &pairing).expect("open");
     s.start();
     let mut lists = Vec::new();
     for name in [

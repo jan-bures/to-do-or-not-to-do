@@ -6924,6 +6924,7 @@ dependencies = [
  "todo-core",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -6960,6 +6961,7 @@ dependencies = [
  "image",
  "jiff 1.0.2",
  "raw-window-handle",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -6973,6 +6975,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "unicode-segmentation",
+ "url",
  "uuid",
  "windows-registry",
  "windows-sys 0.59.0",

@@ -21,6 +21,9 @@ pub struct LocalStore {
     now: Now,
     sync: SyncInfo,
     next: Cell<u64>,
+    /// Tests: refuse every submit, as a cache that can't be written would.
+    #[cfg(test)]
+    refuse: Cell<bool>,
 }
 
 /// The live session, plus when it was last in sync.
@@ -52,7 +55,17 @@ impl Store {
             now: f.now.clone(),
             sync: f.sync.clone(),
             next: Cell::new(0),
+            #[cfg(test)]
+            refuse: Cell::new(false),
         })
+    }
+
+    /// Tests: makes a local store refuse submits (a full disk, a locked cache).
+    #[cfg(test)]
+    pub fn refuse_submits(&self, refuse: bool) {
+        if let Self::Local(s) = self {
+            s.refuse.set(refuse);
+        }
     }
 
     /// The state to show: the server's, with this device's pending changes applied.
@@ -68,6 +81,10 @@ impl Store {
     pub fn submit(&self, cmd: Command) -> Result<(), String> {
         match self {
             Self::Local(s) => {
+                #[cfg(test)]
+                if s.refuse.get() {
+                    return Err("storage backend error: disk full".into());
+                }
                 let actor = Actor::owner("desktop").map_err(|e| e.to_string())?;
                 let mut state = (**s.state.borrow()).clone();
                 let events = decide(&state, &actor, &cmd, s.now.at).map_err(|e| e.to_string())?;
