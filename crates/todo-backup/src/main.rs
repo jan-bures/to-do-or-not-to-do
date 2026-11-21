@@ -41,6 +41,10 @@ enum Command {
         force: bool,
     },
     /// Download, decrypt and check a backup, writing it to a new file.
+    ///
+    /// To put it into service: stop the server, move the file into place, and run
+    /// `todo-server rotate-log-epoch` before starting the server again, so that clients that followed
+    /// the replaced log resync instead of mixing the two histories.
     Restore {
         /// The object key, for example frequent/20261121T060000Z-42.sqlite3.zst.age.
         #[arg(long, conflicts_with_all = ["latest", "kind"], required_unless_present = "latest")]
@@ -169,6 +173,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 r.bytes,
                 r.info.max_seq,
                 r.info.events_count
+            );
+            println!(
+                "to use it: stop the server, move it into place, then run `todo-server rotate-log-epoch` before starting the server"
             );
             Ok(ExitCode::SUCCESS)
         }
