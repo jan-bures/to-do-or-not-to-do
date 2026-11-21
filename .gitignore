@@ -1,0 +1,17 @@
+# Private companion repo, checked out locally. Never publish.
+/private/
+
+# Local deployment and runtime config
+*.local.toml
+.env
+.env.*
+
+# Build output
+target/
+node_modules/
+
+# Editors / OS
+.vs/
+.idea/
+.DS_Store
+Thumbs.db

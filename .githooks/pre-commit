@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks commits whose staged changes, paths or author identity contain denylisted text or secrets.
+hooks="$(git rev-parse --show-toplevel)/.githooks"
+tmp="$(mktemp)"
+{
+  git diff --cached --no-color -U0 --diff-filter=ACMR | grep '^+' | grep -v '^+++'
+  git diff --cached --name-only --diff-filter=ACMR
+  git var GIT_AUTHOR_IDENT
+  git var GIT_COMMITTER_IDENT
+} > "$tmp"
+sh "$hooks/leak-check.sh" "$tmp" "staged changes"
+status=$?
+rm -f "$tmp"
+
+if command -v gitleaks > /dev/null 2>&1; then
+  gitleaks git --staged --no-banner --redact . || status=1
+else
+  echo "pre-commit: gitleaks not installed; secret scan skipped." >&2
+fi
+exit $status

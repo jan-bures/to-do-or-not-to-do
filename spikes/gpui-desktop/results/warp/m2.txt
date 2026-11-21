@@ -1,0 +1,38 @@
+main_entered_ms_since_process_start = 25.1
+app_run_callback_ms_since_process_start = 225.26
+data_generate_ms = 2.58
+first_render_call_ms_since_process_start = 275.37
+first_visible_rows_build_ms = 0.03
+first_visible_rows_count = 19
+open_window_call_ms = 55.56
+tray_icon = created OK
+global_hotkey = Ctrl+Alt+Space registered OK
+first_frame_presented_ms_since_process_start = 299.98
+working_set_after_load_mb = 50.3
+peak_working_set_after_load_mb = 54.0
+private_commit_after_load_mb = 29.2
+construct_all_2000_row_elements_ms(no layout/paint) = 6.11
+ctrl_n_focuses_quick_add = true
+typed_text_in_quick_add = Koupit mléko, rohlíky a čaj
+typed_text_matches_czech_input = true
+typing_handler_to_paint_ms = n=27 min=0.64 median=2.61 p95=6.32 max=6.85
+typing_sendinput_to_paint_ms = n=27 min=0.66 median=1.26 p95=6.34 max=6.87
+quick_add_submit_ms = 0.09
+enter_adds_task_to_top = true
+ctrl_f_focuses_filter = true
+filter_recompute_ms = 0.06
+filter_recompute_ms = 0.04
+filter_recompute_ms = 0.04
+filter_recompute_ms = 0.04
+filter_recompute_ms = 0.05
+filter_'mleko'_matches(diacritic-insensitive) = 74
+filter_recompute_ms = 0.05
+visible_after_clearing_filter = 2001
+down_x3_selected_index_is_3 = true
+space_toggles_selected = true
+scroll_frame_interval_ms = n=399 min=4.11 median=5.55 p95=6.05 max=7.30
+scroll_visible_list_build_ms = n=399 min=0.02 median=0.03 p95=0.05 max=0.10
+peak_working_set_after_scroll_mb = 69.7
+hotkey_end_to_end = NOT tested (would require OS-level input injection); registration only
+working_set_end_mb = 69.4
+peak_working_set_end_mb = 69.7

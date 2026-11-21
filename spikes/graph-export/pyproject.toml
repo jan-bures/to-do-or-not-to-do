@@ -1,0 +1,9 @@
+[project]
+name = "graph-export-spike"
+version = "0.0.1"
+description = "Spike: dump all Microsoft To Do data via Microsoft Graph to local JSON"
+requires-python = ">=3.10"
+dependencies = ["msal>=1.31", "requests>=2.32"]
+
+[tool.uv]
+package = false
