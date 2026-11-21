@@ -155,6 +155,25 @@ pub struct AuditRow {
     pub detail: String,
 }
 
+/// An audit entry to write in the same transaction as the change it records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAudit {
+    /// Time.
+    pub at: i64,
+    /// What happened (see [`super::audit`]).
+    pub kind: &'static str,
+    /// Client IP, if known.
+    pub ip: Option<String>,
+    /// JSON details (never secrets).
+    pub detail: String,
+}
+
+impl NewAudit {
+    fn insert(&self, conn: &Connection) -> Result<()> {
+        insert_audit(conn, self.at, self.kind, self.ip.as_deref(), &self.detail)
+    }
+}
+
 /// Appends an audit entry through any connection to the database (so a change and its audit entry
 /// can share one transaction), and drops the oldest beyond [`AUDIT_KEEP`].
 pub fn insert_audit(
@@ -260,6 +279,24 @@ impl AuthStore {
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs one `UPDATE` and, if it changed a row, appends `audit`, in one transaction: the change is
+    /// stored only with its audit entry. Returns whether a row changed.
+    fn update_audited(
+        &self,
+        sql: &str,
+        p: impl rusqlite::Params,
+        audit: &NewAudit,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let n = tx.execute(sql, p)?;
+        if n == 1 {
+            audit.insert(&tx)?;
+        }
+        tx.commit()?;
+        Ok(n == 1)
     }
 
     // ---- meta -------------------------------------------------------------------------------------
@@ -482,13 +519,13 @@ impl AuthStore {
             .collect()
     }
 
-    /// Revokes a device. Returns false if there is no such active device.
-    pub fn revoke_device(&self, id: &str, now: i64) -> Result<bool> {
-        let n = self.conn().execute(
+    /// Revokes a device, with its audit entry. Returns false if there is no such active device.
+    pub fn revoke_device(&self, id: &str, now: i64, audit: &NewAudit) -> Result<bool> {
+        self.update_audited(
             "UPDATE devices SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, now],
-        )?;
-        Ok(n == 1)
+            audit,
+        )
     }
 
     /// Records use of a device token.
@@ -561,31 +598,39 @@ impl AuthStore {
         raw.map(decode_agent).transpose()
     }
 
-    /// Revokes an agent token. Returns false if it is not active.
-    pub fn revoke_agent(&self, id: i64, now: i64) -> Result<bool> {
-        let n = self.conn().execute(
+    /// Revokes an agent token, with its audit entry. Returns false if it is not active.
+    pub fn revoke_agent(&self, id: i64, now: i64, audit: &NewAudit) -> Result<bool> {
+        self.update_audited(
             "UPDATE agent_tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, now],
-        )?;
-        Ok(n == 1)
+            audit,
+        )
     }
 
-    /// Replaces an active agent token's grants. Returns false if it is not active.
-    pub fn set_agent_grants(&self, id: i64, grants: &Grants) -> Result<bool> {
-        let n = self.conn().execute(
+    /// Replaces an active agent token's grants, with the audit entry. Returns false if it is not
+    /// active.
+    pub fn set_agent_grants(&self, id: i64, grants: &Grants, audit: &NewAudit) -> Result<bool> {
+        self.update_audited(
             "UPDATE agent_tokens SET grants = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, serde_json::to_string(grants)?],
-        )?;
-        Ok(n == 1)
+            audit,
+        )
     }
 
-    /// Replaces an active agent token's grants and write quota. Returns false if it is not active.
-    pub fn set_agent_access(&self, id: i64, grants: &Grants, writes_per_hour: u32) -> Result<bool> {
-        let n = self.conn().execute(
+    /// Replaces an active agent token's grants and write quota, with the audit entry. Returns false
+    /// if it is not active.
+    pub fn set_agent_access(
+        &self,
+        id: i64,
+        grants: &Grants,
+        writes_per_hour: u32,
+        audit: &NewAudit,
+    ) -> Result<bool> {
+        self.update_audited(
             "UPDATE agent_tokens SET grants = ?2, writes_per_hour = ?3 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, serde_json::to_string(grants)?, i64::from(writes_per_hour)],
-        )?;
-        Ok(n == 1)
+            audit,
+        )
     }
 
     /// Records use of an agent token.
@@ -652,13 +697,13 @@ impl AuthStore {
             .next())
     }
 
-    /// Revokes a share link. Returns false if it is not active.
-    pub fn revoke_share(&self, id: i64, now: i64) -> Result<bool> {
-        let n = self.conn().execute(
+    /// Revokes a share link, with its audit entry. Returns false if it is not active.
+    pub fn revoke_share(&self, id: i64, now: i64, audit: &NewAudit) -> Result<bool> {
+        self.update_audited(
             "UPDATE share_links SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, now],
-        )?;
-        Ok(n == 1)
+            audit,
+        )
     }
 
     /// Gives an active share link a new token. Returns false if it is not active.
@@ -764,8 +809,19 @@ mod tests {
         let g = Grants::default();
         let id = s.add_agent(&a, "h1", &g, 10, None, 0).unwrap().unwrap();
         assert_eq!(s.add_agent(&a, "h2", &g, 10, None, 0).unwrap(), None);
-        assert!(s.revoke_agent(id, 1).unwrap());
-        assert!(!s.revoke_agent(id, 1).unwrap());
+        let audit = NewAudit {
+            at: 1,
+            kind: "agent_token_revoked",
+            ip: None,
+            detail: "{}".into(),
+        };
+        assert!(s.revoke_agent(id, 1, &audit).unwrap());
+        assert!(!s.revoke_agent(id, 1, &audit).unwrap());
+        assert_eq!(
+            s.audit_page(10).unwrap().len(),
+            1,
+            "audited once, with the change"
+        );
         assert!(s.add_agent(&a, "h3", &g, 10, None, 2).unwrap().is_some());
         assert_eq!(s.agents().unwrap().len(), 2);
     }

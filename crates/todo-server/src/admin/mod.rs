@@ -20,11 +20,11 @@
 //! 1. **No browsers.** A request carrying `Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Mode` or `Cookie` is
 //!    refused with 403 `browser_refused`, so no web page can drive the API, even through DNS
 //!    rebinding. The `Host` must name a loopback address (`localhost`, `127.0.0.1`, `[::1]`).
-//! 2. **Failures.** Failed token checks spend a small budget shared by all callers
-//!    (`admin.failures_per_minute`, `admin.failure_burst`); once it is empty, requests get 429
-//!    before their token is looked at.
-//! 3. **The token**, only from `Authorization: Bearer`, compared as SHA-256 digests in constant time.
+//! 2. **The token**, only from `Authorization: Bearer`, compared as SHA-256 digests in constant time.
 //!    It is never logged.
+//! 3. **Failures.** A missing or wrong token spends a small budget shared by all callers
+//!    (`admin.failures_per_minute`, `admin.failure_burst`); once it is empty, rejected requests get
+//!    429 instead of 401. The right token is never charged and never turned away by it.
 //! 4. **Rate.** All authenticated requests share `admin.requests_per_minute` and `admin.request_burst`.
 //!
 //! Forwarding headers (`CF-Connecting-IP`, `X-Forwarded-For`) are ignored: the client IP is always
@@ -191,14 +191,14 @@ pub async fn guard(State(st): State<AdminState>, mut req: Request, next: Next) -
     if !host_ok {
         return bad_host().into_response();
     }
-    if let Err(wait) = st.inner.failures.peek(&()) {
-        return ApiError::too_many_requests(wait).into_response();
-    }
+    // The token is checked first, so wrong tokens from another local process can't lock out the
+    // right one: only rejected requests spend the failure budget.
     let ok = bearer(headers).is_ok_and(|t| st.accepts(t));
     if !ok {
-        // Spending fails once the budget is empty; the next request is turned away earlier.
-        let _ = st.inner.failures.check(&());
         tracing::debug!("rejected an admin API request");
+        if let Err(wait) = st.inner.failures.check(&()) {
+            return ApiError::too_many_requests(wait).into_response();
+        }
         return ApiError::unauthorized().into_response();
     }
     if let Err(wait) = st.inner.requests.check(&()) {

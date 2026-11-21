@@ -92,7 +92,8 @@
 //! # Requests per minute, and burst, across all callers.
 //! requests_per_minute = 120
 //! request_burst = 60
-//! # Failed token checks per minute, and burst, across all callers; past it, every request gets 429.
+//! # Failed token checks per minute, and burst, across all callers; past it, rejected requests get
+//! # 429 instead of 401. The right token is never turned away by it.
 //! failures_per_minute = 10
 //! failure_burst = 10
 //! ```
@@ -332,8 +333,9 @@ pub struct AdminConfig {
     pub requests_per_minute: u32,
     /// Request burst on the admin listener.
     pub request_burst: u32,
-    /// Failed token checks per minute on the admin listener, across all callers; once spent, every
-    /// request gets 429 until the budget refills.
+    /// Failed token checks per minute on the admin listener, across all callers; once spent,
+    /// rejected requests get 429 instead of 401 until the budget refills. The right token is never
+    /// charged or turned away.
     pub failures_per_minute: u32,
     /// Burst of failed token checks.
     pub failure_burst: u32,

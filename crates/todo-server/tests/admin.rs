@@ -324,7 +324,8 @@ async fn requests_and_failures_are_rate_limited() {
     assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(res.headers().contains_key("retry-after"));
 
-    // Wrong tokens spend a budget of their own; once it is gone, even the right token waits.
+    // Wrong tokens spend a budget of their own; once it is gone they get 429, but the right token
+    // still gets in (another local process can't lock the operator out).
     let t = TestServer::start_with(|cfg| {
         admin_on(cfg);
         cfg.admin.failures_per_minute = 1;
@@ -359,7 +360,113 @@ async fn requests_and_failures_are_rate_limited() {
         None,
     )
     .await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = admin(&t, Method::GET, "/api/v1/admin/lists", None, None).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "missing tokens are failures too"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_change_whose_audit_entry_fails_is_not_made() {
+    let t = server().await;
+    let svc = t.server.authsvc.clone();
+    let list = t.create_list("Mine").await;
+    let (id, token) = svc
+        .create_agent(
+            &AgentId::new("helper").unwrap(),
+            AccessLevel::Read,
+            Some(5),
+            None,
+            None,
+        )
+        .unwrap();
+    let (device, device_token) = svc.create_device("Phone", None).unwrap();
+    let share_token = svc
+        .create_share(ShareTarget::List(list.parse().unwrap()), None)
+        .unwrap();
+    let share = svc.store().shares().unwrap()[0].id;
+    let audited = svc.store().audit_page(10_000).unwrap().len();
+    // Every audit insert fails from now on.
+    rusqlite::Connection::open(t.db_path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER no_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'audit down'); END;",
+        )
+        .unwrap();
+
+    let id_path = |p: &str| p.replace("{id}", &id.to_string());
+    for (method, path, body) in [
+        (
+            Method::PUT,
+            id_path("/api/v1/admin/agents/{id}/access"),
+            Some(json!({ "grants": { "default": "plan" }, "writes_per_hour": 500 })),
+        ),
+        (
+            Method::POST,
+            id_path("/api/v1/admin/agents/{id}/revoke"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/admin/devices/{device}/revoke"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/admin/shares/{share}/revoke"),
+            None,
+        ),
+        (
+            Method::PUT,
+            "/api/v1/admin/ingest/inbox".to_owned(),
+            Some(json!({ "list": list })),
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/ingest/senders".to_owned(),
+            Some(json!({ "address": "new@example.org" })),
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/ingest/keys".to_owned(),
+            Some(json!({ "key": "mine", "list": list })),
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/admin/ingest/senders/you@example.com".to_owned(),
+            None,
+        ),
+    ] {
+        let (s, v) = admin(&t, method.clone(), &path, Some(ADMIN_TOKEN), body).await;
+        assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{method} {path}: {v}");
+    }
+
+    let row = svc.store().agent(id).unwrap().unwrap();
+    assert_eq!(row.grants.default, AccessLevel::Read, "grants unchanged");
+    assert_eq!(row.writes_per_hour, 5, "quota unchanged");
+    assert_eq!(row.revoked_at, None);
+    for tok in [&token, &device_token] {
+        let (s, _, _) = t
+            .request(Method::GET, "/api/v1/lists", Some(tok), None)
+            .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let res = t
+        .client
+        .get(format!("{}/s/{share_token}", t.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let store = &t.server.ingest.store;
+    assert_eq!(store.inbox().unwrap(), None);
+    assert!(!store.is_allowed("new@example.org").unwrap());
+    assert!(store.is_allowed("you@example.com").unwrap());
+    assert!(store.list_keys().unwrap().is_empty());
+    assert_eq!(svc.store().audit_page(10_000).unwrap().len(), audited);
 }
 
 // ---- operations -----------------------------------------------------------------------------------

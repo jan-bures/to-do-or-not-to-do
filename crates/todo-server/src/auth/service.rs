@@ -9,7 +9,7 @@
 use super::limits::{BurstCounter, FailureTracker, KeyedLimiter, WriteQuotas};
 use super::pairing::Pairings;
 use super::secret::{self, AGENT_TOKEN_PREFIX, DEVICE_TOKEN_PREFIX, RandomError};
-use super::store::{AgentRow, AuthStore, SessionRow, ShareRow, ShareTarget};
+use super::store::{AgentRow, AuthStore, NewAudit, SessionRow, ShareRow, ShareTarget};
 use super::{Access, AuthError, Authenticated, Authenticator, OwnerTokens, Principal, bearer};
 use crate::api::error::ApiError;
 use crate::config::{AuthConfig, Config, PublicOrigin};
@@ -458,13 +458,18 @@ impl AuthService {
         }
     }
 
-    /// Writes an audit entry for a change made by `who` (its `actor`, if any, joins the details).
-    /// Blocking.
-    pub fn audit_by(&self, kind: &str, who: Who, mut detail: Value) {
+    /// The audit entry for a change made by `who` (its `actor`, if any, joins the details), to be
+    /// written in the change's own transaction.
+    fn audit_entry(&self, kind: &'static str, who: Who, mut detail: Value) -> NewAudit {
         if let (Some(actor), Some(m)) = (who.actor, detail.as_object_mut()) {
             m.insert("actor".into(), json!(actor));
         }
-        self.audit(kind, who.ip, detail);
+        NewAudit {
+            at: self.now(),
+            kind,
+            ip: who.ip.map(|i| i.to_string()),
+            detail: detail.to_string(),
+        }
     }
 
     /// Records a failed sign-in-like attempt from `ip` (locking it out at the threshold) and audits
@@ -1210,14 +1215,14 @@ impl AuthService {
     /// Revokes a device: its token stops working at once and its event streams close. Blocking.
     pub fn revoke_device(&self, id: &str, by: impl Into<Who>) -> Result<bool, ApiError> {
         let by = by.into();
+        let entry = self.audit_entry(audit::DEVICE_REVOKED, by, json!({ "device": id }));
         let guard = self.begin_mutation();
-        if !self.store.revoke_device(id, self.now())? {
+        if !self.store.revoke_device(id, self.now(), &entry)? {
             return Ok(false);
         }
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit_by(audit::DEVICE_REVOKED, by, json!({ "device": id }));
         Ok(true)
     }
 
@@ -1270,18 +1275,18 @@ impl AuthService {
         let by = by.into();
         let guard = self.begin_mutation();
         let row = self.store.agent(id)?;
-        if !self.store.revoke_agent(id, self.now())? {
+        let entry = self.audit_entry(
+            audit::AGENT_TOKEN_REVOKED,
+            by,
+            json!({ "agent": row.map(|r| r.agent), "token_id": id }),
+        );
+        if !self.store.revoke_agent(id, self.now(), &entry)? {
             return Ok(false);
         }
         self.quotas.forget(id);
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit_by(
-            audit::AGENT_TOKEN_REVOKED,
-            by,
-            json!({ "agent": row.map(|r| r.agent), "token_id": id }),
-        );
         Ok(true)
     }
 
@@ -1297,17 +1302,17 @@ impl AuthService {
         let Some(before) = self.store.agent(id)? else {
             return Ok(false);
         };
-        if !self.store.set_agent_grants(id, grants)? {
+        let entry = self.audit_entry(
+            audit::GRANTS_CHANGED,
+            by,
+            json!({ "agent": before.agent, "token_id": id, "before": before.grants, "after": grants }),
+        );
+        if !self.store.set_agent_grants(id, grants, &entry)? {
             return Ok(false);
         }
         self.publish(&guard)?;
         drop(guard);
         self.revoked();
-        self.audit_by(
-            audit::GRANTS_CHANGED,
-            by,
-            json!({ "agent": before.agent, "token_id": id, "before": before.grants, "after": grants }),
-        );
         Ok(true)
     }
 
@@ -1326,13 +1331,7 @@ impl AuthService {
         let Some(before) = self.store.agent(id)?.filter(|a| a.revoked_at.is_none()) else {
             return Ok(false);
         };
-        if !self.store.set_agent_access(id, grants, writes_per_hour)? {
-            return Ok(false);
-        }
-        self.publish(&guard)?;
-        drop(guard);
-        self.revoked();
-        self.audit_by(
+        let entry = self.audit_entry(
             audit::GRANTS_CHANGED,
             by,
             json!({
@@ -1344,6 +1343,15 @@ impl AuthService {
                 "writes_per_hour_after": writes_per_hour,
             }),
         );
+        if !self
+            .store
+            .set_agent_access(id, grants, writes_per_hour, &entry)?
+        {
+            return Ok(false);
+        }
+        self.publish(&guard)?;
+        drop(guard);
+        self.revoked();
         Ok(true)
     }
 
@@ -1383,12 +1391,8 @@ impl AuthService {
 
     /// Revokes a share link. Blocking.
     pub fn revoke_share(&self, id: i64, by: impl Into<Who>) -> Result<bool, ApiError> {
-        let by = by.into();
-        if !self.store.revoke_share(id, self.now())? {
-            return Ok(false);
-        }
-        self.audit_by(audit::SHARE_REVOKED, by, json!({ "share_id": id }));
-        Ok(true)
+        let entry = self.audit_entry(audit::SHARE_REVOKED, by.into(), json!({ "share_id": id }));
+        Ok(self.store.revoke_share(id, self.now(), &entry)?)
     }
 
     /// The active share link for a token. Blocking.
@@ -1583,6 +1587,53 @@ mod tests {
         assert!(svc.revoke_agent(id, None).unwrap());
         assert!(svc.authenticate(&bearer_headers(&token)).is_err());
         assert!(!svc.engine.state().grants.contains_key(&agent));
+    }
+
+    /// Makes every audit insert fail, as a full disk or a broken table would.
+    fn break_audit(svc: &AuthService) {
+        let conn = rusqlite::Connection::open(svc.engine.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER no_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'audit down'); END;",
+        )
+        .unwrap();
+    }
+
+    /// A change to a credential is stored only together with its audit entry.
+    #[test]
+    fn a_change_whose_audit_entry_fails_is_rolled_back() {
+        let (_dir, svc) = service();
+        let agent = AgentId::new("bot").unwrap();
+        let (id, token) = svc
+            .create_agent(&agent, AccessLevel::Read, Some(5), None, None)
+            .unwrap();
+        let (device, device_token) = svc.create_device("Phone", None).unwrap();
+        let list = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+        let share_token = svc.create_share(ShareTarget::List(list), None).unwrap();
+        let share = svc.store().shares().unwrap()[0].id;
+        let audited = svc.store().audit_page(100).unwrap().len();
+        break_audit(&svc);
+
+        let wider = Grants::with_default(AccessLevel::Plan);
+        let admin = Who::admin_api(None);
+        assert!(svc.set_agent_access(id, &wider, 500, admin).is_err());
+        assert!(svc.set_grants(id, &wider, admin).is_err());
+        assert!(svc.revoke_agent(id, admin).is_err());
+        assert!(svc.revoke_device(device.as_str(), admin).is_err());
+        assert!(svc.revoke_share(share, admin).is_err());
+
+        let row = svc.store().agent(id).unwrap().unwrap();
+        assert_eq!(row.grants.default, AccessLevel::Read, "grants unchanged");
+        assert_eq!(row.writes_per_hour, 5, "quota unchanged");
+        assert_eq!(row.revoked_at, None);
+        assert_eq!(
+            svc.engine.state().grants.get(&agent).map(|g| g.default),
+            Some(AccessLevel::Read),
+            "nothing new was published"
+        );
+        assert!(svc.authenticate(&bearer_headers(&token)).is_ok());
+        assert!(svc.authenticate(&bearer_headers(&device_token)).is_ok());
+        assert!(svc.share(&share_token).unwrap().is_some());
+        assert_eq!(svc.store().audit_page(100).unwrap().len(), audited);
     }
 
     #[test]

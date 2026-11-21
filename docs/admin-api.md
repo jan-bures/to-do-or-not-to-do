@@ -51,7 +51,7 @@ Optional limits, all across every caller:
 [admin]
 requests_per_minute = 120   # authenticated requests
 request_burst = 60
-failures_per_minute = 10    # wrong or missing tokens; past it, every request gets 429 for a while
+failures_per_minute = 10    # wrong or missing tokens; past it, they get 429 (the right token never does)
 failure_burst = 10
 ```
 
