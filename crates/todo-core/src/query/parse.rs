@@ -294,7 +294,10 @@ fn invalid<T>(
     )
 }
 
-fn parse_date(value: &str) -> Option<DateExpr> {
+/// Parses a date as the query language writes it: `today`, `tomorrow`, `yesterday`, `+Nd`, `-Nd` or
+/// `YYYY-MM-DD` (case-insensitive). Clients use it for typed dates too, so both read dates alike.
+#[must_use]
+pub fn parse_date(value: &str) -> Option<DateExpr> {
     let lower = value.to_ascii_lowercase();
     match lower.as_str() {
         "today" => return Some(DateExpr::Today),

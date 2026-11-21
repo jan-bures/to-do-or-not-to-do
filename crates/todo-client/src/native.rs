@@ -31,7 +31,8 @@ pub enum BuildError {
 pub struct HttpTransport {
     client: reqwest::Client,
     base: String,
-    auth: HeaderValue,
+    /// `None` for an anonymous transport (pairing).
+    auth: Option<HeaderValue>,
     max_frame_bytes: usize,
 }
 
@@ -48,13 +49,28 @@ impl HttpTransport {
     /// A transport for the server at `base_url` (for example `https://todo.example.com`), learnt at
     /// pairing time, authenticating with `token`.
     pub fn new(base_url: &str, token: &str) -> Result<Self, BuildError> {
+        let mut auth =
+            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| BuildError::BadToken)?;
+        auth.set_sensitive(true);
+        Self::build(base_url, Some(auth))
+    }
+
+    /// A transport without a token, for the endpoints that take none (pairing).
+    pub fn anonymous(base_url: &str) -> Result<Self, BuildError> {
+        Self::build(base_url, None)
+    }
+
+    /// The server's base URL, without a trailing slash.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    fn build(base_url: &str, auth: Option<HeaderValue>) -> Result<Self, BuildError> {
         let base = base_url.trim_end_matches('/').to_owned();
         if !(base.starts_with("http://") || base.starts_with("https://")) {
             return Err(BuildError::BadUrl);
         }
-        let mut auth =
-            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| BuildError::BadToken)?;
-        auth.set_sensitive(true);
         // Ignore the error: another part of the process may have installed a provider already.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
@@ -83,8 +99,10 @@ impl HttpTransport {
         let mut b = match request.method {
             Method::Get => self.client.get(url),
             Method::Post => self.client.post(url),
+        };
+        if let Some(auth) = &self.auth {
+            b = b.header(AUTHORIZATION, auth.clone());
         }
-        .header(AUTHORIZATION, self.auth.clone());
         if let Some(body) = &request.body {
             b = b
                 .header(CONTENT_TYPE, "application/json")

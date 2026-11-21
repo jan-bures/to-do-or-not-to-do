@@ -16,6 +16,7 @@
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
 //! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
+//! | [`pairing`] | device pairing: start, poll |
 //! | [`protocol`] | the server API: paths, bodies, response classification |
 //! | [`storage`] | the [`Storage`] trait and [`MemoryStorage`] |
 //! | [`platform`] | the transport, clock and entropy traits |
@@ -33,6 +34,7 @@
 pub mod client;
 pub mod notify;
 pub mod outbox;
+pub mod pairing;
 pub mod platform;
 pub mod protocol;
 pub mod replica;

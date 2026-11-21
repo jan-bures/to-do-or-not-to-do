@@ -184,8 +184,12 @@ pub const COUNT: TextStyle = TextStyle::new(MONO, 400, 11.5, 16.0);
 /// The letter in a 20 px agent mark. Scale the size with the mark: half its diameter.
 pub const AGENT_LETTER: TextStyle = TextStyle::new(MONO, 600, 10.0, 10.0);
 
+/// The code a new device shows while it waits to be approved: "KQ4M-7XWD". Mono, so it reads character by
+/// character.
+pub const PAIRING_CODE: TextStyle = TextStyle::new(MONO, 500, 40.0, 48.0).tracking(0.06);
+
 /// Every named style, for the exports and for a type specimen.
-pub const ALL: [(&str, TextStyle); 39] = [
+pub const ALL: [(&str, TextStyle); 40] = [
     ("room-title", ROOM_TITLE),
     ("room-title-compact", ROOM_TITLE_COMPACT),
     ("room-title-phone", ROOM_TITLE_PHONE),
@@ -225,4 +229,5 @@ pub const ALL: [(&str, TextStyle); 39] = [
     ("priority", PRIORITY),
     ("count", COUNT),
     ("agent-letter", AGENT_LETTER),
+    ("pairing-code", PAIRING_CODE),
 ];

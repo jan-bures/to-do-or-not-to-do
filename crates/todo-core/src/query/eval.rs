@@ -53,7 +53,9 @@ impl EvalContext {
         utc_date(shifted.unwrap_or(ts))
     }
 
-    fn resolve(&self, d: DateExpr) -> Option<Date> {
+    /// The calendar date `d` stands for (`None` if it overflows the calendar).
+    #[must_use]
+    pub fn resolve(&self, d: DateExpr) -> Option<Date> {
         match d {
             DateExpr::Today => Some(self.today),
             DateExpr::Tomorrow => add_days(self.today, 1),

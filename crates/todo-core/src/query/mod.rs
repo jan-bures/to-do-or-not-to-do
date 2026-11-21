@@ -20,7 +20,7 @@ pub use ast::{
 };
 pub use eval::{EvalContext, KeyPart, KeyValue, Matcher, OrderKey, Stop};
 pub use fold::fold;
-pub use parse::{ParseError, ParseErrorKind};
+pub use parse::{ParseError, ParseErrorKind, parse_date};
 
 use std::str::FromStr;
 
@@ -88,5 +88,26 @@ impl BuiltinList {
     /// Parses the built-in query.
     pub fn parse(&self) -> Result<Query, ParseError> {
         Query::parse(self.query)
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::{DateExpr, EvalContext, parse_date};
+    use crate::time::{Date, Timestamp};
+
+    #[test]
+    fn typed_dates_parse_and_resolve_like_query_dates() {
+        let today: Date = "2026-11-21".parse().unwrap();
+        let now: Timestamp = "2026-11-21T09:35:00Z".parse().unwrap();
+        let ctx = EvalContext::new(now, today, 3600);
+        let resolve = |s: &str| parse_date(s).and_then(|d| ctx.resolve(d));
+        assert_eq!(parse_date("Tomorrow"), Some(DateExpr::Tomorrow));
+        assert_eq!(resolve("tomorrow"), Some("2026-11-22".parse().unwrap()));
+        assert_eq!(resolve("+10d"), Some("2026-12-01".parse().unwrap()));
+        assert_eq!(resolve("-1d"), Some("2026-11-20".parse().unwrap()));
+        assert_eq!(resolve("2027-01-05"), Some("2027-01-05".parse().unwrap()));
+        assert_eq!(parse_date("someday"), None);
+        assert_eq!(parse_date("+d"), None);
     }
 }

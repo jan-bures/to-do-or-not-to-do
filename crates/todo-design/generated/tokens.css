@@ -155,6 +155,8 @@
   --text-priority-tracking: -0.115em;
   --text-count: 400 11.5px/16px var(--font-mono);
   --text-agent-letter: 600 10px/10px var(--font-mono);
+  --text-pairing-code: 500 40px/48px var(--font-mono);
+  --text-pairing-code-tracking: 0.06em;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
