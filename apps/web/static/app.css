@@ -992,6 +992,17 @@ a {
   height: var(--component-icon-small);
 }
 
+/* Storing failed: stays until it works again. */
+.toast.toast-error {
+  padding: 0 var(--space-4);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-ink);
+}
+
+.toast-error .toast-short {
+  display: none;
+}
+
 /* The undo window, as a thin line that runs out. */
 .toast-timer {
   position: absolute;
@@ -1751,6 +1762,14 @@ a.source:hover {
   .toast {
     height: var(--phone-toast);
     flex: 1;
+  }
+
+  .toast-error .toast-long {
+    display: none;
+  }
+
+  .toast-error .toast-short {
+    display: inline;
   }
 
   .toast .keycap {

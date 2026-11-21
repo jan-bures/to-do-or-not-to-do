@@ -91,8 +91,9 @@ The build is a directory named in the config, read **into memory at start-up** (
 honours `no-transform`). Compressing a response that holds a secret next to text an attacker can influence
 leaks the secret through the compressed size (BREACH), so every response that may carry one gets the same
 header: the server's other pages (CSRF form fields), the API's JSON (pairing and agent tokens) and
-`/auth/session`. Only the app's static files, which hold no secret, are compressed, by the build. They carry an
-`ETag` and `private, no-cache`, so a deploy is picked up on the next load.
+`/auth/session`. Private attachment downloads (the owner's files, which can quote anything) get
+`private, no-store, no-transform`. Only the app's static files, which hold no secret, are compressed, by the
+build. They carry an `ETag` and `private, no-cache`, so a deploy is picked up on the next load.
 
 ### Headers
 
@@ -137,12 +138,23 @@ idle timeout.
 
 **A stale token.** The session behind the cookie can change while a tab is open: signing in again in another
 tab replaces the cookie, and the open tab's token no longer fits it. The API answers `403 csrf`. The
-transport (`todo_client::web::FetchTransport`) then reads the session's current token from `GET
-/auth/session` (cookie only, `{"csrf": "..."}`, a 401 without a session) and sends the same request again,
-with the same body and so the same command ID: the server applies it once. If the token hasn't changed, the
-refusal was about something else (the `Origin`) and stands. If the refresh itself fails, the request counts
-as a network failure and is retried later; queued changes are never marked "couldn't sync" for it. The page
-uses the refreshed token too (sign-out, downloads).
+transport (`todo_client::web::FetchTransport`, through `todo_client::session::with_fresh_token`) then reads
+the session's current token from `GET /auth/session` and, if it differs from **the token the refused request
+was sent with**, sends the same request once more with it, with the same body and so the same command ID:
+the server applies it once. Comparing with the token sent, not with the tab's current one, matters when the
+event stream and a command are refused at the same time: whichever refreshes first updates the shared token,
+and the other must still retry rather than take the new token for "unchanged". One refresh and one retry per
+request. If the token hasn't changed, the refusal was about something else (the `Origin`) and stands for now:
+the engine treats a `403 csrf` as "retry later" with backoff, never as a verdict on the command, so queued
+changes are never marked "couldn't sync" for it. If the refresh itself fails, the request counts as a network
+failure and is retried later; a 401 from it means signed out. The page uses the refreshed token too
+(sign-out, downloads).
+
+`GET /auth/session` (cookie only, `{"csrf": "..."}`, a 401 without a session) answers this origin only: it
+refuses a request whose `Sec-Fetch-Site` is anything but `same-origin` (so `same-site`, `cross-site` and a
+typed-in `none` too) or whose `Origin`, if present, isn't the server's. And it never counts as activity: it
+looks the session up without touching it, so a sibling origin or a forgotten tab can't keep an idle session
+alive through it.
 
 When the session is gone (the stream or a request gets a 401), the app sends the browser to
 `/login?next=<the current path>`. Changes not yet sent stay in IndexedDB and go out after signing in.
@@ -166,20 +178,43 @@ The sync engine's `Storage` trait is synchronous, and IndexedDB is not. `MirrorS
 
 - It keeps the whole replica image in memory (the snapshot, the confirmed events since, the epoch, the outbox,
   the "couldn't sync" list) and behaves exactly like `MemoryStorage` (a property test checks this).
-- Every write also appends a batch of changes to a journal. `IdbFlusher` drains the journal into IndexedDB
-  (one transaction per batch, in order), retrying if a write fails.
+- Every write also appends a batch of changes to a journal. `IdbFlusher` writes the journal into IndexedDB
+  (one transaction per batch, in order); a batch leaves the journal only when its transaction's `complete`
+  fired.
 - At start the image is read back from IndexedDB (`MirrorStorage::recover`).
+
+**A change is queued once IndexedDB has it.** The view shows an edit at once, but the engine doesn't send an
+outbox entry until the batch that added it has committed (`Storage::is_durable`), and sends nothing after it
+before it either. So an edit the server has is never one a closed tab could have forgotten. While a write is
+uncommitted or has failed, closing the page asks first (`beforeunload`), and hiding it (`pagehide`) writes
+what is pending. A failed write (out of quota, say) shows a persistent alert, "Couldn’t save in this browser",
+with the browser's error in its tooltip, and is retried every second until it works; the edit is sent then.
 
 The database has one object store per part: `kv` (snapshot and epoch), `events`, `outbox`, `failed` and
 `damaged`. The outbox and the "couldn't sync" list are stored **one record per command**, keyed by its
 command ID, and a write puts or deletes only the records of the commands it touches.
 
-**Several tabs.** Each tab has its own copy of the replica over the same database, and none knows what the
-others wrote. With per-command records, a tab never overwrites another tab's unsent changes: after every tab
-is closed, the next start reads all of them back, ordered by submission time, and sends each (command IDs are
-idempotent on the server, so a command two tabs both send is applied once). The confirmed part is a function
-of the server's log, so whichever tab wrote it last is fine: the replica skips stored events it already has
-and refetches after a gap.
+**Several tabs.** Each tab has its own copy of the replica over the same database. With per-command records, a
+tab never overwrites another tab's unsent changes: after every tab is closed, the next start reads all of them
+back, ordered by submission time, and sends each. The confirmed part is a function of the server's log, so
+whichever tab wrote it last is fine: the replica skips stored events it already has and refetches after a gap.
+
+**One tab sends for all.** If each tab sent its own outbox, a rename made in a stalled tab could reach the
+server after a later rename of the same task from another tab, and the older title would win. So the tabs
+elect one sender with the Web Locks API: the tab holding the lock `todo-sender` sends; the others only queue
+(`SyncClient::set_sending(false)`). After every committed batch that touched the outbox or the failed list, a
+tab posts on the `BroadcastChannel` `todo-outbox`; the sender then reads the `outbox` store and takes the
+other tabs' entries in (`SyncClient::adopt`), slotted by submission time behind anything it has already sent,
+skipping what it has, refused, or saw confirmed. Every tab still follows the event stream, which confirms its
+own entries; entries the sender refused reach the other tabs' "couldn't sync" lists the same way. When the
+sender's tab closes, the browser hands the lock to the next tab, which takes in whatever is still queued. A
+browser without Web Locks falls back to every tab sending its own outbox: each tab's commands stay in order,
+and command IDs are idempotent, but two tabs' offline edits to one task may land in either order.
+
+**Upgrades.** Opening the database at a newer version waits until every other tab has closed its connection.
+While it waits, the page says "Close other To-do tabs to finish updating", and goes on by itself when they do.
+Every connection listens for `versionchange`: when another tab needs a newer version, it writes what it still
+has, closes the database and reloads (to get the newer build).
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -189,7 +224,9 @@ and refetches after a gap.
   deleted, and the app says so in a toast.
 - The database is never deleted automatically. If it can't be opened at all, the app shows a storage error
   with **Reset local data**, which deletes it only after a confirmation that says unsent changes go with it.
-- Version 1 of the database kept each list as one array in `kv`; it is split into records on the first start.
+- Version 1 of the database kept each list as one array in `kv`; it is split into records by the first write,
+  in one transaction that puts every record (keyed by command ID) before it deletes the array, so an
+  interrupted conversion leaves one or the other and simply runs again. (No version 1 build was deployed.)
 
 So a change made while the server can't be reached waits in the outbox, survives a reload or a closed tab
 (from one tab or several), and is sent when the app runs again (the live browser tests do exactly this). The
@@ -242,8 +279,8 @@ quick-add, **Esc** closes the detail.
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, a collection, the finished day, an empty list, a medium window, and the phone's list, detail and
-  drawer. The PNGs land in `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
+  the detail, a collection, the finished day, an empty list, the storage-error alert (desktop and phone,
+  `?fixture=storage-error`), a medium window, and the phone's list, detail and drawer. The PNGs land in `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
@@ -252,24 +289,31 @@ quick-add, **Esc** closes the detail.
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
   header being refused. Then: two tabs queueing edits offline, both closed, and every edit sent exactly once
   on the next start; a tab whose session was replaced by a sign-in elsewhere still sending its queued edit,
-  once; and a note being typed surviving a rename that arrives over the event stream, then saving. The port is
-  `LIVE_PORT` (default 47412).
+  once; a note being typed surviving a rename that arrives over the event stream, then saving; a rename in a
+  stalled sender tab and a later one from a second tab landing in that order, and the lock passing on when
+  the sender closes; an IndexedDB write failure (injected) that shows the alert, sends nothing, asks before
+  closing, and sends the edit once after storage recovers; an upgrade blocked by an old connection showing its
+  notice and going ahead; and a connection closing (and the tab reloading) for a newer version. Tests wait for
+  IndexedDB commits by reading the `outbox` store, never for a fixed time. The port is `LIVE_PORT` (default
+  47412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as
   the `web` device, missing or wrong CSRF tokens, cross-origin and originless writes, expired and ended
   sessions, bearer precedence, MCP and uploads staying bearer-only), the `/app` routes and headers, gzip,
-  `no-store, no-transform` on everything that carries a secret, `/auth/session`, refused requests not
-  extending the session, and the event stream closing on sign-out.
+  `no-store, no-transform` on everything that carries a secret, `/auth/session` (same origin only, and never
+  extending the session), refused requests not extending the session, and the event stream closing on
+  sign-out. `tests/attachments.rs` checks `private, no-store, no-transform` on downloads.
 - **Client tests** (`crates/todo-client/tests/mirror.rs`): the journal rebuilds the storage; two tabs' outbox
   entries both survive in any order; an unreadable snapshot, event, outbox or failed record is repaired or set
-  aside without losing unsent work; the version 1 arrays are split into records.
+  aside without losing unsent work; the version 1 arrays are split into records; a batch stays queued until
+  committed, and an entry isn't sent before it is durable. `tests/replica.rs`: adopted entries slot in by
+  submission time behind what was sent, and settled or refused ones aren't adopted. `tests/sync.rs`: one
+  client sending for another, in submission order, against a real server. `src/session.rs`: two concurrent
+  `403 csrf` refusals both retry with the new token, and a refusal that persists is retried once, then later.
 
 ## Not yet
 
 - **Offline start.** There is no service worker, so the app can't load without the server (Web Push and PWA
   install are out of scope for this version, and would come with it).
-- **One writer tab.** Every tab writes its own records; they don't elect one writer (Web Locks or a
-  `BroadcastChannel`), so two open tabs may both send a command the other queued if it was queued before the
-  other tab opened. The server applies it once.
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.

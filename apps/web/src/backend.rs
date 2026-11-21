@@ -6,6 +6,9 @@
 //!   page (refreshed by the transport if the session changes); there is no token in the browser.
 //!   Local data is never deleted on its own: what can't be read is repaired or set aside
 //!   (`todo_client::mirror`), and a storage failure shows a "Reset local data" action instead.
+//!   A command is sent only once IndexedDB has it; a failed write shows until one succeeds, and the
+//!   page asks before closing while anything is unsaved. One tab sends for all of them (a Web Lock);
+//!   the others tell it about their commands over a `BroadcastChannel` (`todo_client::web`).
 //! - **Fixtures** (the screenshot gallery, `--features fixtures`): invented data with a fixed clock,
 //!   changed through `decide` and `apply` like the server would, and never sent anywhere.
 //!
@@ -18,9 +21,10 @@
 use crate::model::Now;
 use std::cell::RefCell;
 use std::sync::Arc;
-use todo_client::mirror::Recovery;
+use todo_client::mirror::{MirrorStorage, Recovery};
 use todo_client::web::{
-    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, open_storage,
+    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks, elect_sender,
+    open_channel, open_storage,
 };
 use todo_client::{ClientConfig, Connection, ErrorKind, SyncClient};
 use todo_core::{Actor, Command, State};
@@ -44,6 +48,8 @@ enum Backend {
 struct Local {
     state: Arc<State>,
     now: Now,
+    /// Pretend storing fails (`?fixture=storage-error`, for the gallery).
+    storage_error: bool,
     started_ms: f64,
     counter: u64,
 }
@@ -51,6 +57,11 @@ struct Local {
 thread_local! {
     static BACKEND: RefCell<Option<Backend>> = const { RefCell::new(None) };
     static CSRF: RefCell<Option<CsrfToken>> = const { RefCell::new(None) };
+    static STORE: RefCell<Option<(MirrorStorage, IdbFlusher)>> = const { RefCell::new(None) };
+}
+
+fn store() -> Option<(MirrorStorage, IdbFlusher)> {
+    STORE.with(|s| s.borrow().clone())
 }
 
 /// The session's CSRF token: the transport's (kept current when the session changes), or the page's
@@ -75,6 +86,10 @@ pub struct Sync {
     pub signed_out: bool,
     /// The fixtures backend (nothing is sent anywhere).
     pub offline_demo: bool,
+    /// Why this browser couldn't store the last change (retried until it works).
+    pub local_error: Option<String>,
+    /// Something is not in this browser's storage yet: closing the page now could lose it.
+    pub unsaved: bool,
 }
 
 impl Default for Sync {
@@ -85,6 +100,8 @@ impl Default for Sync {
             failed: 0,
             signed_out: false,
             offline_demo: false,
+            local_error: None,
+            unsaved: false,
         }
     }
 }
@@ -118,8 +135,11 @@ fn owner() -> Actor {
 /// The stored replica is never deleted here, even if it fails to open: it may hold changes not yet
 /// sent. Unreadable parts are repaired on the way in (see [`Recovery`]); anything worse is a
 /// [`StartError::Storage`], and the page offers [`reset_local_data`].
-pub async fn open_live(csrf: String) -> Result<Opened, StartError> {
-    let (storage, flusher, recovery) = open_storage(DB_NAME)
+///
+/// `hooks` hear about a database upgrade that waits for other tabs, and about another tab's
+/// upgrade closing this one's connection.
+pub async fn open_live(csrf: String, hooks: OpenHooks) -> Result<Opened, StartError> {
+    let (storage, flusher, recovery) = open_storage(DB_NAME, hooks)
         .await
         .map_err(|e| StartError::Storage(e.0))?;
     let token = CsrfToken::new(csrf);
@@ -127,13 +147,67 @@ pub async fn open_live(csrf: String) -> Result<Opened, StartError> {
         FetchTransport::new(token.clone()),
         BrowserClock,
         BrowserEntropy,
-        storage,
+        storage.clone(),
         ClientConfig::new(owner()),
     )
     .map_err(|e| StartError::Storage(e.to_string()))?;
     CSRF.with(|c| *c.borrow_mut() = Some(token));
+    STORE.with(|s| *s.borrow_mut() = Some((storage, flusher.clone())));
+    // One tab sends for all: this one waits for the lock (if the browser has Web Locks).
+    client.set_sending(false);
+    let elected = elect_sender(|| {
+        if let Some(c) = live() {
+            c.set_sending(true);
+            wasm_bindgen_futures::spawn_local(take_in_queued());
+        }
+    });
+    if !elected {
+        tracing::info!("no Web Locks: this tab sends its own commands");
+        client.set_sending(true);
+    }
+    if let Some(channel) = open_channel(|| wasm_bindgen_futures::spawn_local(take_in_queued())) {
+        flusher.announce_on(channel);
+    }
     BACKEND.with(|b| *b.borrow_mut() = Some(Backend::Live(client)));
     Ok(Opened { flusher, recovery })
+}
+
+/// Reads every tab's queued commands from IndexedDB: the sending tab takes them in, and every tab
+/// takes in what another refused.
+async fn take_in_queued() {
+    let (Some(c), Some((_, flusher))) = (live(), store()) else {
+        return;
+    };
+    let (outbox, failed) = match flusher.queued().await {
+        Ok(q) => q,
+        Err(e) => {
+            tracing::warn!("could not read other tabs' changes: {}", e.0);
+            return;
+        }
+    };
+    if c.is_sending()
+        && let Err(e) = c.adopt(outbox)
+    {
+        tracing::warn!("could not take in other tabs' changes: {e}");
+    }
+    if let Err(e) = c.adopt_failed(failed) {
+        tracing::warn!("could not take in other tabs' refusals: {e}");
+    }
+}
+
+/// Writes what is not stored yet (the page is being hidden).
+pub fn flush_now() {
+    if let Some((_, flusher)) = store() {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = flusher.flush().await;
+        });
+    }
+}
+
+/// True if closing the page now could lose a change (not stored yet, or storing failed).
+#[must_use]
+pub fn unsaved() -> bool {
+    store().is_some_and(|(s, _)| s.unsaved() || s.flush_error().is_some())
 }
 
 /// Deletes this browser's copy, unsent changes included. Only on the user's confirmed request.
@@ -150,6 +224,7 @@ pub fn open_fixtures(state: State, now: Now) {
         *b.borrow_mut() = Some(Backend::Local(Local {
             state: Arc::new(state),
             now,
+            storage_error: crate::platform::query().contains("storage-error"),
             started_ms: js_sys::Date::now(),
             counter: 0,
         }));
@@ -176,9 +251,21 @@ pub async fn run() {
 /// Waits for the next change of the view or the status (live backend only; the fixtures backend
 /// never changes on its own).
 pub async fn next_change() {
-    match live() {
-        Some(c) => c.changes().next().await,
-        None => std::future::pending::<()>().await,
+    use futures_util::future::select;
+    use std::pin::pin;
+    match (live(), store()) {
+        (Some(c), Some((s, _))) => {
+            let mut changes = c.changes();
+            match todo_client::Storage::saved(&s) {
+                Some(saved) => {
+                    let seen = saved.generation();
+                    select(pin!(changes.next()), pin!(saved.changed(seen))).await;
+                }
+                None => changes.next().await,
+            }
+        }
+        (Some(c), None) => c.changes().next().await,
+        _ => std::future::pending::<()>().await,
     }
 }
 
@@ -214,12 +301,18 @@ pub fn status() -> Sync {
                     .last_error
                     .is_some_and(|e| e.kind == ErrorKind::Unauthorized),
                 offline_demo: false,
+                local_error: store().and_then(|(s, _)| s.flush_error()),
+                unsaved: store().is_some_and(|(s, _)| s.unsaved()),
             }
         }
         #[cfg(feature = "fixtures")]
-        Some(Backend::Local(_)) => Sync {
+        Some(Backend::Local(l)) => Sync {
             connection: Connection::Online,
             offline_demo: true,
+            local_error: l
+                .storage_error
+                .then(|| "QuotaExceededError: the quota has been exceeded".to_owned()),
+            unsaved: l.storage_error,
             ..Sync::default()
         },
         None => Sync::default(),

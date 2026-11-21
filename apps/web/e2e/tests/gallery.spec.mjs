@@ -54,6 +54,18 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`storage error (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app?fixture=storage-error");
+      await page.locator(".toast-error[role=alert]").waitFor();
+      await shot(page, `storage-error-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await page.locator(".toast-error[role=alert]").waitFor();
+      await shot(page, `phone-storage-error-${scheme}`);
+      await w.check();
+    });
+
     test(`medium window with detail (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(MEDIUM);

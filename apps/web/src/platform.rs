@@ -140,6 +140,52 @@ pub fn on_wake(f: impl Fn() + 'static) {
     }
 }
 
+/// While the page is open: asks before it closes if `unsaved()` (a change not stored in this browser
+/// yet), and calls `hidden` when it is hidden or put away (to write what is pending).
+#[cfg_attr(feature = "fixtures", allow(dead_code))]
+pub fn on_leave(unsaved: impl Fn() -> bool + 'static, hidden: impl Fn() + 'static) {
+    let Some(w) = window() else { return };
+    let ask = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+        if unsaved() {
+            e.prevent_default();
+            // Older browsers want `returnValue` set as well.
+            let _ = js_sys::Reflect::set(&e, &"returnValue".into(), &"".into());
+        }
+    });
+    let _ = w.add_event_listener_with_callback("beforeunload", ask.as_ref().unchecked_ref());
+    ask.forget();
+    let hide = Closure::<dyn Fn()>::new(hidden);
+    let _ = w.add_event_listener_with_callback("pagehide", hide.as_ref().unchecked_ref());
+    hide.forget();
+}
+
+/// Shows a notice while the app is starting (before it mounts), or removes it (`None`).
+#[cfg_attr(feature = "fixtures", allow(dead_code))]
+pub fn boot_notice(text: Option<&str>) {
+    let Some(d) = document() else { return };
+    if let Some(old) = d.get_element_by_id("boot-notice") {
+        old.remove();
+    }
+    let (Some(text), Some(body)) = (text, d.body()) else {
+        return;
+    };
+    if let Ok(p) = d.create_element("p") {
+        p.set_id("boot-notice");
+        p.set_class_name("fatal boot-notice");
+        let _ = p.set_attribute("role", "status");
+        p.set_text_content(Some(text));
+        let _ = body.append_child(&p);
+    }
+}
+
+/// Reloads the page.
+#[cfg_attr(feature = "fixtures", allow(dead_code))]
+pub fn reload() {
+    if let Some(w) = window() {
+        let _ = w.location().reload();
+    }
+}
+
 /// Sends the browser to the sign-in page, back to `next` afterwards.
 pub fn sign_in(next: &str) {
     if let Some(w) = window() {

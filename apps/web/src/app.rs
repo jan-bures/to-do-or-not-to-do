@@ -1017,6 +1017,18 @@ fn ToastView() -> impl IntoView {
     let c = ctx();
     view! {
         {move || {
+            // A change this browser couldn't store stays on screen until storing works again.
+            if let Some(e) = c.sync.with(|s| s.local_error.clone()) {
+                return Some(
+                    view! {
+                        <div class="toast toast-error" role="alert" title=format!("Retrying. The browser said: {e}")>
+                            <span class="toast-text toast-long">"Couldn’t save in this browser. Retrying; keep this tab open."</span>
+                            <span class="toast-text toast-short">"Not saved · keep this tab open"</span>
+                        </div>
+                    }
+                    .into_any(),
+                );
+            }
             c.toast
                 .get()
                 .map(|t| {
@@ -1046,6 +1058,7 @@ fn ToastView() -> impl IntoView {
                             <i class="toast-timer" aria-hidden="true"></i>
                         </div>
                     }
+                    .into_any()
                 })
         }}
     }
