@@ -8,6 +8,13 @@ input="$1"
 label="$2"
 root="$(git rev-parse --show-toplevel)"
 denylist="$root/private/config/denylist.txt"
+# Linked worktrees (agent checkouts) have no private/ of their own; fall back to the main checkout's.
+if [ ! -f "$denylist" ]; then
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$common" ] && [ -f "$(dirname "$common")/private/config/denylist.txt" ]; then
+    denylist="$(dirname "$common")/private/config/denylist.txt"
+  fi
+fi
 status=0
 
 if [ -f "$denylist" ]; then
