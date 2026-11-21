@@ -262,11 +262,11 @@ impl ShellView {
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
         let session = self.store.session();
-        // Don't prune against the empty replica while a new or rebuilt cache awaits its first sync.
-        let can_prune = session.is_none_or(|s| {
-            let status = s.client().status();
-            status.cursor != 0 || status.connection == Connection::Online
-        });
+        // Prune only once the stream is live and caught up: during catch-up after a new or rebuilt
+        // cache, a collection from a later page isn't in the replica yet. Stale IDs are harmless
+        // meanwhile, since deriving the sidebar only asks whether an ID is collapsed.
+        let can_prune =
+            session.is_none_or(|s| s.client().status().connection == Connection::Online);
         let state = self.store.view();
         let pruned = can_prune && self.ui.prune_collapsed_collections(&state);
         if (collapsed_changed || pruned)
