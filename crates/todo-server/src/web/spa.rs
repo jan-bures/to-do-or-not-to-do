@@ -19,12 +19,19 @@
 //! `index.html` gets [`APP_CSP`]: everything from this origin only, and `'wasm-unsafe-eval'` so the
 //! module can be compiled. No inline script or style is allowed. It is never cached. The other files
 //! are revalidated with an `ETag` (`private, no-cache`).
+//!
+//! # Compression
+//!
+//! The build script writes a gzipped copy next to the larger files (`todo-web_bg.wasm.gz`, ...). A
+//! client that accepts gzip gets that copy with `Content-Encoding: gzip`; the server never compresses
+//! anything itself. The wasm module shrinks from about 4.5 MB to 0.7 MB this way.
 
 use crate::app::AppState;
 use crate::auth::session::OwnerSession;
 use axum::extract::{Path, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG, IF_NONE_MATCH,
+    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG,
+    IF_NONE_MATCH, VARY,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -66,6 +73,12 @@ struct File {
     body: Vec<u8>,
     content_type: &'static str,
     etag: String,
+    /// The gzipped copy the build wrote next to it (`<name>.gz`), with its own ETag.
+    gzip: Option<(Vec<u8>, String)>,
+}
+
+fn etag(body: &[u8]) -> String {
+    format!("\"{}\"", &hex::encode(Sha256::digest(body))[..32])
 }
 
 /// The built web app, in memory.
@@ -99,7 +112,7 @@ impl WebApp {
     /// Reads the build in `dir`. Files with unknown extensions are skipped; `index.html` must exist
     /// and hold [`SESSION_MARKER`] exactly once.
     pub fn load(dir: &FsPath) -> Result<Self, WebAppError> {
-        let mut files = HashMap::new();
+        let mut entries = Vec::new();
         let mut total = 0u64;
         let mut stack = vec![(dir.to_owned(), String::new())];
         while let Some((path, prefix)) = stack.pop() {
@@ -119,38 +132,63 @@ impl WebApp {
                     stack.push((entry.path(), format!("{rel}/")));
                     continue;
                 }
-                let Some(ty) = content_type(&name) else {
+                if content_type(name.strip_suffix(".gz").unwrap_or(&name)).is_none() {
                     continue;
-                };
+                }
                 let body = std::fs::read(entry.path()).map_err(|source| WebAppError::Io {
                     path: entry.path().display().to_string(),
                     source,
                 })?;
                 total += body.len() as u64;
-                if total > MAX_TOTAL_BYTES || files.len() >= MAX_FILES {
+                if total > MAX_TOTAL_BYTES || entries.len() >= MAX_FILES {
                     return Err(WebAppError::Invalid(format!(
                         "{} is larger than {MAX_TOTAL_BYTES} bytes or {MAX_FILES} files",
                         dir.display()
                     )));
                 }
-                let etag = format!("\"{}\"", &hex::encode(Sha256::digest(&body))[..32]);
+                entries.push((rel, body));
+            }
+        }
+        let (index, files) = Self::assemble(entries);
+        let index = index
+            .ok_or_else(|| WebAppError::Invalid(format!("{} has no index.html", dir.display())))?;
+        let index = String::from_utf8(index)
+            .map_err(|_| WebAppError::Invalid("index.html is not UTF-8".into()))?;
+        let index = Self::split_index(&index)?;
+        Ok(Self { index, files })
+    }
+
+    /// Sorts files into `index.html` and the rest, attaching each `<name>.gz` to `<name>` (a `.gz`
+    /// without its original is dropped) and skipping unknown types.
+    fn assemble(entries: Vec<(String, Vec<u8>)>) -> (Option<Vec<u8>>, HashMap<String, File>) {
+        let mut index = None;
+        let mut files = HashMap::new();
+        let mut gz = Vec::new();
+        for (name, body) in entries {
+            if name == "index.html" {
+                index = Some(body);
+            } else if let Some(base) = name.strip_suffix(".gz") {
+                gz.push((base.to_owned(), body));
+            } else if let Some(content_type) = content_type(&name) {
+                let etag = etag(&body);
                 files.insert(
-                    rel,
+                    name,
                     File {
                         body,
-                        content_type: ty,
+                        content_type,
                         etag,
+                        gzip: None,
                     },
                 );
             }
         }
-        let index = files
-            .remove("index.html")
-            .ok_or_else(|| WebAppError::Invalid(format!("{} has no index.html", dir.display())))?;
-        let index = String::from_utf8(index.body)
-            .map_err(|_| WebAppError::Invalid("index.html is not UTF-8".into()))?;
-        let index = Self::split_index(&index)?;
-        Ok(Self { index, files })
+        for (base, body) in gz {
+            if let Some(f) = files.get_mut(&base) {
+                let tag = etag(&body);
+                f.gzip = Some((body, tag));
+            }
+        }
+        (index, files)
     }
 
     fn split_index(index: &str) -> Result<(String, String), WebAppError> {
@@ -171,21 +209,7 @@ impl WebApp {
         files: impl IntoIterator<Item = (String, Vec<u8>)>,
     ) -> Result<Self, WebAppError> {
         let index = Self::split_index(index_html)?;
-        let files = files
-            .into_iter()
-            .filter_map(|(name, body)| {
-                let content_type = content_type(&name)?;
-                let etag = format!("\"{}\"", &hex::encode(Sha256::digest(&body))[..32]);
-                Some((
-                    name,
-                    File {
-                        body,
-                        content_type,
-                        etag,
-                    },
-                ))
-            })
-            .collect();
+        let (_, files) = Self::assemble(files.into_iter().collect());
         Ok(Self { index, files })
     }
 
@@ -216,6 +240,62 @@ fn page_response(app: &WebApp, session: &OwnerSession) -> Response {
         .into_response()
 }
 
+/// Whether the request accepts gzip (`Accept-Encoding: gzip`, not with `q=0`).
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|enc| {
+            let mut parts = enc.split(';').map(str::trim);
+            let name = parts.next().unwrap_or_default();
+            let refused = parts.any(|p| {
+                p.strip_prefix("q=")
+                    .and_then(|q| q.parse::<f32>().ok())
+                    .is_some_and(|q| q <= 0.0)
+            });
+            (name.eq_ignore_ascii_case("gzip") || name == "*") && !refused
+        })
+}
+
+fn file_response(f: &File, headers: &HeaderMap) -> Response {
+    let gzip = f.gzip.as_ref().filter(|_| accepts_gzip(headers));
+    let (body, tag) = match gzip {
+        Some((body, tag)) => (body, tag),
+        None => (&f.body, &f.etag),
+    };
+    let etag = HeaderValue::from_str(tag).unwrap_or(HeaderValue::from_static("\"\""));
+    let cache = HeaderValue::from_static("private, no-cache");
+    let vary = HeaderValue::from_static("accept-encoding");
+    let fresh = headers
+        .get(IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == tag));
+    if fresh {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(ETAG, etag), (CACHE_CONTROL, cache), (VARY, vary)],
+        )
+            .into_response();
+    }
+    let mut res = (
+        [
+            (CONTENT_TYPE, HeaderValue::from_static(f.content_type)),
+            (ETAG, etag),
+            (CACHE_CONTROL, cache),
+            (VARY, vary),
+        ],
+        body.clone(),
+    )
+        .into_response();
+    if gzip.is_some() {
+        res.headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    res
+}
+
 /// `GET /app`.
 pub async fn root(State(app): State<AppState>, session: OwnerSession) -> Response {
     match &app.web {
@@ -236,28 +316,7 @@ pub async fn path(
         return StatusCode::NOT_FOUND.into_response();
     };
     if let Some(f) = web.files.get(path.as_str()) {
-        let etag = HeaderValue::from_str(&f.etag).unwrap_or(HeaderValue::from_static("\"\""));
-        let fresh = headers
-            .get(IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.split(',').any(|t| t.trim() == f.etag));
-        let cache = HeaderValue::from_static("private, no-cache");
-        if fresh {
-            return (
-                StatusCode::NOT_MODIFIED,
-                [(ETAG, etag), (CACHE_CONTROL, cache)],
-            )
-                .into_response();
-        }
-        return (
-            [
-                (CONTENT_TYPE, HeaderValue::from_static(f.content_type)),
-                (ETAG, etag),
-                (CACHE_CONTROL, cache),
-            ],
-            f.body.clone(),
-        )
-            .into_response();
+        return file_response(f, &headers);
     }
     let last = path.rsplit('/').next().unwrap_or_default();
     if last.contains('.') {
@@ -294,5 +353,38 @@ mod tests {
         assert!(app.files.contains_key("app.wasm"));
         assert!(!app.files.contains_key("notes.md"));
         assert_eq!(app.files["app.wasm"].content_type, "application/wasm");
+    }
+
+    #[test]
+    fn a_gzipped_copy_is_attached_to_its_original() {
+        let app = WebApp::from_parts(
+            SESSION_MARKER,
+            [
+                ("app.wasm".to_owned(), vec![1]),
+                ("app.wasm.gz".to_owned(), vec![2]),
+                ("orphan.js.gz".to_owned(), vec![3]),
+            ],
+        )
+        .unwrap();
+        let f = &app.files["app.wasm"];
+        assert_eq!(f.gzip.as_ref().unwrap().0, vec![2]);
+        assert_ne!(f.gzip.as_ref().unwrap().1, f.etag);
+        assert!(!app.files.contains_key("app.wasm.gz"));
+        assert!(!app.files.contains_key("orphan.js"));
+    }
+
+    #[test]
+    fn gzip_is_sent_only_to_clients_that_accept_it() {
+        let h = |v: &str| {
+            let mut m = HeaderMap::new();
+            m.insert(ACCEPT_ENCODING, HeaderValue::from_str(v).unwrap());
+            m
+        };
+        assert!(accepts_gzip(&h("gzip, deflate, br")));
+        assert!(accepts_gzip(&h("br;q=1.0, gzip;q=0.8")));
+        assert!(accepts_gzip(&h("*")));
+        assert!(!accepts_gzip(&h("gzip;q=0")));
+        assert!(!accepts_gzip(&h("br")));
+        assert!(!accepts_gzip(&HeaderMap::new()));
     }
 }

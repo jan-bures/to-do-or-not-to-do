@@ -7,8 +7,8 @@ mod common;
 use common::web::{Body, Browser, Env, SITE};
 use common::{TOKEN_A, id};
 use reqwest::header::{
-    ACCEPT, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
-    LOCATION, ORIGIN, WWW_AUTHENTICATE,
+    ACCEPT, ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, LOCATION, ORIGIN, VARY, WWW_AUTHENTICATE,
 };
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -25,6 +25,8 @@ fn build() -> TempDir {
     assert!(INDEX.contains(SESSION_MARKER));
     std::fs::write(dir.path().join("index.html"), INDEX).unwrap();
     std::fs::write(dir.path().join("todo_web_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    // The build's gzipped copy (the server sends it as is; the bytes needn't be real gzip here).
+    std::fs::write(dir.path().join("todo_web_bg.wasm.gz"), b"gzipped").unwrap();
     std::fs::write(dir.path().join("boot.js"), "import('./todo_web.js');").unwrap();
     std::fs::create_dir(dir.path().join("fonts")).unwrap();
     std::fs::write(dir.path().join("fonts").join("Mono.ttf"), b"font").unwrap();
@@ -390,6 +392,33 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+
+    // A client that accepts gzip gets the build's gzipped copy, under its own ETag.
+    let gz = |accept: &'static str| {
+        reqwest::Client::new()
+            .get(format!("{}/app/todo_web_bg.wasm", b.url))
+            .header(
+                COOKIE,
+                format!("__Host-todo_session={}", b.cookie.as_ref().unwrap()),
+            )
+            .header(ACCEPT_ENCODING, accept)
+            .send()
+    };
+    let res = gz("gzip, deflate, br").await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[CONTENT_ENCODING], "gzip");
+    assert_eq!(res.headers()[CONTENT_TYPE], "application/wasm");
+    assert_eq!(res.headers()[VARY], "accept-encoding");
+    assert_ne!(res.headers()[ETAG].to_str().unwrap(), etag);
+    assert_eq!(res.bytes().await.unwrap().as_ref(), b"gzipped");
+    let res = gz("br, gzip;q=0").await.unwrap();
+    assert!(res.headers().get(CONTENT_ENCODING).is_none());
+    assert_eq!(res.bytes().await.unwrap().as_ref(), b"\0asm\x01\0\0\0");
+    // The copy is not a file of its own.
+    assert_eq!(
+        b.get("/app/todo_web_bg.wasm.gz").await.status,
+        StatusCode::NOT_FOUND
+    );
 
     // Nothing else: unknown files, other types, and no way out of the directory.
     for path in [
