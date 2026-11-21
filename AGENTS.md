@@ -39,7 +39,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `assets/fonts` | Bundled OFL fonts (static instances, Czech coverage), their licenses, sources and build script. |
 | `assets/icons` | Lucide icon subset (ISC) and the hand-drawn list glyphs. |
 | `docs/design-language.md` | The design language. Every UI change follows it and passes the screenshot gate. |
-| `apps/desktop` | GPUI desktop app (not yet created). |
+| `apps/desktop` | GPUI desktop app, Windows only for now. Its own Cargo workspace with a vendored, patched `gpui_windows`. See `docs/desktop.md`. |
 | `workers/email-ingest` | Cloudflare Email Worker for email to task (plain JS, Node tests). Contract: `docs/ingest-email.md`. |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
 
@@ -56,6 +56,9 @@ cargo check -p todo-core -p todo-client -p todo-design --target aarch64-linux-an
 TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated
 # The email Worker (Node 22 or later):
 cd workers/email-ingest && npm ci && npm test
+# The desktop app (its own workspace, Windows only):
+cd apps/desktop && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
+pwsh apps/desktop/scripts/gallery.ps1   # screenshot gallery; look at it after UI changes
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` to what the GPUI revision needs. Bump it only together

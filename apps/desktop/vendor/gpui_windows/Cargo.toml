@@ -1,0 +1,43 @@
+[package]
+name = "gpui_windows"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/gpui_windows.rs"
+doctest = false
+
+[features]
+default = ["gpui/default"]
+test-support = ["gpui/test-support"]
+screen-capture = []
+
+[dependencies]
+accesskit = "0.24"
+accesskit_windows = "0.34"
+anyhow = "1"
+collections = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+dunce = "1"
+etagere = "0.2"
+futures = "0.3"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+gpui_util = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+image = { version = "0.25", default-features = false, features = ["png","jpeg","gif","bmp","webp","tiff","ico"] }
+itertools = "0.14"
+log = "0.4"
+parking_lot = "0.12"
+rand = "0.9"
+raw-window-handle = "0.6"
+scheduler = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+smallvec = "1"
+uuid = { version = "1", features = ["v5"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation","Win32_Graphics_Gdi","Win32_Security","Win32_Storage_FileSystem","Win32_System_Com","Win32_System_Com_StructuredStorage","Win32_System_IO","Win32_System_LibraryLoader","Win32_System_Ole","Win32_System_Threading","Win32_System_Variant","Win32_UI_Shell","Win32_UI_Shell_Common","Win32_UI_Shell_PropertiesSystem","Win32_UI_WindowsAndMessaging",
+    "Data_Xml_Dom","UI_Notifications","UI_ViewManagement","Wdk_System_SystemServices","Win32_Graphics_Direct3D11","Win32_Graphics_Direct3D_Fxc","Win32_Graphics_DirectComposition","Win32_Graphics_DirectManipulation","Win32_Graphics_DirectWrite","Win32_Graphics_Dwm","Win32_Graphics_Dxgi_Common","Win32_Graphics_Hlsl","Win32_Media","Win32_Security_Credentials","Win32_Storage_Packaging_Appx","Win32_System_DataExchange","Win32_System_Diagnostics_Debug","Win32_System_Memory","Win32_System_Performance","Win32_System_StationsAndDesktops","Win32_System_SystemInformation","Win32_System_SystemServices","Win32_UI_Controls","Win32_UI_HiDpi","Win32_UI_Input_Ime","Win32_UI_Input_Pointer"] }
+windows-core = "0.62"
+windows-numerics = "0.3"
+windows-registry = "0.6"
+
+[build-dependencies]
+windows-registry = "0.6"

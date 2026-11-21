@@ -1,0 +1,67 @@
+[package]
+name = "todo-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license-file = "../../LICENSE.md"
+repository = "https://github.com/jan-bures/to-do-or-not-to-do"
+publish = false
+description = "To-do desktop client (GPUI)."
+
+# The desktop app is its own Cargo workspace, outside the root one. GPUI comes from a pinned Zed revision
+# with a vendored, patched `gpui_windows` and an `async-task` patch, and pulls several hundred crates. Keeping
+# them out of the root workspace keeps the server, the shared crates and their wasm32/Android checks free of
+# GPUI's lockfile, patches and system dependencies. See `docs/desktop.md`.
+[workspace]
+
+[[bin]]
+name = "todo-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# The pinned GPUI revision. Bump it only on purpose, together with `vendor/gpui_windows` and the toolchain in
+# the root `rust-toolchain.toml` (see `vendor/gpui_windows/VENDORED.md`).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+anyhow = "1"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-segmentation = "1"
+
+[target.'cfg(windows)'.dependencies]
+gpui_windows = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
+global-hotkey = "0.7"
+raw-window-handle = "0.6"
+tray-icon = "0.21"
+windows-registry = "0.6"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[patch."https://github.com/zed-industries/zed"]
+gpui_windows = { path = "vendor/gpui_windows" }
+
+[patch.crates-io]
+# Zed carries the same patch (the waker identity fix, smol-rs/async-task#108) until it is released.
+async-task = { git = "https://github.com/smol-rs/async-task", rev = "41fd3359c75e221bd8b187a8ee361aa309c1714c" }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+debug = false
