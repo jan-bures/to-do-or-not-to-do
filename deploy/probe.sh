@@ -210,7 +210,7 @@ case "$csp" in *"default-src 'self'"*|*"default-src 'none'"*) result PASS "/logi
 v="$(header x-frame-options)"; [ "$v" = DENY ] && result PASS "/login X-Frame-Options" "$v" || result FAIL "/login X-Frame-Options" "$v"
 v="$(header x-content-type-options)"; [ "$v" = nosniff ] && result PASS "/login X-Content-Type-Options" "$v" || result FAIL "/login X-Content-Type-Options" "$v"
 v="$(header referrer-policy)"
-case "$v" in no-referrer|same-origin|strict-origin) result PASS "/login Referrer-Policy" "$v" ;; *) result FAIL "/login Referrer-Policy" "$v" ;; esac
+case "$v" in same-origin|strict-origin) result PASS "/login Referrer-Policy" "$v" ;; *) result FAIL "/login Referrer-Policy" "$v" ;; esac
 hsts /login "$tmp/login.h"
 
 cp "$tmp/api.h" "$tmp/h"

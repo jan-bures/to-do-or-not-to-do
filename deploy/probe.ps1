@@ -313,7 +313,7 @@ $checks = @(
     @('CSP default-src', ($csp -match "default-src '(self|none)'"), $csp),
     @('X-Frame-Options', ((Get-Header $login 'x-frame-options') -eq 'DENY'), (Get-Header $login 'x-frame-options')),
     @('X-Content-Type-Options', ((Get-Header $login 'x-content-type-options') -eq 'nosniff'), (Get-Header $login 'x-content-type-options')),
-    @('Referrer-Policy', ((Get-Header $login 'referrer-policy') -in @('no-referrer', 'same-origin', 'strict-origin')), (Get-Header $login 'referrer-policy'))
+    @('Referrer-Policy', ((Get-Header $login 'referrer-policy') -in @('same-origin', 'strict-origin')), (Get-Header $login 'referrer-policy'))
 )
 foreach ($c in $checks) {
     Write-Result $(if ($c[1]) { 'PASS' } else { 'FAIL' }) "/login $($c[0])" $c[2]

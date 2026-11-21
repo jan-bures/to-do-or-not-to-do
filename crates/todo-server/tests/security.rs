@@ -7,7 +7,7 @@
 //! | Public routes | They answer without credentials and reveal nothing: `/health` is an empty 200 without a version, and no response names the server or its version. |
 //! | Token scope | Agents at none, read, capture and plan stay inside their grants across REST reads, queries, smart lists, task detail, activity, the event log and stream, commands, undo and every MCP tool. Hidden lists, tasks, steps, tags and events look missing. |
 //! | Request limits | Oversized bodies get 413 on every route, with or without credentials, announced or chunked (the attachment upload and content routes have their own, larger cap; `tests/attachments.rs` covers their chunked case). Slow request heads are dropped and the connection cap holds. |
-//! | Headers | HTML pages carry the CSP (`frame-ancestors 'none'`), `X-Frame-Options`, `nosniff` and `no-referrer`; HSTS is on every response when the origin is HTTPS and never otherwise. Every cookie is `__Host-`, `Secure`, `HttpOnly` and `SameSite=Strict`. |
+//! | Headers | HTML pages carry the CSP (`frame-ancestors 'none'`), `X-Frame-Options`, `nosniff` and `Referrer-Policy: same-origin` (not `no-referrer`, which makes browsers send `Origin: null` on our own form posts); HSTS is on every response when the origin is HTTPS and never otherwise. Every cookie is `__Host-`, `Secure`, `HttpOnly` and `SameSite=Strict`. |
 //! | Email ingest | The one public write route takes no token: only a request signed with the Worker's secret, within the timestamp window and with an unused nonce gets in. A bad, missing or repeated signature, a tampered body, a stale or future timestamp, a replay and a bearer token in place of a signature are all 401 and store nothing. |
 //! | Logs | Tokens, session cookies, codes and task content never reach the log at `info` or above. |
 #![allow(clippy::unwrap_used, clippy::too_many_lines)]
@@ -1590,7 +1590,7 @@ fn assert_html_headers(what: &str, p: &Page) {
     );
     assert_eq!(p.header(X_FRAME_OPTIONS), "DENY", "{what}");
     assert_eq!(p.header(X_CONTENT_TYPE_OPTIONS), "nosniff", "{what}");
-    assert_eq!(p.header(REFERRER_POLICY), "no-referrer", "{what}");
+    assert_eq!(p.header(REFERRER_POLICY), "same-origin", "{what}");
     assert_eq!(p.header(CACHE_CONTROL), "no-store", "{what}");
     assert_eq!(p.header(STRICT_TRANSPORT_SECURITY), HSTS, "{what}");
     // No external resources.

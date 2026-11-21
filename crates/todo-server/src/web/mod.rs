@@ -16,7 +16,9 @@
 //! - The sign-in, setup and pairing routes are rate-limited per client IP ([`ip_limit`]); failed
 //!   sign-ins lock an IP out for a while.
 //! - Every HTML response gets a strict CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-//!   no-referrer` and `Cache-Control: no-store` ([`security_headers`], applied to the whole app).
+//!   same-origin` and `Cache-Control: no-store` ([`security_headers`], applied to the whole app).
+//!   Not `no-referrer`: under it browsers send `Origin: null` with a plain form POST, so the origin
+//!   check would refuse every form on our own pages. `same-origin` still sends nothing to other sites.
 //!   When `public_origin` is `https://`, every response (pages, API JSON, event streams, assets) also
 //!   gets [`HSTS`].
 //!
@@ -118,7 +120,8 @@ pub async fn security_headers(State(https): State<bool>, req: Request, next: Nex
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     h.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    // `same-origin`, never `no-referrer`: see the module docs (form POSTs would carry `Origin: null`).
+    h.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
     if !h.contains_key(CACHE_CONTROL) {
         h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }

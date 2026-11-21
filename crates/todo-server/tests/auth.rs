@@ -2017,7 +2017,7 @@ async fn share_pages_show_titles_completion_due_dates_and_steps_only() {
     assert_eq!(page.header("x-robots-tag"), "noindex, nofollow");
     assert!(body.contains(r#"<meta name="robots" content="noindex, nofollow">"#));
     assert_eq!(page.header(CACHE_CONTROL), "no-store");
-    assert_eq!(page.header(REFERRER_POLICY), "no-referrer");
+    assert_eq!(page.header(REFERRER_POLICY), "same-origin");
     assert_eq!(page.header(X_CONTENT_TYPE_OPTIONS), "nosniff");
     assert_eq!(page.header(X_FRAME_OPTIONS), "DENY");
     assert_eq!(
