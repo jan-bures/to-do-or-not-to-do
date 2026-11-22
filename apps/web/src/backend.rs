@@ -25,6 +25,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::mirror::{MirrorStorage, Recovery};
 use todo_client::notify::Notify;
 use todo_client::web::{
@@ -35,7 +36,7 @@ use todo_client::{
     ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
     TrackedUndo, failure, protocol,
 };
-use todo_core::ids::{AttachmentId, TaskId};
+use todo_core::ids::{AttachmentId, EventId, TaskId};
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
 
@@ -64,6 +65,7 @@ struct Local {
     started_ms: f64,
     counter: u64,
     failures: Vec<Failure>,
+    activity: Vec<todo_client::activity::ActivityItem>,
 }
 
 thread_local! {
@@ -356,6 +358,11 @@ pub fn open_fixtures(state: State, now: Now) {
             started_ms: js_sys::Date::now(),
             counter: 0,
             failures,
+            activity: if query.contains("fixture=blank") {
+                Vec::new()
+            } else {
+                crate::fixtures::activity()
+            },
         }));
     });
 }
@@ -692,6 +699,95 @@ pub fn undo(target: &UndoTarget) -> Result<TrackedUndo, String> {
         }
         _ => Ok(TrackedUndo::Unavailable),
     })
+}
+
+/// The confirmed position, not the optimistic view; a change here may mean new feed entries.
+pub fn activity_revision() -> Option<(Option<todo_client::Epoch>, u64)> {
+    live().map(|c| (c.epoch(), c.cursor()))
+}
+
+pub async fn activity(query: &ActivityQuery) -> Result<ActivityPage, ActivityError> {
+    if let Some(c) = live() {
+        return c.activity(query).await;
+    }
+    #[cfg(feature = "fixtures")]
+    if let Some(page) = BACKEND.with(|b| {
+        let b = b.borrow();
+        let Some(Backend::Local(local)) = b.as_ref() else {
+            return None;
+        };
+        let limit = query.limit.unwrap_or(50).clamp(1, 200);
+        let mut matches = local.activity.iter().filter(|item| {
+            let event = &item.event.event;
+            query
+                .before
+                .is_none_or(|seq| event.seq.is_some_and(|n| n < seq))
+                && query
+                    .agent
+                    .as_ref()
+                    .is_none_or(|agent| event.actor.agent_id() == Some(agent))
+        });
+        let items: Vec<_> = matches.by_ref().take(limit).cloned().collect();
+        let next_before = matches.next().and_then(|_| items.last()?.event.event.seq);
+        Some(ActivityPage { items, next_before })
+    }) {
+        return Ok(page);
+    }
+    Err(ActivityError::Unavailable)
+}
+
+/// Reconcile an already loaded feed row with any newer compensation the replica confirmed.
+pub fn activity_flags(id: EventId, compensating: bool) -> Option<(bool, bool)> {
+    live()?.with_confirmed(|state| {
+        let journal = &state.journal;
+        if !journal.has_seen(id) {
+            return None;
+        }
+        let root = journal.root_of(id);
+        let head = journal.head_of(root);
+        let undone = if compensating {
+            head != id
+        } else {
+            journal.is_undone(root)
+        };
+        Some((undone, head == id))
+    })
+}
+
+/// Queue the checked, non-forced compensation. `None` is an immediate success in the fixture.
+pub fn undo_activity(event: protocol::EventRef) -> Result<Option<CommandId>, &'static str> {
+    if status().read_only {
+        return Err(READ_ONLY);
+    }
+    if let Some(c) = live() {
+        return c.undo_activity(event).map(Some).map_err(|error| {
+            tracing::debug!(%error, "could not queue activity undo");
+            changes::undo_failure("")
+        });
+    }
+    #[cfg(feature = "fixtures")]
+    return BACKEND.with(|b| {
+        let mut b = b.borrow_mut();
+        let Some(Backend::Local(local)) = b.as_mut() else {
+            return Err(changes::undo_failure(""));
+        };
+        let item = local
+            .activity
+            .iter_mut()
+            .find(|item| item.event_ref() == Some(event))
+            .ok_or_else(|| changes::undo_failure("event_not_found"))?;
+        if !item.can_undo {
+            return Err(changes::undo_failure("already_undone"));
+        }
+        if event.seq == crate::fixtures::REFUSED_ACTIVITY_SEQ {
+            return Err(changes::undo_failure("undo_conflict"));
+        }
+        item.can_undo = false;
+        item.undone = true;
+        Ok(None)
+    });
+    #[cfg(not(feature = "fixtures"))]
+    Err(changes::undo_failure(""))
 }
 
 /// None while the compensation is still queued. Durable refusals also remain in Not synced.

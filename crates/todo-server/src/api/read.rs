@@ -857,7 +857,12 @@ pub async fn activity(
     // loaded; summaries get a fixed reserve per entry.
     let budget = MAX_PAGE_BYTES - PAGE_ENVELOPE - limit * ACTIVITY_ITEM_RESERVE;
     blocking(&app, Work::Read, move || {
-        let page = engine.events_before_capped(q.before, limit, budget)?;
+        let actor = q.agent.map(|agent_id| Actor::Agent { agent_id });
+        let unrestricted = visibility::sees_all(&auth.actor);
+        // For scoped readers keep the original scan/cursor and apply the filter only to visible
+        // items. Otherwise an empty page's cursor could identify an unseen event's actor.
+        let query_actor = actor.as_ref().filter(|_| unrestricted);
+        let page = engine.events_before_capped(q.before, limit, budget, query_actor)?;
         if let Some(seq) = page.oversized {
             tracing::warn!(seq, "an event is larger than the page limit");
             return Err(ApiError::item_too_large("next_before", json!(seq)));
@@ -875,9 +880,10 @@ pub async fn activity(
             .filter(|e| {
                 let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
                 visibility::event_visible(&s, &gone, &auth.actor, &e.event, scope)
+                    && actor.as_ref().is_none_or(|actor| actor == &e.event.actor)
             })
             .map(|mut event| {
-                if !visibility::sees_all(&auth.actor) {
+                if !unrestricted {
                     // See `visibility::log_event_for`.
                     event.command_len = None;
                 }

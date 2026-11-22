@@ -218,6 +218,39 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+test("Activity reads confirmed changes and compensates another tab's past edit", async () => {
+  const author = await openApp();
+  const reader = await openApp();
+  const problems = [author, reader].map(watch);
+  const original = "Activity test original title";
+  const edited = "Activity test changed title";
+  await add(author, original);
+  await expect(row(reader, original)).toBeVisible();
+  await rename(author, original, edited);
+  await expect(row(reader, edited)).toBeVisible();
+  await expect.poll(() => occurrences(reader, edited)).toBe(1);
+
+  await reader.getByRole("link", { name: "Activity", exact: true }).click();
+  await expect(reader).toHaveURL(/\/app\/activity$/);
+  const edit = reader.locator(".activity-row").filter({ hasText: `Updated task "${edited}" (title)` });
+  await expect(edit).toBeVisible();
+  await expect(edit.locator(".activity-meta")).toContainText("You");
+  await edit.getByRole("button", { name: /^Undo:/ }).click();
+  await expect(edit.getByText("Undone", { exact: true })).toBeVisible();
+  await expect(row(author, original)).toBeVisible();
+  await expect(row(author, edited)).toHaveCount(0);
+  await reader.getByRole("button", { name: "Refresh activity" }).click();
+  const compensation = reader.locator(".activity-row").first();
+  await expect(compensation).toContainText(`Undo: Updated task "${original}" (title)`);
+  await compensation.getByRole("button", { name: /^Undo:/ }).click();
+  await expect(row(author, edited)).toBeVisible();
+  await expect(reader.locator(".activity-row").nth(1).getByText("Superseded", { exact: true })).toBeVisible();
+
+  expect(problems.flat()).toEqual([]);
+  await reader.close();
+  await author.close();
+});
+
 test("attachments wait for task creation and event delivery; the web session can then download and remove them", async () => {
   const page = await context.newPage();
   const problems = watch(page);

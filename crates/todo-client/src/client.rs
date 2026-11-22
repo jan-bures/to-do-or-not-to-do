@@ -36,6 +36,7 @@
 //! epoch is not recorded, and a resync forgets the recorded ones, so their entries are sent again
 //! (idempotently) to the log the client now follows.
 
+use crate::activity::{self, ActivityError, ActivityPage, ActivityQuery};
 use crate::notify::{Backoff, Notify, sleep_or_wake, timeout};
 use crate::outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 use crate::platform::{
@@ -495,6 +496,28 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             },
             |_, id| id,
         )
+    }
+
+    /// Reads a page of confirmed history through the same transport as sync. The caller supplies
+    /// the next cursor (and the same agent filter) to read older activity.
+    pub async fn activity(&self, query: &ActivityQuery) -> Result<ActivityPage, ActivityError> {
+        let response = timeout(
+            &self.inner.clock,
+            self.inner.config.request_timeout,
+            self.inner.transport.send(query.request()),
+        )
+        .await
+        .and_then(Result::ok)
+        .ok_or(ActivityError::Unavailable)?;
+        activity::read_response(&response)
+    }
+
+    /// Requests a non-forced compensation for the command that produced a confirmed feed event.
+    /// Unlike `compensate_tracked`, this doesn't need a local submission handle: the event already
+    /// exists in the server's log. The durable outbox still sends the checked undo, not a local
+    /// cancellation, and the server compensates the entire original batch.
+    pub fn undo_activity(&self, event: protocol::EventRef) -> Result<CommandId, SubmitError> {
+        self.undo(event.seq, event.id, false)
     }
 
     /// The log epoch the confirmed state belongs to.

@@ -1,6 +1,7 @@
 //! The Leptos components. Layout and look are in `static/app.css`, which takes every value from
 //! `tokens.css`; this file only sets classes and `data-*` hue keys.
 
+mod activity;
 mod attachments;
 mod room_actions;
 
@@ -85,6 +86,8 @@ pub struct Ctx {
     toast_seq: RwSignal<u64>,
     undo: RwSignal<Option<Undo>>,
     waiting_undo: RwSignal<BTreeMap<CommandId, WaitingUndo>>,
+    activity_undos: activity::Undos,
+    activity_revision: RwSignal<Option<(Option<todo_client::Epoch>, u64)>>,
     room_actions: room_actions::Controls,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
@@ -139,6 +142,11 @@ impl Ctx {
         }
         self.sync.set(s);
         self.failures.set(backend::failures());
+        let revision = backend::activity_revision();
+        if self.activity_revision.get_untracked() != revision {
+            self.activity_revision.set(revision);
+        }
+        self.activity_undos.settle();
         for (id, undo) in self.waiting_undo.get_untracked() {
             if let Some(outcome) = backend::undo_result(id) {
                 self.waiting_undo.update(|pending| {
@@ -508,6 +516,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         toast_seq: RwSignal::new(0),
         undo: RwSignal::new(None),
         waiting_undo: RwSignal::new(BTreeMap::new()),
+        activity_undos: activity::Undos::new(),
+        activity_revision: RwSignal::new(None),
         room_actions: room_actions::Controls::new(),
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
@@ -634,16 +644,25 @@ fn track_overlay_focus(c: Ctx) {
         }
         (modal, id, room)
     });
-    Effect::new(move |prev| {
+    Effect::new(move |prev: Option<(bool, RoomId)>| {
         let open = c.drawer.get();
-        if open || prev == Some(true) {
+        let room = c.room.get();
+        if !open
+            && prev
+                .as_ref()
+                .is_some_and(|(_, old)| old != &room && (old.is_activity() || room.is_activity()))
+        {
+            request_animation_frame(|| {
+                platform::focus("room-title");
+            });
+        } else if open || prev.is_some_and(|(was_open, _)| was_open) {
             request_animation_frame(move || {
                 if open == c.drawer.get_untracked() {
                     platform::focus(if open { "list-drawer" } else { "open-drawer" });
                 }
             });
         }
-        open
+        (open, room)
     });
 }
 
@@ -705,7 +724,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
+    let activity = c.room.with_untracked(RoomId::is_activity);
     if !typing
+        && !activity
         && !drawer
         && !modal
         && !ev.alt_key()
@@ -731,7 +752,8 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
-    if drawer {
+    if drawer || activity {
+        // The history has no task selection or composer. Keep native scrolling and button keys.
         return;
     }
     if ev.alt_key() {
@@ -942,6 +964,7 @@ fn SidebarPane() -> impl IntoView {
             .map(|s| room_actions::Origin(s, room_actions::Anchor::Link));
         let lead = match (&n.room, n.glyph) {
             (RoomId::Smart(id), _) => icon(model::smart_icon(id)).into_any(),
+            (RoomId::Activity(_), _) => icon(Icon::Clock).into_any(),
             (_, Some(g)) => glyph(g).into_any(),
             _ => ().into_any(),
         };
@@ -1003,6 +1026,10 @@ fn SidebarPane() -> impl IntoView {
                     view! {
                         <div class="nav-section">
                             {sb.smart.into_iter().map(|n| item(n, false, Vec::new())).collect_view()}
+                            {item(model::NavItem {
+                                room: RoomId::Activity(None), name: "Activity".into(), count: 0,
+                                hue: "agent-activity", glyph: None,
+                            }, false, Vec::new())}
                         </div>
                         {sb
                             .groups
@@ -1044,8 +1071,18 @@ fn SidebarPane() -> impl IntoView {
                             <section class="nav-section side-agents" aria-label="Agents">
                                 <h2 class="caps nav-caps">"Agents"</h2>
                                 <ul>
-                                    {sb.agents.into_iter().map(|(agent, status)| view! {
-                                        <li>{mark(&agent)}<span>{model::agent_display(&agent.name)}</span><span class="count">{status}</span></li>
+                                    {sb.agents.into_iter().filter_map(|(agent, status)| {
+                                        let room = RoomId::Activity(Some(todo_core::actor::AgentId::new(&agent.name).ok()?));
+                                        let active_room = room.clone();
+                                        let active = move || c.room.with(|r| *r == active_room);
+                                        Some(view! {
+                                            <li><a class="nav-item" class:active=active.clone()
+                                                aria-current=move || active().then_some("page")
+                                                href=room.path() on:click=link_room(c, room)>
+                                                {mark(&agent)}<span class="nav-name">{model::agent_display(&agent.name)}</span>
+                                                <span class="count">{status}</span>
+                                            </a></li>
+                                        })
                                     }).collect_view()}
                                 </ul>
                             </section>
@@ -1156,11 +1193,13 @@ fn AppBar() -> impl IntoView {
                         .then(|| sync_text(&s, c.synced_at.get()))
                 }}
             </span>
-            <button type="button" class="filter-trigger" id="open-filter" aria-label="Filter tasks"
-                aria-keyshortcuts="/ Control+K" title="Filter tasks (/ or Ctrl+K)"
-                aria-expanded=move || c.filter_open.get().to_string()
-                on:click=move |_| c.open_filter()
-            >{icon(Icon::Search)}<span>"Filter"</span><kbd class="keycap">"Ctrl K"</kbd></button>
+            <Show when=move || !c.room.with(RoomId::is_activity)>
+                <button type="button" class="filter-trigger" id="open-filter" aria-label="Filter tasks"
+                    aria-keyshortcuts="/ Control+K" title="Filter tasks (/ or Ctrl+K)"
+                    aria-expanded=move || c.filter_open.get().to_string()
+                    on:click=move |_| c.open_filter()
+                >{icon(Icon::Search)}<span>"Filter"</span><kbd class="keycap">"Ctrl K"</kbd></button>
+            </Show>
             <Show when=move || c.filter_open.get()>
                 <div class="filter-field" role="search">
                     {icon(Icon::Search)}
@@ -1234,6 +1273,7 @@ fn RoomPane() -> impl IntoView {
     let finished = c.finished;
     let node = NodeRef::<html::Div>::new();
     let width = RwSignal::new(0.0_f64);
+    let reached_bottom = RwSignal::new(0u64);
     node.on_load(move |el| {
         width.set(f64::from(el.client_width()));
         platform::observe_width(&el, move |w| width.set(w));
@@ -1248,16 +1288,31 @@ fn RoomPane() -> impl IntoView {
         room
     });
     view! {
-        <div class="room" node_ref=node on:scroll=move |_| c.room_actions.position_menu()>
+        <div class="room" node_ref=node on:scroll=move |_| {
+            c.room_actions.position_menu();
+            if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
+                let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
+                // Scroll metrics are rounded; also start before the last row leaves the viewport.
+                if remaining <= el.client_height() / 4 {
+                    reached_bottom.update(|n| *n += 1);
+                }
+            }
+        }>
             <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
                 <FinishedHeader width=width/>
             </Show>
-            <RoomPills/>
-            <QuickAdd/>
-            <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
-                <Handover/>
+            <Show when=move || !c.room.with(RoomId::is_activity)>
+                <RoomPills/>
+                <QuickAdd/>
+                <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
+                    <Handover/>
+                </Show>
+                <CompletedRows/>
             </Show>
-            <CompletedRows/>
+            <For each=move || c.room.with(|r| match r {
+                RoomId::Activity(agent) => vec![agent.clone()],
+                _ => Vec::new(),
+            }) key=Clone::clone children=move |agent| view! { <activity::Feed agent=agent reached_bottom=reached_bottom/> }/>
         </div>
     }
 }
@@ -2582,7 +2637,7 @@ fn StatusBar() -> impl IntoView {
     view! {
         <footer class="statusbar" inert=move || c.detail_modal.get()>
             <span class="sb-counts">
-                {move || c.view_room.with(|r| format!("{} open   {} done", r.open(), r.done))}
+                {move || c.view_room.with(|r| (!r.id.is_activity()).then(|| format!("{} open   {} done", r.open(), r.done)))}
             </span>
             <span class="sb-keys" aria-hidden="true">
                 <Show when=move || !c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done)))>

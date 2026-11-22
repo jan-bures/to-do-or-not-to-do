@@ -29,17 +29,7 @@ impl Failure {
     }
 }
 
-pub fn undo_failure(code: &str) -> &'static str {
-    match code {
-        "undo_conflict" => "Couldn't undo: the item was changed again.",
-        "undo_no_event" | "event_not_found" => {
-            "Couldn't undo: the original change couldn't be found."
-        }
-        "epoch_mismatch" | "event_mismatch" => "Couldn't undo: the server's history changed.",
-        "not_found" => "Couldn't undo: the item no longer exists.",
-        _ => "Couldn't undo that.",
-    }
-}
+pub use todo_client::failure::undo_message as undo_failure;
 
 /// Validation comes from local `decide`, not from a server response. Storage errors are only logged.
 pub fn submission_error(error: &SubmitError) -> String {

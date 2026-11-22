@@ -242,4 +242,7 @@ pub struct ActivityParams {
     /// Page size (1–200, default 50).
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Only events performed by this agent. Normal visibility rules still apply.
+    #[serde(default)]
+    pub agent: Option<todo_core::actor::AgentId>,
 }

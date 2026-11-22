@@ -15,6 +15,7 @@
 //! |---|---|
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
 //! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
+//! | [`activity`] | paged activity reads and shared feed wording |
 //! | [`intent`] | shared quick-add syntax and gesture-to-command builders |
 //! | [`intent::suggest`] | local, incremental title-to-list suggestions; no storage or network access |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
@@ -38,6 +39,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod activity;
 pub mod client;
 pub mod failure;
 pub mod intent;

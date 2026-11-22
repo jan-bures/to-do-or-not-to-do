@@ -52,7 +52,7 @@ impl Now {
     }
 }
 
-fn local(at: Timestamp, offset_s: i32) -> DateTime {
+pub(crate) fn local(at: Timestamp, offset_s: i32) -> DateTime {
     let off = Offset::from_seconds(offset_s).unwrap_or(Offset::UTC);
     off.to_datetime(at)
 }
@@ -68,6 +68,8 @@ pub enum RoomId {
     Collection(CollectionId),
     /// One list.
     List(ListId),
+    /// History, optionally narrowed to a single agent.
+    Activity(Option<todo_core::actor::AgentId>),
 }
 
 impl Default for RoomId {
@@ -82,7 +84,7 @@ impl From<&RoomId> for TaskRoom {
             RoomId::Smart("my_day") => Self::MyDay,
             RoomId::Smart("important") => Self::Important,
             RoomId::Smart("planned") => Self::Planned,
-            RoomId::Smart(_) => Self::Other,
+            RoomId::Smart(_) | RoomId::Activity(_) => Self::Other,
             RoomId::Collection(id) => Self::Collection(id),
             RoomId::List(id) => Self::List(id),
         }
@@ -98,6 +100,8 @@ impl RoomId {
             RoomId::Smart(id) => format!("/app/{}", id.replace('_', "-")),
             RoomId::Collection(c) => format!("/app/collection/{c}"),
             RoomId::List(l) => format!("/app/list/{l}"),
+            RoomId::Activity(None) => "/app/activity".to_owned(),
+            RoomId::Activity(Some(agent)) => format!("/app/activity/agent/{agent}"),
         }
     }
 
@@ -107,6 +111,13 @@ impl RoomId {
         let rest = path.strip_prefix("/app").unwrap_or(path);
         let segs: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
         let (room, used) = match segs.as_slice() {
+            ["activity"] => return (RoomId::Activity(None), None),
+            ["activity", "agent", agent] => {
+                return (
+                    RoomId::Activity(todo_core::actor::AgentId::new(*agent).ok()),
+                    None,
+                );
+            }
             ["collection", id, ..] => (id.parse().map(RoomId::Collection).ok(), 2),
             ["list", id, ..] => (id.parse().map(RoomId::List).ok(), 2),
             ["task", ..] | [] => (Some(RoomId::default()), 0),
@@ -126,6 +137,11 @@ impl RoomId {
             _ => None,
         };
         (room, task)
+    }
+
+    /// Whether this room is the activity feed rather than a task list.
+    pub fn is_activity(&self) -> bool {
+        matches!(self, Self::Activity(_))
     }
 }
 
@@ -824,6 +840,20 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
     let live = |t: &&Task| task_live(state, t);
     let (title, hue, eyebrow, scope, mode, add): (String, &'static str, Eyebrow, Vec<&Task>, _, _) =
         match id {
+            RoomId::Activity(agent) => (
+                "Activity".to_owned(),
+                "agent-activity",
+                Eyebrow {
+                    lead: "History".to_owned(),
+                    meta: vec![agent.as_ref().map_or_else(
+                        || "All changes".to_owned(),
+                        |agent| format!("Agent: {}", agent_display(agent.as_str())),
+                    )],
+                },
+                Vec::new(),
+                ChipMode::Hidden,
+                None,
+            ),
             RoomId::Smart(s) => {
                 let in_scope: Box<dyn Fn(&Task) -> bool> = match *s {
                     "my_day" => Box::new(move |t: &Task| t.my_day == Some(today)),
@@ -1193,10 +1223,7 @@ pub fn actor_name(actor: &Actor) -> String {
 /// An agent's display name (`claude` → `Claude`, `pi` → `Pi`).
 #[must_use]
 pub fn agent_display(id: &str) -> String {
-    let mut c = id.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+    todo_client::activity::agent_name(id)
 }
 
 fn clock(dt: DateTime) -> String {
@@ -1415,6 +1442,10 @@ mod tests {
             RoomId::Smart("my_day"),
             RoomId::Smart("agent_activity"),
             RoomId::Smart("completed"),
+            RoomId::Activity(None),
+            RoomId::Activity(Some(
+                todo_core::actor::AgentId::new("sample_agent").unwrap(),
+            )),
             RoomId::List(list),
             RoomId::Collection(coll),
         ] {

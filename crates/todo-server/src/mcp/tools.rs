@@ -1429,6 +1429,7 @@ impl TodoMcp {
                 ApiQuery(ActivityParams {
                     before: a.before,
                     limit: a.limit,
+                    agent: None,
                 }),
             )
             .await?;

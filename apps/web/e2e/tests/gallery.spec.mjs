@@ -96,6 +96,29 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`Activity history, filter, empty log and refused undo (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app/activity");
+      await expect(page.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
+      await shot(page, `activity-${scheme}`);
+
+      const undo = page.getByRole("button", { name: /^Undo: Updated task.*due date/ });
+      await undo.click();
+      await expect(page.getByText("Couldn't undo: the item was changed again.")).toBeVisible();
+      await shot(page, `activity-refused-${scheme}`);
+
+      await page.getByRole("region", { name: "Agents" }).getByRole("link", { name: /Codex/ }).click();
+      await expect(page).toHaveURL(/\/app\/activity\/agent\/codex$/);
+      await expect(page.locator(".activity-row").first()).toContainText("Codex");
+      await shot(page, `activity-agent-${scheme}`);
+
+      await open(page, "/app/activity?fixture=blank");
+      await expect(page.getByText("No activity yet.")).toBeVisible();
+      await shot(page, `activity-empty-${scheme}`);
+      await w.check();
+    });
+
     test(`quick-add previews the shared date label (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

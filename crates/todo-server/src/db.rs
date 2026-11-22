@@ -251,6 +251,8 @@ CREATE TABLE list_keys (
     set_at  INTEGER NOT NULL
 ) WITHOUT ROWID;
 ",
+    // SQLite's rowid is the sequence, so this index supports seeking an actor's newest events.
+    "CREATE INDEX events_actor ON events (actor);",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).
@@ -549,11 +551,21 @@ pub fn insert_scope(tx: &Connection, seq: u64, scope: &EventScope) -> Result<()>
 /// The scopes of the events with `lo <= seq <= hi`. Events without a stored scope are missing from
 /// the map (callers treat them as unreadable for agents).
 pub fn scopes_between(conn: &Connection, lo: u64, hi: u64) -> Result<BTreeMap<u64, EventScope>> {
+    query_scopes(
+        conn,
+        "SELECT seq, scope FROM event_scopes WHERE seq >= ?1 AND seq <= ?2",
+        params![from_seq(lo), from_seq(hi)],
+    )
+}
+
+fn query_scopes(
+    conn: &Connection,
+    sql: &str,
+    bind: impl rusqlite::Params,
+) -> Result<BTreeMap<u64, EventScope>> {
     let rows = conn
-        .prepare_cached("SELECT seq, scope FROM event_scopes WHERE seq >= ?1 AND seq <= ?2")?
-        .query_map(params![from_seq(lo), from_seq(hi)], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
+        .prepare_cached(sql)?
+        .query_map(bind, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .map(|(seq, json)| Ok((to_seq(seq)?, serde_json::from_str(&json)?)))
@@ -685,42 +697,60 @@ pub fn events_after_capped(
     })
 }
 
-/// Like [`events_before`], but within a byte budget (see [`events_after_capped`]).
+/// Like [`events_before`], but within a byte budget (see [`events_after_capped`]). An optional
+/// exact actor filter is applied before sizing and paging, including to the scope lookup.
 pub fn events_before_capped(
     conn: &Connection,
     before: Option<u64>,
     limit: usize,
     max_bytes: usize,
+    actor: Option<&Actor>,
 ) -> Result<CappedEvents> {
+    let before = before.map_or(i64::MAX, from_seq);
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let actor = actor.map(serde_json::to_string).transpose()?;
+    // Separate query plans, so SQLite can seek by actor (rather than scanning with an OR).
+    let predicate = if actor.is_some() {
+        " AND actor = ?3"
+    } else {
+        ""
+    };
+    let bind_count = if actor.is_some() { 3 } else { 2 };
+    let sizes_bind: [&dyn rusqlite::ToSql; 3] = [&before, &limit, &actor];
     let sizes = conn
         .prepare_cached(&format!(
-            "SELECT seq, {SIZE_EXPR} FROM events WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
+            "SELECT seq, {SIZE_EXPR} FROM events WHERE seq < ?1{predicate} ORDER BY seq DESC LIMIT ?2"
         ))?
-        .query_map(
-            params![
-                before.map_or(i64::MAX, from_seq),
-                i64::try_from(limit).unwrap_or(i64::MAX)
-            ],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-        )?
+        .query_map(&sizes_bind[..bind_count], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let (last, truncated, oversized) = fit(&sizes, max_bytes)?;
-    let (events, scopes) = match last {
-        None => (Vec::new(), BTreeMap::new()),
-        Some(last) => (
-            query_log_events(
+    let (events, scopes) = if let Some(last) = last {
+        let last = from_seq(last);
+        let bind: [&dyn rusqlite::ToSql; 3] = [&before, &last, &actor];
+        let bind = &bind[..bind_count];
+        let events = query_log_events(
+            conn,
+            &format!(
+                "SELECT {LOG_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2{predicate} ORDER BY seq DESC"
+            ),
+            bind,
+        )?;
+        let scopes = if actor.is_some() {
+            query_scopes(
                 conn,
-                &format!(
-                    "SELECT {LOG_COLUMNS} FROM events WHERE seq < ?1 AND seq >= ?2 ORDER BY seq DESC"
-                ),
-                params![before.map_or(i64::MAX, from_seq), from_seq(last)],
-            )?,
-            scopes_between(
+                "SELECT events.seq, scope FROM events JOIN event_scopes USING (seq) WHERE events.seq < ?1 AND events.seq >= ?2 AND actor = ?3",
+                bind,
+            )?
+        } else {
+            query_scopes(
                 conn,
-                last,
-                before.map_or(u64::MAX >> 1, |b| b.saturating_sub(1)),
-            )?,
-        ),
+                "SELECT seq, scope FROM event_scopes WHERE seq < ?1 AND seq >= ?2",
+                bind,
+            )?
+        };
+        (events, scopes)
+    } else {
+        (Vec::new(), BTreeMap::new())
     };
     Ok(CappedEvents {
         events,

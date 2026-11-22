@@ -9,7 +9,8 @@ there is no token in the browser.
 This first version covers sign-in, the smart lists and every collection and list, the task list, the task
 detail, adding, completing (with the F2 check animation), editing titles, steps and notes, My Day, and live
 updates. Attachments can be uploaded, downloaded and removed. Lists and collections can be renamed,
-moved up or down, and deleted. Undo compensates the exact change. It has the desktop layout on wide
+moved up or down, and deleted. Activity shows confirmed changes and lets you undo past events.
+Undo compensates the exact change. It has the desktop layout on wide
 windows and the phone layout on narrow ones, in both themes.
 
 ## Building and running
@@ -61,6 +62,7 @@ browsers that accept gzip (the wasm module is about 4.5 MB, 0.7 MB gzipped).
 | `src/landscape.rs` | The header landscape as SVG markup, from `todo_design::landscape`. Shapes carry classes; `app.css` colours them from the room's tokens. |
 | `src/app.rs` | The Leptos components. They set classes and `data-*` hue keys only. |
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
+| `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, rename and delete dialogs, and the Not synced list. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
@@ -300,6 +302,18 @@ When the sidebar's sync line says **n not synced**, open it to see the refused c
 reasons. **Dismiss** clears one; **Dismiss all** clears only the entries shown during this opening. A refusal
 that arrives while the list is open stays for the next opening. Dismissing doesn't retry a change.
 
+**Activity** (`/app/activity`) shows confirmed changes from you, agents and email ingest, newest first
+and grouped by local day. Scroll down or choose **Load older activity** for more. Select an agent in the
+sidebar (the Lists drawer on a phone) to open `/app/activity/agent/<agent-id>`. Use **Clear filter** to see
+all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
+new events arrive. A dot on that button means the replica has advanced since the feed was read.
+
+Each change at the head of its undo chain offers **Undo**. Conflict and other refusals stay beside the
+change in plain words; the server is never asked to force the undo. Activity uses
+`SyncClient::undo_activity`: a past event has no local tracked submission to cancel. The shared outbox
+sends its sequence and expected event ID, with the replica's log epoch when known, to compensate the
+original command's whole batch. The Activity read uses the same session and CSRF transport as sync.
+
 Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
 and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
 `Sun 22 Nov`. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
@@ -377,7 +391,7 @@ The status bar shows shortcuts only when their actions are available.
   and removed with Undo), a collapsed collection, sidebar and room menus,
   rename and delete dialogs, a delete Undo toast, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
-  an empty list, the desktop and phone quick-add date chip, the storage-error and read-only alerts
+  an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
   `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.
@@ -386,7 +400,8 @@ The status bar shows shortcuts only when their actions are available.
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
-  header being refused. The suite also uploads, downloads and removes a file with the web session. Then:
+  header being refused. Activity reads confirmed edits from another tab and undoes one through the session.
+  The suite also uploads, downloads and removes a file with the web session. Then:
   exact Undo of a confirmed recurring completion (including removal of its
   next occurrence), including Undo before the sending tab has a receipt and late feedback preserving a
   newer Undo toast; a live sidebar change leaving the highlighted menu action on the same list;

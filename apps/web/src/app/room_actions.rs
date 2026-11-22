@@ -22,7 +22,7 @@ impl Subject {
         match *room {
             RoomId::List(id) => Some(Self::List(id)),
             RoomId::Collection(id) => Some(Self::Collection(id)),
-            RoomId::Smart(_) => None,
+            RoomId::Smart(_) | RoomId::Activity(_) => None,
         }
     }
 

@@ -685,14 +685,15 @@ impl Engine {
         Ok(Some((event, scope)))
     }
 
-    /// Events before `before`, newest first, within a byte budget.
+    /// Events before `before`, newest first, within a byte budget and optionally for one actor.
     pub fn events_before_capped(
         &self,
         before: Option<u64>,
         limit: usize,
         max_bytes: usize,
+        actor: Option<&Actor>,
     ) -> Result<db::CappedEvents, StoreError> {
-        db::events_before_capped(&*self.reader()?, before, limit, max_bytes)
+        db::events_before_capped(&*self.reader()?, before, limit, max_bytes, actor)
     }
 
     /// Events before `before` (or the newest), newest first.

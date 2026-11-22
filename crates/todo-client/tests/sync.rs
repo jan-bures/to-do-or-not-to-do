@@ -421,8 +421,21 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
             .is_some_and(|t| t.title == "renamed")
     })
     .await;
-    let seq = server.head();
-    let undo_id = a.undo(seq, server.event_id_at(seq), false).unwrap();
+    // B didn't submit the rename, so there is no tracked local command to undo. The feed
+    // supplies the identity for a checked compensation of the authoritative batch instead.
+    let page = b
+        .activity(&todo_client::activity::ActivityQuery {
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let item = &page.items[0];
+    assert!(item.can_undo);
+    assert!(item.what_happened().contains("renamed"));
+    let event = item.event_ref().unwrap();
+    assert_eq!(event.seq, server.head());
+    let undo_id = b.undo_activity(event).unwrap();
     eventually("b sees the undo", WAIT, || {
         b.view().tasks[&task].title == "rename me"
     })
@@ -437,9 +450,9 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
             .contains(&(undo_id.to_string(), "undo".to_owned()))
     );
     // Undoing the same event again is refused for good: it is already undone.
-    a.undo(seq, server.event_id_at(seq), false).unwrap();
-    eventually("refused", WAIT, || a.failed().len() == 1).await;
-    assert_eq!(a.failed()[0].rejection.code, "already_undone");
+    b.undo_activity(event).unwrap();
+    eventually("refused", WAIT, || b.failed().len() == 1).await;
+    assert_eq!(b.failed()[0].rejection.code, "already_undone");
     stop(&a, ha).await;
     stop(&b, hb).await;
     server.stop().await;

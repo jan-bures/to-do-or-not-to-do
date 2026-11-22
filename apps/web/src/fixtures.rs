@@ -150,6 +150,114 @@ impl<'a> T<'a> {
     }
 }
 
+/// The older edit conflicts with a later change and cannot be undone without force.
+#[cfg(feature = "fixtures")]
+pub const REFUSED_ACTIVITY_SEQ: u64 = 101;
+
+/// A deterministic history, separate from the task fixtures so it also covers withdrawn items.
+#[cfg(feature = "fixtures")]
+pub fn activity() -> Vec<todo_client::activity::ActivityItem> {
+    use todo_client::{activity::ActivityItem, protocol::LogEvent};
+    use todo_core::{Event, event::EventPayload, ids::EventId};
+
+    let owner = Actor::owner(DEVICE).unwrap_or(Actor::System);
+    let codex = Actor::agent("codex").unwrap_or(Actor::System);
+    let claude = Actor::agent("claude").unwrap_or(Actor::System);
+    let item = |seq: u64, actor, at, summary: &str, undone| {
+        let command_id = uuid(6, u128::from(seq));
+        let id = EventId::from_uuid(command_id);
+        ActivityItem {
+            event: LogEvent {
+                event: Event {
+                    id,
+                    seq: Some(seq),
+                    group: id,
+                    actor,
+                    at,
+                    undoes: None,
+                    forced: false,
+                    payload: EventPayload::Updated {
+                        target: task(1).into(),
+                        changes: Vec::new(),
+                    },
+                },
+                command_id,
+                command_idx: 0,
+                command_len: Some(1),
+            },
+            summary: summary.to_owned(),
+            undone,
+            can_undo: !undone,
+        }
+    };
+    let mut items = vec![
+        item(
+            104,
+            owner.clone(),
+            at("2026-11-21T09:29:00Z"),
+            "Completed task \"Check the practice room booking\"",
+            false,
+        ),
+        item(
+            103,
+            codex.clone(),
+            at("2026-11-21T09:10:00Z"),
+            "Created task \"Draft the volunteer rota\"",
+            false,
+        ),
+        item(
+            102,
+            Actor::EmailIngest,
+            at("2026-11-21T08:50:00Z"),
+            "Created task \"Museum tickets for Saturday\"",
+            false,
+        ),
+        item(
+            REFUSED_ACTIVITY_SEQ,
+            claude.clone(),
+            at("2026-11-21T08:23:00Z"),
+            "Updated task \"Check the practice room booking\" (due date)",
+            false,
+        ),
+        item(
+            100,
+            owner,
+            at("2026-11-20T17:10:00Z"),
+            "Restored list \"Weekend errands\"",
+            false,
+        ),
+        item(
+            99,
+            codex.clone(),
+            at("2026-11-20T15:12:00Z"),
+            "Created task \"Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení\"",
+            true,
+        ),
+        item(
+            98,
+            claude,
+            at("2026-11-20T13:20:00Z"),
+            "Updated task \"Borrow a music stand\" (notes)",
+            false,
+        ),
+    ];
+    for n in (1..=24).rev() {
+        let when = at("2026-11-19T08:00:00Z")
+            .checked_add(jiff::SignedDuration::from_mins(
+                i64::try_from(n).unwrap_or_default(),
+            ))
+            .unwrap_or_default();
+        items.push(item(
+            n,
+            codex.clone(),
+            when,
+            &format!("Created task \"Catalogue inventory, shelf {n}\""),
+            false,
+        ));
+    }
+    items
+}
+
 /// The gallery's state: two collections, a few loose lists, a My Day with 12 tasks (3 done).
 #[must_use]
 #[allow(clippy::too_many_lines)]

@@ -151,6 +151,96 @@ async fn the_session_with_its_csrf_token_reads_and_writes_as_the_web_device() {
 }
 
 #[tokio::test]
+async fn activity_filters_before_paging_without_expanding_visibility() {
+    use todo_core::{AccessLevel, Grants};
+
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let csrf = b.csrf.as_deref();
+    let visible = env.t.create_list("Visible").await;
+    let hidden = env.t.create_list("Hidden").await;
+    let (_, agent) = common::mcp::agent(
+        &env.t,
+        "writer",
+        &Grants::with_default(AccessLevel::Plan),
+        None,
+    );
+    for (list, title) in [(&visible, "Older visible task"), (&hidden, "Private task")] {
+        let (s, _, v) = env
+            .t
+            .command_with_id(
+                &agent,
+                &id(),
+                json!({
+                    "cmd": "create_task", "id": id(), "title": title, "list": list,
+                }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    // A newer non-agent event does not consume the one-item page.
+    env.t.create_list("Newer owner list").await;
+    let path = "/api/v1/activity?agent=writer&limit=1";
+    let (s, _, page) = api(&b, Method::GET, path, csrf, None, None).await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["items"][0]["summary"], "Created task \"Private task\"");
+    let before = page["next_before"].as_u64().unwrap();
+    let (s, _, page) = api(
+        &b,
+        Method::GET,
+        &format!("{path}&before={before}"),
+        csrf,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["items"][0]["summary"],
+        "Created task \"Older visible task\""
+    );
+    assert_eq!(page["items"][0]["event"]["actor"]["agent_id"], "writer");
+    let (s, _, _) = api(&b, Method::GET, path, None, None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let mut grants = Grants::with_default(AccessLevel::None);
+    grants
+        .lists
+        .insert(visible.parse().unwrap(), AccessLevel::Read);
+    let (_, reader) = common::mcp::agent(&env.t, "reader", &grants, None);
+    // Filtered cursors for a scoped reader must reveal no more than unfiltered cursors.
+    let mut cursor = String::new();
+    for visible_item in [false, false, true] {
+        let (s, _, baseline) = env
+            .t
+            .request(
+                Method::GET,
+                &format!("/api/v1/activity?limit=1{cursor}"),
+                Some(&reader),
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{baseline}");
+        let (s, _, page) = env
+            .t
+            .request(Method::GET, &format!("{path}{cursor}"), Some(&reader), None)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{page}");
+        assert_eq!(page["next_before"], baseline["next_before"]);
+        if visible_item {
+            assert_eq!(
+                page["items"][0]["summary"],
+                "Created task \"Older visible task\""
+            );
+            assert!(page["items"][0]["event"].get("command_len").is_none());
+        } else {
+            assert_eq!(page["items"], json!([]));
+        }
+        cursor = format!("&before={}", page["next_before"].as_u64().unwrap());
+    }
+}
+
+#[tokio::test]
 async fn a_missing_or_wrong_csrf_token_is_refused_and_writes_nothing() {
     let env = Env::start().await;
     let b = env.owner().await;

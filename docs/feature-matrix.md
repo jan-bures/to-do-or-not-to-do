@@ -162,9 +162,9 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | wired: compensates the whole completion, including the next occurrence (`W/backend.rs`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | wired: tasks, steps, lists and collections (`W/app.rs`, `W/app/room_actions.rs`) | wired for tasks (`F/engine.rs::undo_task_move`) |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: adding or deleting a link, deleting a task, a step, a list or a collection, and moving a task to another list or a list to another collection, can be undone (`D/ui/shell/undo.rs:29`); renames, recolours, tags and edits can't | partial: restores a deleted step, list, collection or attachment (`W/app.rs`, `W/app/room_actions.rs`, `W/app/attachments.rs`) | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
-| Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
-| Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: adding or deleting a link, deleting a task, a step, a list or a collection, and moving a task to another list or a list to another collection, can be undone (`D/ui/shell/undo.rs:29`); renames, recolours, tags and edits can't | wired through Activity for confirmed changes; delete toasts also undo tracked deletions | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
+| Activity feed (all events, newest first, undo per event) | `GET /activity`; shared `SyncClient::activity` and `undo_activity` | missing (planned) | wired: day groups, cursor paging and per-event Undo (`W/app/activity.rs`) | missing |
+| Group or filter changes by agent | `updated_by:` in the query language; `GET /activity?agent=` for events | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | wired: sidebar agent links open filtered Activity; also has the Agent activity smart list | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
 
 ### Server-side only (admin pages)
@@ -194,8 +194,6 @@ Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), 
   `update_reminder`).
 - **Repeat rules.** `UpdateTask.recurrence` (MCP `update_task`).
 - **Links.** Adding and deleting a web link are on the desktop only.
-- **Activity.** The feed (`GET /api/v1/activity`; MCP `get_activity`) and undoing any event in it,
-  including an agent's.
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
   (`GET /api/v1/tasks?q=`). Clients evaluate the same built-in queries locally. The core has no
   user-defined saved smart lists, so this is not a client gap.
@@ -223,7 +221,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 |---|---|---|
 | 2.1 | **Done.** Delete a task, and move it to another list. The undo kinds exist already (`D/ui/shell/undo.rs:28`, `:31`). Add a task context menu, the Delete key and "Move to…". | M |
 | 2.2 | **Done.** Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
-| 2.3 | Activity feed with per-event undo, grouped by agent. Needs a `todo-client` call for `GET /activity`. | L |
+| 2.3 | Activity feed with per-event undo and an agent filter. The web room is wired; the shared `todo-client` calls for paged `GET /activity` and undo are available for desktop and Android. | L |
 | 2.4 | Reminders: edit them, and fire Windows toasts while the app runs in the tray. | L |
 | 2.5 | Repeat editor: presets plus interval. | M |
 | 2.6 | **Done**, apart from deleting a tag. Tags: create, rename, recolour, add to and remove from a task. | M–L |

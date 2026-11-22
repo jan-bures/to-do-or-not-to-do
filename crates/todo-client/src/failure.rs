@@ -168,6 +168,22 @@ pub fn why(failed: &FailedEntry) -> &'static str {
     )
 }
 
+/// A short undo refusal for a toast or an activity row, based only on the machine-readable code.
+#[must_use]
+pub fn undo_message(code: &str) -> &'static str {
+    match code {
+        "undo_conflict" => "Couldn't undo: the item was changed again.",
+        "undo_no_event" | "event_not_found" => {
+            "Couldn't undo: the original change couldn't be found."
+        }
+        "epoch_mismatch" | "event_mismatch" => "Couldn't undo: the server's history changed.",
+        "not_found" => "Couldn't undo: the item no longer exists.",
+        "already_undone" => "Couldn't undo: the change was already undone.",
+        "undo_invariant" => "Couldn't undo: something the change depends on changed.",
+        _ => "Couldn't undo that.",
+    }
+}
+
 fn reason(rejection: &Rejection, command: bool) -> &'static str {
     match rejection.code.as_str() {
         "deleted" => "It was deleted elsewhere.",
