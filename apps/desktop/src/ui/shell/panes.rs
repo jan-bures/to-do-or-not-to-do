@@ -7,23 +7,27 @@ use gpui::{
 
 use super::*;
 use crate::config::UiPreferences;
-use crate::model::layout::{Columns, Grab, Pane};
+use crate::model::layout::{Columns, Grab, KeyResize, Pane};
 use crate::theme::motion as m;
 
 struct Grip {
     focus: FocusHandle,
-    hover: Track,
+    hovered: bool,
+    highlight: Track,
     ring: Track,
     reset: Option<Track>,
+    key_resize: KeyResize,
 }
 
 impl Grip {
-    fn new(cx: &mut Context<ShellView>, tab_index: isize) -> Self {
+    fn new(cx: &mut Context<ShellView>) -> Self {
         Self {
-            focus: cx.focus_handle().tab_index(tab_index).tab_stop(true),
-            hover: Track::rest(0.),
+            focus: cx.focus_handle(),
+            hovered: false,
+            highlight: Track::rest(0.),
             ring: Track::rest(0.),
             reset: None,
+            key_resize: KeyResize::default(),
         }
     }
 }
@@ -46,19 +50,25 @@ pub(super) struct Splitters {
 impl Splitters {
     pub(super) fn new(window: &mut Window, cx: &mut Context<ShellView>) -> Self {
         let this = Self {
-            // Sidebar, list, Undo (when visible), then detail, regardless of paint order.
-            sidebar: Grip::new(cx, 0),
-            detail: Grip::new(cx, 3),
+            sidebar: Grip::new(cx),
+            detail: Grip::new(cx),
             drag: None,
             viewport: f32::from(window.viewport_size().width),
             preview_hover: false,
         };
-        for handle in [&this.sidebar.focus, &this.detail.focus] {
+        for pane in [Pane::Sidebar, Pane::Detail] {
+            let handle = this.focus(pane);
             cx.on_focus(handle, window, |_, _, cx| cx.notify()).detach();
-            cx.on_blur(handle, window, |_, _, cx| cx.notify()).detach();
+            cx.on_blur(handle, window, move |this, _, cx| {
+                this.finish_key_resize(pane);
+                cx.notify();
+            })
+            .detach();
         }
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
+                this.finish_key_resize(Pane::Sidebar);
+                this.finish_key_resize(Pane::Detail);
                 this.finish_pane_drag(cx);
             }
         })
@@ -68,6 +78,13 @@ impl Splitters {
 
     pub(super) fn has_focus(&self, window: &Window) -> bool {
         self.sidebar.focus.is_focused(window) || self.detail.focus.is_focused(window)
+    }
+
+    pub(super) fn focus(&self, pane: Pane) -> &FocusHandle {
+        match pane {
+            Pane::Sidebar => &self.sidebar.focus,
+            Pane::Detail => &self.detail.focus,
+        }
     }
 
     fn grip_mut(&mut self, pane: Pane) -> &mut Grip {
@@ -142,10 +159,12 @@ impl ShellView {
                 self.finish_pane_drag(cx);
             }
             if self.splitters.detail.focus.is_focused(window) {
+                self.finish_key_resize(Pane::Detail);
                 window.focus(&self.list_focus, cx);
             }
             let detail = &mut self.splitters.detail;
-            detail.hover = Track::rest(0.);
+            detail.hovered = false;
+            detail.highlight = Track::rest(0.);
             detail.ring = Track::rest(0.);
             detail.reset = None;
         }
@@ -153,7 +172,17 @@ impl ShellView {
             return;
         }
         let mut moving = false;
-        for grip in [&mut self.splitters.sidebar, &mut self.splitters.detail] {
+        let dragged = self.splitters.drag.map(|drag| drag.grab.pane);
+        for (pane, grip) in [
+            (Pane::Sidebar, &mut self.splitters.sidebar),
+            (Pane::Detail, &mut self.splitters.detail),
+        ] {
+            grip.highlight.aim(
+                f32::from(grip.hovered || dragged == Some(pane)),
+                self.frame,
+                fade_ms(m::HOVER),
+                m::STANDARD,
+            );
             let focused = grip.focus.is_focused(window) && window.last_input_was_keyboard();
             grip.ring.aim(
                 f32::from(focused),
@@ -165,7 +194,7 @@ impl ShellView {
                 grip.reset = None;
             }
             moving |= grip.reset.is_some()
-                || grip.hover.moving(self.frame)
+                || grip.highlight.moving(self.frame)
                 || grip.ring.moving(self.frame);
         }
         if moving {
@@ -174,6 +203,7 @@ impl ShellView {
     }
 
     fn reset_pane(&mut self, pane: Pane, window: &Window, cx: &mut Context<Self>) {
+        self.finish_key_resize(pane);
         let before = self.ui.panes;
         let (prefs, transition) =
             before.reset(pane, self.columns(window), self.now(), self.pace().reduced);
@@ -192,8 +222,9 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.finish_key_resize(pane);
         self.finish_pane_drag(cx);
-        window.focus(&self.splitters.grip_mut(pane).focus, cx);
+        window.focus(self.splitters.focus(pane), cx);
         if e.click_count == 2 {
             self.reset_pane(pane, window, cx);
         } else {
@@ -228,6 +259,17 @@ impl ShellView {
         }
     }
 
+    fn finish_key_resize(&mut self, pane: Pane) {
+        if self
+            .splitters
+            .grip_mut(pane)
+            .key_resize
+            .finish(self.ui.panes)
+        {
+            self.save_ui_preferences();
+        }
+    }
+
     fn pane_key(
         &mut self,
         pane: Pane,
@@ -243,11 +285,16 @@ impl ShellView {
             "left" | "right" => {
                 self.finish_pane_drag(cx);
                 let columns = self.columns(window);
-                let width = columns.step(pane, e.keystroke.key == "right", mods.shift);
-                if width != columns.width(pane) {
-                    self.splitters.grip_mut(pane).reset = None;
-                    self.ui.panes = self.ui.panes.with(pane, width);
-                    self.save_ui_preferences();
+                let grip = self.splitters.grip_mut(pane);
+                if let Some(prefs) = grip.key_resize.step(
+                    self.ui.panes,
+                    columns,
+                    pane,
+                    e.keystroke.key == "right",
+                    mods.shift,
+                ) {
+                    grip.reset = None;
+                    self.ui.panes = prefs;
                     cx.notify();
                 }
             }
@@ -258,10 +305,13 @@ impl ShellView {
                 }
             }
             "escape" if !mods.shift => {
-                self.finish_pane_drag(cx);
-                window.focus(&self.list_focus, cx);
-                if self.width == Width::Narrow {
-                    self.select_task(None, cx);
+                if !e.is_held {
+                    self.finish_key_resize(pane);
+                    self.finish_pane_drag(cx);
+                    window.focus(&self.list_focus, cx);
+                    if self.width == Width::Narrow {
+                        self.select_task(None, cx);
+                    }
                 }
             }
             _ => return,
@@ -279,37 +329,22 @@ impl ShellView {
         let width = columns.width(pane);
         let p = &self.palette;
         let line = elevation::HAIRLINE;
-        let hit = desktop::PANE_HANDLE_HIT;
-        // The sidebar's track ends one pixel in from this target. Most of its overlap is on the list
-        // side, in the gutter where there are no task controls.
-        let (id, label, grip, line_x) = match pane {
-            Pane::Sidebar => (
-                "sidebar-splitter",
-                "Sidebar width",
-                &self.splitters.sidebar,
-                line,
-            ),
+        let bar = desktop::PANE_HANDLE_HIGHLIGHT;
+        let line_x = line;
+        let (id, label, grip) = match pane {
+            Pane::Sidebar => ("sidebar-splitter", "Sidebar width", &self.splitters.sidebar),
             Pane::Detail => (
                 "detail-splitter",
                 "Task detail width",
                 &self.splitters.detail,
-                hit / 2.,
             ),
         };
-        let hover = if pane == Pane::Sidebar && self.splitters.preview_hover {
+        let highlight = if pane == Pane::Sidebar && self.splitters.preview_hover {
             1.
         } else {
-            grip.hover.at(self.frame)
+            grip.highlight.at(self.frame)
         };
         let ring = grip.ring.at(self.frame);
-        let dragging = self.splitters.drag.is_some_and(|d| d.grab.pane == pane);
-        let color = if dragging {
-            p.accent
-        } else {
-            p.line
-                .blend(theme::with_alpha(p.line_strong, hover))
-                .blend(theme::with_alpha(p.accent, ring))
-        };
         div()
             .id(id)
             .role(Role::Splitter)
@@ -319,31 +354,39 @@ impl ShellView {
             .aria_min_numeric_value(f64::from(pane.min()))
             .aria_max_numeric_value(f64::from(columns.max(pane)))
             .aria_numeric_value_step(f64::from(desktop::PANE_KEY_STEP))
-            .aria_description("Use Left and Right arrows to resize, Shift for larger steps, and Home or Enter to reset.")
+            .aria_description("Use Left and Right arrows to resize, Shift for larger steps, Home or Enter to reset, and Escape to return to the list.")
             .track_focus(&grip.focus)
             .absolute()
             .top_0()
             .bottom_0()
-            .w(px(hit))
-            .when(pane == Pane::Sidebar, |d| d.left(px(width - 2. * line)))
-            .when(pane == Pane::Detail, |d| d.right(px(width - hit / 2.)))
+            .w(px(desktop::PANE_HANDLE_HIT))
+            .when(pane == Pane::Sidebar, |d| d.left(px(columns.handle_inset(pane))))
+            .when(pane == Pane::Detail, |d| d.right(px(columns.handle_inset(pane))))
             .cursor(CursorStyle::ResizeLeftRight)
             .block_mouse_except_scroll()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                let now = this.now();
-                this.splitters.grip_mut(pane).hover.aim(f32::from(*hovered), now, fade_ms(m::HOVER), m::STANDARD);
+                this.splitters.grip_mut(pane).hovered = *hovered;
                 cx.notify();
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e, window, cx| this.pane_down(pane, e, window, cx)))
             .on_key_down(cx.listener(move |this, e, window, cx| this.pane_key(pane, e, window, cx)))
+            .on_key_up(cx.listener(move |this, e: &gpui::KeyUpEvent, _, cx| {
+                if matches!(e.keystroke.key.as_str(), "left" | "right") {
+                    this.finish_key_resize(pane);
+                    cx.notify();
+                }
+            }))
             .when(ring > 0., |d| {
                 d.child(div().absolute().top_0().bottom_0()
                     .left(px(line_x - elevation::FOCUS_RING))
                     .w(px(line + 2. * elevation::FOCUS_RING))
-                    .bg(theme::with_alpha(p.tint, ring)))
+                    .bg(theme::with_alpha(p.tint, p.tint.a * ring)))
+                .child(div().absolute().top_0().bottom_0().left(px(line_x)).w(px(line))
+                    .bg(theme::with_alpha(p.accent, ring)))
             })
-            .when(hover > 0. || ring > 0. || dragging, |d| {
-                d.child(div().absolute().top_0().bottom_0().left(px(line_x)).w(px(line)).bg(color))
+            .when(highlight > 0., |d| {
+                d.child(div().absolute().top_0().bottom_0().left(px(line_x + (line - bar) / 2.))
+                    .w(px(bar)).bg(theme::with_alpha(p.accent, highlight)))
             })
     }
 

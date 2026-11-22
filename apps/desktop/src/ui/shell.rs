@@ -294,7 +294,7 @@ impl ShellView {
             painted_hue,
             landscape: HeaderCache::default(),
             quick_add,
-            list_focus: cx.focus_handle().tab_index(1).tab_stop(true),
+            list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
             handover_scroll: ScrollHandle::new(),
             handover_bar: kit::Scrollbar::default(),
@@ -311,7 +311,7 @@ impl ShellView {
             edit,
             motion: Motion::default(),
             toast: Toast::default(),
-            undo_focus: cx.focus_handle().tab_index(2).tab_stop(true),
+            undo_focus: cx.focus_handle(),
             undo_ring: Track::rest(0.),
             toast_hover: false,
             last_undo: None,
@@ -2416,6 +2416,19 @@ impl ShellView {
             })
     }
 
+    /// Tab belongs only to the shell controls in this list. The order is independent of paint order.
+    fn tab_stops(&self) -> [Option<&FocusHandle>; 4] {
+        let undo = self.toast.look(self.frame).is_some_and(|look| look.active)
+            && (self.last_undo.is_some() || !self.animate);
+        [
+            Some(self.splitters.focus(Pane::Sidebar)),
+            Some(&self.list_focus),
+            undo.then_some(&self.undo_focus),
+            self.show_detail_splitter()
+                .then_some(self.splitters.focus(Pane::Detail)),
+        ]
+    }
+
     /// Where the keyboard is, for the status bar's hints.
     fn focus_now(&self, window: &Window, cx: &App) -> hints::Focus {
         use hints::Focus;
@@ -2578,17 +2591,16 @@ impl Render for ShellView {
         div()
             .id("shell")
             .key_context("Shell")
-            .tab_group()
-            .on_key_down(|e, window, cx| {
-                if navigation_tab(e) {
-                    if e.keystroke.modifiers.shift {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
-                    }
+            .on_key_down(cx.listener(|this, e, window, cx| {
+                if navigation_tab(e)
+                    && let Some(focused) = window.focused(cx)
+                    && let Some(next) =
+                        next_tab_stop(&this.tab_stops(), &focused, e.keystroke.modifiers.shift)
+                {
+                    window.focus(next, cx);
                     cx.stop_propagation();
                 }
-            })
+            }))
             .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
                 if this.focus_now(window, cx).allows_task_undo() {
                     this.request_undo(cx);
@@ -2672,10 +2684,30 @@ impl Render for ShellView {
 fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
     let key = &event.keystroke;
     key.key == "tab"
+        && !event.is_held
         && !key.modifiers.control
         && !key.modifiers.alt
         && !key.modifiers.platform
         && !key.modifiers.function
+}
+
+fn next_tab_stop<T: Copy + PartialEq>(
+    stops: &[Option<T>],
+    focused: T,
+    backward: bool,
+) -> Option<T> {
+    let index = stops.iter().position(|&stop| stop == Some(focused))?;
+    let (before, current_and_after) = stops.split_at(index);
+    let after = &current_and_after[1..];
+    if backward {
+        before
+            .iter()
+            .rev()
+            .chain(after.iter().rev())
+            .find_map(|&stop| stop)
+    } else {
+        after.iter().chain(before).find_map(|&stop| stop)
+    }
 }
 
 #[cfg(test)]
@@ -2683,7 +2715,7 @@ mod tests {
     use crate::fixtures;
 
     #[test]
-    fn tab_navigation_does_not_steal_modified_tab() {
+    fn tab_navigation_does_not_steal_modified_or_repeated_tab() {
         use gpui::{KeyDownEvent, Keystroke};
         let key = |text| KeyDownEvent {
             keystroke: Keystroke::parse(text).expect("keystroke"),
@@ -2694,6 +2726,25 @@ mod tests {
         assert!(super::navigation_tab(&key("shift-tab")));
         assert!(!super::navigation_tab(&key("ctrl-tab")));
         assert!(!super::navigation_tab(&key("alt-tab")));
+        assert!(!super::navigation_tab(&KeyDownEvent {
+            is_held: true,
+            ..key("tab")
+        }));
+    }
+
+    #[test]
+    fn tab_cycles_only_visible_shell_stops_and_ignores_text_fields() {
+        use super::next_tab_stop;
+        let stops = [Some("sidebar"), Some("list"), None, Some("detail")];
+        assert_eq!(next_tab_stop(&stops, "list", false), Some("detail"));
+        assert_eq!(next_tab_stop(&stops, "detail", false), Some("sidebar"));
+        assert_eq!(next_tab_stop(&stops, "sidebar", true), Some("detail"));
+        assert_eq!(next_tab_stop(&stops, "detail", true), Some("list"));
+        assert_eq!(next_tab_stop(&stops, "title field", false), None);
+        assert_eq!(next_tab_stop(&stops, "title field", true), None);
+        let with_undo = [Some("sidebar"), Some("list"), Some("undo"), None];
+        assert_eq!(next_tab_stop(&with_undo, "list", false), Some("undo"));
+        assert_eq!(next_tab_stop(&with_undo, "undo", false), Some("sidebar"));
     }
 
     #[test]

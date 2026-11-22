@@ -140,9 +140,12 @@ Clicking the scrim or pressing Esc closes it. The room title keeps its full size
 move to a line of their own under it, so the title never gives way to them.
 
 **Desktop pane dividers.** Drag the sidebar’s right edge or the docked detail’s left edge. The 12 px hit strip
-(`desktop::PANE_HANDLE_HIT`) overlaps the list gutter without taking the sidebar scrollbar’s target. Only the
-1 px line is visible at rest. Hover strengthens it (`line → line-strong`, `HOVER`, `STANDARD`) and shows a
-column-resize cursor; while held, the line is `accent` and follows the pointer 1:1 with no easing.
+(`desktop::PANE_HANDLE_HIT`) starts 1 px before the divider and extends into the pane on its right, leaving
+both the sidebar and list scrollbar tracks clear. Only the 1 px hairline is visible at rest. Hover shows a
+column-resize cursor and fades in a centred **3 px** bar (`desktop::PANE_HANDLE_HIGHLIGHT`) in the room’s
+`accent` over `HOVER` (`90 ms`, `STANDARD`, also in reduced motion). The bar stays visible while grabbed,
+even if the pointer leaves the strip. During a drag the divider follows the pointer without easing, in
+whole logical pixels; the bar fades out over the same duration when neither hovered nor grabbed.
 
 - **Widths (logical px):** sidebar **200–320**, default **248**; docked detail **320–560**, default **392**.
   The list keeps at least **556** (`desktop::LIST_MIN`, not counting the divider hairlines). A drag stops at
@@ -152,13 +155,15 @@ column-resize cursor; while held, the line is `accent` and follows the pointer 1
   the sidebar handle; the detail overlay keeps its original default width and has no handle.
 - **Keys and focus:** Tab reaches the dividers, which expose their name and current width as vertical
   splitters. Left and Right move the divider in that direction by **8** px (**32** with Shift). Keyboard
-  focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade.
+  focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade. Esc returns
+  focus to the list.
 - **Reset:** Double-click the divider or press Home or Enter while it has focus. The width settles to its
   default (or as much as fits) in `OVERLAY_IN` (**150 ms**, `STANDARD`); reduced motion snaps. A new grab or
   width change can interrupt the reset. Idle dividers request no frames.
 - **Remembered locally:** Save the two preferred widths with the desktop pairing’s UI preferences. Passive
-  window resizing never writes them, and saved values are clamped to the current tokens on load. Web and
-  phone layouts are unchanged.
+  window resizing never writes them. Save arrow-key changes when a key is released or the divider loses
+  focus, not on every repeat. Saved values are clamped to the current tokens on load. Web and phone layouts
+  are unchanged.
 
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.

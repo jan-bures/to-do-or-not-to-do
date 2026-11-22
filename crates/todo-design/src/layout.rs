@@ -182,6 +182,8 @@ pub mod desktop {
     pub const DETAIL_MAX: f32 = 560.0;
     /// Hit width of a pane divider; only its hairline is visible at rest.
     pub const PANE_HANDLE_HIT: f32 = 12.0;
+    /// Width of the accent bar centred on a hovered or grabbed pane divider.
+    pub const PANE_HANDLE_HIGHLIGHT: f32 = 3.0;
     /// Width change per arrow key on a pane divider.
     pub const PANE_KEY_STEP: f32 = 8.0;
     /// Width change per Shift+arrow on a pane divider.
@@ -262,7 +264,7 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 47] = [
+    pub const ALL: [(&str, f32); 48] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -272,6 +274,7 @@ pub mod desktop {
         ("detail-min", DETAIL_MIN),
         ("detail-max", DETAIL_MAX),
         ("pane-handle-hit", PANE_HANDLE_HIT),
+        ("pane-handle-highlight", PANE_HANDLE_HIGHLIGHT),
         ("pane-key-step", PANE_KEY_STEP),
         ("pane-key-step-large", PANE_KEY_STEP_LARGE),
         ("three-pane-min", THREE_PANE_MIN),

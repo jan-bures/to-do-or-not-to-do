@@ -219,6 +219,7 @@
   --desktop-detail-min: 320px;
   --desktop-detail-max: 560px;
   --desktop-pane-handle-hit: 12px;
+  --desktop-pane-handle-highlight: 3px;
   --desktop-pane-key-step: 8px;
   --desktop-pane-key-step-large: 32px;
   --desktop-three-pane-min: 1200px;

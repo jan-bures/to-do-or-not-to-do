@@ -214,11 +214,21 @@ impl Columns {
 
     pub fn max(self, pane: Pane) -> f32 {
         let other = match pane {
-            Pane::Sidebar if self.docked => self.detail,
+            Pane::Sidebar if self.docked => desktop::DETAIL_MIN,
             Pane::Sidebar => 0.,
             Pane::Detail => self.sidebar,
         };
         (self.budget - other).clamp(pane.min(), pane.max())
+    }
+
+    /// Hit strip inset from the sidebar's left edge or the detail pane's right edge. The hairline
+    /// begins one pixel into either strip, leaving the scrollbar on its left fully clear.
+    pub fn handle_inset(self, pane: Pane) -> f32 {
+        let line = elevation::HAIRLINE;
+        match pane {
+            Pane::Sidebar => self.sidebar - 2. * line,
+            Pane::Detail => self.detail + line - desktop::PANE_HANDLE_HIT,
+        }
     }
 
     /// The readable room budget, excluding its side divider hairlines. An overlay takes none of it.
@@ -268,11 +278,39 @@ impl Grab {
     /// a width temporarily capped by the viewport.
     pub fn moved(self, x: f32) -> Option<f32> {
         let width = self.width_at(x);
-        (width != self.start).then_some(width)
+        (width != self.width_at(self.origin)).then_some(width)
     }
 
     pub fn width_at(self, x: f32) -> f32 {
-        (self.start + self.pane.signed(x - self.origin)).clamp(self.pane.min(), self.max)
+        (self.start + self.pane.signed(x - self.origin))
+            .round()
+            .clamp(self.pane.min(), self.max.floor())
+    }
+}
+
+/// Repeated arrow presses update the live width, but only the final preference needs saving.
+#[derive(Default)]
+pub struct KeyResize(Option<PaneWidths>);
+
+impl KeyResize {
+    pub fn step(
+        &mut self,
+        prefs: PaneWidths,
+        columns: Columns,
+        pane: Pane,
+        right: bool,
+        shift: bool,
+    ) -> Option<PaneWidths> {
+        let width = columns.step(pane, right, shift);
+        if width == columns.width(pane) {
+            return None;
+        }
+        self.0.get_or_insert(prefs);
+        Some(prefs.with(pane, width))
+    }
+
+    pub fn finish(&mut self, prefs: PaneWidths) -> bool {
+        self.0.take().is_some_and(|start| prefs != start)
     }
 }
 
@@ -388,6 +426,121 @@ mod tests {
     }
 
     #[test]
+    fn handle_hit_strips_keep_both_scrollbar_tracks_clear() {
+        let prefs = PaneWidths::default();
+        let line = elevation::HAIRLINE;
+        let hit = desktop::PANE_HANDLE_HIT;
+        for (window, placement) in [
+            (MIN_WINDOW, DetailPane::Overlay),
+            (desktop::THREE_PANE_MIN, DetailPane::Docked),
+            (1440.5, DetailPane::Docked),
+        ] {
+            for prefs in [prefs, prefs.with(Pane::Sidebar, desktop::SIDEBAR_MAX)] {
+                let columns = prefs.at(window, placement);
+                let sidebar_edge = columns.width(Pane::Sidebar) - line;
+                let detail_edge = window - columns.width(Pane::Detail);
+                for (pane, edge, start) in [
+                    (
+                        Pane::Sidebar,
+                        sidebar_edge,
+                        columns.handle_inset(Pane::Sidebar),
+                    ),
+                    (
+                        Pane::Detail,
+                        detail_edge,
+                        window - columns.handle_inset(Pane::Detail) - hit,
+                    ),
+                ] {
+                    if pane == Pane::Detail && placement != DetailPane::Docked {
+                        continue;
+                    }
+                    let track_end = edge - desktop::SCROLLBAR_INSET;
+                    let track_start = track_end - desktop::SCROLLBAR_HOVER_WIDTH;
+                    assert!(start > track_end || start + hit < track_start, "{pane:?}");
+                    assert_eq!(start + line, edge, "the hairline starts at the seam");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sidebar_can_widen_when_the_list_is_already_at_its_minimum() {
+        let prefs = PaneWidths::default().with(Pane::Detail, desktop::DETAIL_MAX);
+        let window = desktop::THREE_PANE_MIN;
+        let columns = prefs.at(window, DetailPane::Docked);
+        assert_eq!(columns.room_width(), desktop::LIST_MIN);
+        assert_eq!(columns.max(Pane::Sidebar), desktop::SIDEBAR_MAX);
+        let step = columns.step(Pane::Sidebar, true, false);
+        assert_eq!(step, desktop::SIDEBAR + desktop::PANE_KEY_STEP);
+        assert_eq!(
+            Grab::new(Pane::Sidebar, 0., columns).moved(desktop::PANE_KEY_STEP),
+            Some(step)
+        );
+        let widened = prefs
+            .with(Pane::Sidebar, step)
+            .at(window, DetailPane::Docked);
+        assert_eq!(widened.room_width(), desktop::LIST_MIN);
+        assert_eq!(
+            widened.width(Pane::Detail),
+            columns.width(Pane::Detail) - desktop::PANE_KEY_STEP
+        );
+    }
+
+    #[test]
+    fn fractional_drag_positions_produce_whole_widths_even_at_a_fractional_limit() {
+        let columns = PaneWidths::default().at(desktop::THREE_PANE_MIN + 0.75, DetailPane::Docked);
+        let drag = Grab::new(Pane::Detail, 800.25, columns);
+        assert_eq!(drag.moved(800.), None);
+        assert_eq!(drag.moved(798.75), Some(desktop::DETAIL + 2.));
+        assert_eq!(drag.moved(700.), Some(columns.max(Pane::Detail).floor()));
+
+        let prefs = PaneWidths::default().with(Pane::Detail, desktop::DETAIL_MAX);
+        let columns = prefs.at(desktop::THREE_PANE_MIN + 0.75, DetailPane::Docked);
+        assert!(columns.width(Pane::Detail).fract() > 0.);
+        assert_eq!(Grab::new(Pane::Detail, 800.25, columns).moved(800.25), None);
+    }
+
+    #[test]
+    fn key_resize_writes_only_a_changed_preference_at_the_end_of_the_gesture() {
+        let start = PaneWidths::default();
+        let mut prefs = start;
+        let mut resize = KeyResize::default();
+        for right in [true, true, false] {
+            prefs = resize
+                .step(
+                    prefs,
+                    prefs.at(1440., DetailPane::Docked),
+                    Pane::Sidebar,
+                    right,
+                    false,
+                )
+                .expect("each repeated arrow updates the live width");
+        }
+        assert_eq!(
+            prefs,
+            start.with(Pane::Sidebar, desktop::SIDEBAR + desktop::PANE_KEY_STEP)
+        );
+        assert!(resize.finish(prefs));
+        assert!(
+            !resize.finish(prefs),
+            "a blur after key-up doesn't save twice"
+        );
+        let limit = start.with(Pane::Sidebar, desktop::SIDEBAR_MAX);
+        assert!(
+            resize
+                .step(
+                    limit,
+                    limit.at(1440., DetailPane::Docked),
+                    Pane::Sidebar,
+                    true,
+                    false
+                )
+                .is_none()
+        );
+        assert!(!resize.finish(limit), "an arrow at the clamp doesn't save");
+    }
+
+    #[test]
     fn keyboard_moves_the_seam_in_the_arrow_direction_and_clamps() {
         let columns = PaneWidths::default().at(1440., DetailPane::Docked);
         assert_eq!(
@@ -402,7 +555,9 @@ mod tests {
             columns.step(Pane::Detail, false, false),
             desktop::DETAIL + desktop::PANE_KEY_STEP
         );
-        let tight = PaneWidths::default().at(desktop::THREE_PANE_MIN, DetailPane::Docked);
+        let tight = PaneWidths::default()
+            .with(Pane::Sidebar, desktop::SIDEBAR_MAX - desktop::PANE_KEY_STEP)
+            .at(desktop::THREE_PANE_MIN, DetailPane::Docked);
         assert_eq!(
             tight.step(Pane::Sidebar, true, true),
             tight.max(Pane::Sidebar)

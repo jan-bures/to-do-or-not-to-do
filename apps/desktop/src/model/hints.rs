@@ -92,7 +92,8 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
         Focus::Splitter => hints.extend([
             ("← →", "resize"),
             ("Shift ← →", "larger steps"),
-            ("Home", "reset"),
+            ("Home / Enter", "reset"),
+            ("Esc", "back to the list"),
         ]),
         Focus::Elsewhere => {}
     }
@@ -128,7 +129,7 @@ mod tests {
     fn splitter_focus_replaces_list_keys_with_resize_controls() {
         let mut s = list(true, true, true);
         s.focus = Focus::Splitter;
-        assert_eq!(keys(s), ["← →", "Shift ← →", "Home"]);
+        assert_eq!(keys(s), ["← →", "Shift ← →", "Home / Enter", "Esc"]);
     }
 
     #[test]

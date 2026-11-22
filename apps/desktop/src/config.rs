@@ -186,7 +186,18 @@ impl DataDir {
 #[serde(default)]
 pub struct UiPreferences {
     pub collapsed_collections: BTreeSet<CollectionId>,
+    #[serde(deserialize_with = "read_pane_widths")]
     pub panes: PaneWidths,
+}
+
+fn read_pane_widths<'de, D: serde::Deserializer<'de>>(de: D) -> Result<PaneWidths, D::Error> {
+    // Read the whole value first so a bad field can't leave the JSON reader mid-object.
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(if value.is_object() {
+        serde_json::from_value(value).unwrap_or_default()
+    } else {
+        PaneWidths::default()
+    })
 }
 
 /// Fails if `dir` exists and is a link (junction, symlink) or not a directory. A missing one is fine.
@@ -610,6 +621,34 @@ mod tests {
         for corrupt in ["{", r#"{"collapsed_collections":["not an id"]}"#] {
             std::fs::write(&path, corrupt).expect("corrupt preferences");
             assert_eq!(data.load_ui(), UiPreferences::default());
+        }
+    }
+
+    #[test]
+    fn malformed_panes_do_not_discard_collapsed_collections() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data = Paths::in_dir(dir.path().to_owned()).data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        let path = data.path().join(UI_FILE);
+        let id = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        for panes in [
+            "null",
+            "17",
+            "[320,400]",
+            r#"{"sidebar":"too wide","detail":400}"#,
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"panes":{panes},"collapsed_collections":["{id}"]}}"#),
+            )
+            .expect("preferences");
+            assert_eq!(
+                data.load_ui(),
+                UiPreferences {
+                    collapsed_collections: BTreeSet::from([id]),
+                    panes: PaneWidths::default(),
+                }
+            );
         }
     }
 
