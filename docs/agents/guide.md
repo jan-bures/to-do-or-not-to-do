@@ -43,13 +43,16 @@ it; tell the owner what you wanted to do instead.
    exists, add a note to it (`add_note`) instead of creating another one.
 2. **Retry with the same `command_id`.** Every write accepts an optional `command_id` (a UUID). If a call
    times out, fails with `outcome_unknown`, or you're not sure it went through, repeat it with the **same
-   `command_id` and the same arguments**. The server returns the original result (`replayed: true`)
-   instead of writing twice. Never reuse a `command_id` for a different write: that fails with
-   `command_id_reused`. A retry replays even if the Inbox was renamed or the day changed in between.
+   `command_id` and the same arguments**. If the command committed, the server returns the original
+   result (`replayed: true`) instead of writing twice. Rejected commands are not stored. For example,
+   if `move_task` returns `move_source_changed`, retrying with the same ID may succeed if the task
+   is back in the expected source list. Never reuse a `command_id` for a different write: if the ID is
+   already committed, this fails with `command_id_reused`. A committed write replays even if the
+   Inbox was renamed or the day changed in between.
    But a retry is checked like a new call first: if the write itself took away your view of something it
    names, the retry gets `not_found`. For example, with no default level you see a tag only while it's on
-   a task you can read, so after `untag_task` takes it off the last such task, the tag is gone for you. A
-   retry never writes twice. To confirm such a write, read the item that is still visible to you (here
+   a task you can read, so after `untag_task` takes it off the last such task, the tag is gone for you.
+   To confirm such a write, read the item that is still visible to you (here
    `get_task` on the task: the tag is no longer in its `tags`).
 3. **Merge duplicates you find**, if you have plan level: `merge_tasks` with the duplicate as `source`
    and the task to keep as `target`.

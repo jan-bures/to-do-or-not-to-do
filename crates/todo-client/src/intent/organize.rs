@@ -123,14 +123,14 @@ pub fn actionable_task(state: &State, id: TaskId) -> Option<&Task> {
     state
         .tasks
         .get(&id)
-        .filter(|task| task.merged_into.is_none() && state.is_live(id.into()))
+        .filter(|task| is_actionable(state, task))
 }
 
 /// Moves a task to the first position in another list, provided it is still in the shown source.
 /// Keep the source in the command too: the server may have moved it before the replica catches up.
 pub fn move_task(state: &State, id: TaskId, from: ListId, to: ListId) -> Option<Command> {
     let task = actionable_task(state, id)?;
-    (task.list == from && to != from && state.is_live(to.into())).then_some(Command::MoveTask {
+    (task.list == from && to != from && list_live(state, to)).then_some(Command::MoveTask {
         id,
         list: to,
         from_list: Some(from),

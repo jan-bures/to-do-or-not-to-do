@@ -242,9 +242,11 @@ and command IDs are idempotent, but two tabs' offline edits to one task may land
 
 **Upgrades.** Opening the database at a newer version waits until every other tab has closed its connection.
 While it waits, the page says "Close other To-do tabs to finish updating", and goes on by itself when they do.
-Every connection listens for `versionchange`: when another tab needs a newer version, the tab stops syncing
-and from then on is **read-only**. `backend::submit` refuses every command without applying it (an edit made
-now would show as saved but never reach a database), and quick-add, the checkboxes, the toggles and the
+Every connection listens for `versionchange` before reading the replica. If another tab needs a newer
+version during that read, the opening tab closes its connection and reloads rather than starting sync.
+If the upgrade is requested after startup, the tab stops syncing and becomes **read-only**.
+`backend::submit` refuses every command without applying it (an edit made now would show as saved but
+never reach a database), and quick-add, the checkboxes, the toggles and the
 editors are disabled. A persistent alert says "A newer version is open in another tab. Reload to keep
 editing", with a **Reload** button, in case the automatic reload doesn't happen. The tab writes what it still
 has, releases the sender lock, closes the database and reloads (to get the newer build).

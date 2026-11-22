@@ -1534,6 +1534,57 @@ test("a version 2 sender retires before a new tab can queue guarded moves", asyn
   }
 });
 
+test("a tab still reading its replica retires when a newer tab opens", async ({ browser }) => {
+  const mixed = await browser.newContext({ baseURL, storageState: await context.storageState() });
+  try {
+    const old = await mixed.newPage();
+    await old.addInitScript(() => {
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (name, version) {
+        if (name !== "todo-replica") return open.call(this, name, version);
+        const request = open.call(this, name, 2);
+        request.addEventListener("success", () => {
+          request.result.addEventListener("versionchange", () => { window.__upgradeRequested = true; });
+        });
+        return request;
+      };
+      // Hold delivery of the last replica read. The actual transaction can finish, so the
+      // connection (not an artificially open transaction) is what can block the upgrade.
+      const getAll = IDBObjectStore.prototype.getAll;
+      const success = Object.getOwnPropertyDescriptor(IDBRequest.prototype, "onsuccess");
+      IDBObjectStore.prototype.getAll = function (...args) {
+        const request = getAll.apply(this, args);
+        if (this.name === "damaged") {
+          Object.defineProperty(request, "onsuccess", {
+            set(handler) {
+              success.set.call(this, (event) => {
+                window.__finishReplicaRead = () => handler.call(this, event);
+              });
+            },
+          });
+        }
+        return request;
+      };
+    });
+    await old.goto("/app");
+    await old.waitForFunction(() => typeof window.__finishReplicaRead === "function");
+    // Keep the old document here when it tries to reload so its startup outcome is observable.
+    await old.route("**/app", (r) => r.fulfill({ status: 204 }));
+    const current = await mixed.newPage();
+    await current.goto("/app");
+    await old.waitForFunction(() => window.__upgradeRequested);
+    // The newer tab must finish opening even while the old tab's startup is still paused.
+    await expect(current.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 10_000 });
+    const reload = old.waitForRequest((r) => r.isNavigationRequest());
+    await old.evaluate(() => window.__finishReplicaRead());
+    await reload;
+    await expect(old.locator(".fatal")).toContainText("another tab is updating the local database");
+    await expect(old.locator(".qa-input")).toHaveCount(0);
+  } finally {
+    await mixed.close();
+  }
+});
+
 // The last tests replace the database (everything above is synced, so nothing unsent is lost).
 
 test("an upgrade blocked by another tab says so, and goes ahead once that tab lets go", async () => {

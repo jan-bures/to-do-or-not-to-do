@@ -33,6 +33,11 @@ fn outcome_response(o: Outcome, epoch: uuid::Uuid) -> Response {
 }
 
 /// Runs a command.
+///
+/// Retrying a committed command with the same `command_id` and payload returns its stored result
+/// (`idempotent-replayed: true`), subject to the usual access checks. A rejected command is not
+/// stored. For example, after `409 move_source_changed`, retrying with the same ID may succeed if
+/// the task is back in the expected source list.
 #[utoipa::path(
     post,
     path = "/api/v1/commands",

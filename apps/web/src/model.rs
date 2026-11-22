@@ -16,7 +16,11 @@ use jiff::tz::{Offset, TimeZone};
 use leptos::prelude::{Get, Memo, RwSignal, With};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use todo_client::intent::{self, TaskRoom, quick_add};
+use todo_client::intent::{
+    self, TaskRoom,
+    organize::{actionable_task, is_actionable, list_live},
+    quick_add,
+};
 use todo_client::room_header::{self, LocalTime, RoomHeader, SmartList};
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Stamp, Task};
@@ -262,25 +266,6 @@ pub fn swatch(color: Option<&str>, seed: &[u8; 16]) -> &'static str {
 
 // ---- visibility --------------------------------------------------------------------------------------
 
-fn list_live(state: &State, l: &List) -> bool {
-    l.deleted.is_none()
-        && l.collection.is_none_or(|c| {
-            state
-                .collections
-                .get(&c)
-                .is_some_and(|c| c.deleted.is_none())
-        })
-}
-
-fn task_live(state: &State, t: &Task) -> bool {
-    t.deleted.is_none()
-        && t.merged_into.is_none()
-        && state
-            .lists
-            .get(&t.list)
-            .is_some_and(|l| list_live(state, l))
-}
-
 /// Live collections, in order.
 #[must_use]
 pub fn collections(state: &State) -> Vec<&Collection> {
@@ -299,7 +284,7 @@ pub fn lists_in(state: &State, collection: Option<CollectionId>) -> Vec<&List> {
     let mut v: Vec<&List> = state
         .lists
         .values()
-        .filter(|l| l.collection == collection && list_live(state, l))
+        .filter(|l| l.collection == collection && list_live(state, l.id))
         .collect();
     v.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
     v
@@ -362,7 +347,7 @@ pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) ->
         .collect();
     let mut open_by_list: BTreeMap<ListId, usize> = BTreeMap::new();
     let mut agent_updates_today = 0;
-    for t in state.tasks.values().filter(|t| task_live(state, t)) {
+    for t in state.tasks.values().filter(|t| is_actionable(state, t)) {
         if !t.is_done() {
             *open_by_list.entry(t.list).or_default() += 1;
         }
@@ -410,7 +395,7 @@ fn agent_summary(
     date_of: impl Fn(Timestamp) -> Date,
 ) -> Vec<(AgentMark, String)> {
     let mut agents = BTreeMap::new();
-    for task in state.tasks.values().filter(|t| task_live(state, t)) {
+    for task in state.tasks.values().filter(|t| is_actionable(state, t)) {
         for (stamp, created) in [(&task.created, true), (&task.updated, false)] {
             let Some(id) = stamp.by.agent_id() else {
                 continue;
@@ -851,7 +836,7 @@ fn unfiltered_room(
             )
         }
         RoomId::List(l) => {
-            let list = state.lists.get(l).filter(|l| list_live(state, l));
+            let list = state.lists.get(l).filter(|l| list_live(state, l.id));
 
             (
                 list.map_or_else(String::new, |l| l.name.clone()),
@@ -965,7 +950,7 @@ pub fn tomorrow(
         .tasks
         .values()
         .filter(|t| {
-            (task_live(state, t) || departing(t.id))
+            (is_actionable(state, t) || departing(t.id))
                 && (!t.is_done() || completing(t.id))
                 && t.due.is_some_and(|d| d > today)
         })
@@ -1177,7 +1162,7 @@ fn size_text(bytes: u64) -> String {
 /// The detail pane for a task, if it is live.
 #[must_use]
 pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
-    let t = state.tasks.get(&id).filter(|t| task_live(state, t))?;
+    let t = actionable_task(state, id)?;
     let today = now.today();
     let list = state.lists.get(&t.list)?;
     let coll = list.collection.and_then(|c| state.collections.get(&c));

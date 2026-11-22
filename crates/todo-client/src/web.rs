@@ -1019,6 +1019,15 @@ pub fn elect_sender(on_elected: impl FnOnce() + 'static) -> Option<SenderLock> {
     }
 }
 
+/// Why the browser replica could not start.
+#[derive(Debug, thiserror::Error)]
+pub enum OpenStorageError {
+    #[error(transparent)]
+    Storage(#[from] IdbError),
+    #[error("another tab requested a database upgrade during startup")]
+    Upgrading,
+}
+
 /// Opens (or creates) the IndexedDB database `name` and loads it into a [`MirrorStorage`], with what
 /// had to be repaired ([`MirrorStorage::recover`]): an unreadable confirmed state is fetched from the
 /// server again, and unreadable outbox entries are set aside in the `damaged` store. Unsent work is
@@ -1027,13 +1036,34 @@ pub fn elect_sender(on_elected: impl FnOnce() + 'static) -> Option<SenderLock> {
 /// `hooks` hear about an upgrade blocked by other tabs, and about this connection being closed for
 /// another tab's upgrade (see the module docs).
 ///
-/// Fails only if IndexedDB itself fails (unavailable, or out of space).
+/// Stops startup if another tab requests an upgrade during the replica read.
 pub async fn open_storage(
     name: &str,
     hooks: OpenHooks,
-) -> Result<(MirrorStorage, IdbFlusher, Recovery), IdbError> {
+) -> Result<(MirrorStorage, IdbFlusher, Recovery), OpenStorageError> {
     let db = open_db(name, DB_VERSION, &hooks).await?;
-    let persisted = read_all(&db).await?;
+    // An upgrade can request this connection to close as soon as it opens. Do not miss that
+    // event while reading the replica. No edits or repairs need flushing until recovery starts.
+    let upgrading = Rc::new(Cell::new(false));
+    let during_read = {
+        let db = db.clone();
+        let upgrading = upgrading.clone();
+        let notify = hooks.version_change.clone();
+        Closure::<dyn Fn()>::new(move || {
+            if !upgrading.replace(true) {
+                notify();
+                db.close();
+            }
+        })
+    };
+    db.set_onversionchange(Some(during_read.as_ref().unchecked_ref()));
+    let persisted = read_all(&db).await;
+    db.set_onversionchange(None);
+    if upgrading.get() {
+        (hooks.closed)();
+        return Err(OpenStorageError::Upgrading);
+    }
+    let persisted = persisted.inspect_err(|_| db.close())?;
     let (storage, recovery) = MirrorStorage::recover(persisted);
     if recovery != Recovery::default() {
         tracing::warn!(

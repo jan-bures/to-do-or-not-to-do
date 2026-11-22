@@ -1668,7 +1668,9 @@ fn rows_with_exits(room: &Room, section: RowSection, lingering: &[Linger]) -> Ve
             let phase = (section == RowSection::Open && row.done)
                 .then(|| {
                     lingering.iter().find(|l| {
-                        l.section == section && l.room == room.id && l.row.id == row.id
+                        l.section == section
+                            && l.room == room.id
+                            && l.row.id == row.id
                             && l.phase != Phase::Depart
                     })
                 })
@@ -1716,8 +1718,10 @@ fn TaskList() -> impl IntoView {
 fn CompletedRows() -> impl IntoView {
     let c = ctx();
     let completed = Memo::new(move |_| {
-        c.view_room
-            .with(|r| c.lingering.with(|l| rows_with_exits(r, RowSection::Completed, l)))
+        c.view_room.with(|r| {
+            c.lingering
+                .with(|l| rows_with_exits(r, RowSection::Completed, l))
+        })
     });
     view! {
         <ul id="completed-rows" class="rows completed-rows" role="list" aria-label="Completed tasks"

@@ -45,12 +45,13 @@
 //!
 //! Every write takes an optional `command_id` (a UUID); without one, a fresh one is generated per call.
 //! The IDs of entities a write creates are derived from the `command_id`, so retrying with the same
-//! `command_id` and arguments sends exactly the same command and returns the stored result
-//! (`replayed: true`) instead of writing twice. Defaults a tool resolves itself (the Inbox for
-//! `create_task`, "today" for `set_my_day`) are taken from the stored record on a retry (the list of the
-//! task it created, the day it was handled), so the retry sends the same command even if lists were
-//! renamed or the day changed in between. Other arguments are not: a retry with different arguments
-//! gets `command_id_reused`.
+//! `command_id` and arguments replays the stored result (`replayed: true`) if the command committed.
+//! Defaults a tool resolves itself (the Inbox for `create_task`, "today" for `set_my_day`) are taken
+//! from the stored record on a retry, even if lists were renamed or the day changed in between.
+//! Reusing a committed ID with different arguments gets `command_id_reused`.
+//!
+//! A rejected command is not stored. For example, after `move_source_changed`, the same ID can
+//! succeed if the source precondition holds on a later retry.
 //!
 //! Hidden targets answer like missing ones (`not_found`, `event_not_found`), also on a retry; see
 //! [`crate::api::hidden`].

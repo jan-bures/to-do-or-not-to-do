@@ -30,8 +30,8 @@ use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::mirror::{MirrorStorage, Recovery};
 use todo_client::notify::Notify;
 use todo_client::web::{
-    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks, SenderLock,
-    elect_sender, open_channel, open_storage, sleep,
+    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks,
+    OpenStorageError, SenderLock, elect_sender, open_channel, open_storage, sleep,
 };
 use todo_client::{
     ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
@@ -159,6 +159,9 @@ pub enum StartError {
     /// could not be opened. Nothing is deleted: the page offers "Reset local data".
     #[error("local storage is unavailable: {0}")]
     Storage(String),
+    /// Another tab asked this one to retire before it finished opening.
+    #[error("another tab is updating the local database; reload to keep using To-do")]
+    Updating,
 }
 
 /// The live backend, opened.
@@ -205,9 +208,10 @@ pub async fn open_live(csrf: String, blocked: Rc<dyn Fn(bool)>) -> Result<Opened
             crate::platform::reload();
         }),
     };
-    let (storage, flusher, recovery) = open_storage(DB_NAME, hooks)
-        .await
-        .map_err(|e| StartError::Storage(e.0))?;
+    let (storage, flusher, recovery) = open_storage(DB_NAME, hooks).await.map_err(|e| match e {
+        OpenStorageError::Storage(e) => StartError::Storage(e.0),
+        OpenStorageError::Upgrading => StartError::Updating,
+    })?;
     let token = CsrfToken::new(csrf);
     let client = SyncClient::new(
         FetchTransport::new(token.clone()),
