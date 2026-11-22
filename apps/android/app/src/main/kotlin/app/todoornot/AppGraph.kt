@@ -134,17 +134,24 @@ class AppGraph(private val app: Context) {
     /** Builds the model when an engine opens, and drops it otherwise. */
     private suspend fun follow(h: Host) {
         widgets.invalidate()
-        val engine = (h as? Host.Ready)?.engine
-        if (_model.value?.engine === engine) return
+        val ready = h as? Host.Ready
+        if (_model.value?.engine === ready?.engine) return
         modelScope?.cancel()
         modelScope = null
-        _model.value = engine?.let { e ->
+        _model.value = ready?.let { paired ->
+            val e = paired.engine
             val ms = CoroutineScope(SupervisorJob() + Dispatchers.Main)
             modelScope = ms
             // One listener per engine: also let the reminders and home-screen widgets follow.
             val listen = { onChange: () -> Unit ->
                 e.setListener(object : ChangeListener {
                     override fun onChange() {
+                        // Record a known revocation before telling the app and its widgets to read it.
+                        try {
+                            host.status(paired)
+                        } catch (_: IllegalStateException) {
+                            return // The pairing closed while the callback was in flight.
+                        }
                         onChange()
                         reminderChanges.tryEmit(Unit)
                         widgets.invalidate()
@@ -152,9 +159,13 @@ class AppGraph(private val app: Context) {
                 })
             }
             withContext(Dispatchers.IO) {
-                TodoModel(e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() })
+                TodoModel(
+                    e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair,
+                    pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() },
+                    syncStatus = { host.status(paired) },
+                )
             }.also { m ->
-                EngineHost.recoveredNotice(h.recovered)?.let(m::notice)
+                EngineHost.recoveredNotice(paired.recovered)?.let(m::notice)
                 if (foreground) m.resume()
                 reminderChanges.tryEmit(Unit)
             }

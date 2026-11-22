@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.util.Log
+import androidx.glance.GlanceId
 import androidx.glance.appwidget.updateAll
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -12,12 +13,14 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import app.todoornot.AppGraph
 import app.todoornot.TodoApplication
 import app.todoornot.core.FfiException
-import app.todoornot.core.ProblemKind
 import app.todoornot.core.SyncState
 import app.todoornot.design.Tokens
+import app.todoornot.model.TodoModel
 import app.todoornot.session.Host
+import app.todoornot.session.signedOut
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,12 +50,13 @@ internal class WidgetChoicesStore(context: Context) {
 
 /** Batches bursts from the process's one engine listener, including reminder and widget sync. */
 internal class WidgetRefresh(private val context: Context) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val requests = Channel<Unit>(Channel.CONFLATED)
     private val revision = MutableStateFlow(0L)
     val changes = revision.asStateFlow()
 
     init {
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        scope.launch {
             for (request in requests) {
                 delay(Tokens.Motion.HOVER.toLong())
                 requests.tryReceive()
@@ -66,6 +70,19 @@ internal class WidgetRefresh(private val context: Context) {
     }
 
     fun invalidate() { requests.trySend(Unit) }
+
+    fun configured(id: GlanceId) {
+        scope.launch {
+            // Refresh even if the launcher hasn't attached a newly configured widget yet.
+            revision.update { it + 1 }
+            try {
+                TodoWidget().update(context, id)
+            } catch (e: IllegalStateException) {
+                Log.d("TodoWidget", "could not refresh configured widget: ${e::class.simpleName}")
+            }
+            WidgetSyncWorker.enqueue(context)
+        }
+    }
 
     suspend fun publish() {
         if (context.todoWidgetIds().isEmpty()) return
@@ -81,15 +98,10 @@ class WidgetSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
         val graph = context.todoGraph
         val store = WidgetChoicesStore(context)
         if (context.todoWidgetIds().none { store.get(it) != null }) return@withContext Result.success()
-        val model = withTimeoutOrNull(MODEL_WAIT_MS) {
-            graph.loaded.first { it }
-            if (graph.host.state.value is Host.Ready) graph.model.filterNotNull().first() else null
-        } ?: return@withContext Result.success()
+        val model = graph.widgetModel() ?: return@withContext Result.success()
         try {
-            model.nudge()
-            model.syncInBackground(SYNC_MS) {
-                it.state == SyncState.ONLINE || (it.state == SyncState.OFFLINE && it.problem != null)
-            }
+            val ready = graph.host.state.value as? Host.Ready
+            if (ready != null && ready.engine === model.engine && graph.host.isAuthorized(ready)) model.syncForWidget()
         } catch (e: FfiException) {
             Log.d("TodoWidget", "widget sync failed: ${e::class.simpleName}")
         } catch (e: IllegalStateException) {
@@ -101,9 +113,6 @@ class WidgetSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
     }
 
     companion object {
-        internal const val MODEL_WAIT_MS = 5_000L
-        private const val SYNC_MS = 4_000L
-
         internal fun enqueue(context: Context) {
             val request = OneTimeWorkRequestBuilder<WidgetSyncWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -113,4 +122,16 @@ class WidgetSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
     }
 }
 
-internal fun Host.Ready.widgetAuthorized() = engine.status().problem != ProblemKind.UNAUTHORIZED
+internal suspend fun AppGraph.widgetModel(): TodoModel? = withTimeoutOrNull(5_000L) {
+    loaded.first { it }
+    val ready = host.state.value as? Host.Ready ?: return@withTimeoutOrNull null
+    model.filterNotNull().first { it.engine === ready.engine }
+}
+
+internal suspend fun TodoModel.syncForWidget() {
+    nudge()
+    syncInBackground(4_000L) {
+        // Offline can be a send failure left over from a previous run. Don't cut off a new attempt.
+        it.signedOut || (it.state == SyncState.ONLINE && it.pending == 0u)
+    }
+}

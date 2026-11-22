@@ -187,7 +187,7 @@ private fun TaskLine(row: WidgetRow, height: Float, palette: WidgetPalette, clic
         }
         WidgetButton(
             "star", if (row.important) "Remove importance from ${row.title}" else "Mark ${row.title} as important",
-            if (row.important) palette.room { it.sunInk } else palette.room { it.ink3 },
+            if (row.important) palette.room { it.accentStrong } else palette.room { it.ink3 },
             clicks?.important(row.id, !row.important), filled = row.important,
         )
     }

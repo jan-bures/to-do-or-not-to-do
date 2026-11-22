@@ -4,7 +4,6 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Log
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -12,7 +11,7 @@ import androidx.glance.GlanceId
 import androidx.glance.action.Action
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.actionStartActivity
-import androidx.glance.action.actionParametersOf
+import androidx.glance.appwidget.action.actionSendBroadcast
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
@@ -21,16 +20,12 @@ import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.provideContent
 import app.todoornot.MainActivity
-import app.todoornot.core.FfiException
 import app.todoornot.core.RoomKey
 import app.todoornot.core.localNow
-import app.todoornot.session.Host
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 class TodoWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget = TodoWidget()
@@ -52,8 +47,8 @@ class TodoWidget : GlanceAppWidget() {
         val initial = readWidget(context, instance)
         provideContent {
             val changes = remember { graph.widgets.changes.map { readWidget(context, instance) } }
-            val data by changes.collectAsState(initial)
-            WidgetCard(data, WidgetClicks(context, instance))
+            val snapshot by changes.collectAsState(initial)
+            WidgetCard(snapshot.data, WidgetClicks(context, instance, snapshot.pairingId))
         }
     }
 
@@ -64,31 +59,17 @@ class TodoWidget : GlanceAppWidget() {
     }
 }
 
-private suspend fun readWidget(context: Context, instance: Int): WidgetData = withContext(Dispatchers.IO) {
+private suspend fun readWidget(context: Context, instance: Int): WidgetSnapshot = withContext(Dispatchers.IO) {
     val graph = context.todoGraph
     graph.loaded.first { it }
-    val host = graph.host.state.value
-    when (host) {
-        Host.SignedOut -> WidgetData.SignedOut
-        is Host.CantOpen -> WidgetData.Unavailable
-        is Host.Ready -> try {
-            if (!host.widgetAuthorized()) WidgetData.SignedOut
-            else widgetData(host.engine, WidgetChoicesStore(context).get(instance), localNow()).let {
-                // Do not hand a stale read from before unpair back to the launcher.
-                if (graph.host.state.value === host) it else WidgetData.SignedOut
-            }
-        } catch (e: IllegalStateException) {
-            WidgetData.SignedOut // Engine closed during unpair.
-        }
-    }
+    widgetSnapshot(graph.host, WidgetChoicesStore(context).get(instance), localNow())
 }
 
-private val TASK = ActionParameters.Key<String>("task")
 internal const val WIDGET_ADD = "app.todoornot.widget.ADD"
 internal const val WIDGET_ROOM = "app.todoornot.widget.ROOM"
 
 /** With no lazy collection, Glance uses immutable PendingIntents to these explicit components. */
-internal class WidgetClicks(private val context: Context, private val id: Int) {
+internal class WidgetClicks(private val context: Context, private val id: Int, private val pairingId: String?) {
     fun pick() = actionStartActivity(
         Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE, uri("configure", id.toString()), context, WidgetConfigActivity::class.java)
             .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id),
@@ -102,12 +83,11 @@ internal class WidgetClicks(private val context: Context, private val id: Int) {
         main(Intent.ACTION_VIEW).setData(uri("task", id)).putExtra(MainActivity.EXTRA_TASK, id),
     )
 
-    fun complete(task: String): Action = actionRunCallback<WidgetCompleteCallback>(actionParametersOf(TASK to task))
+    fun complete(task: String): Action? = edit(WidgetEdit.Complete(task))
+    fun important(task: String, on: Boolean): Action? = edit(WidgetEdit.Important(task, on))
 
-    fun important(task: String, on: Boolean): Action = if (on) {
-        actionRunCallback<WidgetStarCallback>(actionParametersOf(TASK to task))
-    } else {
-        actionRunCallback<WidgetUnstarCallback>(actionParametersOf(TASK to task))
+    private fun edit(edit: WidgetEdit): Action? = pairingId?.let {
+        actionSendBroadcast(WidgetTaskAction(it, edit).intent(context))
     }
 
     fun refresh(): Action = actionRunCallback<WidgetRefreshCallback>()
@@ -117,45 +97,6 @@ internal class WidgetClicks(private val context: Context, private val id: Int) {
 
     private fun uri(action: String, id: String): Uri =
         Uri.Builder().scheme("todo-widget").authority(action).appendPath(id).build()
-}
-
-class WidgetCompleteCallback : ActionCallback {
-    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        parameters[TASK]?.let { applyWidgetEdit(context, WidgetEdit.Complete(it)) }
-    }
-}
-
-class WidgetStarCallback : ActionCallback {
-    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        parameters[TASK]?.let { applyWidgetEdit(context, WidgetEdit.Important(it, true)) }
-    }
-}
-
-class WidgetUnstarCallback : ActionCallback {
-    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        parameters[TASK]?.let { applyWidgetEdit(context, WidgetEdit.Important(it, false)) }
-    }
-}
-
-private suspend fun applyWidgetEdit(context: Context, edit: WidgetEdit) {
-    val graph = context.todoGraph
-    val model = withTimeoutOrNull(WidgetSyncWorker.MODEL_WAIT_MS) {
-        graph.loaded.first { it }
-        if (graph.host.state.value is Host.Ready) graph.model.filterNotNull().first() else null
-    } ?: return
-    val ready = graph.host.state.value as? Host.Ready ?: return
-    if (model.engine !== ready.engine) return
-    try {
-        val saved = withContext(Dispatchers.IO) {
-            ready.widgetAuthorized() && model.applyExternalTaskEdit { edit.apply(it, localNow()) }
-        }
-        if (saved) WidgetSyncWorker.enqueue(context)
-    } catch (e: FfiException) {
-        Log.d("TodoWidget", "widget edit failed: ${e::class.simpleName}")
-    } catch (e: IllegalStateException) {
-        Log.d("TodoWidget", "widget edit ended: ${e::class.simpleName}")
-    }
-    graph.widgets.publish()
 }
 
 class WidgetRefreshCallback : ActionCallback {

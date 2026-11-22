@@ -18,7 +18,6 @@ import app.todoornot.core.Holding
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
-import app.todoornot.core.ProblemKind
 import app.todoornot.core.ReminderChange
 import app.todoornot.core.ReminderRef
 import app.todoornot.core.Reopening
@@ -49,6 +48,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import app.todoornot.reminders.reminderLabel
+import app.todoornot.session.signedOut
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -116,7 +116,7 @@ data class UiState(
     val attachmentTaskConfirmed: Boolean = false,
 ) {
     val selected: String? get() = detail?.id
-    val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
+    val signedOut: Boolean get() = status.signedOut
 }
 
 data class TaskSwap(val serial: Long, val room: RoomKey, val rows: Set<String>)
@@ -136,7 +136,7 @@ enum class Tone { OK, BUSY, PROBLEM, IDLE }
  * screenshots) says how much is waiting, if anything.
  */
 fun syncLine(status: SyncStatus, syncedAt: LocalNow?): Pair<String, Tone> = when {
-    status.problem == ProblemKind.UNAUTHORIZED -> "Signed out by the server" to Tone.PROBLEM
+    status.signedOut -> "Signed out by the server" to Tone.PROBLEM
     status.failed > 0u -> "${status.failed} couldn’t sync" to Tone.PROBLEM
     status.state == SyncState.OFFLINE && status.pending > 0u -> "Offline, ${status.pending} waiting" to Tone.PROBLEM
     status.state == SyncState.OFFLINE -> "Offline" to Tone.PROBLEM
@@ -219,6 +219,7 @@ class TodoModel(
      */
     private val zone: () -> ZoneId = { ZoneOffset.ofTotalSeconds(now().utcOffsetSecs) },
     documents: Documents? = null,
+    private val syncStatus: () -> SyncStatus = engine::status,
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
@@ -405,8 +406,8 @@ class TodoModel(
         val reading = selected
         val detail = reading?.let { engine.task(it, n) }?.let { localReminder(it, n, zone()) }
         if (detail == null) selection.compareAndSet(reading, null)
-        val status = engine.status()
-        if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
+        val status = syncStatus()
+        if (!status.signedOut && status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
         val readingActivity = activity
         val state = UiState(
             home = engine.homePlaced(place.rows, n),
@@ -989,10 +990,18 @@ class TodoModel(
     }
 
     /** A system surface's edit uses the same write lock and on-disk outbox as the app. */
-    internal suspend fun applyExternalTaskEdit(edit: (TodoEngine) -> Unit): Boolean {
-        val error = writeEdit { edit(engine) }
+    internal suspend fun applyExternalTaskEdit(
+        isCurrent: () -> Boolean = { true },
+        edit: (TodoEngine) -> Unit,
+    ): Boolean {
+        var authorized = false
+        val error = writeEdit {
+            // Check after waiting for earlier writes, not when the system tap is first delivered.
+            authorized = isCurrent() && !syncStatus().signedOut
+            if (authorized) edit(engine)
+        }
         scope.launch { refresh() }
-        return error == null
+        return authorized && error == null
     }
 
     /**
@@ -1014,7 +1023,7 @@ class TodoModel(
             }
             if (!started) return
             withTimeoutOrNull(budget) {
-                do delay(SYNC_POLL_MS) while (!done(withContext(io) { engine.status() }))
+                do delay(SYNC_POLL_MS) while (!done(withContext(io) { syncStatus() }))
             }
         } finally {
             if (started) withContext(NonCancellable + io) {

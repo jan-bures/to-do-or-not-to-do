@@ -144,10 +144,12 @@ Long-press an empty spot on the home screen, open **Widgets**, and add **To-do l
 **Important**, **Planned**, **All**, a list, or a collection (a group of lists). Each widget remembers its
 own selection. Tap the name or chevron to pick again; on wider widgets **Widget settings** does the same.
 A deleted list or collection offers to pick another. A signed-out widget says **Open the app to sign in**.
+If the server signs the phone out, widgets hide task and list names and refuse task edits, even after an
+offline restart. The app keeps the pairing and the outbox until the owner confirms **Pair again**.
 
 The widget shows open tasks in the app's order. Collection rows name their source list. Resize to show
 more rows; **+N more** counts those that don't fit. Tap the title to open its task, the round checkbox to
-complete it, or the star to change importance (gold and filled when on). **+** opens the app's composer
+complete it, or the star to change importance (filled with the room's strong accent when on). **+** opens the app's composer
 in the selected room, with that room's usual defaults. Widget edits use the same offline outbox as the
 app. Glance hands the completed row straight back to the launcher without the in-app exit animation.
 

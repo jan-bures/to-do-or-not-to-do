@@ -35,13 +35,23 @@ class SessionStore(private val store: KeyValues, private val cipher: SecretCiphe
         return Session(server, device, token, store.get(PAIRING) ?: "")
     }
 
+    @Synchronized
     fun save(session: Session) {
         val sealed = Base64.getEncoder().encodeToString(cipher.encrypt(session.token.toByteArray(Charsets.UTF_8)))
-        store.put(mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId))
+        store.put(mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId, REVOKED to null))
     }
 
+    @Synchronized
     fun clear() {
-        store.put(mapOf(SERVER to null, DEVICE to null, TOKEN to null, PAIRING to null))
+        store.put(mapOf(SERVER to null, DEVICE to null, TOKEN to null, PAIRING to null, REVOKED to null))
+    }
+
+    /** Remember a 401 without discarding the pairing or its unsent edits. An old engine can't revoke a new pairing. */
+    @Synchronized
+    internal fun signedOut(pairingId: String, unauthorized: Boolean): Boolean {
+        if (store.get(PAIRING) != pairingId || store.get(REVOKED) == pairingId) return true
+        if (unauthorized) store.put(mapOf(REVOKED to pairingId))
+        return unauthorized
     }
 
     private companion object {
@@ -49,5 +59,6 @@ class SessionStore(private val store: KeyValues, private val cipher: SecretCiphe
         const val DEVICE = "device_id"
         const val TOKEN = "token_sealed"
         const val PAIRING = "pairing_id"
+        const val REVOKED = "revoked_pairing_id"
     }
 }

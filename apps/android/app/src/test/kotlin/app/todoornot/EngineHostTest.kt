@@ -1,15 +1,27 @@
 package app.todoornot
 
 import app.todoornot.core.CacheRecovery
+import app.todoornot.core.ChangeListener
 import app.todoornot.core.EngineConfig
 import app.todoornot.core.FfiException
+import app.todoornot.core.ProblemKind
+import app.todoornot.core.RoomKey
+import app.todoornot.core.SmartList
 import app.todoornot.core.TodoEngine
+import app.todoornot.model.TodoModel
 import app.todoornot.session.EngineHost
 import app.todoornot.session.Host
 import app.todoornot.session.PairingFiles
 import app.todoornot.session.Session
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
+import app.todoornot.widget.WidgetData
+import app.todoornot.widget.WidgetEdit
+import app.todoornot.widget.WidgetTaskAction
+import app.todoornot.widget.widgetSnapshot
+import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,7 +32,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
+import java.net.InetSocketAddress
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
 
 /** Opening the engine for the saved pairing, what a cache that won't open does to it, and unpairing. */
@@ -80,6 +95,65 @@ class EngineHostTest {
         assertNull(ready.recovered)
         assertEquals(cant.session, sessions.load())
         assertEquals(0, keysForgotten)
+    }
+
+    @Test
+    fun a_401_survives_an_offline_restart_without_showing_widget_rows_or_accepting_writes() = runTest {
+        fun realHost() = EngineHost(SessionStore(values, FakeCipher()), PairingFiles(root), forgetKey = {}, newPairingId = ::nextId) { s, db ->
+            TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, true))
+        }
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange -> exchange.use { it.sendResponseHeaders(401, -1) } }
+        server.start()
+        val session = approved.copy(server = "http://127.0.0.1:${server.address.port}")
+        val room = RoomKey.Smart(SmartList.ALL)
+        val first = realHost().apply { paired(session) }
+        val before = first.state.value as Host.Ready
+        val task = before.engine.use { engine ->
+            try {
+                val id = engine.addTask(room, "Keep this unsent draft", FIXTURE_NOW)
+                assertTrue(widgetSnapshot(first, room, FIXTURE_NOW).data is WidgetData.Room)
+                val recorded = CountDownLatch(1)
+                engine.setListener(object : ChangeListener {
+                    override fun onChange() {
+                        if (first.status(before).problem == ProblemKind.UNAUTHORIZED) recorded.countDown()
+                    }
+                })
+                engine.start()
+                assertTrue("the 401 must be recorded before restart", recorded.await(8, TimeUnit.SECONDS))
+                assertEquals(WidgetData.SignedOut, widgetSnapshot(first, room, FIXTURE_NOW).data)
+                id
+            } finally {
+                engine.stop()
+                server.stop(0)
+            }
+        }
+
+        val restarted = realHost().apply { load() }
+        val ready = restarted.state.value as Host.Ready
+        val click = WidgetTaskAction(before.session.pairingId, WidgetEdit.Complete(task))
+        ready.engine.use { engine ->
+            assertEquals(before.session.pairingId, ready.session.pairingId)
+            assertNull("the new engine has no network response", engine.status().problem)
+            val pending = engine.status().pending
+            assertFalse(engine.task(task, FIXTURE_NOW)!!.done)
+            val model = TodoModel(engine, backgroundScope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, syncStatus = { restarted.status(ready) })
+            assertTrue("the main app also shows Pair again", model.ui.value.signedOut)
+            assertEquals(WidgetData.SignedOut, widgetSnapshot(restarted, room, FIXTURE_NOW).data)
+            assertFalse(click.apply(restarted, model, FIXTURE_NOW))
+            assertEquals(pending, engine.status().pending)
+            assertFalse(engine.task(task, FIXTURE_NOW)!!.done)
+        }
+
+        assertEquals(Unpaired.Clean, restarted.unpair {})
+        restarted.paired(session)
+        val replacement = restarted.state.value as Host.Ready
+        replacement.engine.use { engine ->
+            assertNotEquals(ready.session.pairingId, replacement.session.pairingId)
+            assertTrue(widgetSnapshot(restarted, room, FIXTURE_NOW).data is WidgetData.Room)
+            val model = TodoModel(engine, backgroundScope, Dispatchers.Unconfined, now = { FIXTURE_NOW })
+            assertFalse("an action retained from the old pairing must be refused", click.apply(restarted, model, FIXTURE_NOW))
+        }
     }
 
     @Test

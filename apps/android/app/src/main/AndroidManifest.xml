@@ -57,6 +57,8 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/todo_widget_info" />
         </receiver>
 
+        <receiver android:name=".widget.WidgetTaskReceiver" android:exported="false" />
+
         <!-- A reminder's alarm and notification actions (explicit intents from this app), and the system's
              word that alarms must be set again. -->
         <receiver

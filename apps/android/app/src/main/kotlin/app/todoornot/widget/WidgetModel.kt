@@ -8,6 +8,8 @@ import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.TodoEngine
+import app.todoornot.session.EngineHost
+import app.todoornot.session.Host
 
 internal val defaultWidgetRoom = RoomKey.Smart(SmartList.MY_DAY)
 
@@ -49,6 +51,24 @@ internal sealed interface WidgetData {
     data object Unconfigured : WidgetData
     data class Missing(val collection: Boolean) : WidgetData
     data class Room(val item: NavItem, val rows: List<WidgetRow>, val empty: String) : WidgetData
+}
+
+internal data class WidgetSnapshot(val data: WidgetData, val pairingId: String? = null)
+
+/** Keep the rows and the identity used by their actions from the same pairing. */
+internal fun widgetSnapshot(host: EngineHost, choice: RoomKey?, now: LocalNow): WidgetSnapshot {
+    val signedOut = WidgetSnapshot(WidgetData.SignedOut)
+    return when (val ready = host.state.value) {
+        Host.SignedOut -> signedOut
+        is Host.CantOpen -> WidgetSnapshot(WidgetData.Unavailable)
+        is Host.Ready -> try {
+            if (!host.isAuthorized(ready)) return signedOut
+            val data = widgetData(ready.engine, choice, now)
+            if (host.isAuthorized(ready)) WidgetSnapshot(data, ready.session.pairingId) else signedOut
+        } catch (_: IllegalStateException) {
+            signedOut // Engine closed during unpair.
+        }
+    }
 }
 
 internal fun widgetData(engine: TodoEngine, choice: RoomKey?, now: LocalNow): WidgetData {

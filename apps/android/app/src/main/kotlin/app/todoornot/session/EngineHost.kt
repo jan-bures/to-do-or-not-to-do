@@ -2,6 +2,8 @@ package app.todoornot.session
 
 import app.todoornot.core.CacheRecovery
 import app.todoornot.core.FfiException
+import app.todoornot.core.ProblemKind
+import app.todoornot.core.SyncStatus
 import app.todoornot.core.TodoEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +26,8 @@ sealed interface Host {
      */
     data class CantOpen(val session: Session, val problem: String) : Host
 }
+
+internal val SyncStatus.signedOut: Boolean get() = problem == ProblemKind.UNAUTHORIZED
 
 /** How an unpair ended. */
 sealed interface Unpaired {
@@ -84,6 +88,20 @@ class EngineHost(
         files.sweep(keep = null)
         sessions.save(s)
         open(s)
+    }
+
+    /** The app's signed-out status is sticky for this pairing, even when the engine restarts offline. */
+    internal fun status(ready: Host.Ready): SyncStatus {
+        val sync = ready.engine.status()
+        return if (sessions.signedOut(ready.session.pairingId, sync.signedOut) && !sync.signedOut) {
+            sync.copy(problem = ProblemKind.UNAUTHORIZED, problemDetail = null)
+        } else sync
+    }
+
+    internal fun isAuthorized(ready: Host.Ready): Boolean = try {
+        state.value === ready && !status(ready).signedOut && state.value === ready
+    } catch (_: IllegalStateException) {
+        false // The current engine may have closed during unpair.
     }
 
     /** Tries to open the cache again after [Host.CantOpen]. */

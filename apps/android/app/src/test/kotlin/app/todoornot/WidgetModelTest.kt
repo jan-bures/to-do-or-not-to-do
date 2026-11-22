@@ -1,16 +1,20 @@
 package app.todoornot
 
+import app.todoornot.core.ProblemKind
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.model.TodoModel
+import app.todoornot.widget.WidgetConfigCommit
 import app.todoornot.widget.WidgetData
 import app.todoornot.widget.WidgetEdit
+import app.todoornot.widget.syncForWidget
 import app.todoornot.widget.widgetChoices
 import app.todoornot.widget.widgetData
 import app.todoornot.widget.widgetFit
 import app.todoornot.widget.widgetKey
 import app.todoornot.widget.widgetRoom
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -103,6 +107,61 @@ class WidgetModelTest {
             runCurrent()
             assertEquals(SyncState.PAUSED, engine.status().state)
         }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun background_refresh_waits_for_delayed_reconnect_and_pending_edits_despite_a_stale_send_failure() = runTest {
+        fixtureEngine().use { engine ->
+            var status = engine.status().copy(state = SyncState.OFFLINE, problem = ProblemKind.NETWORK, pending = 1u)
+            val model = TodoModel(engine, backgroundScope, Dispatchers.Unconfined, syncStatus = { status })
+            val sync = launch { model.syncForWidget() }
+            advanceTimeBy(800) // Reconnect didn't answer on the first poll.
+            assertTrue(sync.isActive)
+            status = status.copy(state = SyncState.ONLINE, problem = null)
+            advanceTimeBy(400)
+            assertTrue("online but the edit still hasn't been acknowledged", sync.isActive)
+            status = status.copy(pending = 0u)
+            advanceTimeBy(400)
+            assertTrue(sync.isCompleted)
+            assertEquals(SyncState.PAUSED, engine.status().state)
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun back_during_a_delayed_configuration_save_cannot_cancel_a_committed_selection() = runTest {
+        val commit = WidgetConfigCommit()
+        val finishWriting = CompletableDeferred<Unit>()
+        val returnFromIo = CompletableDeferred<Unit>()
+        val old = RoomKey.Smart(SmartList.MY_DAY)
+        val chosen = RoomKey.List("another-list")
+        var persisted: RoomKey = old
+        var result: Boolean? = null
+        val cancel = { result = false }
+        val save = launch {
+            commit.save(
+                store = {
+                    finishWriting.await()
+                    persisted = chosen
+                    returnFromIo.await()
+                    true
+                },
+                accept = { result = true },
+            )
+        }
+        runCurrent()
+        commit.cancel(cancel)
+        assertNull(result)
+        assertEquals(old, persisted)
+        finishWriting.complete(Unit)
+        runCurrent()
+        commit.cancel(cancel)
+        assertNull(result)
+        assertEquals(chosen, persisted)
+        returnFromIo.complete(Unit)
+        save.join()
+        assertEquals(true, result)
     }
 
     @Test
