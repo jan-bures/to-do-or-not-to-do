@@ -138,7 +138,10 @@ class TodoModel(
 
     @Volatile private var collapsed: Set<String> = emptySet()
 
-    /** "+ Add step" drafts by task: here, not in the UI, so a pending one survives a recreation. */
+    /**
+     * "+ Add step" drafts by task: here, not in the UI, so a pending one survives a recreation. An empty
+     * one goes when its pane closes; any goes once its task is done or gone (see [pruneDrafts]).
+     */
     private val stepDrafts = ConcurrentHashMap<String, StepDraft>()
 
     @Volatile private var syncedAt: LocalNow? = null
@@ -172,6 +175,7 @@ class TodoModel(
         val (epoch, f, open) = synchronized(publishing) { Triple(inputs, filter, searching) }
         val k = key
         val n = now()
+        pruneDrafts(n)
         val detail = selected?.let { engine.task(it, n) }
         if (detail == null) selected = null
         val status = engine.status()
@@ -326,7 +330,23 @@ class TodoModel(
      * Adds a step and says how it went: null once it is added, else why not (a title too long, say),
      * so the field can keep the draft and show the reason in the detail pane, where a toast is hidden.
      */
-    override fun stepDraft(task: String): StepDraft = stepDrafts.getOrPut(task) { StepDraft() }
+    override fun stepDraft(task: String): StepDraft = stepDrafts.getOrPut(task) { StepDraft(task) }
+
+    override fun releaseStepDraft(task: String) {
+        stepDrafts.computeIfPresent(task) { _, d -> d.takeIf { it.text.isNotEmpty() || it.sending } }
+    }
+
+    /**
+     * Drops the drafts of tasks that are done or gone, except one on its way (its answer is still to
+     * land; the refresh after it drops it) and the open task's, which its pane is still showing.
+     */
+    private fun pruneDrafts(n: LocalNow) {
+        for ((id, d) in stepDrafts) {
+            if (d.sending || id == selected) continue
+            val t = engine.task(id, n)
+            if (t == null || t.done) stepDrafts.remove(id, d)
+        }
+    }
 
     override fun addStep(task: String, title: String, onResult: (String?) -> Unit) {
         scope.launch {

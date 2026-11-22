@@ -7,6 +7,7 @@ import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.design.Tokens
+import app.todoornot.model.SavedStep
 import app.todoornot.model.StepDraft
 import app.todoornot.model.Tone
 import app.todoornot.model.TodoModel
@@ -15,6 +16,8 @@ import app.todoornot.model.syncLine
 import app.todoornot.ui.buttonColors
 import app.todoornot.ui.showsAgent
 import app.todoornot.ui.showsPriority
+import androidx.compose.runtime.saveable.SaveableStateRegistry
+import androidx.compose.runtime.saveable.SaverScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import kotlinx.coroutines.CoroutineScope
@@ -210,7 +213,7 @@ class ParityTest {
 
     @Test
     fun done_pressed_twice_sends_one_step_and_a_refused_one_can_be_sent_again() {
-        val draft = StepDraft()
+        val draft = StepDraft("task")
         val sent = mutableListOf<Pair<String, (String?) -> Unit>>()
         val send: (String, (String?) -> Unit) -> Unit = { title, done -> sent += title to done }
         draft.edit("Print the form ")
@@ -259,7 +262,7 @@ class ParityTest {
 
         // Recreated: the new pane gets the same draft, still sending, and the saved text is ignored.
         val second = m.stepDraft(id)
-        second.restore("Print the form")
+        second.restore(SavedStep(id, "Print the form"))
         assertTrue(second.sending)
         assertEquals("Print the form", second.text)
         second.submit(send)
@@ -271,18 +274,72 @@ class ParityTest {
         assertEquals(before + 1, m.ui.value.detail!!.steps.size)
 
         // A pane recreated after the step was added keeps the cleared field, though its saved copy is older.
-        m.stepDraft(id).restore("Print the form")
+        m.stepDraft(id).restore(SavedStep(id, "Print the form"))
         assertEquals("", m.stepDraft(id).text)
     }
 
+    /**
+     * Process death, through what the field saves: the production [SavedStep.Saver] in a
+     * [SaveableStateRegistry], as `rememberSaveable` uses it, then a new model. Saved state comes back by
+     * position, so the first pane to ask may be another task's.
+     */
     @Test
-    fun after_process_death_only_the_drafts_text_comes_back() = runTest {
+    fun after_process_death_a_draft_comes_back_only_to_its_own_task() = runTest {
         val engine = fixtureEngine()
-        val id = engine.taskId(engine.list("Admin"), "Renew passport appointment")
-        val draft = model(engine).stepDraft(id)
-        draft.restore("Print the form")
-        assertEquals("Print the form", draft.text)
-        assertFalse("nothing can be in flight in a new process", draft.sending)
+        val a = engine.taskId(engine.list("Admin"), "Renew passport appointment")
+        val b = engine.taskId(engine.list("Finance"), "Pay quarterly VAT filing")
+        val typed = model(engine).stepDraft(a).apply { edit("Print the form") }
+
+        val before = SaveableStateRegistry(null) { true }
+        before.registerProvider("add-step") { with(SavedStep.Saver) { SaverScope { true }.save(SavedStep(a, typed.text)) } }
+        val bundle = before.performSave()
+        val after = SaveableStateRegistry(bundle) { true }
+        val saved = SavedStep.Saver.restore(after.consumeRestored("add-step")!!)!!
+
+        val m = model(engine) // the new process
+        val other = m.stepDraft(b)
+        other.restore(saved)
+        assertEquals("another task's pane is not handed the draft", "", other.text)
+        val own = m.stepDraft(a)
+        own.restore(saved)
+        assertEquals("Print the form", own.text)
+        assertFalse("nothing can be in flight in a new process", own.sending)
+    }
+
+    @Test
+    fun an_empty_draft_goes_when_its_pane_closes_and_a_typed_one_stays() = runTest {
+        val engine = fixtureEngine()
+        val a = engine.taskId(engine.list("Admin"), "Renew passport appointment")
+        val m = model(engine)
+        val empty = m.stepDraft(a)
+        m.releaseStepDraft(a)
+        assertTrue("released", m.stepDraft(a) !== empty)
+        val typed = m.stepDraft(a).apply { edit("Print the form") }
+        m.releaseStepDraft(a)
+        assertTrue("kept", m.stepDraft(a) === typed)
+    }
+
+    @Test
+    fun a_done_tasks_draft_is_dropped_but_not_while_its_step_is_on_its_way() = runTest {
+        val engine = fixtureEngine()
+        val admin = engine.list("Admin")
+        val a = engine.taskId(admin, "Renew passport appointment")
+        val m = model(engine, admin)
+        val draft = m.stepDraft(a).apply { edit("Print the form") }
+        var answer: ((String?) -> Unit)? = null
+        draft.submit { _, done -> answer = done }
+
+        m.setDone(a, true)
+        advanceUntilIdle()
+        assertTrue("on its way: kept", m.stepDraft(a) === draft)
+
+        answer!!(null)
+        m.refresh()
+        assertTrue("answered: dropped", m.stepDraft(a) !== draft)
+
+        val idle = m.stepDraft(a).apply { edit("Call the office") }
+        m.refresh()
+        assertTrue("a done task's idle draft is dropped", m.stepDraft(a) !== idle)
     }
 
     @Test
