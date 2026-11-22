@@ -76,7 +76,9 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
             return;
         }
         if let Some(dialog) = dialog.get_untracked() {
-            picker.close(false);
+            // Give the native dialog the Tags button as its focus return target. Its
+            // asynchronous close event must not steal focus from a subsequent action.
+            picker.close(true);
             edit.set(Some(next));
             if dialog.show_modal().is_err() {
                 edit.set(None);
@@ -374,10 +376,7 @@ fn TagDialog(
                 ev.stop_propagation(); room_actions::block_dialog_repeat(&ev);
             }
             on:click=move |ev| { if room_actions::scrim_click(&ev) { close(); } }
-            on:close=move |_| {
-                edit.set(None);
-                if c.selected.get_untracked() == Some(task) { platform::focus("edit-task-tags"); }
-            }>
+            on:close=move |_| edit.set(None)>
             {move || edit.get().map(|edit| view! { <TagEditForm edit=edit close=Callback::new(move |()| close())/> })}
         </dialog>
     }
