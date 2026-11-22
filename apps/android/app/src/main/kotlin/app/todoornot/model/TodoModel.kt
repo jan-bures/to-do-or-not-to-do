@@ -2,6 +2,7 @@ package app.todoornot.model
 
 import app.todoornot.core.Completion
 import app.todoornot.core.ChangeListener
+import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.Home
@@ -29,18 +30,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** The task ID drives only the row animation; the handle identifies exactly which event to undo. */
 data class CompletionAction(val task: String, val target: Completion)
 
-/** A short message above the composer, with an optional undo. */
+/**
+ * A short message above the composer, with an optional undo: of a completion (which plays the row's
+ * motion back) or of a deletion (a step, or a list with its tasks).
+ */
 data class Toast(
     val serial: Long,
     val text: String,
     val completion: CompletionAction? = null,
-)
+    val deletion: Deletion? = null,
+) {
+    val undoable: Boolean get() = completion != null || deletion != null
+}
 
 /** Everything the main screen shows, read from the engine in one go. */
 data class UiState(
@@ -68,6 +76,8 @@ data class UiState(
      * the room before ([Actions.setDone]) only writes.
      */
     val generation: Long = 0L,
+    /** Today's date (ISO) by the model's clock: where the date picker opens for a task with no due date. */
+    val today: String = "",
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -104,6 +114,13 @@ fun clock(t: LocalNow): String {
     val day = Math.floorMod(minutes, 24L * 60L)
     return "%02d:%02d".format(day / 60, day % 60)
 }
+
+/** The local date of [t] (ISO, `2026-11-21`), in its own UTC offset. */
+fun isoDay(t: LocalNow): String =
+    LocalDate.ofEpochDay(Math.floorDiv(t.epochMs + t.utcOffsetSecs * 1000L, 86_400_000L)).toString()
+
+/** A name on one line, for a toast. */
+private fun oneLine(s: String): String = s.replace(Regex("[\\p{Cntrl}\u2028\u2029]"), " ")
 
 /** The sun's place on its arc for a room's count, or null when the room has no sun (nothing in it). */
 fun sunAt(done: UInt, total: UInt): Float? =
@@ -337,6 +354,7 @@ class TodoModel(
             syncedAt = syncedAt,
             showCompleted = showDone,
             generation = gen,
+            today = isoDay(n),
         )
         return Snapshot(epoch, k, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
     }
@@ -704,6 +722,11 @@ class TodoModel(
 
     override fun undo(t: Toast) {
         if (toast?.serial != t.serial) return
+        t.deletion?.let { deletion ->
+            show(null)
+            act { engine.undoDeletion(deletion)?.let { show(Toast(++serial, it)) } }
+            return
+        }
         val action = t.completion ?: return
         show(null)
         toggle(action.task, false, generation = null, row = false, undo = action.target)
@@ -775,6 +798,49 @@ class TodoModel(
     }
 
     override fun setStepDone(id: String, done: Boolean) = act { engine.setStepDone(id, done) }
+
+    override fun setDue(id: String, date: String?) = act { engine.setDue(id, date) }
+
+    override fun setPriority(id: String, marks: Int) = act { engine.setPriority(id, marks.coerceIn(0, 3).toUByte()) }
+
+    override fun renameStep(id: String, title: String) = act { engine.renameStep(id, title) }
+
+    override fun moveStep(id: String, by: Int) = act { engine.moveStep(id, by) }
+
+    /** Deletes a step: the toast names it and offers Undo, which brings it back exactly as it was. */
+    override fun deleteStep(id: String) {
+        val title = _ui.value.detail?.steps?.firstOrNull { it.id == id }?.title
+        act {
+            val target = engine.deleteStep(id)
+            show(Toast(++serial, title?.let { "Deleted step “${oneLine(it)}”" } ?: "Deleted a step", deletion = target))
+        }
+    }
+
+    override fun renameRoom(room: RoomKey, name: String) = act {
+        when (room) {
+            is RoomKey.List -> engine.renameList(room.id, name)
+            is RoomKey.Collection -> engine.renameCollection(room.id, name)
+            is RoomKey.Smart -> Unit
+        }
+    }
+
+    override fun moveRoom(room: RoomKey, by: Int) = act { engine.moveRoom(room, by) }
+
+    override fun deleteListQuestion(id: String): String? = engine.deleteListQuestion(id)
+
+    /**
+     * Deletes a list and its tasks. If it's the room on screen, My Day opens (as on the desktop); the toast
+     * names the list and offers Undo either way.
+     */
+    override fun deleteList(id: String) {
+        val name = _ui.value.home.groups.flatMap { it.lists }.firstOrNull { (it.key as? RoomKey.List)?.id == id }?.name
+        act {
+            val target = engine.deleteList(id)
+            val here = key
+            if (here is RoomKey.List && here.id == id) enter(RoomKey.Smart(SmartList.MY_DAY))
+            show(Toast(++serial, name?.let { "Deleted list “${oneLine(it)}”" } ?: "Deleted a list", deletion = target))
+        }
+    }
 
     override fun dismissFailed(id: String) = act { engine.dismissFailed(id) }
 

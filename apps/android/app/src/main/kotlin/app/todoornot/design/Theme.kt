@@ -43,6 +43,13 @@ class Design(val dark: Boolean, val roomHue: String) {
 
     fun dusk(): DuskColors = Tokens.dusk[roomHue] ?: Tokens.dusk.getValue("my-day")
 
+    /** The one shadow, for transient overlays: menus, popovers and the date picker. */
+    val overlayShadow: List<ShadowLayer> get() = if (dark) Tokens.overlayShadowDark else Tokens.overlayShadowLight
+
+    /** The modal scrim under a dialog, in the room's hue. */
+    val scrim: Color
+        get() = (if (dark) Tokens.scrimDark else Tokens.scrimLight).let { it[roomHue] ?: it.getValue("my-day") }
+
     fun withRoom(hue: String): Design = if (hue == roomHue) this else Design(dark, hue)
 
     companion object {

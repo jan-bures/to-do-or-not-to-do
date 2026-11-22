@@ -14,14 +14,38 @@ What the first version does:
   creates a sibling from a list, a child from a collection, or a top-level list from a smart room. The
   footer shows the sync state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired
   server, Sync now, Unpair).
+- **Managing lists.** A long press on a list in the drawer opens its menu: **Rename**, **Move up**, **Move
+  down** and **Delete list…**; a collection's offers **Rename**, **Move up** and **Move down**. A move
+  that would go past either end is greyed out. The room's **⋯** button offers what applies to the room:
+  in a list, Rename list, the moves, Show or Hide completed and Delete list…; in a collection, Rename
+  collection, the moves and the Completed toggle; in My Day, Important, Planned and All, the Completed
+  toggle. Completed and Agent activity have no menu, so no button. Renaming asks for the name in a dialog
+  (a blank one can't be saved). Deleting asks first, in full, as the desktop does ("Delete the list
+  “Errands” and its 4 tasks? Undo brings them back."), with **Cancel** first and focused. Deleting the
+  open list goes to My Day; the toast's **Undo** brings the list and its tasks back either way.
+- **Agents.** Under the lists, the drawer shows the agents seen in the last seven days (at most four), each
+  with its letter mark and what it did today ("2 added, 1 edited", "3 edited", "idle"), worded as the
+  desktop's sidebar words it (`view::agents` in `todo-ffi`). The rows only tell; they aren't controls.
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
   room, even the same one, clears the filter and closes its field.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
-  important (the star, as on the desktop: high priority), and add and tick steps. A step the core refuses
-  (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
-  draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
+  important (the star, as on the desktop: high priority), and add and tick steps.
+- **Due date and priority.** In the detail pane, the **Due** row opens the date picker: the Material date
+  picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
+  (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes
+  the date away, and with it a repeat, which needs a date (`intent::set_due`); when the task repeats, a
+  note under the picker says so. The **Priority** row opens a picker with all four levels, highest first
+  (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
+  high priority or none, as on the desktop.
+- **Steps.** Tap a step's title to rename it in place (Done or leaving the field keeps a changed title; a
+  blank one is dropped). Its **⋯** button opens its menu: **Rename**, **Move up**, **Move down** and
+  **Delete step**. A moved step and the one it swaps with glide to their places. Deleting a step shows the
+  toast with **Undo**, which brings it back exactly as it was (its title, its tick and its place). On the
+  cover screen the detail pane shows the toast strip itself, and its content scrolls clear of it. A new
+  step the core refuses (over 500 characters, say) keeps its draft, and the reason shows under it in the
+  detail pane. A step draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
 - **Notes and sources.** Tap the notes, or **Add notes** on an empty task. Enter inserts a new line;
   **Save notes** keeps the plain text (clear the field to remove it). Back, opening another task, or
@@ -89,6 +113,21 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   the sun. The empty line waits until the last ghost has gone. If a fresh read lists the task again (an
   agent changed it once more), that read lists it as it is, not placed, so the ghost goes at once and the
   live row shows its true state, at rest. Switching rooms ends every ghost.
+- **Undo for deletions.** Deleting a step or a list goes through the same tracked path as a completion
+  (`SyncClient::submit_tracked`, then `undo_tracked` from the toast): an unsent delete is cancelled, a sent
+  one gets a checked inverse. A refused undo shows in the banner in plain words, naming what it reverses
+  ("Undo deleting a step: Couldn't undo: the step was changed again."), never the server's text. If what
+  the item belongs to was deleted elsewhere meanwhile, the undo still brings back exactly the item, and the
+  toast says why it stays hidden ("Step restored, but its task was deleted elsewhere.").
+- **Menus and dialogs** (moment 12). A menu opens under its button or row (over it, when there's no room
+  below), fading in and growing from 0.97 over `OVERLAY_IN` (`ENTER`) as it moves its last 4 dp away
+  from the anchor, and fades out over `OVERLAY_OUT` (`EXIT`). The chosen action runs at once; the menu
+  only leaves after. A dialog's scrim is the token's (`elevation.scrim`, in the room's hue, never
+  blurred), not the window's dim: it fades with the card, which grows from 0.97 and rises 6 dp, and drops
+  4 dp as it leaves. Menus and the date picker wear the one overlay shadow (`elevation.overlayShadow`, with
+  a `line-strong` border in dark mode). A reorder (a step, a list or a collection moved from its menu)
+  glides the two rows it swaps over `ROW_ENTER` (`STANDARD`); a change from elsewhere moves nothing. These
+  are Compose animations, so the animator scale stretches them, and at 0 they snap.
 - **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
   released. Until the engine has the reversal written, the reads still place the task as the tap asked, even
   if the write lands after the row has settled, so a read in between never moves the row or changes the
@@ -128,6 +167,12 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 
 The gallery draws everything at rest, and freezes the motion at chosen moments (`GalleryTest.motion_frames`:
 the fill, the hold, the collapse half way, the sun half way, dusk half way and the hand-over entering).
+Popups and dialogs are windows of their own, which Paparazzi can't draw, so the overlay shots draw their
+cards in place over the screen, at rest: the date picker (`due_date_picker`, drawn with today's ring off,
+since the picker reads the device's clock for it), the priority picker, a step being renamed and a step's
+menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
+rename dialog (`list_menu`), the delete question (`delete_confirmation`) and the agent summary. The gallery
+is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon
 paths, the font resources and the window colours from it, so nothing is copied by hand.

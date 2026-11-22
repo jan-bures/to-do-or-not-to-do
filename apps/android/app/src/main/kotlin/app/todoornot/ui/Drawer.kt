@@ -26,6 +26,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
 import app.todoornot.design.Glyph
@@ -50,6 +52,8 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.Actions
+import app.todoornot.model.MenuAction
+import app.todoornot.model.drawerMenu
 import app.todoornot.model.Tone
 import app.todoornot.model.UiState
 import app.todoornot.model.syncLine
@@ -59,7 +63,9 @@ private val P = Tokens.Metrics.Phone
 
 /**
  * The rooms: smart lists, then the top-level lists and each collection with its lists (glyphs in each
- * list's hue), then "+ New list". A collection folds with its chevron. The footer says how syncing is
+ * list's hue), then "+ New list", then the agents seen this week. A collection folds with its chevron. A
+ * long press on a list or a collection opens its menu (rename, move, and for a list, delete), whose
+ * choice goes to [onMenu]; the rows in [moving] glide to their new places. The footer says how syncing is
  * going, and its settings button holds the pairing, Sync now and Unpair.
  */
 @Composable
@@ -69,9 +75,23 @@ fun RoomDrawer(
     actions: Actions,
     onOpen: (RoomKey) -> Unit,
     onNewList: (String) -> Unit,
+    onMenu: (MenuAction) -> Unit = {},
+    moving: Set<RoomKey> = emptySet(),
 ) {
     val r = LocalDesign.current.room
     val current = state.room.key
+    var menu by remember { mutableStateOf<RoomKey?>(null) }
+
+    // A list's or a collection's row, with its long-press menu anchored to it.
+    @Composable
+    fun Room(item: NavItem, indent: Boolean, heading: Boolean = false) {
+        Box {
+            NavRow(item, item.key == current, indent, onOpen, heading, onLongPress = { menu = item.key })
+            if (menu == item.key) {
+                MenuPopup(drawerMenu(state.home, item.key), onMenu, onDismiss = { if (menu == item.key) menu = null }, start = true, title = item.name)
+            }
+        }
+    }
     Column(
         Modifier
             .fillMaxHeight()
@@ -84,25 +104,36 @@ fun RoomDrawer(
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = S.S3.dp, vertical = S.S3.dp)) {
             state.home.smart.forEach { NavRow(it, it.key == current, indent = false, onOpen) }
             state.home.groups.forEach { g ->
-                Spacer(Modifier.height(S.S4.dp))
                 val c = g.collection
-                val id = (c?.key as? RoomKey.Collection)?.id
-                val folded = id != null && id in state.collapsed
-                c?.let {
-                    // The chevron is its own 48 dp target beside the row, so folding never opens the room.
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { NavRow(it, it.key == current, indent = false, onOpen, heading = true) }
-                        IconButton(
-                            if (folded) "chevron-right" else "chevron-down",
-                            if (folded) "Show ${it.name}" else "Hide ${it.name}",
-                            tint = r.ink3,
-                        ) { id?.let(actions::toggleCollection) }
+                key(c?.key ?: "top") {
+                    Column(Modifier.slideOnMove(c != null && c.key in moving)) {
+                        Spacer(Modifier.height(S.S4.dp))
+                        val id = (c?.key as? RoomKey.Collection)?.id
+                        val folded = id != null && id in state.collapsed
+                        c?.let {
+                            // The chevron is its own 48 dp target beside the row, so folding never opens the room.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.weight(1f)) { Room(it, indent = false, heading = true) }
+                                IconButton(
+                                    if (folded) "chevron-right" else "chevron-down",
+                                    if (folded) "Show ${it.name}" else "Hide ${it.name}",
+                                    tint = r.ink3,
+                                ) { id?.let(actions::toggleCollection) }
+                            }
+                        }
+                        if (!folded) {
+                            g.lists.forEach {
+                                key(it.key) {
+                                    Box(Modifier.slideOnMove(it.key in moving)) { Room(it, indent = c != null) }
+                                }
+                            }
+                        }
                     }
                 }
-                if (!folded) g.lists.forEach { NavRow(it, it.key == current, indent = c != null, onOpen) }
             }
             Spacer(Modifier.height(S.S2.dp))
             NewList(onNewList)
+            if (state.home.agents.isNotEmpty()) Agents(state.home.agents)
         }
         Footer(state, server, actions)
     }
@@ -205,12 +236,58 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
     }
 }
 
+/**
+ * The agents seen in the last week, each with its letter mark and what it did today ("2 added, 1
+ * edited", "idle"), as the desktop's sidebar shows them. Not a control: the rows only tell.
+ */
 @Composable
-internal fun NavRow(item: NavItem, on: Boolean, indent: Boolean, onOpen: (RoomKey) -> Unit, heading: Boolean = false) {
+internal fun Agents(agents: List<AgentSummary>) {
+    val r = LocalDesign.current.room
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = S.S4.dp)
+            .hairline(r.line, top = true)
+            .padding(start = S.S2.dp, end = S.S3.dp, top = S.S3.dp, bottom = S.S2.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(bottom = S.S1.dp)) {
+            Label("Agents", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.weight(1f))
+            Label("Today", Tokens.Type.CAPS_LABEL, r.ink3)
+        }
+        agents.forEach { a ->
+            Row(
+                Modifier.fillMaxWidth().height(S.S8.dp).semantics(mergeDescendants = true) {
+                    contentDescription = "Agent: ${a.mark.name}, today ${a.today}"
+                },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+            ) {
+                AgentBadge(a.mark)
+                Label(a.mark.name, Tokens.Type.NAV_SUB, r.ink2, Modifier.weight(1f), weight = Tokens.Type.NAV.weight)
+                Label(a.today, Tokens.Type.COUNT, r.ink3)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun NavRow(
+    item: NavItem,
+    on: Boolean,
+    indent: Boolean,
+    onOpen: (RoomKey) -> Unit,
+    heading: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
+) {
     val d = LocalDesign.current
     val r = d.room
     val l = d.list(item.hue)
-    TouchTarget({ onOpen(item.key) }, Modifier.fillMaxWidth().semantics { selected = on }) { press ->
+    TouchTarget(
+        { onOpen(item.key) },
+        Modifier.fillMaxWidth().semantics { selected = on },
+        onLongClick = onLongPress,
+        longClickLabel = if (onLongPress != null) "Options for ${item.name}" else null,
+    ) { press ->
         Row(
             Modifier
                 .fillMaxWidth()

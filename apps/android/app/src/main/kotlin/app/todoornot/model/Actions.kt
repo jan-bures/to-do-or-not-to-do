@@ -28,7 +28,32 @@ interface Actions {
     /** The task's "+ Add step" draft, kept where it outlives the Activity. */
     fun stepDraft(task: String): StepDraft
     fun setStepDone(id: String, done: Boolean)
+
+    /** Sets the due date (ISO, `2026-11-22`) or clears it; clearing it also stops a repeat. */
+    fun setDue(id: String, date: String?)
+
+    /** Sets the priority by its `!` marks: 3 (high), 2 (normal), 1 (low) or 0 (none). */
+    fun setPriority(id: String, marks: Int)
+    fun renameStep(id: String, title: String)
+
+    /** Moves a step one place up (-1) or down (1). */
+    fun moveStep(id: String, by: Int)
+
+    /** Deletes a step; the toast offers Undo. */
+    fun deleteStep(id: String)
     fun createList(name: String)
+
+    /** Renames a list or a collection. */
+    fun renameRoom(room: RoomKey, name: String)
+
+    /** Moves a list (among its siblings) or a collection one place up (-1) or down (1). */
+    fun moveRoom(room: RoomKey, by: Int)
+
+    /** The question before deleting a list, saying what goes with it; null if it's gone. */
+    fun deleteListQuestion(id: String): String?
+
+    /** Deletes a list and its tasks (after the question); the toast offers Undo. */
+    fun deleteList(id: String)
 
     /** Filters the open room: the query language when it parses, else words in the title. */
     fun setFilter(text: String)
@@ -68,7 +93,16 @@ interface Actions {
         override fun addStep(task: String, title: String, onResult: (String?) -> Unit) = Unit
         override fun stepDraft(task: String) = StepDraft(task)
         override fun setStepDone(id: String, done: Boolean) = Unit
+        override fun setDue(id: String, date: String?) = Unit
+        override fun setPriority(id: String, marks: Int) = Unit
+        override fun renameStep(id: String, title: String) = Unit
+        override fun moveStep(id: String, by: Int) = Unit
+        override fun deleteStep(id: String) = Unit
         override fun createList(name: String) = Unit
+        override fun renameRoom(room: RoomKey, name: String) = Unit
+        override fun moveRoom(room: RoomKey, by: Int) = Unit
+        override fun deleteListQuestion(id: String): String? = null
+        override fun deleteList(id: String) = Unit
         override fun setFilter(text: String) = Unit
         override fun setSearching(on: Boolean) = Unit
         override fun toggleCollection(id: String) = Unit

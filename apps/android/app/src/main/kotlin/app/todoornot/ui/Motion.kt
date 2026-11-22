@@ -1,6 +1,18 @@
 package app.todoornot.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
+import app.todoornot.design.Tokens
+import app.todoornot.design.cubic
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
@@ -46,4 +58,31 @@ fun Modifier.handover(i: Int, dusk: () -> DuskLook): Modifier = graphicsLayer {
 /** Draws only the part of the content from [from] to [to] of its width (shares, 0 to 1). */
 fun Modifier.clipShare(from: Float, to: Float): Modifier = drawWithContent {
     clipRect(left = size.width * from, right = size.width * to) { this@drawWithContent.drawContent() }
+}
+
+/**
+ * A sibling reorder (`docs/design-language.md`, Motion, 13): while [animate] is on (the owner just moved
+ * this row, or the one it swaps with), a change of place glides from the old one over `ROW_ENTER`
+ * (`STANDARD`), retargeting from where it is on a quick second move. Otherwise it moves at once: a change
+ * from elsewhere never slides rows. With the animator scale at 0 it snaps.
+ */
+@Composable
+fun Modifier.slideOnMove(animate: Boolean): Modifier {
+    val offset = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val last = remember { floatArrayOf(Float.NaN) }
+    val on by rememberUpdatedState(animate)
+    return this
+        .onPlaced { c ->
+            val y = c.positionInParent().y
+            val before = last[0]
+            last[0] = y
+            if (on && !before.isNaN() && before != y) {
+                scope.launch {
+                    offset.snapTo(offset.value + before - y)
+                    offset.animateTo(0f, tween(Tokens.Motion.ROW_ENTER, easing = Tokens.Motion.EASE_STANDARD.cubic()))
+                }
+            }
+        }
+        .graphicsLayer { translationY = offset.value }
 }

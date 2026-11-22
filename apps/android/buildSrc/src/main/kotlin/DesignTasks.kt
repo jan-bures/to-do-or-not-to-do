@@ -101,6 +101,9 @@ abstract class GenerateDesignTokens : DefaultTask() {
         out.appendLine()
         out.appendLine("data class Easing(val x1: Float, val y1: Float, val x2: Float, val y2: Float)")
         out.appendLine()
+        out.appendLine("/** One layer of the overlay shadow, in dp: offset down, blur, spread, and its colour with alpha. */")
+        out.appendLine("data class ShadowLayer(val y: Float, val blur: Float, val spread: Float, val color: Color)")
+        out.appendLine()
 
         fun role(family: String) = when (family) {
             "Fraunces Display" -> "FontRole.DISPLAY"
@@ -124,6 +127,28 @@ abstract class GenerateDesignTokens : DefaultTask() {
         numbers("Landscape", root["landscape"].obj())
         val elevation = root["elevation"].obj()
         numbers("Elevation", elevation)
+        // The one shadow (menus, popovers, the date picker) and the modal scrim, per theme.
+        fun withAlpha(c: Map<String, Any?>): String {
+            val h = (c["color"] as String).removePrefix("#")
+            require(h.length == 6) { "not #rrggbb: ${c["color"]}" }
+            val a = Math.round((c["alpha"] as Number).toDouble() * 255).toInt().coerceIn(0, 255)
+            return "Color(0x%02X%s)".format(a, h.uppercase())
+        }
+        val shadow = elevation["overlayShadow"].obj()
+        for (theme in listOf("light", "dark")) {
+            out.appendLine("    val overlayShadow${pascal(theme)}: List<ShadowLayer> = listOf(")
+            (shadow[theme] as List<*>).forEach {
+                val l = it.obj()
+                out.appendLine("        ShadowLayer(${f(l["y"])}, ${f(l["blur"])}, ${f(l["spread"])}, ${withAlpha(l["color"].obj())}),")
+            }
+            out.appendLine("    )")
+        }
+        val scrim = elevation["scrim"].obj()
+        for (theme in listOf("light", "dark")) {
+            out.appendLine("    val scrim${pascal(theme)}: Map<String, Color> = mapOf(")
+            scrim[theme].obj().forEach { (k, v) -> out.appendLine("        ${kstr(k)} to ${withAlpha(v.obj())},") }
+            out.appendLine("    )")
+        }
 
         val motion = root["motion"].obj()
         out.appendLine("    object Motion {")

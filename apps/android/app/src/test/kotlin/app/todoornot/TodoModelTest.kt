@@ -1534,4 +1534,173 @@ class TodoModelTest {
         assertTrue(unpairWording(3).first.startsWith("3 changes"))
         assertEquals("Unpair and discard", unpairWording(null).second)
     }
+
+    /** The admin list and a task in it with steps, from the fixture, opened in a [Stepped] model. */
+    private fun Stepped.openAdmin(): Pair<RoomKey, String> {
+        val m = model
+        val admin = m.engine.list("Admin")
+        m.open(admin)
+        drain()
+        val id = m.ui.value.room.tasks.first { it.title == "Renew passport appointment" }.id
+        m.select(id)
+        drain()
+        return admin to id
+    }
+
+    @Test
+    fun due_dates_and_priorities_are_written_from_the_detail_pane() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        assertEquals("2026-11-21", m.ui.value.today)
+        m.setDue(id, "2026-12-24")
+        s.drain()
+        assertEquals("2026-12-24", m.ui.value.detail?.due)
+        m.setDue(id, null)
+        s.drain()
+        assertNull(m.ui.value.detail?.due)
+        for (marks in listOf(1, 2, 3, 0)) {
+            m.setPriority(id, marks)
+            s.drain()
+            assertEquals(marks, m.ui.value.detail?.priority?.toInt())
+        }
+        // A date that isn't one is refused in plain words, and nothing is queued.
+        val pending = m.ui.value.status.pending
+        m.setDue(id, "next week")
+        s.drain()
+        assertEquals("That isn't a date.", m.ui.value.toast?.text)
+        assertEquals(pending, m.ui.value.status.pending)
+    }
+
+    @Test
+    fun steps_are_renamed_moved_and_deleted_and_undo_brings_one_back() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        fun titles() = m.ui.value.detail!!.steps.map { it.title }
+        val before = m.ui.value.detail!!.steps
+        assertTrue("the fixture task has steps", before.size >= 2)
+        val (first, second) = before.take(2)
+        m.renameStep(first.id, "  Find the old passport  ")
+        s.drain()
+        assertEquals("Find the old passport", titles()[0])
+        m.moveStep(second.id, -1)
+        s.drain()
+        assertEquals(second.title, titles()[0])
+
+        m.deleteStep(second.id)
+        s.drain()
+        assertFalse(second.title in titles())
+        val toast = m.ui.value.toast!!
+        assertEquals("Deleted step “${second.title}”", toast.text)
+        assertTrue(toast.undoable)
+        assertNotNull(toast.deletion)
+        m.undo(toast)
+        m.undo(toast) // A second tap on the same toast does nothing.
+        s.drain()
+        assertNull(m.ui.value.toast)
+        assertEquals(listOf(second.title, "Find the old passport") + before.drop(2).map { it.title }, titles())
+        assertEquals(second.done, m.ui.value.detail!!.steps[0].done)
+        assertEquals(id, m.ui.value.detail?.id)
+    }
+
+    @Test
+    fun a_deleted_step_whose_task_went_meanwhile_says_why_undo_shows_nothing() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        val step = m.ui.value.detail!!.steps.first()
+        m.deleteStep(step.id)
+        s.drain()
+        val toast = m.ui.value.toast!!
+        m.engine.fixtureDeleteTask(id)
+        m.undo(toast)
+        s.drain()
+        assertEquals("Step restored, but its task was deleted elsewhere.", m.ui.value.toast?.text)
+        assertFalse(m.ui.value.toast!!.undoable)
+    }
+
+    @Test
+    fun lists_and_collections_are_renamed_and_moved() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val personal = m.engine.collection("Personal")
+        val errands = m.engine.list("Errands")
+        m.renameRoom(errands, "Shopping")
+        m.renameRoom(personal, "Home")
+        s.drain()
+        val home = m.ui.value.home
+        val group = home.groups.first { it.collection?.key == personal }
+        assertEquals("Home", group.collection?.name)
+        assertTrue(group.lists.any { it.key == errands && it.name == "Shopping" })
+        // A blank name is refused, and says why.
+        m.renameRoom(errands, "  ")
+        s.drain()
+        assertEquals("A list needs a name.", m.ui.value.toast?.text)
+
+        val before = group.lists.map { it.key }
+        val i = before.indexOf(errands)
+        val by = if (i > 0) -1 else 1
+        m.moveRoom(errands, by)
+        s.drain()
+        val after = m.ui.value.home.groups.first { it.collection?.key == personal }.lists.map { it.key }
+        assertEquals(i + by, after.indexOf(errands))
+        val collections = { m.ui.value.home.groups.mapNotNull { it.collection?.key } }
+        val at = collections().indexOf(personal)
+        val step = if (at > 0) -1 else 1
+        m.moveRoom(personal, step)
+        s.drain()
+        assertEquals(at + step, collections().indexOf(personal))
+    }
+
+    @Test
+    fun deleting_the_open_list_goes_to_my_day_and_undo_brings_it_and_its_tasks_back() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, _) = s.openAdmin()
+        val id = (admin as RoomKey.List).id
+        val tasks = m.ui.value.room.tasks.map { it.id }
+        val question = m.deleteListQuestion(id)!!
+        assertTrue(question, question.startsWith("Delete the list “Admin” and its "))
+        val generation = m.ui.value.generation
+        m.deleteList(id)
+        s.drain()
+        val ui = m.ui.value
+        assertEquals(MY_DAY, ui.room.key)
+        assertTrue("a new room generation", ui.generation > generation)
+        assertNull("the open task went with its list", ui.detail)
+        assertTrue(ui.home.groups.flatMap { it.lists }.none { it.key == admin })
+        assertNull(m.deleteListQuestion(id))
+        val toast = ui.toast!!
+        assertEquals("Deleted list “Admin”", toast.text)
+        m.undo(toast)
+        s.drain()
+        assertTrue(m.ui.value.home.groups.flatMap { it.lists }.any { it.key == admin })
+        assertEquals(MY_DAY, m.ui.value.room.key)
+        m.open(admin)
+        s.drain()
+        assertEquals(tasks, m.ui.value.room.tasks.map { it.id })
+    }
+
+    @Test
+    fun deleting_another_list_keeps_the_room() = runTest {
+        val m = model()
+        val errands = m.engine.list("Errands") as RoomKey.List
+        m.deleteList(errands.id)
+        advanceUntilIdle()
+        assertEquals(MY_DAY, m.ui.value.room.key)
+        assertEquals("Deleted list “Errands”", m.ui.value.toast?.text)
+        assertEquals(0L, m.ui.value.generation)
+    }
+
+    @Test
+    fun the_toast_offers_undo_only_for_what_it_can_reverse() {
+        assertFalse(app.todoornot.model.Toast(1, "Saved").undoable)
+        assertEquals("2026-11-21", app.todoornot.model.isoDay(FIXTURE_NOW))
+        // Just before midnight in UTC is already the next day an hour east.
+        val late = LocalNow(java.time.Instant.parse("2026-11-21T23:30:00Z").toEpochMilli(), 3600)
+        assertEquals("2026-11-22", app.todoornot.model.isoDay(late))
+        assertEquals("2026-11-21", app.todoornot.model.isoDay(late.copy(utcOffsetSecs = 0)))
+    }
 }

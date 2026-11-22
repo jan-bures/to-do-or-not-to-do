@@ -42,7 +42,17 @@ import app.todoornot.model.PairingState
 import app.todoornot.model.TodoModel
 import app.todoornot.model.UiState
 import app.todoornot.session.EngineHost
+import app.todoornot.model.drawerMenu
+import app.todoornot.model.priorityMenu
+import app.todoornot.model.roomMenu
+import app.todoornot.model.stepMenu
 import app.todoornot.ui.CantOpenScreen
+import app.todoornot.ui.DeleteListCard
+import app.todoornot.ui.DetailPane
+import app.todoornot.ui.DialogBackdrop
+import app.todoornot.ui.DueDateCard
+import app.todoornot.ui.MenuCard
+import app.todoornot.ui.RenameCard
 import app.todoornot.ui.MainScreen
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
@@ -61,13 +71,16 @@ import org.junit.Rule
 import org.junit.Test
 
 /** A foldable's cover screen, 412 × 920 dp (the F2 cover mockup). */
-private val COVER = DeviceConfig.PIXEL_5.copy(screenWidth = 824, screenHeight = 1840, xdpi = 320, ydpi = 320, density = Density.XHIGH)
+/** The gallery is drawn in US English whatever the machine's locale (the date picker words its month). */
+private const val LOCALE = "en-rUS"
+
+private val COVER = DeviceConfig.PIXEL_5.copy(screenWidth = 824, screenHeight = 1840, xdpi = 320, ydpi = 320, density = Density.XHIGH, locale = LOCALE)
 
 /** The cover screen on its side, 920 × 412 dp: a short window. */
 private val COVER_SIDEWAYS = COVER.copy(screenWidth = 1840, screenHeight = 824, orientation = com.android.resources.ScreenOrientation.LANDSCAPE)
 
 /** A foldable's inner screen, 900 × 1000 dp (the F2 inner mockup). */
-private val INNER = DeviceConfig.PIXEL_5.copy(screenWidth = 1800, screenHeight = 2000, xdpi = 320, ydpi = 320, density = Density.XHIGH)
+private val INNER = DeviceConfig.PIXEL_5.copy(screenWidth = 1800, screenHeight = 2000, xdpi = 320, ydpi = 320, density = Density.XHIGH, locale = LOCALE)
 
 /**
  * The screenshot gallery: the main states on the cover and inner screens, light and dark, drawn from the
@@ -79,6 +92,11 @@ class GalleryTest {
     val paparazzi = Paparazzi(deviceConfig = COVER, theme = "android:Theme.Material.Light.NoActionBar", maxPercentDifference = 0.1)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    init {
+        // And the JVM's own default, which formats some dates too.
+        java.util.Locale.setDefault(java.util.Locale.US)
+    }
 
     @After
     fun tearDown() = scope.cancel()
@@ -379,6 +397,151 @@ class GalleryTest {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * An overlay over a screen, at rest, as it would sit there: popups and dialogs are windows of their
+     * own, which the gallery can't draw, so their cards are drawn in place over the screen.
+     */
+    private fun overlaid(
+        name: String,
+        device: DeviceConfig,
+        state: UiState,
+        dark: Boolean,
+        drawer: Boolean = false,
+        wide: Boolean = device === INNER,
+        overlay: @Composable () -> Unit,
+    ) = shot(name, device) {
+        Box(Modifier.fillMaxSize()) {
+            MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer)
+            TodoTheme(dark, state.room.hue) { overlay() }
+        }
+    }
+
+    private fun admin(): Triple<TodoEngine, RoomKey, String> {
+        val e = fixtureEngine()
+        val admin = e.list("Admin")
+        return Triple(e, admin, e.taskId(admin, "Renew passport appointment"))
+    }
+
+    /** The due date picker over the task, on its date, drawn as for a repeating task: the note says what Clear does. */
+    @Test
+    fun due_date_picker() {
+        for (dark in listOf(false, true)) {
+            val (e, admin, id) = admin()
+            val s = state(e, admin, select = id)
+            val detail = requireNotNull(s.detail)
+            overlaid("due_date_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
+                DialogBackdrop {
+                    DueDateCard(detail.due, s.today, repeats = true, onSave = {}, onCancel = {}, markToday = false)
+                }
+            }
+        }
+        // An undated task opens on today's month, with nothing to clear.
+        val (e, admin, _) = admin()
+        val undated = e.addTask(admin, "Book the car service", FIXTURE_NOW)
+        val s = state(e, admin, select = undated)
+        overlaid("due_date_picker_undated_light", COVER, s, dark = false) {
+            DialogBackdrop { DueDateCard(null, s.today, repeats = false, onSave = {}, onCancel = {}, markToday = false) }
+        }
+    }
+
+    /** The priority picker under the Priority row: four levels, the current one ticked. */
+    @Test
+    fun priority_picker() {
+        for (dark in listOf(false, true)) {
+            val (e, admin, id) = admin()
+            val s = state(e, admin, select = id)
+            val detail = requireNotNull(s.detail)
+            overlaid("priority_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
+                Box(Modifier.fillMaxSize().padding(start = 24.dp, top = 600.dp)) {
+                    MenuCard(priorityMenu(detail.id, detail.priority.toInt()), {})
+                }
+            }
+        }
+    }
+
+    /**
+     * A step's actions: one step being renamed in place, another's menu open (rename, move, delete); and
+     * after deleting one, the toast with Undo, drawn by the detail pane itself on the cover screen.
+     */
+    @Test
+    fun step_actions() {
+        for (dark in listOf(false, true)) {
+            val (e, admin, id) = admin()
+            val s = state(e, admin, select = id)
+            val detail = requireNotNull(s.detail)
+            shot("step_actions_${if (dark) "dark" else "light"}", COVER) {
+                TodoTheme(dark, s.room.hue) {
+                    Box(Modifier.fillMaxSize()) {
+                        DetailPane(detail, Actions.None, standalone = true, s.generation, today = s.today, stepEditing = detail.steps[1].id)
+                        Box(Modifier.fillMaxSize().padding(start = 146.dp, top = 303.dp)) {
+                            MenuCard(stepMenu(detail.steps, detail.steps[2].id), {})
+                        }
+                    }
+                }
+            }
+        }
+        val (e, admin, id) = admin()
+        val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = admin, listen = {})
+        m.select(id)
+        m.deleteStep(requireNotNull(m.ui.value.detail).steps[1].id)
+        val s = m.ui.value
+        shot("step_deleted_light", COVER) {
+            TodoTheme(false, s.room.hue) {
+                DetailPane(requireNotNull(s.detail), m, standalone = true, s.generation, today = s.today, toast = s.toast)
+            }
+        }
+    }
+
+    /** A list's long-press menu in the drawer, and the room's ⋯ menu in a list. */
+    @Test
+    fun list_menu() {
+        for (dark in listOf(false, true)) {
+            val e = fixtureEngine()
+            val s = state(e)
+            val errands = e.list("Errands")
+            overlaid("list_menu_${if (dark) "dark" else "light"}", COVER, s, dark, drawer = true) {
+                Box(Modifier.fillMaxSize().padding(start = 12.dp, top = 620.dp)) {
+                    MenuCard(drawerMenu(s.home, errands), {})
+                }
+            }
+        }
+        val e = fixtureEngine()
+        val errands = e.list("Errands")
+        val s = state(e, errands)
+        overlaid("room_menu_light", COVER, s, dark = false) {
+            Box(Modifier.fillMaxSize().padding(top = 48.dp, end = 10.dp), contentAlignment = Alignment.TopEnd) {
+                MenuCard(roomMenu(s.home, errands, s.showCompleted), {})
+            }
+        }
+        overlaid("rename_list_light", COVER, s, dark = false) {
+            DialogBackdrop { RenameCard("Rename list", "Errands", {}, {}, focus = false) }
+        }
+    }
+
+    /** Deleting a list asks first, in full: which list, how many tasks, and that Undo brings them back. */
+    @Test
+    fun delete_confirmation() {
+        for (dark in listOf(false, true)) {
+            val e = fixtureEngine()
+            val errands = e.list("Errands")
+            val s = state(e, errands)
+            val question = requireNotNull(e.deleteListQuestion((errands as RoomKey.List).id))
+            overlaid("delete_list_${if (dark) "dark" else "light"}", COVER, s, dark) {
+                DialogBackdrop { DeleteListCard(question, {}, {}, focusCancel = false) }
+            }
+        }
+    }
+
+    /** The drawer's agent summary under the lists (collections folded, so it's in view). */
+    @Test
+    fun agent_summary() {
+        for (dark in listOf(false, true)) {
+            val e = fixtureEngine()
+            val folded = e.home(FIXTURE_NOW).groups.mapNotNull { (it.collection?.key as? RoomKey.Collection)?.id }
+            main("agent_summary_${if (dark) "dark" else "light"}", COVER, state(e, fold = folded), dark, drawer = true)
         }
     }
 }

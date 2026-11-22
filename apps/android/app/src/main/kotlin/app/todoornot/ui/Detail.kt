@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DetailField
+import app.todoornot.core.FieldEdit
+import app.todoornot.core.StepRow
 import app.todoornot.core.SourceLink
 import app.todoornot.core.StepCount
 import app.todoornot.core.TaskDetail
@@ -61,6 +64,11 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.Actions
+import app.todoornot.model.MenuAction
+import app.todoornot.model.Toast as UiToast
+import app.todoornot.model.priorityMenu
+import app.todoornot.model.stepMenu
+import kotlinx.coroutines.delay
 
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
@@ -70,13 +78,25 @@ private val C = Tokens.Metrics.Component
 private const val IMPORTANT: UByte = 3u
 
 /**
- * A task's detail: breadcrumb, title (editable), steps (tick them, or add one), notes, fields and
- * sources. The bar's actions are in the desktop's order: My Day (sun), Important (star), then close.
- * Beside the list on the unfolded phone; on its own, with a back arrow, on the cover screen. Its checkbox
- * carries the room [generation] it was read in, so a tap after another room opens only writes.
+ * A task's detail: breadcrumb, title (editable), steps (tick, rename, move or delete them, or add one),
+ * notes, fields (the due date and the priority are edited from their rows) and sources. The bar's actions
+ * are in the desktop's order: My Day (sun), Important (star), then close. Beside the list on the unfolded
+ * phone; on its own, with a back arrow, on the cover screen, where it shows the [toast] strip itself (with
+ * Undo for a deleted step). Its checkbox carries the room [generation] it was read in, so a tap after
+ * another room opens only writes. [today] (ISO) is where the date picker opens for an undated task.
+ * [stepEditing] starts with that step's title being renamed (the gallery).
  */
 @Composable
-fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, generation: Long, modifier: Modifier = Modifier) {
+fun DetailPane(
+    detail: TaskDetail,
+    actions: Actions,
+    standalone: Boolean,
+    generation: Long,
+    modifier: Modifier = Modifier,
+    today: String = "",
+    toast: UiToast? = null,
+    stepEditing: String? = null,
+) {
     val r = LocalDesign.current.room
     Column(modifier.fillMaxSize().background(r.pane).then(if (standalone) Modifier.statusBarsPadding() else Modifier)) {
         Row(
@@ -108,9 +128,10 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, genera
             ) { actions.setImportant(detail.id, !important) }
             if (!standalone) IconButton("x", "Close") { actions.select(null) }
         }
+        Box(Modifier.weight(1f)) {
         Column(
             Modifier
-                .weight(1f)
+                .fillMaxSize()
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = S.S6.dp, end = S.S6.dp, top = S.S4.dp + S.S1.dp / 2)
@@ -137,36 +158,188 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, genera
                     StepMeter(StepCount(detail.steps.count { it.done }.toUInt(), detail.steps.size.toUInt()))
                 }
             }
-            detail.steps.forEachIndexed { i, step ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).hairline(r.line),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-                ) {
-                    StepMark(step.done, step.title) { actions.setStepDone(step.id, it) }
-                    Label(
-                        step.title,
-                        Tokens.Type.STEP,
-                        if (step.done) r.ink3 else r.ink,
-                        Modifier.weight(1f),
-                        decoration = if (step.done) TextDecoration.LineThrough else null,
-                    )
-                    Label("%02d".format(i + 1), Tokens.Type.COUNT, r.ink3)
-                }
-            }
+            key(detail.id) { Steps(detail, actions, stepEditing) }
             AddStep(detail.id, actions)
             key(detail.id) { TaskNotes(detail, actions) }
             if (detail.fields.isNotEmpty()) {
                 Spacer(Modifier.height(S.S4.dp))
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true))
-                detail.fields.forEach { FieldRow(it) }
+                key(detail.id) { Fields(detail, today, actions) }
             }
             if (detail.sources.isNotEmpty()) {
                 Caps("Source")
                 detail.sources.forEach { SourceCard(it) }
             }
-            Spacer(Modifier.height(S.S8.dp))
+            // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
+            Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
         }
+        if (standalone) {
+            Box(Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding()) { ToastStrip(toast, actions) }
+        }
+        }
+    }
+}
+
+/**
+ * The steps. Tap a title to rename it in place (Done or leaving the field keeps it, a blank title
+ * doesn't); the step's menu (its ⋯ button, or a long press) renames, moves or deletes it. A moved step
+ * and the one it swaps with glide to their places (`ROW_ENTER`, `STANDARD`); nothing else moves.
+ */
+@Composable
+private fun Steps(detail: TaskDetail, actions: Actions, startEditing: String?) {
+    var editing by rememberSaveable { mutableStateOf(startEditing) }
+    var menu by remember { mutableStateOf<String?>(null) }
+    // The steps a local move swaps: only they glide (a change from elsewhere never moves rows).
+    var moving by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(moving) {
+        if (moving.isNotEmpty()) {
+            delay(Tokens.Motion.ROW_ENTER * 4L)
+            moving = emptySet()
+        }
+    }
+    fun perform(action: MenuAction) {
+        when (action) {
+            is MenuAction.RenameStep -> editing = action.step
+            is MenuAction.MoveStep -> {
+                val i = detail.steps.indexOfFirst { it.id == action.step }
+                val other = detail.steps.getOrNull(i + action.by)
+                if (other != null) {
+                    moving = setOf(action.step, other.id)
+                    actions.moveStep(action.step, action.by)
+                }
+            }
+            is MenuAction.DeleteStep -> actions.deleteStep(action.step)
+            else -> Unit
+        }
+    }
+    detail.steps.forEachIndexed { i, step ->
+        key(step.id) {
+            StepLine(
+                step,
+                i,
+                editing = editing == step.id,
+                onEdit = { on -> editing = if (on) step.id else null },
+                actions = actions,
+                modifier = Modifier.slideOnMove(step.id in moving),
+            ) {
+                Box {
+                    IconButton("ellipsis", "Step actions: ${step.title}", tint = LocalDesign.current.room.ink3) { menu = step.id }
+                    if (menu == step.id) {
+                        MenuPopup(stepMenu(detail.steps, step.id), ::perform, onDismiss = { if (menu == step.id) menu = null }, title = "Step")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One step: its box, its title (or the field renaming it), its number and its menu button. */
+@Composable
+private fun StepLine(
+    step: StepRow,
+    index: Int,
+    editing: Boolean,
+    onEdit: (Boolean) -> Unit,
+    actions: Actions,
+    modifier: Modifier = Modifier,
+    menuButton: @Composable () -> Unit,
+) {
+    val r = LocalDesign.current.room
+    Row(
+        modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).hairline(r.line),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+    ) {
+        StepMark(step.done, step.title) { actions.setStepDone(step.id, it) }
+        if (editing) {
+            StepTitleField(step, actions, onDone = { onEdit(false) }, modifier = Modifier.weight(1f))
+        } else {
+            Box(
+                Modifier.weight(1f).heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Rename step") { onEdit(true) },
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Label(
+                    step.title,
+                    Tokens.Type.STEP,
+                    if (step.done) r.ink3 else r.ink,
+                    decoration = if (step.done) TextDecoration.LineThrough else null,
+                )
+            }
+        }
+        Label("%02d".format(index + 1), Tokens.Type.COUNT, r.ink3)
+        menuButton()
+    }
+}
+
+/** Renames a step in place: Done or leaving the field keeps a changed, non-blank title. */
+@Composable
+private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, modifier: Modifier) {
+    val r = LocalDesign.current.room
+    val focus = remember { FocusRequester() }
+    var text by remember(step.id) { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(step.title, androidx.compose.ui.text.TextRange(step.title.length))) }
+    var focused by remember { mutableStateOf(false) }
+    var done by remember { mutableStateOf(false) }
+    fun commit() {
+        if (done) return
+        done = true
+        val t = text.text.trim()
+        if (t.isNotEmpty() && t != step.title) actions.renameStep(step.id, t)
+        onDone()
+    }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    BasicTextField(
+        value = text,
+        onValueChange = {
+            if ('\n' in it.text) commit() else text = it
+        },
+        modifier = modifier
+            .focusRequester(focus)
+            .semantics { contentDescription = "Step title" }
+            .onFocusChanged {
+                if (focused && !it.isFocused) commit()
+                focused = it.isFocused
+            },
+        textStyle = Tokens.Type.STEP.style(r.ink),
+        singleLine = true,
+        cursorBrush = SolidColor(r.accent),
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { commit() }),
+        decorationBox = { inner ->
+            Box(Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.accent, RoundedCornerShape(Tokens.Radius.SM.dp)).padding(horizontal = S.S2.dp, vertical = S.S1.dp)) {
+                inner()
+            }
+        },
+    )
+}
+
+/**
+ * The property rows. Due opens the date picker; Priority opens its picker, all four levels with the
+ * current one ticked. Reminder, Repeat and Tags are shown only.
+ */
+@Composable
+private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
+    var pickingDue by rememberSaveable { mutableStateOf(false) }
+    var pickingPriority by remember { mutableStateOf(false) }
+    detail.fields.forEach { f ->
+        when (f.edit) {
+            FieldEdit.DUE -> FieldRow(f, "Change the due date") { pickingDue = true }
+            FieldEdit.PRIORITY -> Box {
+                FieldRow(f, "Change the priority") { pickingPriority = true }
+                if (pickingPriority) {
+                    MenuPopup(
+                        priorityMenu(detail.id, detail.priority.toInt()),
+                        { a -> if (a is MenuAction.SetPriority) actions.setPriority(a.task, a.marks) },
+                        onDismiss = { pickingPriority = false },
+                        start = true,
+                        title = "Priority",
+                    )
+                }
+            }
+            null -> FieldRow(f)
+        }
+    }
+    if (pickingDue) {
+        DueDateDialog(detail.due, today, detail.repeats, onSave = { actions.setDue(detail.id, it) }, onDismiss = { pickingDue = false })
     }
 }
 
@@ -312,21 +485,29 @@ private fun AddStep(task: String, actions: Actions) {
     }
 }
 
+/** A property row; one that edits ([onEdit]) is a full touch target with a chevron. */
 @Composable
-private fun FieldRow(f: DetailField) {
+private fun FieldRow(f: DetailField, editLabel: String? = null, onEdit: (() -> Unit)? = null) {
     val r = LocalDesign.current.room
     Row(
-        Modifier.fillMaxWidth().height(P.TOUCH.dp - S.S2.dp).hairline(r.line),
+        Modifier
+            .fillMaxWidth()
+            .height(if (onEdit != null) P.TOUCH.dp else P.TOUCH.dp - S.S2.dp)
+            .hairline(r.line)
+            .then(if (onEdit != null) Modifier.clickable(onClickLabel = editLabel, onClick = onEdit) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.width(S.S6.dp + S.S1.dp)) { Icon(f.icon, r.ink3, size = C.ICON_SMALL.dp) }
         Label(f.label, Tokens.Type.META_PHONE, r.ink3, Modifier.width(S.S10.dp * 2 + S.S3.dp))
         val color = if (f.empty) r.ink4 else r.ink
-        if (f.mono) {
-            Label(f.value, Tokens.Type.DUE, color, weight = if (f.empty) null else Tokens.Type.OVERDUE_BADGE.weight)
-        } else {
-            Label(f.value, Tokens.Type.NAV, color)
+        Box(Modifier.weight(1f)) {
+            if (f.mono) {
+                Label(f.value, Tokens.Type.DUE, color, weight = if (f.empty) null else Tokens.Type.OVERDUE_BADGE.weight)
+            } else {
+                Label(f.value, Tokens.Type.NAV, color)
+            }
         }
+        if (onEdit != null) Icon("chevron-right", r.ink4, size = C.ICON_SMALL.dp)
     }
 }
 

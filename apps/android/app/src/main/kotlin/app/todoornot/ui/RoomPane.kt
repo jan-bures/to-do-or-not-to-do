@@ -78,6 +78,8 @@ import app.todoornot.design.Tokens
 import app.todoornot.design.cubic
 import app.todoornot.design.style
 import app.todoornot.model.Actions
+import app.todoornot.model.MenuAction
+import app.todoornot.model.roomMenu
 import app.todoornot.model.DuskLook
 import app.todoornot.model.Ghost
 import app.todoornot.model.MotionFrame
@@ -100,7 +102,8 @@ private const val MIN_ROWS_TYPING = 4
 /**
  * The list pane: header, room pills, the tasks, the toast strip and the composer. The header and the
  * pills give way to the tasks as the list scrolls, and stay out of the way while the keyboard is open or
- * the window is short ([collapsed] forces it, for the gallery).
+ * the window is short ([collapsed] forces it, for the gallery). The bar's ⋯ button opens the room's menu
+ * (only what applies to the room), whose choice goes to [onRoomMenu].
  */
 @Composable
 fun RoomPane(
@@ -111,6 +114,7 @@ fun RoomPane(
     modifier: Modifier = Modifier,
     draft: String = "",
     collapsed: Boolean = false,
+    onRoomMenu: (MenuAction) -> Unit = {},
 ) {
     val r = LocalDesign.current.room
     val room = state.room
@@ -137,6 +141,14 @@ fun RoomPane(
                 SyncChip(state.status, actions::nudge)
                 IconButton("search", "Filter", tint = if (state.searching) LocalDesign.current.room.accentStrong else null) {
                     actions.setSearching(!state.searching)
+                }
+                val entries = roomMenu(state.home, room.key, state.showCompleted)
+                if (entries.isNotEmpty()) {
+                    var open by remember(room.key) { mutableStateOf(false) }
+                    Box {
+                        IconButton("ellipsis", "Room menu") { open = true }
+                        if (open) MenuPopup(entries, onRoomMenu, onDismiss = { open = false }, title = room.title)
+                    }
                 }
             }
             Box(Modifier.collapsing(collapse, HeaderCollapse.Part.Pills)) {
@@ -478,7 +490,7 @@ private fun SmallRow(t: TaskRow, generation: Long, actions: Actions, i: Int, dus
  * at the bottom counts down the undo window.
  */
 @Composable
-private fun ToastStrip(toast: Toast?, actions: Actions) {
+internal fun ToastStrip(toast: Toast?, actions: Actions) {
     val r = LocalDesign.current.room
     AnimatedVisibility(
         visible = toast != null,
@@ -504,7 +516,7 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
                     horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
                 ) {
                     Label(t.text, Tokens.Type.TOAST, r.toastInk, Modifier.weight(1f))
-                    if (t.completion != null) {
+                    if (t.undoable) {
                         Row(
                             Modifier
                                 .height(P.TOAST.dp)

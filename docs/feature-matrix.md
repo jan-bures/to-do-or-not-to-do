@@ -88,14 +88,14 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | New top-level list | `CreateList` `C/command.rs:156` | wired `D/ui/shell/sidebar.rs:472` (then renames in place) | wired `W/app.rs` (`NewList`) | wired `A/model/TodoModel.kt` (`createList`) |
 | New list in a collection | `CreateList` | wired: the collection menu's "New list here" (`D/ui/shell/menu.rs:407`) | wired: **New list** in a collection or one of its lists (`W/app.rs`) | wired: **New list** in a collection or one of its lists (`A/model/TodoModel.kt`, `F/engine.rs`) |
-| Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:241`, `D/ui/shell/menu.rs:385`) | missing | missing |
-| Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | missing |
-| Delete a list | `Delete` `C/command.rs:365` | wired from its context menu or the room menu, after a confirmation, with undo (`D/ui/shell/menu.rs:401`, `D/ui/shell/undo.rs:35`) | missing | missing |
+| Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:241`, `D/ui/shell/menu.rs:385`) | missing | wired: its drawer menu (long press) or the room menu, then a dialog (`A/ui/MainScreen.kt`, `A/model/Menus.kt`, `F/engine.rs::rename_list`) |
+| Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | wired: Move up and down in its drawer menu or the room menu (`A/model/Menus.kt`, `F/engine.rs::move_room`) |
+| Delete a list | `Delete` `C/command.rs:365` | wired from its context menu or the room menu, after a confirmation, with undo (`D/ui/shell/menu.rs:401`, `D/ui/shell/undo.rs:35`) | missing | wired from its drawer menu or the room menu, after a confirmation, with undo (`A/ui/Editing.kt` `DeleteListCard`, `F/engine.rs::delete_list`, `undo_deletion`) |
 | Move a list to another collection | `MoveList` `C/command.rs:187` | missing | missing | missing |
 | List colour | `UpdateList.color` | missing (a swatch is set at creation only) | missing | missing |
 | New collection | `CreateCollection` `C/command.rs:128` | missing | missing | missing |
-| Rename a collection | `UpdateCollection` `C/command.rs:141` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:384`, `D/ui/shell/menu.rs:386`) | missing | missing |
-| Reorder collections | `Reorder` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | missing |
+| Rename a collection | `UpdateCollection` `C/command.rs:141` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:384`, `D/ui/shell/menu.rs:386`) | missing | wired: its drawer menu (long press) or the room menu, then a dialog (`F/engine.rs::rename_collection`) |
+| Reorder collections | `Reorder` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | wired: Move up and down in its drawer menu or the room menu (`F/engine.rs::move_room`) |
 | Delete a collection | `Delete` | missing | missing | missing |
 | Collection colour | `UpdateCollection.color` | missing | missing | missing |
 
@@ -110,7 +110,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
-| Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | wired: the detail pane's Priority field, Shift+P and P (`W/app.rs`) | missing (the star only) |
+| Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | wired: the detail pane's Priority field, Shift+P and P (`W/app.rs`) | wired: the detail pane's Priority row picks any level (`A/ui/Detail.kt` `Fields`, `F/engine.rs::set_priority`, `T/intent/mod.rs` `pick_priority`); the star sets high or none |
 | Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list (`W/app.rs`, `W/model.rs`) | missing |
 | Move a task to another list | `MoveTask` `C/command.rs:206`; the event records the position too, so undoing it after a reorder in the new list conflicts | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | missing | missing |
 | Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
@@ -118,7 +118,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:533`) | missing | missing |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
-| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | missing | missing |
+| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | missing | wired: the ⋯ button opens the room menu with what applies: rename, move, show or hide completed, delete list (`A/ui/RoomPane.kt`, `A/model/Menus.kt` `roomMenu`); no sliders |
 | Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | wired: click or J/K selects (`W/app.rs`, `Handover`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
 | Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | wired: completes in place, with the usual completion undo (`W/app.rs`, `HandoverCheck`) | wired `A/ui/RoomPane.kt:465` |
 | Plan <weekday> (opens Planned) | n/a | wired `D/ui/shell.rs:2160` | wired `W/app.rs:1538` | wired `A/ui/RoomPane.kt:398`, `:438` |
@@ -134,12 +134,12 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Important toggle (high priority or none) | `UpdateTask.priority` | wired `D/ui/shell/detail.rs:744` | wired `W/app.rs:1694` | wired `A/ui/Detail.kt:94`, `F/engine.rs:558` |
 | Add a step | `CreateStep` `C/command.rs:262` | wired `D/ui/shell/detail.rs:83`, `:184` | wired `W/app.rs:2063` | wired `A/ui/Detail.kt:223`, `F/engine.rs:581` |
 | Complete a step | `CompleteStep` / `UncompleteStep` `C/command.rs:281` | wired `D/ui/shell/detail.rs:434` | wired `W/app.rs:1764` | wired `A/ui/Detail.kt:135`, `F/engine.rs:598` |
-| Rename a step | `UpdateStep` `C/command.rs:274` | wired: click its title (`D/ui/shell/detail.rs:403`) | wired: click its title (`W/app.rs`, `DetailStep`) | missing |
-| Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | wired: up/down buttons (`W/app.rs`, `DetailStep`) | missing |
-| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button with Undo (`W/app.rs`, `DetailStep`) | missing |
-| Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | shown (`A/ui/Detail.kt:154`) |
+| Rename a step | `UpdateStep` `C/command.rs:274` | wired: click its title (`D/ui/shell/detail.rs:403`) | wired: click its title (`W/app.rs`, `DetailStep`) | wired: tap its title, or its menu (`A/ui/Detail.kt` `Steps`, `F/engine.rs::rename_step`) |
+| Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | wired: up/down buttons (`W/app.rs`, `DetailStep`) | wired: Move up and down in its ⋯ menu (`A/ui/Detail.kt`, `F/engine.rs::move_step`) |
+| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button with Undo (`W/app.rs`, `DetailStep`) | wired, with undo (`A/ui/Detail.kt`, `F/engine.rs::delete_step`, `undo_deletion`) |
+| Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | wired: the Due row opens a Material date picker in the tokens' colours and type; Clear also clears the repeat (`A/ui/Editing.kt` `DueDateCard`, `F/engine.rs::set_due`, `T/intent/mod.rs` `set_due`) |
 | Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | shown |
-| Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:733`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown |
+| Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:733`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown. Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`), and the date picker says so. |
 | Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:749`) | shown "read only" | shown |
 | Create, rename or recolour a tag | `CreateTag` / `UpdateTag` `C/command.rs:291`, `:301` | missing | missing | missing |
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
@@ -161,9 +161,9 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | missing | n/a |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | missing |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | partial: deleting a step or a list can be undone, through `undo_tracked` (`F/engine.rs::undo_deletion`); renames and edits can't |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
-| Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list only; missing the agent summary |
+| Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
 
 ### Server-side only (admin pages)
@@ -260,11 +260,11 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.2 | **Done.** Open HTTP(S) sources; other sources have no arrow. | S |
 | 4.3 | Attachments: list, download, open (`TaskDetail` has none). | M |
 | 4.4 | **Done.** Exact completion undo through `undo_tracked`, including recurring tasks. | M |
-| 4.5 | Due date (a date picker), priority (four levels). | M |
-| 4.6 | Steps: rename, reorder, delete. | S–M |
-| 4.7 | Lists: rename, delete, reorder; collections: rename, reorder. | M |
+| 4.5 | **Done.** Due date (a date picker), priority (four levels). | M |
+| 4.6 | **Done.** Steps: rename, reorder, delete. | S–M |
+| 4.7 | **Done.** Lists: rename, delete, reorder; collections: rename, reorder. | M |
 | 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
-| 4.9 | Agent summary in the drawer. | S |
+| 4.9 | **Done.** Agent summary in the drawer. | S |
 | 4.10 | Reminder notifications (local alarms from synced reminders). | L |
 | 4.11 | Task delete and move (the shared builders exist: `intent::delete_task`, `move_to_list`, `list_groups`), tags, reminders, repeat, once the shared command helpers exist. | — |
 
