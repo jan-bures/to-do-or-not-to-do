@@ -234,11 +234,18 @@ pub(super) fn DeviceSettings() -> impl IntoView {
                 {move || match pending.get() {
                     Some((_, d)) => view! {
                         <p>{format!("Approve “{}”? Only continue if the code matches your own device.", d.device_name)}</p>
-                        <button class="button primary" disabled=move || busy.get() on:click=move |_| review(true)>"Approve"</button>
+                        <div class="pair-actions">
+                            <button class="button primary" disabled=move || busy.get() on:click=move |_| review(true)>"Approve"</button>
+                            <button class="button" disabled=move || busy.get() on:click=move |_| {
+                                pending.set(None);
+                                code.set(String::new());
+                                request_animation_frame(|| { platform::focus("pending-device-code"); });
+                            }>"Use another code"</button>
+                        </div>
                     }.into_any(),
                     None => view! {
                         <form on:submit=move |e| { e.prevent_default(); review(false); }>
-                            <label>"Code shown on the device" <input type="text" required autocomplete="off" spellcheck="false"
+                            <label>"Code shown on the device" <input id="pending-device-code" type="text" required autocomplete="off" spellcheck="false"
                                 prop:value=move || code.get() on:input=move |e| code.set(event_target_value(&e)) /></label>
                             <button class="button primary" disabled=move || busy.get()>"Review"</button>
                         </form>

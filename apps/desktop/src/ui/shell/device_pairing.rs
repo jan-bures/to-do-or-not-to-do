@@ -39,7 +39,8 @@ impl Panel {
             &input,
             window,
             |this, _, event: &InputEvent, _, cx| match event {
-                InputEvent::Submit => this.review(this.pending.is_some(), cx),
+                InputEvent::Submit if this.pending.is_none() => this.review(false, cx),
+                InputEvent::Submit => {}
                 InputEvent::Cancel => cx.emit(Closed),
                 InputEvent::Changed => {}
             },
@@ -68,6 +69,14 @@ impl Panel {
                 link: format!("https://todo.example.com/pair/invite#{}", "A".repeat(43)),
                 expires_in: 300,
             });
+        } else if panel.net.is_none() {
+            panel.pending = Some((
+                "ABCDEFGH".into(),
+                PendingDevice {
+                    device_name: "New phone".into(),
+                    created_at: 0,
+                },
+            ));
         }
         panel
     }
@@ -274,7 +283,10 @@ impl Panel {
 }
 
 impl Render for Panel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.pending.is_some() && !self.focus.is_focused(window) {
+            window.focus(&self.focus, cx);
+        }
         let p = self.p;
         let mut body =
             kit::overlay(&p)
@@ -283,7 +295,10 @@ impl Render for Panel {
                 .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
                     match e.keystroke.key.as_str() {
                         "escape" => cx.emit(Closed),
-                        "enter" if this.invite_mode && this.invite.is_none() => this.create(cx),
+                        "enter" if !e.is_held && this.invite_mode && this.invite.is_none() => {
+                            this.create(cx)
+                        }
+                        "enter" if !e.is_held && this.pending.is_some() => this.review(true, cx),
                         _ => return,
                     }
                     cx.stop_propagation();
@@ -337,9 +352,29 @@ impl Render for Panel {
                 ))
                 .child(
                     div()
-                        .id("approve-device")
-                        .child(kit::button(&p, "Approve"))
-                        .on_click(cx.listener(|this, _, _, cx| this.review(true, cx))),
+                        .flex()
+                        .gap(px(space::S2))
+                        .child(
+                            div()
+                                .id("approve-device")
+                                .child(kit::button(&p, "Approve"))
+                                .on_click(cx.listener(|this, _, _, cx| this.review(true, cx))),
+                        )
+                        .child(
+                            div()
+                                .id("another-pairing-code")
+                                .child(kit::button_quiet(&p, "Use another code"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if !this.busy {
+                                        this.pending = None;
+                                        this.input
+                                            .update(cx, |i, cx| i.set_text(String::new(), cx));
+                                        let handle = this.input.read(cx).focus_handle.clone();
+                                        window.focus(&handle, cx);
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
                 );
         } else {
             body = body
