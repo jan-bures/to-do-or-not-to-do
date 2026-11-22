@@ -47,6 +47,16 @@ import app.todoornot.model.priorityMenu
 import app.todoornot.model.roomMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.model.taskMenu
+import app.todoornot.ui.ActivityContent
+import app.todoornot.ui.MoveListCard
+import app.todoornot.ui.RepeatCard
+import app.todoornot.ui.TagsCard
+import app.todoornot.ui.SwatchCard
+import app.todoornot.core.ActivityRow
+import app.todoornot.core.ColorTarget
+import app.todoornot.core.CustomRepeat
+import app.todoornot.core.RepeatChoice
+import app.todoornot.core.RepeatUnit
 import app.todoornot.ui.MoveTaskCard
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.DeleteListCard
@@ -601,7 +611,7 @@ class GalleryTest {
             val s = state(e)
             val errands = e.list("Errands")
             overlaid("list_menu_${if (dark) "dark" else "light"}", COVER, s, dark, drawer = true) {
-                Box(Modifier.fillMaxSize().padding(start = 12.dp, top = 620.dp)) {
+                Box(Modifier.fillMaxSize().padding(start = Tokens.Space.S3.dp, bottom = Tokens.Space.S4.dp), contentAlignment = Alignment.BottomStart) {
                     MenuCard(drawerMenu(s.home, errands), {})
                 }
             }
@@ -637,6 +647,52 @@ class GalleryTest {
         val s = state(e, errands)
         overlaid("delete_list_changed_light", COVER, s, dark = false) {
             DialogBackdrop { DeleteListCard(requireNotNull(e.deleteListQuestion(errands.id)), {}, {}, focusCancel = false, changed = true) }
+        }
+    }
+
+    @Test
+    fun organize() {
+        for (dark in listOf(false, true)) {
+            val suffix = if (dark) "dark" else "light"
+            val e = fixtureEngine()
+            val list = e.list("Errands") as RoomKey.List
+            val id = e.addTask(list, "Water herbs", FIXTURE_NOW)
+            e.setRepeat(id, RepeatChoice.Custom(CustomRepeat(RepeatUnit.WEEK, 2u, 5u)), FIXTURE_NOW)
+            e.addWebLink(id, "todo.example.com/garden")
+            e.tagTaskNamed(id, "garden")
+            val tag = e.task(id, FIXTURE_NOW)!!.tags.first { it.name == "garden" }
+            val target = ColorTarget.Tag(tag.id)
+            e.setSwatch(target, "fern")
+            val read = state(e, list, select = id)
+            val detail = read.detail!!.copy(subtitle = "Created 21 Nov")
+            val s = read.copy(detail = detail)
+            main("rows_$suffix", COVER, s, dark)
+            val change = e.removeLink(detail.sources.single().id)!!
+            val toastState = s.copy(toast = app.todoornot.model.Toast(1, "Removed link", organize = change), detail = detail.copy(sources = emptyList()))
+            main("detail_toast_$suffix", COVER, toastState, dark)
+            main("drawer_toast_$suffix", COVER, toastState.copy(detail = null), dark, drawer = true)
+            main("landscape_toast_$suffix", COVER_SIDEWAYS, toastState, dark, wide = true)
+            fun card(name: String, content: @Composable () -> Unit) = overlaid("${name}_$suffix", COVER, s, dark) { DialogBackdrop { content() } }
+            card("repeat") { RepeatCard(detail, false, {}, {}, {}) }
+            card("custom_repeat") { RepeatCard(detail, true, {}, {}, {}) }
+            card("tags") { TagsCard(detail.tags, {}, {}, {}, {}) }
+            card("create_tag") { TagsCard(detail.tags, {}, {}, {}, {}, initialText = "seedlings") }
+            card("tag_options") { app.todoornot.ui.TagOptions(tag, {}, {}) }
+            card("swatches") { SwatchCard("fern", {}, {}) }
+            card("rename_tag") { RenameCard("Rename tag", "garden", {}, {}, focus = false) }
+            card("new_collection") { RenameCard("New collection", "Projects", {}, {}, focus = false) }
+            card("add_link") { RenameCard("Add a web link", "todo.example.com/garden", {}, {}, focus = false, webAddress = true) }
+            card("move_list") { MoveListCard(s.home, list, {}, {}) }
+            val collection = e.collection("Personal") as RoomKey.Collection
+            for ((noun, t) in listOf("tag" to target, "collection" to ColorTarget.Collection(collection.id))) {
+                val q = requireNotNull(e.organizeQuestion(t))
+                card("confirm_$noun") { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false) }
+            }
+            val at = FIXTURE_NOW.epochMs
+            val rows = listOf(ActivityRow("c", 3u, "Added Water herbs", "You", at, "Just now", false, true),
+                ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", at - 60_000, "1 min ago", false, true),
+                ActivityRow("a", 1u, "Added Prepare the beds", "You", at - 86_400_000, "1 day ago", false, true))
+            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityContent(s.copy(eventStates = mapOf("b" to "Undoing…", "a" to "Couldn't undo: it was changed again.")), null, rows, null, false, true, java.time.ZoneOffset.UTC, {}, Actions.None, {}) } }
         }
     }
 

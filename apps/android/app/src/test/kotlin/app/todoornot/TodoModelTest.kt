@@ -543,6 +543,70 @@ class TodoModelTest {
     }
 
     @Test
+    fun activity_is_a_room_not_the_agent_activity_task_list() {
+        val e = fixtureEngine()
+        val s = Stepped(e) { time }
+        val m = s.model
+        s.drain()
+        val agent = m.ui.value.home.agents.first()
+        val id = m.ui.value.room.tasks.first().id
+        m.select(id)
+        m.setFilter("herbs")
+        m.openActivity(agent.id)
+        s.drain()
+        assertEquals(agent.id, m.ui.value.activity)
+        assertNull(m.ui.value.detail)
+        assertEquals("", m.ui.value.filter)
+        var problem: String? = null
+        s.scope.launch { problem = m.activityPage(agent.id, null).problem }
+        s.drain()
+        assertEquals("Couldn’t load activity. Try again.", problem)
+        m.openActivity(null)
+        s.drain()
+        assertEquals("", m.ui.value.activity)
+        m.select(id) // A notification can open a task from Activity.
+        s.drain()
+        assertNull(m.ui.value.activity)
+        assertEquals(id, m.ui.value.selected)
+        s.scope.cancel()
+    }
+
+    @Test
+    fun organize_questions_recheck_after_queued_edits_and_undo_the_exact_change() {
+        val e = fixtureEngine("blank")
+        val id = e.addTask(MY_DAY, "Water herbs", FIXTURE_NOW)
+        val s = Stepped(e) { time }
+        val m = s.model
+        m.select(id)
+        m.organize(app.todoornot.model.OrganizeEdit.Repeat(id, app.todoornot.core.RepeatChoice.Weekdays))
+        s.drain()
+        assertEquals("2026-11-23", m.ui.value.detail!!.due)
+        m.undo(m.ui.value.toast!!)
+        m.organize(app.todoornot.model.OrganizeEdit.TagNamed(id, "garden"))
+        s.drain()
+        assertNull(m.ui.value.detail!!.due)
+        val tag = m.ui.value.detail!!.tags.single()
+        val target = app.todoornot.core.ColorTarget.Tag(tag.id)
+        val asked = m.organizeQuestion(target)!!
+        var next: String? = null
+        m.organize(app.todoornot.model.OrganizeEdit.ToggleTag(id, tag.id))
+        m.confirmDelete(target, asked) { next = it }
+        s.drain()
+        assertEquals("Delete the tag “garden”? Undo restores the tag.", next)
+        m.confirmDelete(target, next!!) { assertNull(it) }
+        s.drain()
+        assertTrue(m.ui.value.detail!!.tags.isEmpty())
+        m.undo(m.ui.value.toast!!)
+        s.drain()
+        assertEquals(tag.id, m.ui.value.detail!!.tags.single().id)
+        m.organize(app.todoornot.model.OrganizeEdit.AddLink(id, "javascript:alert(1)"))
+        s.drain()
+        assertTrue(m.ui.value.detail!!.sources.isEmpty())
+        assertFalse(m.ui.value.toast!!.undoable)
+        s.scope.cancel()
+    }
+
+    @Test
     fun a_second_tap_keeps_the_row_and_the_counts_until_its_write_lands() {
         val engine = fixtureEngine()
         val s = Stepped(engine) { time }

@@ -531,28 +531,8 @@ fn delete_collection_confirm(
     id: CollectionId,
     keys: (&'static str, &'static str),
 ) -> Option<MenuEntry> {
-    let collection = state
-        .collections
-        .get(&id)
-        .filter(|_| state.is_live(id.into()))?;
-    let name = labels::one_line(&collection.name);
-    let commands::Contents { lists, tasks } = commands::collection_contents(state, id);
-    let lists_said = match lists {
-        1 => "its list".to_string(),
-        n => format!("its {n} lists"),
-    };
-    let whose = if lists == 1 { "its" } else { "their" };
-    let what = match (lists, tasks) {
-        (0, _) => format!("Delete the collection “{name}”?"),
-        (_, 0) => format!("Delete the collection “{name}” with {lists_said}?"),
-        (_, 1) => format!("Delete the collection “{name}” with {lists_said} and {whose} task?"),
-        (_, n) => {
-            format!("Delete the collection “{name}” with {lists_said} and {whose} {n} tasks?")
-        }
-    };
-    let back = if lists == 0 { "it" } else { "them all" };
     Some(confirm(
-        format!("{what} Undo brings {back} back."),
+        todo_client::intent::confirm::collection_question(state, id)?,
         danger(
             keys.0,
             Icon::TrashTwo,
@@ -1310,26 +1290,14 @@ pub fn tag_edit_menu(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> 
 
 /// Tombstoning a tag hides it on every task, but does not delete tasks or their memberships.
 pub fn tag_confirm(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> {
-    let Some(t) = state
-        .tags
-        .get(&tag)
-        .filter(|_| state.is_live(tag.into()) && state.is_live(task.into()))
-    else {
+    if !state.is_live(task.into()) {
+        return vec![];
+    }
+    let Some(question) = todo_client::intent::confirm::tag_question(state, tag) else {
         return vec![];
     };
-    let name = labels::one_line(&t.name);
-    let n = state
-        .tasks
-        .values()
-        .filter(|t| t.tags.contains(&tag) && t.deleted.is_none() && state.is_live(t.list.into()))
-        .count();
-    let impact = match n {
-        0 => String::new(),
-        1 => " It’s on 1 task. The task stays.".into(),
-        n => format!(" It’s on {n} tasks. The tasks stay."),
-    };
     vec![confirm(
-        format!("Delete the tag “{name}”?{impact} Undo restores the tag."),
+        question,
         danger(
             "tag-delete",
             Icon::TrashTwo,

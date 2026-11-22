@@ -566,6 +566,26 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| s.pending_undo(event))
     }
 
+    /// Pending (`None`) and refused (plain wording) feed undos by exact event ID. Read both
+    /// lists under one lock without cloning unrelated queued commands or their payloads.
+    #[must_use]
+    pub fn activity_undos(&self) -> std::collections::BTreeMap<EventId, Option<&'static str>> {
+        self.with(|s| {
+            let refused = s.replica.failed().iter().filter_map(|f| {
+                Some((
+                    f.entry.undo_target()?,
+                    Some(crate::failure::undo_message(&f.rejection.code)),
+                ))
+            });
+            let pending = s
+                .replica
+                .outbox()
+                .iter()
+                .filter_map(|e| Some((e.undo_target()?, None)));
+            refused.chain(pending).collect()
+        })
+    }
+
     /// The log epoch the confirmed state belongs to.
     #[must_use]
     pub fn epoch(&self) -> Option<Epoch> {

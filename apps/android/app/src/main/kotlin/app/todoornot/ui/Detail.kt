@@ -7,6 +7,8 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -173,7 +175,16 @@ fun DetailPane(
             }
             if (detail.sources.isNotEmpty()) {
                 Caps("Source")
-                detail.sources.forEach { SourceCard(it) }
+                detail.sources.forEach { s -> SourceCard(s) { actions.organize(app.todoornot.model.OrganizeEdit.RemoveLink(s.id)) } }
+            }
+            key(detail.id) {
+                var adding by rememberSaveable { mutableStateOf(false) }
+                Choice("Add link…") { adding = true }
+                if (adding) OverlayDialog({ adding = false }) { overlay ->
+                    RenameCard("Add a web link", "", { address ->
+                        overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.AddLink(detail.id, address)) }
+                    }, overlay::close, webAddress = true)
+                }
             }
             // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
             Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
@@ -319,11 +330,14 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
 
 /**
  * The property rows. Due opens the date picker; Priority opens its picker, all four levels with the
- * current one ticked; Reminder opens the date and time picker. Repeat and Tags are shown only. After the
+ * current one ticked; Reminder, Repeat and Tags open their respective pickers. After the
  * owner sets a reminder, the app asks for what reminders need, if anything ([LocalReminderAccess]).
  */
 @Composable
 private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
+    var repeat by rememberSaveable { mutableStateOf(false) }
+    var custom by rememberSaveable { mutableStateOf(false) }
+    var tags by rememberSaveable { mutableStateOf(false) }
     var pickingDue by rememberSaveable { mutableStateOf(false) }
     var pickingPriority by remember { mutableStateOf(false) }
     var pickingReminder by rememberSaveable { mutableStateOf(false) }
@@ -345,8 +359,14 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
                 }
             }
             FieldEdit.REMINDER -> FieldRow(f, if (f.empty) "Add a reminder" else "Change the reminder") { pickingReminder = true }
+            FieldEdit.REPEAT -> FieldRow(f, "Change repeat") { custom = false; repeat = true }
+            FieldEdit.TAGS -> FieldRow(f, "Edit tags", tags = detail.tags.filter { it.selected }) { tags = true }
             null -> FieldRow(f)
         }
+    }
+    if (tags) TagsDialog(detail, actions) { tags = false }
+    if (repeat) OverlayDialog({ repeat = false }) { overlay ->
+        RepeatCard(detail, custom, { custom = true }, { choice -> overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.Repeat(detail.id, choice)) } }, overlay::close)
     }
     if (pickingDue) {
         DueDateDialog(detail.due, today, detail.repeats, onSave = { actions.setDue(detail.id, it) }, onDismiss = { pickingDue = false })
@@ -514,12 +534,12 @@ private fun AddStep(task: String, actions: Actions) {
 
 /** A property row; one that edits ([onEdit]) is a full touch target with a chevron. */
 @Composable
-private fun FieldRow(f: DetailField, editLabel: String? = null, onEdit: (() -> Unit)? = null) {
+private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), onEdit: (() -> Unit)? = null) {
     val r = LocalDesign.current.room
     Row(
         Modifier
             .fillMaxWidth()
-            .height(if (onEdit != null) P.TOUCH.dp else P.TOUCH.dp - S.S2.dp)
+            .heightIn(min = if (onEdit != null) P.TOUCH.dp else P.TOUCH.dp - S.S2.dp)
             .hairline(r.line)
             .then(if (onEdit != null) Modifier.clickable(onClickLabel = editLabel, onClick = onEdit) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
@@ -528,10 +548,17 @@ private fun FieldRow(f: DetailField, editLabel: String? = null, onEdit: (() -> U
         Label(f.label, Tokens.Type.META_PHONE, r.ink3, Modifier.width(S.S10.dp * 2 + S.S3.dp))
         val color = if (f.empty) r.ink4 else r.ink
         Box(Modifier.weight(1f)) {
-            if (f.mono) {
+            if (tags.isNotEmpty()) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+                    tags.forEach { tag ->
+                        Box(Modifier.size(C.CHIP_DOT.dp).background(LocalDesign.current.list(tag.hue).dot, CircleShape))
+                        Label("#${tag.name}", Tokens.Type.DUE, r.ink)
+                    }
+                }
+            } else if (f.mono) {
                 Label(f.value, Tokens.Type.DUE, color, weight = if (f.empty) null else Tokens.Type.OVERDUE_BADGE.weight)
             } else {
-                Label(f.value, Tokens.Type.NAV, color)
+                Label(f.value, Tokens.Type.NAV, color, maxLines = Int.MAX_VALUE)
             }
         }
         if (onEdit != null) Icon("chevron-right", r.ink4, size = C.ICON_SMALL.dp)
@@ -539,7 +566,7 @@ private fun FieldRow(f: DetailField, editLabel: String? = null, onEdit: (() -> U
 }
 
 @Composable
-private fun SourceCard(s: SourceLink) {
+internal fun SourceCard(s: SourceLink, remove: () -> Unit) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
     val context = LocalContext.current
@@ -579,6 +606,7 @@ private fun SourceCard(s: SourceLink) {
             Label(s.subtitle, Tokens.Type.COUNT, r.ink3)
         }
         if (link != null) Icon("arrow-up-right", r.ink3, size = C.ICON_SMALL.dp)
+        IconButton("trash-2", "Remove link: ${s.title}", onClick = remove)
     }
 }
 

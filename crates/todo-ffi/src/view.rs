@@ -170,6 +170,8 @@ pub struct NavGroup {
 /// An agent seen in the last week, and what it did today (the drawer's Agents panel).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AgentSummary {
+    /// Exact filter key, not the display name.
+    pub id: String,
     /// Its letter mark and name.
     pub mark: AgentMark,
     /// "2 added, 1 edited", "3 edited" or "idle".
@@ -394,6 +396,8 @@ pub enum FieldEdit {
     Priority,
     /// The reminder (a date and time picker).
     Reminder,
+    Repeat,
+    Tags,
 }
 
 /// A property row in the detail pane.
@@ -425,6 +429,8 @@ pub struct ReminderRef {
 /// Where a task came from.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SourceLink {
+    /// Exact link for removal.
+    pub id: String,
     /// Browser destination, only for a parsed HTTP(S) URL with a host.
     pub url: Option<String>,
     /// Subject or page title.
@@ -459,6 +465,9 @@ pub struct TaskDetail {
     pub due: Option<String>,
     /// It has a repeat rule, which clearing the due date also clears.
     pub repeats: bool,
+    pub custom_repeat: crate::engine::organize::CustomRepeat,
+    pub repeat_options: Vec<crate::engine::organize::RepeatOption>,
+    pub tags: Vec<crate::engine::organize::TagChoice>,
     /// The reminder the Reminder row shows and edits (`intent::reminder::shown`), for its picker; the
     /// edit passes it back, so it changes exactly this reminder, as it was.
     pub reminder: Option<ReminderRef>,
@@ -1076,6 +1085,7 @@ pub fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
                 (a, e) => format!("{a} added, {e} edited"),
             };
             Some(AgentSummary {
+                id: actor.agent_id()?.as_str().into(),
                 mark: lists::agent(actor)?,
                 today,
             })
@@ -1155,14 +1165,14 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         empty: reminder.is_none(),
     });
     fields.push(DetailField {
-        edit: None,
+        edit: Some(FieldEdit::Repeat),
         icon: "repeat".into(),
         label: "Repeat".into(),
-        value: if task.recurrence.is_some() {
-            "Repeats".into()
-        } else {
-            "Does not repeat".into()
-        },
+        value: task
+            .recurrence
+            .as_ref()
+            .map(todo_client::intent::repeat::describe_repeat)
+            .unwrap_or_else(|| "Does not repeat".into()),
         mono: false,
         empty: task.recurrence.is_none(),
     });
@@ -1173,16 +1183,18 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .filter(|t| t.deleted.is_none())
         .map(|t| format!("#{}", t.name))
         .collect();
-    if !tags.is_empty() {
-        fields.push(DetailField {
-            edit: None,
-            icon: "hash".into(),
-            label: "Tags".into(),
-            value: tags.join(" "),
-            mono: true,
-            empty: false,
-        });
-    }
+    fields.push(DetailField {
+        edit: Some(FieldEdit::Tags),
+        icon: "hash".into(),
+        label: "Tags".into(),
+        value: if tags.is_empty() {
+            "–".into()
+        } else {
+            tags.join(" ")
+        },
+        mono: true,
+        empty: tags.is_empty(),
+    });
     let mut links: Vec<_> = state
         .links
         .values()
@@ -1193,6 +1205,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .into_iter()
         .map(|l| match &l.kind {
             LinkKind::Email(m) => SourceLink {
+                id: l.id.to_string(),
                 url: m.web_link.as_deref().and_then(browser_url),
                 title: m.subject.clone(),
                 subtitle: format!(
@@ -1204,6 +1217,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
                 icon: "mail".into(),
             },
             LinkKind::Web { url, title } => SourceLink {
+                id: l.id.to_string(),
                 title: title.clone().unwrap_or_else(|| url.clone()),
                 subtitle: url.clone(),
                 url: browser_url(url),
@@ -1233,6 +1247,17 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         priority: priority_marks(task.priority),
         due: task.due.map(|d| d.to_string()),
         repeats: task.recurrence.is_some(),
+        custom_repeat: crate::engine::organize::draft(task, today),
+        repeat_options: crate::engine::organize::presets(task, today),
+        tags: todo_client::intent::tags(state)
+            .into_iter()
+            .map(|t| crate::engine::organize::TagChoice {
+                id: t.id.to_string(),
+                name: t.name.clone(),
+                hue: lists::swatch(t.color.as_deref(), t.id.as_uuid().as_bytes()).into(),
+                selected: task.tags.contains(&t.id),
+            })
+            .collect(),
         reminder: shown.map(|r| ReminderRef {
             id: r.id.to_string(),
             at_ms: r.at.as_millisecond(),

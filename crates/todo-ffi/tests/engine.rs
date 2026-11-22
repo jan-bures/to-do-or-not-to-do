@@ -1317,6 +1317,93 @@ async fn task_actions_and_move_conflict_on_the_server() {
     e.stop();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn organize_and_page_activity_with_exact_event_undo() {
+    use todo_ffi::engine::organize::{ColorTarget, OrganizeDeletion, RepeatChoice};
+    let server = TestServer::start().await;
+    let db = tempfile::tempdir().unwrap();
+    let e = TodoEngine::open(EngineConfig {
+        server_url: server.url(),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let RoomKey::Collection { id: c } = e.create_collection("Garden".into()).unwrap() else {
+        panic!("collection")
+    };
+    let target = ColorTarget::Collection { id: c.clone() };
+    let asked = e.organize_question(target.clone()).unwrap();
+    let list = e
+        .create_list("Beds".into(), RoomKey::Collection { id: c })
+        .unwrap();
+    let id = e.add_task(list, "Water herbs".into(), now()).unwrap();
+    assert!(
+        matches!(e.confirm_organize_delete(target,asked).unwrap(),OrganizeDeletion::Changed{question:Some(q)} if q.contains("its list and its task"))
+    );
+    e.set_repeat(id.clone(), RepeatChoice::Weekdays, now())
+        .unwrap();
+    e.tag_task_named(id.clone(), "herbs".into()).unwrap();
+    let change = e
+        .add_web_link(id.clone(), "todo.example.com".into())
+        .unwrap()
+        .unwrap();
+    e.start().unwrap();
+    eventually("organize sync", || e.status().pending == 0).await;
+    let remote = &server.running.engine;
+    let task = id.parse().unwrap();
+    assert!(remote.state().tasks[&task].recurrence.is_some());
+    e.undo_organize(change).unwrap();
+    eventually("link undone", || {
+        e.status().pending == 0 && e.task(id.clone(), now()).unwrap().sources.is_empty()
+    })
+    .await;
+    // Enough confirmed events for a second page. Only one belongs to the filtered agent.
+    remote.set_grants(
+        [(
+            todo_core::actor::AgentId::new("gardener").unwrap(),
+            todo_core::Grants::with_default(todo_core::AccessLevel::Plan),
+        )]
+        .into(),
+    );
+    for i in 0..54 {
+        let actor = if i == 52 {
+            Actor::agent("gardener")
+        } else {
+            Actor::owner("other")
+        }
+        .unwrap();
+        let cmd = todo_client::intent::retitle(&remote.state(), task, &format!("Water herbs {i}"))
+            .unwrap();
+        remote
+            .execute(&actor, uuid::Uuid::from_u128(i + 1), &cmd)
+            .unwrap();
+    }
+    let read = |agent: Option<String>, before| {
+        let e = e.clone();
+        tokio::task::spawn_blocking(move || e.activity_page(agent, before, now()).unwrap())
+    };
+    let first = read(None, None).await.unwrap();
+    assert!(first.problem.is_none());
+    let second = read(None, Some(first.before.unwrap())).await.unwrap();
+    assert!(first.rows.last().unwrap().seq > second.rows.first().unwrap().seq);
+    let filtered = read(Some("gardener".into()), None).await.unwrap();
+    assert_eq!(filtered.rows.len(), 1);
+    let row = &filtered.rows[0];
+    assert_eq!(row.actor, "Gardener");
+    e.stop();
+    e.undo_activity_event(row.seq, row.id.clone()).unwrap();
+    assert_eq!(e.activity_undo_states()[&row.id], "Undoing…");
+    e.start().unwrap();
+    eventually("event undo refused", || !e.failed().is_empty()).await;
+    assert_eq!(
+        e.activity_undo_states()[&row.id],
+        todo_client::failure::undo_message("undo_conflict")
+    );
+    e.stop();
+}
+
 /// Deleting a step and a list online, then undoing both: the server has them back, exactly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn undoing_a_deletion_restores_it_on_the_server() {

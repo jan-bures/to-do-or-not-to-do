@@ -114,6 +114,8 @@ abstract class GenerateDesignTokens : DefaultTask() {
         }
 
         out.appendLine("object Tokens {")
+        val swatches = root["hues"].obj()["swatches"].obj().entries.sortedBy { (it.value as Number).toDouble() }
+        out.appendLine("    val swatches = listOf(${swatches.joinToString { "\"${it.key}\"" }})")
         fun numbers(name: String, m: Map<String, Any?>, indent: String = "    ") {
             out.appendLine("${indent}object $name {")
             m.forEach { (k, v) -> if (v is Number) out.appendLine("$indent    const val ${constName(k)} = ${f(v)}") }

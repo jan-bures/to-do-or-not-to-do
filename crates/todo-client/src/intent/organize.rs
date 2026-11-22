@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 use super::delete;
 
+pub mod confirm;
+
 /// A fresh collection at the end of the sidebar, with a swatch picked from its ID (like a new list).
 pub fn create_collection(id: CollectionId, name: &str) -> Command {
     let swatch = hues::swatch_for_seed(id.as_uuid().as_bytes());

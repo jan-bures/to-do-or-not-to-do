@@ -151,17 +151,7 @@ pub fn size(bytes: u64) -> String {
 /// line and paragraph separators become a space. Names come from the server and other clients, and a row,
 /// a chip, a breadcrumb or the sidebar draws them on one line (GPUI's one-line shaping can't take a line
 /// break). The data itself is left as it is.
-pub fn one_line(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect()
-}
+pub use todo_client::intent::confirm::one_line;
 
 #[cfg(test)]
 mod tests {

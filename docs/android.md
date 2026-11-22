@@ -15,10 +15,11 @@ What the first version does:
   footer shows the sync state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired
   server, Sync now, Unpair).
 - **Managing lists.** A long press on a list in the drawer opens its menu: **Rename**, **Move up**, **Move
-  down** and **Delete list…**; a collection's offers **Rename**, **Move up** and **Move down**. A move
+  down**, **Move to…**, **Colour…** and **Delete list…**. The move picker lists the collections and **No collection**.
+  A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The drawer's
+  **New collection** opens the collection after creating it. Both colour pickers use the twelve design swatches. A move
   that would go past either end is greyed out. The room's **⋯** button offers what applies to the room:
-  in a list, Rename list, the moves, Show or Hide completed and Delete list…; in a collection, Rename
-  collection, the moves and the Completed toggle; in My Day, Important, Planned and All, the Completed
+  in a list or collection, Rename, Colour…, the moves, Show or Hide completed and Delete…; in My Day, Important, Planned and All, the Completed
   toggle. Completed and Agent activity have no menu, so no button. Renaming asks for the name in a dialog
   (a blank one can't be saved). Deleting asks first, in full, as the desktop does ("Delete the list
   “Errands” and its 4 tasks? Undo brings them back."), with **Cancel** first and focused. Confirming checks
@@ -28,7 +29,11 @@ What the first version does:
   toast's **Undo** is in view; it brings the list and its tasks back either way.
 - **Agents.** Under the lists, the drawer shows the agents seen in the last seven days (at most four), each
   with its letter mark and what it did today ("2 added, 1 edited", "3 edited", "idle"), worded as the
-  desktop's sidebar words it (`view::agents` in `todo-ffi`). The rows only tell; they aren't controls.
+  desktop's sidebar words it (`view::agents` in `todo-ffi`). Tap one to open Activity filtered to its ID.
+- **Activity.** The drawer's Activity room reads the confirmed event log, newest first. Events are grouped
+  by local calendar day and show the actor and relative time. Scrolling reads older pages. Undo names
+  the event by sequence **and** event ID; a queued undo shows “Undoing…” and a refusal uses the shared
+  plain wording, never the server message. The Agent activity smart list is still a list of tasks.
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
@@ -51,6 +56,14 @@ What the first version does:
   headline and mode toggle, and the calendar scrolls under the buttons, which stay in view. The **Priority** row opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
   high priority or none, as on the desktop.
+- **Repeat.** Tap Repeat for Daily, Weekdays, Weekly, Monthly, Yearly, Custom… or Don’t repeat. Custom
+  takes an interval, a unit and (for weeks) the days. `intent::repeat::set_repeat` gives an undated task
+  its first matching due date in the same undoable edit. The row uses `describe_repeat`.
+- **Tags and links.** Tags is always present. Pick a tag to add or remove it, or type a name to create
+  and apply it. The chevron beside a tag offers Rename, Colour… and Delete tag…. Add link… accepts a web
+  address through `intent::add_link`; a source opens in the browser, and its remove button offers Undo.
+- **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
+  behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.
   The model words its time in the phone's time zone, at the offset of the reminder's own instant
   (`localReminder`), as the toast and the notification do: a reminder after the clocks change reads as
@@ -97,8 +110,8 @@ What the first version does:
   destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
-- **Offline.** The core keeps a local SQLite cache and an outbox, so everything works offline and syncs
-  when the network comes back. A chip in the bar shows how many changes are waiting.
+- **Offline.** Task and organization edits use a local SQLite cache and outbox, and sync
+  when the network comes back. Activity needs a connection to read pages. A chip in the bar shows how many changes are waiting.
 - **Live updates.** While the app is in the foreground it holds the server's event stream open.
 - **Layouts.** Folded (compact width) it is one pane, with the detail over the list. Unfolded it shows the
   list and the detail side by side, like the F2 inner-screen mockup. The header collapses while scrolling
@@ -273,7 +286,7 @@ menu (`step_actions`, with the toast after deleting one), a list's drawer menu, 
 rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
 Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
-agent summary; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
+agent summary. The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon

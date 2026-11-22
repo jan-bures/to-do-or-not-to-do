@@ -54,6 +54,13 @@ interface Actions {
     /** Deletes a step; the toast offers Undo. */
     fun deleteStep(id: String)
     fun createList(name: String)
+    fun organize(edit: OrganizeEdit) = Unit
+    fun organizeQuestion(target: app.todoornot.core.ColorTarget): String? = null
+    fun confirmDelete(target: app.todoornot.core.ColorTarget, asked: String, result: (String?) -> Unit) = Unit
+    fun openActivity(agent: String?) = Unit
+    suspend fun activityPage(agent: String?, before: ULong?): app.todoornot.core.FeedPage =
+        app.todoornot.core.FeedPage(emptyList(), null, null)
+    fun undoEvent(event: app.todoornot.core.ActivityRow) = Unit
 
     /** Renames a list or a collection. */
     fun renameRoom(room: RoomKey, name: String)

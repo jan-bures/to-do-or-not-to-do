@@ -32,6 +32,9 @@ use todo_core::time::{Date, Timestamp};
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
+pub mod activity;
+pub mod organize;
+
 type Client = SyncClient<AppTransport, TokioClock>;
 
 /// How the app reaches its server, from pairing.
@@ -198,6 +201,7 @@ pub enum ListDeletion {
 /// What an undo in the outbox reverses, so a refusal can say so in plain words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Undone {
+    Change(&'static str, &'static str),
     TaskDelete,
     TaskMove,
     Completion,
@@ -218,6 +222,7 @@ impl Undone {
 
     fn what(self) -> &'static str {
         match self {
+            Self::Change(what, _) => what,
             Self::TaskDelete => "Undo deleting a task",
             Self::TaskMove => "Undo moving a task",
             Self::Completion => "Undo a completion",
@@ -229,6 +234,7 @@ impl Undone {
 
     fn noun(self) -> &'static str {
         match self {
+            Self::Change(_, noun) => noun,
             Self::TaskDelete | Self::TaskMove | Self::Completion => "task",
             Self::Step => "step",
             Self::List => "list",
@@ -1184,12 +1190,8 @@ fn undo_failure_message(code: &str, undone: Option<Undone>) -> String {
     let subject = undone.map_or("it".to_owned(), |u| format!("the {}", u.noun()));
     match code {
         "undo_conflict" => format!("Couldn't undo: {subject} was changed again."),
-        "undo_no_event" => "Couldn't undo: the original change couldn't be found.".into(),
-        "epoch_mismatch" | "event_mismatch" => {
-            "Couldn't undo: the server's history changed.".into()
-        }
         "not_found" => format!("Couldn't undo: {subject} no longer exists."),
-        _ => "Couldn't undo that.".into(),
+        _ => todo_client::failure::undo_message(code).into(),
     }
 }
 
@@ -1209,6 +1211,108 @@ mod tests {
     use todo_core::ids::CollectionId;
     use todo_core::time::Timestamp;
     use uuid::Uuid;
+
+    #[test]
+    fn organizing_queues_only_the_shared_builders_commands() {
+        use organize::{ColorTarget, RepeatChoice};
+        let now = LocalNow {
+            epoch_ms: 0,
+            utc_offset_secs: 0,
+        };
+        let e = TodoEngine::fixture("world".into(), now).unwrap();
+        let before = e.state();
+        let task = *before
+            .tasks
+            .keys()
+            .find(|id| before.is_live((**id).into()))
+            .unwrap();
+        let last = || {
+            e.client
+                .pending()
+                .last()
+                .and_then(|p| p.command().cloned())
+                .unwrap()
+        };
+        let repeat = intent::repeat::Preset::Daily.rule(Now::new(now).today());
+        e.set_repeat(task.to_string(), RepeatChoice::Daily, now)
+            .unwrap();
+        assert_eq!(
+            Some(last()),
+            intent::repeat::set_repeat(&before, task, Some(repeat), Now::new(now).today()).unwrap()
+        );
+        let before = e.state();
+        let RoomKey::Collection { id } = e.create_collection(" Garden ".into()).unwrap() else {
+            panic!("collection")
+        };
+        let collection = id.parse().unwrap();
+        assert_eq!(last(), intent::create_collection(collection, " Garden "));
+        let list = before.tasks[&task].list;
+        let before = e.state();
+        e.move_list(list.to_string(), Some(id.clone())).unwrap();
+        assert_eq!(
+            Some(last()),
+            intent::move_list(&before, list, Some(collection))
+        );
+        let target = ColorTarget::Collection { id };
+        let before = e.state();
+        let color = if before.collections[&collection].color.as_deref() == Some("fern") {
+            "jade"
+        } else {
+            "fern"
+        };
+        e.set_swatch(target.clone(), color.into()).unwrap();
+        assert_eq!(
+            Some(last()),
+            intent::set_color(&before, collection.into(), color)
+        );
+        let before = e.state();
+        e.tag_task_named(task.to_string(), "garden".into()).unwrap();
+        let tag = intent::tag_named(&e.state(), "garden").unwrap();
+        let (_, expected) =
+            intent::tag_task_named(&before, task, "garden", || tag.as_uuid()).unwrap();
+        let pending = e.client.pending();
+        assert_eq!(
+            pending
+                .iter()
+                .rev()
+                .take(2)
+                .filter_map(OutboxEntry::command)
+                .collect::<Vec<_>>(),
+            expected.iter().rev().collect::<Vec<_>>()
+        );
+        let before = e.state();
+        e.toggle_tag(task.to_string(), tag.to_string()).unwrap();
+        assert_eq!(Some(last()), intent::toggle_tag(&before, task, tag));
+        let before = e.state();
+        e.rename_tag(tag.to_string(), "outside".into()).unwrap();
+        assert_eq!(
+            Some(last()),
+            intent::rename_tag(&before, tag, "outside").unwrap()
+        );
+        let before = e.state();
+        e.add_web_link(task.to_string(), "todo.example.com".into())
+            .unwrap();
+        let Command::AddLink { id: link, .. } = last() else {
+            panic!("link")
+        };
+        assert_eq!(
+            last(),
+            intent::add_link(&before, task, "todo.example.com", || link.as_uuid()).unwrap()
+        );
+        let before = e.state();
+        e.remove_link(link.to_string()).unwrap();
+        assert_eq!(Some(last()), intent::delete_link(&before, link));
+        let asked = e.organize_question(target.clone()).unwrap();
+        let before = e.state();
+        e.confirm_organize_delete(target, asked).unwrap();
+        assert_eq!(Some(last()), intent::delete_collection(&before, collection));
+        let target = ColorTarget::Tag {
+            id: tag.to_string(),
+        };
+        let asked = e.organize_question(target.clone()).unwrap();
+        e.confirm_organize_delete(target, asked).unwrap();
+        assert_eq!(last(), intent::delete(tag));
+    }
 
     #[test]
     fn ffi_rooms_map_to_shared_task_rooms() {

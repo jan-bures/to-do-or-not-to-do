@@ -111,17 +111,7 @@ pub fn relative_day(d: Date, today: Date) -> String {
 
 /// A name on one line: control characters (line breaks, tabs) and the line and paragraph separators
 /// become a space, as the desktop's `labels::one_line` does. The data keeps them.
-pub fn one_line(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect()
-}
+pub use todo_client::intent::confirm::one_line;
 
 /// "Today, 15:30" or "Mon 23 Nov, 09:00".
 pub fn when(ts: Timestamp, now: &Now) -> String {

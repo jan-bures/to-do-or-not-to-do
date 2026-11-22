@@ -1,5 +1,9 @@
 package app.todoornot.model
 
+import app.todoornot.core.ColorTarget
+import app.todoornot.core.ActivityRow
+import app.todoornot.core.OrganizeChange
+import app.todoornot.core.OrganizeDeletion
 import app.todoornot.core.Completion
 import app.todoornot.core.ChangeListener
 import app.todoornot.core.Deletion
@@ -61,8 +65,9 @@ data class Toast(
     val moved: TaskMove? = null,
     val swap: TaskSwap? = null,
     val reminder: ReminderChange? = null,
+    val organize: OrganizeChange? = null,
 ) {
-    val undoable: Boolean get() = completion != null || deletion != null || moved != null || reminder != null
+    val undoable: Boolean get() = completion != null || deletion != null || moved != null || reminder != null || organize != null
 }
 
 /** Everything the main screen shows, read from the engine in one go. */
@@ -95,6 +100,10 @@ data class UiState(
     val today: String = "",
     /** Last local reorder (including Undo). Only these two rows glide when its read lands. */
     val reorder: TaskSwap? = null,
+    /** null for a task room, empty for all activity, otherwise the agent's wire ID. */
+    val activity: String? = null,
+    val activityRevision: ULong = 0u,
+    val eventStates: Map<String, String> = emptyMap(),
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -217,6 +226,7 @@ class TodoModel(
     @Volatile private var filter = ""
 
     @Volatile private var searching = false
+    @Volatile private var activity: String? = null
 
     /** Refreshes in the order they started; one that finishes after a newer one is dropped. */
     private val refreshes = AtomicLong()
@@ -393,6 +403,9 @@ class TodoModel(
             showCompleted = showDone,
             generation = gen,
             today = isoDay(n),
+            activity = activity,
+            activityRevision = if (activity == null) 0u else engine.activityRevision(),
+            eventStates = if (activity == null) emptyMap() else engine.activityUndoStates(),
             reorder = reorder?.takeIf { it.room == k },
         )
         return Snapshot(epoch, k, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
@@ -597,7 +610,12 @@ class TodoModel(
      * clears the selection, the filter and Completed; the engine falling back to another room ([refresh])
      * keeps them.
      */
-    private fun restart(room: RoomKey, fresh: Boolean) {
+    override fun openActivity(agent: String?) {
+        restart(key, fresh = true, feed = agent.orEmpty())
+        scope.launch { refresh() }
+    }
+
+    private fun restart(room: RoomKey, fresh: Boolean, feed: String? = null) {
         synchronized(motion) {
             motion.motion.settleAll()
             toggled.clear()
@@ -609,6 +627,7 @@ class TodoModel(
                 reorder = null
                 key = room
                 if (fresh) {
+                    activity = feed
                     selectTask(null)
                     filter = ""
                     searching = false
@@ -669,6 +688,7 @@ class TodoModel(
     }
 
     override fun select(id: String?) {
+        if (id != null && activity != null) enter(key)
         selectTask(id)
         scope.launch { refresh() }
     }
@@ -762,6 +782,11 @@ class TodoModel(
 
     override fun undo(t: Toast) {
         if (toast?.serial != t.serial) return
+        t.organize?.let { change ->
+            show(null)
+            act { engine.undoOrganize(change) }
+            return
+        }
         t.reminder?.let { change ->
             show(null)
             act { engine.undoReminder(change) }
@@ -973,6 +998,51 @@ class TodoModel(
             show(Toast(++serial, title?.let { "Deleted step “${oneLine(it)}”" } ?: "Deleted a step", deletion = target))
         }
     }
+
+    override fun organize(edit: OrganizeEdit) = act {
+        fun tracked(text: String, change: OrganizeChange?) {
+            if (change != null) show(Toast(++serial, text, organize = change))
+        }
+        when (edit) {
+            is OrganizeEdit.Repeat -> {
+                val title = engine.task(edit.task, now())?.title ?: return@act
+                tracked("Changed schedule for “${oneLine(title)}”", engine.setRepeat(edit.task, edit.choice, now()))
+            }
+            is OrganizeEdit.ToggleTag -> engine.toggleTag(edit.task, edit.id)
+            is OrganizeEdit.TagNamed -> engine.tagTaskNamed(edit.task, edit.name)
+            is OrganizeEdit.RenameTag -> engine.renameTag(edit.id, edit.name)
+            is OrganizeEdit.Color -> engine.setSwatch(edit.target, edit.hue)
+            is OrganizeEdit.AddLink -> tracked("Added link “${oneLine(edit.address)}”", engine.addWebLink(edit.task, edit.address))
+            is OrganizeEdit.RemoveLink -> {
+                val title = _ui.value.detail?.sources?.find { it.id == edit.id }?.title
+                tracked(title?.let { "Removed link “${oneLine(it)}”" } ?: "Removed link", engine.removeLink(edit.id))
+            }
+            is OrganizeEdit.NewCollection -> enter(engine.createCollection(edit.name))
+            is OrganizeEdit.MoveList -> {
+                val name = _ui.value.home.groups.flatMap { it.lists }.find { it.key == RoomKey.List(edit.id) }?.name
+                tracked(name?.let { "Moved “${oneLine(it)}”" } ?: "Moved list", engine.moveList(edit.id, edit.collection))
+            }
+        }
+    }
+
+    override fun organizeQuestion(target: ColorTarget) = engine.organizeQuestion(target)
+
+    override fun confirmDelete(target: ColorTarget, asked: String, result: (String?) -> Unit) {
+        scope.launch {
+            var next: String? = null
+            writeEdit {
+                when (val reply = engine.confirmOrganizeDelete(target, asked)) {
+                    is OrganizeDeletion.Changed -> next = reply.question
+                    is OrganizeDeletion.Deleted -> show(Toast(++serial, if (target is ColorTarget.Tag) "Deleted tag" else "Deleted collection", organize = reply.change))
+                }
+            }?.let { show(Toast(++serial, it)) }
+            refresh()
+            result(next)
+        }
+    }
+
+    override suspend fun activityPage(agent: String?, before: ULong?) = withContext(io) { engine.activityPage(agent, before, now()) }
+    override fun undoEvent(event: ActivityRow) = act { engine.undoActivityEvent(event.seq, event.id) }
 
     override fun renameRoom(room: RoomKey, name: String) = act {
         when (room) {

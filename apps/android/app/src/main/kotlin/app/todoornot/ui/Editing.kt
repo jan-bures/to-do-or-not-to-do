@@ -192,7 +192,7 @@ fun DueDateDialog(due: String?, today: String, repeats: Boolean, onSave: (String
  * a blank name can't be saved.
  */
 @Composable
-fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: () -> Unit, focus: Boolean = true) {
+fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: () -> Unit, focus: Boolean = true, webAddress: Boolean = false) {
     val r = LocalDesign.current.room
     var text by rememberSaveable(name, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(name, TextRange(0, name.length)))
@@ -214,16 +214,16 @@ fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: 
                 .border(Tokens.Elevation.HAIRLINE.dp, r.accent, RoundedCornerShape(Tokens.Radius.MD.dp))
                 .padding(horizontal = S.S3.dp, vertical = S.S3.dp)
                 .focusRequester(field)
-                .semantics { contentDescription = "Name" },
+                .semantics { contentDescription = if (webAddress) "Web address" else "Name" },
             textStyle = Tokens.Type.NAV.style(r.ink),
             singleLine = true,
             cursorBrush = SolidColor(r.accent),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+            keyboardOptions = if (webAddress) KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri, imeAction = ImeAction.Done) else KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { save() }),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Button("Cancel", primary = false, modifier = Modifier.weight(1f), onClick = onCancel)
-            Button("Save", primary = true, modifier = Modifier.weight(1f), enabled = ok) { save() }
+            Button(if (webAddress) "Add link" else "Save", primary = true, modifier = Modifier.weight(1f), enabled = ok) { save() }
         }
     }
 }
@@ -242,16 +242,17 @@ fun DeleteListCard(
     focusCancel: Boolean = true,
     changed: Boolean = false,
     busy: Boolean = false,
+    noun: String = "list",
 ) {
     val r = LocalDesign.current.room
     val cancel = remember { FocusRequester() }
     if (focusCancel) LaunchedEffect(Unit) { runCatching { cancel.requestFocus() } }
-    DialogCard("Delete list?") {
-        Label("Delete list?", Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
+    DialogCard("Delete $noun?", modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Label("Delete $noun?",  Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         Label(question, Tokens.Type.NOTES, r.ink2, maxLines = 8)
-        if (changed) Label(LIST_CHANGED, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)
+        if (changed) Label("The $noun changed while the question was open. Check it, then confirm again.", Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)
         Button("Cancel", primary = true, modifier = Modifier.focusRequester(cancel), onClick = onCancel)
-        Button("Delete list", primary = false, danger = true, enabled = !busy, onClick = onDelete)
+        Button("Delete $noun", primary = false, danger = true, enabled = !busy, onClick = onDelete)
     }
 }
 

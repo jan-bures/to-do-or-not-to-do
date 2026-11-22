@@ -45,6 +45,9 @@ sealed interface MenuAction {
 
     /** Ask before deleting a list. */
     data class AskDelete(val list: String) : MenuAction
+    data class Colour(val room: RoomKey) : MenuAction
+    data class MoveList(val room: RoomKey.List) : MenuAction
+    data class DeleteCollection(val room: RoomKey.Collection) : MenuAction
 
     data class ShowCompleted(val on: Boolean) : MenuAction
 
@@ -106,7 +109,9 @@ fun swappedWith(home: Home, room: RoomKey, by: Int): RoomKey? {
 
 private fun moves(home: Home, room: RoomKey): List<MenuEntry> {
     val (up, down) = siblingPlace(home, room) ?: return emptyList()
-    return listOf(
+    return listOfNotNull(
+        MenuEntry.Item("pencil", "Colour…", MenuAction.Colour(room)),
+        (room as? RoomKey.List)?.let { MenuEntry.Item("list", "Move to…", MenuAction.MoveList(it), enabled = home.groups.any { g -> g.collection != null }) },
         MenuEntry.Item("chevron-up", "Move up", MenuAction.Move(room, -1), enabled = up),
         MenuEntry.Item("chevron-down", "Move down", MenuAction.Move(room, 1), enabled = down),
     )
@@ -125,10 +130,12 @@ fun drawerMenu(home: Home, room: RoomKey): List<MenuEntry> = when (room) {
     is RoomKey.Collection -> if (siblingPlace(home, room) == null) {
         emptyList()
     } else {
-        listOf(MenuEntry.Item("pencil", "Rename", MenuAction.Rename(room))) + moves(home, room)
+        listOf(MenuEntry.Item("pencil", "Rename", MenuAction.Rename(room))) + moves(home, room) + collectionDelete(room)
     }
     is RoomKey.Smart -> emptyList()
 }
+
+private fun collectionDelete(room: RoomKey.Collection) = listOf(MenuEntry.Separator, MenuEntry.Item("trash-2", "Delete collection…", MenuAction.DeleteCollection(room), danger = true))
 
 /**
  * The room's overflow menu: only what applies to the room. A list: rename, move, the Completed toggle and
@@ -154,7 +161,7 @@ fun roomMenu(home: Home, room: RoomKey, showCompleted: Boolean): List<MenuEntry>
         is RoomKey.Collection -> if (siblingPlace(home, room) == null) {
             emptyList()
         } else {
-            listOf(MenuEntry.Item("pencil", "Rename collection", MenuAction.Rename(room))) + moves(home, room) + completed
+            listOf(MenuEntry.Item("pencil", "Rename collection", MenuAction.Rename(room))) + moves(home, room) + completed + collectionDelete(room)
         }
         is RoomKey.Smart -> if (listsDoneAmongRows(room)) emptyList() else listOf(completed)
     }

@@ -25,6 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.RoomKey
+import app.todoornot.core.ColorTarget
+import app.todoornot.model.OrganizeEdit
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
@@ -108,8 +110,28 @@ private fun Screen(
                 moving = emptySet()
             }
         }
+        var organize by remember { mutableStateOf<MenuAction?>(null) }
+        var newCollection by rememberSaveable { mutableStateOf(false) }
+        if (newCollection) OverlayDialog({ newCollection = false }) { overlay ->
+            RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); scope.launch { drawer.close() } } }, overlay::close)
+        }
+        organize?.let { action -> OverlayDialog({ organize = null }) { overlay ->
+            when (action) {
+                is MenuAction.DeleteCollection -> ConfirmOrganize(ColorTarget.Collection(action.room.id), actions, overlay)
+                is MenuAction.MoveList -> MoveListCard(state.home, action.room, { id -> overlay.choose { actions.organize(OrganizeEdit.MoveList(action.room.id, id)) } }, overlay::close)
+                is MenuAction.Colour -> {
+                    val item = state.home.groups.flatMap { listOfNotNull(it.collection) + it.lists }.find { it.key == action.room }
+                    if (item == null) SideEffect { overlay.close() } else SwatchCard(item.hue, { hue -> overlay.choose {
+                        val target = when (val k = action.room) { is RoomKey.Collection -> ColorTarget.Collection(k.id); is RoomKey.List -> ColorTarget.List(k.id); else -> error("Not a colour target") }
+                        actions.organize(OrganizeEdit.Color(target, hue))
+                    } }, overlay::close)
+                }
+                else -> Unit
+            }
+        } }
         val onRoomMenu: (MenuAction) -> Unit = { a ->
             when (a) {
+                is MenuAction.MoveList, is MenuAction.DeleteCollection, is MenuAction.Colour -> organize = a
                 is MenuAction.Rename -> renaming = a.room
                 is MenuAction.Move -> {
                     swappedWith(state.home, a.room, a.by)?.let { moving = setOf(a.room, it) }
@@ -167,12 +189,15 @@ private fun Screen(
                 }
             }
         }
+        val drawerVisible = drawer.currentValue == DrawerValue.Open || drawer.targetValue == DrawerValue.Open
+        val drawerSurface = if (drawerVisible) state else state.copy(toast = null)
+        val paneSurface = if (drawerVisible) state.copy(toast = null) else state
         ModalNavigationDrawer(
             drawerState = drawer,
             scrimColor = r.toast.copy(alpha = 0.32f),
             drawerContent = {
                 RoomDrawer(
-                    state,
+                    drawerSurface,
                     server,
                     actions,
                     ::open,
@@ -182,29 +207,35 @@ private fun Screen(
                     },
                     onMenu = onRoomMenu,
                     moving = moving,
+                    onNewCollection = { newCollection = true },
+                    onActivity = { agent -> actions.openActivity(agent); scope.launch { drawer.close() } },
                 )
             },
         ) {
             val detail = state.detail
-            if (wide) {
+            val feed = state.activity
+            if (feed != null) {
+                BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
+                ActivityRoom(paneSurface, feed.ifEmpty { null }, actions, menu)
+            } else if (wide) {
                 Row(Modifier.fillMaxSize().background(r.pane)) {
                     RoomPane(
-                        state, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
+                        paneSurface, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
                         onRoomMenu = onRoomMenu,
                     )
                     Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
                     if (detail != null) {
-                        DetailPane(state, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
+                        DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
                     } else {
                         NoDetail(Modifier.weight(1f))
                     }
                 }
             } else {
                 Box(Modifier.fillMaxSize().background(r.pane)) {
-                    RoomPane(state, actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed, onRoomMenu = onRoomMenu)
+                    RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed, onRoomMenu = onRoomMenu)
                     if (detail != null) {
                         BackHandler { actions.select(null) }
-                        DetailPane(state, actions, standalone = true)
+                        DetailPane(paneSurface, actions, standalone = true)
                     }
                 }
             }

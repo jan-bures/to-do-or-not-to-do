@@ -1,5 +1,6 @@
 package app.todoornot.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -77,9 +78,11 @@ fun RoomDrawer(
     onNewList: (String) -> Unit,
     onMenu: (MenuAction) -> Unit = {},
     moving: Set<RoomKey> = emptySet(),
+    onActivity: (String?) -> Unit = {},
+    onNewCollection: () -> Unit = {},
 ) {
     val r = LocalDesign.current.room
-    val current = state.room.key
+    val current = state.room.key.takeIf { state.activity == null }
     var menu by remember { mutableStateOf<RoomKey?>(null) }
 
     // A list's or a collection's row, with its long-press menu anchored to it.
@@ -133,8 +136,11 @@ fun RoomDrawer(
             }
             Spacer(Modifier.height(S.S2.dp))
             NewList(onNewList)
-            if (state.home.agents.isNotEmpty()) Agents(state.home.agents)
+            Choice("New collection", onClick = onNewCollection)
+            Choice("Activity", state.activity == "") { onActivity(null) }
+            if (state.home.agents.isNotEmpty()) Agents(state.home.agents) { onActivity(it) }
         }
+        if (state.toast != null) ToastStrip(state.toast, actions)
         Footer(state, server, actions)
     }
 }
@@ -238,10 +244,10 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
 
 /**
  * The agents seen in the last week, each with its letter mark and what it did today ("2 added, 1
- * edited", "idle"), as the desktop's sidebar shows them. Not a control: the rows only tell.
+ * edited", "idle"), as the desktop's sidebar shows them. Tap to filter the Activity room.
  */
 @Composable
-internal fun Agents(agents: List<AgentSummary>) {
+internal fun Agents(agents: List<AgentSummary>, onActivity: (String) -> Unit = {}) {
     val r = LocalDesign.current.room
     Column(
         Modifier
@@ -256,7 +262,7 @@ internal fun Agents(agents: List<AgentSummary>) {
         }
         agents.forEach { a ->
             Row(
-                Modifier.fillMaxWidth().height(S.S8.dp).semantics(mergeDescendants = true) {
+                Modifier.fillMaxWidth().height(P.TOUCH.dp).clickable { onActivity(a.id) }.semantics(mergeDescendants = true) {
                     contentDescription = "Agent: ${a.mark.name}, today ${a.today}"
                 },
                 verticalAlignment = Alignment.CenterVertically,
