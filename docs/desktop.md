@@ -301,9 +301,15 @@ After at least one title word, all clients accept one trailing date and one prio
 - `next week` / `příští týden` means next Monday. `next Sunday` / `příští neděli` means Sunday of
   the **next** Monday–Sunday week, even when this week's Sunday hasn't happened yet.
 - `this weekend` / `o víkendu` means Saturday, or today on Saturday or Sunday. `end of month` /
-  `konec měsíce` means the last day of the current month.
+  `konec měsíce` means the last day of the current month. If `o víkendu` means “about the weekend”
+  rather than a due date, type `o \víkendu` to keep the words in the title.
 - `1 Dec`, `1. 12.`, `1.12.` and `1. prosince` mean the next December 1, including today. The year
-  rolls forward if needed. Incomplete phrases like `Meeting in 2` and bare numbers stay in the title.
+  rolls forward if needed. Day-month and end-of-month dates can start with `on`, `by` or `do`:
+  `Pay by 1 Dec`, `Pay by end of month`, `Zaplatit do 1. prosince`, `Zaplatit do konce měsíce`.
+- Compact `D.M.` dates stay literal immediately after `v`, `ve`, `at`, `version`, `verze`, `section`,
+  `sekce`, `chapter`, `kapitola`, `release`, `part` and `část`: `Release 1.12.` and `Sraz v 10.10.`
+  have no due date. Elsewhere type `\1.12.` to keep the number. Incomplete phrases like `Meeting in 2`
+  and bare numbers stay in the title.
 - A separate `!!` sets normal priority; `!!!` sets high priority. `Wow !` and `Wow!` keep their punctuation.
 - Put `\` before the final title token to keep it literal: `Enjoy the \sun` becomes `Enjoy the sun`,
   and `See you \tomorrow !!` becomes `See you tomorrow` with normal priority and no parsed date.

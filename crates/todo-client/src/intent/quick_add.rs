@@ -17,6 +17,10 @@
 //! - `end of month` / `konec měsíce` (the last day of this month);
 //! - `1 Dec`, `1. 12.`, `1.12.` or `1. prosince` (next occurrence, including today).
 //!
+//! Day-month and month-end phrases accept `on`, `by` or `do` (e.g. `do konce měsíce`). A compact
+//! `D.M.` stays literal after `v`, `ve`, `at`, `version`, `verze`, `section`, `sekce`, `chapter`,
+//! `kapitola`, `release`, `part` or `část`. Elsewhere use `\1.12.` to keep it literal. A trailing
+//! `o víkendu` can also mean “about the weekend”; use `o \víkendu` when it belongs in the title.
 //! Case is ignored; Czech words also work without accents. Incomplete phrases stay literal.
 //! Only standalone `!!` (normal) and `!!!` (high) are priority markers; `!` and `Wow!` stay literal.
 //! A leading backslash on the final title token stops parsing there and is removed: `Plan \today !!`
@@ -138,18 +142,43 @@ fn date_suffix(words: &[&str], ctx: &EvalContext) -> Option<(Date, usize)> {
     {
         return Some((next_weekday(day, ctx)?, 2));
     }
+    // A date introducer is part of the suffix (and therefore cannot serve as the only title word).
+    let with_intro = |date, count| {
+        let has_intro = words[..words.len() - count]
+            .last()
+            .is_some_and(|w| matches!(fold(w).as_str(), "on" | "by" | "do"));
+        Some((date, count + usize::from(has_intro)))
+    };
     match (prefix.as_str(), last.as_str()) {
-        ("of", "month") if first == "end" => Some((today.last_of_month(), 3)),
-        ("konec", "mesice") => Some((today.last_of_month(), 2)),
+        ("of", "month") if first == "end" => with_intro(today.last_of_month(), 3),
+        ("konec", "mesice") => with_intro(today.last_of_month(), 2),
+        ("konce", "mesice") if first == "do" => Some((today.last_of_month(), 3)),
         ("this", "weekend") | ("o", "vikendu") => Some((add_days(today, (5 - offset).max(0))?, 2)),
         ("next", "week") | ("pristi", "tyden") => Some((add_days(today, 7 - offset)?, 2)),
         _ => {
             if let Some(date) = day_month(&prefix, &last, today) {
-                return Some((date, 2));
+                return with_intro(date, 2);
             }
-            let date = if let Some((day, month)) = last.split_once('.') {
-                numeric_day_month(day, month, today)?
-            } else if let Some(day) = weekday(&last, false) {
+            if let Some((day, month)) = last.split_once('.') {
+                if matches!(
+                    prefix.as_str(),
+                    "v" | "ve"
+                        | "at"
+                        | "version"
+                        | "verze"
+                        | "section"
+                        | "sekce"
+                        | "chapter"
+                        | "kapitola"
+                        | "release"
+                        | "part"
+                        | "cast"
+                ) {
+                    return None;
+                }
+                return with_intro(numeric_day_month(day, month, today)?, 1);
+            }
+            let date = if let Some(day) = weekday(&last, false) {
                 next_weekday(day, ctx)?
             } else {
                 // Even `-0d` isn't quick-add syntax.
@@ -291,7 +320,7 @@ mod tests {
             prop_assert_eq!(parsed.title.is_empty(), words.is_empty());
             prop_assert!(title_words <= words.len());
             prop_assert_eq!(parsed.title, literal_title(&words[..title_words]));
-            prop_assert!(words.len() - title_words <= 4);
+            prop_assert!(words.len() - title_words <= 5);
             let _ = due_text(&text, &ctx());
         }
 
@@ -303,7 +332,7 @@ mod tests {
                 "dnes", "zítra", "včera", "Monday", "Saturday", "sunday", "úterý", "pátek",
                 "+0d", "+3d", "-1d", "-0d", "2026-11-20", "2026-11-21", "2026-12-01",
                 "next", "week", "příští týden", "in", "2", "days", "za 3 týdny", "end of month",
-                "this weekend", "o víkendu", "konec měsíce", "1. prosince", "1.12.", r"\week",
+                "this weekend", "o víkendu", "konec měsíce", "1. prosince", "1.12.", r"\week", "by end of month", "do", "konce měsíce", "v", "Release",
             ]), 1..16),
         ) {
             let input = words.join("\t");
@@ -323,7 +352,7 @@ mod tests {
             prop_assert_eq!(priority, parsed.priority);
             prop_assert_eq!(parsed.due.is_some(), !suffix.is_empty());
             if !suffix.is_empty() {
-                prop_assert!(suffix.len() <= 3);
+                prop_assert!(suffix.len() <= 4);
                 prop_assert!(!matches!(suffix, [w] if weekday(&fold(w), true).is_some() && weekday(&fold(w), false).is_none()));
                 prop_assert!(!suffix.iter().any(|w| w.starts_with('-')));
                 prop_assert_eq!(parsed.due, due_text(&suffix.join(" "), &ctx()));
@@ -451,6 +480,13 @@ mod tests {
             ("end of month", "2026-11-30"),
             ("konec mesice", "2026-11-30"),
             ("1 Dec", "2026-12-01"),
+            ("BY 1 Dec", "2026-12-01"),
+            ("on 1.12.", "2026-12-01"),
+            ("by 1. 12.", "2026-12-01"),
+            ("do 1. prosince", "2026-12-01"),
+            ("by end of month", "2026-11-30"),
+            ("on end of month", "2026-11-30"),
+            ("do konce měsíce", "2026-11-30"),
             ("1. 12.", "2026-12-01"),
             ("1.12.", "2026-12-01"),
             ("1. prosince", "2026-12-01"),
@@ -473,6 +509,23 @@ mod tests {
             assert_eq!(parse(phrase, &ctx()).due, None);
             assert_eq!(due_text(phrase, &ctx()), d(date));
         }
+    }
+
+    #[test]
+    fn compact_dates_stay_literal_after_number_introducers() {
+        for intro in [
+            "v", "ve", "at", "VERSION", "verze", "section", "sekce", "chapter", "kapitola",
+            "Release", "part", "ČÁST", "cast",
+        ] {
+            let title = format!("Inspect {intro} 10.10.");
+            let p = parse(&format!("{title} !!"), &ctx());
+            assert_eq!(
+                (p.title, p.due, p.priority),
+                (title, None, Some(Priority::Normal))
+            );
+        }
+        assert_eq!(parse("Plan konce měsíce", &ctx()).due, None);
+        assert_eq!(parse("Release 1. 12.", &ctx()).due, d("2026-12-01"));
     }
 
     #[test]
@@ -518,6 +571,8 @@ mod tests {
             (r"Enjoy the \sun", "Enjoy the sun", None, None),
             (r"See you \tomorrow", "See you tomorrow", None, None),
             (r"Meet on \fri", "Meet on fri", None, None),
+            (r"Úvaha o \víkendu", "Úvaha o víkendu", None, None),
+            (r"Build \1.12.", "Build 1.12.", None, None),
             (r"Wow \!!", "Wow !!", None, None),
             (
                 r"Plan next \Monday !!",
