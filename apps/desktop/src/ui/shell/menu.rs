@@ -883,7 +883,7 @@ impl ShellView {
                 }
                 self.close_menu(keyboard, window, cx);
             }
-            Err(error) => self.notice = Some(Notice::error(error.to_string())),
+            Err(error) => self.notice = Some(Notice::error(commands::repeat::error_text(error))),
         }
         self.refresh(cx);
     }
@@ -933,7 +933,7 @@ impl ShellView {
                     self.highlight(menus::index_of(&entries, &format!("tag-{tag}")));
                 }
             }
-            Err(e) => self.notice = Some(Notice::error(format!("Couldn't create that tag: {e}."))),
+            Err(e) => self.notice = Some(Notice::error(e.create_message())),
         }
         self.refresh(cx);
     }

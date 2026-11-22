@@ -2,7 +2,7 @@
 use todo_core::State;
 use todo_core::command::{Command, TaskPatch};
 use todo_core::ids::TaskId;
-use todo_core::recurrence::{Recurrence, RecurrenceError, Rule};
+use todo_core::recurrence::{MAX_INTERVAL, Recurrence, RecurrenceError, Rule};
 use todo_core::time::{Date, Weekday};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,82 @@ impl Preset {
             },
             Self::Yearly => Rule::Yearly { interval: 1 },
         }
+    }
+}
+
+/// How a custom repeat interval is measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+/// The unsaved fields of a custom repeat editor, independent of any platform's input controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepeatDraft {
+    pub interval: u32,
+    pub unit: Unit,
+    pub days: [bool; 7],
+    month_day: u8,
+}
+
+impl RepeatDraft {
+    pub fn new(due: Option<Date>, recurrence: Option<&Recurrence>, today: Date) -> Self {
+        let anchor = due.unwrap_or(today);
+        let mut draft = Self {
+            interval: 1,
+            unit: Unit::Day,
+            days: Weekday::ALL.map(|day| day == Weekday::of(anchor)),
+            month_day: anchor.day() as u8,
+        };
+        if let Some(r) = recurrence {
+            (draft.unit, draft.interval) = match &r.rule {
+                Rule::Daily { interval } => (Unit::Day, *interval),
+                Rule::Weekly { interval, days } => {
+                    draft.days = Weekday::ALL.map(|day| days.contains(&day));
+                    (Unit::Week, *interval)
+                }
+                Rule::Monthly { interval, day } => {
+                    draft.month_day = *day;
+                    (Unit::Month, *interval)
+                }
+                Rule::Yearly { interval } => (Unit::Year, *interval),
+            };
+        }
+        draft
+    }
+
+    /// Build the rule as entered. It can still be invalid while the owner is editing it.
+    pub fn rule(self) -> Rule {
+        let interval = self.interval;
+        match self.unit {
+            Unit::Day => Rule::Daily { interval },
+            Unit::Week => Rule::Weekly {
+                interval,
+                days: Weekday::ALL
+                    .into_iter()
+                    .filter(|d| self.days[d.offset()])
+                    .collect(),
+            },
+            Unit::Month => Rule::Monthly {
+                interval,
+                day: self.month_day,
+            },
+            Unit::Year => Rule::Yearly { interval },
+        }
+    }
+}
+
+pub const UNDATED_NOTE: &str = "Due starts today or on the next matching day.";
+
+/// How a repeat editor explains invalid or impossible rules.
+pub fn error_text(error: RecurrenceError) -> String {
+    match error {
+        RecurrenceError::NoWeekdays => "Choose at least one weekday.".into(),
+        RecurrenceError::NoOccurrence => "No future date matches this rule.".into(),
+        _ => format!("Choose an interval from 1 to {MAX_INTERVAL}."),
     }
 }
 
@@ -150,6 +226,65 @@ pub fn describe_repeat(r: &Recurrence) -> String {
 mod tests {
     use super::*;
     const MON: Date = Date::constant(2025, 3, 31);
+    #[test]
+    fn a_new_draft_uses_the_due_date_or_local_today() {
+        let fri = Date::constant(2025, 4, 4);
+        for (due, weekday, day) in [(Some(fri), Weekday::Fri, 4), (None, Weekday::Mon, 31)] {
+            let mut draft = RepeatDraft::new(due, None, MON);
+            assert_eq!(draft.rule(), Rule::Daily { interval: 1 });
+            draft.unit = Unit::Week;
+            assert_eq!(
+                draft.rule(),
+                Rule::Weekly {
+                    interval: 1,
+                    days: [weekday].into()
+                }
+            );
+            draft.unit = Unit::Month;
+            assert_eq!(draft.rule(), Rule::Monthly { interval: 1, day });
+        }
+    }
+
+    #[test]
+    fn a_draft_round_trips_the_existing_rule_including_a_clamped_month_day() {
+        let apr = Date::constant(2025, 4, 30);
+        for rule in [
+            Rule::Daily { interval: 2 },
+            Rule::Weekly {
+                interval: 3,
+                days: [Weekday::Tue, Weekday::Thu].into(),
+            },
+            Rule::Monthly {
+                interval: 8,
+                day: 31,
+            },
+            Rule::Yearly { interval: 4 },
+        ] {
+            let r = Recurrence::new(rule.clone());
+            assert_eq!(RepeatDraft::new(Some(apr), Some(&r), MON).rule(), rule);
+        }
+    }
+
+    #[test]
+    fn draft_errors_explain_what_to_fix() {
+        let mut draft = RepeatDraft::new(None, None, MON);
+        draft.interval = 0;
+        let err = Recurrence::new(draft.rule()).validate().unwrap_err();
+        assert_eq!(
+            error_text(err),
+            format!("Choose an interval from 1 to {MAX_INTERVAL}.")
+        );
+        draft.interval = 2;
+        draft.unit = Unit::Week;
+        draft.days.fill(false);
+        let err = Recurrence::new(draft.rule()).validate().unwrap_err();
+        assert_eq!(error_text(err), "Choose at least one weekday.");
+        assert_eq!(
+            error_text(RecurrenceError::NoOccurrence),
+            "No future date matches this rule."
+        );
+    }
+
     #[test]
     fn presets_read_as_their_anchored_rules() {
         for (preset, words) in [

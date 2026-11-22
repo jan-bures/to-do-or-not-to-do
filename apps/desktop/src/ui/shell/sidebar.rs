@@ -107,7 +107,7 @@ impl ShellView {
                 self.submit(vec![cmd]);
             }
             Ok(None) => {}
-            Err(e) => self.notice = Some(Notice::error(format!("Couldn't rename that tag: {e}."))),
+            Err(e) => self.notice = Some(Notice::error(e.rename_message())),
         }
         self.refresh(cx);
     }

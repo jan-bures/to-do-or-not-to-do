@@ -302,8 +302,9 @@ Right-click a list or collection in the sidebar, press **Shift+F10** on its link
 A list or collection header has a **Room menu** too. Use Arrow Up/Down to navigate, Enter to act, or
 Escape to close the menu. **Move up** and **Move down** stay within the item's siblings. **Move to…**
 chooses the collection for a list, or **No collection** for the top level. Moving into a folded collection
-unfolds it. **Colour…** offers the twelve design swatches, with the current swatch ticked. **Delete**
-asks before hiding the item and its contents; the scrim blocks other controls and focus starts on
+unfolds it. **Colour…** offers the twelve design swatches, with the current swatch ticked. Both open
+separate pickers: use the arrows to browse, Enter or Space to choose, or Back to return to the menu.
+**Delete** asks before hiding the item and its contents; the scrim blocks other controls and focus starts on
 **Cancel**. Undo brings back the deleted item and makes its surviving contents visible again.
 
 When the sidebar's sync line says **n not synced**, open it to see the refused changes and plain-language
@@ -360,15 +361,17 @@ down and delete buttons (visible on hover or keyboard focus on desktop, always v
 The Undo toast restores a deleted step. A set reminder is shown but is read-only.
 
 **Repeat** (or **R**) offers Daily, Weekdays, Weekly, Monthly and Yearly, plus **Custom…** for an
-interval, unit and days of the week. **Don’t repeat** keeps the due date. Setting repeat on an undated
-task picks the first matching date on or after today, in the same undoable change. The summary uses
-the shared repeat description.
+interval, unit and days of the week. Use the arrows to browse the presets and Enter or Space to choose.
+**Don’t repeat** keeps the due date. Setting repeat on an undated task picks the first matching date on
+or after today, in the same undoable change. The summary uses the shared repeat description.
 
 **Tags** (or **T**) opens the tag picker. Select a tag to put it on or take it off the task without
 closing the picker. Type to filter, or create a new tag with that name and attach it. Undo detaches it;
 the new tag remains available for other tasks. Open a tag’s chevron (or press **Right** on the tag) to
 rename, recolour or delete it. A delete confirmation rechecks the tag and its live task count on confirm
-and asks again if they changed. Deleting hides that tag on every task; Undo restores it and its memberships.
+and asks again if they changed. If the task the picker came from is deleted, the confirmation closes.
+Deleting hides that tag on every task; Undo restores it and its memberships unless another tag has
+taken its name.
 
 In **Links**, type a web address (or press **L** to focus the field). For a bare host like `example.com`
 the shared builder adds `https://`. Remove a web link with its remove button; Undo brings it back.

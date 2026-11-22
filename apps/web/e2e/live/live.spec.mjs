@@ -100,6 +100,20 @@ async function stored(page, text) {
   );
 }
 
+/** Counts the durably stored refusals, not a tab's in-memory replica. */
+function failedCount(page) {
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open("todo-replica");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const req = db.transaction("failed").objectStore("failed").count();
+      req.onsuccess = () => { db.close(); resolve(req.result); };
+      req.onerror = () => { db.close(); reject(req.error); };
+    };
+  }));
+}
+
 /** Waits until the edit mentioning `text` is committed to IndexedDB. */
 async function committed(page, text) {
   await expect.poll(() => stored(page, text), { timeout: 15_000 }).toBeGreaterThan(0);
@@ -465,7 +479,7 @@ test("set a repeat in detail, then complete it and see the next occurrence from 
   await add(page, title);
   await row(page, title).locator(".row-title").click();
   await page.getByRole("button", { name: "Repeat", exact: true }).click();
-  await page.getByRole("dialog", { name: "Repeat", exact: true }).getByRole("button", { name: "Daily" }).click();
+  await page.getByRole("dialog", { name: "Repeat", exact: true }).getByRole("option", { name: "Daily" }).click();
   await expect(page.getByRole("button", { name: "Repeat", exact: true })).toHaveText("Every day");
   const items = () => page.evaluate(async ({ list, title }) => {
     const csrf = document.querySelector('meta[name="csrf-token"]').content;
@@ -487,6 +501,35 @@ test("set a repeat in detail, then complete it and see the next occurrence from 
   await expect(row(page, title).locator(".row-title")).toHaveAttribute("id", `row-${next.id}`);
   expect(problems).toEqual([]);
   await page.close();
+});
+
+test("another tab undoes both the repeat and its first due date on a previously undated task", async () => {
+  const author = await openApp();
+  const reader = await openApp();
+  const problems = [author, reader].map(watch);
+  const title = "Order labels for the seed trays";
+  const repeat = (tab) => tab.getByRole("button", { name: "Repeat", exact: true });
+  const due = (tab) => tab.getByRole("button", { name: /^Edit due date:/ });
+  await add(author, title);
+  for (const tab of [author, reader]) {
+    await row(tab, title).locator(".row-title").click();
+    await expect(due(tab)).toHaveText("Set date");
+  }
+  await repeat(author).click();
+  await author.getByRole("dialog", { name: "Repeat" }).getByRole("option", { name: "Weekdays" }).click();
+  await expect(repeat(reader)).toHaveText("Every weekday");
+  await expect(due(reader)).not.toHaveText("Set date");
+  await reader.getByRole("link", { name: "Activity", exact: true }).click();
+  const edit = reader.locator(".activity-row").filter({ hasText: `Updated task "${title}"` });
+  await expect(edit).toContainText("due date");
+  await expect(edit).toContainText("recurrence");
+  await edit.getByRole("button", { name: /^Undo:/ }).click();
+  await expect(edit.getByText("Undone", { exact: true })).toBeVisible();
+  await expect(repeat(author)).toHaveText("Does not repeat");
+  await expect(due(author)).toHaveText("Set date");
+  expect(problems.flat()).toEqual([]);
+  await reader.close();
+  await author.close();
 });
 
 test("tags and links sync across tabs, and delete rechecks the tag’s impact at confirmation", async () => {
@@ -544,6 +587,7 @@ test("tags and links sync across tabs, and delete rechecks the tag’s impact at
   const remove = confirm.getByRole("button", { name: "Delete tag", exact: true });
   await remove.click();
   await expect(confirm).toContainText("It’s on 2 tasks.");
+  await expect(confirm.getByRole("alert")).toHaveText("The tag changed while the question was open. Check it, then confirm again.");
   await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
   await expect(tags(other)).toContainText(tag);
   await remove.click();
@@ -554,6 +598,78 @@ test("tags and links sync across tabs, and delete rechecks the tag’s impact at
   expect([...firstProblems, ...otherProblems]).toEqual([]);
   await other.close();
   await page.close();
+});
+
+test("undo of a tag delete reports a name clash; losing the task closes the tag confirmation", async () => {
+  const author = await openApp();
+  const other = await openApp();
+  const problems = [author, other].map(watch);
+  const original = "Review the ink samples";
+  const second = "Review the paper samples";
+  const tag = "print-proof";
+  const tags = (tab) => tab.getByRole("button", { name: "Tags", exact: true });
+  const picker = (tab) => tab.getByRole("dialog", { name: "Tags", exact: true });
+  const confirm = author.getByRole("dialog", { name: "Delete tag", exact: true });
+  const create = async (tab) => {
+    await tags(tab).click();
+    const filter = picker(tab).getByRole("textbox", { name: "Type to find or create a tag" });
+    await filter.fill(tag);
+    await filter.press("Enter");
+    await expect(tags(tab)).toHaveAccessibleDescription(tag);
+    await filter.press("Escape");
+  };
+  const askDelete = async () => {
+    await tags(author).click();
+    await picker(author).getByRole("button", { name: `Manage tag “${tag}”` }).click();
+    await author.getByRole("button", { name: "Delete tag…" }).click();
+    await expect(confirm).toContainText(`Delete the tag “${tag}”?`);
+  };
+  await add(author, original);
+  await add(author, second);
+  const originalRow = row(author, original).locator(".row-title");
+  const id = (await originalRow.getAttribute("id")).replace(/^row-/, "");
+  await originalRow.click();
+  await create(author);
+  await expect(row(other, original)).toContainText(`#${tag}`);
+  await askDelete();
+  await confirm.getByRole("button", { name: "Delete tag", exact: true }).click();
+  await expect(row(other, original)).not.toContainText(`#${tag}`);
+  await row(other, second).locator(".row-title").click();
+  await create(other);
+  await expect(row(author, second)).toContainText(`#${tag}`);
+
+  const refusal = author.waitForResponse((r) => /\/api\/v1\/events\/\d+\/undo$/.test(r.url()));
+  await author.locator(".room-title").focus();
+  await author.keyboard.press("Control+z");
+  const response = await refusal;
+  expect(response.status()).toBe(409);
+  expect((await response.json()).error.code).toBe("duplicate_name");
+  await expect(author.locator(".toast")).toContainText("Couldn't undo: another tag already uses that name.");
+  await expect(tags(author)).toHaveAccessibleDescription("No tags");
+  await expect(tags(other)).toHaveAccessibleDescription(tag);
+
+  await askDelete();
+  const status = await other.evaluate(async (id) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    return (await fetch("/api/v1/commands", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf, "content-type": "application/json" },
+      body: JSON.stringify({ command_id: crypto.randomUUID(), command: { cmd: "delete", id: { kind: "task", id } } }),
+    })).status;
+  }, id);
+  expect(status).toBe(200);
+  await expect(confirm).toBeHidden();
+  await expect(originalRow).toHaveCount(0);
+  await expect(tags(other)).toHaveAccessibleDescription(tag);
+  await expect(other.locator(".sync-text")).toContainText("1 not synced");
+  await author.getByRole("button", { name: /1 not synced/ }).click();
+  const failures = author.getByRole("dialog", { name: "Not synced" });
+  await failures.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(author.locator(".sync-text")).not.toContainText("not synced");
+  await expect.poll(() => failedCount(author)).toBe(0);
+  expect(problems.flat()).toEqual([]);
+  await other.close();
+  await author.close();
 });
 
 test("move a list between web-created collections and see the new parent from another tab", async () => {
@@ -579,7 +695,7 @@ test("move a list between web-created collections and see the new parent from an
   await expect(link(other, "Greenhouse")).toBeVisible();
   await page.getByRole("button", { name: "Room menu" }).click();
   await page.getByRole("menuitem", { name: "Move to…" }).click();
-  await page.getByRole("dialog", { name: "Move to" }).getByRole("button", { name: "Workshop" }).click();
+  await page.getByRole("dialog", { name: "Move to" }).getByRole("option", { name: "Workshop" }).click();
   await expect(link(other, "Greenhouse")).toHaveCount(0);
   await expect(link(other, "Workshop")).toBeVisible();
   await page.locator(".room-title").focus();
@@ -774,16 +890,7 @@ test("Dismiss all does not drop a refusal that arrived after opening Not synced"
   await dialog.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.locator(".sync-text")).not.toContainText("not synced");
   // Let the deletion persist before closing this tab.
-  await expect.poll(() => page.evaluate(() => new Promise((resolve, reject) => {
-    const open = indexedDB.open("todo-replica");
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const req = db.transaction("failed").objectStore("failed").count();
-      req.onsuccess = () => { db.close(); resolve(req.result); };
-      req.onerror = () => { db.close(); reject(req.error); };
-    };
-  }))).toBe(0);
+  await expect.poll(() => failedCount(page)).toBe(0);
   await page.close();
 });
 

@@ -51,6 +51,7 @@ pub fn submission_error(error: &SubmitError) -> String {
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture {
+    use todo_core::error::{DomainError, UndoError};
     use todo_core::undo::{UndoOptions, undo_batch};
     use todo_core::{Actor, Event, State, apply, time::Timestamp};
 
@@ -70,8 +71,28 @@ pub mod fixture {
         at: Timestamp,
     ) -> Result<State, String> {
         let inverse = undo_batch(state, events, actor, at, UndoOptions::default())
-            .map_err(|_| super::undo_failure("undo_conflict").to_owned())?;
+            .map_err(|error| super::undo_failure(undo_code(error)).to_owned())?;
         apply_batch(state, &inverse).map_err(|_| super::undo_failure("").to_owned())
+    }
+
+    // Match the server's api::error::undo_error without depending on its HTTP stack.
+    fn undo_code(error: UndoError) -> &'static str {
+        match error {
+            UndoError::Denied(_) => "forbidden",
+            UndoError::NotOwnEvent => "not_own_event",
+            UndoError::UnknownEvent(_) => "event_not_found",
+            UndoError::EventMismatch(_) => "event_mismatch",
+            UndoError::Invariant {
+                source: DomainError::DuplicateName(_),
+                ..
+            } => "duplicate_name",
+            UndoError::Invariant { .. } => "undo_invariant",
+            UndoError::AlreadyUndone(_) => "already_undone",
+            UndoError::Conflict(_) => "undo_conflict",
+            UndoError::HasDependents(_) => "has_dependents",
+            UndoError::BrokenReference(_) => "broken_reference",
+            UndoError::Apply(_) => "internal",
+        }
     }
 }
 
@@ -97,6 +118,27 @@ mod tests {
         assert_eq!(live(&undone), live(&before));
         assert!(!undone.tasks[&id].is_done());
         assert_eq!(undone.tasks[&id].due, before.tasks[&id].due);
+    }
+
+    #[test]
+    fn undo_tag_delete_explains_a_name_taken_by_another_tag() {
+        let before = fixtures::state();
+        let at = fixtures::now().at;
+        let actor = Actor::owner("web").expect("owner");
+        let old = intent::tag_named(&before, "ops").expect("existing fixture tag");
+        let deletion = decide(&before, &actor, &intent::delete(old), at).expect("delete old tag");
+        let deleted = fixture::apply_batch(&before, &deletion).expect("apply deletion");
+        let other =
+            todo_core::ids::TagId::from_uuid(todo_core::ids::uuid_v7(1_790_000_000_000, [7; 10]));
+        let reuse = intent::create_tag(&deleted, other, "OPS").expect("name free after deletion");
+        let events = decide(&deleted, &actor, &reuse, at).expect("create replacement tag");
+        let taken = fixture::apply_batch(&deleted, &events).expect("apply creation");
+        assert_eq!(
+            fixture::undo(&taken, &deletion, &actor, at).expect_err("name now taken"),
+            "Couldn't undo: another tag already uses that name."
+        );
+        assert_eq!(intent::tag_named(&taken, "ops"), Some(other));
+        assert!(!taken.is_live(old.into()));
     }
 
     #[test]

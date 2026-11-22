@@ -1796,11 +1796,67 @@ mod tests {
     }
 
     #[test]
+    fn detail_tag_chips_sort_by_folded_name_and_skip_deleted_tags() {
+        let mut s = fixtures::state();
+        let n = now();
+        let task = fixtures::task(3);
+        let actor = Actor::owner("web").unwrap();
+        for (index, name) in [(1, "Zebra"), (2, "čaj"), (3, "ábel"), (4, "Beans")] {
+            let tag = todo_core::ids::TagId::from_uuid(todo_core::ids::uuid_v7(
+                1_790_000_000_000,
+                [index; 10],
+            ));
+            let create = intent::create_tag(&s, tag, name).unwrap();
+            let attach = todo_core::Command::AddTag { task, tag };
+            for cmd in [create, attach] {
+                for event in todo_core::decide(&s, &actor, &cmd, n.at).unwrap() {
+                    todo_core::apply(&mut s, &event).unwrap();
+                }
+            }
+            if name == "Beans" {
+                for event in todo_core::decide(&s, &actor, &intent::delete(tag), n.at).unwrap() {
+                    todo_core::apply(&mut s, &event).unwrap();
+                }
+            }
+        }
+        let d = detail(&s, &n, task).unwrap();
+        assert_eq!(
+            d.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(),
+            ["ábel", "čaj", "ops", "Zebra"]
+        );
+    }
+
+    #[test]
+    fn detail_web_source_keeps_its_link_id_but_never_offers_non_web_urls() {
+        let mut s = fixtures::state();
+        let n = now();
+        let task = fixtures::task(22);
+        let link = s.links.values().find(|l| l.task == task).unwrap();
+        let id = link.id;
+        let d = detail(&s, &n, task).unwrap();
+        assert!(
+            matches!(d.sources.as_slice(), [Source::Web { id: link, title, href }] if *link == id && title == "Timetable" && href == "https://example.com/trains")
+        );
+        for url in ["javascript:void(0)", "data:text/plain,example"] {
+            s.links.get_mut(&id).unwrap().kind = LinkKind::Web {
+                url: url.into(),
+                title: None,
+            };
+            assert!(detail(&s, &n, task).unwrap().sources.is_empty());
+        }
+    }
+
+    #[test]
     fn repeat_rules_read_as_words() {
         assert_eq!(repeat_text(None), "Does not repeat");
-        let r = todo_core::recurrence::Recurrence::from_rrule("FREQ=WEEKLY;BYDAY=MO").unwrap();
-        assert_eq!(repeat_text(Some(&r)), "Every Monday");
-        let r = todo_core::recurrence::Recurrence::from_rrule("FREQ=DAILY;INTERVAL=2").unwrap();
-        assert_eq!(repeat_text(Some(&r)), "Every 2 days");
+        use todo_core::recurrence::Recurrence;
+        for pattern in [
+            "FREQ=WEEKLY;BYDAY=MO",
+            "FREQ=DAILY;INTERVAL=2",
+            "FREQ=MONTHLY;BYMONTHDAY=31;UNTIL=20261231",
+        ] {
+            let r = Recurrence::from_rrule(pattern).unwrap();
+            assert_eq!(repeat_text(Some(&r)), intent::repeat::describe_repeat(&r));
+        }
     }
 }

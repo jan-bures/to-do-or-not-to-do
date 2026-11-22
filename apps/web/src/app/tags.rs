@@ -65,7 +65,11 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
     let go = move |next, target| {
         page.set(next);
         error.set(None);
-        picker.focus_page(target);
+        if matches!(next, Page::Colour(_)) {
+            picker.focus_choices(target);
+        } else {
+            picker.focus_page(target);
+        }
     };
     let start_edit = move |next: Edit| {
         if c.read_only() {
@@ -119,7 +123,7 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                     error.set(c.toast.get_untracked().map(|t| t.text));
                 }
             }
-            Err(e) => error.set(Some(format!("Couldn’t add tag: {e}."))),
+            Err(e) => error.set(Some(e.create_message())),
         }
     };
     let can_create = Memo::new(move |_| {
@@ -160,7 +164,8 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
             <dt>{icon(Icon::Hash)}"Tags"</dt>
             <dd>
                 <button type="button" id=picker.anchor class="prop-edit tag-trigger" aria-label="Tags"
-                    aria-haspopup="dialog" aria-controls=picker.id aria-expanded=move || picker.open.get().to_string()
+                    aria-haspopup="dialog" aria-controls=picker.id aria-describedby="tags-description"
+                    aria-expanded=move || picker.open.get().to_string()
                     popovertarget=picker.id title="Choose tags (T)" aria-keyshortcuts="T" disabled=move || c.read_only()
                     on:click=move |ev| {
                         ev.prevent_default();
@@ -175,6 +180,10 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                         } else { "—".into_any() }
                     })}
                 </button>
+                <span id="tags-description" hidden>{move || detail.with(|d| {
+                    let Some(d) = d.as_ref().filter(|d| !d.tags.is_empty()) else { return "No tags".into() };
+                    d.tags.iter().map(|tag| tag.label.as_str()).collect::<Vec<_>>().join(", ")
+                })}</span>
                 <div class="room-action-menu detail-picker tag-picker" role="dialog" aria-labelledby="tag-picker-heading"
                     id=picker.id popover="auto" node_ref=picker.node on:toggle=move |_| picker.toggle_event()
                     on:keydown=move |ev| picker.key(c, Some(if matches!(page.get_untracked(), Page::Colour(_)) { 6 } else { 1 }), &ev)>
@@ -217,10 +226,7 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                             }.into_any(),
                             Page::Actions(id) => view! {
                                 <TagActions task=task id=id edit=Callback::new(start_edit)
-                                    colour=Callback::new(move |()| {
-                                        go(Page::Colour(id), "tag-swatch-back");
-                                        super::pickers::focus_choice(picker.id, "tag-swatch-back");
-                                    })
+                                    colour=Callback::new(move |()| go(Page::Colour(id), "tag-swatch-back"))
                                     back=Callback::new(move |()| {
                                         go(Page::All, "tag-filter");
                                         request_animation_frame(move || {
@@ -232,7 +238,7 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                             }.into_any(),
                             Page::Colour(id) => view! {
                                 <div class="picker-page">
-                                    <h3 id="tag-picker-heading">"Tag colour"</h3>
+                                    <h3 id="tag-picker-heading">{organize::colour_heading(id.into())}</h3>
                                     <Swatches selected=Signal::derive(move || tag_display(c, id).map(|(_, hue)| hue))
                                         disabled=Signal::derive(move || c.read_only())
                                         choose=Callback::new(move |key| {
@@ -324,11 +330,8 @@ struct Impact {
 }
 
 impl Impact {
-    fn read(state: &State, task: TaskId, tag: TagId) -> Option<Self> {
-        let g = state
-            .tags
-            .get(&tag)
-            .filter(|_| state.is_live(tag.into()) && state.is_live(task.into()))?;
+    fn read(state: &State, tag: TagId) -> Option<Self> {
+        let g = state.tags.get(&tag).filter(|_| state.is_live(tag.into()))?;
         Some(Self {
             name: g.name.clone(),
             count: state
@@ -360,6 +363,11 @@ fn TagDialog(
 ) -> impl IntoView {
     let close = move || room_actions::close_dialog(node);
     let c = ctx();
+    Effect::new(move |_| {
+        if edit.with(Option::is_some) && !c.state.with(|s| s.is_live(task.into())) {
+            close();
+        }
+    });
     view! {
         <dialog class="room-dialog" node_ref=node aria-labelledby="tag-action-heading"
             aria-describedby="tag-action-description" on:keydown=move |ev| {
@@ -370,22 +378,19 @@ fn TagDialog(
                 edit.set(None);
                 if c.selected.get_untracked() == Some(task) { platform::focus("edit-task-tags"); }
             }>
-            {move || edit.get().map(|edit| view! { <TagEditForm task=task edit=edit close=Callback::new(move |()| close())/> })}
+            {move || edit.get().map(|edit| view! { <TagEditForm edit=edit close=Callback::new(move |()| close())/> })}
         </dialog>
     }
 }
 
 #[component]
-fn TagEditForm(task: TaskId, edit: Edit, close: Callback<()>) -> impl IntoView {
+fn TagEditForm(edit: Edit, close: Callback<()>) -> impl IntoView {
     let c = ctx();
     let id = edit.id();
     let rename = matches!(edit, Edit::Rename(_));
-    let asked = RwSignal::new(c.state.with_untracked(|s| Impact::read(s, task, id)));
+    let asked = RwSignal::new(c.state.with_untracked(|s| Impact::read(s, id)));
     let name = asked.with_untracked(|i| i.as_ref().map_or_else(String::new, |i| i.name.clone()));
-    let available = move || {
-        c.state
-            .with(|s| s.is_live(id.into()) && s.is_live(task.into()))
-    };
+    let available = move || c.state.with(|s| s.is_live(id.into()));
     let error = RwSignal::new(None::<String>);
     let input = NodeRef::<html::Input>::new();
     view! {
@@ -396,14 +401,14 @@ fn TagEditForm(task: TaskId, edit: Edit, close: Callback<()>) -> impl IntoView {
                 let Some(input) = input.get_untracked() else { return };
                 match c.state.with_untracked(|s| organize::rename_tag(s, id, &input.value())) {
                     Ok(cmd) => cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Tag renamed.".into(), None)),
-                    Err(e) => { error.set(Some(format!("Couldn’t rename tag: {e}."))); return; }
+                    Err(e) => { error.set(Some(e.rename_message())); return; }
                 }
             } else {
-                let impact = c.state.with_untracked(|s| Impact::read(s, task, id));
+                let impact = c.state.with_untracked(|s| Impact::read(s, id));
                 let Some(impact) = impact else { return };
                 if asked.with_untracked(|i| i.as_ref() != Some(&impact)) {
                     asked.set(Some(impact));
-                    error.set(Some("This tag changed. Check again before deleting.".into()));
+                    error.set(Some(organize::delete_recheck_text("tag")));
                     platform::focus("cancel-tag-edit");
                     return;
                 }

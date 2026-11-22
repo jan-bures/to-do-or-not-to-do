@@ -1,15 +1,18 @@
 //! Repeat presets and the custom draft for the detail pane.
 
-use super::{Detail, ctx, icon, model, pickers::DetailPicker, platform};
+use super::{
+    Detail, ctx, icon, model,
+    pickers::{self, DetailPicker},
+    platform,
+};
 use leptos::prelude::*;
 use todo_client::intent::{
     quick_add,
-    repeat::{self, Preset, describe_repeat},
+    repeat::{self, Preset, RepeatDraft, UNDATED_NOTE, Unit, describe_repeat, error_text},
 };
 use todo_core::{
     ids::TaskId,
-    model::Task,
-    recurrence::{MAX_INTERVAL, Recurrence, RecurrenceError, Rule},
+    recurrence::{MAX_INTERVAL, Recurrence, Rule},
     time::{Date, Weekday},
 };
 use todo_design::Icon;
@@ -22,81 +25,11 @@ const PRESETS: [(Preset, &str, &str); 5] = [
     (Preset::Yearly, "Yearly", "repeat-yearly"),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Unit {
-    Day,
-    Week,
-    Month,
-    Year,
-}
-
-#[derive(Clone, Copy)]
-struct Custom {
-    interval: u32,
-    unit: Unit,
-    days: [bool; 7],
-    month_day: u8,
-}
-
-impl Custom {
-    fn new(task: &Task, today: Date) -> Self {
-        let anchor = task.due.unwrap_or(today);
-        let mut draft = Self {
-            interval: 1,
-            unit: Unit::Day,
-            days: Weekday::ALL.map(|d| d == Weekday::of(anchor)),
-            month_day: u8::try_from(anchor.day()).unwrap_or(1),
-        };
-        if let Some(r) = &task.recurrence {
-            (draft.unit, draft.interval) = match &r.rule {
-                Rule::Daily { interval } => (Unit::Day, *interval),
-                Rule::Weekly { interval, days } => {
-                    draft.days = Weekday::ALL.map(|d| days.contains(&d));
-                    (Unit::Week, *interval)
-                }
-                Rule::Monthly { interval, day } => {
-                    draft.month_day = *day;
-                    (Unit::Month, *interval)
-                }
-                Rule::Yearly { interval } => (Unit::Year, *interval),
-            };
-        }
-        draft
-    }
-
-    fn rule(self) -> Rule {
-        let interval = self.interval;
-        match self.unit {
-            Unit::Day => Rule::Daily { interval },
-            Unit::Week => Rule::Weekly {
-                interval,
-                days: Weekday::ALL
-                    .into_iter()
-                    .filter(|d| self.days[d.offset()])
-                    .collect(),
-            },
-            Unit::Month => Rule::Monthly {
-                interval,
-                day: self.month_day,
-            },
-            Unit::Year => Rule::Yearly { interval },
-        }
-    }
-}
-
-fn error_text(e: RecurrenceError) -> String {
-    match e {
-        RecurrenceError::NoWeekdays => "Choose at least one weekday.".into(),
-        RecurrenceError::NoOccurrence => "No future date matches this rule.".into(),
-        _ => format!("Choose an interval from 1 to {MAX_INTERVAL}."),
-    }
-}
-
 #[component]
 pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
     let picker = DetailPicker::new(c, id, "edit-task-repeat", "repeat-picker");
-    let custom = RwSignal::new(None::<Custom>);
+    let custom = RwSignal::new(None::<RepeatDraft>);
     let error = RwSignal::new(None::<String>);
     let editing_custom = Memo::new(move |_| custom.with(Option::is_some));
     let dates = Memo::new(move |_| {
@@ -110,7 +43,7 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
             c.now.get_untracked()
         }
     };
-    let change = move |preset: Option<Preset>, draft: Option<Custom>| {
+    let change = move |preset: Option<Preset>, draft: Option<RepeatDraft>| {
         if c.read_only() {
             return;
         }
@@ -119,7 +52,7 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
             let Some(t) = s.tasks.get(&id) else {
                 return Ok(None);
             };
-            let rule = draft.map(Custom::rule).or_else(|| {
+            let rule = draft.map(RepeatDraft::rule).or_else(|| {
                 preset.map(|p| p.rule_for(t.due.unwrap_or(today), t.recurrence.as_ref()))
             });
             repeat::set_repeat(s, id, rule, today)
@@ -161,7 +94,11 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
                     on:click=move |ev| {
                         ev.prevent_default();
                         if picker.open.get_untracked() { picker.close(true); }
-                        else { custom.set(None); error.set(None); picker.show("repeat-daily"); }
+                        else {
+                            custom.set(None);
+                            error.set(None);
+                            picker.show_choice("repeat-daily");
+                        }
                     }><span id="repeat-description">{move || detail.with(|d| d.as_ref().map(|d| d.repeat.clone()))}</span></button>
                 <div class="room-action-menu detail-picker" role="dialog" aria-labelledby="repeat-picker-heading"
                     id=picker.id popover="auto" node_ref=picker.node on:toggle=move |_| picker.toggle_event()
@@ -170,8 +107,9 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
                         <Show when=move || editing_custom.get() fallback=move || view! {
                             <div class="picker-page">
                                 <h3 id="repeat-picker-heading">"Repeat"</h3>
+                                <div role="listbox" aria-labelledby="repeat-picker-heading" on:focusin=pickers::choice_focus>
                                 {PRESETS.into_iter().map(|(p, name, key)| view! {
-                                    <button type="button" id=key data-picker-option="" aria-pressed=move || selected(p).to_string()
+                                    <button type="button" id=key data-picker-option="" role="option" tabindex="-1" aria-selected=move || selected(p).to_string()
                                         on:click=move |_| change(Some(p), None)>
                                         <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
                                         {move || dates.with(|d| {
@@ -187,19 +125,20 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
                                         })}
                                     </button>
                                 }).collect_view()}
-                                <button type="button" data-picker-option="" aria-pressed=move || dates.with(|d| {
+                                <button type="button" data-picker-option="" role="option" tabindex="-1" aria-selected=move || dates.with(|d| {
                                         d.as_ref().is_some_and(|(_, r)| r.is_some()) && !PRESETS.iter().any(|(p, _, _)| selected(*p))
                                     }).to_string()
                                     on:click=move |_| {
-                                        custom.set(c.state.with_untracked(|s| s.tasks.get(&id).map(|t| Custom::new(t, now().today()))));
+                                        custom.set(c.state.with_untracked(|s| s.tasks.get(&id).map(|t| RepeatDraft::new(t.due, t.recurrence.as_ref(), now().today()))));
                                         error.set(None);
                                         picker.focus_page("repeat-interval");
                                     }><span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>"Custom…"</button>
-                                <button type="button" data-picker-option="" aria-pressed=move || dates.with(|d| d.as_ref().is_some_and(|(_, r)| r.is_none())).to_string()
+                                <button type="button" data-picker-option="" role="option" tabindex="-1" aria-selected=move || dates.with(|d| d.as_ref().is_some_and(|(_, r)| r.is_none())).to_string()
                                     on:click=move |_| change(None, None)>
                                     <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>"Don’t repeat"
                                 </button>
-                                <Show when=missing_due><p class="picker-note">"Sets the first matching due date."</p></Show>
+                                </div>
+                                <Show when=missing_due><p class="picker-note">{UNDATED_NOTE}</p></Show>
                             </div>
                         }>
                             <CustomEditor custom=custom dates=dates today=Signal::derive(move || c.now.get().today())
@@ -207,7 +146,7 @@ pub(super) fn RepeatEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl Int
                                 back=Callback::new(move |()| {
                                     custom.set(None);
                                     error.set(None);
-                                    picker.focus_page("repeat-daily");
+                                    picker.focus_choices("repeat-daily");
                                 })/>
                         </Show>
                         {move || error.get().map(|text| view! { <p class="prop-error" role="alert">{text}</p> })}
@@ -222,10 +161,10 @@ type Dates = Memo<Option<(Option<Date>, Option<Recurrence>)>>;
 
 #[component]
 fn CustomEditor(
-    custom: RwSignal<Option<Custom>>,
+    custom: RwSignal<Option<RepeatDraft>>,
     dates: Dates,
     today: Signal<Date>,
-    apply: Callback<Custom>,
+    apply: Callback<RepeatDraft>,
     back: Callback<()>,
 ) -> impl IntoView {
     let summary = Memo::new(move |_| {

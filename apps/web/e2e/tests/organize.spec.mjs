@@ -19,12 +19,17 @@ test("repeat presets set the first date atomically; clearing repeat keeps its du
   await expect(due).toHaveText("Set date");
   await page.keyboard.press("r");
   const picker = dialog(page, "Repeat");
-  await expect(picker.getByRole("button", { name: /^Weekly on/ })).toBeVisible();
-  await expect(picker.getByRole("button", { name: /^Monthly on day/ })).toBeVisible();
-  await expect(picker.getByRole("button", { name: "Yearly" })).toBeVisible();
-  await picker.getByRole("button", { name: "Daily" }).focus();
+  const rules = picker.getByRole("listbox", { name: "Repeat" });
+  await expect(rules.getByRole("option", { name: /^Weekly on/ })).toBeVisible();
+  await expect(rules.getByRole("option", { name: /^Monthly on day/ })).toBeVisible();
+  await expect(rules.getByRole("option", { name: "Yearly" })).toBeVisible();
+  const off = rules.getByRole("option", { name: "Don’t repeat", selected: true });
+  await expect(off).toBeFocused();
+  await expect(picker).toContainText("Due starts today or on the next matching day.");
+  await page.keyboard.press("Home");
   await page.keyboard.press("ArrowDown");
-  await expect(picker.getByRole("button", { name: "Weekdays" })).toBeFocused();
+  await expect(rules.getByRole("option", { name: "Weekdays" })).toBeFocused();
+  await expect(off).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
   await expect(repeat).toBeFocused();
   await expect(repeat).toHaveText("Every weekday");
@@ -38,9 +43,9 @@ test("repeat presets set the first date atomically; clearing repeat keeps its du
   await expect(repeat).toHaveText("Does not repeat");
   await expect(due).toHaveText("Set date");
   await repeat.click();
-  await picker.getByRole("button", { name: "Daily" }).click();
+  await picker.getByRole("option", { name: "Daily" }).click();
   await repeat.click();
-  await picker.getByRole("button", { name: "Don’t repeat" }).click();
+  await picker.getByRole("option", { name: "Don’t repeat" }).click();
   await expect(repeat).toHaveText("Does not repeat");
   await expect(due).not.toHaveText("Set date");
   await w.check();
@@ -53,7 +58,7 @@ test("custom repeat validates the interval and the selected weekdays; Escape dis
   const repeat = detail(page).getByRole("button", { name: "Repeat", exact: true });
   const openCustom = async () => {
     await repeat.click();
-    await dialog(page, "Repeat").getByRole("button", { name: "Custom…" }).click();
+    await dialog(page, "Repeat").getByRole("option", { name: "Custom…" }).click();
     return dialog(page, "Custom repeat");
   };
   const custom = await openCustom();
@@ -103,8 +108,12 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   await docs.press("Control+z");
   const tags = detail(page).getByRole("button", { name: "Tags", exact: true });
   await expect(tags).toContainText("docs");
+  await expect(tags).toHaveAccessibleDescription("docs, ops");
 
   await tags.click();
+  await filter.fill("x".repeat(1001));
+  await filter.press("Enter");
+  await expect(picker.getByRole("alert")).toContainText("Couldn't create that tag: a tag's name can be at most");
   await filter.fill("Web Organize");
   await expect(picker.getByRole("button", { name: "Create tag “Web Organize”" })).toBeVisible();
   await filter.press("Enter");
@@ -117,7 +126,7 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   await expect(name).toBeFocused();
   await name.fill("DOCS");
   await name.press("Enter");
-  await expect(rename.getByRole("alert")).toContainText("there is already a tag named “docs”");
+  await expect(rename.getByRole("alert")).toHaveText("Couldn't rename that tag: there is already a tag named “docs”.");
   await name.fill("Organized");
   await name.press("Enter");
   await expect(tags).toBeFocused();
@@ -130,9 +139,14 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   };
   await edit();
   await page.getByRole("button", { name: "Colour…", exact: true }).click();
-  const swatches = dialog(page, "Tag colour").getByRole("group", { name: "Colour swatches" });
-  await expect(swatches.getByRole("button")).toHaveCount(12);
-  const fern = swatches.getByRole("button", { name: "fern", exact: true });
+  const swatches = dialog(page, "Tag colour").getByRole("listbox", { name: "Colour swatches" });
+  await expect(swatches.getByRole("option")).toHaveCount(12);
+  const fern = swatches.getByRole("option", { name: "Fern", exact: true });
+  await expect(swatches.getByRole("option", { selected: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(swatches.getByRole("option", { name: "Rose" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(swatches.getByRole("option", { name: "Teal" })).toBeFocused();
   await fern.click();
   await expect(tags.locator(".detail-tag").filter({ hasText: "Organized" })).toHaveAttribute("data-list-hue", "fern");
   await edit();
@@ -162,6 +176,13 @@ test("links validate shared addresses, keep the draft on refusal, and support ex
   await input.press("r");
   await expect(dialog(page, "Tags")).toBeHidden();
   await expect(dialog(page, "Repeat")).toBeHidden();
+  for (const text of ["javascript:void(0)", "data:text/plain,example"]) {
+    await input.fill(text);
+    await input.press("Enter");
+    await expect(detail(page).getByRole("alert")).toContainText("isn't a web address");
+    await expect(input).toHaveValue(text);
+    await expect(detail(page).locator('a[href^="javascript:"], a[href^="data:"]')).toHaveCount(0);
+  }
   await input.fill("example.com/organize");
   await input.press("Enter");
   const link = detail(page).locator('a[href="https://example.com/organize"]');
@@ -188,18 +209,27 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await name.press("Enter");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Workshop");
   await page.getByRole("button", { name: "Room menu" }).click();
+  const menu = page.getByRole("menu", { name: "Room actions" });
+  await expect(action(page, "Colour…")).toHaveAttribute("aria-haspopup", "dialog");
   await action(page, "Colour…").click();
-  const colours = dialog(page, "Colour");
-  await expect(colours.getByRole("button", { pressed: true })).toBeFocused();
-  await colours.getByRole("button", { name: "orchid" }).click();
+  const colours = dialog(page, "Collection colour");
+  await expect(menu).toBeHidden();
+  await expect(page.locator("#room-action-menu")).toHaveAttribute("role", "menu");
+  await expect(colours.getByRole("option", { selected: true })).toBeFocused();
+  await colours.getByRole("option", { name: "Orchid" }).click();
   await expect(room(page, "Workshop")).toHaveAttribute("data-list-hue", "orchid");
 
   const finance = room(page, "Finance");
   await finance.press("Shift+F10");
+  await expect(action(page, "Move to…")).toHaveAttribute("aria-haspopup", "dialog");
   await action(page, "Move to…").click();
   const move = dialog(page, "Move to");
-  await expect(move.getByRole("button", { name: "Work", exact: true })).toBeFocused();
-  await move.getByRole("button", { name: "Workshop", exact: true }).click();
+  await expect(menu).toBeHidden();
+  await expect(move.getByRole("option", { name: "Work", exact: true, selected: true })).toBeFocused();
+  await move.getByRole("button", { name: "Back" }).click();
+  await expect(action(page, "Move to…")).toBeFocused();
+  await action(page, "Move to…").press("Enter");
+  await move.getByRole("option", { name: "Workshop", exact: true }).click();
   await expect(finance).toBeFocused();
   const workshop = page.locator(".nav-section").filter({
     has: page.getByRole("link", { name: /^Workshop( |$)/ }),
@@ -207,13 +237,13 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await expect(workshop.getByRole("link", { name: /^Finance/ })).toBeVisible();
   await finance.click({ button: "right" });
   await action(page, "Move to…").click();
-  await move.getByRole("button", { name: "No collection" }).click();
+  await move.getByRole("option", { name: "No collection" }).click();
   await expect(workshop.getByRole("link", { name: /^Finance/ })).toHaveCount(0);
   await undo(page).click();
   await expect(workshop.getByRole("link", { name: /^Finance/ })).toBeVisible();
   await finance.click({ button: "right" });
   await action(page, "Colour…").click();
-  await colours.getByRole("button", { name: "pink" }).click();
+  await dialog(page, "List colour").getByRole("option", { name: "Pink" }).click();
   await expect(finance).toHaveAttribute("data-list-hue", "pink");
   await page.keyboard.press("Control+z");
   await expect(finance).not.toHaveAttribute("data-list-hue", "pink");
@@ -231,6 +261,30 @@ test("new detail editors are disabled in read-only mode", async ({ page }) => {
   await w.check();
 });
 
+test("picker opens above and aligns to the end, then closes when its anchor is clipped by detail scroll", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1440, height: 500 });
+  await open(page);
+  await task(page, "Prepare the November board update").click();
+  const anchor = detail(page).getByRole("button", { name: "Repeat", exact: true });
+  const scroll = detail(page).locator(".detail-scroll");
+  await anchor.evaluate((el) => el.scrollIntoView({ block: "end" }));
+  await anchor.click();
+  const picker = dialog(page, "Repeat");
+  await expect(picker).toHaveClass(/\babove-anchor\b/);
+  await expect(picker).toHaveClass(/\bend-anchor\b/);
+  await expect.poll(async () => {
+    const a = await anchor.boundingBox();
+    const p = await picker.boundingBox();
+    return Math.max(Math.abs(p.x + p.width - a.x - a.width), Math.abs(p.y + p.height - a.y));
+  }).toBeLessThan(2);
+  await scroll.evaluate((el) => { el.scrollTop = 0; });
+  await expect(anchor).not.toBeInViewport();
+  await expect(picker).toBeHidden();
+  await expect(anchor).toHaveAttribute("aria-expanded", "false");
+  await w.check();
+});
+
 test("phone picker contains Tab, returns focus and leaves detail open after dismissing it", async ({ page }) => {
   const w = watch(page);
   await page.setViewportSize({ width: 412, height: 800 });
@@ -239,9 +293,12 @@ test("phone picker contains Tab, returns focus and leaves detail open after dism
   const repeat = detail(page).getByRole("button", { name: "Repeat", exact: true });
   await repeat.click();
   const picker = dialog(page, "Repeat");
-  await picker.getByRole("button", { name: "Don’t repeat" }).focus();
+  await expect(picker.getByRole("option", { name: "Don’t repeat" })).toBeFocused();
+  await page.keyboard.press("Home");
+  const daily = picker.getByRole("option", { name: "Daily" });
+  await expect(daily).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(picker.getByRole("button", { name: "Daily" })).toBeFocused();
+  await expect(daily).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(picker).toBeHidden();
   await expect(repeat).toBeFocused();

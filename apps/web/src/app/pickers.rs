@@ -3,6 +3,7 @@
 use super::{Ctx, icon, platform, typing};
 use leptos::html;
 use leptos::prelude::*;
+use todo_client::intent::organize::swatch_name;
 use todo_core::ids::TaskId;
 use todo_design::{Icon, hues::SWATCHES};
 use wasm_bindgen::JsCast;
@@ -14,17 +15,38 @@ pub(super) fn Swatches(
     disabled: Signal<bool>,
 ) -> impl IntoView {
     view! {
-        <div class="swatches" role="group" aria-label="Colour swatches">
+        <div class="swatches" role="listbox" aria-label="Colour swatches" on:focusin=choice_focus>
             {SWATCHES.into_iter().map(|swatch| view! {
-                <button type="button" data-picker-option="" data-list-hue=swatch.key
-                    aria-label=swatch.key title=swatch.key disabled=move || disabled.get()
-                    aria-pressed=move || (selected.get() == Some(swatch.key)).to_string()
+                <button type="button" data-picker-option="" data-list-hue=swatch.key role="option" tabindex="-1"
+                    aria-label=swatch_name(swatch.key) title=swatch_name(swatch.key) disabled=move || disabled.get()
+                    aria-selected=move || (selected.get() == Some(swatch.key)).to_string()
                     on:click=move |_| choose.run(swatch.key)>
                     <span class="swatch-disc" aria-hidden="true"></span>
                     <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
                 </button>
             }).collect_view()}
         </div>
+    }
+}
+
+/// Arrow keys move focus without committing a choice; only click, Enter or Space selects it.
+/// Keep one Tab stop in each listbox, without changing which value is selected.
+pub(super) fn choice_focus(ev: leptos::ev::FocusEvent) {
+    let Some(target) = ev
+        .target()
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return;
+    };
+    if target
+        .matches("[role=option]:not(:disabled)")
+        .unwrap_or(false)
+        && let Ok(Some(group)) = target.closest("[role=listbox]")
+    {
+        if let Ok(Some(previous)) = group.query_selector("[role=option][tabindex='0']") {
+            let _ = previous.set_attribute("tabindex", "-1");
+        }
+        target.set_tab_index(0);
     }
 }
 
@@ -102,13 +124,31 @@ impl DetailPicker {
         this
     }
 
-    pub(super) fn show(self, first: &'static str) {
+    fn open_popover(self) -> bool {
         if let Some(el) = self.node.get_untracked()
             && el.show_popover().is_ok()
         {
             self.open.set(true);
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn show(self, first: &'static str) {
+        if self.open_popover() {
             self.focus_page(first);
         }
+    }
+
+    pub(super) fn show_choice(self, fallback: &'static str) {
+        if self.open_popover() {
+            self.focus_choices(fallback);
+        }
+    }
+
+    pub(super) fn focus_choices(self, fallback: &'static str) {
+        request_animation_frame(move || self.position());
+        focus_choice(self.id, fallback);
     }
 
     pub(super) fn focus_page(self, first: &'static str) {
@@ -196,7 +236,7 @@ pub(super) fn focus_choice(id: &'static str, fallback: &'static str) {
                 .flatten()
                 .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
         };
-        if let Some(choice) = find("[data-picker-option][aria-pressed=true]:not(:disabled)")
+        if let Some(choice) = find("[role=option][aria-selected=true]:not(:disabled)")
             .or_else(|| find("[data-picker-option]:not(:disabled)"))
         {
             let _ = choice.focus();

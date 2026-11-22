@@ -480,13 +480,9 @@ pub fn as_asked(entries: Vec<MenuEntry>, asked: &Asked) -> Vec<MenuEntry> {
                 };
                 MenuEntry::Confirm {
                     message: asked.question.clone(),
-                    note: asked.changed.then(|| {
-                        format!(
-                            "The {what} changed while the question was open. Check it, then \
-                             confirm again."
-                        )
-                        .into()
-                    }),
+                    note: asked
+                        .changed
+                        .then(|| commands::delete_recheck_text(what).into()),
                     buttons,
                 }
             }
@@ -598,25 +594,11 @@ fn colour_of(state: &State, id: EntityId) -> Option<Hue> {
     .filter(|_| state.is_live(id))
 }
 
-/// A swatch's name, for its tooltip and screen readers: "Cornflower".
-fn swatch_name(key: &str) -> String {
-    let mut chars = key.chars();
-    chars
-        .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
 /// The colour page of a collection, list or tag: the design's swatches, the current one ticked. Empty
 /// once it's gone.
 pub fn colour_menu(state: &State, id: EntityId) -> Vec<MenuEntry> {
-    let Some(current) = colour_of(state, id) else {
+    let Some((current, heading)) = colour_of(state, id).zip(commands::colour_heading(id)) else {
         return Vec::new();
-    };
-    let heading = match id {
-        EntityId::Collection(_) => "Collection colour",
-        EntityId::List(_) => "List colour",
-        _ => "Tag colour",
     };
     let swatches = hues::SWATCHES
         .iter()
@@ -625,7 +607,7 @@ pub fn colour_menu(state: &State, id: EntityId) -> Vec<MenuEntry> {
             icon: Icon::Check,
             glyph: None,
             dot: Some(s.degrees),
-            label: swatch_name(s.key).into(),
+            label: commands::swatch_name(s.key).into(),
             danger: false,
             checked: (s.degrees - current).abs() < 0.5,
             hint: None,

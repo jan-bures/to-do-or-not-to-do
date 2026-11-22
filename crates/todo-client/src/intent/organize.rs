@@ -99,6 +99,28 @@ pub fn swatch(key: &str) -> Option<NamedHue> {
         .find(|s| s.key.eq_ignore_ascii_case(key.trim()))
 }
 
+/// A display name for a swatch's stable key, for tooltips and accessible labels.
+pub fn swatch_name(key: &str) -> String {
+    let mut chars = key.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+pub fn colour_heading(id: EntityId) -> Option<&'static str> {
+    Some(match id {
+        EntityId::Collection(_) => "Collection colour",
+        EntityId::List(_) => "List colour",
+        EntityId::Tag(_) => "Tag colour",
+        _ => return None,
+    })
+}
+
+pub fn delete_recheck_text(kind: &str) -> String {
+    format!("The {kind} changed while the question was open. Check it, then confirm again.")
+}
+
 /// Recolours a live collection, list or tag with one of the design's swatches. `None` when the key isn't a
 /// swatch, the entity has no colour (or isn't live), or it already has exactly that colour.
 pub fn set_color(state: &State, id: EntityId, key: &str) -> Option<Command> {
@@ -232,6 +254,16 @@ pub enum TagError {
     Taken(String),
     #[error("the task is gone")]
     TaskGone,
+}
+
+impl TagError {
+    pub fn create_message(&self) -> String {
+        format!("Couldn't create that tag: {self}.")
+    }
+
+    pub fn rename_message(&self) -> String {
+        format!("Couldn't rename that tag: {self}.")
+    }
 }
 
 /// A tag's name as the domain stores it (trimmed), or why it can't be one: empty, or longer than the

@@ -695,7 +695,7 @@ a {
 
 .picker-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-tick { display: inline-flex; color: var(--color-accent-strong); }
-button[aria-pressed="false"] > .picker-tick { visibility: hidden; }
+button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visibility: hidden; }
 .move-glyph { display: inline-flex; color: var(--list-glyph, var(--color-ink-3)); }
 .move-choice .picker-tick, .tag-choice .picker-tick { margin-inline-start: auto; }
 

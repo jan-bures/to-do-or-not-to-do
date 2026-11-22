@@ -10,6 +10,7 @@ use todo_design::{Glyph, Icon};
 use wasm_bindgen::JsCast;
 
 const MENU_ID: &str = "room-action-menu";
+const PICKER_ID: &str = "room-action-picker";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Subject {
@@ -196,6 +197,7 @@ pub(super) struct Controls {
     menu: RwSignal<Option<Menu>>,
     page: RwSignal<Page>,
     popover: NodeRef<html::Div>,
+    picker: NodeRef<html::Div>,
     edit: RwSignal<Option<Edit>>,
     edit_dialog: NodeRef<html::Dialog>,
     failed_dialog: NodeRef<html::Dialog>,
@@ -209,6 +211,7 @@ impl Controls {
             menu: RwSignal::new(None),
             page: RwSignal::new(Page::Actions),
             popover: NodeRef::new(),
+            picker: NodeRef::new(),
             edit: RwSignal::new(None),
             edit_dialog: NodeRef::new(),
             failed_dialog: NodeRef::new(),
@@ -235,10 +238,15 @@ impl Controls {
         if self
             .menu
             .with_untracked(|m| m.is_some_and(|m| m.origin == origin))
-            && el.matches(":popover-open").unwrap_or(false)
+            && self
+                .active_popover()
+                .is_some_and(|el| el.matches(":popover-open").unwrap_or(false))
         {
             self.close_menu(true);
             return;
+        }
+        if let Some(picker) = self.picker.get_untracked() {
+            let _ = picker.hide_popover();
         }
         self.page.set(Page::Actions);
         self.menu.set(Some(Menu {
@@ -259,8 +267,37 @@ impl Controls {
         });
     }
 
+    fn active_popover(self) -> Option<leptos::web_sys::HtmlDivElement> {
+        if self.page.get_untracked() == Page::Actions {
+            self.popover.get_untracked()
+        } else {
+            self.picker.get_untracked()
+        }
+    }
+
+    fn toggle(self, is_menu: bool) {
+        // Moving between surfaces queues a close event on the old one; ignore it.
+        if (self.page.get_untracked() == Page::Actions) == is_menu
+            && self
+                .active_popover()
+                .is_some_and(|el| !el.matches(":popover-open").unwrap_or(false))
+        {
+            self.menu.set(None);
+        }
+    }
+
     fn page(self, page: Page, focus: Option<Item>) {
+        if let Some(el) = self.active_popover() {
+            let _ = el.hide_popover();
+        }
         self.page.set(page);
+        if self
+            .active_popover()
+            .is_none_or(|el| el.show_popover().is_err())
+        {
+            self.close_menu(true);
+            return;
+        }
         request_animation_frame(move || self.position_menu());
         if let Some(item) = focus {
             request_animation_frame(move || {
@@ -269,12 +306,12 @@ impl Controls {
                 }
             });
         } else {
-            pickers::focus_choice(MENU_ID, "room-picker-back");
+            pickers::focus_choice(PICKER_ID, "room-picker-back");
         }
     }
 
     pub(super) fn position_menu(self) {
-        if let Some((menu, el)) = self.menu.get_untracked().zip(self.popover.get_untracked())
+        if let Some((menu, el)) = self.menu.get_untracked().zip(self.active_popover())
             && !platform::place_room_menu(&el, &menu.origin.dom_id())
         {
             self.close_menu(false);
@@ -283,7 +320,7 @@ impl Controls {
 
     pub(super) fn close_menu(self, restore: bool) {
         if let Some(menu) = self.menu.try_update(Option::take).flatten() {
-            if let Some(el) = self.popover.get_untracked() {
+            if let Some(el) = self.active_popover() {
                 let _ = el.hide_popover();
             }
             if restore {
@@ -338,7 +375,7 @@ pub(super) fn MenuButton(origin: Origin, label: String) -> impl IntoView {
         <button type="button" id=origin.dom_id() class="icon-button room-menu-trigger"
             class:menu-anchor=move || controls.anchored(origin)
             popovertarget=MENU_ID aria-haspopup="menu" aria-controls=MENU_ID
-            aria-expanded=move || controls.anchored(origin).to_string()
+            aria-expanded=move || (controls.page.get() == Page::Actions && controls.anchored(origin)).to_string()
             aria-label=label.clone() title=label disabled=move || c.read_only()
             on:click=move |ev| { ev.prevent_default(); controls.open_menu(c, origin); }
             on:keydown=move |ev| {
@@ -394,7 +431,8 @@ fn ActionMenu() -> impl IntoView {
     let controls = c.room_actions;
     // Items don't rebuild on sync, and each action keeps both its item ID and its subject's ID.
     let origin = Memo::new(move |_| controls.menu.with(|m| m.map(|m| m.origin)));
-    let _resize = window_event_listener(leptos::ev::resize, move |_| controls.position_menu());
+    let resize = window_event_listener(leptos::ev::resize, move |_| controls.position_menu());
+    on_cleanup(move || resize.remove());
     Effect::new(move |_| {
         if origin.get().is_some() {
             c.sidebar.track();
@@ -411,22 +449,21 @@ fn ActionMenu() -> impl IntoView {
         }
     });
     view! {
-        <div id=MENU_ID role=move || if controls.page.get() == Page::Actions { "menu" } else { "dialog" }
-            aria-label=move || match controls.page.get() { Page::Actions => "Room actions", Page::Colour => "Colour", Page::Move => "Move to" }
+        <div id=MENU_ID role="menu" aria-label="Room actions" class="room-action-menu"
+            inert=move || controls.page.get() != Page::Actions || origin.get().is_none()
+            popover="auto" node_ref=controls.popover on:toggle=move |_| controls.toggle(true)
+            on:keydown=move |ev| menu_key(c, &ev)>
+            {move || origin.get().map(|origin| Menu { origin, highlighted: Item::Rename }.items().into_iter().map(|item| view! {
+                <MenuItem origin=origin item=item/>
+            }).collect_view())}
+        </div>
+        <div id=PICKER_ID role="dialog" aria-labelledby="room-picker-heading"
+            inert=move || controls.page.get() == Page::Actions || origin.get().is_none()
             class="room-action-menu" class:swatch-picker=move || controls.page.get() == Page::Colour
-            popover="auto" node_ref=controls.popover
-            on:toggle=move |_| {
-                if let Some(el) = controls.popover.get_untracked()
-                    && !el.matches(":popover-open").unwrap_or(false)
-                {
-                    controls.menu.set(None);
-                }
-            }
+            popover="auto" node_ref=controls.picker on:toggle=move |_| controls.toggle(false)
             on:keydown=move |ev| menu_key(c, &ev)>
             {move || origin.get().map(|origin| match controls.page.get() {
-                Page::Actions => Menu { origin, highlighted: Item::Rename }.items().into_iter().map(|item| view! {
-                    <MenuItem origin=origin item=item/>
-                }).collect_view().into_any(),
+                Page::Actions => ().into_any(),
                 Page::Colour => view! { <ColourPicker origin=origin/> }.into_any(),
                 Page::Move => match origin.0 {
                     Subject::List(id) => view! { <MovePicker origin=origin id=id/> }.into_any(),
@@ -464,8 +501,8 @@ fn menu_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 ev.prevent_default();
                 controls.close_menu(true);
             }
-            "Tab" => platform::contain_tab(MENU_ID, ev),
-            _ => pickers::choice_key(MENU_ID, if page == Page::Colour { 6 } else { 1 }, ev),
+            "Tab" => platform::contain_tab(PICKER_ID, ev),
+            _ => pickers::choice_key(PICKER_ID, if page == Page::Colour { 6 } else { 1 }, ev),
         }
         return;
     }
@@ -540,6 +577,7 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
     };
     view! {
         <button id=item.id() type="button" role="menuitem" tabindex="-1"
+            aria-haspopup=matches!(item, Item::Colour | Item::MoveTo).then_some("dialog")
             class:danger=item == Item::Delete aria-disabled=move || disabled().to_string()
             on:focus=move |_| controls.menu.update(|m| {
                 if let Some(m) = m.as_mut().filter(|m| m.origin == origin) { m.highlighted = item; }
@@ -600,7 +638,7 @@ fn ColourPicker(origin: Origin) -> impl IntoView {
     let c = ctx();
     view! {
         <div class="picker-page">
-            <h3>"Colour"</h3>
+            <h3 id="room-picker-heading">{intent::organize::colour_heading(origin.0.id())}</h3>
             <pickers::Swatches selected=Signal::derive(move || c.state.with(|s| origin.0.hue(s)))
                 disabled=Signal::derive(move || c.read_only())
                 choose=Callback::new(move |key| {
@@ -641,9 +679,11 @@ fn MovePicker(origin: Origin, id: ListId) -> impl IntoView {
     });
     view! {
         <div class="picker-page">
-            <h3>"Move to"</h3>
-            <For each=move || ids.get() key=|id| *id children=move |to| view! { <MoveChoice list=id to=Some(to) choose=choose/> }/>
-            <MoveChoice list=id to=None choose=choose/>
+            <h3 id="room-picker-heading">"Move to"</h3>
+            <div role="listbox" aria-labelledby="room-picker-heading" on:focusin=pickers::choice_focus>
+                <For each=move || ids.get() key=|id| *id children=move |to| view! { <MoveChoice list=id to=Some(to) choose=choose/> }/>
+                <MoveChoice list=id to=None choose=choose/>
+            </div>
             <PickerBack item=Item::MoveTo/>
         </div>
     }
@@ -667,9 +707,9 @@ fn MoveChoice(
             .with(|s| to.and_then(|id| Subject::Collection(id).hue(s)))
     };
     view! {
-        <button type="button" data-picker-option="" class="move-choice"
+        <button type="button" data-picker-option="" class="move-choice" role="option" tabindex="-1"
             disabled=move || c.read_only() || c.state.with(|s| to.is_some_and(|id| !s.is_live(id.into())))
-            aria-pressed=move || c.state.with(|s| s.lists.get(&list).is_some_and(|l| l.collection == to)).to_string()
+            aria-selected=move || c.state.with(|s| s.lists.get(&list).is_some_and(|l| l.collection == to)).to_string()
             on:click=move |_| choose.run(to)>
             <span data-list-hue=hue class="move-glyph">{glyph(Glyph::Layers)}</span>
             <span class="picker-label">{name}</span>

@@ -160,7 +160,24 @@ pub fn place_room_menu(menu: &web_sys::HtmlElement, anchor: &str) -> bool {
         f64::from(viewport.client_height()),
     );
     let rect = trigger.get_bounding_client_rect();
-    if rect.width() == 0.0 || rect.bottom() <= 0.0 || rect.top() >= vh {
+    let clip = trigger
+        .closest(".detail-scroll, .nav, .room")
+        .ok()
+        .flatten()
+        .map(|pane| pane.get_bounding_client_rect());
+    let (left, top) = clip
+        .as_ref()
+        .map_or((0.0, 0.0), |r| (r.left().max(0.0), r.top().max(0.0)));
+    let (right, bottom) = clip
+        .as_ref()
+        .map_or((vw, vh), |r| (r.right().min(vw), r.bottom().min(vh)));
+    if rect.width() == 0.0
+        || rect.height() == 0.0
+        || rect.right() <= left
+        || rect.left() >= right
+        || rect.bottom() <= top
+        || rect.top() >= bottom
+    {
         return false;
     }
     let (w, h) = (
