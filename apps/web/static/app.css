@@ -2731,7 +2731,6 @@ a.source:hover {
   }
 
   .due:not([data-tone="overdue"]) {
-    font-family: var(--font-ui);
     font-weight: 500;
   }
 

@@ -723,6 +723,16 @@ class GalleryTest {
         }
     }
 
+    @Test
+    fun empty_activity() {
+        val feed = ActivityView(null, emptyList(), 0u, "Refresh activity", false, ActivityFooter.Empty("No activity yet."))
+        val s = state(fixtureEngine()).copy(feed = feed)
+        for (dark in listOf(false, true)) {
+            val suffix = if (dark) "dark" else "light"
+            shot("activity_empty_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityRoom(s, Actions.None, {}) } }
+        }
+    }
+
     /** Today's agents under Activity, then folded collections followed by a loose list. */
     @Test
     fun agent_summary() {

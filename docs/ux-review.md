@@ -8,10 +8,10 @@ A review of the current Desktop (GPUI), Web (Leptos/wasm) and Android (Jetpack C
 - **Android:** `apps/android/app/src/test/snapshots/images/*.png` (branch `feat/android-app-v1`: cover screen,
   large inner screen, large text, landscape/short window, light and dark)
 
-Overall, the Daybreak visual identity lands well across all three platforms: the Fraunces / Schibsted Grotesk /
-Geist Mono pairing, warm OKLCH room palettes, round checkboxes, dusk scene, and reserved bottom toast strip look
-cohesive and crafted rather than generic. The findings below focus on concrete layout bugs, cross-platform drift,
-affordance gaps, accessibility issues, and where motion will add the most comprehension.
+At the time of this review, Daybreak paired a soft display serif with a sans for interface text and Geist Mono
+for metadata. That type palette, the warm OKLCH room colours, round checkboxes, dusk scene, and reserved bottom
+toast strip looked cohesive across all three platforms. The findings below focus on concrete layout bugs,
+cross-platform drift, affordance gaps, accessibility issues, and where motion will add the most comprehension.
 
 ## Findings ranked by impact
 

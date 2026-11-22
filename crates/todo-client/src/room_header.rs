@@ -367,7 +367,7 @@ fn room_tasks_impl<'s, 'u>(
 /// The line above the room's title.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Eyebrow {
-    /// Smart lists: the weekday in italics, then the date and the week, `Saturday | 21 Nov 2026 | W47`.
+    /// Smart lists: the weekday as the upright lead, then the date and week, `Saturday | 21 Nov 2026 | W47`.
     Day {
         /// "Saturday".
         weekday: String,
@@ -376,7 +376,7 @@ pub enum Eyebrow {
         /// "W47".
         week: String,
     },
-    /// Collections, lists and Activity: an italic kind, then a detail, `Collection | 4 lists`,
+    /// Collections, lists and Activity: the kind as the upright lead, then a detail, `Collection | 4 lists`,
     /// `Work | 9 open`, `History | All changes`.
     Kind {
         /// "Collection", the list's collection or "List", "History".
@@ -387,7 +387,7 @@ pub enum Eyebrow {
 }
 
 impl Eyebrow {
-    /// The italic lead.
+    /// The upright lead.
     #[must_use]
     pub fn lead(&self) -> &str {
         match self {

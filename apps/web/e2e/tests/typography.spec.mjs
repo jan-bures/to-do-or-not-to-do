@@ -27,3 +27,12 @@ for (const [width, size, lineHeight] of [[1440, 42, 48], [412, 33, 36]]) {
     }
   });
 }
+
+test("non-overdue phone due dates use Geist Mono", async ({ page }) => {
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  const row = page.locator(".row").filter({ has: page.getByRole("button", { name: "Prepare the November board update", exact: true }) });
+  const due = row.locator('.due-slot .due:not([data-tone="overdue"])');
+  await expect(due).toBeVisible();
+  await expect(due).toHaveCSS("font-family", /^"?Geist Mono"?,/);
+});

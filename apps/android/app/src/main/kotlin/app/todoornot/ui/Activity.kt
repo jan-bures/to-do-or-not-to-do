@@ -56,7 +56,7 @@ internal fun ActivityRoom(state: UiState, actions: Actions, drawer: () -> Unit) 
                             Label(footer.message, Tokens.Type.NOTES, r.ink2)
                             Button(footer.action, false) { load(ActivityLoad.RETRY) }
                         }
-                        is ActivityFooter.Empty -> Label(footer.label, Tokens.Type.EYEBROW_DAY, r.ink3)
+                        is ActivityFooter.Empty -> Label(footer.label, Tokens.Type.EMPTY_LINE, r.ink2, maxLines = 3)
                     }
                 }
             }

@@ -324,13 +324,13 @@ impl SyncInfo {
 /// The line above the room title.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Eyebrow {
-    /// Smart lists: the weekday in italics, then the date and the week.
+    /// Smart lists: the weekday as the upright lead, then the date and the week.
     Day {
         weekday: SharedString,
         date: SharedString,
         week: SharedString,
     },
-    /// Collections and lists: an italic kind, then a mono detail.
+    /// Collections and lists: the kind as the upright lead, then a mono detail.
     Kind {
         kind: SharedString,
         detail: SharedString,
