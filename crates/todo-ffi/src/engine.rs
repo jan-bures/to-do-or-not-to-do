@@ -119,33 +119,51 @@ pub struct SyncStatus {
     pub problem_detail: Option<String>,
 }
 
-/// Both forms of the drawer's sync label.
+/// The drawer dot's tone, derived from the same status as its label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum SyncTone {
+    Ok,
+    Busy,
+    Problem,
+    Idle,
+}
+
+/// The drawer's sync label and dot.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SyncText {
     pub short: String,
     pub full: String,
+    pub tone: SyncTone,
 }
 
 #[uniffi::export]
 pub fn sync_status_text(status: SyncStatus, local_time: Option<String>) -> SyncText {
     use todo_client::sync_label::SyncLabel;
 
-    let label = if status.revoked {
-        SyncLabel::SignedOut
-    } else if status.failed > 0 {
-        SyncLabel::Failed(status.failed as usize)
-    } else {
-        match status.state {
-            SyncState::Paused => SyncLabel::Paused(status.pending as usize),
-            SyncState::Offline => SyncLabel::Offline(status.pending as usize),
-            SyncState::Syncing => SyncLabel::Syncing,
-            SyncState::Online => SyncLabel::Synced(local_time.as_deref()),
-        }
+    let connection = match status.state {
+        SyncState::Paused => None,
+        SyncState::Offline => Some(Connection::Offline),
+        SyncState::Syncing => Some(Connection::Syncing),
+        SyncState::Online => Some(Connection::Online),
+    };
+    let label = SyncLabel::for_client(
+        connection,
+        status.pending as usize,
+        status.failed as usize,
+        status.revoked,
+        local_time.as_deref(),
+    );
+    let tone = match label {
+        SyncLabel::Synced(_) => SyncTone::Ok,
+        SyncLabel::Syncing => SyncTone::Busy,
+        SyncLabel::Paused(_) => SyncTone::Idle,
+        _ => SyncTone::Problem,
     };
     let text = label.text();
     SyncText {
         short: text.short,
         full: text.full,
+        tone,
     }
 }
 

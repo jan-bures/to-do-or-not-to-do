@@ -674,6 +674,10 @@ a {
   background: var(--color-ink-4);
 }
 
+.conn[data-conn="error"] {
+  background: var(--color-danger);
+}
+
 /* ---- room actions and not-synced changes --------------------------------------------------------- */
 
 .room-action-menu,

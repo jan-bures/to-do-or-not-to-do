@@ -209,8 +209,48 @@ test("the New menu supports keyboard activation, arrows, dismissal and both choi
   await w.check();
 });
 
+test("open footer menus do not run the selected task's shortcuts", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.locator(".row-title").filter({ hasText: /^Review the API latency report$/ }).click();
+  const priority = page.getByRole("combobox", { name: "Priority" });
+  await expect(priority).toHaveValue("None");
+  const nav = sidebar(page);
+  for (const [name, choice] of [["New", "List"], ["Settings", "Sign out"]]) {
+    const trigger = nav.getByRole("button", { name, exact: true });
+    const item = nav.getByRole("menuitem", { name: choice, exact: true });
+    await trigger.press("Enter");
+    await expect(item).toBeFocused();
+    await page.keyboard.press("p");
+    await expect(priority).toHaveValue("None");
+    await expect(item).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+  }
+  await page.keyboard.press("p");
+  await expect(priority).toHaveValue("Low");
+  await w.check();
+});
+
+test("Tab closes Settings and wraps within the phone drawer", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  await page.getByRole("button", { name: "Lists", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  const settings = drawer.getByRole("button", { name: "Settings", exact: true });
+  await settings.press("Enter");
+  await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(settings).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer.getByRole("link", { name: /^My Day/ })).toBeFocused();
+  await w.check();
+});
+
 test("the compact footer fits in one row at the sidebar minimum", async ({ page }) => {
   const w = watch(page);
+  await page.emulateMedia({ colorScheme: "light" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await open(page, "/app?fixture=not-synced");
   const nav = sidebar(page);
@@ -220,6 +260,7 @@ test("the compact footer fits in one row at the sidebar minimum", async ({ page 
   expect(Math.abs((await nav.boundingBox()).width - desktop["sidebar-min"])).toBeLessThanOrEqual(1);
   const sync = nav.getByRole("button", { name: "2 couldn't sync", exact: true });
   await expect(sync).toHaveText("2 not synced");
+  await expect(footer.locator(".conn")).toHaveCSS("background-color", rgb(tokens.colors.light.rooms["my-day"].danger));
   await expect(sync).toHaveCSS("text-overflow", "ellipsis");
   const newButton = await footer.getByRole("button", { name: "New", exact: true }).boundingBox();
   const status = await footer.locator(".side-sync").boundingBox();

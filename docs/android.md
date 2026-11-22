@@ -382,6 +382,10 @@ model, on the cover screen (412 × 920 dp) and the inner screen (900 × 1000 dp)
 includes the collapsed header, a short window and 1.3× text. Look at it after every UI change; the
 images are in `app/src/test/snapshots/images/`.
 
+Paparazzi does not run the system keyboard. On a device or emulator with the software keyboard enabled,
+open the drawer and choose **New → List**. The focused name field must stay fully above the keyboard,
+including in landscape. Type a name and press the keyboard's **Done** key to confirm the new list opens.
+
 CI builds the debug APK and runs the unit and screenshot tests. It uses no signing secrets: the debug APK
 is signed with the SDK's debug key, and the APK is uploaded as a build artifact.
 

@@ -10,7 +10,7 @@ import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
 import app.todoornot.design.Tokens
 import app.todoornot.model.StepDraft
-import app.todoornot.model.Tone
+import app.todoornot.core.SyncTone
 import app.todoornot.model.TodoModel
 import app.todoornot.model.clock
 import app.todoornot.model.syncLine
@@ -466,18 +466,19 @@ class ParityTest {
     fun the_sync_line_reads_as_on_the_desktop() {
         fun s(state: SyncState, pending: UInt = 0u, failed: UInt = 0u, problem: ProblemKind? = null) =
             SyncStatus(state, pending, failed, caughtUp = false, revoked = problem == ProblemKind.UNAUTHORIZED, problem = problem, problemDetail = null)
-        fun check(status: SyncStatus, short: String, full: String, tone: Tone, at: LocalNow? = null) {
-            val (text, actualTone) = syncLine(status, at)
-            assertEquals(Triple(short, full, tone), Triple(text.short, text.full, actualTone))
+        fun check(status: SyncStatus, short: String, full: String, tone: SyncTone, at: LocalNow? = null) {
+            val (actualShort, actualFull, actualTone) = syncLine(status, at)
+            assertEquals(Triple(short, full, tone), Triple(actualShort, actualFull, actualTone))
         }
-        check(s(SyncState.ONLINE), "10:35", "Synced 10:35", Tone.OK, FIXTURE_NOW)
-        check(s(SyncState.ONLINE), "Synced", "Synced", Tone.OK)
-        check(s(SyncState.SYNCING, 2u), "Syncing…", "Syncing…", Tone.BUSY)
-        check(s(SyncState.OFFLINE, 3u), "Offline · 3", "Offline, 3 waiting", Tone.PROBLEM)
-        check(s(SyncState.OFFLINE), "Offline", "Offline", Tone.PROBLEM)
-        check(s(SyncState.ONLINE, failed = 2u), "2 not synced", "2 couldn't sync", Tone.PROBLEM)
-        check(s(SyncState.OFFLINE, problem = ProblemKind.UNAUTHORIZED), "Signed out", "Signed out by the server", Tone.PROBLEM)
-        check(s(SyncState.PAUSED, 1u), "Not syncing · 1", "Not syncing, 1 waiting", Tone.IDLE)
+        check(s(SyncState.ONLINE), "10:35", "Synced 10:35", SyncTone.OK, FIXTURE_NOW)
+        check(s(SyncState.ONLINE), "Synced", "Synced", SyncTone.OK)
+        check(s(SyncState.SYNCING, 2u), "Syncing…", "Syncing…", SyncTone.BUSY)
+        check(s(SyncState.OFFLINE, 3u), "Offline · 3", "Offline, 3 waiting", SyncTone.PROBLEM)
+        check(s(SyncState.OFFLINE), "Offline", "Offline", SyncTone.PROBLEM)
+        check(s(SyncState.ONLINE, failed = 2u), "2 not synced", "2 couldn't sync", SyncTone.PROBLEM)
+        check(s(SyncState.SYNCING, failed = 2u), "2 not synced", "2 couldn't sync", SyncTone.PROBLEM)
+        check(s(SyncState.OFFLINE, failed = 2u, problem = ProblemKind.UNAUTHORIZED), "Signed out", "Signed out by the server", SyncTone.PROBLEM)
+        check(s(SyncState.PAUSED, 1u), "Not syncing · 1", "Not syncing, 1 waiting", SyncTone.IDLE)
         assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600, "+01:00")))
         assertEquals("23:59", clock(LocalNow(-60_000L, 0, "UTC")))
     }

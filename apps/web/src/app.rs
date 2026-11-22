@@ -1045,33 +1045,30 @@ fn link_room(c: Ctx, room: RoomId) -> impl Fn(leptos::ev::MouseEvent) + Clone + 
     }
 }
 
-fn sync_text(s: &Sync, at: Option<Now>) -> todo_client::sync_label::SyncText {
+fn sync_presentation(
+    s: &Sync,
+    at: Option<Now>,
+) -> (todo_client::sync_label::SyncText, &'static str) {
     use todo_client::sync_label::SyncLabel;
 
     let time = at.map(|n| {
         let l = n.local();
         format!("{:02}:{:02}", l.hour(), l.minute())
     });
-    let label = if s.signed_out {
-        SyncLabel::SignedOut
-    } else if s.failed > 0 {
-        SyncLabel::Failed(s.failed)
-    } else {
-        match s.connection {
-            Connection::Offline => SyncLabel::Offline(s.pending),
-            Connection::Syncing => SyncLabel::Syncing,
-            Connection::Online => SyncLabel::Synced(time.as_deref()),
-        }
+    let label = SyncLabel::for_client(
+        Some(s.connection),
+        s.pending,
+        s.failed,
+        s.signed_out,
+        time.as_deref(),
+    );
+    let dot = match label {
+        SyncLabel::Synced(_) => "online",
+        SyncLabel::Syncing => "syncing",
+        SyncLabel::Offline(_) | SyncLabel::Paused(_) => "offline",
+        SyncLabel::Unpaired | SyncLabel::SignedOut | SyncLabel::Failed(_) => "error",
     };
-    label.text()
-}
-
-fn conn_key(s: &Sync) -> &'static str {
-    match s.connection {
-        Connection::Online => "online",
-        Connection::Syncing => "syncing",
-        Connection::Offline => "offline",
-    }
+    (label.text(), dot)
 }
 
 // ---- sidebar ------------------------------------------------------------------------------------------
@@ -1240,10 +1237,7 @@ fn SidebarPane() -> impl IntoView {
             </div>
             <div class="side-foot">
                 <NewRoomMenu/>
-                <div class="side-sync">
-                    <span class="conn" aria-hidden="true" data-conn=move || conn_key(&c.sync.get())></span>
-                    <room_actions::SyncLine/>
-                </div>
+                <room_actions::SyncLine/>
                 <SettingsMenu/>
                 <device_pairing::DeviceSettings/>
             </div>
@@ -1312,16 +1306,26 @@ impl FooterMenu {
 
     fn key(self, ev: leptos::ev::KeyboardEvent) {
         use wasm_bindgen::JsCast;
+        let open = self.open.get_untracked();
+        let key = ev.key();
+        // Keep task shortcuts out of an open menu, without taking native button activation away.
+        // Tab still reaches the window listener for the phone drawer's focus trap.
+        if open && key != "Tab" {
+            ev.stop_propagation();
+        }
         if ev.alt_key() || ev.ctrl_key() || ev.meta_key() || ev.is_composing() {
             return;
         }
+        if open && ev.repeat() && key == "Enter" {
+            ev.prevent_default();
+            return;
+        }
         let last = self.items.len() - 1;
-        let open = self.open.get_untracked();
         let from = ev
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
             .and_then(|el| self.items.iter().position(|id| *id == el.id()));
-        let next = match ev.key().as_str() {
+        let next = match key.as_str() {
             "ArrowDown" => from.map_or(0, |i| (i + 1) % self.items.len()),
             "ArrowUp" => from.map_or(last, |i| i.checked_sub(1).unwrap_or(last)),
             "Home" if open => 0,
@@ -1333,7 +1337,6 @@ impl FooterMenu {
             }
             "Escape" if open => {
                 ev.prevent_default();
-                ev.stop_propagation();
                 self.close();
                 return;
             }
@@ -1495,11 +1498,11 @@ fn AppBar() -> impl IntoView {
             data-room-hue=move || c.finished.get().then_some("my-day")>
             <button type="button" class="icon-button drawer-button" id="open-drawer" aria-label="Lists"
                 on:click=move |_| c.drawer.set(true)>{icon(Icon::Menu)}</button>
-            <span class="app-bar-sync" data-conn=move || conn_key(&c.sync.get())>
+            <span class="app-bar-sync">
                 {move || {
                     let s = c.sync.get();
                     (s.connection != Connection::Online || s.pending > 0)
-                        .then(|| sync_text(&s, c.synced_at.get()).full)
+                        .then(|| sync_presentation(&s, c.synced_at.get()).0.full)
                 }}
             </span>
             <Show when=move || !c.room.with(RoomId::is_activity)>

@@ -1,4 +1,6 @@
-//! Shared wording for the compact sync footer and its accessible description.
+//! Shared status and wording for the compact sync footer and its accessible description.
+
+use crate::Connection;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncLabel<'a> {
@@ -18,7 +20,30 @@ pub struct SyncText {
     pub full: String,
 }
 
-impl SyncLabel<'_> {
+impl<'a> SyncLabel<'a> {
+    /// A signed-out session or refused changes take precedence over connectivity. A missing
+    /// connection means sync is paused, not offline.
+    pub fn for_client(
+        connection: Option<Connection>,
+        pending: usize,
+        failed: usize,
+        signed_out: bool,
+        local_time: Option<&'a str>,
+    ) -> Self {
+        if signed_out {
+            Self::SignedOut
+        } else if failed > 0 {
+            Self::Failed(failed)
+        } else {
+            match connection {
+                None => Self::Paused(pending),
+                Some(Connection::Offline) => Self::Offline(pending),
+                Some(Connection::Syncing) => Self::Syncing,
+                Some(Connection::Online) => Self::Synced(local_time),
+            }
+        }
+    }
+
     pub fn text(self) -> SyncText {
         let (short, full) = match self {
             Self::Unpaired => ("Not signed in".into(), None),
@@ -51,6 +76,25 @@ impl SyncLabel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failures_take_precedence_over_connection_but_not_sign_out() {
+        for connection in [
+            None,
+            Some(Connection::Offline),
+            Some(Connection::Syncing),
+            Some(Connection::Online),
+        ] {
+            assert_eq!(
+                SyncLabel::for_client(connection, 3, 2, true, Some("20:18")),
+                SyncLabel::SignedOut,
+            );
+            assert_eq!(
+                SyncLabel::for_client(connection, 3, 2, false, Some("20:18")),
+                SyncLabel::Failed(2),
+            );
+        }
+    }
 
     #[test]
     fn compact_labels_keep_the_full_explanation() {

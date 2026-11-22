@@ -487,18 +487,21 @@ fn sync_line(sync: &SyncInfo, now: &Now) -> (todo_client::sync_label::SyncText, 
     use todo_client::sync_label::SyncLabel;
 
     let time = sync.synced_at.map(|at| labels::clock(at, &now.tz));
-    let (label, tone) = if !sync.paired {
-        (SyncLabel::Unpaired, Tone::Problem)
-    } else if sync.unauthorized {
-        (SyncLabel::SignedOut, Tone::Problem)
-    } else if sync.failed > 0 {
-        (SyncLabel::Failed(sync.failed), Tone::Problem)
+    let label = if sync.paired {
+        SyncLabel::for_client(
+            Some(sync.connection),
+            sync.pending,
+            sync.failed,
+            sync.unauthorized,
+            time.as_deref(),
+        )
     } else {
-        match sync.connection {
-            Connection::Offline => (SyncLabel::Offline(sync.pending), Tone::Problem),
-            Connection::Syncing => (SyncLabel::Syncing, Tone::Busy),
-            Connection::Online => (SyncLabel::Synced(time.as_deref()), Tone::Ok),
-        }
+        SyncLabel::Unpaired
+    };
+    let tone = match label {
+        SyncLabel::Synced(_) => Tone::Ok,
+        SyncLabel::Syncing => Tone::Busy,
+        _ => Tone::Problem,
     };
     (label.text(), tone)
 }

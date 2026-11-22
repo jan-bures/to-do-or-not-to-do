@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,6 +57,7 @@ import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
+import app.todoornot.core.SyncTone
 import app.todoornot.design.Glyph
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
@@ -64,7 +66,6 @@ import app.todoornot.design.style
 import app.todoornot.model.Actions
 import app.todoornot.model.MenuAction
 import app.todoornot.model.drawerMenu
-import app.todoornot.model.Tone
 import app.todoornot.model.UiState
 import app.todoornot.model.syncLine
 
@@ -113,7 +114,9 @@ fun RoomDrawer(
             .width(Tokens.Metrics.Desktop.SIDEBAR.dp + S.S10.dp)
             .background(r.canvas)
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            // Shrink the scrolling rooms, keeping the pinned name editor above the keyboard.
+            .navigationBarsPadding()
+            .imePadding(),
     ) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = S.S3.dp, vertical = S.S3.dp)) {
             val smart = state.home.smart
@@ -278,17 +281,17 @@ private fun Footer(
     onNewCollection: () -> Unit,
 ) {
     val r = LocalDesign.current.room
-    val (line, tone) = syncLine(state.status, state.syncedAt)
+    val line = syncLine(state.status, state.syncedAt)
     Row(
         Modifier.fillMaxWidth().hairline(r.line, top = true).padding(horizontal = S.S2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
-        val color = when (tone) {
-            Tone.OK -> r.success
-            Tone.BUSY -> r.accent
-            Tone.PROBLEM -> r.danger
-            Tone.IDLE -> r.ink4
+        val color = when (line.tone) {
+            SyncTone.OK -> r.success
+            SyncTone.BUSY -> r.accent
+            SyncTone.PROBLEM -> r.danger
+            SyncTone.IDLE -> r.ink4
         }
         NewMenu(newFocus, onNewList, onNewCollection)
         Row(

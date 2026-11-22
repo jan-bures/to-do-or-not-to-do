@@ -10,8 +10,8 @@
 //! (`model::motion::Overlay`); a closing menu is paint-only: it takes no clicks, keys or hovers.
 
 use gpui::{
-    Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, ScrollHandle, SharedString,
-    Window, anchored, deferred, div, prelude::*, px,
+    Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, Role, ScrollHandle,
+    SharedString, Window, anchored, deferred, div, prelude::*, px,
 };
 use todo_client::intent::organize::actionable_task;
 use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
@@ -1214,6 +1214,11 @@ impl ShellView {
         let look = menu.overlay.look(self.frame);
         let live = look.open;
         let kind = menu.kind;
+        let footer_menu = match kind {
+            MenuKind::New => Some("New"),
+            MenuKind::Account { confirm: false } => Some("Settings"),
+            _ => None,
+        };
         let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
         let rows: Vec<AnyElement> = menus::scrolling(&entries)
             .map(|entry| match entry {
@@ -1224,6 +1229,11 @@ impl ShellView {
                     .into_any_element(),
                 MenuEntry::Item(item) => self
                     .menu_item(&p, item, on(item), live, cx)
+                    .when(live && footer_menu.is_some(), |d| {
+                        d.role(Role::MenuItem)
+                            .aria_label(item.label.clone())
+                            .when(on(item), |d| d.aria_active_descendant())
+                    })
                     .into_any_element(),
                 MenuEntry::Confirm {
                     message,
@@ -1444,6 +1454,9 @@ impl ShellView {
             .opacity(look.alpha)
             .children(filter)
             .child(items)
+            .when_some(footer_menu.filter(|_| live), |d, label| {
+                d.role(Role::Menu).aria_label(label)
+            })
             .when(live, |el| {
                 el.occlude()
                     .track_focus(&self.menu_focus)

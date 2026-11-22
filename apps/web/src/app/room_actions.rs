@@ -411,19 +411,22 @@ pub(super) fn RoomMenuButton() -> impl IntoView {
 #[component]
 pub(super) fn SyncLine() -> impl IntoView {
     let c = ctx();
-    let label = Memo::new(move |_| sync_text(&c.sync.get(), c.synced_at.get()));
-    let full = move || label.with(|l| l.full.clone());
-    let short = move || label.with(|l| l.short.clone());
+    let status = Memo::new(move |_| sync_presentation(&c.sync.get(), c.synced_at.get()));
+    let full = move || status.with(|(label, _)| label.full.clone());
+    let short = move || status.with(|(label, _)| label.short.clone());
     view! {
-        <Show when=move || c.failures.with(|f| !f.is_empty()) fallback=move || view! {
-            <span class="sync-text" role="status" title=full aria-label=full>
-                <span aria-hidden="true">{short}</span>
-            </span>
-        }>
-            <button type="button" class="sync-text sync-failures-trigger" id="open-sync-failures"
-                aria-haspopup="dialog" aria-controls="sync-failures" title=full aria-label=full
-                on:click=move |_| c.room_actions.open_failures(c)>{short}</button>
-        </Show>
+        <div class="side-sync">
+            <span class="conn" aria-hidden="true" data-conn=move || status.with(|(_, dot)| *dot)></span>
+            <Show when=move || c.failures.with(|f| !f.is_empty()) fallback=move || view! {
+                <span class="sync-text" role="status" title=full aria-label=full>
+                    <span aria-hidden="true">{short}</span>
+                </span>
+            }>
+                <button type="button" class="sync-text sync-failures-trigger" id="open-sync-failures"
+                    aria-haspopup="dialog" aria-controls="sync-failures" title=full aria-label=full
+                    on:click=move |_| c.room_actions.open_failures(c)>{short}</button>
+            </Show>
+        </div>
     }
 }
 

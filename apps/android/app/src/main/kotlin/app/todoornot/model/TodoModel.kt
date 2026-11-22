@@ -129,20 +129,9 @@ data class TaskSwap(val serial: Long, val room: RoomKey, val rows: Set<String>)
  */
 data class UnpairQuestion(val unsent: Int, val changed: Boolean = false)
 
-/** How the drawer's sync line reads: fine, busy, or a problem (its dot's colour). */
-enum class Tone { OK, BUSY, PROBLEM, IDLE }
-
 /** The drawer's compact sync label, its accessible description, and the dot's tone. */
-fun syncLine(status: SyncStatus, syncedAt: LocalNow?): Pair<SyncText, Tone> {
-    val tone = when {
-        status.signedOut || status.failed > 0u -> Tone.PROBLEM
-        status.state == SyncState.OFFLINE -> Tone.PROBLEM
-        status.state == SyncState.SYNCING -> Tone.BUSY
-        status.state == SyncState.ONLINE -> Tone.OK
-        else -> Tone.IDLE
-    }
-    return syncStatusText(status, syncedAt?.let(::clock)) to tone
-}
+fun syncLine(status: SyncStatus, syncedAt: LocalNow?): SyncText =
+    syncStatusText(status, syncedAt?.let(::clock))
 
 /** "09:05", in the time's own UTC offset. */
 fun clock(t: LocalNow): String {

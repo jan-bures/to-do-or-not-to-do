@@ -478,7 +478,11 @@ impl ShellView {
         }
         let button = line
             .id("sync-failures")
+            .role(Role::Button)
             .aria_label(sb.sync.clone())
+            .aria_expanded(self.menu.as_ref().is_some_and(|m| {
+                m.kind == MenuKind::SyncFailures && m.overlay.look(self.frame).open
+            }))
             .tooltip(kit::tooltip(p, sb.sync.clone()))
             .relative()
             .h(px(component::ICON_BUTTON))
@@ -695,6 +699,8 @@ impl ShellView {
         let focused = self.new_focus.is_focused(window);
         let new = div()
             .id("sidebar-new")
+            .role(Role::Button)
+            .aria_label("New")
             .relative()
             .h(px(desktop::NAV_SUB_ROW))
             .px(px(space::S2))
@@ -731,6 +737,11 @@ impl ShellView {
         // The account menu opens upwards from the gear. Tab reaches the gear (`hints::tab_stop`).
         let account = div()
             .id("account")
+            .role(Role::Button)
+            .aria_label("Settings")
+            .aria_expanded(self.menu.as_ref().is_some_and(|m| {
+                matches!(m.kind, MenuKind::Account { .. }) && m.overlay.look(self.frame).open
+            }))
             .relative()
             .size(px(component::ICON_BUTTON))
             .flex()
