@@ -37,6 +37,11 @@ test("the docked separator is tabbable and resizes the detail by keyboard", asyn
   await pane(page).getByRole("button", { name: "My Day", exact: true }).focus();
   await page.keyboard.press("Shift+Tab");
   await expect(handle).toBeFocused();
+  const taskCheck = page.getByRole("main").getByRole("checkbox", { name: /November board update/ });
+  await expect(taskCheck).not.toBeChecked();
+  await page.keyboard.press("Space");
+  await expect(taskCheck).not.toBeChecked();
+  await expect(page.locator(".toast-text").filter({ hasText: /Completed.*November board update/ })).toHaveCount(0);
   await page.keyboard.press("ArrowLeft");
   await expectWidth(page, initial + desktop["pane-key-step"]);
   await page.keyboard.press("Shift+ArrowRight");
@@ -54,6 +59,20 @@ test("the docked separator is tabbable and resizes the detail by keyboard", asyn
   await expectWidth(page, min);
   await page.reload();
   await expectWidth(page, min);
+  await w.check();
+});
+
+test("the separator shows keyboard focus in forced colours", async ({ page }) => {
+  const w = watch(page);
+  await page.emulateMedia({ forcedColors: "active" });
+  await page.setViewportSize(DESKTOP);
+  await open(page);
+  const handle = await showDetail(page);
+  await expect(handle).toHaveCSS("outline-style", "none");
+  await pane(page).getByRole("button", { name: "My Day", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(handle).toBeFocused();
+  await expect(handle).toHaveCSS("outline-style", "solid");
   await w.check();
 });
 
@@ -97,6 +116,32 @@ test("drag captures the pointer, tracks without lag and saves on release", async
   await expectWidth(page, initial);
   await expect(handle).not.toHaveClass(/\bgrabbing\b/);
   await page.mouse.up();
+  await w.check();
+});
+
+test("a viewport width change cancels a drag without saving its preview", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize(WIDE);
+  await open(page);
+  const handle = await showDetail(page);
+  await handle.press("End");
+  await expectWidth(page, max(WIDE.width));
+  const x = (await handle.boundingBox()).x + 2;
+  await page.mouse.move(x, 60);
+  await page.mouse.down();
+  await page.mouse.move(x + 120, 60);
+  await expectWidth(page, max(WIDE.width) - 120);
+  await expect(handle).toHaveClass(/\bgrabbing\b/);
+
+  await page.setViewportSize(DESKTOP);
+  await expect(handle).not.toHaveClass(/\bgrabbing\b/);
+  await expectWidth(page, max(DESKTOP.width));
+  await page.mouse.move(x + 160, 60);
+  await page.mouse.up();
+  await page.setViewportSize(WIDE);
+  await expectWidth(page, max(WIDE.width));
+  await page.reload();
+  await expectWidth(page, max(WIDE.width));
   await w.check();
 });
 

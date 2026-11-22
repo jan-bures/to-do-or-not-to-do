@@ -13,6 +13,7 @@ const CHROME: i32 = (desktop::SIDEBAR + 2.0 * elevation::HAIRLINE) as i32;
 pub(super) struct Layout {
     preferred: RwSignal<i32>,
     preview: RwSignal<Option<i32>>,
+    viewport: RwSignal<i32>,
     max: Memo<i32>,
     pub(super) width: Memo<i32>,
     pub(super) compact_room: Memo<bool>,
@@ -21,10 +22,6 @@ pub(super) struct Layout {
 impl Layout {
     pub(super) fn new() -> Self {
         let viewport = RwSignal::new(platform::viewport_width());
-        let resize = window_event_listener(leptos::ev::resize, move |_| {
-            viewport.set(platform::viewport_width());
-        });
-        on_cleanup(move || resize.remove());
         let preferred = RwSignal::new(platform::load_detail_width().unwrap_or(DEFAULT).max(MIN));
         let preview = RwSignal::new(None);
         let max = Memo::new(move |_| {
@@ -42,6 +39,7 @@ impl Layout {
         Self {
             preferred,
             preview,
+            viewport,
             max,
             width,
             compact_room,
@@ -89,6 +87,15 @@ pub(super) fn DetailSplitter(layout: Layout, docked: Memo<bool>) -> impl IntoVie
             }
         }
     };
+    let resize = window_event_listener(leptos::ev::resize, move |_| {
+        let width = platform::viewport_width();
+        if width != layout.viewport.get_untracked() {
+            // The grab's starting coordinates no longer match the divider. Discard its preview.
+            cancel_grab();
+            layout.viewport.set(width);
+        }
+    });
+    on_cleanup(move || resize.remove());
     let reset = move || {
         cancel_grab();
         layout.preferred.set(DEFAULT);
@@ -136,7 +143,9 @@ pub(super) fn DetailSplitter(layout: Layout, docked: Memo<bool>) -> impl IntoVie
                     let max = layout.max.get_untracked();
                     let width = g.moved(ev.client_x(), max);
                     // A click or a drag back to where it started must not overwrite a saved width.
-                    if ev.client_x() != g.x && width != g.width.min(max) {
+                    if platform::viewport_width() == layout.viewport.get_untracked()
+                        && ev.client_x() != g.x && width != g.width.min(max)
+                    {
                         layout.preferred.set(width);
                         layout.save();
                     }

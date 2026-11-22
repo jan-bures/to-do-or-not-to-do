@@ -211,6 +211,14 @@ a {
 .detail-splitter:focus-visible::after { box-shadow: 0 0 0 var(--focus-ring) var(--color-tint); }
 .app:has(.detail-splitter.grabbing) * { cursor: col-resize; }
 
+/* Forced colours can hide the accent bar and suppress the shadow. */
+@media (forced-colors: active) {
+  .detail-splitter:focus-visible {
+    outline: var(--focus-ring) solid CanvasText;
+    outline-offset: calc(-1 * var(--focus-ring));
+  }
+}
+
 .sidebar {
   grid-area: side;
 }

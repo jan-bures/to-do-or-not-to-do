@@ -883,13 +883,14 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         " " if !c.read_only() => {
             let selected = c.selected.get_untracked();
-            // Keep native activation on other controls, including unselected row titles.
+            // Space may complete from the selected row, but not from other focused controls.
             if ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
                 .is_some_and(|el| {
-                    matches!(el.tag_name().as_str(), "BUTTON" | "A")
-                        && !selected.is_some_and(|id| el.id() == format!("row-{id}"))
+                    el.get_attribute("role").as_deref() == Some("separator")
+                        || (matches!(el.tag_name().as_str(), "BUTTON" | "A")
+                            && !selected.is_some_and(|id| el.id() == format!("row-{id}")))
                 })
             {
                 return;
