@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** A short message above the composer, with an optional undo. */
@@ -136,6 +137,9 @@ class TodoModel(
     private val publishing = Any()
 
     @Volatile private var collapsed: Set<String> = emptySet()
+
+    /** "+ Add step" drafts by task: here, not in the UI, so a pending one survives a recreation. */
+    private val stepDrafts = ConcurrentHashMap<String, StepDraft>()
 
     @Volatile private var syncedAt: LocalNow? = null
 
@@ -322,6 +326,8 @@ class TodoModel(
      * Adds a step and says how it went: null once it is added, else why not (a title too long, say),
      * so the field can keep the draft and show the reason in the detail pane, where a toast is hidden.
      */
+    override fun stepDraft(task: String): StepDraft = stepDrafts.getOrPut(task) { StepDraft() }
+
     override fun addStep(task: String, title: String, onResult: (String?) -> Unit) {
         scope.launch {
             val problem = writes.withLock {

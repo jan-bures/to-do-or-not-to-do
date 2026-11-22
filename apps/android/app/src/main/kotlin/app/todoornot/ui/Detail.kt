@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -222,7 +223,12 @@ private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) 
 @Composable
 private fun AddStep(task: String, actions: Actions) {
     val r = LocalDesign.current.room
-    val draft = rememberSaveable(task, saver = StepDraft.Saver) { StepDraft() }
+    // The draft is the model's, so a submission still on its way survives a rotation. Only its text is
+    // also saved here, for after process death, when the model is new.
+    val draft = remember(task, actions) { actions.stepDraft(task) }
+    var saved by rememberSaveable(task) { mutableStateOf("") }
+    remember(draft) { draft.restore(saved); Unit }
+    LaunchedEffect(draft, draft.text) { saved = draft.text }
     fun submit() = draft.submit { title, done -> actions.addStep(task, title, done) }
     Column(Modifier.fillMaxWidth().hairline(r.line)) {
         Row(

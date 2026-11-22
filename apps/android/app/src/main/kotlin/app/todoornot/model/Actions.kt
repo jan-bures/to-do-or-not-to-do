@@ -16,6 +16,9 @@ interface Actions {
 
     /** Adds a step; [onResult] gets null once it is added, else why it wasn't. */
     fun addStep(task: String, title: String, onResult: (String?) -> Unit)
+
+    /** The task's "+ Add step" draft, kept where it outlives the Activity. */
+    fun stepDraft(task: String): StepDraft
     fun setStepDone(id: String, done: Boolean)
     fun createList(name: String)
 
@@ -49,6 +52,7 @@ interface Actions {
         override fun setMyDay(id: String, on: Boolean) = Unit
         override fun setImportant(id: String, on: Boolean) = Unit
         override fun addStep(task: String, title: String, onResult: (String?) -> Unit) = Unit
+        override fun stepDraft(task: String) = StepDraft()
         override fun setStepDone(id: String, done: Boolean) = Unit
         override fun createList(name: String) = Unit
         override fun setFilter(text: String) = Unit

@@ -7,11 +7,11 @@ import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.design.Tokens
+import app.todoornot.model.StepDraft
 import app.todoornot.model.Tone
 import app.todoornot.model.TodoModel
 import app.todoornot.model.clock
 import app.todoornot.model.syncLine
-import app.todoornot.ui.StepDraft
 import app.todoornot.ui.buttonColors
 import app.todoornot.ui.showsAgent
 import app.todoornot.ui.showsPriority
@@ -231,6 +231,58 @@ class ParityTest {
         assertEquals("added: the field is cleared for the next one", "", draft.text)
         assertNull(draft.problem)
         assertFalse(draft.sending)
+    }
+
+    @Test
+    fun a_step_sent_just_before_a_recreation_is_added_once_and_clears_the_new_field() = runTest {
+        // The model outlives the Activity; its own work is queued, so the write is still on its way
+        // while the "recreated" detail pane asks the model for the draft again.
+        val engine = fixtureEngine()
+        val admin = engine.list("Admin")
+        val id = engine.taskId(admin, "Renew passport appointment")
+        val m = TodoModel(
+            engine,
+            CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+            UnconfinedTestDispatcher(testScheduler),
+            now = { FIXTURE_NOW },
+            start = admin,
+        )
+        m.select(id)
+        advanceUntilIdle()
+        val before = m.ui.value.detail!!.steps.size
+        var sent = 0
+        val send: (String, (String?) -> Unit) -> Unit = { t, done -> sent++; m.addStep(id, t, done) }
+
+        val first = m.stepDraft(id)
+        first.edit("Print the form")
+        first.submit(send)
+
+        // Recreated: the new pane gets the same draft, still sending, and the saved text is ignored.
+        val second = m.stepDraft(id)
+        second.restore("Print the form")
+        assertTrue(second.sending)
+        assertEquals("Print the form", second.text)
+        second.submit(send)
+        assertEquals("Done again while it's on its way does nothing", 1, sent)
+
+        advanceUntilIdle()
+        assertEquals("", second.text)
+        assertFalse(second.sending)
+        assertEquals(before + 1, m.ui.value.detail!!.steps.size)
+
+        // A pane recreated after the step was added keeps the cleared field, though its saved copy is older.
+        m.stepDraft(id).restore("Print the form")
+        assertEquals("", m.stepDraft(id).text)
+    }
+
+    @Test
+    fun after_process_death_only_the_drafts_text_comes_back() = runTest {
+        val engine = fixtureEngine()
+        val id = engine.taskId(engine.list("Admin"), "Renew passport appointment")
+        val draft = model(engine).stepDraft(id)
+        draft.restore("Print the form")
+        assertEquals("Print the form", draft.text)
+        assertFalse("nothing can be in flight in a new process", draft.sending)
     }
 
     @Test
