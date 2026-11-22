@@ -678,7 +678,7 @@ class GalleryTest {
             card("tags") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed) }
             card("create_tag") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed, initialText = "seedlings") }
             card("tag_options") { app.todoornot.ui.TagOptions(tag, {}, {}) }
-            card("swatches") { SwatchCard("fern", {}, {}) }
+            card("swatches") { SwatchCard(target, "fern", {}, {}) }
             card("rename_tag") { RenameCard("Rename tag", "garden", {}, {}, focus = false) }
             card("new_collection") { RenameCard("New collection", "Projects", {}, {}, focus = false) }
             card("add_link") { RenameCard("Add a web link", "todo.example.com/garden", {}, {}, focus = false, webAddress = true) }

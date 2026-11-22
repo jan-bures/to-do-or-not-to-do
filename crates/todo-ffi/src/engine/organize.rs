@@ -1,7 +1,8 @@
 //! Android bindings for the shared organize and repeat intents.
 use super::*;
 use crate::labels::one_line;
-use todo_client::intent::repeat::{self, Preset};
+use todo_client::intent::repeat;
+pub use todo_client::intent::repeat::{Preset as RepeatPreset, Unit as RepeatUnit};
 use todo_core::{
     ids::TagId,
     model::{LinkKind, Task},
@@ -33,6 +34,31 @@ impl ColorTarget {
         })
     }
 }
+#[uniffi::export]
+pub fn undated_repeat_note() -> String {
+    repeat::UNDATED_NOTE.into()
+}
+
+#[uniffi::export]
+pub fn colour_heading(target: ColorTarget) -> String {
+    target
+        .entity()
+        .ok()
+        .and_then(intent::colour_heading)
+        .unwrap_or("Colour")
+        .into()
+}
+
+#[uniffi::export]
+pub fn swatch_name(key: String) -> String {
+    intent::swatch_name(&key)
+}
+
+#[uniffi::export]
+pub fn delete_recheck_text(noun: String) -> String {
+    intent::delete_recheck_text(&noun)
+}
+
 fn tag_id(id: &str) -> Result<TagId, FfiError> {
     id.parse().map_err(|_| invalid("No such tag."))
 }
@@ -45,7 +71,8 @@ pub struct TagChoice {
     pub selected: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+// Mirror only the wire shape: the types (and their behavior) are todo-client’s own.
+#[uniffi::remote(Enum)]
 pub enum RepeatUnit {
     Day,
     Week,
@@ -59,29 +86,29 @@ pub struct CustomRepeat {
     /// Monday is the least significant bit.
     pub weekdays: u8,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum RepeatChoice {
+#[uniffi::remote(Enum)]
+pub enum RepeatPreset {
     Daily,
     Weekdays,
     Weekly,
     Monthly,
     Yearly,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum RepeatChoice {
+    Preset { preset: RepeatPreset },
     Custom { draft: CustomRepeat },
     Stop,
 }
 impl RepeatChoice {
     fn rule(self, t: &Task, today: Date) -> Option<Rule> {
-        let anchor = t.due.unwrap_or(today);
-        let preset = match self {
-            Self::Daily => Preset::Daily,
-            Self::Weekdays => Preset::Weekdays,
-            Self::Weekly => Preset::Weekly,
-            Self::Monthly => Preset::Monthly,
-            Self::Yearly => Preset::Yearly,
-            Self::Stop => return None,
-            Self::Custom { draft } => return Some(draft.fields(t, today).rule()),
-        };
-        Some(preset.rule_for(anchor, t.recurrence.as_ref()))
+        match self {
+            Self::Preset { preset } => {
+                Some(preset.rule_for(t.due.unwrap_or(today), t.recurrence.as_ref()))
+            }
+            Self::Custom { draft } => Some(draft.fields(t, today).rule()),
+            Self::Stop => None,
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -94,12 +121,7 @@ pub struct RepeatOption {
 impl CustomRepeat {
     fn fields(self, t: &Task, today: Date) -> repeat::RepeatDraft {
         let mut draft = repeat::RepeatDraft::new(t.due, t.recurrence.as_ref(), today);
-        draft.unit = match self.unit {
-            RepeatUnit::Day => repeat::Unit::Day,
-            RepeatUnit::Week => repeat::Unit::Week,
-            RepeatUnit::Month => repeat::Unit::Month,
-            RepeatUnit::Year => repeat::Unit::Year,
-        };
+        draft.unit = self.unit;
         draft.interval = self.interval;
         draft.days = std::array::from_fn(|i| self.weekdays & (1 << i) != 0);
         draft
@@ -113,17 +135,10 @@ pub struct RepeatPreview {
 }
 
 pub(crate) fn presets(t: &Task, today: Date) -> Vec<RepeatOption> {
-    use RepeatChoice as C;
     repeat::presets(t.due, t.recurrence.as_ref(), today)
         .into_iter()
-        .map(|(p, _, label, selected)| RepeatOption {
-            choice: match p {
-                Preset::Daily => C::Daily,
-                Preset::Weekdays => C::Weekdays,
-                Preset::Weekly => C::Weekly,
-                Preset::Monthly => C::Monthly,
-                Preset::Yearly => C::Yearly,
-            },
+        .map(|(preset, _, label, selected)| RepeatOption {
+            choice: RepeatChoice::Preset { preset },
             label,
             selected,
         })
@@ -133,12 +148,7 @@ pub(crate) fn presets(t: &Task, today: Date) -> Vec<RepeatOption> {
 pub(crate) fn draft(t: &Task, today: Date) -> CustomRepeat {
     let d = repeat::RepeatDraft::new(t.due, t.recurrence.as_ref(), today);
     CustomRepeat {
-        unit: match d.unit {
-            repeat::Unit::Day => RepeatUnit::Day,
-            repeat::Unit::Week => RepeatUnit::Week,
-            repeat::Unit::Month => RepeatUnit::Month,
-            repeat::Unit::Year => RepeatUnit::Year,
-        },
+        unit: d.unit,
         interval: d.interval,
         weekdays: d
             .days
@@ -279,7 +289,7 @@ impl TodoEngine {
         let (_, cmds) = intent::tag_task_named(&self.state(), task_id(&task)?, &name, || {
             self.client.new_uuid()
         })
-        .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| invalid(one_line(&e.create_message())))?;
         for cmd in cmds {
             self.client.submit(cmd)?;
         }
@@ -288,7 +298,7 @@ impl TodoEngine {
     pub fn rename_tag(&self, id: String, name: String) -> Result<bool, FfiError> {
         self.submit_some(
             intent::rename_tag(&self.state(), tag_id(&id)?, &name)
-                .map_err(|e| invalid(e.to_string()))?,
+                .map_err(|e| invalid(one_line(&e.rename_message())))?,
         )
     }
     pub fn set_swatch(&self, target: ColorTarget, key: String) -> Result<bool, FfiError> {

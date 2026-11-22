@@ -62,7 +62,7 @@ internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Uni
             detail.repeatOptions.forEach { option -> Choice(option.label, option.selected) { choose(option.choice) } }
             Choice("Custom…", detail.repeats && detail.repeatOptions.none { it.selected }, onCustom)
             Choice("Don’t repeat", !detail.repeats) { choose(RepeatChoice.Stop) }
-            if (detail.due == null) Label("Due starts today or on the next matching day.", Tokens.Type.META_PHONE, LocalDesign.current.room.ink3, maxLines = Int.MAX_VALUE)
+            if (detail.due == null) Label(undatedRepeatNote(), Tokens.Type.META_PHONE, LocalDesign.current.room.ink3, maxLines = Int.MAX_VALUE)
             Button("Cancel", false, onClick = cancel)
         }
     } else {
@@ -103,11 +103,11 @@ internal fun MoveListCard(home: Home, list: RoomKey.List, choose: (String?) -> U
 }
 
 @Composable
-internal fun SwatchCard(selected: String, choose: (String) -> Unit, cancel: () -> Unit) {
+internal fun SwatchCard(target: ColorTarget, selected: String, choose: (String) -> Unit, cancel: () -> Unit) {
     val d = LocalDesign.current
-    PickerCard("Colour") {
+    PickerCard(colourHeading(target)) {
         Tokens.swatches.chunked(6).forEach { group -> Row(Modifier.fillMaxWidth()) {
-            group.forEach { hue -> Box(Modifier.weight(1f).height(P.TOUCH.dp).clickable { choose(hue) }.semantics { contentDescription = if (hue == selected) "$hue, selected" else hue }, contentAlignment = Alignment.Center) {
+            group.forEach { hue -> Box(Modifier.weight(1f).height(P.TOUCH.dp).clickable { choose(hue) }.semantics { contentDescription = swatchName(hue) + if (hue == selected) ", selected" else "" }, contentAlignment = Alignment.Center) {
                 Box(Modifier.size(S.S8.dp).background(d.list(hue).tint, CircleShape).border(Tokens.Elevation.HAIRLINE.dp, d.list(hue).dot, CircleShape), contentAlignment = Alignment.Center) { if (hue == selected) Icon("check", d.list(hue).ink) }
             } }
         } }
@@ -173,7 +173,7 @@ internal fun TagsDialog(detail: TaskDetail, actions: Actions, dismiss: () -> Uni
             page == "Tags" || tag == null -> TagsCard(detail.tags, { edit(OrganizeEdit.ToggleTag(detail.id, it.id)) }, { id = it.id; page = "Options" }, { edit(OrganizeEdit.TagNamed(detail.id, it)) }, overlay::close, actions::tagNamed)
             page == "Options" -> TagOptions(tag, { edit(OrganizeEdit.ToggleTag(detail.id, tag.id)) }, { page = it })
             page == "Rename" -> RenameCard("Rename tag", tag.name, { edit(OrganizeEdit.RenameTag(tag.id, it)) }, overlay::close)
-            page == "Colour" -> SwatchCard(tag.hue, { edit(OrganizeEdit.Color(ColorTarget.Tag(tag.id), it)) }, overlay::close)
+            page == "Colour" -> SwatchCard(ColorTarget.Tag(tag.id), tag.hue, { edit(OrganizeEdit.Color(ColorTarget.Tag(tag.id), it)) }, overlay::close)
             else -> Unit
         }
     }

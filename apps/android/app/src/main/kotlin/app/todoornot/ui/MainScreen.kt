@@ -141,10 +141,14 @@ private fun Screen(
                 is MenuAction.MoveList -> MoveListCard(state.home, action.room, { id -> overlay.choose { actions.organize(OrganizeEdit.MoveList(action.room.id, id)) } }, overlay::close)
                 is MenuAction.Colour -> {
                     val item = state.home.groups.flatMap { listOfNotNull(it.collection) + it.lists }.find { it.key == action.room }
-                    if (item == null) SideEffect { overlay.close() } else SwatchCard(item.hue, { hue -> overlay.choose {
-                        val target = when (val k = action.room) { is RoomKey.Collection -> ColorTarget.Collection(k.id); is RoomKey.List -> ColorTarget.List(k.id); else -> error("Not a colour target") }
-                        actions.organize(OrganizeEdit.Color(target, hue))
-                    } }, overlay::close)
+                    val target = when (val k = action.room) {
+                        is RoomKey.Collection -> ColorTarget.Collection(k.id)
+                        is RoomKey.List -> ColorTarget.List(k.id)
+                        else -> null
+                    }
+                    if (item == null || target == null) SideEffect { overlay.close() } else SwatchCard(target, item.hue, { hue ->
+                        overlay.choose { actions.organize(OrganizeEdit.Color(target, hue)) }
+                    }, overlay::close)
                 }
                 else -> Unit
             }

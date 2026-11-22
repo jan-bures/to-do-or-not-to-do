@@ -1342,8 +1342,14 @@ async fn organize_and_page_activity_with_exact_event_undo() {
     assert!(
         matches!(e.confirm_organize_delete(target,asked).unwrap(),OrganizeDeletion::Changed{question:Some(q)} if q.contains("its list and its task"))
     );
-    e.set_repeat(id.clone(), RepeatChoice::Weekdays, now())
-        .unwrap();
+    e.set_repeat(
+        id.clone(),
+        RepeatChoice::Preset {
+            preset: todo_client::intent::repeat::Preset::Weekdays,
+        },
+        now(),
+    )
+    .unwrap();
     e.tag_task_named(id.clone(), "herbs".into()).unwrap();
     let change = e
         .add_web_link(id.clone(), "todo.example.com".into())
@@ -1483,8 +1489,14 @@ async fn collection_restore_tag_name_collision_and_batch_undo() {
         .add_task(list.clone(), "File receipts".into(), now())
         .unwrap();
     e.tag_task_named(id.clone(), "tax".into()).unwrap();
-    e.set_repeat(id.clone(), RepeatChoice::Daily, now())
-        .unwrap();
+    e.set_repeat(
+        id.clone(),
+        RepeatChoice::Preset {
+            preset: todo_client::intent::repeat::Preset::Daily,
+        },
+        now(),
+    )
+    .unwrap();
     let tag = e.task(id.clone(), now()).unwrap().tags[0].id.clone();
     let settle = || eventually("sent", || e.status().pending == 0);
     let delete = |target: ColorTarget| {

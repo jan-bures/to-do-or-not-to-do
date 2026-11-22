@@ -618,7 +618,7 @@ class TodoModelTest {
         val invalid = m.previewRepeat(id, monday.copy(weekdays = 0u))
         assertFalse(invalid.valid)
         assertEquals("Choose at least one weekday.", invalid.description)
-        m.organize(app.todoornot.model.OrganizeEdit.Repeat(id, app.todoornot.core.RepeatChoice.Weekdays))
+        m.organize(app.todoornot.model.OrganizeEdit.Repeat(id, app.todoornot.core.RepeatChoice.Preset(app.todoornot.core.RepeatPreset.WEEKDAYS)))
         s.drain()
         assertEquals("2026-11-23", m.ui.value.detail!!.due)
         m.undo(m.ui.value.toast!!)

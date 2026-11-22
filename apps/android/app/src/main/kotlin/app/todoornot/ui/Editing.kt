@@ -173,9 +173,6 @@ internal fun datePickerColors(r: RoomColors, markToday: Boolean) = DatePickerDef
 /** Below this height the date picker drops its headline (the cover screen on its side). */
 internal val COMPACT_BELOW = Tokens.Metrics.Phone.INNER_LIST.dp + Tokens.Space.S10.dp * 2
 
-/** Shown when the list changed (renamed, or tasks came or went) while the delete question was open. */
-const val LIST_CHANGED = "The list changed while the question was open. Check it, then confirm again."
-
 /** Under the picker when the task repeats: what Clear also does. */
 const val REPEAT_NOTE = "This task repeats. Clearing the date also stops the repeat."
 
@@ -250,7 +247,7 @@ fun DeleteListCard(
     DialogCard("Delete $noun?", modifier = Modifier.verticalScroll(rememberScrollState())) {
         Label("Delete $noun?",  Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         Label(question, Tokens.Type.NOTES, r.ink2, maxLines = 8)
-        if (changed) Label("The $noun changed while the question was open. Check it, then confirm again.", Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)
+        if (changed) Label(app.todoornot.core.deleteRecheckText(noun), Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)
         Button("Cancel", primary = true, modifier = Modifier.focusRequester(cancel), onClick = onCancel)
         Button("Delete $noun", primary = false, danger = true, enabled = !busy, onClick = onDelete)
     }

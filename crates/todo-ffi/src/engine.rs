@@ -1237,8 +1237,14 @@ mod tests {
                 .unwrap()
         };
         let repeat = intent::repeat::Preset::Daily.rule(Now::new(now).today());
-        e.set_repeat(task.to_string(), RepeatChoice::Daily, now)
-            .unwrap();
+        e.set_repeat(
+            task.to_string(),
+            RepeatChoice::Preset {
+                preset: intent::repeat::Preset::Daily,
+            },
+            now,
+        )
+        .unwrap();
         assert_eq!(
             Some(last()),
             intent::repeat::set_repeat(&before, task, Some(repeat), Now::new(now).today()).unwrap()
