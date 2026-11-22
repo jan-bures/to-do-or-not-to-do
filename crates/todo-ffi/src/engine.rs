@@ -20,7 +20,7 @@ use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
 use todo_client::{ClientConfig, Connection, ErrorKind, MemoryStorage, SyncClient};
 use todo_core::command::{NewTask, Placement, TaskPatch};
-use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
+use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
@@ -376,9 +376,14 @@ impl TodoEngine {
         view::room_filtered(&self.client.view(), &key, &filter, &Now::new(now))
     }
 
-    /// The navigation, counting the tasks in `placement` as they were (see [`view::placed`]).
+    /// The navigation, counting the tasks held or being reopened in `placement` as they were (see
+    /// [`view::placed`]). Pins belong to the room on screen, so they don't change the counts.
     pub fn home_placed(&self, placement: RowPlacement, now: LocalNow) -> Home {
         let state = self.client.view();
+        let placement = RowPlacement {
+            pinned: Vec::new(),
+            ..placement
+        };
         if placement.is_empty() {
             return view::home(&state, &Now::new(now));
         }
@@ -386,7 +391,7 @@ impl TodoEngine {
     }
 
     /// A room, filtered as [`TodoEngine::room_matching`] (an empty filter shows everything), with the tasks
-    /// in `placement` kept where they were while their choreography plays (see [`view::placed`]).
+    /// in `placement` kept where they were while their choreography plays (see [`view::room_placed`]).
     pub fn room_placed(
         &self,
         key: RoomKey,
@@ -394,12 +399,13 @@ impl TodoEngine {
         placement: RowPlacement,
         now: LocalNow,
     ) -> RoomView {
-        let state = self.client.view();
-        let now = Now::new(now);
-        if placement.is_empty() {
-            return view::room_filtered(&state, &key, &filter, &now);
-        }
-        view::room_filtered(&view::placed(&state, &placement), &key, &filter, &now)
+        view::room_placed(
+            &self.client.view(),
+            &key,
+            &filter,
+            &placement,
+            &Now::new(now),
+        )
     }
 
     /// Whether a task is done now, or `None` when it is gone (deleted, merged, in a deleted list, or unknown): what the app's
@@ -474,6 +480,24 @@ impl TodoEngine {
             Command::CompleteTask { id }
         } else {
             Command::UncompleteTask { id }
+        })?;
+        Ok(())
+    }
+
+    /// Deletes a task (a tombstone: [`TodoEngine::restore_task`] brings it back).
+    pub fn delete_task(&self, id: String) -> Result<(), FfiError> {
+        let id = task_id(&id)?;
+        self.client.submit(Command::Delete {
+            id: EntityId::Task(id),
+        })?;
+        Ok(())
+    }
+
+    /// Restores a deleted task.
+    pub fn restore_task(&self, id: String) -> Result<(), FfiError> {
+        let id = task_id(&id)?;
+        self.client.submit(Command::Restore {
+            id: EntityId::Task(id),
         })?;
         Ok(())
     }

@@ -139,9 +139,60 @@ class MotionTest {
         // The disc clears, the strike draws back, and it's never released.
         val mid = mo.look("a", at + M.OVERLAY_OUT / 2)
         assertTrue(mid.fill < 1f && mid.fill > 0f && mid.strike < 1f)
-        assertTrue(mo.advance(5_000).isEmpty())
+        // At its end it lingers at rest, waiting for no frame, until a read says the room still has it.
+        assertEquals(listOf(Release.Settled("a")), mo.advance(5_000))
+        assertEquals(RowLook.rest(false), mo.row("a", 5_000))
+        assertEquals(setOf("a"), mo.inPlace())
+        assertEquals(Wake.Idle, mo.wake(5_000))
+        assertTrue(mo.advance(10_000).isEmpty())
+        mo.letGo("a")
         assertNull(mo.row("a", 5_000))
         assertEquals(Wake.Idle, mo.wake(5_000))
+    }
+
+    @Test
+    fun a_settled_row_its_room_no_longer_has_collapses_out_and_never_snaps() {
+        for (pace in listOf(Pace.FULL, Pace.REDUCED)) {
+            val mo = Motion()
+            mo.complete("a", 0, pace)
+            mo.reopen("a", 300, pace)
+            val settled = mo.advance(5_000)
+            assertEquals(listOf(Release.Settled("a")), settled)
+            mo.leave("a", 6_000, pace)
+            assertEquals(setOf("a"), mo.inPlace())
+            assertEquals(Section.ROWS, mo.placedIn("a"))
+            assertEquals("$pace: it starts where it is", RowLook.rest(false), mo.look("a", 6_000))
+            assertEquals(Wake.Frame, mo.wake(6_000))
+            // Exit only: it collapses (or, with reduced motion, only fades in REDUCED_FADE).
+            val span = if (pace.reduced) minOf(M.ROW_COLLAPSE, M.REDUCED_FADE).toLong() else M.ROW_COLLAPSE.toLong()
+            val mid = mo.look("a", 6_000 + span / 2)
+            val expected = 1f - M.EASE_EXIT.ease((span / 2).toFloat() / span)
+            assertEquals("$pace", expected, mid.opacity, 1e-4f)
+            assertEquals("$pace", if (pace.reduced) 1f else expected, mid.height, 1e-4f)
+            assertTrue(mo.advance(6_000 + span - 1).isEmpty())
+            // Then it's gone: drawn as nothing, no longer pinned, until a read without it drops it.
+            assertEquals(listOf(Release.Left("a")), mo.advance(6_000 + span))
+            assertTrue(mo.look("a", 6_000 + span).gone)
+            assertTrue(mo.inPlace().isEmpty())
+            assertEquals(Wake.Idle, mo.wake(6_000 + span))
+            assertFalse(mo.retainShown(7_000) { false })
+            assertNull(mo.row("a", 7_000))
+        }
+    }
+
+    @Test
+    fun a_gone_row_its_room_has_again_enters() {
+        val mo = Motion()
+        mo.complete("a", 0, Pace.FULL)
+        mo.reopen("a", 300, Pace.FULL)
+        mo.advance(5_000)
+        mo.leave("a", 5_000, Pace.FULL)
+        assertEquals(listOf(Release.Left("a")), mo.advance(6_000))
+        mo.returned(6_000) { true }
+        assertEquals(0f, mo.look("a", 6_000).height)
+        assertEquals(1f, mo.look("a", 6_000L + M.ROW_ENTER).height)
+        assertTrue(mo.advance(6_000L + M.ROW_ENTER).isEmpty())
+        assertNull(mo.row("a", 6_000L + M.ROW_ENTER))
     }
 
     @Test
@@ -155,7 +206,7 @@ class MotionTest {
         assertEquals(before, mo.look("a", at))
         val back = mo.look("a", at + M.ROW_ENTER)
         assertEquals(1f to 1f, back.height to back.opacity)
-        assertTrue(mo.advance(5_000).isEmpty())
+        assertEquals(listOf(Release.Settled("a")), mo.advance(5_000))
     }
 
     @Test
@@ -184,8 +235,8 @@ class MotionTest {
         assertEquals(Keep.IN_PLACE, mo.complete("a", 60, Pace.FULL))
         assertTrue(mo.reopening().isEmpty())
         assertEquals(Section.COMPLETED, mo.placedIn("a"))
-        assertTrue(mo.advance(5_000).isEmpty())
-        assertNull(mo.row("a", 5_000))
+        assertEquals(listOf(Release.Settled("a")), mo.advance(5_000))
+        assertEquals(RowLook.rest(true), mo.row("a", 5_000))
     }
 
     /**
@@ -205,8 +256,8 @@ class MotionTest {
         mo.complete("done-row", 60, Pace.FULL, from = Section.COMPLETED)
         assertEquals(Section.ROWS, mo.placedIn("done-row"))
         assertEquals(true, mo.expectedDone("done-row"))
-        // Released: it enters among the rows, done.
-        assertEquals(listOf(Release.Completed("agent")), mo.advance(RELEASE_AT))
+        // Released: it enters among the rows, done (the reversed one has settled where it is).
+        assertEquals(listOf(Release.Settled("done-row"), Release.Completed("agent")), mo.advance(RELEASE_AT))
         assertEquals(Section.ROWS, mo.placedIn("agent"))
         assertEquals(true, mo.expectedDone("agent"))
     }
@@ -224,7 +275,7 @@ class MotionTest {
         assertNull(mo.row("c", 300))
         // Settling starts from where each row was: no jump.
         assertNotNull(mo.row("a", 300))
-        assertTrue(mo.advance(5_000).isEmpty())
+        assertEquals(listOf(Release.Settled("a"), Release.Settled("b")), mo.advance(5_000))
         assertEquals(Wake.Idle, mo.wake(5_000))
     }
 
@@ -423,12 +474,20 @@ class MotionTest {
             }
             repeat(1 + rnd.nextInt(40)) { step ->
                 now += if (rnd.nextBoolean()) rnd.nextLong(60) else rnd.nextLong(1_200)
+                val left = HashSet<String>()
                 for (r in mo.advance(now)) {
                     when (r) {
-                        is Release.Completed -> assertTrue(done[r.id] == true && placed[r.id] == false)
-                        is Release.Reopened -> assertTrue(done[r.id] == false && placed[r.id] == true)
+                        is Release.Completed -> {
+                            assertTrue(done[r.id] == true && placed[r.id] == false)
+                            placed[r.id] = true
+                        }
+                        is Release.Reopened -> {
+                            assertTrue(done[r.id] == false && placed[r.id] == true)
+                            placed[r.id] = false
+                        }
+                        is Release.Settled -> assertTrue("$case", r.id in mo.lingering())
+                        is Release.Left -> left += r.id
                     }
-                    placed[r.id] = r is Release.Completed
                 }
                 check("after advance $step")
                 val id = ids[rnd.nextInt(ids.size)]
@@ -452,18 +511,37 @@ class MotionTest {
                 // As the model does: the state answers (a deleted task is gone), and the list doesn't show
                 // a deleted task.
                 mo.reconcile(now, pace) { if (it in deleted) null else done[it] }
-                while (mo.retainShown(now) { it !in deleted }) {
+                // A row that left isn't in the next read.
+                while (mo.retainShown(now) { it !in deleted && it !in left }) {
                     // Letting a task go reads again; the list still doesn't show it.
                 }
+                // A read decides each lingering row: the room has it, or only its pin keeps it.
+                for (l in mo.lingering()) if (rnd.nextBoolean()) mo.leave(l, now, pace) else mo.letGo(l)
                 val holding = mo.holding()
                 val reopening = mo.reopening()
                 for (t in ids) if (t !in holding && t !in reopening) placed[t] = done.getValue(t)
                 check("after step $step")
             }
-            // Quiet: everything is released and at rest, with no frames and no timers.
-            now += 10_000
-            for (r in mo.advance(now)) placed[r.id] = r is Release.Completed
-            assertEquals("$case", Wake.Idle, mo.wake(now))
+            // Quiet: everything is released and at rest, with no frames and no timers, once the reads have
+            // decided the rows that lingered and dropped the rows that left.
+            val left = HashSet<String>()
+            fun quiet() {
+                now += 10_000
+                for (r in mo.advance(now)) {
+                    when (r) {
+                        is Release.Completed -> placed[r.id] = true
+                        is Release.Reopened -> placed[r.id] = false
+                        is Release.Settled -> Unit
+                        is Release.Left -> left += r.id
+                    }
+                }
+                assertEquals("$case", Wake.Idle, mo.wake(now))
+            }
+            quiet()
+            for (l in mo.lingering()) if (rnd.nextBoolean()) mo.leave(l, now, pace) else mo.letGo(l)
+            quiet()
+            mo.retainShown(now) { it !in left }
+            assertTrue(mo.lingering().isEmpty())
             assertTrue(mo.holding().isEmpty() && mo.reopening().isEmpty())
             for (t in ids) {
                 if (t !in deleted) assertEquals("$case $t", done.getValue(t), placed.getValue(t))

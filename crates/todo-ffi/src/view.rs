@@ -9,7 +9,7 @@ use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
-use todo_core::model::{LinkKind, List, Priority, Stamp, Task};
+use todo_core::model::{LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::time::{Date, Timestamp, add_days, days_between};
 
@@ -235,10 +235,11 @@ pub struct TaskRow {
     /// the app. Reopening a task passes it back in [`Reopening`], so the row keeps its completed place (done
     /// tasks sort by it to the nanosecond) while it leaves it.
     pub completed_at: Option<String>,
-    /// When and by whom it was last changed, exactly: opaque to the app. Toggling a task changes it (to
-    /// the owner, now), so the app passes it back in [`LastChange`] and the row keeps its place in a room
-    /// that selects or sorts by it (Agent activity) while its choreography plays.
-    pub updated: String,
+    /// When it was last changed, exactly: an RFC 3339 timestamp to nanoseconds, opaque to the app, and
+    /// only the time (never who changed it, or from where). Toggling a task changes it, so the app passes
+    /// it back in [`Pin`] and the row keeps its place in a room sorted by it (Agent activity) while its
+    /// choreography plays.
+    pub changed_at: String,
 }
 
 /// What the finished day hands over to: tomorrow's first task and the rest of the week.
@@ -294,6 +295,10 @@ pub struct RoomView {
     /// The finished day (not filtered): the next day's name ("Sunday") for *Plan Sunday*, even when
     /// nothing is due then and there is no hand-over.
     pub plan_weekday: Option<String>,
+    /// The rows shown only because the placement pins them ([`RowPlacement::pinned`]): the room itself no
+    /// longer selects them (a task the owner toggled in Agent activity is no longer an agent's change).
+    /// Once its choreography is over, such a row leaves.
+    pub pinned_only: Vec<String>,
 }
 
 /// Where the app's completion choreography keeps tasks while it plays (as the desktop's `UiState::holding`
@@ -305,18 +310,19 @@ pub struct RowPlacement {
     pub holding: Vec<String>,
     /// Tasks just reopened: they keep their completed place and count as done.
     pub reopening: Vec<Reopening>,
-    /// Tasks toggled on screen, with their last change as it was before: a room that selects or sorts by
-    /// it (Agent activity) keeps their rows, in order, where they were.
-    pub last_changes: Vec<LastChange>,
+    /// Tasks held in the room on screen: the room keeps their rows even if its query no longer selects
+    /// them, where they would be with their held done state, completion time and last-change time.
+    pub pinned: Vec<Pin>,
 }
 
-/// A task's last change as it was before a toggle ([`TaskRow::updated`]).
+/// A task held in the room on screen, with when it was last changed before its toggle
+/// ([`TaskRow::changed_at`]): the only sort key a room needs that a toggle changes (Agent activity).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct LastChange {
+pub struct Pin {
     /// Task ID.
     pub id: String,
-    /// Exactly as [`TaskRow::updated`] gave it.
-    pub updated: String,
+    /// Exactly as [`TaskRow::changed_at`] gave it.
+    pub changed_at: String,
 }
 
 /// A task being reopened, with when it had been completed ([`TaskRow::completed_at`]).
@@ -331,18 +337,20 @@ pub struct Reopening {
 impl RowPlacement {
     /// Nothing held back.
     pub fn is_empty(&self) -> bool {
-        self.holding.is_empty() && self.reopening.is_empty() && self.last_changes.is_empty()
+        self.holding.is_empty() && self.reopening.is_empty() && self.pinned.is_empty()
+    }
+
+    /// The pinned tasks (IDs that don't parse are ignored).
+    fn pins(&self) -> BTreeSet<TaskId> {
+        self.pinned.iter().filter_map(|p| task_id(&p.id)).collect()
     }
 }
 
-/// [`TaskRow::updated`]: the stamp, as JSON.
-fn stamp_token(s: &Stamp) -> String {
-    serde_json::to_string(s).unwrap_or_default()
-}
-
-/// The state as the rows place it while a choreography plays: each held task still open, and each task
-/// being reopened still done, as it was. IDs or times that don't parse, and IDs that name no task, are
-/// ignored. Only the list and its counts read this; the detail pane always shows the truth.
+/// The state as the rows place it while a choreography plays: each held task still open, each task
+/// being reopened still done, as it was, and each pinned task last changed when it was before its toggle
+/// (only the time: who changed it stays as it is). IDs or times that don't parse, and IDs that name no
+/// task, are ignored. Only the list and its counts read this; the detail pane always shows the truth.
+/// The room itself keeps the pinned rows too: see [`room_placed`].
 pub fn placed(state: &State, placement: &RowPlacement) -> State {
     let mut placed = state.clone();
     for id in &placement.holding {
@@ -357,14 +365,37 @@ pub fn placed(state: &State, placement: &RowPlacement) -> State {
             t.completed_at = r.completed_at.parse::<Timestamp>().ok();
         }
     }
-    for c in &placement.last_changes {
-        if let Some(t) = task_id(&c.id).and_then(|id| placed.tasks.get_mut(&id))
-            && let Ok(s) = serde_json::from_str::<Stamp>(&c.updated)
+    for p in &placement.pinned {
+        if let Some(t) = task_id(&p.id).and_then(|id| placed.tasks.get_mut(&id))
+            && let Ok(at) = p.changed_at.parse::<Timestamp>()
         {
-            t.updated = s;
+            t.updated.at = at;
         }
     }
     placed
+}
+
+/// A room with the tasks in `placement` kept where they were while their choreography plays: the state
+/// is [`placed`], and the room keeps each pinned task (live, in any list) among its rows even if its
+/// query no longer selects it, in the order the room sorts by. Those rows are listed in
+/// [`RoomView::pinned_only`].
+pub fn room_placed(
+    state: &State,
+    key: &RoomKey,
+    filter_text: &str,
+    placement: &RowPlacement,
+    now: &Now,
+) -> RoomView {
+    if placement.is_empty() {
+        return room_filtered(state, key, filter_text, now);
+    }
+    room_view(
+        &placed(state, placement),
+        key,
+        filter_text,
+        now,
+        &placement.pins(),
+    )
 }
 
 fn task_id(id: &str) -> Option<TaskId> {
@@ -552,7 +583,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .collect(),
         from_mail: ix.mail.contains(&task.id),
         completed_at: task.completed_at.map(|c| c.to_string()),
-        updated: stamp_token(&task.updated),
+        changed_at: task.updated.at.to_string(),
     }
 }
 
@@ -589,15 +620,45 @@ pub(crate) fn ordered_lists(state: &State) -> Vec<&List> {
     out
 }
 
-/// The room's tasks: (open in order, done newest first).
-fn room_tasks<'a>(state: &'a State, key: &RoomKey, now: &Now) -> (Vec<&'a Task>, Vec<&'a Task>) {
+/// The room's tasks: open in order, done newest first, and the pinned ones the room only shows because
+/// they're pinned.
+struct RoomTasks<'a> {
+    open: Vec<&'a Task>,
+    done: Vec<&'a Task>,
+    pinned_only: Vec<TaskId>,
+}
+
+/// The pinned tasks the room doesn't select itself: live, and in neither of `open` and `done`.
+fn unselected<'a>(
+    state: &'a State,
+    pins: &BTreeSet<TaskId>,
+    open: &[&Task],
+    done: &[&Task],
+) -> Vec<&'a Task> {
+    pins.iter()
+        .filter(|id| !open.iter().chain(done).any(|t| t.id == **id))
+        .filter_map(|id| state.tasks.get(id))
+        .filter(|t| task_live(state, t))
+        .collect()
+}
+
+fn room_tasks<'a>(
+    state: &'a State,
+    key: &RoomKey,
+    now: &Now,
+    pins: &BTreeSet<TaskId>,
+) -> RoomTasks<'a> {
     let ctx = now.eval();
     match key {
         RoomKey::Smart { list } => {
             let Ok(q) = list.builtin().parse() else {
-                return (Vec::new(), Vec::new());
+                return RoomTasks {
+                    open: Vec::new(),
+                    done: Vec::new(),
+                    pinned_only: Vec::new(),
+                };
             };
-            let open = q.run(state, &ctx);
+            let mut open = q.run(state, &ctx);
             // The rows a smart list hides once done, for its progress and Completed section.
             let done_query = match list {
                 SmartList::MyDay => Some("my_day and done sort:-completed"),
@@ -606,11 +667,32 @@ fn room_tasks<'a>(state: &'a State, key: &RoomKey, now: &Now) -> (Vec<&'a Task>,
                 SmartList::All => Some("done sort:-completed"),
                 SmartList::Completed | SmartList::AgentActivity => None,
             };
-            let done = done_query
-                .and_then(|s| Query::parse(s).ok())
+            let done_q = done_query.and_then(|s| Query::parse(s).ok());
+            let mut done = done_q
+                .as_ref()
                 .map(|q| q.run(state, &ctx))
                 .unwrap_or_default();
-            (open, done)
+            // Pinned tasks the queries no longer select go where the room sorts them: a done one under
+            // the Completed section if the room has one, anything else among the rows.
+            let extra = unselected(state, pins, &open, &done);
+            let pinned_only = extra.iter().map(|t| t.id).collect();
+            if !extra.is_empty() {
+                for t in extra {
+                    match done_q {
+                        Some(_) if t.is_done() => done.push(t),
+                        _ => open.push(t),
+                    }
+                }
+                open.sort_by_cached_key(|t| q.order_key(state, t));
+                if let Some(dq) = &done_q {
+                    done.sort_by_cached_key(|t| dq.order_key(state, t));
+                }
+            }
+            RoomTasks {
+                open,
+                done,
+                pinned_only,
+            }
         }
         RoomKey::Collection { .. } | RoomKey::List { .. } => {
             let in_room = |t: &Task| match key {
@@ -621,16 +703,26 @@ fn room_tasks<'a>(state: &'a State, key: &RoomKey, now: &Now) -> (Vec<&'a Task>,
                 RoomKey::Smart { .. } => false,
             };
             let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| l.position.clone());
+            let pinned_only = state
+                .tasks
+                .values()
+                .filter(|t| pins.contains(&t.id) && !in_room(t) && task_live(state, t))
+                .map(|t| t.id)
+                .collect();
             let (mut open, mut done): (Vec<&Task>, Vec<&Task>) = state
                 .tasks
                 .values()
-                .filter(|t| in_room(t) && task_live(state, t))
+                .filter(|t| (in_room(t) || pins.contains(&t.id)) && task_live(state, t))
                 .partition(|t| !t.is_done());
             open.sort_by(|a, b| {
                 (list_pos(a), &a.position, a.id).cmp(&(list_pos(b), &b.position, b.id))
             });
             done.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then(a.id.cmp(&b.id)));
-            (open, done)
+            RoomTasks {
+                open,
+                done,
+                pinned_only,
+            }
         }
     }
 }
@@ -690,10 +782,24 @@ fn filter<'a>(state: &State, text: &str, ctx: &EvalContext, tasks: Vec<&'a Task>
 /// Derives a room showing only the tasks that match `filter` (see [`filter`]). The progress (sun and
 /// counts) is the whole room's; the finished day's hand-over is left out while filtering.
 pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now) -> RoomView {
+    room_view(state, key, filter_text, now, &BTreeSet::new())
+}
+
+fn room_view(
+    state: &State,
+    key: &RoomKey,
+    filter_text: &str,
+    now: &Now,
+    pins: &BTreeSet<TaskId>,
+) -> RoomView {
     let key = resolve(state, key);
     let ix = Index::new(state, now);
     let today = now.today();
-    let (open, done) = room_tasks(state, &key, now);
+    let RoomTasks {
+        open,
+        done,
+        pinned_only,
+    } = room_tasks(state, &key, now, pins);
 
     let (progress_done, progress_total) = match key {
         RoomKey::Smart {
@@ -827,6 +933,7 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         tomorrow,
         filtered,
         plan_weekday,
+        pinned_only: pinned_only.iter().map(ToString::to_string).collect(),
         key,
     }
 }

@@ -24,8 +24,9 @@ import kotlin.math.roundToLong
  *
  * Reopening a completed task mirrors it: the disc clears (OVERLAY_OUT, EXIT), the row collapses out of its
  * completed place and is released into the open rows, where it enters. Toggling a row again in the middle
- * reverses it from wherever it is, in place. With reduced motion, movement is instant, fades take at most
- * REDUCED_FADE, and the hold keeps its full length ([Pace]).
+ * reverses it from wherever it is, in place; once it has settled, the screen's next read says whether the
+ * room still has it, and if not it collapses out (ROW_COLLAPSE, EXIT) rather than snapping. With reduced
+ * motion, movement is instant, fades take at most REDUCED_FADE, and the hold keeps its full length ([Pace]).
  *
  * Every duration, curve and cue is a `todo-design` token (the generated [Tokens]). Nothing here sleeps or
  * touches Compose: the screen samples it at each frame's time, and [Motion.wake] says when it needs the
@@ -146,6 +147,18 @@ private sealed interface Phase {
 
     /** Entering a list at its new place, after a release. */
     data class Enter(val done: Boolean) : Phase
+
+    /**
+     * A settle that has ended: at rest where it is, until the screen's next read says whether the room
+     * still has the row ([Motion.leave] if not, [Motion.letGo] if so).
+     */
+    data class Linger(val done: Boolean) : Phase
+
+    /** Leaving a room that no longer has the row: it only collapses (ROW_COLLAPSE, EXIT). */
+    data class Leave(val done: Boolean) : Phase
+
+    /** Left: drawn as nothing until a read without it is on screen. */
+    data class Gone(val done: Boolean) : Phase
 }
 
 /**
@@ -189,7 +202,8 @@ private class RowMotion(
     fun exitAt(): Long = when (phase) {
         Phase.Complete -> landed() + M.COMPLETE_HOLD
         Phase.Reopen -> max(clear(), restoreEnd())
-        is Phase.Settle, is Phase.Enter -> Long.MAX_VALUE
+        is Phase.Leave -> 0L
+        is Phase.Settle, is Phase.Enter, is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
     }
 
     private fun exitSpan(): Long = max(pace.movement(M.ROW_COLLAPSE), pace.fade(M.ROW_COLLAPSE))
@@ -202,9 +216,15 @@ private class RowMotion(
             maxOf(clear(), pace.movement(M.CHECK_TICK), pace.fade(M.CHECK_TICK), restoreEnd())
         }
         is Phase.Enter -> max(pace.movement(M.ROW_ENTER), pace.fade(M.ROW_ENTER))
+        is Phase.Leave -> exitSpan()
+        is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
     }
 
-    fun end(): Long = start + length()
+    /** When it ends: never for a row lingering or gone (the screen's reads end those). */
+    fun end(): Long = when (phase) {
+        is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
+        else -> start + length()
+    }
 
     fun look(now: Long): RowLook {
         val e = max(0L, now - start)
@@ -259,10 +279,15 @@ private class RowMotion(
                 height = M.EASE_ENTER.ease(stretch(e, 0, p.movement(M.ROW_ENTER))),
                 opacity = M.EASE_ENTER.ease(stretch(e, 0, p.fade(M.ROW_ENTER))),
             )
+            is Phase.Linger -> f
+            is Phase.Leave -> placed(f)
+            is Phase.Gone -> RowLook.hidden(phase.done)
         }
     }
 
     fun wake(now: Long): Wake {
+        // At rest, or drawn as nothing: no frames until a read decides.
+        if (phase is Phase.Linger || phase is Phase.Gone) return Wake.Idle
         if (phase == Phase.Complete) {
             // Holding still: nothing to draw until the row starts to leave.
             val quiet = start + landed()
@@ -301,6 +326,15 @@ sealed interface Release {
 
     /** A reopened task left its completed place (and enters the open rows). */
     data class Reopened(override val id: String) : Release
+
+    /**
+     * A row that reversed its choreography came to rest where it is ([Phase.Linger]): the screen reads
+     * again to see whether the room still has it.
+     */
+    data class Settled(override val id: String) : Release
+
+    /** A row left a room that no longer has it ([Motion.leave]). */
+    data class Left(override val id: String) : Release
 }
 
 /** Where a toggled task stays while its choreography plays. */
@@ -410,6 +444,9 @@ class Motion {
         Phase.Reopen -> false
         is Phase.Settle -> p.done
         is Phase.Enter -> p.done
+        is Phase.Linger -> p.done
+        is Phase.Leave -> p.done
+        is Phase.Gone -> p.done
     }
 
     private fun start(id: String, phase: Phase, now: Long, pace: Pace, rest: Boolean, section: Section, next: Section = section) {
@@ -455,8 +492,42 @@ class Motion {
 
     private fun ids(phase: Phase): Set<String> = rows.filterValues { it.phase == phase }.keys.toSet()
 
-    /** Tasks whose rows still play where they were toggled: everything in motion but the rows entering after a release. */
-    fun inPlace(): Set<String> = rows.filterValues { it.phase !is Phase.Enter }.keys.toSet()
+    /**
+     * Tasks whose rows still play where they were toggled: everything in motion but the rows entering
+     * after a release and the rows gone. The room keeps these rows where they are.
+     */
+    fun inPlace(): Set<String> = rows.filterValues { it.phase !is Phase.Enter && it.phase !is Phase.Gone }.keys.toSet()
+
+    /** Rows whose settle has ended, waiting for a read to say whether the room still has them. */
+    fun lingering(): Set<String> = rows.filterValues { it.phase is Phase.Linger }.keys.toSet()
+
+    /**
+     * The lingering row of task [id] leaves a room that no longer has it: exit only, it collapses
+     * (ROW_COLLAPSE, EXIT; with reduced motion it fades in REDUCED_FADE and leaves the layout when it's
+     * released), never snapping out.
+     */
+    fun leave(id: String, now: Long, pace: Pace) {
+        val r = rows[id] ?: return
+        val p = r.phase as? Phase.Linger ?: return
+        rows[id] = RowMotion(Phase.Leave(p.done), now, r.look(now), pace, r.section)
+    }
+
+    /** The lingering row of task [id] is where its room has it anyway: it comes to rest. */
+    fun letGo(id: String) {
+        if (rows[id]?.phase is Phase.Linger) rows.remove(id)
+    }
+
+    /**
+     * A row gone from a room that has it again after all (an agent changed it once more): it enters. Only
+     * for a read with the current placement, which no longer keeps it.
+     */
+    fun returned(now: Long, shown: (String) -> Boolean) {
+        for (entry in rows.entries) {
+            val r = entry.value
+            val p = r.phase as? Phase.Gone ?: continue
+            if (shown(entry.key)) entry.setValue(RowMotion(Phase.Enter(p.done), now, RowLook.hidden(p.done), r.pace, r.section))
+        }
+    }
 
     /** The tasks in motion, for following the data ([reconcile]). */
     fun ids(): Set<String> = rows.keys.toSet()
@@ -479,13 +550,17 @@ class Motion {
                     entry.setValue(RowMotion(Phase.Settle(done = r.phase == Phase.Reopen), now, r.look(now), pace, r.section))
                 r.phase is Phase.Settle && r.phase.done != d -> it.remove()
                 r.phase is Phase.Enter && r.phase.done != d -> it.remove()
+                // At rest: it takes the task's new state, and the next read still decides whether it stays.
+                r.phase is Phase.Linger && r.phase.done != d ->
+                    entry.setValue(RowMotion(Phase.Linger(d), now, RowLook.rest(d), pace, r.section))
             }
         }
     }
 
     /**
      * Moves every row past its end: rows that finished leaving are released (and enter their new place,
-     * timed from when they left), finished ones come to rest.
+     * timed from when they left), entering ones come to rest, a settle that has ended lingers until a read
+     * decides ([Release.Settled]), and a row that left a room is gone ([Release.Left]).
      */
     fun advance(now: Long): List<Release> {
         val released = ArrayList<Release>()
@@ -496,13 +571,24 @@ class Motion {
             val end = r.end()
             if (now < end) continue
             val id = entry.key
-            val done = when (r.phase) {
+            val done = when (val p = r.phase) {
                 Phase.Complete -> true
                 Phase.Reopen -> false
-                is Phase.Settle, is Phase.Enter -> {
+                is Phase.Settle -> {
+                    entry.setValue(RowMotion(Phase.Linger(p.done), end, RowLook.rest(p.done), r.pace, r.section))
+                    released += Release.Settled(id)
+                    continue
+                }
+                is Phase.Leave -> {
+                    entry.setValue(RowMotion(Phase.Gone(p.done), end, RowLook.hidden(p.done), r.pace, r.section))
+                    released += Release.Left(id)
+                    continue
+                }
+                is Phase.Enter -> {
                     it.remove()
                     continue
                 }
+                is Phase.Linger, is Phase.Gone -> continue
             }
             released += if (done) Release.Completed(id) else Release.Reopened(id)
             val entering = RowMotion(Phase.Enter(done), end, RowLook.hidden(done), r.pace, r.next)
@@ -534,7 +620,7 @@ class Motion {
                     letGo = true
                     entry.setValue(RowMotion(Phase.Enter(false), now, RowLook.hidden(false), r.pace, r.next))
                 }
-                is Phase.Settle, is Phase.Enter -> it.remove()
+                is Phase.Settle, is Phase.Enter, is Phase.Linger, is Phase.Leave, is Phase.Gone -> it.remove()
             }
         }
         return letGo

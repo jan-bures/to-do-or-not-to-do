@@ -602,7 +602,7 @@ mod tests {
                 id: row.id.clone(),
                 completed_at: at,
             }],
-            last_changes: vec![],
+            pinned: vec![],
         };
         let kept = view::room(&view::placed(&s, &placement), &my_day(), &n).completed;
         assert_eq!(kept, before);

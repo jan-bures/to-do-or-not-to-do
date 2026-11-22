@@ -4,8 +4,8 @@ import app.todoornot.core.ChangeListener
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.Home
-import app.todoornot.core.LastChange
 import app.todoornot.core.LocalNow
+import app.todoornot.core.Pin
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.Reopening
 import app.todoornot.core.RoomKey
@@ -192,9 +192,9 @@ class TodoModel(
 
     /**
      * The tasks in motion or with a toggle still to be written, whose state each read reports so the
-     * motion can follow the data.
+     * motion can follow the data, each with its latest toggle's serial (0 for none) as the read saw it.
      */
-    @Volatile private var moving: Set<String> = emptySet()
+    @Volatile private var moving: Map<String, Long> = emptyMap()
 
     /**
      * When each task being reopened had been completed (exactly, as the engine gave it), so it keeps its
@@ -203,10 +203,11 @@ class TodoModel(
     private val reopenedAt = HashMap<String, String>()
 
     /**
-     * Each task's last change before it was toggled, as its row gave it: a room that selects or sorts by
-     * it (Agent activity) keeps the row there until its choreography is over.
+     * When each task pinned in the room was last changed before it was toggled, as its row gave it: a
+     * room sorted by it (Agent activity) keeps the row where it was while it's pinned. Only the time; who
+     * changed it never reaches the app.
      */
-    private val lastChanges = HashMap<String, String>()
+    private val changedAt = HashMap<String, String>()
 
     /** A toggle: its place in the order they were made, and the state it asks for. */
     private class Toggle(val serial: Long, val done: Boolean)
@@ -248,9 +249,14 @@ class TodoModel(
 
     /**
      * Whether each task in motion is done (null when gone), as of the toggles up to [written], read with
-     * the placement [placed].
+     * the placement [placed], while each task's latest toggle was the one in [toggles].
      */
-    private class Truth(val done: Map<String, Boolean?>, val written: Long, val placed: Long)
+    private class Truth(
+        val done: Map<String, Boolean?>,
+        val written: Long,
+        val placed: Long,
+        val toggles: Map<String, Long> = emptyMap(),
+    )
 
     /** A read: the [inputs] it was read for, the screen, and the state of the tasks in motion. */
     private class Snapshot(val epoch: Long, val state: UiState, val truth: Truth)
@@ -290,7 +296,7 @@ class TodoModel(
             syncedAt = syncedAt,
             showCompleted = showDone,
         )
-        return Snapshot(epoch, state, Truth(ids.associateWith { engine.taskDone(it) }, seen, place.version))
+        return Snapshot(epoch, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
     }
 
     /**
@@ -338,8 +344,9 @@ class TodoModel(
         // next read.
         fun ahead(id: String) = (toggled[id]?.serial ?: 0L) > truth.written
         m.reconcile(now, p) { id -> if (id in truth.done && !ahead(id)) truth.done[id] else m.expectedDone(id) }
-        // A task that's gone has no row to keep: its toggle (whose write is refused) is let go.
-        toggled.keys.removeAll { id -> id in truth.done && truth.done[id] == null }
+        // A task that's gone has no row to keep: its toggle (whose write is refused) is let go. Only the
+        // toggle the read saw, though: one made since (the task restored and toggled again) stands.
+        toggled.entries.removeAll { (id, t) -> id in truth.done && truth.done[id] == null && truth.toggles[id] == t.serial }
         val room = state.room
         m.aimDusk(room.key, room.finished, now, p)
         // The finished day's sun travels from where it is to the end of its arc while the strip it's
@@ -352,6 +359,18 @@ class TodoModel(
         if (state.showCompleted) room.completed.mapTo(listed) { it.id }
         val current = truth.placed == placement.version
         val letGo = current && m.retainShown(now) { it in listed || ahead(it) }
+        if (current) {
+            // A row whose settle has ended, once the read has its toggle written: where the room still has
+            // it, it comes to rest; where only its pin keeps it (the owner's toggle took it out of Agent
+            // activity), it collapses out. A toggle still to be written keeps it until a read has that too.
+            val pinnedOnly = room.pinnedOnly.toSet()
+            for (id in m.lingering()) {
+                if (ahead(id)) continue
+                if (id in pinnedOnly) m.leave(id, now, p) else m.letGo(id)
+            }
+            // A row gone from the room that the room has again after all, not only by its pin, enters.
+            m.returned(now) { it in listed && it !in pinnedOnly }
+        }
         val moved = placeRows()
         motion.touched()
         return letGo || moved
@@ -366,8 +385,10 @@ class TodoModel(
      * A task completing counts as open and one being reopened as done, until released. A toggle not yet
      * written (a second tap that reverses a choreography, say) keeps its task as it asked, open or done,
      * until the engine has it too, even past the end of its choreography: a read in between never moves
-     * the row or changes the counts. A row still where it was toggled keeps its task's last change as it
-     * was, so a room that selects or sorts by it doesn't drop or move the row early.
+     * the row or changes the counts. A row still where it was toggled, or with a toggle to be written, is
+     * pinned in the room, with its task's last-change time as it was: a room that selects or sorts by its
+     * last change (Agent activity) doesn't drop or move the row early. Its leaving is a choreography too
+     * ([Motion.leave]).
      */
     private fun placeRows(): Boolean {
         val m = motion.motion
@@ -379,13 +400,13 @@ class TodoModel(
         val holding = held + unwritten.filterValues { !it.done }.keys
         val reopening = back + unwritten.filterValues { it.done }.keys
         reopenedAt.keys.retainAll(reopening)
-        lastChanges.keys.retainAll(m.inPlace() + unwritten.keys)
+        changedAt.keys.retainAll(m.inPlace() + unwritten.keys)
         val next = RowPlacement(
             holding.sorted(),
             reopening.sorted().mapNotNull { id -> reopenedAt[id]?.let { Reopening(id, it) } },
-            lastChanges.entries.sortedBy { it.key }.map { (id, at) -> LastChange(id, at) },
+            changedAt.entries.sortedBy { it.key }.map { (id, at) -> Pin(id, at) },
         )
-        moving = ids + toggled.keys
+        moving = (ids + toggled.keys).associateWith { toggled[it]?.serial ?: 0L }
         if (next == placement.rows) return false
         placement = Placed(placement.version + 1, next)
         return true
@@ -415,9 +436,18 @@ class TodoModel(
      * filter and its field are cleared together.
      */
     override fun open(room: RoomKey) {
+        enter(room)
+        scope.launch { refresh() }
+    }
+
+    /**
+     * Every way into a room goes through here ([open], [createList]). A new room starts at rest:
+     * choreographies under way, and the rows kept for writes still on their way, are let go, so the rows
+     * are the engine's own. Nothing is selected, the filter and its field are cleared, and Completed is
+     * closed; a read for the room before is never published.
+     */
+    private fun enter(room: RoomKey) {
         synchronized(motion) {
-            // A new room starts at rest: choreographies under way, and the rows kept for writes still on
-            // their way, are let go.
             motion.motion.settleAll()
             toggled.clear()
             placeRows()
@@ -432,7 +462,6 @@ class TodoModel(
                 _ui.value = _ui.value.copy(filter = "", searching = false, showCompleted = false)
             }
         }
-        scope.launch { refresh() }
     }
 
     override fun setShowCompleted(on: Boolean) {
@@ -478,16 +507,7 @@ class TodoModel(
     }
 
     /** Adds a list and opens it. */
-    override fun createList(name: String) = act {
-        val room = engine.createList(name)
-        synchronized(publishing) {
-            key = room
-            selected = null
-            filter = ""
-            searching = false
-            inputs++
-        }
-    }
+    override fun createList(name: String) = act { enter(engine.createList(name)) }
 
     override fun select(id: String?) {
         selected = id
@@ -526,7 +546,8 @@ class TodoModel(
             }
             val toggle = ++toggles
             toggled[id] = Toggle(toggle, done)
-            (row ?: doneRow)?.updated?.let { lastChanges[id] = it }
+            // While it's pinned, its row shows the time it was pinned with: that one stays.
+            (row ?: doneRow)?.changedAt?.let { changedAt.getOrPut(id) { it } }
             if (done) {
                 m.complete(id, at, pace(), from, to)
             } else {

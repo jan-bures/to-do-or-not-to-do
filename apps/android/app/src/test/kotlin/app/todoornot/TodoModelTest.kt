@@ -8,8 +8,10 @@ import app.todoornot.core.TodoEngine
 import app.todoornot.design.Tokens
 import app.todoornot.model.DuskLook
 import app.todoornot.model.Pace
+import app.todoornot.model.RowLook
 import app.todoornot.model.TodoModel
 import app.todoornot.model.Wake
+import app.todoornot.model.ease
 import app.todoornot.model.rowIn
 import app.todoornot.model.Section
 import app.todoornot.model.UnpairQuestion
@@ -52,8 +54,16 @@ class TodoModelTest {
     /** The motion's clock: a test moves it and draws frames by hand ([frame]). */
     private var time = 0L
 
+    /**
+     * The model, run eagerly. It hears of engine changes only from its own writes: the engine's listener
+     * calls back on the engine's threads, racing the test, so only [listening] models use it.
+     */
     private fun TestScope.model(name: String = "world", engine: TodoEngine = fixtureEngine(name), pace: Pace = Pace.FULL) =
-        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time }, pace = { pace })
+        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time }, pace = { pace }, listen = {})
+
+    /** The model with the engine's own listener. */
+    private fun TestScope.listening(engine: TodoEngine) =
+        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time })
 
     /** Moves the clock to [t] and draws a frame there. */
     private fun TodoModel.frame(t: Long) {
@@ -84,11 +94,13 @@ class TodoModelTest {
     }
 
     @Test
-    fun completing_holds_the_row_until_its_choreography_releases_it_and_undo_brings_it_back() = runTest {
-        val m = model()
+    fun completing_holds_the_row_until_its_choreography_releases_it_and_undo_brings_it_back() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
         val task = m.ui.value.room.tasks.first { it.title == "Koupit rohlíky a mléko" }
         m.setDone(task.id, true)
-        advanceUntilIdle()
+        s.drain()
         // Written at once (the toast offers undo), but the row holds its place and the counts wait.
         val toast = m.ui.value.toast!!
         assertEquals(task.id, toast.reopen)
@@ -99,11 +111,11 @@ class TodoModelTest {
 
         // Holding, then collapsing: still there.
         m.frame(EXIT_AT + M.ROW_COLLAPSE / 2)
-        advanceUntilIdle()
+        s.drain()
         assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
         // Released: it leaves the open rows, the count changes, and the sun sets off from where it was.
         m.frame(RELEASE_AT)
-        advanceUntilIdle()
+        s.drain()
         assertFalse(m.ui.value.room.tasks.any { it.id == task.id })
         assertEquals(4u, m.ui.value.room.done)
         assertEquals(8u, m.ui.value.home.smart.first().open)
@@ -114,7 +126,7 @@ class TodoModelTest {
 
         // Undo, with Completed closed: it goes straight back to the open rows, entering.
         m.undo(toast)
-        advanceUntilIdle()
+        s.drain()
         assertNull(m.ui.value.toast)
         assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
         assertEquals(3u, m.ui.value.room.done)
@@ -324,6 +336,12 @@ class TodoModelTest {
         /** The engine says something changed, as its listener would. */
         fun changed() = onChange()
 
+        /** Runs the model's own waiting tasks, not the engine calls they queue. */
+        fun runMain() {
+            var more = main.next()
+            while (more) more = main.next()
+        }
+
         /** Runs every waiting task, checking [each] after every one. */
         fun drain(each: () -> Unit = {}) {
             while (main.next() || io.next()) each()
@@ -383,7 +401,7 @@ class TodoModelTest {
         m.frame(EXIT_AT - 100)
         m.setDone(last, false)
         // What the tap started runs up to its write, queued last; the write is held back.
-        while (s.main.next()) Unit
+        s.runMain()
         val write = s.io.hold()
         fun unchanged() {
             val room = m.ui.value.room
@@ -395,18 +413,21 @@ class TodoModelTest {
         }
         s.drain { unchanged() }
         assertEquals("the reversal isn't written yet", true, engine.taskDone(last))
-        // The settle ends long before the write lands; then the engine says something changed.
+        // The settle ends long before the write lands: the row rests where it is, still kept for its write.
+        // Then the engine says something changed.
         m.frame(time + 5_000)
-        assertNull(m.motion.row(last))
+        assertEquals(RowLook.rest(false), m.motion.row(last))
         s.changed()
         s.drain { unchanged() }
         unchanged()
         assertEquals(true, engine.taskDone(last))
-        // The write lands: nothing moves.
+        assertEquals(RowLook.rest(false), m.motion.row(last))
+        // The write lands: nothing moves, and My Day has the row anyway, so it simply comes to rest.
         write.run()
         s.drain { unchanged() }
         assertEquals(false, engine.taskDone(last))
         unchanged()
+        assertNull(m.motion.row(last))
         assertEquals(Wake.Idle, m.motion.motion.wake(time))
     }
 
@@ -418,23 +439,187 @@ class TodoModelTest {
         s.drain()
         val id = m.ui.value.room.tasks.first().id
         m.setDone(id, true)
-        while (s.main.next()) Unit
+        s.drain()
+        // The completion is written; the tap that reverses it isn't yet. The engine has the task done, but
+        // the row stays open, counted as open, past the end of its choreography.
+        m.frame(EXIT_AT - 100)
+        m.setDone(id, false)
+        s.runMain()
         val write = s.io.hold()
         s.drain()
-        // Not written yet: it's held open, and stays so after its choreography would have released it.
         m.frame(RELEASE_AT + 5_000)
         s.drain()
-        assertEquals(false, engine.taskDone(id))
+        assertEquals(true, engine.taskDone(id))
         assertTrue(m.ui.value.room.tasks.any { it.id == id })
-        // Another room, and back: the rows are the engine's own, and the write lands there.
+        assertEquals(3u, m.ui.value.room.done)
+        // Another room, and back, before the write lands: the rows are the engine's own, done.
         m.open(RoomKey.Smart(SmartList.ALL))
         m.open(MY_DAY)
         s.drain()
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
+        assertTrue(m.ui.value.room.completed.isEmpty() || !m.ui.value.showCompleted)
+        assertEquals(4u, m.ui.value.room.done)
+        assertTrue(m.motion.motion.holding().isEmpty())
+        assertNull(m.motion.row(id))
+        // The write lands: the task is open again, and so is its row.
         write.run()
         s.drain()
-        assertEquals(true, engine.taskDone(id))
-        assertFalse(m.ui.value.room.tasks.any { it.id == id })
-        assertEquals(4u, m.ui.value.room.done)
+        assertEquals(false, engine.taskDone(id))
+        assertTrue(m.ui.value.room.tasks.any { it.id == id })
+        assertEquals(3u, m.ui.value.room.done)
+    }
+
+    @Test
+    fun creating_a_list_enters_it_as_opening_a_room_does() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setShowCompleted(true)
+        m.setFilter("a")
+        m.select(id)
+        s.drain()
+        m.setDone(id, true)
+        s.drain()
+        m.frame(EXIT_AT)
+        assertEquals(setOf(id), m.motion.motion.holding())
+        m.createList("Garden")
+        s.drain()
+        val ui = m.ui.value
+        assertEquals("Garden", ui.room.title)
+        assertNull(ui.detail)
+        assertEquals("", ui.filter)
+        assertFalse(ui.searching)
+        assertFalse(ui.showCompleted)
+        // At rest: what played in the room before is let go.
+        assertTrue(m.motion.motion.holding().isEmpty())
+        assertNull(m.motion.row(id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /**
+     * An agent's task is completed in Agent activity and the tap reversed: both written, the owner is now
+     * its last editor and the room no longer has it. Once the settle ends, it collapses out (never
+     * snapping), whether the reversal's write landed [before] or after the settle ended, with no change
+     * announced by the engine.
+     */
+    private fun aReversedAgentRowLeaves(before: Boolean) {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val agents = RoomKey.Smart(SmartList.AGENT_ACTIVITY)
+        m.open(agents)
+        s.drain()
+        val order = m.ui.value.room.tasks.map { it.id }
+        val row = m.ui.value.room.tasks.drop(1).first { !it.done }
+        m.setDone(row.id, true)
+        s.drain()
+        m.frame(EXIT_AT - 100)
+        m.setDone(row.id, false)
+        var write: Runnable? = null
+        if (before) {
+            s.drain()
+        } else {
+            s.runMain()
+            write = s.io.hold()
+            s.drain()
+        }
+        fun inPlace() = assertEquals(order, m.ui.value.room.tasks.map { it.id })
+        inPlace()
+        // The settle ends.
+        m.frame(EXIT_AT + 5_000)
+        val settled = time
+        s.drain()
+        if (!before) {
+            // Its write is still to land: the row stays, at rest, however long that takes.
+            assertEquals(true, engine.taskDone(row.id))
+            inPlace()
+            assertEquals(RowLook.rest(false), m.motion.rowIn(row.id, Section.ROWS))
+            m.frame(time + 5_000)
+            s.drain()
+            inPlace()
+            assertEquals(RowLook.rest(false), m.motion.rowIn(row.id, Section.ROWS))
+            write!!.run()
+            s.drain()
+        }
+        assertEquals(false, engine.taskDone(row.id))
+        assertFalse("the owner is its last editor", engine.room(agents, FIXTURE_NOW).tasks.any { it.id == row.id })
+        // It collapses out where it is, from its full height.
+        val start = if (before) settled else time
+        inPlace()
+        assertEquals(1f, m.motion.rowIn(row.id, Section.ROWS)!!.height)
+        m.frame(start + M.ROW_COLLAPSE / 2)
+        s.drain()
+        inPlace()
+        val half = m.motion.rowIn(row.id, Section.ROWS)!!
+        assertEquals(1f - M.EASE_EXIT.ease((M.ROW_COLLAPSE / 2).toFloat() / M.ROW_COLLAPSE), half.height, 1e-4f)
+        // Gone: nothing of it shows, and then the list no longer has it.
+        m.frame(start + M.ROW_COLLAPSE)
+        assertTrue(m.motion.rowIn(row.id, Section.ROWS)!!.gone)
+        s.drain()
+        assertEquals(order - row.id, m.ui.value.room.tasks.map { it.id })
+        assertNull(m.motion.row(row.id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun a_reversed_agent_row_leaves_agent_activity_when_its_write_landed_before_the_settle_ended() =
+        aReversedAgentRowLeaves(before = true)
+
+    @Test
+    fun a_reversed_agent_row_leaves_agent_activity_when_its_write_lands_after_the_settle_ended() =
+        aReversedAgentRowLeaves(before = false)
+
+    /**
+     * A read that finds the task deleted is published after the task was restored and the owner reversed
+     * its completion: the reversal, still to be written, keeps its row.
+     */
+    @Test
+    fun a_read_of_a_deleted_task_never_lets_go_of_a_newer_reversal() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        s.drain()
+        m.frame(EXIT_AT - 100)
+        // Deleted elsewhere; a read takes that in.
+        engine.deleteTask(id)
+        s.refreshLater()
+        s.main.next()
+        s.io.next()
+        // Restored (the engine says so), and the owner reverses the completion before that read is
+        // published. The reversal's write waits.
+        engine.restoreTask(id)
+        s.changed()
+        m.setDone(id, false)
+        s.main.last()
+        val write = s.io.hold()
+        // The old read shows the task gone for a moment; it never lets the newer reversal go, so the task
+        // is never placed done.
+        fun neverDone() {
+            val room = m.ui.value.room
+            assertFalse(room.completed.any { it.id == id })
+            assertEquals(3u, room.done)
+        }
+        fun kept() {
+            neverDone()
+            assertTrue(m.ui.value.room.tasks.any { it.id == id })
+        }
+        s.drain { neverDone() }
+        kept()
+        assertEquals("the reversal isn't written yet", true, engine.taskDone(id))
+        m.frame(time + 5_000)
+        s.drain { kept() }
+        kept()
+        write.run()
+        s.drain { kept() }
+        assertEquals(false, engine.taskDone(id))
+        assertNull(m.motion.row(id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
     }
 
     @Test
@@ -520,7 +705,7 @@ class TodoModelTest {
     @Test
     fun a_change_the_engine_announces_reaches_the_screen() = runTest {
         val engine = fixtureEngine()
-        val m = model(engine = engine)
+        val m = listening(engine)
         val id = m.ui.value.room.tasks.first().id
         // Written behind the model's back, as a sync would.
         engine.setDone(id, true)

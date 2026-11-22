@@ -632,7 +632,7 @@ fn a_finished_day_offers_planning_even_with_nothing_due_tomorrow() {
 
 #[test]
 fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
-    use todo_ffi::view::{LastChange, Reopening, RowPlacement};
+    use todo_ffi::view::{Pin, Reopening, RowPlacement};
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let before = engine.room(my_day(), now());
     let home_before = engine.home(now());
@@ -645,7 +645,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
     let holding = RowPlacement {
         holding: vec![first.clone()],
         reopening: vec![],
-        last_changes: vec![],
+        pinned: vec![],
     };
     let held = engine.room_placed(my_day(), String::new(), holding.clone(), now());
     assert_eq!(held.tasks[0].id, first);
@@ -653,6 +653,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
         (held.done, held.total, held.open),
         (before.done, before.total, before.open)
     );
+    assert!(held.pinned_only.is_empty());
     assert_eq!(engine.home_placed(holding, now()), home_before);
     // A filter still applies.
     let filtered = engine.room_placed(
@@ -672,9 +673,9 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
         .find(|t| t.id == first)
         .expect("completed");
     let at = done.completed_at.clone().expect("a completion time");
-    let updated = done.updated.clone();
 
-    // Reopened: it keeps its completed place, exactly as it was, until released, and counts as done.
+    // Reopened: it keeps its completed place, exactly as it was, until released, and counts as done. My
+    // Day selects it anyway, so its pin keeps nothing that the room wouldn't show.
     engine.set_done(first.clone(), false).unwrap();
     let reopening = RowPlacement {
         holding: vec![],
@@ -682,24 +683,31 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
             id: first.clone(),
             completed_at: at,
         }],
-        last_changes: vec![LastChange {
+        pinned: vec![Pin {
             id: first.clone(),
-            updated,
+            changed_at: done.changed_at.clone(),
         }],
     };
     let kept = engine.room_placed(my_day(), String::new(), reopening, now());
     assert_eq!(kept.completed, released.completed);
     assert_eq!(kept.done, released.done);
     assert!(kept.tasks.iter().all(|t| t.id != first));
+    assert!(kept.pinned_only.is_empty());
 
-    // Unknown or malformed IDs are ignored; a task that's gone answers None.
+    // Unknown or malformed IDs and times are ignored; a task that's gone answers None.
     let junk = RowPlacement {
         holding: vec!["not-an-id".into()],
         reopening: vec![],
-        last_changes: vec![LastChange {
-            id: "not-an-id".into(),
-            updated: "not a stamp".into(),
-        }],
+        pinned: vec![
+            Pin {
+                id: "not-an-id".into(),
+                changed_at: "not a time".into(),
+            },
+            Pin {
+                id: first.clone(),
+                changed_at: "not a time".into(),
+            },
+        ],
     };
     assert_eq!(
         engine.room_placed(my_day(), String::new(), junk, now()),
@@ -709,16 +717,15 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
 }
 
 #[test]
-fn a_placement_keeps_a_toggled_agent_task_in_agent_activity_in_order() {
-    use todo_ffi::view::{LastChange, Reopening, RowPlacement};
+fn a_pinned_agent_task_stays_in_agent_activity_in_order_and_no_actor_crosses() {
+    use todo_ffi::view::{Pin, Reopening, RoomView, RowPlacement};
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let agents = RoomKey::Smart {
         list: SmartList::AgentActivity,
     };
     let before = engine.room(agents.clone(), now());
-    let ids =
-        |r: &todo_ffi::view::RoomView| r.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
-    // An open agent task that isn't the most recent change: toggling it would move it to the top too.
+    let ids = |r: &RoomView| r.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+    // An open agent task that isn't the most recent change: a toggle would move it to the top too.
     let row = before
         .tasks
         .iter()
@@ -726,25 +733,51 @@ fn a_placement_keeps_a_toggled_agent_task_in_agent_activity_in_order() {
         .find(|t| !t.done)
         .expect("an open agent task below the first")
         .clone();
-    let kept = LastChange {
+    let pin = Pin {
         id: row.id.clone(),
-        updated: row.updated.clone(),
+        changed_at: row.changed_at.clone(),
     };
     engine.set_done(row.id.clone(), true).unwrap();
 
     // The owner's toggle took it out of Agent activity...
     let truth = engine.room(agents.clone(), now());
     assert!(truth.tasks.iter().all(|t| t.id != row.id));
-    // ...but held, with its last change as it was, the row stays where it was, open, marked as before.
+    assert!(truth.pinned_only.is_empty());
+    // ...but held and pinned, the row stays where it was, open, and the room says only the pin keeps it.
     let held = RowPlacement {
         holding: vec![row.id.clone()],
         reopening: vec![],
-        last_changes: vec![kept.clone()],
+        pinned: vec![pin.clone()],
     };
     let placed = engine.room_placed(agents.clone(), String::new(), held, now());
-    assert_eq!(placed, before);
+    assert_eq!(ids(&placed), ids(&before));
+    assert!(!placed.tasks.iter().find(|t| t.id == row.id).unwrap().done);
+    assert_eq!(placed.pinned_only, vec![row.id.clone()]);
+    assert_eq!(placed.open, before.open);
+    // Held without its pin, the room drops it: the pin is what keeps it.
+    let unpinned = RowPlacement {
+        holding: vec![row.id.clone()],
+        reopening: vec![],
+        pinned: vec![],
+    };
+    let placed = engine.room_placed(agents.clone(), String::new(), unpinned, now());
+    assert!(placed.tasks.iter().all(|t| t.id != row.id));
 
-    // Released, then reopened from the Completed room: it has a completion time and the owner's stamp.
+    // The completion is reversed, and that is written too: pinned alone (its choreography settling), it
+    // stays where it was, open.
+    engine.set_done(row.id.clone(), false).unwrap();
+    let settling = RowPlacement {
+        holding: vec![],
+        reopening: vec![],
+        pinned: vec![pin.clone()],
+    };
+    let placed = engine.room_placed(agents.clone(), String::new(), settling, now());
+    assert_eq!(ids(&placed), ids(&before));
+    assert_eq!(placed.pinned_only, vec![row.id.clone()]);
+
+    // Completed again and reopened from the Completed room: back among Agent activity's rows, done,
+    // where it was.
+    engine.set_done(row.id.clone(), true).unwrap();
     let done = engine
         .room(
             RoomKey::Smart {
@@ -757,16 +790,55 @@ fn a_placement_keeps_a_toggled_agent_task_in_agent_activity_in_order() {
         .find(|t| t.id == row.id)
         .expect("completed");
     engine.set_done(row.id.clone(), false).unwrap();
-    // Reopening, with the agent's last change: back among Agent activity's rows, done, where it was.
     let reopening = RowPlacement {
         holding: vec![],
         reopening: vec![Reopening {
             id: row.id.clone(),
             completed_at: done.completed_at.clone().unwrap(),
         }],
-        last_changes: vec![kept],
+        pinned: vec![pin],
     };
     let placed = engine.room_placed(agents.clone(), String::new(), reopening, now());
     assert_eq!(ids(&placed), ids(&before));
     assert!(placed.tasks.iter().find(|t| t.id == row.id).unwrap().done);
+
+    // Nothing about who changed a task, or from which device, is in its row: only the time.
+    for room in [before, truth, placed] {
+        for t in room.tasks.iter().chain(&room.completed) {
+            let shown = format!("{t:?}");
+            assert!(!shown.contains("fixture-phone"), "{shown}");
+            assert!(!shown.contains("owner"), "{shown}");
+            assert!(
+                t.changed_at.parse::<todo_core::time::Timestamp>().is_ok(),
+                "{}",
+                t.changed_at
+            );
+        }
+    }
+}
+
+#[test]
+fn a_deleted_task_is_gone_until_restored() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let id = engine.room(my_day(), now()).tasks[0].id.clone();
+    engine.delete_task(id.clone()).unwrap();
+    assert_eq!(engine.task_done(id.clone()), None);
+    assert!(engine.task(id.clone(), now()).is_none());
+    assert!(
+        engine
+            .room(my_day(), now())
+            .tasks
+            .iter()
+            .all(|t| t.id != id)
+    );
+    engine.restore_task(id.clone()).unwrap();
+    assert_eq!(engine.task_done(id.clone()), Some(false));
+    assert!(
+        engine
+            .room(my_day(), now())
+            .tasks
+            .iter()
+            .any(|t| t.id == id)
+    );
+    assert!(engine.delete_task("not-an-id".into()).is_err());
 }

@@ -53,16 +53,22 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   completed place (it counts as done until then) and enters the open rows. Undo is a reopening. The
   Completed and Agent activity lists show done tasks among their rows: there a row plays its choreography
   where it is, and enters there too. A toggle makes the owner the task's last editor, so the placement also
-  passes back each toggled row's last change as it was (`TaskRow.updated`): Agent activity keeps the row, in
-  order, until it's released.
+  pins each row still where it was toggled (`RowPlacement.pinned`), with only the time of its last change
+  before the toggle (`TaskRow.changedAt`): the room keeps a pinned row even when its query no longer selects
+  it, in the order it sorts by, and lists it in `RoomView.pinnedOnly`. Agent activity keeps the row, in
+  order, until it's released. Who changed a task, or from which device, never reaches the app.
 - **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
   released. Until the engine has the reversal written, the reads still place the task as the tap asked, even
   if the write lands after the row has settled, so a read in between never moves the row or changes the
-  counts (the hold goes when the write lands or is refused, when the task is gone, or on switching rooms);
-  a read taken with a placement the motion
-  has since changed is never published. A change from elsewhere (another device, an agent, a refused command) settles a choreography
-  the same way; a deleted task, or one the list stops showing, stops at once; switching rooms puts
-  everything at rest. A row that has gone (or hasn't arrived) takes no taps.
+  counts (the hold goes when the write lands or is refused, when the task is gone, or on switching rooms;
+  a read that finds the task gone lets go only of the toggle it saw, never of a newer one); a read taken
+  with a placement the motion has since changed is never published. When a reversed row has settled and its
+  write has landed (in either order), the next read decides: where the room still has the row, it simply
+  comes to rest; where only its pin keeps it (a reversed toggle in Agent activity still makes the owner the
+  last editor), it collapses out (`ROW_COLLAPSE`, `EXIT`; a `REDUCED_FADE` fade with reduced motion) and is
+  then let go. It never snaps out. A change from elsewhere (another device, an agent, a refused command) settles a choreography
+  the same way; a deleted task, or one the list stops showing, stops at once; switching rooms (or creating a
+  list, which opens it) puts everything at rest. A row that has gone (or hasn't arrived) takes no taps.
 - **The sun** eases from where it is to wherever the count puts it, whatever changed it (a sync too),
   retargeting mid-travel. A new room places it without travel.
 - **Dusk.** Once My Day's last row has left, the header grows into the dusk scene over `DUSK` (`SUN`): the
