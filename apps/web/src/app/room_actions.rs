@@ -1,6 +1,6 @@
 //! List and collection actions, and the sidebar's list of refused changes.
 
-use super::{Ctx, RoomId, backend, ctx, glyph, icon, model, pickers, platform, sync_text};
+use super::{Ctx, RoomId, backend, ctx, glyph, icon, model, pickers, platform, sync_presentation};
 use leptos::html;
 use leptos::prelude::*;
 use todo_client::{CommandId, intent};
