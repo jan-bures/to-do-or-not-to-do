@@ -389,12 +389,19 @@ pub struct DetailField {
 /// Where a task came from.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SourceLink {
+    /// Browser destination, only for a parsed HTTP(S) URL with a host.
+    pub url: Option<String>,
     /// Subject or page title.
     pub title: String,
-    /// "sender · Thu 12 Nov, 10:20" or the host.
+    /// "sender · Thu 12 Nov, 10:20" or the web link as text.
     pub subtitle: String,
     /// Lucide icon key (`mail` or `link`).
     pub icon: String,
+}
+
+fn browser_url(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.has_host()).then(|| url.to_string())
 }
 
 /// Everything the detail pane shows.
@@ -1058,6 +1065,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .into_iter()
         .map(|l| match &l.kind {
             LinkKind::Email(m) => SourceLink {
+                url: m.web_link.as_deref().and_then(browser_url),
                 title: m.subject.clone(),
                 subtitle: format!(
                     "{} · {}, {}",
@@ -1069,13 +1077,8 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             },
             LinkKind::Web { url, title } => SourceLink {
                 title: title.clone().unwrap_or_else(|| url.clone()),
-                subtitle: url::Url::parse(url)
-                    .ok()
-                    .and_then(|u| {
-                        u.host_str()
-                            .map(|h| h.trim_start_matches("www.").to_owned())
-                    })
-                    .unwrap_or_default(),
+                subtitle: url.clone(),
+                url: browser_url(url),
                 icon: "link".into(),
             },
         })

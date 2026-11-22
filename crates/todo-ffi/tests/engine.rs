@@ -289,6 +289,149 @@ fn bad_input_is_refused_before_it_reaches_the_outbox() {
 }
 
 #[test]
+fn notes_and_quick_add_preview_use_the_submit_builders_semantics() {
+    use todo_ffi::engine::quick_add_date;
+    let n = now();
+    let engine = TodoEngine::fixture("blank".into(), n).unwrap();
+    let text = "Sow seeds zítra !!";
+    assert_eq!(quick_add_date(text.into(), n).as_deref(), Some("Tomorrow"));
+    assert!(quick_add_date(r"Sow seeds \tomorrow".into(), n).is_none());
+    assert!(quick_add_date("Sow seeds !!".into(), n).is_none());
+    let id = engine.add_task(my_day(), text.into(), n).unwrap();
+    let task = &engine.state().tasks[&id.parse().unwrap()];
+    let today = todo_ffi::labels::Now::new(n).today();
+    assert_eq!(task.due, todo_core::time::add_days(today, 1));
+    assert_eq!(task.title, "Sow seeds");
+    let pending = engine.status().pending;
+    for text in ["First line\nSecond line\n", "First line\nSecond line", ""] {
+        engine.set_notes(id.clone(), text.into()).unwrap();
+        assert_eq!(engine.task(id.clone(), n).unwrap().notes, text.trim_end());
+    }
+    assert_eq!(
+        engine.status().pending,
+        pending + 2,
+        "unchanged notes do not enqueue an edit"
+    );
+}
+
+#[test]
+fn only_http_and_https_source_destinations_cross_the_bridge() {
+    use todo_core::model::LinkKind;
+    use todo_ffi::labels::Now;
+    let n = now();
+    let engine = TodoEngine::fixture("world".into(), n).unwrap();
+    let mut state = (*engine.state()).clone();
+    let (&link, source) = state.links.iter().next().unwrap();
+    let task = source.task.to_string();
+    let LinkKind::Email(mail) = source.kind.clone() else {
+        panic!("fixture mail")
+    };
+    for (raw, expected) in [
+        ("HTTPS://example.com", Some("https://example.com/")),
+        ("http://example.com/path", Some("http://example.com/path")),
+        ("intent://example.com", None),
+        ("mailto:you@example.com", None),
+        ("file:///notes", None),
+        ("not a URL", None),
+    ] {
+        let mut mail = mail.clone();
+        mail.web_link = Some(raw.into());
+        for kind in [
+            LinkKind::Email(mail),
+            LinkKind::Web {
+                title: Some("Page".into()),
+                url: raw.into(),
+            },
+        ] {
+            state.links.get_mut(&link).unwrap().kind = kind;
+            let d = todo_ffi::view::detail(&state, &task, &Now::new(n)).unwrap();
+            assert_eq!(d.sources.len(), 1);
+            assert_eq!(d.sources[0].url.as_deref(), expected);
+            if d.sources[0].icon == "link" {
+                assert_eq!(d.sources[0].subtitle, raw);
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_undo_removes_the_next_occurrence_and_reports_a_conflict_in_plain_language() {
+    use todo_core::command::TaskPatch;
+    use todo_core::recurrence::{Recurrence, Rule};
+    let server = TestServer::start().await;
+    let db = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(EngineConfig {
+        server_url: server.url(),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let id = engine
+        .add_task(my_day(), "Water seedlings today".into(), now())
+        .unwrap();
+    let task = id.parse().unwrap();
+    engine.start().unwrap();
+    eventually("creation confirmed", || engine.status().pending == 0).await;
+    let remote = &server.running.engine;
+    let elsewhere = |seq, cmd| {
+        remote
+            .execute(
+                &Actor::owner("desktop").unwrap(),
+                uuid::Uuid::from_u128(seq),
+                &cmd,
+            )
+            .unwrap();
+    };
+    elsewhere(
+        1,
+        todo_client::intent::update_task(
+            task,
+            TaskPatch {
+                recurrence: Some(Some(Recurrence::new(Rule::Daily { interval: 1 }))),
+                ..Default::default()
+            },
+        ),
+    );
+    eventually("repeat rule received", || {
+        engine.state().tasks[&task].recurrence.is_some()
+    })
+    .await;
+    let target = engine.set_done(id.clone(), true).unwrap().unwrap();
+    eventually("repeat confirmed", || {
+        engine.status().pending == 0 && remote.state().tasks.len() == 2
+    })
+    .await;
+    engine.undo_completion(target).unwrap();
+    eventually("exact inverse confirmed", || {
+        engine.status().pending == 0
+            && remote.state().tasks.len() == 1
+            && !remote.state().tasks[&task].is_done()
+    })
+    .await;
+    let target = engine.set_done(id, true).unwrap().unwrap();
+    eventually("second completion confirmed", || {
+        engine.status().pending == 0 && remote.state().tasks.len() == 2
+    })
+    .await;
+    for (seq, done) in [(2, false), (3, true)] {
+        elsewhere(
+            seq,
+            todo_client::intent::set_done(&remote.state(), task, done).unwrap(),
+        );
+    }
+    engine.undo_completion(target).unwrap();
+    eventually("conflicting undo refused", || !engine.failed().is_empty()).await;
+    assert_eq!(
+        engine.failed()[0].reason,
+        "Couldn't undo: the task was changed again."
+    );
+    assert!(remote.state().tasks[&task].is_done());
+    engine.stop();
+}
+
+#[test]
 fn fixture_commands_apply_offline() {
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let before = engine.room(my_day(), now());

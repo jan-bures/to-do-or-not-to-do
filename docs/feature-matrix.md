@@ -104,7 +104,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Quick add in a room | `CreateTask` `C/command.rs:197` | wired `D/ui/shell.rs:248`, `:940` | wired `W/app.rs:1146` | wired `A/ui/RoomPane.kt:152`, `F/engine.rs:440` |
 | The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` |
-| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired on submit (`W/app.rs`) | wired on submit (`F/engine.rs`) |
+| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired on submit (`W/app.rs`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
 | Quick-add field's calendar and flag icons | n/a | hidden until the date picker (D2); the date and priority are typed (`D/ui/shell.rs:1564`) | missing | missing |
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
@@ -127,7 +127,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
 | Edit the title | `UpdateTask.title` `C/command.rs:199` | wired `D/ui/shell/detail.rs:144`; E | wired `W/app.rs:1949`, `:2017`; E | wired `A/ui/Detail.kt:173`, `F/engine.rs:521` |
-| Edit notes | `UpdateTask.notes` | wired `D/ui/shell/detail.rs:160` (multi-line) | wired `W/app.rs:2039` | shown only, and hidden when empty (`A/ui/Detail.kt:147`); missing edit |
+| Edit notes | `UpdateTask.notes` | wired `D/ui/shell/detail.rs:160` (multi-line) | wired `W/app.rs:2039` | wired: multi-line edit, save and clear (`A/ui/Detail.kt`, `F/engine.rs::set_notes`) |
 | Complete from the detail pane | `CompleteTask` | wired `D/ui/shell/detail.rs:781` | wired `W/app.rs:1730` | wired `A/ui/Detail.kt:110` |
 | My Day toggle | `SetMyDay` `C/command.rs:226` | wired `D/ui/shell/detail.rs:735` | wired `W/app.rs:1683` | wired `A/ui/Detail.kt:88`, `F/engine.rs:547` |
 | Important toggle (high priority or none) | `UpdateTask.priority` | wired `D/ui/shell/detail.rs:744` | wired `W/app.rs:1694` | wired `A/ui/Detail.kt:94`, `F/engine.rs:558` |
@@ -142,7 +142,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:749`) | shown "read only" | shown |
 | Create, rename or recolour a tag | `CreateTag` / `UpdateTag` `C/command.rs:291`, `:301` | missing | missing | missing |
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
-| Links: open a web or email link | `Link` | wired, http(s) only (`D/ui/shell/detail.rs:600`) | wired `W/app.rs:1906` | **stub** `A/ui/Detail.kt:304`: an arrow but no click; the FFI's `SourceLink` carries no URL (`F/view.rs:391`) |
+| Links: open a web or email link | `Link` | wired, http(s) only (`D/ui/shell/detail.rs:600`) | wired `W/app.rs:1906` | wired: `SourceCard` opens an HTTP(S) destination through `ACTION_VIEW`; otherwise text only (`A/ui/Detail.kt`, `F/view.rs`) |
 | Add or remove a link | `AddLink` `C/command.rs:316`; `Delete` | missing | missing | missing |
 | Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired `W/app.rs:1842`, `W/platform.rs:255` | missing (not in `TaskDetail`, `F/view.rs:402`) |
 | Attachments: open | same | wired: documents and images only (`D/ui/shell/detail.rs:656`) | n/a (the browser opens downloads) | missing |
@@ -158,7 +158,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
-| Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | missing: reopens instead, which leaves a recurring task's next occurrence behind (`A/model/TodoModel.kt:671`) |
+| Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | n/a (no reorder) | n/a |
 | Undo anything else (rename, edits, deletes) | same | partial: deleting a list or a step can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | missing | missing |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
@@ -254,14 +254,14 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 
 | # | Gap | Size |
 |---|---|---|
-| 4.1 | Edit notes. They are shown read-only, and hidden when empty. Needs `TodoEngine.setNotes`. | S |
-| 4.2 | Open links. The arrow is a stub, and `SourceLink` carries no URL. | S |
+| 4.1 | **Done.** Editable notes, including **Add notes** when empty. | S |
+| 4.2 | **Done.** Open HTTP(S) sources; other sources have no arrow. | S |
 | 4.3 | Attachments: list, download, open (`TaskDetail` has none). | M |
-| 4.4 | Exact undo through `undo_tracked`. Reopening leaves a recurring task's next occurrence behind (`A/model/TodoModel.kt:671`). | M |
+| 4.4 | **Done.** Exact completion undo through `undo_tracked`, including recurring tasks. | M |
 | 4.5 | Due date (a date picker), priority (four levels). | M |
 | 4.6 | Steps: rename, reorder, delete. | S–M |
 | 4.7 | Lists: rename, delete, reorder; collections: rename, reorder. | M |
-| 4.8 | A live date chip in quick-add. The shared parser already reads the suffix on submit. | S |
+| 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
 | 4.9 | Agent summary in the drawer. | S |
 | 4.10 | Reminder notifications (local alarms from synced reminders). | L |
 | 4.11 | Task delete and move, tags, reminders, repeat, once the shared command helpers exist. | — |
@@ -275,4 +275,4 @@ maps its own room key to the shared task intent. This resolves the creation drif
 - Every new list gets a stable swatch from its ID.
 - All three clients can create lists inside collections.
 - New tasks are placed first in their list's manual order. A smart list may display its own sort order.
-- Web and Android parse the same trailing date and priority as desktop. The live date chip remains desktop-only.
+- Web and Android parse the same trailing date and priority as desktop. Desktop and Android preview the parsed date while typing.

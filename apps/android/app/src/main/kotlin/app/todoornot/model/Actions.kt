@@ -14,6 +14,8 @@ interface Actions {
      */
     fun setDone(id: String, done: Boolean, generation: Long? = null, row: Boolean = generation != null)
     fun rename(id: String, title: String)
+    fun notesDraft(task: String): NotesDraft
+    fun setNotes(id: String, notes: String, onResult: (String?) -> Unit)
     fun setMyDay(id: String, on: Boolean)
 
     /** The star: important is high priority, as on the desktop. */
@@ -57,6 +59,8 @@ interface Actions {
         override fun add(title: String) = Unit
         override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) = Unit
         override fun rename(id: String, title: String) = Unit
+        override fun notesDraft(task: String) = NotesDraft(task)
+        override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) = Unit
         override fun setMyDay(id: String, on: Boolean) = Unit
         override fun setImportant(id: String, on: Boolean) = Unit
         override fun addStep(task: String, title: String, onResult: (String?) -> Unit) = Unit

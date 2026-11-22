@@ -1,5 +1,7 @@
 package app.todoornot
 
+import app.todoornot.core.Completion
+import app.todoornot.core.quickAddDate
 import app.todoornot.core.FailedChange
 import app.todoornot.core.Home
 import app.todoornot.core.LocalNow
@@ -88,10 +90,12 @@ private class WithAgent(private val real: TodoEngine) : TodoEngine(NoHandle) {
         touched.add(0, id)
     }
 
-    override fun setDone(id: String, done: Boolean) {
+    override fun setDone(id: String, done: Boolean): Completion? {
         touched.remove(id)
-        real.setDone(id, done)
+        return real.setDone(id, done)
     }
+
+    override fun undoCompletion(completion: Completion) = real.undoCompletion(completion)
 
     override fun roomPlaced(key: RoomKey, filter: String, placement: RowPlacement, now: LocalNow): RoomView {
         val view = real.roomPlaced(if (key == gone) MY_DAY else key, filter, placement, now)
@@ -153,6 +157,63 @@ class TodoModelTest {
     }
 
     @Test
+    fun the_date_chip_uses_submit_syntax() {
+        assertEquals("Tomorrow", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
+        assertNull(quickAddDate("Buy seeds \\tomorrow", FIXTURE_NOW))
+        assertNull(quickAddDate("Buy seeds tomorrow at noon", FIXTURE_NOW))
+    }
+
+    @Test
+    fun notes_save_clear_cancel_and_keep_refused_drafts() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.select(id)
+        s.drain()
+        val draft = m.notesDraft(id)
+        for (notes in listOf("Two packets\nof seeds.", "")) {
+            draft.edit(notes)
+            draft.save(m)
+            draft.save(m)
+            assertTrue(m.notesDraft(id).saving)
+            s.drain()
+            assertNull(draft.text)
+            assertNull(draft.problem)
+            assertEquals(notes, m.ui.value.detail?.notes)
+        }
+        val long = "a".repeat(100_001)
+        draft.edit(long)
+        draft.save(m)
+        s.drain()
+        assertNotNull(draft.problem)
+        assertEquals(long, draft.text)
+        draft.edit(null) // Cancel.
+        assertNull(draft.problem)
+        assertNull(draft.text)
+        assertEquals("", m.ui.value.detail?.notes)
+    }
+
+    @Test
+    fun cancelling_an_unsent_completion_restores_the_agent_and_consumes_only_the_current_toast() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        m.open(AGENTS)
+        s.drain()
+        val row = m.ui.value.room.tasks.first { !it.done }
+        m.setDone(row.id, true)
+        s.drain()
+        val toast = m.ui.value.toast!!
+        assertTrue(m.motion.motion.isGhost(row.id))
+        m.undo(toast)
+        m.undo(toast)
+        s.drain()
+        assertEquals(0u, m.ui.value.status.pending)
+        assertTrue(m.ui.value.room.tasks.any { it.id == row.id && it.agent == row.agent && !it.done })
+        assertFalse(m.motion.motion.isGhost(row.id))
+    }
+
+    @Test
     fun adding_in_my_day_lands_in_my_day() = runTest {
         val m = model()
         m.add("Post the parcel")
@@ -173,7 +234,7 @@ class TodoModelTest {
         s.drain()
         // Written at once (the toast offers undo), but the row holds its place and the counts wait.
         val toast = m.ui.value.toast!!
-        assertEquals(task.id, toast.reopen)
+        assertEquals(task.id, toast.completion?.task)
         assertEquals(true, m.engine.taskDone(task.id))
         assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
         assertEquals(3u, m.ui.value.room.done)
@@ -570,7 +631,7 @@ class TodoModelTest {
 
     /**
      * An agent's task is completed in Agent activity: written, the owner is its last editor, and the room
-     * no longer lists it. Its row plays on as a ghost where it was, inert and never counted, and Undo
+     * no longer lists it. Its row plays on as a ghost where it was, inert and never counted, and the detail checkbox
      * reverses it there; it settles, then collapses out (never snapping), whether the reversal's write
      * lands [before] the settle ends or after the row has gone.
      */
@@ -604,8 +665,8 @@ class TodoModelTest {
         assertEquals(true, engine.taskDone(row.id))
         assertEquals(look, m.motion.row(row.id))
         assertEquals(setOf(row.id), m.motion.motion.holding())
-        // Undo reverses it where it is; the reversal's write lands now, or after the row has gone.
-        m.undo(m.ui.value.toast!!)
+        // A manual reopen keeps the owner as last editor, unlike cancelling the unsent completion.
+        m.setDone(row.id, false, m.ui.value.generation, row = false)
         var write: Runnable? = null
         if (before) {
             s.drain()
@@ -711,7 +772,7 @@ class TodoModelTest {
         m.setDone(row.id, true, m.ui.value.generation)
         s.drain()
         m.frame(EXIT_AT - 100)
-        m.undo(m.ui.value.toast!!)
+        m.setDone(row.id, false, m.ui.value.generation, row = false)
         s.drain()
         assertEquals(false, engine.taskDone(row.id))
         // Mid-exit.
@@ -807,7 +868,7 @@ class TodoModelTest {
         assertTrue(m.motion.motion.holding().isEmpty())
         // Undo, after My Day opens again and before its read lands.
         val toast = m.ui.value.toast!!
-        assertEquals(id, toast.reopen)
+        assertEquals(id, toast.completion?.task)
         m.open(MY_DAY)
         assertEquals(ALL, m.ui.value.room.key)
         m.undo(toast)
@@ -1030,7 +1091,7 @@ class TodoModelTest {
         val ui = m.ui.value
         assertEquals(ALL, ui.room.key)
         assertNotEquals(shown.generation, ui.generation)
-        assertEquals(id, ui.toast?.reopen)
+        assertEquals(id, ui.toast?.completion?.task)
         // All has it done at once: not held among its open rows, and counted done.
         assertFalse(ui.room.tasks.any { it.id == id })
         assertTrue(ui.room.completed.any { it.id == id })

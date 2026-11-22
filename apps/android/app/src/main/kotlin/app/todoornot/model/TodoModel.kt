@@ -1,5 +1,6 @@
 package app.todoornot.model
 
+import app.todoornot.core.Completion
 import app.todoornot.core.ChangeListener
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
@@ -30,12 +31,14 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+/** The task ID drives only the row animation; the handle identifies exactly which event to undo. */
+data class CompletionAction(val task: String, val target: Completion)
+
 /** A short message above the composer, with an optional undo. */
 data class Toast(
     val serial: Long,
     val text: String,
-    /** The task to reopen on undo, for a completion. */
-    val reopen: String? = null,
+    val completion: CompletionAction? = null,
 )
 
 /** Everything the main screen shows, read from the engine in one go. */
@@ -183,6 +186,13 @@ class TodoModel(
      * cleanup is [pruneDrafts]; the map is bounded by the open tasks viewed in this process.
      */
     private val stepDrafts = ConcurrentHashMap<String, StepDraft>()
+
+    // The open editor (including an in-flight save) survives Activity recreation without putting
+    // potentially long notes in the saved-state Bundle. A different task gets a different editor.
+    @Volatile private var notes: NotesDraft? = null
+
+    override fun notesDraft(task: String): NotesDraft =
+        notes?.takeIf { it.task == task } ?: NotesDraft(task).also { notes = it }
 
     @Volatile private var syncedAt: LocalNow? = null
 
@@ -532,6 +542,7 @@ class TodoModel(
                 generation++
                 key = room
                 if (fresh) {
+                    notes = null
                     selected = null
                     filter = ""
                     searching = false
@@ -592,6 +603,7 @@ class TodoModel(
     }
 
     override fun select(id: String?) {
+        if (notes?.task != id) notes = null
         selected = id
         scope.launch { refresh() }
     }
@@ -612,7 +624,10 @@ class TodoModel(
      * row, so nothing there moves, is placed or is painted. A ghost's [row] is inert: a tap on it does
      * nothing at all (the Undo toast and the detail pane still reverse it).
      */
-    override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) {
+    override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) =
+        toggle(id, done, generation, row, undo = null)
+
+    private fun toggle(id: String, done: Boolean, generation: Long?, row: Boolean, undo: Completion?) {
         val (toggle, again) = synchronized(motion) {
             if ((generation ?: _ui.value.generation) != this.generation) return@synchronized null to false
             val m = motion.motion
@@ -655,9 +670,17 @@ class TodoModel(
         if (again) scope.launch { refresh() }
         act {
             try {
-                val title = engine.task(id, now())?.title
-                engine.setDone(id, done)
-                if (done && title != null) show(Toast(++serial, "Completed “$title”", reopen = id))
+                if (undo != null) {
+                    engine.undoCompletion(undo)
+                } else {
+                    val title = if (done) engine.task(id, now())?.title else null
+                    val target = engine.setDone(id, done)
+                    if (target != null && title != null) {
+                        show(Toast(++serial, "Completed “$title”", CompletionAction(id, target)))
+                    } else if (!done && toast?.completion?.task == id) {
+                        show(null)
+                    }
+                }
             } finally {
                 // Written (or refused): the engine has the task as it is now, so the placement lets it go
                 // before the read that follows.
@@ -672,9 +695,10 @@ class TodoModel(
     }
 
     override fun undo(t: Toast) {
-        if (toast?.serial == t.serial) show(null)
-        val id = t.reopen
-        if (id != null) setDone(id, false) else scope.launch { refresh() }
+        if (toast?.serial != t.serial) return
+        val action = t.completion ?: return
+        show(null)
+        toggle(action.task, false, generation = null, row = false, undo = action.target)
     }
 
     override fun dismissToast(t: Toast) {
@@ -708,12 +732,18 @@ class TodoModel(
         }
     }
 
-    override fun addStep(task: String, title: String, onResult: (String?) -> Unit) {
+    override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) =
+        editWithResult(onResult) { engine.setNotes(id, notes) }
+
+    override fun addStep(task: String, title: String, onResult: (String?) -> Unit) =
+        editWithResult(onResult) { engine.addStep(task, title) }
+
+    private fun editWithResult(onResult: (String?) -> Unit, edit: () -> Unit) {
         scope.launch {
             val problem = writes.withLock {
                 withContext(io) {
                     try {
-                        engine.addStep(task, title)
+                        edit()
                         null
                     } catch (e: FfiException) {
                         PairingModel.describe(e)

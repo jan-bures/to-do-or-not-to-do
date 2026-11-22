@@ -23,9 +23,13 @@ What the first version does:
   (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
   draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
-- **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) on submit, with no
-  preview. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday
-  (`Sunday`, `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
+- **Notes and sources.** Tap the notes, or **Add notes** on an empty task. Enter inserts a new line;
+  **Save notes** keeps the plain text (clear the field to remove it), and **Cancel** leaves it unchanged.
+  A source with a web address opens in the browser. Sources without an HTTP or HTTPS destination are
+  text only, with no arrow.
+- **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) while typing and on
+  submit. A calendar chip previews a recognized date without changing the text. A trailing date can be
+  `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
   keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
   priority and Planned defaults to due today. New tasks go first in their list's manual order. If no
   destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.
@@ -58,8 +62,12 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   model counts it as open: each read passes the rows in their choreography (`RowPlacement`) to
   `TodoEngine.roomPlaced` and `homePlaced`.
 - **Reopening** a completed task mirrors it: the disc clears (`OVERLAY_OUT`), the row collapses out of its
-  completed place (it counts as done until then) and enters the open rows. Undo is a reopening. The
-  Completed and Agent activity lists show done tasks among their rows: there a row plays its choreography
+  completed place (it counts as done until then) and enters the open rows. Undo plays the reopening
+  motion but reverses the exact completion through `SyncClient::undo_tracked`. If it can cancel the
+  unsent command it does; otherwise the outbox sends a checked inverse, including removal of a recurring
+  task's generated next occurrence. A conflicting edit is not overwritten: the failed-change banner
+  explains why Undo could not be applied.
+  The Completed and Agent activity lists show done tasks among their rows: there a row plays its choreography
   where it is, and enters there too. The placement only ever keeps a task's done state, by exact completion
   time (`TaskRow.completedAt`); rows carry no device or actor stamp for it (the agent badge still names the
   agent that last touched a task).

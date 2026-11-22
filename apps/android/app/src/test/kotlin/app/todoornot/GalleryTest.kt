@@ -40,7 +40,6 @@ import app.todoornot.model.Actions
 import app.todoornot.model.MotionFrame
 import app.todoornot.model.PairingState
 import app.todoornot.model.TodoModel
-import app.todoornot.model.Toast
 import app.todoornot.model.UiState
 import app.todoornot.session.EngineHost
 import app.todoornot.ui.CantOpenScreen
@@ -88,7 +87,6 @@ class GalleryTest {
         engine: TodoEngine,
         room: RoomKey = RoomKey.Smart(SmartList.MY_DAY),
         select: String? = null,
-        toast: Toast? = null,
         filter: String = "",
         fold: List<String> = emptyList(),
     ): UiState {
@@ -96,7 +94,7 @@ class GalleryTest {
         if (select != null) m.select(select)
         if (filter.isNotEmpty()) m.setFilter(filter)
         fold.forEach(m::toggleCollection)
-        return m.read().copy(toast = toast)
+        return m.read()
     }
 
     private fun shot(name: String, device: DeviceConfig, content: @Composable () -> Unit) {
@@ -174,8 +172,9 @@ class GalleryTest {
 
     @Test
     fun cover_toast_after_completing() {
-        val s = state(fixtureEngine(), toast = Toast(1, "Completed “Koupit rohlíky a mléko”", reopen = "x"))
-        main("cover_toast_light", COVER, s, dark = false)
+        val e = fixtureEngine()
+        val id = e.taskId(RoomKey.Smart(SmartList.MY_DAY), "Koupit rohlíky a mléko")
+        motionShot("cover_toast_light", moving(e, { m -> m.setDone(id, true) }, 0L))
     }
 
     @Test
@@ -185,6 +184,32 @@ class GalleryTest {
         val s = state(e, admin, select = e.taskId(admin, "Renew passport appointment"))
         main("cover_detail_light", COVER, s, dark = false)
         main("cover_detail_dark", COVER, s, dark = true)
+    }
+
+    @Test
+    fun editing_notes_and_sources() {
+        val e = fixtureEngine()
+        val admin = e.list("Admin")
+        val id = e.taskId(admin, "Renew passport appointment")
+        val s = state(e, admin, select = id)
+        val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = admin, listen = {})
+        m.select(id)
+        m.notesDraft(id).edit("Bring the form.\nAsk for a copy.")
+        shot("notes_editor", COVER) { MainScreen(m.ui.value, m, false, false) }
+        // One source opens in the browser; the other has no destination and no arrow.
+        val detail = requireNotNull(s.detail)
+        val otherMail = e.room(RoomKey.Smart(SmartList.ALL), FIXTURE_NOW).tasks.asSequence()
+            .flatMap { e.task(it.id, FIXTURE_NOW)!!.sources }.first { it.url == null }
+        val links = detail.copy(steps = emptyList(), fields = emptyList(), sources = detail.sources + otherMail)
+        main("source_links", COVER, s.copy(detail = links), dark = false)
+    }
+
+    @Test
+    fun parsed_quick_add_date() {
+        val s = state(fixtureEngine())
+        shot("quick_add_date", COVER) {
+            MainScreen(s, Actions.None, false, false, draft = "Water the plants zítra !!", collapsed = true)
+        }
     }
 
     /** While typing (the keyboard can't be drawn here, so the collapse is forced): bar, tasks, composer. */

@@ -1,5 +1,9 @@
 package app.todoornot.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -144,10 +150,7 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, genera
                 }
             }
             AddStep(detail.id, actions)
-            if (detail.notes.isNotBlank()) {
-                Caps("Notes")
-                Label(detail.notes, Tokens.Type.NOTES, r.ink2, maxLines = Int.MAX_VALUE)
-            }
+            key(detail.id) { TaskNotes(detail, actions) }
             if (detail.fields.isNotEmpty()) {
                 Spacer(Modifier.height(S.S4.dp))
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true))
@@ -204,6 +207,50 @@ private fun TitleField(detail: TaskDetail, actions: Actions, modifier: Modifier)
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
     )
+}
+
+@Composable
+private fun TaskNotes(detail: TaskDetail, actions: Actions) {
+    val r = LocalDesign.current.room
+    val draft = actions.notesDraft(detail.id)
+    Caps("Notes")
+    val text = draft.text
+    if (text == null) {
+        Box(
+            Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Edit notes") {
+                draft.edit(detail.notes)
+            },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Label(detail.notes.ifEmpty { "Add notes" }, Tokens.Type.NOTES,
+                if (detail.notes.isEmpty()) r.ink3 else r.ink2, maxLines = Int.MAX_VALUE)
+        }
+    } else {
+        NotesEditor(text, draft.saving, draft.problem, draft::edit, onCancel = { draft.edit(null) }, onSave = { draft.save(actions) })
+    }
+}
+
+@Composable
+private fun NotesEditor(text: String, saving: Boolean, problem: String?, onEdit: (String) -> Unit, onCancel: () -> Unit, onSave: () -> Unit) {
+    val r = LocalDesign.current.room
+    Column(verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+        BasicTextField(
+            value = text,
+            onValueChange = onEdit,
+            enabled = !saving,
+            modifier = Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
+                .border(Tokens.Elevation.HAIRLINE.dp, r.control, RoundedCornerShape(Tokens.Radius.MD.dp))
+                .padding(S.S2.dp).semantics { contentDescription = "Notes" },
+            textStyle = Tokens.Type.NOTES.style(r.ink),
+            cursorBrush = SolidColor(r.accent),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+        )
+        if (problem != null) Label(problem, Tokens.Type.META_PHONE, r.dangerInk, maxLines = Int.MAX_VALUE)
+        Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+            Button("Cancel", false, Modifier.weight(1f), enabled = !saving, onClick = onCancel)
+            Button("Save notes", true, Modifier.weight(1f), enabled = !saving, onClick = onSave)
+        }
+    }
 }
 
 /** A step's box: ticking it completes the step. */
@@ -280,6 +327,19 @@ private fun FieldRow(f: DetailField) {
 private fun SourceCard(s: SourceLink) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
+    val context = LocalContext.current
+    // The engine returns a canonical HTTP(S) URL, or null for a text-only source.
+    val link = s.url
+    val open = if (link == null) Modifier else Modifier.clickable(onClickLabel = "Open link") {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link)).addCategory(Intent.CATEGORY_BROWSABLE)
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "No browser can open this link.", Toast.LENGTH_SHORT).show()
+        } catch (_: SecurityException) {
+            Toast.makeText(context, "This phone won't open that link.", Toast.LENGTH_SHORT).show()
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -287,6 +347,8 @@ private fun SourceCard(s: SourceLink) {
             .clip(shape)
             .background(r.raised)
             .border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, shape)
+            .then(open)
+            .heightIn(min = P.TOUCH.dp)
             .padding(horizontal = S.S3.dp, vertical = S.S2.dp + S.S1.dp / 2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
@@ -301,7 +363,7 @@ private fun SourceCard(s: SourceLink) {
             Label(s.title, Tokens.Type.BUTTON_SMALL, r.ink)
             Label(s.subtitle, Tokens.Type.COUNT, r.ink3)
         }
-        Icon("arrow-up-right", r.ink3, size = C.ICON_SMALL.dp)
+        if (link != null) Icon("arrow-up-right", r.ink3, size = C.ICON_SMALL.dp)
     }
 }
 

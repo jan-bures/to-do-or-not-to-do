@@ -112,6 +112,20 @@ pub struct FailedChange {
     pub reason: String,
 }
 
+/// An opaque reference to the exact completion (including its generated next occurrence).
+/// Kept by the toast, never rebuilt from a task ID or timestamp.
+#[derive(Debug, uniffi::Object)]
+pub struct Completion(todo_client::TrackedCommand);
+
+/// The quick-add date label, if the shared submit parser found a trailing date.
+#[uniffi::export]
+pub fn quick_add_date(text: String, now: LocalNow) -> Option<String> {
+    let now = Now::new(now);
+    intent::quick_add::parse(&text, &now.eval())
+        .due
+        .map(|d| crate::labels::relative_day(d, now.today()))
+}
+
 /// The sync engine and view model.
 #[derive(uniffi::Object)]
 pub struct TodoEngine {
@@ -441,10 +455,45 @@ impl TodoEngine {
         Ok(id.to_string())
     }
 
-    /// Completes or reopens a task.
-    pub fn set_done(&self, id: String, done: bool) -> Result<(), FfiError> {
+    /// Completes or reopens a task. Only an actual completion gets an Undo action.
+    pub fn set_done(&self, id: String, done: bool) -> Result<Option<Arc<Completion>>, FfiError> {
         let id = task_id(&id)?;
-        if let Some(command) = intent::set_done(&self.client.view(), id, done) {
+        let Some(command) = intent::set_done(&self.client.view(), id, done) else {
+            return Ok(None);
+        };
+        if done {
+            return Ok(Some(Arc::new(Completion(
+                self.client.submit_tracked(command)?,
+            ))));
+        }
+        self.client.submit(command)?;
+        Ok(None)
+    }
+
+    /// Cancels an unsent completion or queues its checked inverse. A later server refusal is
+    /// reported by `failed`, like other outbox failures, but never with raw server text.
+    pub fn undo_completion(&self, completion: Arc<Completion>) -> Result<(), FfiError> {
+        match self.client.undo_tracked(&completion.0) {
+            Ok(todo_client::TrackedUndo::Cancelled | todo_client::TrackedUndo::Queued(_)) => Ok(()),
+            Ok(todo_client::TrackedUndo::Unavailable) => Err(invalid(
+                "Couldn't undo: the original change couldn't be found.",
+            )),
+            Err(_) => Err(invalid("Couldn't undo that.")),
+        }
+    }
+
+    /// Edits multi-line plain-text notes; empty text clears them.
+    pub fn set_notes(&self, id: String, notes: String) -> Result<(), FfiError> {
+        let id = task_id(&id)?;
+        let state = self.client.view();
+        if !state
+            .tasks
+            .get(&id)
+            .is_some_and(|t| view::task_live(&state, t))
+        {
+            return Err(invalid("No such task."));
+        }
+        if let Some(command) = intent::set_notes(&state, id, &notes) {
             self.client.submit(command)?;
         }
         Ok(())
@@ -550,7 +599,11 @@ impl TodoEngine {
             .map(|f| FailedChange {
                 id: f.entry.command_id.to_string(),
                 what: describe(&f.entry).into(),
-                reason: f.rejection.message,
+                reason: if f.entry.command().is_none() {
+                    undo_failure_message(&f.rejection.code).into()
+                } else {
+                    f.rejection.message
+                },
             })
             .collect()
     }
@@ -559,6 +612,16 @@ impl TodoEngine {
     pub fn dismiss_failed(&self, id: String) -> Result<bool, FfiError> {
         let id = id.parse().map_err(|_| invalid("no such change"))?;
         Ok(self.client.dismiss(id)?)
+    }
+}
+
+fn undo_failure_message(code: &str) -> &'static str {
+    match code {
+        "undo_conflict" => "Couldn't undo: the task was changed again.",
+        "undo_no_event" => "Couldn't undo: the original change couldn't be found.",
+        "epoch_mismatch" | "event_mismatch" => "Couldn't undo: the server's history changed.",
+        "not_found" => "Couldn't undo: the task no longer exists.",
+        _ => "Couldn't undo that.",
     }
 }
 

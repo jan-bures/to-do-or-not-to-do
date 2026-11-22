@@ -1,6 +1,8 @@
 package app.todoornot.ui
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
@@ -63,6 +65,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import app.todoornot.core.quickAddDate
+import app.todoornot.core.localNow
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
 import app.todoornot.core.SmartList
@@ -502,7 +506,7 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
                     horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
                 ) {
                     Label(t.text, Tokens.Type.TOAST, r.toastInk, Modifier.weight(1f))
-                    if (t.reopen != null) {
+                    if (t.completion != null) {
                         Row(
                             Modifier
                                 .height(P.TOAST.dp)
@@ -540,6 +544,7 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
 private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAdd: (String) -> Unit) {
     val r = LocalDesign.current.room
     var text by rememberSaveable(draft) { mutableStateOf(draft) }
+    val date = remember(text) { if (text.isBlank()) null else quickAddDate(text, localNow()) }
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
     fun submit() {
         val t = text.trim()
@@ -583,6 +588,26 @@ private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAd
                     }
                 },
             )
+            AnimatedContent(
+                targetState = date,
+                transitionSpec = {
+                    (fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) togetherWith
+                        fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic()))).using(null)
+                },
+                label = "Quick-add date",
+            ) { label ->
+                if (label != null) {
+                    Row(
+                        Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.MD.dp))
+                            .padding(horizontal = S.S2.dp, vertical = S.S1.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
+                    ) {
+                        Icon("calendar", r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                        Label(label, Tokens.Type.DUE, r.ink)
+                    }
+                }
+            }
         }
     }
 }

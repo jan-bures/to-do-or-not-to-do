@@ -58,6 +58,7 @@ struct Spec<'a> {
     tags: &'a [TagId],
     notes: &'a str,
     mail: Option<(&'a str, &'a str, i64)>,
+    web_link: Option<&'a str>,
 }
 
 impl<'a> Builder<'a> {
@@ -214,7 +215,7 @@ impl<'a> Builder<'a> {
                     sender: sender.into(),
                     received_at,
                     message_id: format!("<fixture-{}@example.com>", self.seq),
-                    web_link: None,
+                    web_link: spec.web_link.map(str::to_owned),
                 }),
                 created,
                 deleted: None,
@@ -330,6 +331,7 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
             tags: &[admin_tag],
             notes: "Bring the old passport and proof of address. Slots open on Mondays at 08:00.",
             mail: Some(("Your appointment reminder", "info@example.com", 9)),
+            web_link: Some("https://example.com/appointment"),
             ..my(false)
         },
     );
