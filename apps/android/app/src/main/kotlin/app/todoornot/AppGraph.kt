@@ -27,6 +27,10 @@ import app.todoornot.session.PairingFiles
 import app.todoornot.session.PrefsKeyValues
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
+import android.os.SystemClock
+import app.todoornot.core.ProblemKind
+import app.todoornot.core.SyncState
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -90,6 +94,8 @@ class AppGraph(private val app: Context) {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
                 _model.value?.resume()
+                // Notifications may have been allowed in the settings meanwhile: show what is due.
+                reminderChanges.tryEmit(Unit)
             }
 
             override fun onStop(owner: LifecycleOwner) {
@@ -140,7 +146,7 @@ class AppGraph(private val app: Context) {
     fun reconcileReminders(force: Boolean = false) {
         val engine = engine() ?: return
         try {
-            reminders.reconcile(engine, force)
+            reminders.reconcile(engine, force, catchingUp = catchingUp.get() > 0)
         } catch (e: IllegalStateException) {
             // The engine was closed meanwhile (unpaired): nothing to follow any more.
             Log.d("Reminders", "the engine closed during a pass: ${e::class.simpleName}")
@@ -150,19 +156,66 @@ class AppGraph(private val app: Context) {
     /** Snooze 10 min, from a reminder's notification. */
     fun snoozeReminder(id: String) = reminders.snooze(id, engine())
 
-    /** Complete, from a reminder's notification: the app's own command, which syncs. */
-    suspend fun completeFromReminder(id: String, task: String) {
-        reminders.dismiss(id)
-        // The model may still be on its way when the process started for this broadcast.
-        withTimeoutOrNull(MainActivity.MODEL_WAIT_MS) { model.filterNotNull().first() }?.completeFromNotification(task)
+    /** Catch-up syncs under way: nothing due is shown until they end. */
+    private val catchingUp = AtomicInteger()
+
+    /** What is left of a broadcast's time, in milliseconds. */
+    class Deadline(private val until: Long = now() + RECEIVER_BUDGET_MS) {
+        fun left(): Long = (until - now()).coerceAtLeast(0)
+
+        private companion object {
+            fun now() = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /**
+     * The model, once the engine is open; null at once when it isn't (not paired, or the cache won't
+     * open), and after [wait] ms. It may still be on its way when the process started for a broadcast.
+     */
+    private suspend fun readyModel(wait: Long): TodoModel? {
+        if (host.state.value !is Host.Ready) return null
+        return withTimeoutOrNull(wait) { model.filterNotNull().first() }
+    }
+
+    /**
+     * A reminder's alarm went off. The alarms come from the last synced state, so with the app in the
+     * background it first catches up for a moment (what changed elsewhere: the reminder moved or removed,
+     * the task completed), showing nothing meanwhile, then shows what is still due.
+     */
+    suspend fun reminderFired(deadline: Deadline) {
+        val m = readyModel(minOf(MainActivity.MODEL_WAIT_MS, deadline.left() / 2))
+        if (m != null) {
+            catchingUp.incrementAndGet()
+            try {
+                m.syncInBackground(minOf(FIRE_SYNC_MS, deadline.left() - MARGIN_MS)) {
+                    it.state == SyncState.ONLINE || (it.state == SyncState.OFFLINE && it.problem == ProblemKind.NETWORK)
+                }
+            } finally {
+                catchingUp.decrementAndGet()
+            }
+        }
         reconcileReminders()
     }
 
-    /** Runs a broadcast's [work] off the main thread, then [finish]es the broadcast. */
-    fun reminderWork(finish: () -> Unit, work: suspend () -> Unit) {
+    /**
+     * Complete, from a reminder's notification: the app's own command, which syncs. The notification goes
+     * only once the completion is saved; if the engine can't be opened, it stays, and nothing else happens.
+     */
+    suspend fun completeFromReminder(id: String, task: String, deadline: Deadline) {
+        val m = readyModel(minOf(MainActivity.MODEL_WAIT_MS, deadline.left() / 2)) ?: return
+        m.completeFromNotification(task, syncFor = deadline.left() - MARGIN_MS) { reminders.dismiss(id) }
+        reconcileReminders()
+    }
+
+    /**
+     * Runs a broadcast's [work] off the main thread, within one [Deadline] for the whole broadcast, then
+     * [finish]es it.
+     */
+    fun reminderWork(finish: () -> Unit, work: suspend (Deadline) -> Unit) {
         reminderScope.launch {
             try {
-                work()
+                val deadline = Deadline()
+                withTimeoutOrNull(RECEIVER_BUDGET_MS) { work(deadline) }
             } catch (e: FfiException) {
                 Log.d("Reminders", "a reminder action failed: ${e::class.simpleName}")
             } catch (e: IllegalStateException) {
@@ -214,6 +267,20 @@ class AppGraph(private val app: Context) {
     private fun deviceName(): String =
         Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
             ?: Build.MODEL
+
+    companion object {
+        /**
+         * The time a reminder broadcast's work may take, all of it: well inside the ten seconds Android
+         * allows a receiver that called `goAsync`.
+         */
+        const val RECEIVER_BUDGET_MS = 8_000L
+
+        /** How long an alarm going off syncs for before showing the reminder. */
+        const val FIRE_SYNC_MS = 4_000L
+
+        /** Kept back from a broadcast's time for what follows its sync. */
+        const val MARGIN_MS = 1_000L
+    }
 }
 
 /**

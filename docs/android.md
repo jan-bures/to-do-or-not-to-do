@@ -54,12 +54,22 @@ What the first version does:
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none. It
   opens the reminder picker: the Material date picker and time input (24 hours, as the rest of the app) in
   the room's colours and the tokens' type, on the overlay surface. It opens on the reminder's own day and
-  time; with none, on 09:00 of a later due date, else on the next whole hour. **Save** keeps a time still
-  to come (a time that has passed can't be saved, and the engine refuses it too), **Remove** takes the
-  reminder away, and the toast offers **Undo** for either, through the tracked undo. A task can carry
-  more than one reminder (an agent can add them); the row shows and edits one, the first from today
-  (else the latest), as `todo_client::intent::reminder` picks it. In a short window the time comes first
-  and the calendar scrolls under the buttons. See *Reminder notifications* below.
+  time; with none, on 09:00 of a later due date, else on the next whole hour. **Save** keeps a whole
+  time still to come: not while an hour or minute is half typed, and not one that has passed (the engine
+  refuses that too). **Remove** takes the reminder away, and the toast offers **Undo** for either,
+  through the tracked undo, naming the time saved. A task can carry more than one reminder (an agent can
+  add them); the row shows and edits one, the first from today (else the latest), as
+  `todo_client::intent::reminder` picks it. In a short window the time comes first and the calendar
+  scrolls under the buttons. See *Reminder notifications* below.
+  - **An edit names its reminder.** Saving or removing carries the reminder the picker opened on, and the
+    time it showed (`ReminderRef`). If that reminder moved or went while the picker was open (another
+    device, an agent), or a task that had none got one, nothing is written, and the toast says so: "The
+    reminder changed while the picker was open. Check it, then try again."
+  - **When the clocks change.** The time is the phone's zone's wall clock on the day picked. A time the
+    clocks skip (02:30 when they go forward at 02:00) doesn't exist, so the one the gap moves it to is
+    saved, and a note under the picker says which ("Saves 03:30."). A time that happens twice (when they
+    go back) saves the first, and the note says so. The toast names the time saved in the zone of the
+    reminder's own day.
 - **Steps.** Tap a step's title to rename it in place (Done or leaving the field keeps a changed title; a
   blank one is dropped). Its **⋯** button opens its menu: **Rename**, **Move up**, **Move down** and
   **Delete step**. A moved step and the one it swaps with glide to their places. Deleting a step shows the
@@ -96,38 +106,60 @@ What the first version does:
 The phone alerts for the synced reminders with local alarms. Nothing comes from the server: whatever
 device sets a reminder, the phone sees it after a sync and sets its alarm.
 
+**The alarms come from the last synced state.** There is no push, and the app syncs only in the
+foreground. A reminder added, moved or removed elsewhere (or its task completed there) while the app is in
+the background is seen only at the next sync: until then an alarm can be missing, at an old time, or
+for a reminder that has gone. To narrow that, when an alarm goes off with the app in the background, the
+app first syncs for up to four seconds (until it's caught up, or the network is found to be down), shows
+nothing meanwhile, and then shows only what is still due: a reminder removed or moved elsewhere, or a
+task completed there, isn't shown. A reminder added elsewhere still waits for the app to sync.
+
 - **What gets an alarm.** `TodoEngine.reminderAlarms` lists the live reminders of open tasks
   (`intent::reminder::alarms`). `reminders/ReminderPlan.kt` decides, purely, which alarms to set or cancel
   and which notifications to show or hide, and `reminders/Reminders.kt` applies it and remembers what it
   did (reminder IDs and times only, never task content) in the app's private preferences. Every change the
   engine reports runs it again, so a reminder removed, or a task completed or deleted, here or on another
   device, loses its alarm and its notification, and a moved reminder's alarm moves.
-- **Exact or not.** With *Alarms & reminders* allowed, alarms are exact (`setExactAndAllowWhileIdle`);
-  without it, inexact (`setAndAllowWhileIdle`), which Android may deliver a few minutes late.
-- **Set again.** After a reboot or an app update, a clock or time-zone change, or a change to the
-  exact-alarm permission, `ReminderReceiver` sets every alarm again; so does the first pass after the
-  process starts, as a reboot clears them.
+- **Exact or not.** Every reminder has an inexact alarm (`setAndAllowWhileIdle`), which Android may
+  deliver a few minutes late. With *Alarms & reminders* allowed it also has an exact one
+  (`setExactAndAllowWhileIdle`). Taking the permission away cancels the exact alarms without a word to
+  the app, so the inexact one still goes off; whichever goes off first shows the reminder, and the other
+  finds it shown.
+- **Set again.** After a reboot or an app update, a clock or time-zone change, or the exact-alarm
+  permission being granted, `ReminderReceiver` sets every alarm again; so does the first pass after the
+  process starts, as a reboot clears them, and any pass that finds the permission granted or taken away
+  since the last (each pass checks `canScheduleExactAlarms`). A pass runs after every change the engine
+  reports and whenever the app comes to the foreground.
 - **The notification** is on the *Reminders* channel: the task's title, when it was for, and two
   actions. **Complete** completes the task through the app's own command
-  (`TodoModel.completeFromNotification`, the checkbox's `setDone`), so it syncs: with the app in the
-  background, it syncs for up to eight seconds to send it, then stops again. **Snooze 10 min** puts the
+  (`TodoModel.completeFromNotification`, the checkbox's `setDone`), so it syncs. The notification goes
+  only once the completion is in the outbox, on disk; if the cache can't be opened, it stays and nothing
+  else happens. With the app in the background it then syncs to send it. A broadcast's work (waiting for
+  the engine, the write, the sync) has one deadline of eight seconds, inside Android's limit for a
+  receiver. **Snooze 10 min** puts the
   notification away and shows it again ten minutes later. A snooze is this phone's own: it is never synced
   and doesn't move the reminder (a repeating task's next reminders stay where they were). Tapping the
   notification opens the task.
 - **Missed reminders.** A reminder whose time has come is shown once for that time, whether the alarm
   went off or the app found it due when it started or synced. One missed while the phone was off, or that
-  synced in late, is shown once if its time is within the last 24 hours, and never if it is older. Nothing
-  is shown twice: what was shown is written down before the notification goes up.
+  synced in late, is shown once if its time is within the last 24 hours, and never if it is older. A
+  reminder counts as shown only when it could be: if notifications are off for the app (or the
+  *Reminders* channel is), it waits, and shows once they are allowed, still within the 24 hours. What was
+  shown is written down, by occurrence (the reminder and the time), before the notification goes up, and
+  kept for 24 hours whatever becomes of the reminder: one removed and brought back by Undo never shows the
+  same time again. After the 24 hours the app forgets it, and takes its notification away if it is still
+  up, as it could no longer take it away when the task is completed.
 - **Permissions, asked when they matter.** Never at launch: right after the owner sets a reminder, the app
   says why it needs notifications (Android 13 and later), then Android asks. A later reminder asks for
   exact alarms the same way (Android 12 and later), opening the system's page. Each is asked once; **Not
   now** (or Back) is kept.
-- **Unpairing** cancels every alarm and notification.
+- **Unpairing** cancels every alarm, and every notification on the *Reminders* channel.
 - Log lines about reminders are counts, at debug level; never task content.
 
 `RemindersTest` checks the policy against the fixture engine with a fake `AlarmSink` and a clock the test
 sets: which alarms are set, moved or cancelled, what is shown once, snoozes, missed reminders, a restart,
-and unpairing.
+exact alarms taken away, notifications off, the catch-up sync, Undo after removing, unpairing, and the
+picker's times in a zone whose clocks change (Europe/Prague).
 
 ## Motion
 

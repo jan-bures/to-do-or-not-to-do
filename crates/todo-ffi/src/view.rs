@@ -413,6 +413,15 @@ pub struct DetailField {
     pub empty: bool,
 }
 
+/// A reminder as the detail pane showed it: which one, and when, in milliseconds since the Unix epoch.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReminderRef {
+    /// Reminder ID.
+    pub id: String,
+    /// Its time.
+    pub at_ms: i64,
+}
+
 /// Where a task came from.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SourceLink {
@@ -450,9 +459,9 @@ pub struct TaskDetail {
     pub due: Option<String>,
     /// It has a repeat rule, which clearing the due date also clears.
     pub repeats: bool,
-    /// The reminder the Reminder row shows and edits (`intent::reminder::shown`), in milliseconds since
-    /// the Unix epoch, for its picker.
-    pub reminder_at: Option<i64>,
+    /// The reminder the Reminder row shows and edits (`intent::reminder::shown`), for its picker; the
+    /// edit passes it back, so it changes exactly this reminder, as it was.
+    pub reminder: Option<ReminderRef>,
     /// Collection and list chips ("Personal / Admin").
     pub breadcrumb: Vec<Chip>,
     /// "Created 12 Nov / Edited today 08:50".
@@ -1135,7 +1144,8 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             empty: task.priority == Priority::None,
         },
     ];
-    let reminder = todo_client::intent::reminder::shown(state, id, &now.eval()).map(|r| r.at);
+    let shown = todo_client::intent::reminder::shown(state, id, &now.eval());
+    let reminder = shown.map(|r| r.at);
     fields.push(DetailField {
         edit: Some(FieldEdit::Reminder),
         icon: "bell".into(),
@@ -1223,7 +1233,10 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         priority: priority_marks(task.priority),
         due: task.due.map(|d| d.to_string()),
         repeats: task.recurrence.is_some(),
-        reminder_at: reminder.map(|at| at.as_millisecond()),
+        reminder: shown.map(|r| ReminderRef {
+            id: r.id.to_string(),
+            at_ms: r.at.as_millisecond(),
+        }),
         breadcrumb,
         subtitle,
         steps: steps

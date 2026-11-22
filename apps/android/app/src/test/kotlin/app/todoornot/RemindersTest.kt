@@ -1,8 +1,6 @@
 package app.todoornot
 
 import app.todoornot.core.ReminderAlarm
-import app.todoornot.core.RoomKey
-import app.todoornot.core.SmartList
 import app.todoornot.core.TodoEngine
 import app.todoornot.reminders.AlarmSink
 import app.todoornot.reminders.Record
@@ -10,12 +8,19 @@ import app.todoornot.reminders.ReminderAccess
 import app.todoornot.reminders.ReminderNeed
 import app.todoornot.reminders.ReminderPlan
 import app.todoornot.reminders.Reminders
-import app.todoornot.ui.reminderMillis
-import app.todoornot.ui.reminderStart
+import app.todoornot.reminders.Schedule
+import app.todoornot.reminders.Shown
+import app.todoornot.reminders.clockChangeNote
+import app.todoornot.reminders.reminderLabel
+import app.todoornot.reminders.reminderStart
+import app.todoornot.reminders.resolveReminder
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -40,6 +45,16 @@ private class FakeAlarms : AlarmSink {
 
     var sets = 0
 
+    /** Whether exact alarms are allowed; taking them away cancels the alarms set while they were. */
+    var exact = true
+
+    /** Whether notifications are allowed and the channel is on. */
+    var allowed = true
+
+    override fun exact() = exact
+
+    override fun canShow() = allowed
+
     override fun set(alarm: ReminderAlarm, atMs: Long) {
         alarms[alarm.id] = atMs
         sets++
@@ -50,6 +65,7 @@ private class FakeAlarms : AlarmSink {
     }
 
     override fun show(alarm: ReminderAlarm) {
+        check(allowed) { "shown while notifications are off" }
         showing[alarm.id] = alarm.title
         shown += alarm.title
     }
@@ -57,6 +73,8 @@ private class FakeAlarms : AlarmSink {
     override fun hide(id: String) {
         showing.remove(id)
     }
+
+    override fun hideAll() = showing.clear()
 }
 
 class RemindersTest {
@@ -71,8 +89,8 @@ class RemindersTest {
     private fun TodoEngine.reminderOf(title: String): ReminderAlarm =
         reminderAlarms(0, FIXTURE_NOW).first { it.title == title }
 
-    private fun TodoEngine.taskTitled(title: String): String =
-        room(RoomKey.Smart(SmartList.ALL), FIXTURE_NOW).tasks.first { it.title == title }.id
+    /** The reminder as the detail pane shows it, for an edit. */
+    private fun TodoEngine.seen(task: String) = task(task, FIXTURE_NOW)?.reminder
 
     private fun alarm(id: String, at: Long, task: String = "t-$id") = ReminderAlarm(id, task, "Task $id", at, "label")
 
@@ -104,6 +122,25 @@ class RemindersTest {
     }
 
     @Test
+    fun taking_exact_alarms_away_sets_every_alarm_again_and_so_does_allowing_them() {
+        val e = fixtureEngine()
+        val r = scheduler()
+        r.reconcile(e)
+        // Android cancels the exact alarms and says nothing; the next pass (a sync, the app opening, any
+        // broadcast) sees it and sets them all again, inexact.
+        sink.exact = false
+        sink.alarms.clear()
+        r.reconcile(e)
+        assertEquals(5, sink.alarms.size)
+        val sets = sink.sets
+        r.reconcile(e)
+        assertEquals("only once", sets, sink.sets)
+        sink.exact = true
+        r.reconcile(e)
+        assertEquals(sets + 5, sink.sets)
+    }
+
+    @Test
     fun a_reminder_shows_once_when_its_time_comes() {
         val e = fixtureEngine()
         val r = scheduler()
@@ -122,13 +159,47 @@ class RemindersTest {
     }
 
     @Test
+    fun a_reminder_that_could_not_be_shown_shows_once_notifications_are_allowed() {
+        val e = fixtureEngine()
+        val r = scheduler()
+        r.reconcile(e)
+        val venue = e.reminderOf("Send venue booking confirmation")
+        sink.allowed = false
+        now = venue.atMs
+        r.reconcile(e)
+        assertTrue(sink.shown.isEmpty())
+        assertTrue(r.load().shown.isEmpty())
+        // Allowed two hours later: still within the day, so it shows, once.
+        now += 2 * HOUR
+        sink.allowed = true
+        r.reconcile(e)
+        r.reconcile(e)
+        assertEquals(listOf("Send venue booking confirmation"), sink.shown)
+    }
+
+    @Test
+    fun nothing_due_shows_while_a_catch_up_sync_is_under_way() {
+        val e = fixtureEngine()
+        val r = scheduler()
+        r.reconcile(e)
+        val venue = e.reminderOf("Send venue booking confirmation")
+        now = venue.atMs
+        // The alarm went off; the sync brings in that the reminder was removed elsewhere.
+        r.reconcile(e, catchingUp = true)
+        assertTrue(sink.shown.isEmpty())
+        e.removeReminder(venue.task, requireNotNull(e.seen(venue.task)))
+        r.reconcile(e)
+        assertTrue(sink.shown.isEmpty())
+    }
+
+    @Test
     fun alarms_go_with_removed_reminders_and_completed_or_deleted_tasks() {
         val e = fixtureEngine()
         val r = scheduler()
         r.reconcile(e)
         // Its reminder removed: the alarm goes.
         val passport = e.reminderOf("Renew passport appointment")
-        e.removeReminder(passport.task, FIXTURE_NOW)
+        e.removeReminder(passport.task, requireNotNull(e.seen(passport.task)))
         r.reconcile(e)
         assertNull(sink.alarms[passport.id])
         // Its task completed, then reopened: the alarm goes, and comes back.
@@ -152,13 +223,32 @@ class RemindersTest {
     }
 
     @Test
+    fun a_reminder_removed_and_brought_back_by_undo_never_shows_the_same_time_twice() {
+        val e = fixtureEngine()
+        val r = scheduler()
+        r.reconcile(e)
+        val venue = e.reminderOf("Send venue booking confirmation")
+        now = venue.atMs
+        r.reconcile(e)
+        assertEquals(1, sink.shown.size)
+        val removed = e.removeReminder(venue.task, requireNotNull(e.seen(venue.task)))
+        r.reconcile(e)
+        assertTrue(venue.id !in sink.showing)
+        e.undoReminder(removed)
+        now += MIN
+        r.reconcile(e)
+        scheduler().reconcile(e)
+        assertEquals("shown once, not again after Undo", 1, sink.shown.size)
+    }
+
+    @Test
     fun a_moved_reminder_moves_its_alarm() {
         val e = fixtureEngine()
         val r = scheduler()
         r.reconcile(e)
         val call = e.reminderOf("Call Alex about the venue")
         val later = call.atMs + HOUR
-        e.setReminder(call.task, later, FIXTURE_NOW)
+        e.setReminder(call.task, e.seen(call.task), later, FIXTURE_NOW)
         r.reconcile(e)
         assertEquals(later, sink.alarms[call.id])
     }
@@ -193,15 +283,16 @@ class RemindersTest {
         val passport = e.reminderOf("Renew passport appointment")
         now = venue.atMs + 3 * HOUR
         r.reconcile(e)
-        assertEquals(listOf("Send venue booking confirmation"), sink.shown.filter { it == "Send venue booking confirmation" })
+        assertEquals(1, sink.shown.count { it == "Send venue booking confirmation" })
         now = passport.atMs + 30 * HOUR
         sink.shown.clear()
         r.reconcile(e)
         assertTrue("older than a day: never shown", "Renew passport appointment" !in sink.shown)
         r.reconcile(e)
         assertTrue("Renew passport appointment" !in sink.shown)
-        // Shown ones are forgotten once out of the window, and still never shown again.
-        assertTrue(r.load().values.all { it.fireAt >= now - ReminderPlan.MISSED_WINDOW_MS })
+        // Occurrences shown longer ago than the window are forgotten, and their notification goes with them.
+        assertTrue(r.load().shown.all { it.fireAt >= now - ReminderPlan.MISSED_WINDOW_MS })
+        assertTrue(venue.id !in sink.showing)
     }
 
     @Test
@@ -211,30 +302,40 @@ class RemindersTest {
         r.reconcile(e)
         now = e.reminderOf("Send venue booking confirmation").atMs
         r.reconcile(e)
+        sink.showing["left-over"] = "A notification the records no longer name"
         r.clear()
         assertTrue(sink.alarms.isEmpty())
         assertTrue(sink.showing.isEmpty())
-        assertTrue(r.load().isEmpty())
+        assertEquals(Schedule(), r.load())
     }
 
     @Test
-    fun the_plan_is_pure_and_its_records_round_trip() {
-        val t = 1_000_000L
-        val records = mapOf(
-            "gone" to Record("gone", "t", t - HOUR, shownAt = t - HOUR),
-            "moved" to Record("moved", "t", t + HOUR, alarmAt = t + HOUR),
-            "same" to Record("same", "t", t + HOUR, alarmAt = t + HOUR),
+    fun the_plan_is_pure_and_its_schedule_round_trips() {
+        val t = 1_000_000_000L
+        val before = Schedule(
+            mapOf(
+                "gone" to Record("gone", "t", t - HOUR),
+                "moved" to Record("moved", "t", t + HOUR, alarmAt = t + HOUR),
+                "same" to Record("same", "t", t + HOUR, alarmAt = t + HOUR),
+            ),
+            setOf(Shown("gone", t - HOUR), Shown("old", t - ReminderPlan.MISSED_WINDOW_MS - MIN)),
         )
-        val plan = ReminderPlan.plan(listOf(alarm("moved", t + 2 * HOUR), alarm("same", t + HOUR), alarm("new", t - MIN)), records, t)
+        val plan = ReminderPlan.plan(listOf(alarm("moved", t + 2 * HOUR), alarm("same", t + HOUR), alarm("new", t - MIN)), before, t)
         assertEquals(listOf("moved" to t + 2 * HOUR), plan.set.map { (a, at) -> a.id to at })
-        // The gone one had no alarm left (it was shown); the moved one's goes before it is set again.
         assertEquals(listOf("moved"), plan.cancel)
-        assertEquals(listOf("gone"), plan.hide)
+        // The aged-out occurrence's notification goes; so does the gone reminder's.
+        assertEquals(setOf("old", "gone"), plan.hide.toSet())
         assertEquals(listOf("new"), plan.show.map { it.id })
-        assertEquals(setOf("moved", "same", "new"), plan.records.keys)
-        assertEquals(plan.records, Reminders.decode(Reminders.encode(plan.records)))
-        assertEquals(emptyMap<String, Record>(), Reminders.decode("not json"))
-        assertEquals(t - HOUR - ReminderPlan.MISSED_WINDOW_MS, ReminderPlan.since(records + ("old" to Record("old", "t", t - HOUR - ReminderPlan.MISSED_WINDOW_MS)), t))
+        assertEquals(setOf("moved", "same", "new"), plan.schedule.records.keys)
+        // The gone reminder's occurrence is kept: if it comes back, it isn't shown again.
+        assertEquals(setOf(Shown("gone", t - HOUR), Shown("new", t - MIN)), plan.schedule.shown)
+        assertEquals(plan.schedule, Reminders.decode(Reminders.encode(plan.schedule)))
+        assertEquals(Schedule(), Reminders.decode("not json"))
+        // Unable to show: nothing is shown or counted as shown.
+        val blocked = ReminderPlan.plan(listOf(alarm("new", t - MIN)), Schedule(), t, canShow = false)
+        assertTrue(blocked.show.isEmpty())
+        assertTrue(blocked.schedule.shown.isEmpty())
+        assertEquals(t - HOUR - ReminderPlan.MISSED_WINDOW_MS, ReminderPlan.since(Schedule(mapOf("x" to Record("x", "t", t - HOUR - ReminderPlan.MISSED_WINDOW_MS))), t))
     }
 
     @Test
@@ -259,8 +360,31 @@ class RemindersTest {
         // Due today, or not at all: the next whole hour (10:35 → 11:00).
         assertEquals(LocalDateTime.of(2026, 11, 21, 11, 0), reminderStart(null, "2026-11-21", FIXTURE_NOW.epochMs, zone))
         assertEquals(LocalDateTime.of(2026, 11, 21, 11, 0), reminderStart(null, null, FIXTURE_NOW.epochMs, zone))
-        // The picker's day (its UTC midnight) and time, in the phone's zone.
-        val day = at.toLocalDate().toEpochDay() * 86_400_000L
-        assertEquals(atMs, reminderMillis(day, 15, 0, zone))
+        // The picker's day and time, in the phone's zone.
+        val t = resolveReminder(at.toLocalDate(), 15, 0, zone)
+        assertEquals(atMs, t.atMs)
+        assertFalse(t.skipped || t.twice)
+        assertNull(clockChangeNote(t))
+    }
+
+    @Test
+    fun a_time_the_clocks_skip_or_repeat_says_which_time_is_saved() {
+        // Prague: the clocks go forward at 02:00 on 29 March 2026 and back at 03:00 on 25 October 2026.
+        val prague = ZoneId.of("Europe/Prague")
+        val skipped = resolveReminder(LocalDate.of(2026, 3, 29), 2, 30, prague)
+        assertTrue(skipped.skipped)
+        assertEquals(LocalDateTime.of(2026, 3, 29, 3, 30), skipped.saved)
+        assertEquals(Instant.parse("2026-03-29T01:30:00Z").toEpochMilli(), skipped.atMs)
+        assertEquals("02:30 doesn’t exist that day: the clocks go forward. Saves 03:30.", clockChangeNote(skipped))
+        val twice = resolveReminder(LocalDate.of(2026, 10, 25), 2, 30, prague)
+        assertTrue(twice.twice)
+        // The first 02:30 is still summer time (UTC+2).
+        assertEquals(Instant.parse("2026-10-25T00:30:00Z").toEpochMilli(), twice.atMs)
+        assertEquals("02:30 happens twice that day: the clocks go back. Saves the first.", clockChangeNote(twice))
+        // Across a change of the clocks, the label reads as set, in the zone of the reminder's own day.
+        val winter = Instant.parse("2026-03-20T10:00:00Z").toEpochMilli()
+        val summerNine = LocalDateTime.of(2026, 4, 2, 9, 0).atZone(prague).toInstant().toEpochMilli()
+        assertEquals("Thu 2 Apr, 09:00", reminderLabel(summerNine, winter, prague))
+        assertEquals("Sun 29 Mar, 03:30", reminderLabel(skipped.atMs, winter, prague))
     }
 }

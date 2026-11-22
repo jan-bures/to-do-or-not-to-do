@@ -5,12 +5,12 @@ import app.todoornot.core.ChangeListener
 import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
-import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.ReminderChange
+import app.todoornot.core.ReminderRef
 import app.todoornot.core.Reopening
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
@@ -30,13 +30,16 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import app.todoornot.reminders.reminderLabel
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -177,6 +180,8 @@ class TodoModel(
             override fun onChange() = onChange()
         })
     },
+    /** The phone's time zone, for the times the model words itself (a reminder's). */
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
@@ -883,39 +888,60 @@ class TodoModel(
     override fun setPriority(id: String, marks: Int) = act { engine.setPriority(id, marks.coerceIn(0, 3).toUByte()) }
 
     /**
-     * Sets the task's reminder to [atMs] (milliseconds since the Unix epoch), or removes it (null). The
-     * toast says when it is now and offers Undo, which reverses exactly this change.
+     * Sets the reminder the owner saw ([seen], from the detail pane) to [atMs] (milliseconds since the Unix
+     * epoch), adds one to a task that had none, or removes it ([atMs] null). If that reminder changed or
+     * went while the picker was open, nothing is written and the toast says so. Otherwise the toast says
+     * when it is now (the time saved, in the phone's zone) and offers Undo, which reverses exactly this.
      */
-    override fun setReminder(id: String, atMs: Long?) = act {
-        val change = if (atMs == null) engine.removeReminder(id, now()) else engine.setReminder(id, atMs, now())
-        change ?: return@act
-        val text = if (atMs == null) {
-            "Reminder removed"
+    override fun setReminder(id: String, seen: ReminderRef?, atMs: Long?) = act {
+        val change = if (atMs == null) {
+            engine.removeReminder(id, seen ?: return@act)
         } else {
-            engine.task(id, now())?.fields?.firstOrNull { it.edit == FieldEdit.REMINDER && !it.empty }
-                ?.let { "Reminder set for ${it.value}" } ?: "Reminder set"
+            engine.setReminder(id, seen, atMs, now()) ?: return@act
         }
+        val text = if (atMs == null) "Reminder removed" else "Reminder set for ${reminderLabel(atMs, now().epochMs, zone())}"
         show(Toast(++serial, text, reminder = change))
     }
 
     /**
      * Completes a task from its reminder's notification: the same command as the checkbox's, so it syncs.
      * No row plays (the app is usually not on screen; a change from elsewhere settles anything that does)
-     * and no toast offers Undo. With the app in the background it syncs for up to [syncFor] ms, to send the
-     * completion now, then stops again. Returns whether the task is done.
+     * and no toast offers Undo. Once the completion is in the outbox (on disk), [saved] runs: only then may
+     * the notification go. With the app in the background it then syncs for up to [syncFor] ms, to send it
+     * now. Returns whether the completion was saved.
      */
-    suspend fun completeFromNotification(id: String, syncFor: Long = NOTIFICATION_SYNC_MS): Boolean {
+    suspend fun completeFromNotification(id: String, syncFor: Long = NOTIFICATION_SYNC_MS, saved: () -> Unit = {}): Boolean {
         val error = writeEdit { engine.setDone(id, true) }
         scope.launch { refresh() }
         if (error != null) return false
-        if (!foreground && syncFor > 0) {
-            withContext(io) { lifecycle.withLock { if (!foreground) engine.start() } }
-            withTimeoutOrNull(syncFor) {
-                while (withContext(io) { engine.status().pending } > 0u) delay(SYNC_POLL_MS)
-            }
-            withContext(io) { lifecycle.withLock { if (!foreground) engine.stop() } }
-        }
+        saved()
+        syncInBackground(syncFor) { it.pending == 0u }
         return true
+    }
+
+    /**
+     * With the app in the background, syncs for up to [budget] ms, or until [done] says the status is
+     * enough, then stops again (also when cancelled). In the foreground it syncs anyway: nothing to do.
+     */
+    suspend fun syncInBackground(budget: Long, done: (SyncStatus) -> Boolean) {
+        if (foreground || budget <= 0) return
+        var started = false
+        try {
+            withContext(io) {
+                lifecycle.withLock {
+                    if (!foreground) {
+                        engine.start()
+                        started = true
+                    }
+                }
+            }
+            if (!started) return
+            withTimeoutOrNull(budget) {
+                do delay(SYNC_POLL_MS) while (!done(withContext(io) { engine.status() }))
+            }
+        } finally {
+            if (started) withContext(NonCancellable + io) { lifecycle.withLock { if (!foreground) engine.stop() } }
+        }
     }
 
     override fun renameStep(id: String, title: String) = act { engine.renameStep(id, title) }

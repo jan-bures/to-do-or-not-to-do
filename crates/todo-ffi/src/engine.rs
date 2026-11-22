@@ -11,7 +11,9 @@ use crate::labels::{LocalNow, Now};
 use crate::recovery::{self, CacheRecovery};
 use crate::runtime::runtime;
 use crate::transport::AppTransport;
-use crate::view::{self, Home, RoomKey, RoomView, RowPlacement, SmartList, TaskDetail};
+use crate::view::{
+    self, Home, ReminderRef, RoomKey, RoomView, RowPlacement, SmartList, TaskDetail,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -289,6 +291,24 @@ fn list_id(id: &str) -> Result<ListId, FfiError> {
 
 fn collection_id(id: &str) -> Result<CollectionId, FfiError> {
     id.parse().map_err(|_| invalid("no such collection"))
+}
+
+/// Shown when a reminder edit was refused because the reminder changed while the picker was open.
+pub const REMINDER_CHANGED: &str =
+    "The reminder changed while the picker was open. Check it, then try again.";
+
+fn seen_reminder(seen: ReminderRef) -> Result<intent::reminder::Seen, FfiError> {
+    Ok(intent::reminder::Seen {
+        id: seen.id.parse().map_err(|_| invalid(REMINDER_CHANGED))?,
+        at: Timestamp::from_millisecond(seen.at_ms).map_err(|_| invalid(REMINDER_CHANGED))?,
+    })
+}
+
+fn stale(e: intent::reminder::Stale) -> FfiError {
+    match e {
+        intent::reminder::Stale::Task => invalid("No such task."),
+        intent::reminder::Stale::Reminder => invalid(REMINDER_CHANGED),
+    }
 }
 
 /// What a refused change was, in the "Not saved" banner's words: the shared wording
@@ -768,20 +788,25 @@ impl TodoEngine {
         Ok(())
     }
 
-    /// Sets the task's reminder (the one its Reminder row shows) to `at_ms`, milliseconds since the Unix
-    /// epoch: moves it, or adds one (`intent::reminder::set_reminder`). `None` when it is already then.
-    /// A time that has passed is refused. The handle undoes exactly this change.
+    /// Sets the reminder the owner saw (`seen`, from [`TaskDetail::reminder`]) to `at_ms`, milliseconds
+    /// since the Unix epoch, or adds one to a task that had none (`None`; `intent::reminder::set_reminder`).
+    /// `None` when it is already then. A time that has passed is refused, and so is an edit on a reminder
+    /// that changed or went while the picker was open: nothing is written, and the error says so. The
+    /// handle undoes exactly this change.
     pub fn set_reminder(
         &self,
         id: String,
+        seen: Option<ReminderRef>,
         at_ms: i64,
         now: LocalNow,
     ) -> Result<Option<Arc<ReminderChange>>, FfiError> {
         let at = Timestamp::from_millisecond(at_ms).map_err(|_| invalid("That isn't a time."))?;
         let (id, state) = self.live_task(&id)?;
+        let seen = seen.map(seen_reminder).transpose()?;
         let now = Now::new(now);
         let Some(cmd) =
-            intent::reminder::set_reminder(&state, id, at, &now.eval(), || self.client.new_uuid())
+            intent::reminder::set_reminder(&state, id, seen, at, || self.client.new_uuid())
+                .map_err(stale)?
         else {
             return Ok(None);
         };
@@ -791,17 +816,18 @@ impl TodoEngine {
         self.track_reminder(cmd).map(Some)
     }
 
-    /// Removes the task's reminder (the one its Reminder row shows; `intent::reminder::remove_reminder`).
-    /// `None` when it has none. The handle undoes exactly this removal.
+    /// Removes the reminder the owner saw (`seen`; `intent::reminder::remove_reminder`); others stay. One
+    /// that changed or went meanwhile is left alone, and the error says so. The handle undoes exactly
+    /// this removal.
     pub fn remove_reminder(
         &self,
         id: String,
-        now: LocalNow,
-    ) -> Result<Option<Arc<ReminderChange>>, FfiError> {
+        seen: ReminderRef,
+    ) -> Result<Arc<ReminderChange>, FfiError> {
         let (id, state) = self.live_task(&id)?;
-        intent::reminder::remove_reminder(&state, id, &Now::new(now).eval())
-            .map(|cmd| self.track_reminder(cmd))
-            .transpose()
+        let cmd =
+            intent::reminder::remove_reminder(&state, id, seen_reminder(seen)?).map_err(stale)?;
+        self.track_reminder(cmd)
     }
 
     /// Reverses this exact reminder change. A later conflicting change is not overwritten.
@@ -1318,6 +1344,15 @@ mod tests {
         }
     }
 
+    /// Why an engine call was refused, or `None` when it went through.
+    fn refusal<T>(r: Result<T, FfiError>) -> Option<String> {
+        match r {
+            Err(FfiError::Invalid { detail }) => Some(detail),
+            Err(e) => Some(format!("{e}")),
+            Ok(_) => None,
+        }
+    }
+
     /// The commands the engine queued since `from`, oldest first.
     fn queued(engine: &TodoEngine, from: usize) -> Vec<Command> {
         engine
@@ -1475,19 +1510,20 @@ mod tests {
 
     #[test]
     fn reminders_queue_exactly_the_shared_builders_and_undo_them() {
+        use intent::reminder::Seen;
         let now = fixture_now();
         let e = TodoEngine::fixture("world".into(), now).expect("fixture");
         let id = e
             .add_task(RoomKey::default(), "Call the dentist".into(), now)
             .expect("task");
         let task = task_id(&id).expect("id");
-        let ctx = Now::new(now).eval();
         let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
         let later: Timestamp = "2026-11-22T08:00:00Z".parse().expect("timestamp");
+        let seen = |e: &TodoEngine| e.task(id.clone(), now).expect("task").reminder;
         let from = e.client.pending().len();
 
         let state = e.state();
-        e.set_reminder(id.clone(), at.as_millisecond(), now)
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
             .expect("set")
             .expect("handle");
         let Some(Command::AddReminder { id: reminder, .. }) = queued(&e, from).first().cloned()
@@ -1495,37 +1531,53 @@ mod tests {
             panic!("expected an added reminder");
         };
         let mut expected = vec![
-            intent::reminder::set_reminder(&state, task, at, &ctx, || reminder.as_uuid())
+            intent::reminder::set_reminder(&state, task, None, at, || reminder.as_uuid())
+                .expect("unchanged")
                 .expect("add"),
         ];
+        let shown = seen(&e).expect("shown");
         assert_eq!(
-            e.task(id.clone(), now).expect("task").reminder_at,
-            Some(at.as_millisecond())
+            shown,
+            ReminderRef {
+                id: reminder.to_string(),
+                at_ms: at.as_millisecond()
+            }
         );
         // The same time again queues nothing.
         assert!(
-            e.set_reminder(id.clone(), at.as_millisecond(), now)
+            e.set_reminder(id.clone(), Some(shown.clone()), at.as_millisecond(), now)
                 .expect("same")
                 .is_none()
         );
         let state = e.state();
         let moved = e
-            .set_reminder(id.clone(), later.as_millisecond(), now)
+            .set_reminder(id.clone(), Some(shown), later.as_millisecond(), now)
             .expect("move")
             .expect("handle");
+        let was = Seen { id: reminder, at };
         expected.push(
-            intent::reminder::set_reminder(&state, task, later, &ctx, Uuid::nil).expect("move"),
+            intent::reminder::set_reminder(&state, task, Some(was), later, Uuid::nil)
+                .expect("unchanged")
+                .expect("move"),
         );
         let state = e.state();
+        let shown = seen(&e).expect("shown");
         let removed = e
-            .remove_reminder(id.clone(), now)
-            .expect("remove")
-            .expect("handle");
-        expected.push(intent::reminder::remove_reminder(&state, task, &ctx).expect("remove"));
-        assert!(e.remove_reminder(id.clone(), now).expect("none").is_none());
+            .remove_reminder(id.clone(), shown.clone())
+            .expect("remove");
+        let was = Seen {
+            id: reminder,
+            at: later,
+        };
+        expected.push(intent::reminder::remove_reminder(&state, task, was).expect("remove"));
+        // Removing it again: it has gone, so nothing is written and the owner is told.
+        assert_eq!(
+            refusal(e.remove_reminder(id.clone(), shown)),
+            Some(REMINDER_CHANGED.into())
+        );
         assert_eq!(queued(&e, from), expected);
         let detail = e.task(id.clone(), now).expect("task");
-        assert_eq!(detail.reminder_at, None);
+        assert_eq!(detail.reminder, None);
         let row = detail
             .fields
             .iter()
@@ -1538,24 +1590,65 @@ mod tests {
 
         // Undo brings back exactly what each change replaced.
         e.undo_reminder(removed).expect("undo");
-        assert_eq!(
-            e.task(id.clone(), now).expect("task").reminder_at,
-            Some(later.as_millisecond())
-        );
+        assert_eq!(seen(&e).map(|r| r.at_ms), Some(later.as_millisecond()));
         e.undo_reminder(moved).expect("undo");
-        assert_eq!(
-            e.task(id.clone(), now).expect("task").reminder_at,
-            Some(at.as_millisecond())
-        );
+        assert_eq!(seen(&e).map(|r| r.at_ms), Some(at.as_millisecond()));
 
         // A time that has passed is refused, and queues nothing.
         let pending = e.client.pending().len();
         let past = Timestamp::from_millisecond(now.epoch_ms - 60_000).expect("past");
         assert!(matches!(
-            e.set_reminder(id.clone(), past.as_millisecond(), now),
+            e.set_reminder(id.clone(), seen(&e), past.as_millisecond(), now),
             Err(FfiError::Invalid { .. })
         ));
         assert_eq!(e.client.pending().len(), pending);
+    }
+
+    #[test]
+    fn a_picker_left_open_never_edits_a_reminder_that_changed_meanwhile() {
+        let now = fixture_now();
+        let e = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let id = e
+            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .expect("task");
+        let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
+        let later: Timestamp = "2026-11-22T08:00:00Z".parse().expect("timestamp");
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
+            .expect("set");
+        let opened = e
+            .task(id.clone(), now)
+            .expect("task")
+            .reminder
+            .expect("shown");
+        // Moved elsewhere while the picker was open.
+        let current = e.task(id.clone(), now).expect("task").reminder;
+        e.set_reminder(id.clone(), current, later.as_millisecond(), now)
+            .expect("moved elsewhere");
+        let pending = e.client.pending().len();
+        let stale = Some(REMINDER_CHANGED.to_owned());
+        let tomorrow = at.as_millisecond() + 86_400_000;
+        assert_eq!(
+            refusal(e.set_reminder(id.clone(), Some(opened.clone()), tomorrow, now)),
+            stale
+        );
+        assert_eq!(
+            refusal(e.remove_reminder(id.clone(), opened.clone())),
+            stale
+        );
+        // Opened on a task without a reminder, which got one elsewhere: no second one is added.
+        let bare = e
+            .add_task(RoomKey::default(), "Water the plants".into(), now)
+            .expect("task");
+        e.set_reminder(bare.clone(), None, at.as_millisecond(), now)
+            .expect("added elsewhere");
+        let pending_bare = e.client.pending().len();
+        assert_eq!(refusal(e.set_reminder(bare, None, tomorrow, now)), stale);
+        assert_eq!(e.client.pending().len(), pending_bare);
+        assert_eq!(pending + 2, pending_bare);
+        assert_eq!(
+            e.task(id, now).expect("task").reminder.map(|r| r.at_ms),
+            Some(later.as_millisecond())
+        );
     }
 
     #[test]
@@ -1566,7 +1659,7 @@ mod tests {
             .add_task(RoomKey::default(), "Call the dentist".into(), now)
             .expect("task");
         let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
-        e.set_reminder(id.clone(), at.as_millisecond(), now)
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
             .expect("set");
         let alarms = e.reminder_alarms(now.epoch_ms, now);
         assert_eq!(alarms.len(), 1);

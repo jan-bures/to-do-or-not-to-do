@@ -1,6 +1,7 @@
 package app.todoornot.model
 
 import app.todoornot.core.DestinationGroup
+import app.todoornot.core.ReminderRef
 import app.todoornot.core.RoomKey
 
 /** What the main screen can ask for. [TodoModel] does the work; the screenshot gallery passes [None]. */
@@ -40,8 +41,11 @@ interface Actions {
     /** Sets the priority by its `!` marks: 3 (high), 2 (normal), 1 (low) or 0 (none). */
     fun setPriority(id: String, marks: Int)
 
-    /** Sets the reminder to [atMs] (milliseconds since the Unix epoch), or removes it (null); the toast offers Undo. */
-    fun setReminder(id: String, atMs: Long?)
+    /**
+     * Sets the reminder the owner saw ([seen]; null: the task had none) to [atMs] (milliseconds since the
+     * Unix epoch), or removes it (null). One that changed meanwhile is left alone. The toast offers Undo.
+     */
+    fun setReminder(id: String, seen: ReminderRef?, atMs: Long?)
     fun renameStep(id: String, title: String)
 
     /** Moves a step one place up (-1) or down (1). */
@@ -111,7 +115,7 @@ interface Actions {
         override fun setStepDone(id: String, done: Boolean) = Unit
         override fun setDue(id: String, date: String?) = Unit
         override fun setPriority(id: String, marks: Int) = Unit
-        override fun setReminder(id: String, atMs: Long?) = Unit
+        override fun setReminder(id: String, seen: ReminderRef?, atMs: Long?) = Unit
         override fun renameStep(id: String, title: String) = Unit
         override fun moveStep(id: String, by: Int) = Unit
         override fun deleteStep(id: String) = Unit

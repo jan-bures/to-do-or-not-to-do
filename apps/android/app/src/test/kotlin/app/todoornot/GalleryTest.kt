@@ -488,7 +488,7 @@ class GalleryTest {
             val detail = requireNotNull(s.detail)
             overlaid("reminder_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
                 DialogBackdrop {
-                    ReminderCard(detail.reminderAt, detail.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false)
+                    ReminderCard(detail.reminder?.atMs, detail.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false)
                 }
             }
         }
@@ -501,7 +501,7 @@ class GalleryTest {
         val (e2, admin2, id2) = admin()
         val s2 = state(e2, admin2, select = id2)
         overlaid("reminder_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
-            DialogBackdrop { ReminderCard(s2.detail?.reminderAt, s2.detail?.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
+            DialogBackdrop { ReminderCard(s2.detail?.reminder?.atMs, s2.detail?.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
         }
     }
 

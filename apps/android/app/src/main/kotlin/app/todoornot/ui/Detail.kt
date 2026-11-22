@@ -353,13 +353,15 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
     }
     if (pickingReminder) {
         val now = remember { System.currentTimeMillis() }
+        // The edit carries the reminder it was made on, as the picker opened on it.
+        val seen = remember { detail.reminder }
         ReminderDialog(
-            detail.reminderAt,
+            seen?.atMs,
             detail.due,
             now,
             ZoneId.systemDefault(),
             onSave = { at ->
-                actions.setReminder(detail.id, at)
+                actions.setReminder(detail.id, seen, at)
                 if (at != null) asking = access.toAsk()
             },
             onDismiss = { pickingReminder = false },

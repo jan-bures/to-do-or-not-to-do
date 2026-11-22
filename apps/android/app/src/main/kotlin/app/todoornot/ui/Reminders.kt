@@ -33,11 +33,12 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.reminders.ReminderAccess
 import app.todoornot.reminders.ReminderNeed
-import java.time.Instant
+import app.todoornot.reminders.clockChangeNote
+import app.todoornot.reminders.reminderStart
+import app.todoornot.reminders.resolveReminder
+import androidx.compose.material3.isInputValid
 import java.time.LocalDate
-import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.temporal.ChronoUnit
 
 private val S = Tokens.Space
 private const val DAY_MS = 86_400_000L
@@ -45,29 +46,18 @@ private const val DAY_MS = 86_400_000L
 /** Asks for what reminders need after the owner sets one ([ReminderAccess]); the gallery's asks nothing. */
 val LocalReminderAccess = staticCompositionLocalOf<ReminderAccess> { ReminderAccess.None }
 
-/**
- * Where the reminder picker opens: the reminder's own time; else, for a task due on a later day, 09:00
- * that day; else the next whole hour from [nowMs]. In [zone], the phone's.
- */
-fun reminderStart(atMs: Long?, due: String?, nowMs: Long, zone: ZoneId): LocalDateTime {
-    if (atMs != null) return LocalDateTime.ofInstant(Instant.ofEpochMilli(atMs), zone)
-    val now = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zone)
-    val day = due?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
-    if (day != null && day.isAfter(now.toLocalDate())) return day.atTime(9, 0)
-    return now.truncatedTo(ChronoUnit.HOURS).plusHours(1)
-}
-
-/** The instant of the picker's day (its UTC midnight, as the Material date picker counts) at [hour]:[minute] in [zone]. */
-fun reminderMillis(dayUtcMs: Long, hour: Int, minute: Int, zone: ZoneId): Long =
-    LocalDate.ofEpochDay(Math.floorDiv(dayUtcMs, DAY_MS)).atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
-
 /** Under the picker when the time picked has passed. */
 const val REMINDER_PAST = "Pick a time that hasn’t passed."
+
+/** Under the picker while the time typed isn't one. */
+const val REMINDER_BAD_TIME = "Type an hour from 00 to 23 and a minute from 00 to 59."
 
 /**
  * The reminder picker: the Material date picker and time input, in our colours and type, on the overlay
  * surface, with the time in 24 hours like the rest of the app. It opens where [reminderStart] says.
- * **Save** keeps the day and time (only one still to come), **Remove** takes the reminder away, and
+ * **Save** keeps the day and time (only a whole time still to come). When the clocks change over it, a
+ * note says which time is saved: the one a skipped time moves to, or the first of a doubled one
+ * ([resolveReminder]). **Remove** takes the reminder away, and
  * **Cancel** changes nothing. [markToday] rings today's date; the gallery turns it off, as the picker
  * reads the device's clock for it. In a short window the date picker drops its headline and mode toggle,
  * the time comes first, and everything scrolls under the buttons, which stay in view.
@@ -109,8 +99,12 @@ fun ReminderCard(
             unfocusedSupportingTextColor = r.ink3,
         ),
     )
-    val picked = date.selectedDateMillis?.let { reminderMillis(it, time.hour, time.minute, zone) }
-    val past = picked != null && picked <= nowMs
+    // Only a time the fields hold whole counts: while one is half typed, the state keeps the last good one.
+    val valid = time.isInputValid
+    val picked = date.selectedDateMillis?.takeIf { valid }
+        ?.let { resolveReminder(LocalDate.ofEpochDay(Math.floorDiv(it, DAY_MS)), time.hour, time.minute, zone) }
+    val past = picked != null && picked.atMs <= nowMs
+    val note = picked?.let(::clockChangeNote)
     val shape = RoundedCornerShape(Tokens.Radius.XL.dp)
     BoxWithConstraints(modifier) {
         val compact = maxHeight < COMPACT_BELOW
@@ -148,12 +142,14 @@ fun ReminderCard(
                     .padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S5.dp, top = if (compact) S.S3.dp else 0.dp),
                 verticalArrangement = Arrangement.spacedBy(S.S3.dp),
             ) {
+                if (!valid) Label(REMINDER_BAD_TIME, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 2)
+                if (note != null) Label(note, Tokens.Type.META_PHONE, r.ink2, maxLines = 3)
                 if (past) Label(REMINDER_PAST, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 2)
                 Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                     if (atMs != null) Button("Remove", primary = false, modifier = Modifier.weight(1f)) { onSave(null) }
                     Button("Cancel", primary = false, modifier = Modifier.weight(1f), onClick = onCancel)
                     Button("Save", primary = true, modifier = Modifier.weight(1f), enabled = picked != null && !past) {
-                        picked?.let(onSave)
+                        picked?.let { onSave(it.atMs) }
                     }
                 }
             }

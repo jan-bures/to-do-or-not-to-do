@@ -519,7 +519,7 @@ class TodoModelTest {
         val io = Steps()
         val scope = CoroutineScope(SupervisorJob() + main)
         private var onChange: () -> Unit = {}
-        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it })
+        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it }, zone = { java.time.ZoneOffset.ofHours(1) })
 
         /** The engine says something changed, as its listener would. */
         fun changed() = onChange()
@@ -1842,13 +1842,15 @@ class TodoModelTest {
         val m = s.model
         val (_, id) = s.openAdmin()
         fun row() = m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }
-        val before = requireNotNull(m.ui.value.detail?.reminderAt)
+        fun seen() = m.ui.value.detail?.reminder
+        val before = requireNotNull(seen())
         assertEquals("Today, 18:00", row().value)
         // Tomorrow at 15:00 local (UTC+1).
         val at = java.time.Instant.parse("2026-11-22T14:00:00Z").toEpochMilli()
-        m.setReminder(id, at)
+        m.setReminder(id, before, at)
         s.drain()
-        assertEquals(at, m.ui.value.detail?.reminderAt)
+        assertEquals(at, seen()?.atMs)
+        assertEquals(before.id, seen()?.id)
         assertEquals("Tomorrow, 15:00", row().value)
         val moved = m.ui.value.toast!!
         assertEquals("Reminder set for Tomorrow, 15:00", moved.text)
@@ -1856,27 +1858,51 @@ class TodoModelTest {
         m.undo(moved)
         m.undo(moved) // A second tap on the same toast does nothing.
         s.drain()
-        assertEquals(before, m.ui.value.detail?.reminderAt)
+        assertEquals(before, seen())
         assertNull(m.ui.value.toast)
 
-        m.setReminder(id, null)
+        m.setReminder(id, seen(), null)
         s.drain()
-        assertNull(m.ui.value.detail?.reminderAt)
+        assertNull(seen())
         assertEquals("–", row().value)
         assertTrue(row().empty)
         val removed = m.ui.value.toast!!
         assertEquals("Reminder removed", removed.text)
         m.undo(removed)
         s.drain()
-        assertEquals(before, m.ui.value.detail?.reminderAt)
+        assertEquals(before, seen())
 
         // A time that has passed is refused in plain words, and nothing is queued.
         val pending = m.ui.value.status.pending
-        m.setReminder(id, FIXTURE_NOW.epochMs - 60_000)
+        m.setReminder(id, seen(), FIXTURE_NOW.epochMs - 60_000)
         s.drain()
         assertEquals("Pick a time that hasn't passed.", m.ui.value.toast?.text)
         assertFalse(m.ui.value.toast!!.undoable)
         assertEquals(pending, m.ui.value.status.pending)
+    }
+
+    @Test
+    fun a_picker_left_open_while_the_reminder_changed_writes_nothing_and_says_so() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        // The picker opens on the reminder; another device moves it meanwhile.
+        val opened = requireNotNull(m.ui.value.detail?.reminder)
+        val elsewhere = opened.atMs + 3_600_000
+        m.engine.setReminder(id, opened, elsewhere, FIXTURE_NOW)
+        s.changed()
+        s.drain()
+        val pending = m.ui.value.status.pending
+        m.setReminder(id, opened, opened.atMs + 7_200_000)
+        s.drain()
+        assertEquals("The reminder changed while the picker was open. Check it, then try again.", m.ui.value.toast?.text)
+        assertEquals(pending, m.ui.value.status.pending)
+        assertEquals(elsewhere, m.ui.value.detail?.reminder?.atMs)
+        // Removing it from the stale picker is refused the same way.
+        m.setReminder(id, opened, null)
+        s.drain()
+        assertEquals(pending, m.ui.value.status.pending)
+        assertEquals(elsewhere, m.ui.value.detail?.reminder?.atMs)
     }
 
     @Test
@@ -1887,9 +1913,11 @@ class TodoModelTest {
         val pending = m.ui.value.status.pending
         assertTrue(m.engine.reminderAlarms(0, FIXTURE_NOW).any { it.task == id })
         var done: Boolean? = null
-        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) }
+        var saved = 0
+        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) { saved++ } }
         s.drain()
         assertEquals(true, done)
+        assertEquals("the notification may go once it is saved", 1, saved)
         assertEquals(true, m.engine.taskDone(id))
         assertEquals(true, m.ui.value.detail?.done)
         assertEquals(pending + 1u, m.ui.value.status.pending)
@@ -1898,8 +1926,13 @@ class TodoModelTest {
         // A done task alerts for nothing.
         assertTrue(m.engine.reminderAlarms(0, FIXTURE_NOW).none { it.task == id })
         // Completing it again (a second tap on a stale notification) changes nothing.
-        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) }
+        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) { saved++ } }
         s.drain()
         assertEquals(pending + 1u, m.ui.value.status.pending)
+        // A completion that can't be saved keeps the notification.
+        s.scope.launch { done = m.completeFromNotification("not a task", syncFor = 0) { saved++ } }
+        s.drain()
+        assertEquals(false, done)
+        assertEquals(2, saved)
     }
 }
