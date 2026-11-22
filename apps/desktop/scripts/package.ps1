@@ -65,6 +65,9 @@ try {
     cargo build --release --locked --target $target --bin $appId
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)." }
     if (-not (Test-Path -LiteralPath $vpk -PathType Leaf)) {
+        # A build cache can restore part of the tool store without vpk.exe, and `dotnet tool
+        # install` then fails on the leftovers. Start from an empty tool directory.
+        if (Test-Path -LiteralPath $toolDir) { Remove-Item -LiteralPath $toolDir -Recurse -Force }
         dotnet tool install vpk --tool-path $toolDir --version $vpkVersion
         if ($LASTEXITCODE -ne 0) { throw "Installing vpk failed ($LASTEXITCODE). Install the .NET 8 SDK." }
     }
