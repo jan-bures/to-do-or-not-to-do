@@ -70,7 +70,8 @@ set -eu
 case "$1" in
     --version) echo 'todo-server 1.0.0' ;;
     database-path)
-        case "$(< "${0%/*}/web/index.html")" in
+        incompatible=none
+        case "$(cat "${0%/*}/web/index.html" 2>/dev/null || true)" in
             'first web bundle') incompatible=second_only ;;
             'second web bundle') incompatible=first_only ;;
         esac
@@ -157,6 +158,17 @@ grep -q 'refusing to switch' "$root/output"
 grep -qx 'phase=switched' "$marker"
 grep -qx 'after switch' "$db"
 cp "$root/compatible.toml" "$config"
+
+# A rollback onto a release without a web bundle is refused while the config serves current/web: that
+# release's server couldn't start.
+first_web="$root/opt/todo/releases/$(basename "$first")/web/index.html"
+mv "$first_web" "$root/first-index.html"
+: > "$root/stops"
+run 3 "$recovery" --recover rollback
+grep -q 'has no web bundle' "$root/output"
+[[ $(readlink "$current") = "$second" && ! -s "$root/stops" && -f "$marker" ]]
+grep -qx 'after switch' "$db"
+mv "$root/first-index.html" "$first_web"
 run 2 "$recovery" --recover rollback
 [[ $(readlink "$current") = "$first" && ! -e "$marker" ]]
 grep -qx 'first web bundle' "$current/web/index.html"

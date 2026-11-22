@@ -216,7 +216,10 @@ On a VM with an unbundled release already installed, leave the current config un
 bundled deploy. If it uses `[web] dir = "/opt/todo/web"` with a manual symlink, leave both in place so
 the previous release can still use them if you have to roll back. After the deploy succeeds and the
 marker is gone, use `sudoedit /etc/todo/server.toml` to change `dir` to `"/opt/todo/current/web"`, or add
-that `[web]` section from the template if it is missing. Restart `todo-server` and verify `/health`
+that `[web]` section from the template if it is missing. Before the restart, confirm the bundle is there with
+`test -f /opt/todo/current/web/index.html && echo ok`: the server won't start if that directory is
+missing, and `install-release.sh` refuses to switch to a release without a bundle while the config points
+there. Restart `todo-server` and verify `/health`
 and `/app` (sign in to check that the app loads). The server reads the assets at start-up. Future
 bundled deploys and recoveries need no edit. Keep the manual symlink and assets until you no longer
 need the unbundled release. If you must return to that release, first restore its old `[web]` settings

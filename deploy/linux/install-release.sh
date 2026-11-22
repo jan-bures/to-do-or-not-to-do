@@ -397,6 +397,12 @@ check_transition_config() {
         die3 "refusing to switch: release $id cannot check or does not accept $CONFIG (todo-server database-path). Fix the config for that release and retry."
     [ "$(dirname -- "$db_path")" = "$data_dir" ] ||
         die3 "refusing to switch: release $id would open $db_path, outside the deploy's recorded data directory $data_dir. Restore the original data_dir in $CONFIG and retry."
+    # `database-path` doesn't check the web directory, but `serve` fails without it: a release from before
+    # web bundles can't start on a config that serves the bundle under current/.
+    if grep -Fq "\"$OPT/current/web" "$CONFIG" &&
+        [ ! -f "$RELEASES/$id/web/index.html" ]; then
+        die3 "refusing to switch: $CONFIG serves the web app from $OPT/current/web, but release $id has no web bundle. Point [web] dir at a directory that exists for that release and retry."
+    fi
 }
 
 # ---- databases ------------------------------------------------------------------------------------
@@ -678,9 +684,9 @@ fi
 [ -n "$staging" ] || fail "usage: install-release.sh [options] STAGING_DIR (see --help)"
 check_unit_config
 for f in "${BINARIES[@]}" SHA256SUMS; do
-    [ -f "$staging/$f" ] && [ ! -L "$staging/$f" ] || fail "$staging/$f is not a regular file"
+    if ! { [ -f "$staging/$f" ] && [ ! -L "$staging/$f" ]; }; then fail "$staging/$f is not a regular file"; fi
 done
-[ -d "$staging/web" ] && [ ! -L "$staging/web" ] || fail "$staging/web is not a release web directory; build the full release first"
+if ! { [ -d "$staging/web" ] && [ ! -L "$staging/web" ]; }; then fail "$staging/web is not a release web directory; build the full release first"; fi
 
 check_web_tree() {
     local dir="$1" unexpected
@@ -695,7 +701,7 @@ work="$RELEASES/.stage-$stamp"
 mkdir -m 0755 "$work"
 for f in "${BINARIES[@]}" SHA256SUMS; do
     cp --no-dereference -- "$staging/$f" "$work/$f"
-    [ -f "$work/$f" ] && [ ! -L "$work/$f" ] || fail "$staging/$f changed during copy"
+    if ! { [ -f "$work/$f" ] && [ ! -L "$work/$f" ]; }; then fail "$staging/$f changed during copy"; fi
 done
 cp -R --no-dereference -- "$staging/web" "$work/web"
 check_web_tree "$work/web" || fail "$staging/web changed during copy"
