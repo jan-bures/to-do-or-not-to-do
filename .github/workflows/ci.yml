@@ -91,7 +91,7 @@ jobs:
       - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target aarch64-linux-android
 
   deploy-scripts:
-    name: deploy scripts (shellcheck, systemd units)
+    name: deploy scripts (shellcheck, install and recovery, systemd units)
     runs-on: ubuntu-latest
     # Debian 13, the target: its shellcheck and systemd, and none of the runner's own units, whose
     # warnings `systemd-analyze verify` would otherwise print.
@@ -104,7 +104,8 @@ jobs:
             systemd shellcheck > /dev/null
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: shellcheck --version
-      - run: shellcheck deploy/probe.sh deploy/linux/*.sh
+      - run: shellcheck deploy/probe.sh deploy/linux/*.sh deploy/linux/tests/*.sh
+      - run: bash deploy/linux/tests/install-release.sh
       # `systemd-analyze verify` exits 0 on unknown keys, so any output fails the step. It needs the
       # executables the units name, so stand-ins are put there; the template gets its two instances.
       - name: Verify the systemd units
@@ -123,7 +124,7 @@ jobs:
           [ ! -s out.txt ]
 
   linux-release:
-    name: Linux release binaries (built, not published)
+    name: Linux release with web app (built, not published)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -132,12 +133,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-release
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.15.0
       # The script deploy-linux.ps1 runs in WSL; here with the workspace target dir, so the cache covers it.
       - run: CARGO_TARGET_DIR="$PWD/target" bash deploy/linux/build-release.sh "$RUNNER_TEMP/linux-release"
       - name: Check the output
         working-directory: ${{ runner.temp }}/linux-release
         run: |
           sha256sum --check --strict SHA256SUMS
+          grep -q '  web/index.html$' SHA256SUMS
+          grep -q '  web/todo-web_bg.wasm$' SHA256SUMS
           ./todo-server --version
           ./todo-backup --version
 

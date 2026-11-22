@@ -67,3 +67,22 @@ fn an_invalid_config_fails_and_prints_no_path() {
         String::from_utf8_lossy(&o.stdout)
     );
 }
+
+#[test]
+fn deployment_config_check_accepts_a_not_yet_switched_web_dir_but_rejects_unknown_sections() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("server.toml");
+    let known = "data_dir = 'state'\n[web]\ndir = 'current/web'\n";
+    std::fs::write(&config, known).expect("write config");
+    assert_eq!(
+        stdout_path(&database_path(dir.path(), &config)),
+        dir.path().join("state/todo.sqlite3")
+    );
+    assert!(!dir.path().join("state").exists());
+
+    std::fs::write(&config, format!("{known}\n[future]\nenabled = true\n")).expect("write config");
+    let o = database_path(dir.path(), &config);
+    assert!(!o.status.success());
+    assert!(o.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown field `future`"));
+}

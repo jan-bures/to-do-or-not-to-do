@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Installs a release of todo-server and todo-backup on a provisioned VM, and stops it again if the new
-# server doesn't come up healthy. deploy-linux.ps1 uploads it with the binaries and runs it:
+# Installs todo-server, todo-backup and the web app on a provisioned VM, and stops the new server
+# again if it doesn't come up healthy. deploy-linux.ps1 uploads the release and runs this script:
 #
 #   sudo bash install-release.sh [--health-timeout S] [--keep N] [--no-start] [--allow-empty-database] STAGING_DIR
 #   sudo bash install-release.sh --recover finish|rollback [--discard-writes] [--health-timeout S]
 #   sudo bash install-release.sh --status
 #
-# STAGING_DIR holds todo-server, todo-backup and SHA256SUMS. Every run that changes anything holds
-# /opt/todo/deploy.lock, so only one deploy or recovery runs at a time. Before anything stops, a deploy
-# checks the checksums, installs the binaries as /opt/todo/releases/<version>-<hash>/, asks the new
-# server for its database path (`todo-server database-path`, which also checks the config) and refuses
-# a unit with drop-ins or environment overrides. Nothing has changed if any of this fails.
+# STAGING_DIR holds todo-server, todo-backup, web/ and SHA256SUMS. Every run that changes anything
+# holds /opt/todo/deploy.lock. A deploy verifies and installs the release under /opt/todo/releases/.
+# Before stopping anything or switching releases, deploy and recovery use the target server's
+# `database-path` command to check the live config. They refuse a unit with drop-ins or environment
+# overrides. The web bundle, when configured at /opt/todo/current/web, follows the release switch.
 #
 # Then it writes a durable marker, /opt/todo/deploy-in-progress. While it exists, todo-server and the
 # backups refuse to start, except for one start at a time that this script authorizes (deploy-guard.sh).
@@ -342,6 +342,63 @@ start_and_finish() {
     return 1
 }
 
+# ---- config compatibility -------------------------------------------------------------------------
+
+refuse_config() {
+    if [ -f "$MARKER" ]; then die3 "$*"; fi
+    fail "$*"
+}
+
+unit_prop() { systemctl show -p "$1" --value "$SERVICE"; }
+
+check_unit_config() {
+    # The live TOML is the one source of settings. Refuse a unit that can load other settings.
+    local p v kv config_seen=0
+    [ -f "$CONFIG" ] || refuse_config "$CONFIG doesn't exist yet: write it first (see server.toml.example)"
+    [ "$(unit_prop FragmentPath)" = "$UNIT_FILE" ] ||
+        refuse_config "$SERVICE is not loaded from $UNIT_FILE; run provision.sh again."
+    for p in DropInPaths PassEnvironment UnsetEnvironment EnvironmentFiles; do
+        v="$(unit_prop "$p")"
+        [ -z "$v" ] || refuse_config "$SERVICE has $p set ($v). The unit must not have drop-ins; config lives in $CONFIG."
+    done
+    v="$(systemctl show-environment)" || refuse_config "could not read the systemd manager's environment"
+    if grep -q '^TODO_SERVER_' <<< "$v"; then
+        refuse_config "the systemd manager's environment sets TODO_SERVER_* (systemctl show-environment); config lives in $CONFIG."
+    fi
+    v="$(unit_prop Environment)" || refuse_config "could not read $SERVICE's environment"
+    set -f
+    for kv in $v; do
+        case "$kv" in
+            "TODO_SERVER_CONFIG=$CONFIG") config_seen=1 ;;
+            TODO_SERVER_*) refuse_config "$SERVICE sets ${kv%%=*} in its environment; config lives in $CONFIG." ;;
+        esac
+    done
+    set +f
+    [ "$config_seen" -eq 1 ] || refuse_config "$SERVICE doesn't set TODO_SERVER_CONFIG=$CONFIG; run provision.sh again."
+}
+
+release_database_path() {
+    local id="$1" workdir db_path
+    workdir="$(unit_prop WorkingDirectory)" || return 1
+    # Config::load, just like `serve`, without binding or opening the DB. Also works with older releases
+    # that know `database-path`. Relative paths resolve exactly as in the unit.
+    db_path="$(cd "${workdir:-/}" && runuser -u todo -- env -i PATH=/usr/bin:/bin TODO_SERVER_CONFIG="$CONFIG" \
+        "$RELEASES/$id/todo-server" database-path)" || return 1
+    case "$db_path" in
+        /todo.sqlite3 | /*/todo.sqlite3) printf '%s\n' "$db_path" ;;
+        *) printf 'error: unexpected database path from %s: %s\n' "$id" "$db_path" >&2; return 1 ;;
+    esac
+}
+
+check_transition_config() {
+    local id="$1" db_path
+    [ -n "$id" ] || return 0 # no previous release to start on a first-install rollback
+    db_path="$(release_database_path "$id")" ||
+        die3 "refusing to switch: release $id cannot check or does not accept $CONFIG (todo-server database-path). Fix the config for that release and retry."
+    [ "$(dirname -- "$db_path")" = "$data_dir" ] ||
+        die3 "refusing to switch: release $id would open $db_path, outside the deploy's recorded data directory $data_dir. Restore the original data_dir in $CONFIG and retry."
+}
+
 # ---- databases ------------------------------------------------------------------------------------
 
 # Holds the lock every backup run takes, until this script exits, so no run reads or writes a database
@@ -500,6 +557,8 @@ prune() {
 # Rolls back from phase $1 and ends the run with exit code $2 (default 2).
 rollback_from() {
     local code="${2:-2}"
+    # Check before stopping or restoring anything, including when an initial deploy aborts in prepared.
+    check_transition_config "$prev_id"
     case "$1" in
         prepared)
             # The new release never ran: the databases are as the previous release left them.
@@ -602,7 +661,9 @@ if [ -n "$recover" ]; then
     case "$served" in yes | no) ;; *) die3 "the marker doesn't say whether the new release served (served=)" ;; esac
     if [ -z "$data_dir" ] || [ -z "$snapshot" ] || [ -z "$new_id" ]; then die3 "the marker is incomplete"; fi
     log "recovering ($recover) a deploy of $new_id interrupted in phase '$phase'"
+    check_unit_config
     if [ "$recover" = rollback ]; then rollback_from "$phase"; fi
+    case "$phase" in prepared | switched) check_transition_config "$new_id" ;; esac
     deploy_from "$phase"
 fi
 
@@ -615,70 +676,60 @@ if [ -f "$MARKER" ]; then
     exit 1
 fi
 [ -n "$staging" ] || fail "usage: install-release.sh [options] STAGING_DIR (see --help)"
-[ -f "$CONFIG" ] || fail "$CONFIG doesn't exist yet: write it first (see server.toml.example)"
+check_unit_config
 for f in "${BINARIES[@]}" SHA256SUMS; do
-    [ -f "$staging/$f" ] || fail "$staging/$f is missing"
+    [ -f "$staging/$f" ] && [ ! -L "$staging/$f" ] || fail "$staging/$f is not a regular file"
 done
+[ -d "$staging/web" ] && [ ! -L "$staging/web" ] || fail "$staging/web is not a release web directory; build the full release first"
 
-# The config file is the one source of the server's settings. The unit is ours alone: refuse drop-ins,
-# variables passed in or unset from the manager, an EnvironmentFile, a TODO_SERVER_* variable other than
-# TODO_SERVER_CONFIG=$CONFIG, and TODO_SERVER_* in the manager's own environment.
-unit_prop() { systemctl show -p "$1" --value "$SERVICE"; }
-[ "$(unit_prop FragmentPath)" = "$UNIT_FILE" ] || fail "$SERVICE is not loaded from $UNIT_FILE; run provision.sh again. Nothing changed."
-for p in DropInPaths PassEnvironment UnsetEnvironment EnvironmentFiles; do
-    v="$(unit_prop "$p")"
-    [ -z "$v" ] || fail "$SERVICE has $p set ($v). The unit must not have drop-ins; config lives in $CONFIG. Nothing changed."
-done
-if systemctl show-environment | grep -q '^TODO_SERVER_'; then
-    fail "the systemd manager's environment sets TODO_SERVER_* (systemctl show-environment); config lives in $CONFIG. Nothing changed."
-fi
-set -f
-config_seen=0
-for kv in $(unit_prop Environment); do
-    case "$kv" in
-        "TODO_SERVER_CONFIG=$CONFIG") config_seen=1 ;;
-        TODO_SERVER_*) fail "$SERVICE sets ${kv%%=*} in its environment; config lives in $CONFIG. Nothing changed." ;;
-    esac
-done
-set +f
-[ "$config_seen" -eq 1 ] || fail "$SERVICE doesn't set TODO_SERVER_CONFIG=$CONFIG; run provision.sh again. Nothing changed."
+check_web_tree() {
+    local dir="$1" unexpected
+    unexpected="$(find "$dir" ! -type d ! -type f -print -quit)" || return 1
+    [ -z "$unexpected" ] && [ -f "$dir/index.html" ]
+}
+check_web_tree "$staging/web" || fail "$staging/web must contain index.html and only regular files and directories"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 find "$RELEASES" -mindepth 1 -maxdepth 1 -name '.stage-*' -exec rm -rf -- {} +
 work="$RELEASES/.stage-$stamp"
 mkdir -m 0755 "$work"
 for f in "${BINARIES[@]}" SHA256SUMS; do
-    cp -- "$staging/$f" "$work/$f"
+    cp --no-dereference -- "$staging/$f" "$work/$f"
+    [ -f "$work/$f" ] && [ ! -L "$work/$f" ] || fail "$staging/$f changed during copy"
 done
-(cd "$work" && sha256sum --check --strict --quiet SHA256SUMS) || fail "checksums don't match; nothing changed"
+cp -R --no-dereference -- "$staging/web" "$work/web"
+check_web_tree "$work/web" || fail "$staging/web changed during copy"
+# Compare to a manifest generated from the whole staged tree. This checks for unlisted files as well
+# as bad checksums, and never reads paths supplied by SHA256SUMS as root.
+(cd "$work" && sha256sum "${BINARIES[@]}" && find web -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) \
+    > "$work/SHA256SUMS.actual" || fail "could not checksum $work"
+cmp -s "$work/SHA256SUMS" "$work/SHA256SUMS.actual" || fail "checksums don't match (binaries or web assets); nothing changed"
+rm -- "$work/SHA256SUMS.actual"
 for b in "${BINARIES[@]}"; do
-    grep -qE "^[0-9a-f]{64} [ *]$b\$" "$work/SHA256SUMS" || fail "SHA256SUMS doesn't cover $b"
     chmod 0755 "$work/$b"
     version="$("$work/$b" --version 2>&1)" || fail "$b doesn't run on this host: $version"
     log "new $version"
 done
 chmod 0644 "$work/SHA256SUMS"
+find "$work/web" -type d -exec chmod 0755 -- {} +
+find "$work/web" -type f -exec chmod 0644 -- {} +
 version="$("$work/todo-server" --version | awk '{ print $2 }')"
-new_id="$version-$(sha256sum "$work/todo-server" | cut -c 1-12)"
+new_id="$version-$(sha256sum "$work/SHA256SUMS" | cut -c 1-12)"
 case "$new_id" in *[!A-Za-z0-9._+-]*) fail "unexpected version string: $new_id" ;; esac
 if [ -d "$RELEASES/$new_id" ]; then
-    cmp -s "$work/SHA256SUMS" "$RELEASES/$new_id/SHA256SUMS" || fail "$RELEASES/$new_id exists with other binaries"
+    cmp -s "$work/SHA256SUMS" "$RELEASES/$new_id/SHA256SUMS" || fail "$RELEASES/$new_id exists with different contents"
     rm -rf -- "$work"
     log "release $new_id is already installed; reusing it"
 else
-    fsync "$work"/* "$work" || fail "could not sync $work"
+    find "$work" -depth -exec sync -- {} + || fail "could not sync $work"
     mv -T -- "$work" "$RELEASES/$new_id"
     fsync "$RELEASES" || fail "could not sync $RELEASES"
     log "installed release $new_id"
 fi
 
-# The database the new server will open, by its own rules: run as the service user, in the unit's working
-# directory, with the config the unit passes and nothing else. A config it refuses stops the deploy here.
-workdir="$(unit_prop WorkingDirectory)"
-db_path="$(cd "${workdir:-/}" && runuser -u todo -- env -i PATH=/usr/bin:/bin TODO_SERVER_CONFIG="$CONFIG" \
-    "$RELEASES/$new_id/todo-server" database-path)" || fail "the new server refuses $CONFIG; nothing changed"
-case "$db_path" in /*) ;; *) fail "the server printed an unexpected database path: $db_path" ;; esac
-data_dir="$(dirname "$db_path")"
+db_path="$(release_database_path "$new_id")" ||
+    fail "refusing to switch: release $new_id cannot check or does not accept $CONFIG (todo-server database-path). Nothing changed."
+data_dir="$(dirname -- "$db_path")"
 prev_id="$(current_id)"
 if [ -n "$prev_id" ] && [ ! -f "$db_path" ] && [ "$allow_empty" -eq 0 ]; then
     fail "release $prev_id is installed but there is no database at $db_path to copy before the deploy. Nothing changed. If that is expected (a fresh or wiped install, or a VM that has not been cut over yet), pass --allow-empty-database (-AllowEmptyDatabase)."

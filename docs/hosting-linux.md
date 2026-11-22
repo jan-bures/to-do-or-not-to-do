@@ -14,9 +14,9 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 | Script | Runs on | What it does |
 |---|---|---|
 | `deploy/linux/provision.sh` | the VM, as root | Users, directories, swap, UDP buffer limits, unattended upgrades, journald limits, `cloudflared`, the systemd units. Idempotent. |
-| `deploy/deploy-linux.ps1` | the Windows PC | Builds the Linux binaries in WSL, copies them over, installs them on the VM, checks health, and stops a release that fails it. |
+| `deploy/deploy-linux.ps1` | the Windows PC | Builds the Linux binaries and web app in WSL, deploys them to the VM, checks health, and stops a release that fails it. |
 | `deploy/linux/install-release.sh` | the VM, as root | The VM half of a deploy. `deploy-linux.ps1` uploads and runs it. |
-| `deploy/linux/build-release.sh` | WSL or any Linux | Builds `todo-server` and `todo-backup` for `x86_64-unknown-linux-gnu`. |
+| `deploy/linux/build-release.sh` | WSL or any Linux | Builds the `x86_64-unknown-linux-gnu` binaries and the `wasm32-unknown-unknown` web app into one release. |
 | `deploy/linux/server.toml.example`, `backup.toml.example` | | Config templates, placeholders only. |
 | `deploy/probe.ps1`, `deploy/probe.sh` | anywhere | Probe the deployment from outside (see `deploy/windows/README.md`). |
 
@@ -24,8 +24,8 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 
 | Path | Owner, mode | Contents |
 |---|---|---|
-| `/opt/todo/releases/<version>-<hash>/` | root, 0755 | One directory per release: `todo-server`, `todo-backup`, `SHA256SUMS`. The current and previous release and three older ones are kept. |
-| `/opt/todo/current` | root | A symlink to the running release. A deploy switches it with one atomic rename. The units run the binaries through it. |
+| `/opt/todo/releases/<version>-<hash>/` | root, 0755 | One directory per release: `todo-server`, `todo-backup`, `web/`, `SHA256SUMS`. The hash in the name covers both binaries and the web files. The current and previous release and three older ones are kept. |
+| `/opt/todo/current` | root | A symlink to the running release. A deploy switches it with one atomic rename. The units run the binaries through it and the server reads `/opt/todo/current/web` through it. |
 | `/usr/local/bin/todo-server`, `todo-backup` | root | Symlinks to `/opt/todo/current/`, for running the tools by hand. |
 | `/opt/todo/deploy-in-progress` | root, 0600 | Exists only while a deploy is unfinished. See [An interrupted deploy](#an-interrupted-deploy). |
 | `/opt/todo/deploy.lock` | root | Held by the deploy or recovery that is running, so only one runs at a time. |
@@ -168,7 +168,8 @@ sudoedit /etc/todo/server.toml
 
 Keep `bind` on `127.0.0.1` and the port the tunnel's public hostname points at (`http://127.0.0.1:47320` by
 default), `data_dir = "/var/lib/todo"`, the same `public_origin` as the pilot, and
-`trust_cloudflare_headers = true`.
+`trust_cloudflare_headers = true`. Keep the template's `[web] dir = "/opt/todo/current/web"` to serve
+`/app`; that path first resolves when a bundled release becomes current.
 
 This file is the only source of the server's settings. **The unit must not have drop-ins; config lives in
 the TOML.** A deploy must know which database the server opens, so it refuses to run if `todo-server.service`
@@ -191,8 +192,9 @@ everything else root:todo 0640.
 
 ### The build host
 
-The binaries are built in WSL (Ubuntu). Set it up once, by hand; the build script installs nothing but the
-pinned toolchain, through rustup:
+The release is built in WSL (Ubuntu). Install a C toolchain, rustup and **Node.js 24 LTS** (CI uses
+24.15.0) in that distribution, not just on Windows. Both `rustup` and `node` must be on the WSL login
+shell's `PATH`; `node` must be the Linux executable. Set up the C toolchain and rustup once:
 
 ```sh
 sudo apt-get install build-essential curl
@@ -200,7 +202,25 @@ sudo apt-get install build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 ```
 
-Open a new WSL shell afterwards, so `~/.cargo/bin` is on `PATH`.
+Open a new WSL shell afterwards, so `~/.cargo/bin` is on `PATH`. The release script installs the
+pinned toolchain and the Linux and wasm32 targets. It uses `wasm-bindgen-cli` at the exact version in
+`apps/web/Cargo.lock`; if the CLI on `PATH` doesn't match, it installs the pinned version under the
+build cache without replacing the operator's CLI. The production Node build needs no npm install.
+
+CI's `linux-release` job builds and checks the complete release but **does not publish a deployable
+artifact**. Build on the PC (or supply a full release you built on a compatible Linux host).
+
+### Existing VMs: enable bundled web assets once
+
+On a VM with an unbundled release already installed, leave the current config unchanged for the first
+bundled deploy. If it uses `[web] dir = "/opt/todo/web"` with a manual symlink, leave both in place so
+the previous release can still use them if you have to roll back. After the deploy succeeds and the
+marker is gone, use `sudoedit /etc/todo/server.toml` to change `dir` to `"/opt/todo/current/web"`, or add
+that `[web]` section from the template if it is missing. Restart `todo-server` and verify `/health`
+and `/app` (sign in to check that the app loads). The server reads the assets at start-up. Future
+bundled deploys and recoveries need no edit. Keep the manual symlink and assets until you no longer
+need the unbundled release. If you must return to that release, first restore its old `[web]` settings
+(or remove that section if the old binary predates web support); the old release has no `current/web`.
 
 ### Deploying
 
@@ -210,22 +230,23 @@ From the Windows PC:
 ./deploy/deploy-linux.ps1 -Project $projectId -Zone $zone -Instance $instance
 ```
 
-1. **Build.** WSL builds release binaries with the toolchain pinned in `rust-toolchain.toml`, under `nice`.
-   The build directory is `~/.cache/to-do-or-not-to-do/target-linux` inside WSL. The output is
-   `target\linux-release\`: `todo-server`, `todo-backup` and `SHA256SUMS`. The binaries link against WSL's
-   glibc: Ubuntu 22.04 has 2.35, so they need 2.34 or newer, and Debian 13 has 2.41. A first build takes a
-   few minutes, later ones less.
-2. **Copy.** The binaries and `install-release.sh` go to `~/todo-deploy-<time>/` on the VM. That directory is
-   removed again afterwards, whatever happens.
+1. **Build.** WSL builds the Linux binaries and the production web app under `nice`, with the toolchain
+   pinned in `rust-toolchain.toml`. The build cache is `~/.cache/to-do-or-not-to-do/target-linux` in WSL.
+   The output is `target\linux-release\`: `todo-server`, `todo-backup`, `web/` (a copy of `apps/web/dist`)
+   and `SHA256SUMS`. The binaries link against WSL's glibc: Ubuntu 22.04 has 2.35 and Debian 13 has 2.41.
+   A first build takes longer, especially if the wasm-bindgen CLI needs to be built.
+2. **Copy.** The release and `install-release.sh` go to `~/todo-deploy-<time>/` on the VM. That directory
+   is removed again afterwards, whatever happens.
 3. **Install.** `sudo install-release.sh` takes over. It holds `/opt/todo/deploy.lock` throughout, so a second
    deploy or recovery started meanwhile is refused at once. Nothing is stopped until the first three steps
    pass:
-   1. It checks the checksums and that both binaries run on the VM, and installs them as a new release
-      directory, `/opt/todo/releases/<version>-<hash>/`, synced to disk before it gets its name.
-   2. It asks the new server which database its config points at (`todo-server database-path`, as `todo`, in
-      the unit's working directory), so a relative `data_dir` resolves exactly as the server resolves it. A
-      config the new server refuses stops the deploy, and so does a unit that sets the server's settings
-      through its environment (see [Configure](#configure)).
+   1. It checks the binaries and all web file checksums, checks that both binaries run on the VM, and
+      installs the release at `/opt/todo/releases/<version>-<hash>/`, synced before it gets its name.
+   2. It runs the target binary's `todo-server database-path` as `todo`, in the unit's working directory.
+      This reads and validates the live config just as `serve` does, without starting the server or
+      touching the database. It also resolves a relative `data_dir` exactly as the server would. A
+      config the binary refuses stops the deploy, as does a unit that overrides the settings (see
+      [Configure](#configure)). Don't edit the config or unit during a deploy or recovery.
    3. If a release is installed already but there is no database at that path, it stops: there would be
       nothing to roll back to. After a deliberate wipe, or on a VM that isn't cut over yet, pass
       `-AllowEmptyDatabase`.
@@ -270,7 +291,7 @@ including a new release that didn't become healthy (see the next section); 4 dep
 
 | Option | Effect |
 |---|---|
-| `-SkipBuild` | Deploys what is already in `-ArtifactDir`. |
+| `-SkipBuild` | Deploys a complete release already in `-ArtifactDir`; older binary-only directories don't qualify. |
 | `-NoStart` | Installs the release and leaves the server stopped. The marker records it, so a recovery keeps it stopped too. |
 | `-AllowEmptyDatabase` | Deploys although a release is installed and no database exists: after a deliberate wipe, and for every deploy after the first to a VM that isn't cut over yet. |
 | `-PublicHealthUrl https://todo.example.com/health` | Also checks the server from outside after the deploy. |
@@ -341,8 +362,13 @@ Then choose one:
   `sudo /usr/local/lib/todo/install-release --recover rollback --discard-writes`. The live databases are moved
   to `failed-<time>/`, where they stay, and the copy taken before the deploy is restored.
 
-Every recovery first stops the server and the timers, and puts `current` where its phase says, whatever it
-pointed at, before it starts anything.
+Before stopping anything or restoring a database, recovery runs the target release's `database-path`
+against the live config. If the binary can't check or accept the config (for example, an older binary
+rejects a new section), or if it resolves to a different data directory than the marker records, the
+script refuses to switch and exits 3 with the marker intact. Correct the config for the release you
+intend to run and retry. The check validates the config, not external assets, credentials or database
+compatibility. Then recovery stops the server and timers and points `current` at the chosen release;
+`current/web` follows that same switch with no separate web restore.
 
 Both honour the deploy's start policy, so after `-NoStart` the server stays stopped. Both need neither the PC
 nor the upload: the script keeps a copy of itself in `/usr/local/lib/todo`. They exit with the deploy's codes,

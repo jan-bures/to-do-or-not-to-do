@@ -1,18 +1,16 @@
 <#
 .SYNOPSIS
-    Builds todo-server and todo-backup for Linux in WSL and deploys them to a provisioned Linux VM,
-    rolling back there if the new server doesn't come up healthy.
+    Builds the Linux binaries and web app in WSL and deploys them together to a provisioned Linux VM.
 
 .DESCRIPTION
     Runs on the Windows dev PC under Windows PowerShell 5.1 or PowerShell 7. The VM must have been set
     up with deploy/linux/provision.sh and have /etc/todo/server.toml (see docs/hosting-linux.md).
 
-    1. Builds release x86_64-unknown-linux-gnu binaries inside WSL with deploy/linux/build-release.sh,
-       which needs rustup there (a one-time setup, see the runbook) and installs the toolchain pinned
-       in rust-toolchain.toml if it is missing. The binaries and a SHA256SUMS file land in
-       -ArtifactDir. -SkipBuild deploys what is already there.
-    2. Copies them, with deploy/linux/install-release.sh, to a new directory in the remote user's home.
-    3. Runs install-release.sh there with sudo. It installs the binaries as a new release directory,
+    1. Builds release x86_64-unknown-linux-gnu binaries and the wasm web app inside WSL with
+       deploy/linux/build-release.sh. The binaries, web/ and SHA256SUMS land in -ArtifactDir.
+       -SkipBuild deploys what is already there.
+    2. Copies the release and deploy/linux/install-release.sh to a new directory in the remote user's home.
+    3. Runs install-release.sh there with sudo. It installs the binaries and web app as a new release directory,
        stops the backups and the server behind a durable deploy marker, copies the databases, switches
        the current release atomically, starts the server and waits for /health on the VM itself. If it
        doesn't answer, the server is stopped and the marker stays (exit 3): you choose between fixing and
@@ -56,10 +54,10 @@
     The WSL distribution to build in. Defaults to the default distribution.
 
 .PARAMETER ArtifactDir
-    Where the Linux binaries are written and read. Defaults to <repo>\target\linux-release.
+    Where the Linux release is written and read. Defaults to <repo>\target\linux-release.
 
 .PARAMETER NoStart
-    Install the binaries and leave the server stopped (for the move from the pilot).
+    Install the release and leave the server stopped (for the move from the pilot).
 
 .PARAMETER AllowEmptyDatabase
     Deploy although a release is installed and there is no database to copy first. Without it, such a
@@ -147,9 +145,9 @@ function Invoke-Remote([string]$Command) {
 # home. Names stay relative: both gcloud and scp would read `C:\...` as a host named C.
 function Copy-ToRemote([string[]]$Names, [string]$RemoteDir) {
     if ($Transport -eq 'gcloud') {
-        & $GcloudPath compute scp @gcloudCommon @Names "${Instance}:$RemoteDir/" | Out-Host
+        & $GcloudPath compute scp @gcloudCommon --recurse @Names "${Instance}:$RemoteDir/" | Out-Host
     } else {
-        & scp @sshOpts @Names "${SshTarget}:$RemoteDir/" | Out-Host
+        & scp @sshOpts -r @Names "${SshTarget}:$RemoteDir/" | Out-Host
     }
     if ($LASTEXITCODE -ne 0) { throw "copying to the VM failed (exit code $LASTEXITCODE)." }
 }
@@ -174,19 +172,22 @@ if (-not $SkipBuild) {
     }
 }
 foreach ($f in $files) {
-    if (-not (Test-Path (Join-Path $ArtifactDir $f))) { throw "$f is missing from $ArtifactDir. Build first (drop -SkipBuild)." }
+    if (-not (Test-Path (Join-Path $ArtifactDir $f) -PathType Leaf)) { throw "$f is missing from $ArtifactDir. Build first (drop -SkipBuild)." }
+}
+if (-not (Test-Path (Join-Path $ArtifactDir 'web\index.html') -PathType Leaf)) {
+    throw "web/index.html is missing from $ArtifactDir. Build the full release first (drop -SkipBuild)."
 }
 
 # ---- 2. copy ------------------------------------------------------------------------------------
 
 $remoteDir = 'todo-deploy-{0:yyyyMMddTHHmmss}' -f (Get-Date).ToUniversalTime()
 Write-Host "Copying the release to ~/$remoteDir on the VM" -ForegroundColor Cyan
-# The installer travels with the binaries, so the VM always runs the one from this checkout.
+# The installer travels with the release, so the VM always runs the one from this checkout.
 Copy-Item -Path $installer -Destination (Join-Path $ArtifactDir 'install-release.sh') -Force
 Push-Location $ArtifactDir
 try {
     if ((Invoke-Remote "mkdir -m 700 $remoteDir") -ne 0) { throw 'could not create the remote directory.' }
-    Copy-ToRemote ($files + @('install-release.sh')) $remoteDir
+    Copy-ToRemote ($files + @('web', 'install-release.sh')) $remoteDir
 } catch {
     Write-Host "Copying failed: $_ Nothing was deployed." -ForegroundColor Red
     Invoke-Remote "rm -rf $remoteDir" | Out-Null

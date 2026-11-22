@@ -57,7 +57,9 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(join(out, "fonts"), { recursive: true });
 mkdirSync(join(out, "brand"), { recursive: true });
 
-const wasm = join(web, "target", "wasm32-unknown-unknown", profile, "todo-web.wasm");
+// Cargo resolves a relative CARGO_TARGET_DIR from its working directory (web).
+const target = resolve(web, process.env.CARGO_TARGET_DIR || "target");
+const wasm = join(target, "wasm32-unknown-unknown", profile, "todo-web.wasm");
 run("wasm-bindgen", ["--target", "web", "--no-typescript", "--out-dir", out, "--out-name", "todo-web", wasm]);
 
 for (const f of readdirSync(join(web, "static"))) {

@@ -38,3 +38,7 @@ allowed_senders = ["you@example.com"]
 [admin]
 bind = "127.0.0.1:47321"
 token_sha256 = "<hex SHA-256 of the admin token>"
+
+# Serve the web client at /app. Deploys and recovery switch it along with the server.
+[web]
+dir = "/opt/todo/current/web"

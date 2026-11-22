@@ -29,12 +29,9 @@ npx playwright test                                   # browser tests + screensh
 npx playwright test -c live.config.mjs                # against a real todo-server (see "Tests")
 ```
 
-To serve the app, point the server at the build and restart it:
-
-```toml
-[web]
-dir = "/opt/todo/web"        # a copy of apps/web/dist; or TODO_SERVER_WEB_DIR
-```
+The [Linux release](hosting-linux.md#deploy) includes the production build and switches it with the
+server. The Linux config template sets `[web] dir = "/opt/todo/current/web"`. For a local or manual
+build, set `[web] dir` (or `TODO_SERVER_WEB_DIR`) to the path of `apps/web/dist` and restart the server.
 
 With a build configured, `/` opens the app; without one, `/` opens the admin pages as before.
 
