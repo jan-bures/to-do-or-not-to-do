@@ -224,6 +224,12 @@ pub mod desktop {
     pub const QUICK_ADD: f32 = 44.0;
     /// Vertical margin around the quick-add.
     pub const QUICK_ADD_MARGIN: f32 = 16.0;
+    /// Preferred width of the global quick-add popup.
+    pub const QUICK_ADD_POPUP_WIDTH: f32 = 640.0;
+    /// Preferred height of the global quick-add popup.
+    pub const QUICK_ADD_POPUP_HEIGHT: f32 = 196.0;
+    /// Preferred top edge of the global quick-add popup as a fraction of the work area's height.
+    pub const QUICK_ADD_POPUP_TOP_FRACTION: f32 = 0.2;
     /// Task row height.
     pub const ROW: f32 = 56.0;
     /// Space above the title inside a row.
@@ -278,7 +284,7 @@ pub mod desktop {
     pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 55] = [
+    pub const ALL: [(&str, f32); 57] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -308,6 +314,8 @@ pub mod desktop {
         ("landscape", LANDSCAPE),
         ("quick-add", QUICK_ADD),
         ("quick-add-margin", QUICK_ADD_MARGIN),
+        ("quick-add-popup-width", QUICK_ADD_POPUP_WIDTH),
+        ("quick-add-popup-height", QUICK_ADD_POPUP_HEIGHT),
         ("row", ROW),
         ("row-pad-top", ROW_PAD_TOP),
         ("row-gap", ROW_GAP),
@@ -335,6 +343,10 @@ pub mod desktop {
         ("confirm", CONFIRM),
         ("sunrise-mark", SUNRISE_MARK),
     ];
+
+    /// Unitless metrics, for the exports.
+    pub const FRACTIONS: [(&str, f32); 1] =
+        [("quick-add-popup-top-fraction", QUICK_ADD_POPUP_TOP_FRACTION)];
 }
 
 /// Phone metrics (Android, dp). The cover screen is about 412 dp wide; the inner screen splits into a 450 dp list

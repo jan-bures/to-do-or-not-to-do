@@ -171,6 +171,9 @@ pub fn css() -> String {
             root.push((format!("{group}-{k}"), format!("{v}{unit}")));
         }
     }
+    for (k, v) in desktop::FRACTIONS {
+        root.push((format!("desktop-{k}"), v.to_string()));
+    }
     for (k, v) in LANDSCAPE {
         let unit = if k.ends_with("opacity") { "" } else { "px" };
         root.push((format!("landscape-{k}"), format!("{v}{unit}")));
@@ -350,6 +353,10 @@ pub fn json() -> String {
     let mut radii = numbers_json(&radius::ALL);
     // Not a number: checkboxes and agent marks are circles (`CircleShape` in Compose).
     radii["checkbox"] = json!(radius::CHECKBOX);
+    let mut desktop_metrics = numbers_json(&desktop::ALL);
+    for (name, value) in desktop::FRACTIONS {
+        desktop_metrics[name] = num(value);
+    }
     let doc = json!({
         "_comment": HEADER,
         "derivation": {
@@ -399,7 +406,7 @@ pub fn json() -> String {
             "cues": numbers_json(&motion::CUES),
         },
         "metrics": {
-            "desktop": numbers_json(&desktop::ALL),
+            "desktop": desktop_metrics,
             "phone": numbers_json(&phone::ALL),
             "component": numbers_json(&component::ALL),
         },

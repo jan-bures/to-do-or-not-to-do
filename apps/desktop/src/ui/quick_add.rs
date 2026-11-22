@@ -20,8 +20,8 @@ use crate::theme::{
 
 /// The window's logical size.
 pub const SIZE: Size<Pixels> = Size {
-    width: px(640.),
-    height: px(196.),
+    width: px(desktop::QUICK_ADD_POPUP_WIDTH),
+    height: px(desktop::QUICK_ADD_POPUP_HEIGHT),
 };
 
 /// What the quick-add window reports to the app.
@@ -239,8 +239,6 @@ impl Render for QuickAddView {
     }
 }
 
-const TOP_FRACTION: f32 = 0.2;
-
 /// Create the hidden popup at its real size on the primary display. It is repositioned on show.
 pub fn window_options(cx: &App) -> WindowOptions {
     let bounds = match cx.primary_display() {
@@ -249,7 +247,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
             Bounds::new(
                 point(
                     display.center().x - SIZE.width / 2.,
-                    display.origin.y + display.size.height * TOP_FRACTION,
+                    display.origin.y + display.size.height * desktop::QUICK_ADD_POPUP_TOP_FRACTION,
                 ),
                 SIZE,
             )
@@ -270,14 +268,17 @@ pub fn window_options(cx: &App) -> WindowOptions {
     }
 }
 
-pub fn position(hwnd: isize) -> anyhow::Result<()> {
-    win::position_popup(hwnd, SIZE, TOP_FRACTION)
+pub fn position(hwnd: isize, target: win::PopupTarget) -> anyhow::Result<()> {
+    win::position_popup(
+        hwnd,
+        win::popup_rect(target, SIZE, desktop::QUICK_ADD_POPUP_TOP_FRACTION),
+    )
 }
 
 /// Re-anchor before showing, so there's no frame on the wrong monitor or at the wrong DPI.
 pub fn show(hwnd: isize) {
     if hwnd != 0 {
-        if let Err(error) = position(hwnd) {
+        if let Err(error) = win::cursor_popup_target().and_then(|target| position(hwnd, target)) {
             tracing::warn!(%error, "couldn't position quick add");
         }
         win::show_and_focus(hwnd);

@@ -6,7 +6,7 @@ use gpui::{Pixels, Size, Window};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{FILETIME, HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
     MonitorFromPoint, MonitorFromWindow,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
@@ -75,23 +75,44 @@ pub fn window_rect(hwnd: isize) -> std::io::Result<RECT> {
     Ok(rect)
 }
 
-fn popup_rect(monitor: RECT, size: Size<Pixels>, dpi: u32, top_fraction: f32) -> RECT {
-    let size = size.to_device_pixels(dpi as f32 / USER_DEFAULT_SCREEN_DPI as f32);
-    let left = monitor.left + (monitor.right - monitor.left - size.width.0) / 2;
-    let top = monitor.top + ((monitor.bottom - monitor.top) as f32 * top_fraction).round() as i32;
-    RECT {
-        left,
-        top,
-        right: left + size.width.0,
-        bottom: top + size.height.0,
+/// The work area in physical screen pixels and the effective DPI of a popup's destination.
+#[allow(missing_debug_implementations)] // The Win32 RECT has no Debug implementation.
+#[derive(Clone, Copy)]
+pub struct PopupTarget {
+    pub work_area: RECT,
+    pub dpi: u32,
+}
+
+impl PopupTarget {
+    pub fn scale(self) -> f32 {
+        self.dpi as f32 / USER_DEFAULT_SCREEN_DPI as f32
     }
 }
 
-/// Position a frameless popup on the cursor's monitor, falling back to the foreground
-/// window's monitor and then the primary one. Do not show it or change the foreground.
-pub fn position_popup(hwnd: isize, size: Size<Pixels>, top_fraction: f32) -> anyhow::Result<()> {
+/// Centre horizontally and anchor from the top of the work area, shifting or shrinking as needed.
+pub fn popup_rect(target: PopupTarget, size: Size<Pixels>, top_fraction: f32) -> RECT {
+    let work = target.work_area;
+    let size = size.to_device_pixels(target.scale());
+    let work_width = work.right - work.left;
+    let work_height = work.bottom - work.top;
+    let width = size.width.0.min(work_width);
+    let height = size.height.0.min(work_height);
+    // The centred x offset always fits after capping the width; the y anchor may need moving up.
+    let left = work.left + (work_width - width) / 2;
+    let top = work.top
+        + ((work_height as f32 * top_fraction).round() as i32).clamp(0, work_height - height);
+    RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    }
+}
+
+/// The cursor's monitor, falling back to the foreground window's monitor, then the primary one.
+pub fn cursor_popup_target() -> anyhow::Result<PopupTarget> {
     // SAFETY: the monitor queries only read desktop state and write to initialized locals.
-    let (monitor_rect, dpi) = unsafe {
+    let monitor = unsafe {
         let mut cursor = POINT { x: 0, y: 0 };
         let mut monitor = if GetCursorPos(&mut cursor) != 0 {
             MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL)
@@ -101,9 +122,24 @@ pub fn position_popup(hwnd: isize, size: Size<Pixels>, top_fraction: f32) -> any
         if monitor.is_null() {
             monitor = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONULL);
         }
-        if monitor.is_null() {
-            monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        }
+        monitor
+    };
+    if monitor.is_null() {
+        primary_popup_target()
+    } else {
+        popup_target(monitor)
+    }
+}
+
+/// The primary monitor, independently of the cursor or foreground window.
+pub fn primary_popup_target() -> anyhow::Result<PopupTarget> {
+    // SAFETY: point (0, 0) is on the primary monitor; the query has no side effects.
+    popup_target(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })
+}
+
+fn popup_target(monitor: HMONITOR) -> anyhow::Result<PopupTarget> {
+    // SAFETY: these monitor queries read desktop state and write to initialized locals.
+    unsafe {
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         if GetMonitorInfoW(monitor, &mut info) == 0 {
@@ -112,9 +148,15 @@ pub fn position_popup(hwnd: isize, size: Size<Pixels>, top_fraction: f32) -> any
         let (mut x, mut y) = (0, 0);
         windows::core::HRESULT(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y))
             .ok()?;
-        (info.rcMonitor, x)
-    };
-    let rect = popup_rect(monitor_rect, size, dpi, top_fraction);
+        Ok(PopupTarget {
+            work_area: info.rcWork,
+            dpi: x,
+        })
+    }
+}
+
+/// Move and size a frameless popup without showing it or changing the foreground.
+pub fn position_popup(hwnd: isize, rect: RECT) -> anyhow::Result<()> {
     let h = hwnd as HWND;
     let place = || {
         // SAFETY: we own the HWND. No pointer parameters, activation, or changes to Z order.
@@ -228,20 +270,47 @@ pub fn process_age_ms() -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn popup_centers_in_physical_monitor_coordinates_at_each_dpi() {
-        let size = gpui::size(gpui::px(640.), gpui::px(196.));
-        let monitor = RECT {
-            left: -1920,
-            top: -1080,
-            right: 0,
-            bottom: 0,
+    fn place(work: (i32, i32, i32, i32), dpi: u32) -> (i32, i32, i32, i32) {
+        let (left, top, right, bottom) = work;
+        let target = PopupTarget {
+            work_area: RECT {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            dpi,
         };
+        let size = gpui::size(gpui::px(640.), gpui::px(196.));
+        let r = popup_rect(target, size, 0.2);
+        (r.left, r.top, r.right, r.bottom)
+    }
+
+    #[test]
+    fn popup_centers_on_a_negative_origin_monitor_at_each_dpi() {
         for (dpi, width, height) in [(96, 640, 196), (120, 800, 245), (144, 960, 294)] {
-            let r = popup_rect(monitor, size, dpi, 0.2);
-            assert_eq!((r.left + r.right) / 2, -960);
-            assert_eq!(r.top, -864);
-            assert_eq!((r.right - r.left, r.bottom - r.top), (width, height));
+            let left = -960 - width / 2;
+            assert_eq!(
+                place((-1920, -1080, 0, 0), dpi),
+                (left, -864, left + width, -864 + height)
+            );
         }
+    }
+
+    #[test]
+    fn popup_caps_width_on_a_narrow_high_dpi_monitor() {
+        assert_eq!(place((0, 0, 1080, 1920), 192), (0, 384, 1080, 776));
+    }
+
+    #[test]
+    fn popup_anchors_inside_the_work_area_with_a_left_or_top_taskbar() {
+        assert_eq!(place((64, 0, 1920, 1080), 96), (672, 216, 1312, 412));
+        assert_eq!(place((0, 64, 1920, 1080), 96), (640, 267, 1280, 463));
+    }
+
+    #[test]
+    fn popup_clamps_the_anchor_and_caps_height_in_a_short_work_area() {
+        assert_eq!(place((0, 64, 1920, 288), 96), (640, 92, 1280, 288));
+        assert_eq!(place((0, 64, 1920, 288), 192), (320, 64, 1600, 288));
     }
 }

@@ -274,30 +274,51 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
 /// Check the actual HWND before overriding the renderer's scale. The old capture-only
 /// sizing path filled in the requested bounds and masked a bug in native startup.
 async fn check_native_quick_add(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    // Pick a destination without consulting the live pointer. Start away from its anchor so
+    // this checks a real native move even on a single monitor at a fixed DPI.
+    let target = win::primary_popup_target()?;
+    let expected = win::popup_rect(
+        target,
+        quick_add::SIZE,
+        desktop::QUICK_ADD_POPUP_TOP_FRACTION,
+    );
+    let start_x = if expected.left == 0 { 8. } else { 0. };
     let handle = cx.update(|cx| {
-        cx.open_window(quick_add::window_options(cx), |_, cx| {
-            cx.new(|_| gpui::Empty)
-        })
+        let mut opts = quick_add::window_options(cx);
+        if let Some(WindowBounds::Windowed(bounds)) = &mut opts.window_bounds {
+            bounds.origin = point(px(start_x), px(0.));
+        }
+        cx.open_window(opts, |_, cx| cx.new(|_| gpui::Empty))
     })?;
     let hwnd = handle.update(cx, |_, window, _| win::hwnd_of(window))?;
-    let check = |cx: &mut AsyncApp| -> anyhow::Result<()> {
-        let rect = win::window_rect(hwnd)?;
-        let scale = handle.update(cx, |_, window, _| window.scale_factor())?;
+    let result = (|| {
+        let before = win::window_rect(hwnd)?;
         let got = (
-            (rect.right - rect.left) as u32,
-            (rect.bottom - rect.top) as u32,
+            (before.right - before.left) as u32,
+            (before.bottom - before.top) as u32,
         );
-        let expected = expected_size(window_size("quick-add"), scale);
+        let startup_size = expected_size(window_size("quick-add"), target.scale());
         anyhow::ensure!(
-            got == expected,
-            "hidden quick-add HWND is {got:?}, expected {expected:?} at scale {scale}"
+            got == startup_size,
+            "hidden quick-add HWND starts at size {got:?}, expected {startup_size:?}"
         );
-        anyhow::ensure!(!win::is_shown(hwnd), "quick-add HWND is visible");
+        anyhow::ensure!(!win::is_shown(hwnd), "quick-add HWND starts visible");
+        anyhow::ensure!(
+            (before.left, before.top) != (expected.left, expected.top),
+            "native quick-add probe must start away from the destination anchor"
+        );
+        quick_add::position(hwnd, target)?;
+        let after = win::window_rect(hwnd)?;
+        let got = (after.left, after.top, after.right, after.bottom);
+        let want = (expected.left, expected.top, expected.right, expected.bottom);
+        anyhow::ensure!(
+            got == want,
+            "hidden quick-add HWND moved to {got:?}, expected {want:?} at {} DPI",
+            target.dpi
+        );
+        anyhow::ensure!(!win::is_shown(hwnd), "quick-add HWND became visible");
         Ok(())
-    };
-    let result = check(cx)
-        .and_then(|()| quick_add::position(hwnd))
-        .and_then(|()| check(cx).context("after moving to the cursor's monitor"));
+    })();
     // Let the backend deliver any display-change callbacks queued by the move before removing the window.
     cx.foreground_executor().spawn(async {}).await;
     handle.update(cx, |_, window, _| window.remove_window())?;
