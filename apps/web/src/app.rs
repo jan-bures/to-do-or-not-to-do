@@ -46,13 +46,18 @@ pub struct Shown {
     phase: Option<Phase>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Undo {
+    Reopen(TaskId),
+    RestoreStep(StepId),
+}
+
 /// The toast at the bottom of the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Toast {
     id: u64,
     text: String,
-    /// The task to reopen on Undo.
-    undo: Option<TaskId>,
+    undo: Option<Undo>,
 }
 
 /// Shared UI state and whether it follows the real clock (`false` for fixtures).
@@ -138,7 +143,17 @@ impl Ctx {
         command.is_some_and(|command| self.submit(command))
     }
 
-    fn show_toast(self, text: String, undo: Option<TaskId>) {
+    fn undo(self, action: Undo) {
+        self.toast.set(None);
+        match action {
+            Undo::Reopen(id) => self.uncomplete(id),
+            Undo::RestoreStep(id) => {
+                self.submit(intent::restore_step(id));
+            }
+        }
+    }
+
+    fn show_toast(self, text: String, undo: Option<Undo>) {
         let id = self.toast_seq.get_untracked() + 1;
         self.toast_seq.set(id);
         self.toast.set(Some(Toast { id, text, undo }));
@@ -253,7 +268,7 @@ impl Ctx {
             Duration::from_millis(u64::from(hold)),
         );
         if undoable {
-            self.show_toast(format!("Completed “{}”", row.title), Some(id));
+            self.show_toast(format!("Completed “{}”", row.title), Some(Undo::Reopen(id)));
         } else {
             // A recurring task: the next occurrence is already in the list, and reopening this one
             // would not remove it, so there is no Undo.
@@ -614,11 +629,10 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     }
     if ev.ctrl_key() {
         if key == "z"
-            && let Some(id) = c.toast.get_untracked().and_then(|t| t.undo)
+            && let Some(action) = c.toast.get_untracked().and_then(|t| t.undo)
         {
             ev.prevent_default();
-            c.toast.set(None);
-            c.uncomplete(id);
+            c.undo(action);
         }
         return;
     }
@@ -1531,13 +1545,15 @@ fn ToastView() -> impl IntoView {
                         <div class="toast">
                             <span class="toast-text">{t.text}</span>
                             {undo
-                                .map(|id| {
+                                .map(|action| {
                                     view! {
                                         <button
                                             class="toast-undo"
                                             on:click=move |_| {
-                                                dismiss();
-                                                c.uncomplete(id);
+                                                if c.detail_modal.get_untracked() {
+                                                    platform::focus("task-detail");
+                                                }
+                                                c.undo(action);
                                             }
                                         >
                                             {icon(Icon::UndoTwo)}
@@ -1672,7 +1688,7 @@ fn HandoverFirst(row: Row, date: String) -> impl IntoView {
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || phase.get() == Some(Phase::Exit)
             on:click=move |_| c.select(Some(id))>
-            <HandoverCheck row=row.clone()/>
+            <HandoverCheck row=row.clone() phase=phase/>
             <span class="sunrise">{icon(Icon::Sunrise)}</span>
             <div class="next-text">
                 <button class="next-title" type="button" id=format!("row-{id}")>{row.title}</button>
@@ -1696,7 +1712,7 @@ fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || phase.get() == Some(Phase::Exit)
             on:click=move |_| c.select(Some(id))>
-            <HandoverCheck row=row.clone()/>
+            <HandoverCheck row=row.clone() phase=phase/>
             <button class="t-title" type="button" id=format!("row-{id}")>{row.title}</button>
             {row.chip.map(|ch| chip(ch.label, ch.hue))}
             <span class="t-date">{row.due.filter(|_| show_date).map(|d| d.text)}</span>
@@ -1705,7 +1721,7 @@ fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
 }
 
 #[component]
-fn HandoverCheck(row: Row) -> impl IntoView {
+fn HandoverCheck(row: Row, phase: Memo<Option<Phase>>) -> impl IntoView {
     let c = ctx();
     let label = format!(
         "{} “{}”",
@@ -1715,9 +1731,12 @@ fn HandoverCheck(row: Row) -> impl IntoView {
     view! {
         <button class="check" type="button" role="checkbox" aria-label=label
             aria-checked=row.done.to_string() disabled=move || c.read_only()
+            aria-disabled=move || phase.get().is_some().then_some("true")
             on:click=move |ev| {
                 ev.stop_propagation();
-                c.toggle(&row);
+                if phase.with_untracked(Option::is_none) {
+                    c.toggle(&row);
+                }
             }>
             {tick_svg()}
         </button>
@@ -1852,7 +1871,11 @@ fn DetailCheck(d: Detail) -> impl IntoView {
     let id = d.id;
     let done = d.done;
     let check_row = c.actionable_rows().into_iter().find(|row| row.id == id);
+    let handover = handover_phase(c, id);
     let on_check = move |_| {
+        if handover.with_untracked(Option::is_some) {
+            return;
+        }
         if done {
             c.uncomplete(id);
         } else if let Some(r) = check_row.clone() {
@@ -1868,6 +1891,7 @@ fn DetailCheck(d: Detail) -> impl IntoView {
             disabled=move || c.read_only()
             aria-checked=done.to_string()
             aria-label=if done { "Reopen" } else { "Complete" }
+            aria-disabled=move || handover.get().is_some().then_some("true")
             on:click=on_check
         >
             {tick_svg()}
@@ -1938,9 +1962,10 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             input.select();
         }
     });
+    let arrow_id = move |by| format!("step-move-{id}-{by}");
     let move_step = move |by| {
         if c.submit_intent(|s| intent::nudge(s, id.into(), by)) {
-            request_animation_frame(focus_title);
+            request_animation_frame(move || platform::refocus_row(&arrow_id(by)));
         }
     };
     view! {
@@ -1971,20 +1996,25 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             <div class="step-tail">
                 <span class="step-n" aria-hidden="true">{move || format!("{:02}", index() + 1)}</span>
                 <div class="step-actions">
-                    <button class="icon-button" type="button" title="Move step up"
+                    // At a boundary the arrow stays focusable so a move to that edge keeps focus.
+                    <button class="icon-button" type="button" title="Move step up" id=arrow_id(-1)
                         aria-label=move || format!("Move step {} up", index() + 1)
-                        disabled=move || c.read_only() || index() == 0
+                        disabled=move || c.read_only()
+                        aria-disabled=move || (index() == 0).then_some("true")
                         on:click=move |_| move_step(-1)>{icon(Icon::ChevronUp)}</button>
-                    <button class="icon-button" type="button" title="Move step down"
+                    <button class="icon-button" type="button" title="Move step down" id=arrow_id(1)
                         aria-label=move || format!("Move step {} down", index() + 1)
-                        disabled=move || c.read_only() || steps.with(|s| index() + 1 >= s.len())
+                        disabled=move || c.read_only()
+                        aria-disabled=move || steps.with(|s| (index() + 1 >= s.len()).then_some("true"))
                         on:click=move |_| move_step(1)>{icon(Icon::ChevronDown)}</button>
                     <button class="icon-button" type="button" title="Delete step"
                         aria-label=move || format!("Delete step {}", index() + 1)
                         disabled=move || c.read_only()
                         on:click=move |_| {
+                            let label = title.get_untracked();
                             if c.submit(intent::delete(id)) {
-                                request_animation_frame(|| { platform::focus("add-step"); });
+                                c.show_toast(format!("Deleted step “{label}”"), Some(Undo::RestoreStep(id)));
+                                request_animation_frame(|| platform::refocus_row("add-step"));
                             }
                         }>{icon(Icon::TrashTwo)}</button>
                 </div>
@@ -2100,7 +2130,6 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                         let value = event_target_value(&ev);
                         if let Some((level, _, _)) = options.iter().find(|(_, name, _)| value == *name) {
                             c.submit_intent(|s| intent::pick_priority(s, id, *level));
-                            request_animation_frame(return_focus);
                         }
                     }
                     on:keydown=move |ev| {

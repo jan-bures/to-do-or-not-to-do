@@ -209,7 +209,77 @@ test("four priority levels stay in sync with the star, row and P shortcut", asyn
   await w.check();
 });
 
-test("step titles can be renamed, cancelled, reordered and deleted", async ({ page }) => {
+test("two ArrowDown presses on the closed priority select keep focus and selection", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const title = "Review the API latency report";
+  await row(page, title).locator(".row-title").click();
+  const priority = page.getByRole("combobox", { name: "Priority" });
+  await expect(priority).toHaveValue("None");
+  await priority.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(priority).toHaveValue("Low");
+  await expect(priority).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(priority).toHaveValue("Normal");
+  await expect(priority).toBeFocused();
+  await expect(page.locator(".detail .d-title")).toHaveText(title);
+  await expect(row(page, title)).toHaveClass(/selected/);
+  await w.check();
+});
+
+test("holding P cycles the priority only once", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const title = row(page, "Review the API latency report").locator(".row-title");
+  await title.click();
+  const priority = page.getByRole("combobox", { name: "Priority" });
+  await expect(priority).toHaveValue("None");
+  await page.keyboard.down("p");
+  await expect(priority).toHaveValue("Low");
+  await page.keyboard.down("p");
+  await page.keyboard.down("p");
+  await page.keyboard.up("p");
+  await expect(priority).toHaveValue("Low");
+  await page.keyboard.press("p");
+  await expect(priority).toHaveValue("Normal");
+  await w.check();
+});
+
+test("task shortcuts stay out of the quick-add and due-date inputs", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await page.locator(".sidebar").getByRole("link", { name: /^Team/ }).click();
+  const titles = rows(page).locator(".row-title");
+  const order = await titles.allTextContents();
+  // Pick a middle task so both reorder directions would have an effect.
+  await titles.nth(1).click();
+  const detail = page.locator(".detail .d-title");
+  const priority = page.getByRole("combobox", { name: "Priority" });
+  const dueButton = page.getByRole("button", { name: /^Edit due date/ });
+  const dueInput = page.getByRole("textbox", { name: "Due date" });
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  for (const input of [add, dueInput]) {
+    if (input === add) await add.focus();
+    else await dueButton.click();
+    await expect(input).toBeFocused();
+    await input.fill("");
+    for (const key of ["p", "d", "Space", "Alt+ArrowUp", "Alt+ArrowDown"]) {
+      await page.keyboard.press(key);
+      await expect(input).toBeFocused();
+      await expect(detail).toHaveText(order[1]);
+      await expect(titles).toHaveText(order);
+      await expect(priority).toHaveValue("Low");
+      if (input === add) await expect(dueInput).toHaveCount(0);
+    }
+    await expect(input).toHaveValue("pd ");
+  }
+  await dueInput.press("Escape");
+  await expect(dueButton).toHaveText("Set date");
+  await w.check();
+});
+
+test("step titles can be renamed, reordered and restored after deletion", async ({ page }) => {
   const w = watch(page);
   await open(page);
   await row(page, "Prepare the November board update").locator(".row-title").click();
@@ -229,12 +299,27 @@ test("step titles can be renamed, cancelled, reordered and deleted", async ({ pa
   await expect(steps.first().getByRole("button", { name: "Move step 1 up" })).toBeDisabled();
   await steps.first().getByRole("button", { name: "Move step 1 down" }).click();
   await expect(steps.nth(1).locator(".step-title")).toHaveText("Check the first draft");
+  await expect(steps.nth(1).getByRole("button", { name: "Move step 2 down" })).toBeFocused();
   await steps.nth(1).getByRole("button", { name: "Move step 2 up" }).click();
   await expect(title).toHaveText("Check the first draft");
-  await steps.first().getByRole("button", { name: "Delete step 1" }).click();
+  await expect(steps.first().getByRole("button", { name: "Move step 1 up" })).toBeFocused();
+  const remove = steps.first().getByRole("button", { name: "Delete step 1" });
+  await remove.click();
   await expect(steps).toHaveCount(4);
   await expect(page.locator(".step-title", { hasText: "Check the first draft" })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Add step" })).toBeFocused();
+  const toast = page.locator(".toast");
+  await expect(toast).toContainText("Deleted step “Check the first draft”");
+  await toast.getByRole("button", { name: /Undo/ }).click();
+  await expect(steps).toHaveCount(5);
+  await expect(title).toHaveText("Check the first draft");
+  await expect(steps.first().getByRole("checkbox")).toBeChecked();
+  await remove.click();
+  await expect(steps).toHaveCount(4);
+  await expect(page.getByRole("textbox", { name: "Add step" })).toBeFocused();
+  await toast.getByRole("button", { name: /Undo/ }).focus();
+  await page.keyboard.press("Control+z");
+  await expect(title).toHaveText("Check the first draft");
   await w.check();
 });
 
@@ -485,6 +570,25 @@ test("hand-over rows select, complete with choreography, and can be undone", asy
   await page.keyboard.press("Space");
   await expect(handover.getByRole("checkbox", { name: /Reopen.*October expense/ })).toHaveAttribute("aria-checked", "true");
   await expect(handover.getByRole("button", { name: "Submit the October expense report" })).toHaveCount(0);
+  await w.check();
+});
+
+test("double-clicking a recurring hand-over checkbox leaves one open copy and no Undo", async ({ page }) => {
+  const w = watch(page);
+  await open(page, "/app?fixture=finished");
+  const handover = page.locator(".tomorrow");
+  const title = "Prepare the November board update";
+  await handover.getByRole("checkbox", { name: `Complete “${title}”` }).dblclick();
+  await expect(handover.getByRole("checkbox", { name: `Reopen “${title}”` })).toBeDisabled();
+  const toast = page.locator(".toast");
+  await expect(toast).toContainText("The next one is scheduled");
+  await expect(toast.getByRole("button", { name: /Undo/ })).toHaveCount(0);
+  await page.keyboard.press("Control+z");
+  await expect(handover.getByRole("button", { name: title })).toHaveCount(0);
+  await page.locator(".sidebar").getByRole("link", { name: /^All/ }).click();
+  await expect(row(page, title)).toHaveCount(1);
+  await expect(row(page, title).getByRole("checkbox")).not.toBeChecked();
+  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 30 Nov");
   await w.check();
 });
 

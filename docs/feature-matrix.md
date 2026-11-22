@@ -135,7 +135,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Complete a step | `CompleteStep` / `UncompleteStep` `C/command.rs:281` | wired `D/ui/shell/detail.rs:434` | wired `W/app.rs:1764` | wired `A/ui/Detail.kt:135`, `F/engine.rs:598` |
 | Rename a step | `UpdateStep` `C/command.rs:274` | wired: click its title (`D/ui/shell/detail.rs:403`) | wired: click its title (`W/app.rs`, `DetailStep`) | missing |
 | Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | wired: up/down buttons (`W/app.rs`, `DetailStep`) | missing |
-| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button (`W/app.rs`, `DetailStep`), no undo yet | missing |
+| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button with Undo (`W/app.rs`, `DetailStep`) | missing |
 | Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | shown (`A/ui/Detail.kt:154`) |
 | Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | shown |
 | Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:733`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown |
@@ -160,7 +160,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | missing | n/a |
-| Undo anything else (rename, edits, deletes) | same | partial: deleting a list or a step can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | missing | missing |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a list or a step can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | missing |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list only; missing the agent summary |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |

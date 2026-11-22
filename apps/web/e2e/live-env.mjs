@@ -2,5 +2,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const PORT = Number(process.env.LIVE_PORT ?? 47412);
+// Stay below Linux's default ephemeral port range so outbound connections do not take it.
+export const PORT = Number(process.env.LIVE_PORT ?? 27412);
 export const DATA = join(dirname(fileURLToPath(import.meta.url)), ".live-data");

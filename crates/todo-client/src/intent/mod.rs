@@ -322,6 +322,11 @@ pub fn delete(id: impl Into<EntityId>) -> Command {
     Command::Delete { id: id.into() }
 }
 
+/// Restores a deleted step without changing its title, completion or parent.
+pub fn restore_step(id: StepId) -> Command {
+    Command::Restore { id: id.into() }
+}
+
 /// Moves an item one place up (`-1`) or down (`1`) among its live siblings; `None` at either end.
 pub fn nudge(state: &State, id: EntityId, by: i32) -> Option<Command> {
     let scope = state.scope_of(id)?;
@@ -634,6 +639,10 @@ mod tests {
         w.run(retitle_step(&w.state, s1id, "Pack light").expect("cmd"));
         w.run(delete(s2id));
         assert!(w.state.steps[&s2id].deleted.is_some());
+        w.run(restore_step(s2id));
+        assert!(w.state.is_live(s2id.into()));
+        assert!(w.state.steps[&s2id].position < w.state.steps[&s1id].position);
+        assert_eq!(w.state.steps[&s2id].title, "Go");
         assert!(add_step(task, " ", Uuid::nil).is_none());
 
         let work = CollectionId::from_uuid(w.id());

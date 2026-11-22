@@ -1244,7 +1244,8 @@ a {
   cursor: default;
 }
 
-.icon-button:disabled {
+.icon-button:disabled,
+.step-actions .icon-button[aria-disabled="true"] {
   color: var(--color-ink-4);
   background: transparent;
 }

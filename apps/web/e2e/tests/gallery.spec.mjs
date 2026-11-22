@@ -38,6 +38,10 @@ for (const scheme of ["light", "dark"]) {
       await page.locator(".step-title").nth(2).hover();
       await expect(page.locator(".step-actions").nth(2)).toHaveCSS("opacity", "1");
       await shot(page, `desktop-step-actions-${scheme}`);
+      await page.getByRole("button", { name: "Delete step 3" }).click();
+      await expect(page.locator(".toast").getByRole("button", { name: /Undo/ })).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "Add step" })).toBeFocused();
+      await shot(page, `desktop-step-undo-${scheme}`);
       await w.check();
     });
 

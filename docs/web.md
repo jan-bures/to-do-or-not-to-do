@@ -306,7 +306,7 @@ blank field clears both the date and any repeat rule. Choose any of the four lev
 field (also reachable with **Shift+P**), or press **P** to cycle none → low → normal → high → none. The
 Important star still toggles high priority. Click a step's title to rename it, or use the step's up,
 down and delete buttons (visible on hover or keyboard focus on desktop, always visible on phones).
-Reminder, Repeat and Tags are still labelled read-only. On a narrower viewport,
+The Undo toast restores a deleted step. Reminder, Repeat and Tags are still labelled read-only. On a narrower viewport,
 the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
 scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
@@ -339,7 +339,7 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, due-date editor and step controls, a collapsed collection, an active query filter, the finished
+  the detail, due-date editor, step controls and delete Undo, a collapsed collection, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, the phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
@@ -365,7 +365,7 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
   a quick-add forced past its disabled field changes anything; and a connection closing (and the tab
   reloading) for a newer version. Tests wait for
   IndexedDB commits by reading the `outbox` store, never for a fixed time. The port is `LIVE_PORT` (default
-  47412).
+  27412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as
   the `web` device, missing or wrong CSRF tokens, cross-origin and originless writes, expired and ended
   sessions, bearer precedence, MCP and uploads staying bearer-only), the `/app` routes and headers, gzip,
