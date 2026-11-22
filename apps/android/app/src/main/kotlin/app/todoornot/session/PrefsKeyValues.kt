@@ -9,10 +9,10 @@ class PrefsKeyValues(context: Context, name: String = "session") : KeyValues {
 
     override fun get(key: String): String? = prefs.getString(key, null)
 
-    override fun put(values: Map<String, String?>) {
+    override fun put(values: Map<String, String?>): Boolean {
         val e = prefs.edit()
         values.forEach { (k, v) -> if (v == null) e.remove(k) else e.putString(k, v) }
-        // commit, not apply: the token must be on disk before the app moves on from pairing.
-        e.commit()
+        // commit, not apply: callers can distinguish an in-memory edit from a durable write.
+        return e.commit()
     }
 }

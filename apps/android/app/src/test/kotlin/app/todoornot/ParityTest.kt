@@ -465,7 +465,7 @@ class ParityTest {
     @Test
     fun the_sync_line_reads_as_on_the_desktop() {
         fun s(state: SyncState, pending: UInt = 0u, failed: UInt = 0u, problem: ProblemKind? = null) =
-            SyncStatus(state, pending, failed, problem, null)
+            SyncStatus(state, pending, failed, caughtUp = false, revoked = problem == ProblemKind.UNAUTHORIZED, problem = problem, problemDetail = null)
         assertEquals("Synced 10:35" to Tone.OK, syncLine(s(SyncState.ONLINE), FIXTURE_NOW))
         assertEquals("Synced" to Tone.OK, syncLine(s(SyncState.ONLINE), null))
         assertEquals("Syncing…" to Tone.BUSY, syncLine(s(SyncState.SYNCING, 2u), null))

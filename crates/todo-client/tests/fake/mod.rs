@@ -223,6 +223,11 @@ pub struct Script {
     pub outcome_unknown: usize,
     /// Fail this many requests (of any kind) with a network error before they reach the server.
     pub offline: usize,
+    /// Refuse the next command or stream with a 401, respectively.
+    pub revoke_command: bool,
+    pub revoke_stream: bool,
+    /// Close the current stream before its next frame.
+    pub disconnect_stream: bool,
     /// Match an agent stream, with no head in hello but an end-of-backlog frame.
     pub hide_head: bool,
 }
@@ -314,6 +319,7 @@ impl MockTransport {
 /// Streams the fake log from a position, waiting for it to grow.
 pub struct MockStream {
     server: Arc<Mutex<FakeServer>>,
+    script: Arc<Mutex<Script>>,
     grew: Notify,
     next: u64,
     hello: Option<String>,
@@ -340,6 +346,9 @@ impl EventStream for MockStream {
         }
         loop {
             let seen = self.grew.generation();
+            if std::mem::take(&mut self.script.lock().unwrap().disconnect_stream) {
+                return None;
+            }
             let event = self
                 .server
                 .lock()
@@ -369,6 +378,11 @@ impl Transport for MockTransport {
         if self.offline() {
             return Err(TransportError::Network("offline".into()));
         }
+        if request.path == "/api/v1/commands"
+            && std::mem::take(&mut self.script.lock().unwrap().revoke_command)
+        {
+            return Ok(error(401, "unauthorized", Value::Null));
+        }
         Ok(self.handle(&request))
     }
 
@@ -379,6 +393,9 @@ impl Transport for MockTransport {
         yield_now().await;
         if self.offline() {
             return Err(TransportError::Network("offline".into()));
+        }
+        if std::mem::take(&mut self.script.lock().unwrap().revoke_stream) {
+            return Ok(StreamOpen::Refused(error(401, "unauthorized", Value::Null)));
         }
         let server = self.server.lock().unwrap();
         if let Some(r) = epoch_mismatch(&request.path, &server) {
@@ -402,6 +419,7 @@ impl Transport for MockTransport {
         }
         Ok(StreamOpen::Open(MockStream {
             server: self.server.clone(),
+            script: self.script.clone(),
             grew: self.grew.clone(),
             next: since,
             hello: Some(hello.to_string()),

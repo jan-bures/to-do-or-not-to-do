@@ -160,6 +160,10 @@ pub struct Status {
     pub failed: usize,
     /// The last confirmed sequence number.
     pub cursor: u64,
+    /// This connection has received the server's backlog. Unlike [`Readiness`], resets on reconnect.
+    pub caught_up: bool,
+    /// The server rejected this client's token at least once. Transient errors and reconnects never clear it.
+    pub revoked: bool,
     /// The most recent problem; cleared once the client is online again.
     pub last_error: Option<SyncError>,
 }
@@ -192,13 +196,20 @@ struct Shared {
     /// The send loop found that the server's log differs from the confirmed state.
     resync_requested: bool,
     readiness: Readiness,
+    caught_up: bool,
+    revoked: bool,
 }
 
 impl Shared {
+    fn record_error(&mut self, error: SyncError) {
+        self.revoked |= error.kind == ErrorKind::Unauthorized;
+        self.last_error = Some(error);
+    }
     /// Marks the current view non-authoritative before waking the event loop to reset it.
     fn request_resync(&mut self) {
         self.resync_requested = true;
         self.readiness = Readiness::Starting;
+        self.caught_up = false;
     }
 
     fn enqueue(
@@ -252,6 +263,8 @@ impl Shared {
             pending: self.replica.outbox().len(),
             failed: self.replica.failed().len(),
             cursor: self.replica.cursor(),
+            caught_up: self.caught_up,
+            revoked: self.revoked,
             last_error: self.last_error.clone(),
         }
     }
@@ -390,6 +403,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     last_submitted_ms,
                     resync_requested: false,
                     readiness: Readiness::Starting,
+                    caught_up: false,
+                    revoked: false,
                 }),
                 outbox_changed: Notify::default(),
                 saved,
@@ -700,8 +715,11 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         let changed = self.with(|s| {
             // A frame or page from the old stream may still be in flight when the sender asks for
             // a reset. It must not mark that replica ready again.
-            !s.resync_requested
-                && std::mem::replace(&mut s.readiness, Readiness::CaughtUp) != Readiness::CaughtUp
+            if s.resync_requested {
+                return false;
+            }
+            s.readiness = Readiness::CaughtUp;
+            !std::mem::replace(&mut s.caught_up, true)
         });
         if changed {
             self.changed();
@@ -841,13 +859,26 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// Syncs until [`stop`](Self::stop) is called.
     pub async fn run(&self) {
+        self.run_on_start(|| {}).await;
+    }
+
+    /// Like [`run`](Self::run), with a callback after clearing the previous run's stream status.
+    /// Hosts that cancel and restart the future can use this to publish that a new run has started.
+    pub async fn run_on_start(&self, on_start: impl FnOnce()) {
         if self.is_stopped() {
             return;
         }
-        self.with(|s| s.stream = StreamState::Connecting);
+        self.with(|s| {
+            s.stream = StreamState::Connecting;
+            s.caught_up = false;
+        });
+        on_start();
         self.changed();
         join(pin!(self.send_loop()), pin!(self.event_loop())).await;
-        self.with(|s| s.stream = StreamState::Idle);
+        self.with(|s| {
+            s.stream = StreamState::Idle;
+            s.caught_up = false;
+        });
         self.changed();
     }
 
@@ -888,7 +919,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     fn storage_failed(&self, what: &str, err: &StorageError) {
         tracing::warn!(error = %err, "cannot {what}");
         let error = self.error(ErrorKind::Storage, format!("cannot {what}: {err}"));
-        self.with(|s| s.last_error = Some(error));
+        self.with(|s| s.record_error(error));
         self.changed();
     }
 
@@ -1022,7 +1053,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     tracing::debug!(command_id = %entry.command_id, attempt = entry.attempts, reason = %error.message, "command not confirmed; retrying");
                     self.with(|s| {
                         s.send = SendState::Failing { offline };
-                        s.last_error = Some(error);
+                        s.record_error(error);
                     });
                     self.changed();
                     self.back_off(&mut failures, after).await;
@@ -1121,6 +1152,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                         // The old view is no longer authoritative even if writing the reset fails.
                         // Publish the reset and readiness under the same lock.
                         s.readiness = Readiness::Starting;
+                        s.caught_up = false;
                         s.replica.reset()
                     }) {
                         Ok(()) => {
@@ -1151,7 +1183,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     tracing::debug!(reason = %error.message, "event stream down");
                     self.with(|s| {
                         s.stream = StreamState::Down { offline };
-                        s.last_error = Some(error);
+                        s.caught_up = false;
+                        s.record_error(error);
                         if s.readiness == Readiness::Starting {
                             s.readiness = Readiness::Failed;
                         }
@@ -1187,7 +1220,10 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         if self.take_resync_request() {
             return Step::Resync { diverged_at: None };
         }
-        let (since, epoch) = self.with(|s| (s.replica.received(), s.replica.epoch()));
+        let (since, epoch) = self.with(|s| {
+            s.caught_up = false;
+            (s.replica.received(), s.replica.epoch())
+        });
         let opened = self
             .unless_stopped(timeout(
                 &self.inner.clock,
@@ -1302,7 +1338,10 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// Pages `GET /api/v1/events` from the cursor until the server reports no more.
     async fn catch_up(&self) -> Step {
-        self.with(|s| s.stream = StreamState::CatchingUp);
+        self.with(|s| {
+            s.stream = StreamState::CatchingUp;
+            s.caught_up = false;
+        });
         self.changed();
         loop {
             let (since, epoch) = self.with(|s| (s.replica.received(), s.replica.epoch()));

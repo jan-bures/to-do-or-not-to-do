@@ -4,7 +4,6 @@ import app.todoornot.core.CacheRecovery
 import app.todoornot.core.ChangeListener
 import app.todoornot.core.EngineConfig
 import app.todoornot.core.FfiException
-import app.todoornot.core.ProblemKind
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.TodoEngine
@@ -116,7 +115,7 @@ class EngineHostTest {
                 val recorded = CountDownLatch(1)
                 engine.setListener(object : ChangeListener {
                     override fun onChange() {
-                        if (first.status(before).problem == ProblemKind.UNAUTHORIZED) recorded.countDown()
+                        if (first.status(before).revoked) recorded.countDown()
                     }
                 })
                 engine.start()

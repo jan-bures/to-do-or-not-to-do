@@ -131,7 +131,7 @@ internal suspend fun AppGraph.widgetModel(): TodoModel? = withTimeoutOrNull(5_00
 internal suspend fun TodoModel.syncForWidget() {
     nudge()
     syncInBackground(4_000L) {
-        // Offline can be a send failure left over from a previous run. Don't cut off a new attempt.
-        it.signedOut || (it.state == SyncState.ONLINE && it.pending == 0u)
+        // An open SSE response can be Online well before it supplies its hello or backlog.
+        it.signedOut || (it.state == SyncState.ONLINE && it.caughtUp && it.pending == 0u)
     }
 }

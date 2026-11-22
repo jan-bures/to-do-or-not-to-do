@@ -16,6 +16,7 @@ use crate::view::{
 };
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use todo_client::intent::reminder::{self, REMINDER_CHANGED, REMINDER_PAST};
 use todo_client::intent::{self, TaskRoom};
@@ -108,6 +109,10 @@ pub struct SyncStatus {
     pub pending: u32,
     /// Changes the server refused.
     pub failed: u32,
+    /// The current connection's backlog is in. An open stream alone does not count.
+    pub caught_up: bool,
+    /// A sync request received a 401 on this engine, even if a later error replaced it.
+    pub revoked: bool,
     /// The most recent problem, cleared once online.
     pub problem: Option<ProblemKind>,
     /// Its description (never task content).
@@ -269,8 +274,16 @@ pub struct TodoEngine {
     activity_undos: Mutex<todo_client::activity::Undos>,
     /// Stop invalidates transfers, including ones still staging a picked document on Android.
     transfer_epoch: tokio::sync::watch::Sender<u64>,
-    run: Mutex<Option<JoinHandle<()>>>,
+    run: Mutex<Option<SyncRun>>,
+    // On rapid stop/start, the aborted run may still be handling a frame. Let it finish before
+    // resetting the connection status for the new run.
+    run_gate: Arc<tokio::sync::Mutex<()>>,
     watch: Mutex<Option<JoinHandle<()>>>,
+}
+
+struct SyncRun {
+    task: JoinHandle<()>,
+    started: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for TodoEngine {
@@ -414,6 +427,7 @@ impl TodoEngine {
             activity_undos: Mutex::default(),
             transfer_epoch: tokio::sync::watch::channel(0).0,
             run: Mutex::new(None),
+            run_gate: Arc::default(),
             watch: Mutex::new(None),
         })
     }
@@ -430,10 +444,6 @@ impl TodoEngine {
     /// The optimistic view (for tests).
     pub fn state(&self) -> Arc<State> {
         self.client.view()
-    }
-
-    fn is_running(&self) -> bool {
-        locked(&self.run).as_ref().is_some_and(|h| !h.is_finished())
     }
 
     /// Cancels an unsent tracked command or queues its checked inverse, remembering what it reverses.
@@ -620,11 +630,20 @@ impl TodoEngine {
     /// stream until [`stop`](Self::stop). Does nothing if it is already running.
     pub fn start(&self) -> Result<(), FfiError> {
         let mut run = locked(&self.run);
-        if run.as_ref().is_some_and(|h| !h.is_finished()) {
+        if run.as_ref().is_some_and(|r| !r.task.is_finished()) {
             return Ok(());
         }
         let client = self.client.clone();
-        *run = Some(runtime()?.spawn(async move { client.run().await }));
+        let gate = self.run_gate.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let mark_started = started.clone();
+        let task = runtime()?.spawn(async move {
+            let _run = gate.lock().await;
+            client
+                .run_on_start(|| mark_started.store(true, Ordering::Release))
+                .await;
+        });
+        *run = Some(SyncRun { task, started });
         drop(run);
         self.client.nudge();
         Ok(())
@@ -635,8 +654,8 @@ impl TodoEngine {
     /// [`status`](Self::status) reports `Paused` from now on; the listener isn't called for that.
     /// Direct attachment transfers are cancelled separately by the caller.
     pub fn stop(&self) {
-        if let Some(h) = locked(&self.run).take() {
-            h.abort();
+        if let Some(run) = locked(&self.run).take() {
+            run.task.abort();
         }
     }
 
@@ -662,9 +681,14 @@ impl TodoEngine {
 
     /// The sync status.
     pub fn status(&self) -> SyncStatus {
+        let run = locked(&self.run);
+        let running = run.as_ref().filter(|r| !r.task.is_finished());
+        let started = running.is_some_and(|r| r.started.load(Ordering::Acquire));
         let s = self.client.status();
-        let state = if !self.is_running() {
+        let state = if running.is_none() {
             SyncState::Paused
+        } else if !started {
+            SyncState::Syncing
         } else {
             match s.connection {
                 Connection::Offline => SyncState::Offline,
@@ -676,6 +700,8 @@ impl TodoEngine {
             state,
             pending: u32::try_from(s.pending).unwrap_or(u32::MAX),
             failed: u32::try_from(s.failed).unwrap_or(u32::MAX),
+            caught_up: started && s.caught_up,
+            revoked: s.revoked,
             problem: s.last_error.as_ref().map(|e| match e.kind {
                 ErrorKind::Network => ProblemKind::Network,
                 ErrorKind::Unauthorized => ProblemKind::Unauthorized,
@@ -1195,10 +1221,9 @@ fn undo_failure_message(code: &str, undone: Option<Undone>) -> String {
 
 impl Drop for TodoEngine {
     fn drop(&mut self) {
-        for slot in [&self.run, &self.watch] {
-            if let Some(h) = locked(slot).take() {
-                h.abort();
-            }
+        self.stop();
+        if let Some(task) = locked(&self.watch).take() {
+            task.abort();
         }
     }
 }

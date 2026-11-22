@@ -145,7 +145,9 @@ Long-press an empty spot on the home screen, open **Widgets**, and add **To-do l
 own selection. Tap the name or chevron to pick again; on wider widgets **Widget settings** does the same.
 A deleted list or collection offers to pick another. A signed-out widget says **Open the app to sign in**.
 If the server signs the phone out, widgets hide task and list names and refuse task edits, even after an
-offline restart. The app keeps the pairing and the outbox until the owner confirms **Pair again**.
+offline restart. Sync latches a 401 independently of transient errors; Android records it for that
+pairing and keeps it blocked while retrying a failed disk write. The app keeps the pairing and the
+outbox until the owner confirms **Pair again**.
 
 The widget shows open tasks in the app's order. Collection rows name their source list. Resize to show
 more rows; **+N more** counts those that don't fit. Tap the title to open its task, the round checkbox to
@@ -156,7 +158,8 @@ app. Glance hands the completed row straight back to the launcher without the in
 **Refresh** redraws from the local cache and requests a short sync. The widget also follows engine changes,
 including syncs triggered by reminders. While widgets are installed, the launcher requests a refresh about
 once an hour (Android may defer it); a single network-constrained WorkManager job catches up for at most
-four seconds once the engine is ready. No push or continuously running background service is added.
+four seconds once the engine is ready. It can finish earlier once that connection has received the
+server's backlog and the outbox is empty. No push or continuously running background service is added.
 
 The rounded card follows the system's light/dark theme and the room's `todo-design` palette, not wallpaper
 colours. Glance renders text in the system's corresponding font families at the token sizes. The launcher

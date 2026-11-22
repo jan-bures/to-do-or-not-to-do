@@ -83,6 +83,43 @@ fn a_new_client_catches_up_and_goes_online() {
 }
 
 #[test]
+fn either_loop_latches_revocation_even_after_a_network_error_and_recovery() {
+    for revoke_command in [false, true] {
+        let t = MockTransport::new(seeded_server(), owner());
+        {
+            let mut script = t.script.lock().unwrap();
+            script.revoke_command = revoke_command;
+            script.revoke_stream = !revoke_command;
+        }
+        let storage = MemoryStorage::new();
+        let c = client(&t, &storage, 1);
+        if revoke_command {
+            c.submit(create_list(list_id(2), "Later")).unwrap();
+        }
+        assert!(!c.status().revoked);
+        let saw_network = std::cell::Cell::new(false);
+        run_until(&c, |c| {
+            let s = c.status();
+            if !s.revoked {
+                return false;
+            }
+            match s.last_error.map(|e| e.kind) {
+                Some(ErrorKind::Unauthorized) => t.script.lock().unwrap().offline = 2,
+                Some(ErrorKind::Network) => saw_network.set(true),
+                None if saw_network.get() => return s.connection == Connection::Online,
+                _ => {}
+            }
+            false
+        });
+        assert!(c.status().revoked);
+        assert!(
+            !client(&t, &storage, 2).status().revoked,
+            "a new client starts unlatched"
+        );
+    }
+}
+
+#[test]
 fn readiness_says_caught_up_only_once_the_servers_head_is_in() {
     let server = seeded_server();
     let t = MockTransport::new(server.clone(), owner());
@@ -126,12 +163,21 @@ fn an_unknown_head_waits_for_backlog_end() {
     let before_event = std::cell::Cell::new(0);
     let after_events = std::cell::Cell::new(false);
     run_until(&c, |c| {
-        match (c.cursor(), c.readiness()) {
-            (0, Readiness::Starting) if c.status().connection == Connection::Online => {
+        let s = c.status();
+        match (s.cursor, c.readiness()) {
+            (0, Readiness::Starting) if s.connection == Connection::Online => {
+                assert!(
+                    !s.caught_up,
+                    "online before delayed frames is not caught up"
+                );
                 before_event.set(before_event.get() + 1);
             }
-            (2, Readiness::Starting) => after_events.set(true),
+            (2, Readiness::Starting) => {
+                assert!(!s.caught_up, "the backlog marker has not arrived");
+                after_events.set(true);
+            }
             (seq, Readiness::CaughtUp) => {
+                assert!(s.caught_up);
                 assert_eq!(seq, 2, "hello alone is not caught up");
                 return true;
             }
@@ -144,6 +190,30 @@ fn an_unknown_head_waits_for_backlog_end() {
         after_events.get(),
         "even the last event isn't an end marker"
     );
+}
+
+#[test]
+fn reconnect_requires_fresh_catch_up_evidence_without_resetting_startup_readiness() {
+    let t = MockTransport::new(seeded_server(), owner());
+    let c = client(&t, &MemoryStorage::new(), 1);
+    let phase = std::cell::Cell::new(0);
+    run_until(&c, |c| {
+        let s = c.status();
+        match phase.get() {
+            0 if s.caught_up => {
+                t.script.lock().unwrap().disconnect_stream = true;
+                t.grew.notify();
+                phase.set(1);
+            }
+            1 if s.connection == Connection::Online && !s.caught_up => {
+                assert_eq!(c.readiness(), Readiness::CaughtUp);
+                phase.set(2);
+            }
+            2 if s.caught_up => return true,
+            _ => {}
+        }
+        false
+    });
 }
 
 #[test]

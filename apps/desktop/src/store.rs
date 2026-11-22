@@ -12,7 +12,7 @@ use todo_client::activity::{
 use todo_client::failure::undo_message;
 use todo_client::outbox::FailedEntry;
 use todo_client::protocol::EventRef;
-use todo_client::{CommandId, Connection, Epoch, ErrorKind, TrackedCommand, TrackedUndo};
+use todo_client::{CommandId, Connection, Epoch, TrackedCommand, TrackedUndo};
 use todo_core::event::Event;
 use todo_core::time::Timestamp;
 use todo_core::undo::undo_batch;
@@ -424,10 +424,7 @@ impl Store {
                     connection: status.connection,
                     pending: status.pending,
                     failed: status.failed,
-                    unauthorized: status
-                        .last_error
-                        .as_ref()
-                        .is_some_and(|e| e.kind == ErrorKind::Unauthorized),
+                    unauthorized: status.revoked,
                     synced_at: s.synced_at.get(),
                 }
             }

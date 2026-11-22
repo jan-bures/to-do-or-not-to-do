@@ -40,6 +40,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -63,8 +64,9 @@ class AppGraph(private val app: Context) {
     private var modelScope: CoroutineScope? = null
     private var foreground = false
 
+    private val sessions = SessionStore(PrefsKeyValues(app), cipher)
     val host = EngineHost(
-        SessionStore(PrefsKeyValues(app), cipher),
+        sessions,
         PairingFiles(app.noBackupFilesDir),
         forgetKey = cipher::destroy,
         debug = { Log.d("EngineHost", it) },
@@ -100,6 +102,17 @@ class AppGraph(private val app: Context) {
 
     init {
         NativeInit.ensure(app)
+        scope.launch(Dispatchers.IO) {
+            sessions.revocationPending.collectLatest { id ->
+                if (id == null) return@collectLatest
+                var retryIn = 250L
+                while (sessions.revocationPending.value == id) {
+                    delay(retryIn)
+                    sessions.retryRevocation(id)
+                    retryIn = (retryIn * 2).coerceAtMost(30_000L)
+                }
+            }
+        }
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
         scope.launch {
             withContext(Dispatchers.IO) { host.load() }

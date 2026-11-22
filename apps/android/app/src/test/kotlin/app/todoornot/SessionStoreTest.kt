@@ -13,8 +13,9 @@ import org.junit.Test
 internal class MapValues : KeyValues {
     val map = HashMap<String, String>()
     override fun get(key: String): String? = map[key]
-    override fun put(values: Map<String, String?>) {
+    override fun put(values: Map<String, String?>): Boolean {
         values.forEach { (k, v) -> if (v == null) map.remove(k) else map[k] = v }
+        return true
     }
 }
 
@@ -61,6 +62,42 @@ class SessionStoreTest {
     @Test
     fun the_session_never_prints_its_token() {
         assertFalse(session.toString().contains("tdd_"))
+    }
+
+    @Test
+    fun a_failed_revocation_commit_blocks_even_though_only_the_memory_copy_changed() {
+        val memory = MapValues()
+        val disk = MapValues()
+        var failCommit = false
+        val values = object : KeyValues {
+            override fun get(key: String) = memory.get(key)
+            override fun put(values: Map<String, String?>): Boolean {
+                memory.put(values)
+                return !failCommit && disk.put(values)
+            }
+        }
+        val cipher = FakeCipher()
+        val store = SessionStore(values, cipher)
+        val id = "a".repeat(32)
+        store.save(session.copy(pairingId = id))
+        failCommit = true
+        assertTrue(store.signedOut(id, unauthorized = true))
+        assertTrue(store.signedOut(id, unauthorized = false))
+        assertEquals(id, store.revocationPending.value)
+        assertFalse(SessionStore(disk, cipher).signedOut(id, unauthorized = false))
+
+        store.retryRevocation(id)
+        assertEquals(id, store.revocationPending.value)
+        failCommit = false
+        store.retryRevocation(id)
+        assertNull(store.revocationPending.value)
+        assertTrue(SessionStore(disk, cipher).signedOut(id, unauthorized = false))
+
+        val replacement = "b".repeat(32)
+        store.save(session.copy(pairingId = replacement))
+        assertTrue(store.signedOut(id, unauthorized = true))
+        store.retryRevocation(id)
+        assertFalse(SessionStore(disk, cipher).signedOut(replacement, unauthorized = false))
     }
 
     @Test

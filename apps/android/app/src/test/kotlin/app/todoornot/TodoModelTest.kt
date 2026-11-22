@@ -1758,7 +1758,7 @@ class TodoModelTest {
     /** Queued and refused come from one status snapshot (the engine reads both under one lock). */
     @Test
     fun the_unsent_count_is_queued_plus_refused_from_one_snapshot() = runTest {
-        assertEquals(5, unsentCount(SyncStatus(SyncState.OFFLINE, 2u, 3u, null, null)))
+        assertEquals(5, unsentCount(SyncStatus(SyncState.OFFLINE, 2u, 3u, false, false, null, null)))
         val engine = fixtureEngine()
         val m = model(engine = engine)
         m.add("One")

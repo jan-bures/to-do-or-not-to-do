@@ -34,7 +34,7 @@ use todo_client::web::{
     OpenStorageError, SenderLock, elect_sender, open_channel, open_storage, sleep,
 };
 use todo_client::{
-    ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
+    ClientConfig, CommandId, Connection, SubmitError, SyncClient, TrackedCommand,
     TrackedUndo, failure, protocol,
 };
 use todo_core::ids::{AttachmentId, EventId, TaskId};
@@ -468,9 +468,7 @@ pub fn status() -> Sync {
                 connection: s.connection,
                 pending: s.pending,
                 failed: s.failed,
-                signed_out: s
-                    .last_error
-                    .is_some_and(|e| e.kind == ErrorKind::Unauthorized),
+                signed_out: s.revoked,
                 offline_demo: false,
                 local_error: store()
                     .and_then(|(s, _)| s.flush_error())

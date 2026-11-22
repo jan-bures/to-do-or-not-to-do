@@ -1,5 +1,6 @@
 package app.todoornot.widget
 
+import android.app.Activity
 import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.os.Bundle
@@ -28,8 +29,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewModelScope
 import app.todoornot.MainActivity
 import app.todoornot.core.RoomKey
 import app.todoornot.design.LocalDesign
@@ -39,13 +45,14 @@ import app.todoornot.session.Host
 import app.todoornot.ui.Label
 import app.todoornot.ui.NavRow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class WidgetConfigActivity : ComponentActivity() {
     private var selected by mutableStateOf<RoomKey?>(null)
-    private val commit = WidgetConfigCommit()
-    private var error by mutableStateOf(false)
+    private lateinit var commit: WidgetConfigCommit
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,34 +66,25 @@ class WidgetConfigActivity : ComponentActivity() {
             return
         }
         val glanceId = manager.getGlanceIdBy(intent) ?: run { finish(); return }
-        onBackPressedDispatcher.addCallback(this) { commit.cancel(::finish) }
+        val context = applicationContext
+        commit = followWidgetConfig(result) { context.todoGraph.widgets.configured(glanceId) }
         lifecycleScope.launch {
-            val previous = withContext(Dispatchers.IO) { WidgetChoicesStore(applicationContext).get(id) }
-            if (!commit.saving) selected = previous
+            val previous = withContext(Dispatchers.IO) { WidgetChoicesStore(context).get(id) }
+            if (!commit.state.value.locked) selected = previous
         }
         fun save(room: RoomKey?, ready: Host.Ready?) {
-            if (isFinishing || commit.saving) return
-            error = false
-            lifecycleScope.launch {
-                val stored = commit.save(
-                    store = {
-                        withContext(Dispatchers.IO) {
-                            if (id !in todoWidgetIds()) return@withContext false
-                            val store = WidgetChoicesStore(applicationContext)
-                            if (room == null) {
-                                // Signed out: keep the existing selection, or add an unpersonalized My Day.
-                                store.get(id) != null || store.put(id, defaultWidgetRoom)
-                            } else if (ready != null && todoGraph.host.isAuthorized(ready)) {
-                                store.put(id, room)
-                            } else false
-                        }
-                    },
-                    accept = {
-                        setResult(RESULT_OK, result)
-                        finish()
-                    },
-                )
-                if (stored) todoGraph.widgets.configured(glanceId) else error = true
+            if (isFinishing) return
+            commit.save {
+                withContext(Dispatchers.IO) {
+                    if (id !in context.todoWidgetIds()) return@withContext false
+                    val store = WidgetChoicesStore(context)
+                    if (room == null) {
+                        // Signed out: keep the existing selection, or add an unpersonalized My Day.
+                        store.get(id) != null || store.put(id, defaultWidgetRoom)
+                    } else if (ready != null && context.todoGraph.host.isAuthorized(ready)) {
+                        store.put(id, room)
+                    } else false
+                }
             }
         }
         enableEdgeToEdge()
@@ -95,6 +93,7 @@ class WidgetConfigActivity : ComponentActivity() {
 
     @Composable
     private fun Picker(save: (RoomKey?, Host.Ready?) -> Unit) {
+        val transaction by commit.state.collectAsStateWithLifecycle()
         val graph = todoGraph
         val loaded by graph.loaded.collectAsStateWithLifecycle()
         val host by graph.host.state.collectAsStateWithLifecycle()
@@ -107,9 +106,9 @@ class WidgetConfigActivity : ComponentActivity() {
             Column(Modifier.fillMaxSize().background(r.canvas).windowInsetsPadding(WindowInsets.safeDrawing).padding(pad)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Label("Choose what to show", Tokens.Type.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f))
-                    TextButton(onClick = { commit.cancel(::finish) }, enabled = !commit.saving) { Label("Cancel", Tokens.Type.NAV, r.ink) }
+                    TextButton(onClick = { commit.cancel(::finish) }, enabled = !transaction.locked) { Label("Cancel", Tokens.Type.NAV, r.ink) }
                 }
-                if (error) Label("Couldn’t save the widget. Try again.", Tokens.Type.BODY, r.dangerInk)
+                if (transaction == WidgetConfigState.Failed) Label("Couldn’t save the widget. Try again.", Tokens.Type.BODY, r.dangerInk)
                 when {
                     !loaded || (host is Host.Ready && ui == null) -> Label("Loading lists…", Tokens.Type.BODY, r.ink3)
                     host is Host.CantOpen -> Label("Open the app to load your tasks", Tokens.Type.BODY, r.ink3)
@@ -117,7 +116,7 @@ class WidgetConfigActivity : ComponentActivity() {
                         TextButton(onClick = { startActivity(Intent(this@WidgetConfigActivity, MainActivity::class.java)) }) {
                             Label("Open the app to sign in", Tokens.Type.BODY, r.accentStrong)
                         }
-                        TextButton(onClick = { save(null, null) }, enabled = !commit.saving) {
+                        TextButton(onClick = { save(null, null) }, enabled = !transaction.locked) {
                             Label(if (selected == null) "Add My Day widget" else "Keep current selection", Tokens.Type.BODY, r.ink)
                         }
                     }
@@ -135,22 +134,44 @@ class WidgetConfigActivity : ComponentActivity() {
     }
 }
 
-/** Main-thread transaction: Back can cancel before the save, never between persistence and acceptance. */
-internal class WidgetConfigCommit {
-    var saving by mutableStateOf(false)
-        private set
+/** Registers this activity to deliver the retained transaction's result, only while started. */
+internal fun ComponentActivity.followWidgetConfig(result: Intent, afterSave: () -> Unit): WidgetConfigCommit {
+    val commit = ViewModelProvider(this)[WidgetConfigCommit::class.java]
+    onBackPressedDispatcher.addCallback(this) { commit.cancel(::finish) }
+    lifecycleScope.launch {
+        repeatOnLifecycle(Lifecycle.State.STARTED) {
+            commit.state.collect {
+                if (it == WidgetConfigState.Saved && !isFinishing) {
+                    setResult(Activity.RESULT_OK, result)
+                    finish()
+                    afterSave()
+                }
+            }
+        }
+    }
+    return commit
+}
+
+internal enum class WidgetConfigState {
+    Idle, Saving, Saved, Failed;
+
+    val locked get() = this == Saving || this == Saved
+}
+
+/** The write and its outcome outlive rotation/fold. Only the current activity delivers a result. */
+internal class WidgetConfigCommit : ViewModel() {
+    private val _state = MutableStateFlow(WidgetConfigState.Idle)
+    val state = _state.asStateFlow()
 
     fun cancel(finish: () -> Unit) {
-        if (!saving) finish()
+        if (!state.value.locked) finish()
     }
 
-    suspend fun save(store: suspend () -> Boolean, accept: () -> Unit): Boolean {
-        saving = true
-        if (!store()) {
-            saving = false
-            return false
+    fun save(store: suspend () -> Boolean) {
+        if (state.value.locked) return
+        _state.value = WidgetConfigState.Saving
+        viewModelScope.launch {
+            _state.value = if (store()) WidgetConfigState.Saved else WidgetConfigState.Failed
         }
-        accept()
-        return true
     }
 }
