@@ -31,6 +31,7 @@ import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
 import app.todoornot.core.quickAddDate
+import app.todoornot.core.reminderSetText
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
@@ -953,7 +954,7 @@ class TodoModel(
         } else {
             engine.setReminder(id, seen, atMs, now()) ?: return@act
         }
-        val text = if (atMs == null) "Reminder removed" else "Reminder set for ${reminderLabel(atMs, now().epochMs, zone())}"
+        val text = if (atMs == null) "Reminder removed" else reminderSetText(reminderLabel(atMs, now().epochMs, zone()))
         show(Toast(++serial, text, reminder = change))
     }
 

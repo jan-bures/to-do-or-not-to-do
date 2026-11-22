@@ -16,6 +16,7 @@ test("reminder presets are keyboard accessible and adding or removing a reminder
   await task(page).click();
   const reminder = trigger(page);
   await expect(reminder).toHaveAccessibleDescription("Set reminder");
+  await expect(reminder.getByText("Set reminder")).toHaveCSS("font-family", /Schibsted Grotesk/);
   await reminder.press("Enter");
   await expect(reminder).toHaveAttribute("aria-expanded", "true");
   const reducedFade = await page.locator("html").evaluate((root) =>
@@ -35,7 +36,15 @@ test("reminder presets are keyboard accessible and adding or removing a reminder
   await page.keyboard.press("Space");
   await expect(reminder).toBeFocused();
   await expect(reminder).toHaveText("Tomorrow, 09:00");
+  await expect(page.locator(".toast")).toContainText("Reminder set for Tomorrow, 09:00");
   await expect(reminder).toHaveAttribute("aria-expanded", "false");
+  await reminder.press("Enter");
+  await expect(tomorrow).toHaveAttribute("aria-selected", "true");
+  await expect(tomorrow.locator(".picker-tick")).toBeVisible();
+  await expect(tomorrow).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(reminder).toBeFocused();
+  await expect(presets(page)).toBeHidden();
   await reminder.press("Control+z");
   await expect(reminder).toHaveText("Set reminder");
 
@@ -72,6 +81,10 @@ test("custom reminder pre-fills the shown time, validates input and discards a c
   await expect(date).toBeFocused();
   await expect(date).toHaveValue("2026-11-21");
   await expect(time).toHaveValue("15:30");
+  await page.keyboard.press("Shift+Tab");
+  await expect(save).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(date).toBeFocused();
   // The native date input has several keyboard-focusable segments.
   for (let i = 0; i < 4 && !(await time.evaluate((el) => el === document.activeElement)); i++) {
     await page.keyboard.press("Tab");
@@ -82,7 +95,7 @@ test("custom reminder pre-fills the shown time, validates input and discards a c
   await expect(status).toHaveText("Choose a date and time.");
   await time.fill("09:30");
   await expect(save).toBeDisabled();
-  await expect(status).toHaveText("Choose a time that hasn’t passed.");
+  await expect(status).toHaveText("Pick a time that hasn’t passed.");
   await date.fill("2026-11-23");
   await expect(save).toBeEnabled();
   await custom(page).getByRole("button", { name: "Back", exact: true }).click();

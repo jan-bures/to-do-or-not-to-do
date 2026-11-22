@@ -17,6 +17,18 @@ use todo_core::query::EvalContext;
 use todo_core::time::Timestamp;
 use uuid::Uuid;
 
+/// Shown when the reminder no longer matches what the editor was opened on.
+pub const REMINDER_CHANGED: &str =
+    "The reminder changed while the picker was open. Check it, then try again.";
+
+/// Shown when the chosen time has passed.
+pub const REMINDER_PAST: &str = "Pick a time that hasn’t passed.";
+
+/// Confirms a reminder was set, with a time label formatted in the client's local time.
+pub fn reminder_set_text(time: &str) -> String {
+    format!("Reminder set for {time}")
+}
+
 /// The task's live reminders, earliest first.
 fn live(state: &State, task: TaskId) -> Vec<&Reminder> {
     let mut all: Vec<&Reminder> = state

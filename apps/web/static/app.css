@@ -2128,6 +2128,11 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   font: var(--text-step);
 }
 
+.prop dd.mono,
+.prop-edit > .mono {
+  font: var(--text-due);
+}
+
 .source {
   display: flex;
   align-items: center;

@@ -17,6 +17,7 @@ use crate::view::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
+use todo_client::intent::reminder::{self, REMINDER_CHANGED, REMINDER_PAST};
 use todo_client::intent::{self, TaskRoom};
 use todo_client::native::{Cleartext, HttpTransport, OsEntropy, TokioClock};
 use todo_client::outbox::OutboxEntry;
@@ -301,9 +302,17 @@ fn collection_id(id: &str) -> Result<CollectionId, FfiError> {
     id.parse().map_err(|_| invalid("no such collection"))
 }
 
-/// Shown when a reminder edit was refused because the reminder changed while the picker was open.
-pub const REMINDER_CHANGED: &str =
-    "The reminder changed while the picker was open. Check it, then try again.";
+/// The reminder editor's validation note for a time that has already passed.
+#[uniffi::export]
+pub fn reminder_past_note() -> String {
+    REMINDER_PAST.into()
+}
+
+/// Confirmation text for a reminder time already formatted in the phone's zone.
+#[uniffi::export]
+pub fn reminder_set_text(time: String) -> String {
+    reminder::reminder_set_text(&time)
+}
 
 fn seen_reminder(seen: ReminderRef) -> Result<intent::reminder::Seen, FfiError> {
     Ok(intent::reminder::Seen {
@@ -820,7 +829,7 @@ impl TodoEngine {
             return Ok(None);
         };
         if at <= now.at {
-            return Err(invalid("Pick a time that hasn't passed."));
+            return Err(invalid(REMINDER_PAST));
         }
         self.track_reminder(cmd).map(Some)
     }
@@ -1720,7 +1729,7 @@ mod tests {
         let past = Timestamp::from_millisecond(now.epoch_ms - 60_000).expect("past");
         assert!(matches!(
             e.set_reminder(id.clone(), seen(&e), past.as_millisecond(), now),
-            Err(FfiError::Invalid { .. })
+            Err(FfiError::Invalid { detail }) if detail == reminder_past_note()
         ));
         assert_eq!(e.client.pending().len(), pending);
     }

@@ -722,6 +722,11 @@ test("detail actions, schedule fields, sync label and context keyboard hints mat
   const reminder = fields.getByRole("button", { name: "Reminder", exact: true });
   await expect(reminder).toBeEnabled();
   await expect(reminder).toHaveAccessibleDescription("Today, 15:30");
+  for (const value of [fields.getByRole("button", { name: /^Edit due date:/ }), reminder.getByText("Today, 15:30")]) {
+    await expect(value).toHaveCSS("font-family", /Geist Mono/);
+    await expect(value).toHaveCSS("font-size", "12.5px");
+    await expect(value).toHaveCSS("font-weight", "500");
+  }
   await expect(keys).toContainText("Esc");
   await expect(keys).toContainText("Space");
   await page.locator(".sidebar").getByRole("link", { name: "Garden" }).click();

@@ -1,6 +1,7 @@
 //! Small browser helpers: the clock, the theme, the address bar, the CSRF token and downloads.
 
 use crate::model::{self, Now};
+use crate::reminder_time::fixed_instant;
 use jiff::{Timestamp, civil::DateTime};
 use std::collections::BTreeSet;
 use todo_core::ids::CollectionId;
@@ -83,10 +84,7 @@ pub fn civil_time(at: Timestamp, now: Now, live: bool) -> DateTime {
 /// a repeated hour; reject times it moves forward through a spring clock change.
 pub fn local_instant(dt: DateTime, now: Now, live: bool) -> Option<Timestamp> {
     if !live {
-        return jiff::tz::Offset::from_seconds(now.offset_s)
-            .ok()?
-            .to_timestamp(dt)
-            .ok();
+        return fixed_instant(dt, now);
     }
     let ms = js_sys::Date::new(&JsValue::from_str(&dt.to_string())).get_time();
     if !ms.is_finite() {

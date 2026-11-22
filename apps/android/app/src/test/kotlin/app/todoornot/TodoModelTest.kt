@@ -2012,7 +2012,7 @@ class TodoModelTest {
         val pending = m.ui.value.status.pending
         m.setReminder(id, seen(), FIXTURE_NOW.epochMs - 60_000)
         s.drain()
-        assertEquals("Pick a time that hasn't passed.", m.ui.value.toast?.text)
+        assertEquals("Pick a time that hasn’t passed.", m.ui.value.toast?.text)
         assertFalse(m.ui.value.toast!!.undoable)
         assertEquals(pending, m.ui.value.status.pending)
     }

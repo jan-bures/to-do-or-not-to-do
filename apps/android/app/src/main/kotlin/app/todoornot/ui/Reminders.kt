@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import app.todoornot.core.reminderPastNote
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.reminders.ReminderAccess
@@ -45,9 +46,6 @@ private const val DAY_MS = 86_400_000L
 
 /** Asks for what reminders need after the owner sets one ([ReminderAccess]); the gallery's asks nothing. */
 val LocalReminderAccess = staticCompositionLocalOf<ReminderAccess> { ReminderAccess.None }
-
-/** Under the picker when the time picked has passed. */
-const val REMINDER_PAST = "Pick a time that hasn’t passed."
 
 /** Under the picker while the time typed isn't one. */
 const val REMINDER_BAD_TIME = "Type an hour from 00 to 23 and a minute from 00 to 59."
@@ -144,7 +142,7 @@ fun ReminderCard(
             ) {
                 if (!valid) Label(REMINDER_BAD_TIME, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 2)
                 if (note != null) Label(note, Tokens.Type.META_PHONE, r.ink2, maxLines = 3)
-                if (past) Label(REMINDER_PAST, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 2)
+                if (past) Label(remember { reminderPastNote() }, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 2)
                 Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                     if (atMs != null) Button("Remove", primary = false, modifier = Modifier.weight(1f)) { onSave(null) }
                     Button("Cancel", primary = false, modifier = Modifier.weight(1f), onClick = onCancel)

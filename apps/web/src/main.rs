@@ -11,6 +11,7 @@ mod changes;
 mod fixtures;
 mod landscape;
 mod model;
+mod reminder_time;
 
 #[cfg(target_arch = "wasm32")]
 mod app;

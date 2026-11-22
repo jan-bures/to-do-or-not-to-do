@@ -5,9 +5,10 @@ use super::{
     pickers::{self, DetailPicker},
     platform,
 };
-use jiff::{SignedDuration, Span, Timestamp, civil::DateTime};
+use crate::reminder_time::{Draft, Preset};
+use jiff::Timestamp;
 use leptos::prelude::*;
-use todo_client::intent::reminder::{self, Seen, Stale};
+use todo_client::intent::reminder::{self, REMINDER_CHANGED, Seen, Stale};
 use todo_core::ids::TaskId;
 use todo_design::Icon;
 
@@ -16,12 +17,6 @@ pub(super) const PICKER: &str = "reminder-picker";
 const CUSTOM: &str = "reminder-custom";
 const DATE: &str = "reminder-date";
 const FIRST: &str = "reminder-in-an-hour";
-
-#[derive(Clone, Copy)]
-enum Preset {
-    InAnHour,
-    AtNineInDays(i32),
-}
 
 const PRESETS: [(Preset, &str, &str); 3] = [
     (Preset::InAnHour, "In 1 hour", FIRST),
@@ -37,54 +32,12 @@ const PRESETS: [(Preset, &str, &str); 3] = [
     ),
 ];
 
-impl Preset {
-    fn at(self, now: Now, live: bool) -> Option<Timestamp> {
-        match self {
-            Self::InAnHour => now.at.checked_add(SignedDuration::from_hours(1)).ok(),
-            Self::AtNineInDays(days) => {
-                let day = now.today().checked_add(Span::new().days(days)).ok()?;
-                platform::local_instant(day.at(9, 0, 0, 0), now, live)
-            }
-        }
-    }
-
-    fn matches(self, seen: Seen, now: Now, live: bool) -> bool {
-        // The relative preset is an action, not a saved rule; its target changes with the clock.
-        matches!(self, Self::AtNineInDays(_)) && self.at(now, live) == Some(seen.at)
-    }
+fn preset_at(preset: Preset, now: Now, live: bool) -> Option<Timestamp> {
+    preset.at(now, |dt| platform::local_instant(dt, now, live))
 }
 
-#[derive(Default, PartialEq, Eq)]
-struct Draft {
-    date: String,
-    time: String,
-}
-
-impl Draft {
-    fn from_civil(dt: DateTime) -> Self {
-        Self {
-            date: dt.date().to_string(),
-            time: format!("{:02}:{:02}", dt.hour(), dt.minute()),
-        }
-    }
-
-    fn at(&self, seen: Option<Seen>, now: Now, live: bool) -> Result<Timestamp, &'static str> {
-        let dt = format!("{}T{}", self.date, self.time)
-            .parse()
-            .map_err(|_| "Choose a date and time.")?;
-        // Preserve seconds and the exact instant in a repeated hour if nothing was changed.
-        if let Some(seen) = seen
-            && *self == Self::from_civil(platform::civil_time(seen.at, now, live))
-        {
-            return Ok(seen.at);
-        }
-        let at = platform::local_instant(dt, now, live)
-            .ok_or("That time doesn’t exist in this time zone. Choose another time.")?;
-        if at <= now.at {
-            return Err("Choose a time that hasn’t passed.");
-        }
-        Ok(at)
-    }
+fn time_label(at: Timestamp, now: Now, live: bool) -> String {
+    model::local_date_time(platform::civil_time(at, now, live), now.today())
 }
 
 #[component]
@@ -103,8 +56,11 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
         }
     };
     let selected = move |p: Preset| {
-        seen.get()
-            .is_some_and(|s| p.matches(s, opened_at.get(), c.live))
+        // In 1 hour is an action, not a saved rule; its target changes with the clock.
+        matches!(p, Preset::AtNineInDays(_))
+            && seen
+                .get()
+                .is_some_and(|s| preset_at(p, opened_at.get(), c.live) == Some(s.at))
     };
     let change = move |at: Option<Timestamp>| {
         if c.read_only() || c.selected.get_untracked() != Some(id) {
@@ -119,21 +75,20 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
         });
         match result {
             Ok(cmd) => {
-                let label = match (seen, at) {
-                    (_, None) => "Reminder removed.",
-                    (None, _) => "Reminder set.",
-                    (Some(_), _) => "Reminder changed.",
-                };
-                if cmd.is_none_or(|cmd| c.submit_undoable(cmd, label.into(), None)) {
+                if cmd.is_none_or(|cmd| {
+                    let label = at.map_or_else(
+                        || "Reminder removed.".into(),
+                        |at| reminder::reminder_set_text(&time_label(at, now(), c.live)),
+                    );
+                    c.submit_undoable(cmd, label, None)
+                }) {
                     picker.close(true);
                 } else {
                     error.set(c.toast.get_untracked().map(|t| t.text));
                 }
             }
             Err(Stale::Task) => picker.close(false),
-            Err(Stale::Reminder) => error.set(Some(
-                "The reminder changed while this picker was open. Close and reopen it to edit the current reminder.".into(),
-            )),
+            Err(Stale::Reminder) => error.set(Some(REMINDER_CHANGED.into())),
         }
     };
     Effect::new(move |_| {
@@ -165,7 +120,7 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
                         {move || {
                             let now = c.now.get();
                             detail.with(|d| d.as_ref().and_then(|d| d.reminder)).map_or_else(|| "Set reminder".into(), |s| {
-                                model::local_date_time(platform::civil_time(s.at, now, c.live), now.today())
+                                time_label(s.at, now, c.live)
                             })
                         }}
                     </span>
@@ -181,7 +136,7 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
                                     {PRESETS.into_iter().map(|(preset, name, key)| view! {
                                         <button type="button" id=key data-picker-option="" role="option" tabindex="-1"
                                             aria-selected=move || selected(preset).to_string() on:click=move |_| {
-                                                if let Some(at) = preset.at(now(), c.live) { change(Some(at)); }
+                                                if let Some(at) = preset_at(preset, now(), c.live) { change(Some(at)); }
                                                 else { error.set(Some("That time isn’t available. Choose a custom time.".into())); }
                                             }>
                                             <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>{name}
@@ -232,19 +187,25 @@ fn CustomTime(seen: Option<Seen>, apply: Callback<Timestamp>, back: Callback<()>
     let now_at_open = now();
     let start = seen
         .map(|s| s.at)
-        .or_else(|| Preset::AtNineInDays(1).at(now_at_open, c.live));
+        .or_else(|| preset_at(Preset::AtNineInDays(1), now_at_open, c.live));
     let draft = start.map_or_else(Draft::default, |at| {
         Draft::from_civil(platform::civil_time(at, now_at_open, c.live))
     });
     let initial_date = draft.date.clone();
     let initial_time = draft.time.clone();
     let draft = RwSignal::new(draft);
-    let result = Memo::new(move |_| draft.with(|d| d.at(seen, c.now.get(), c.live)));
+    let resolve = move |d: &Draft, now: Now| {
+        let original = seen.map(|s| (s.at, platform::civil_time(s.at, now, c.live)));
+        d.at(original, now.at, |dt| {
+            platform::local_instant(dt, now, c.live)
+        })
+    };
+    let result = Memo::new(move |_| draft.with(|d| resolve(d, c.now.get())));
     let submit_error = RwSignal::new(None);
     view! {
         <form class="picker-page" on:submit=move |ev| {
             ev.prevent_default();
-            match draft.with_untracked(|d| d.at(seen, now(), c.live)) {
+            match draft.with_untracked(|d| resolve(d, now())) {
                 Ok(at) => apply.run(at),
                 Err(message) => submit_error.set(Some(message)),
             }
