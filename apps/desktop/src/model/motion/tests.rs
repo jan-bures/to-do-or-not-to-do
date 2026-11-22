@@ -333,6 +333,87 @@ fn reduced_dusk_crossfades_without_growing_or_rising() {
 }
 
 #[test]
+fn a_row_the_list_no_longer_shows_stops_at_once() {
+    let (held, reopened, entering) = (task(1), task(2), task(3));
+    let mut mo = Motion::default();
+    mo.complete(entering, ms(0), Pace::FULL);
+    mo.complete(held, ms(100), Pace::FULL);
+    mo.reopen(reopened, ms(RELEASE_AT - 100), Pace::FULL);
+    assert_eq!(mo.advance(ms(RELEASE_AT)), [Release::Completed(entering)]);
+    let now = ms(RELEASE_AT);
+    // Nothing the list doesn't show: the deleted (tombstoned) held task stops and is let go, a task
+    // reopened where it isn't shown goes straight to entering the open rows, and the released row
+    // with no place in a closed Completed section stops entering.
+    assert!(mo.retain_shown(now, |_| false));
+    assert_eq!(mo.row(held, now), None);
+    assert_eq!(mo.row(entering, now), None);
+    assert_eq!(mo.holding().count() + mo.reopening().count(), 0);
+    let enters = mo.row(reopened, now).expect("entering");
+    assert_eq!((enters.height, enters.fill), (0., 0.));
+    // Not shown there either: it stops, and that lets nothing go.
+    assert!(!mo.retain_shown(now, |_| false));
+    assert_eq!(mo.wake(now), Wake::Idle);
+}
+
+#[test]
+fn rows_rising_from_past_the_rendered_slots_are_drawn_with_them() {
+    // Ten rows, slots 0..6 rendered; row 2 is half collapsed, so rows 3.. are drawn half a row up.
+    let mut heights = [1.; 10];
+    heights[2] = 0.5;
+    let up = lifts(heights);
+    assert_eq!(rows_rising_into(&up, 6).collect::<Vec<_>>(), [6]);
+    // Rows 2 and 4 fully collapsed: rows from 5 on are two rows up.
+    heights[2] = 0.;
+    heights[4] = 0.;
+    let up = lifts(heights);
+    assert_eq!(rows_rising_into(&up, 6).collect::<Vec<_>>(), [6, 7]);
+    // Nothing collapsing: nothing past the rendered slots shows, and nothing past the end exists.
+    assert_eq!(rows_rising_into(&lifts([1.; 10]), 6).count(), 0);
+    assert_eq!(rows_rising_into(&up, 10).count(), 0);
+}
+
+#[test]
+fn a_list_scrolled_to_its_end_comes_back_with_a_collapsing_row() {
+    let row = 50.;
+    // Ten rows of 50 in a 200 tall viewport: scrolled to the end, 300 down.
+    let mut heights = [1.; 10];
+    assert_eq!(anchored_scroll(300., 200., row, &heights), None);
+    // A row half collapsed: the content is 25 shorter, so the scroll comes back 25.
+    heights[3] = 0.5;
+    assert_eq!(anchored_scroll(300., 200., row, &heights), Some(275.));
+    // Fully collapsed: 50 back, exactly where the list ends once the row is released.
+    heights[3] = 0.;
+    assert_eq!(anchored_scroll(300., 200., row, &heights), Some(250.));
+    assert_eq!(anchored_scroll(250., 200., row, &[1.; 9]), None);
+    // Scrolled less far, or at the top, nothing moves; content shorter than the viewport ends at 0.
+    assert_eq!(anchored_scroll(100., 200., row, &heights), None);
+    assert_eq!(anchored_scroll(0., 200., row, &heights), None);
+    assert_eq!(anchored_scroll(20., 600., row, &heights), Some(0.));
+}
+
+#[test]
+fn j_and_k_reach_only_the_hand_over_tasks_that_have_begun_to_enter() {
+    let shell = crate::fixtures::finished().shell();
+    let next = shell.room.handover().expect("hands over");
+    let all: Vec<TaskId> = next.tasks().map(|t| t.id).collect();
+    let mut mo = Motion::default();
+    mo.aim_dusk(MY_DAY, false, ms(0), Pace::FULL);
+    mo.aim_dusk(MY_DAY, true, ms(0), Pace::FULL);
+    let nav = |t: u32| {
+        let dusk = mo.dusk(ms(t));
+        shell.nav_tasks_shown(|c| dusk.handover(c).0 > 0.)
+    };
+    // Dusk has fallen half way: the hand-over isn't there yet, so there's nothing to select.
+    assert!(nav(m::DUSK / 2).is_empty());
+    let cue = (m::DUSK as f32 * m::DUSK_HANDOVER_AT) as u32;
+    assert!(nav(cue).is_empty());
+    // Just after the first task has begun to enter (one stagger after the label), only it.
+    assert_eq!(nav(cue + m::STAGGER + 5), [all[0]]);
+    // Entered: all of them, in order.
+    assert_eq!(nav(m::DUSK), all);
+}
+
+#[test]
 fn rows_below_a_collapsing_row_rise_by_the_share_that_has_gone() {
     assert_eq!(lifts([1., 0.25, 1., 0.5, 1.]), [0., 0., 0.75, 0.75, 1.25]);
     assert!(lifts([]).is_empty());
@@ -345,7 +426,8 @@ enum Op {
     Toggle(u8),
     /// Another device flips task `n`.
     Elsewhere(u8),
-    /// Task `n` is deleted.
+    /// Task `n` is deleted. The replica keeps its tombstone, which still says whether it was done; the
+    /// list no longer shows it.
     Delete(u8),
     /// The owner switches rooms.
     SwitchRoom,
@@ -404,14 +486,19 @@ proptest! {
         // Each task's state, and where the list shows it (done = in Completed).
         let mut done: BTreeMap<TaskId, bool> = (0..3).map(|n| (task(n), false)).collect();
         let mut placed = done.clone();
-        let check = |mo: &Motion, now: Duration, done: &BTreeMap<TaskId, bool>, placed: &BTreeMap<TaskId, bool>| -> Result<(), TestCaseError> {
+        let mut deleted = BTreeSet::new();
+        let check = |mo: &Motion, now: Duration, done: &BTreeMap<TaskId, bool>, placed: &BTreeMap<TaskId, bool>, deleted: &BTreeSet<TaskId>| -> Result<(), TestCaseError> {
             let holding: BTreeSet<TaskId> = mo.holding().collect();
             let reopening: BTreeSet<TaskId> = mo.reopening().collect();
             for (&id, &d) in done.iter() {
                 if let Some(look) = mo.row(id, now) {
                     prop_assert!(in_range(look), "{look:?}");
                 }
-                if holding.contains(&id) {
+                if deleted.contains(&id) {
+                    // Gone from the list: nothing moves for it, nothing keeps it.
+                    prop_assert_eq!(mo.row(id, now), None);
+                    prop_assert!(!holding.contains(&id) && !reopening.contains(&id));
+                } else if holding.contains(&id) {
                     prop_assert!(d && !placed[&id]);
                 } else if reopening.contains(&id) {
                     prop_assert!(!d && placed[&id]);
@@ -435,11 +522,14 @@ proptest! {
                     }
                 }
             }
-            check(&mo, now, &done, &placed)?;
+            check(&mo, now, &done, &placed, &deleted)?;
             match op {
                 Op::Toggle(n) => {
                     let id = task(n);
-                    let Some(d) = done.get(&id).copied() else { continue };
+                    if deleted.contains(&id) {
+                        continue;
+                    }
+                    let d = done[&id];
                     let before = mo.row(id, now).unwrap_or_else(|| RowLook::rest(placed[&id]));
                     done.insert(id, !d);
                     let keep = if d { mo.reopen(id, now, pace) } else { mo.complete(id, now, pace) };
@@ -455,17 +545,19 @@ proptest! {
                 }
                 Op::Elsewhere(n) => {
                     let id = task(n);
-                    if let Some(d) = done.get_mut(&id) {
-                        *d = !*d;
+                    if !deleted.contains(&id) {
+                        done.insert(id, !done[&id]);
                     }
                 }
                 Op::Delete(n) => {
-                    done.remove(&task(n));
-                    placed.remove(&task(n));
+                    deleted.insert(task(n));
                 }
                 Op::SwitchRoom => mo.settle_all(),
             }
+            // As the view does: the tombstone still answers, and the derived list doesn't show it.
             mo.reconcile(now, pace, |id| done.get(&id).copied());
+            // When that lets a task go the view derives again, and the list still doesn't show it.
+            while mo.retain_shown(now, |id| !deleted.contains(&id)) {}
             // The list follows the state wherever no choreography holds a task back.
             let holding: BTreeSet<TaskId> = mo.holding().collect();
             let reopening: BTreeSet<TaskId> = mo.reopening().collect();
@@ -474,7 +566,7 @@ proptest! {
                     placed.insert(*id, *d);
                 }
             }
-            check(&mo, now, &done, &placed)?;
+            check(&mo, now, &done, &placed, &deleted)?;
         }
         // Quiet: everything is released and at rest, with no frames and no timers.
         now += ms(10_000);
@@ -486,7 +578,11 @@ proptest! {
         }
         prop_assert_eq!(mo.wake(now), Wake::Idle);
         prop_assert_eq!(mo.holding().count() + mo.reopening().count(), 0);
-        prop_assert_eq!(&placed, &done);
+        for (id, d) in &done {
+            if !deleted.contains(id) {
+                prop_assert_eq!(placed[id], *d);
+            }
+        }
         for id in done.keys() {
             prop_assert_eq!(mo.row(*id, now), None);
         }

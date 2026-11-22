@@ -416,6 +416,27 @@ impl Tomorrow {
             .chain(self.also.iter())
             .chain(self.week.iter())
     }
+
+    /// The hand-over's child (see `ShellView::tomorrow`) that shows task `id`: the first section label,
+    /// tomorrow's first task, then each section's label followed by its tasks. Children enter in this
+    /// order while dusk falls (`motion::DuskLook::handover`).
+    pub fn child(&self, id: TaskId) -> Option<usize> {
+        if self.first.id == id {
+            return Some(1);
+        }
+        let mut child = 2;
+        for section in [&self.also, &self.week] {
+            if section.is_empty() {
+                continue;
+            }
+            child += 1;
+            if let Some(i) = section.iter().position(|t| t.id == id) {
+                return Some(child + i);
+            }
+            child += section.len();
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -562,9 +583,21 @@ impl Shell {
 
     /// The tasks J and K walk, in order: the rows, or on the finished day (while it hands over to
     /// tomorrow) the hand-over's tasks.
+    #[cfg(test)]
     pub fn nav_tasks(&self) -> Vec<TaskId> {
+        self.nav_tasks_shown(|_| true)
+    }
+
+    /// [`Shell::nav_tasks`] that can be seen: while dusk falls, only the hand-over's children that have
+    /// begun to enter (`entered(child)`, see [`Tomorrow::child`]), so J, K and Space never reach a task
+    /// that isn't there yet.
+    pub fn nav_tasks_shown(&self, entered: impl Fn(usize) -> bool) -> Vec<TaskId> {
         match self.room.handover() {
-            Some(next) => next.tasks().map(|t| t.id).collect(),
+            Some(next) => next
+                .tasks()
+                .filter(|t| next.child(t.id).is_some_and(&entered))
+                .map(|t| t.id)
+                .collect(),
             None => self.rows().map(|r| r.id).collect(),
         }
     }

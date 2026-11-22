@@ -295,6 +295,27 @@ impl RowMotion {
     }
 }
 
+/// The rows from `end` on (the first slot `uniform_list` doesn't render) that their `lifts` draw up into
+/// the rendered slots: row `j` is drawn `lifts[j]` slots above its own, so it shows while that's above
+/// `end`. Lifts never grow by more than a row from one row to the next, so the rows stop at the first
+/// that stays out of view.
+pub fn rows_rising_into(lifts: &[f32], end: usize) -> impl Iterator<Item = usize> + '_ {
+    (end..lifts.len()).take_while(move |&j| (j as f32 - lifts[j]) < end as f32)
+}
+
+/// Where a list scrolled near its end must be scrolled to while rows collapse, or `None` to leave it.
+///
+/// A collapsing row gives up part of its slot, so the list's content is effectively shorter than its
+/// fixed slots (`heights`, each row's share of its slot, times `row`). When the list is scrolled further
+/// than that shorter content allows, the scroll comes back by the difference, frame by frame: the rows
+/// above close the gap downwards and the end of the list stays at the bottom of the `viewport`. Then
+/// removing the slot on release changes nothing on screen, where a list clamped all at once would jump.
+pub fn anchored_scroll(scroll: f32, viewport: f32, row: f32, heights: &[f32]) -> Option<f32> {
+    let content: f32 = heights.iter().sum::<f32>() * row;
+    let end = (content - viewport).max(0.);
+    (scroll > end).then_some(end)
+}
+
 /// When the view needs its next frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wake {
@@ -569,22 +590,45 @@ impl Motion {
         released
     }
 
-    /// Stops a row's motion where it is (a released row that has no place in the list to enter).
-    pub fn forget(&mut self, id: TaskId) {
-        self.rows.remove(&id);
+    /// Stops the motion of every row the list doesn't show (`shown` is false): deleted (the replica
+    /// keeps a tombstone), filtered out, or never in this room, so nothing keeps waking the window for
+    /// it. A task reopened from where it isn't shown (the detail pane, with Completed closed) goes straight
+    /// to entering the open rows. Returns whether a task held open or kept done (`holding`, `reopening`)
+    /// was let go, so the view derives again.
+    pub fn retain_shown(&mut self, now: Duration, shown: impl Fn(TaskId) -> bool) -> bool {
+        let mut let_go = false;
+        self.rows.retain(|&id, r| {
+            if shown(id) {
+                return true;
+            }
+            match r.phase {
+                Phase::Complete => {
+                    let_go = true;
+                    false
+                }
+                Phase::Reopen => {
+                    let_go = true;
+                    *r = RowMotion {
+                        phase: Phase::Enter { done: false },
+                        start: now,
+                        from: RowLook {
+                            height: 0.,
+                            opacity: 0.,
+                            ..RowLook::rest(false)
+                        },
+                        pace: r.pace,
+                    };
+                    true
+                }
+                Phase::Settle { .. } | Phase::Enter { .. } => false,
+            }
+        });
+        let_go
     }
 
     /// Whether any row is in its choreography (at rest, no row needs sampling).
     pub fn rows_moving(&self) -> bool {
         !self.rows.is_empty()
-    }
-
-    /// Rows entering after a release, which the view checks against the rows it shows.
-    pub fn entering(&self) -> impl Iterator<Item = TaskId> + '_ {
-        self.rows
-            .iter()
-            .filter(|(_, r)| matches!(r.phase, Phase::Enter { .. }))
-            .map(|(id, _)| *id)
     }
 
     /// Everything at rest at once, as on switching rooms: completions and reopenings are released

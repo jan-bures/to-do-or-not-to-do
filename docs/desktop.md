@@ -204,6 +204,13 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   reverses it from where it is, in place: a row in its hold or half collapsed comes back without a jump, and
   nothing is released. A change from elsewhere (another device, an agent, a refused command) settles a
   choreography the same way; switching rooms puts everything at rest at once.
+- **The list.** Its rows keep `uniform_list`'s fixed slots until a row is released: a leaving row collapses
+  inside its slot and the rows below rise by what the rows above them gave up. Rows rising into view from
+  below the last rendered slot are drawn (and take clicks) with it. In a list scrolled to its end, the scroll
+  comes back as rows collapse, so the rows above close the gap and nothing jumps when the slot goes. A row the
+  list stops showing (deleted, filtered out) stops moving at once.
+- **Navigation follows what shows.** While dusk falls, J, K and clicks reach a hand-over task only once it has
+  begun to enter.
 - **The sun** eases from where it is to wherever the count puts it, whatever changed it, retargeting
   mid-travel. A new room places it without travel.
 - **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`): the scene
@@ -266,7 +273,8 @@ opened" screen after a recovery that can't finish, before and while confirming *
 `long-names-narrow` and `narrow-detail` are 960 px wide (the narrowest window): the first with nothing open,
 the second with the detail pane over the list. `finished-nothing-tomorrow` is the finished day with nothing due
 tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `completing-fill`, `completing-hold`,
-`completing-collapse-50`, `sun-travel-50`, `reopening-collapse-50`, `dusk-50` and `dusk-75`.
+`completing-collapse-50`, `sun-travel-50`, `reopening-collapse-50`, `long-list-collapse-80`,
+`long-list-end-collapse-50`, `dusk-50` and `dusk-75`.
 These states are set by the fixture, not by moving the pointer or maximizing the capture window.
 
 The runner requests five settling frames before reading back the next frame. It doesn't capture the

@@ -15,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm', 'completing-fill', 'completing-hold', 'completing-collapse-50', 'sun-travel-50', 'reopening-collapse-50', 'dusk-50', 'dusk-75'),
+    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm', 'completing-fill', 'completing-hold', 'completing-collapse-50', 'sun-travel-50', 'reopening-collapse-50', 'long-list-collapse-80', 'long-list-end-collapse-50', 'dusk-50', 'dusk-75'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )

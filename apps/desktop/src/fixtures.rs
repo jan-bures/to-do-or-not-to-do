@@ -34,8 +34,8 @@ pub struct Fixture {
 /// the transition, made from the design's durations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Moment {
-    /// `task` was just completed.
-    Completing { task: TaskId, at: u32 },
+    /// `task` was just completed. With `end`, the list is scrolled to its end first.
+    Completing { task: TaskId, at: u32, end: bool },
     /// `task`, completed at `completed`, was just reopened.
     Reopening {
         task: TaskId,
@@ -87,6 +87,10 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         )),
         "sun-travel-50" => Some(sun_travel(m::SUN_TRAVEL / 2)),
         "reopening-collapse-50" => Some(reopening(m::OVERLAY_OUT + m::ROW_COLLAPSE / 2)),
+        // A list longer than the room, part way through a collapse: at the top (the row from below the
+        // fold rises into view), and scrolled to its end (the rows above come down instead).
+        "long-list-collapse-80" => Some(long_list_collapse("Check the room capacity", 80, false)),
+        "long-list-end-collapse-50" => Some(long_list_collapse("Prepare reusable signs", 50, true)),
         // Dusk falling: half way (the ink has switched, the night is coming), and three quarters of the
         // way (tomorrow's hand-over entering, staggered).
         "dusk-50" => Some(dusk(m::DUSK / 2)),
@@ -719,7 +723,39 @@ fn completing(at: u32) -> Fixture {
         MORNING,
     );
     f.ui.holding.insert(task);
-    f.moment = Some(Moment::Completing { task, at });
+    f.moment = Some(Moment::Completing {
+        task,
+        at,
+        end: false,
+    });
+    f
+}
+
+/// `long-task-list` with the task titled `title` `percent` of the way through its collapse, the list
+/// scrolled to its end or not.
+fn long_list_collapse(title: &str, percent: u32, end: bool) -> Fixture {
+    let mut f = long_task_list();
+    let task = titled(&f.state, title);
+    let complete = Command::CompleteTask { id: task };
+    match decide(&f.state, &owner(), &complete, ts(MORNING)) {
+        Ok(events) => {
+            for e in &events {
+                if let Err(err) = apply(&mut f.state, e) {
+                    tracing::error!("fixture data has errors: {err}");
+                }
+            }
+        }
+        Err(err) => tracing::error!("fixture data has errors: {err}"),
+    }
+    f.ui.holding.insert(task);
+    f.moment = Some(Moment::Completing {
+        task,
+        at: m::CHECK_TICK_DELAY
+            + m::CHECK_TICK
+            + m::COMPLETE_HOLD
+            + m::ROW_COLLAPSE * percent / 100,
+        end,
+    });
     f
 }
 

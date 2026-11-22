@@ -22,7 +22,9 @@ use super::kit;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::layout::{self, DetailPane, OverlayMotion, OverlayPhase, Width};
-use crate::model::motion::{Keep, Motion, Pace, RowLook, Wake, lifts};
+use crate::model::motion::{
+    Keep, Motion, Pace, RowLook, Wake, anchored_scroll, lifts, rows_rising_into,
+};
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
     quick_add,
@@ -272,7 +274,7 @@ impl ShellView {
             animate: true,
         };
         this.load_detail(cx);
-        this.follow_shell();
+        let _ = this.follow_shell();
         this.watch(cx);
         this
     }
@@ -358,7 +360,11 @@ impl ShellView {
         }
         self.overlay_transition(&shell, cx);
         self.shell = shell;
-        self.follow_shell();
+        if self.follow_shell() {
+            // A held task the list no longer shows was let go: derive again without it. That pass lets
+            // nothing else go, since only shown rows are left.
+            return self.refresh_with_collapse_change(false, cx);
+        }
         self.load_detail(cx);
         cx.notify();
     }
@@ -385,16 +391,20 @@ impl ShellView {
     /// agent, a refused command), and the window's state holds back exactly the rows the motion does.
     fn follow_data(&mut self, state: &todo_core::State) {
         let (now, pace) = (self.now(), self.pace());
-        self.motion
-            .reconcile(now, pace, |id| state.tasks.get(&id).map(|t| t.is_done()));
+        self.motion.reconcile(now, pace, |id| {
+            (state.tasks.get(&id))
+                .filter(|t| t.deleted.is_none() && t.merged_into.is_none())
+                .map(|t| t.is_done())
+        });
         self.ui.holding = self.motion.holding().collect();
         let reopening: Vec<TaskId> = self.motion.reopening().collect();
         self.ui.reopening.retain(|id, _| reopening.contains(id));
     }
 
-    /// After deriving: the sun heads for the new count (the dusk scene takes it at once), and a released
-    /// row with no place in this list stops entering.
-    fn follow_shell(&mut self) {
+    /// After deriving: the sun heads for the new count (the dusk scene takes it at once), and rows the
+    /// list doesn't show stop moving (see `Motion::retain_shown`). Returns whether that let a held task
+    /// go, so the shell must be derived again.
+    fn follow_shell(&mut self) -> bool {
         let now = self.now();
         let room = &self.shell.room;
         let pace = self.pace();
@@ -406,14 +416,8 @@ impl ShellView {
             self.motion
                 .aim_sun(room.key, sun_at(room.done, room.total), now, pace);
         }
-        let gone: Vec<TaskId> = self
-            .motion
-            .entering()
-            .filter(|id| !self.shell.rows().any(|r| r.id == *id))
-            .collect();
-        for id in gone {
-            self.motion.forget(id);
-        }
+        let shown: std::collections::HashSet<TaskId> = self.shell.rows().map(|r| r.id).collect();
+        self.motion.retain_shown(now, |id| shown.contains(&id))
     }
 
     /// At the start of each frame: releases rows that have finished leaving (re-deriving the list, the
@@ -426,6 +430,7 @@ impl ShellView {
             self.refresh(cx);
         }
         self.measure_lifts();
+        self.anchor_scroll();
         if !self.animate {
             return;
         }
@@ -447,6 +452,30 @@ impl ShellView {
                 })
                 .detach();
             }
+        }
+    }
+
+    /// Near the end of a scrolled list, collapsing rows bring the scroll back with them (see
+    /// `motion::anchored_scroll`), so the list's end stays put and releasing the slot doesn't jump.
+    fn anchor_scroll(&mut self) {
+        if self.row_lifts.is_empty() {
+            return;
+        }
+        let frame = self.frame;
+        let heights: Vec<f32> = (self.shell.rows())
+            .map(|r| self.motion.row(r.id, frame).map_or(1., |l| l.height))
+            .collect();
+        let state = self.rows.0.borrow();
+        let handle = &state.base_handle;
+        let viewport = f32::from(handle.bounds().size.height);
+        let offset = handle.offset();
+        if viewport <= 0. {
+            return;
+        }
+        if let Some(scroll) =
+            anchored_scroll(-f32::from(offset.y), viewport, desktop::ROW, &heights)
+        {
+            handle.set_offset(gpui::point(offset.x, px(-scroll)));
         }
     }
 
@@ -473,8 +502,12 @@ impl ShellView {
         self.motion = Motion::default();
         self.clock = Clock::Frozen(Duration::ZERO);
         let at = match moment {
-            Moment::Completing { task, at } => {
+            Moment::Completing { task, at, end } => {
                 self.motion.complete(task, Duration::ZERO, Pace::FULL);
+                if end {
+                    let last = self.shell.row_count().saturating_sub(1);
+                    self.rows.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
+                }
                 at
             }
             Moment::Reopening {
@@ -650,6 +683,12 @@ impl ShellView {
     }
 
     fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {
+        // A hand-over task that hasn't begun to enter isn't there to click or select yet.
+        if let (Some(id), Some(next)) = (id, self.shell.room.handover())
+            && next.child(id).is_some_and(|c| !self.handover_entered(c))
+        {
+            return;
+        }
         if self.ui.task != id && !self.commit_edits(cx) {
             self.keep_unsaved(cx);
             return;
@@ -659,7 +698,7 @@ impl ShellView {
         if let Some(i) = self.shell.selected_task {
             self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
         } else if let (Some(next), Some(id)) = (self.shell.room.handover(), id)
-            && let Some(child) = handover_child(next, id)
+            && let Some(child) = next.child(id)
         {
             self.handover_scroll.scroll_to_item(child);
         }
@@ -714,7 +753,7 @@ impl ShellView {
 
     /// J and K: through the rows, or through the finished day's hand-over to tomorrow.
     fn move_selection(&mut self, by: isize, cx: &mut Context<Self>) {
-        let tasks = self.shell.nav_tasks();
+        let tasks = self.nav_tasks();
         let n = tasks.len();
         if n == 0 {
             return;
@@ -1595,10 +1634,45 @@ impl ShellView {
                         .clone()
                         .filter_map(|i| this.shell.row(i).cloned())
                         .collect();
-                    range
+                    let mut items = range
+                        .clone()
                         .zip(rows.iter())
                         .map(|(i, r)| this.row_element(i, r, window, cx))
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    // While rows collapse, the rows below rise; `uniform_list` only renders the slots in
+                    // view, so the ones rising into view from below are drawn (and take clicks) with the
+                    // last slot it renders.
+                    let past: Vec<usize> = rows_rising_into(&this.row_lifts, range.end).collect();
+                    if !past.is_empty()
+                        && let Some(last) = items.pop()
+                    {
+                        let rising: Vec<AnyElement> = past
+                            .into_iter()
+                            .filter_map(|j| {
+                                let r = this.shell.row(j)?.clone();
+                                let at = (j + 1 - range.end) as f32 * desktop::ROW;
+                                Some(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .top(px(at))
+                                        .w_full()
+                                        .child(this.row_element(j, &r, window, cx))
+                                        .into_any_element(),
+                                )
+                            })
+                            .collect();
+                        items.push(
+                            div()
+                                .relative()
+                                .w_full()
+                                .h(px(desktop::ROW))
+                                .child(last)
+                                .children(rising)
+                                .into_any_element(),
+                        );
+                    }
+                    items
                 }),
             )
             .track_scroll(&self.rows)
@@ -1705,7 +1779,10 @@ impl ShellView {
             .child(kit::button(&self.palette, format!("Plan {weekday}")))
             .on_click(cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
-                this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
+                // It sits in the hand-over's first task (or its only line): not there until that enters.
+                if this.handover_entered(1) {
+                    this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
+                }
             }))
     }
 
@@ -1762,6 +1839,16 @@ impl ShellView {
                     )
                     .child(self.plan_button(&weekday, cx)),
             )
+    }
+
+    /// Whether child `i` of tomorrow's hand-over has begun to enter as dusk falls (always, at rest).
+    fn handover_entered(&self, i: usize) -> bool {
+        self.motion.dusk(self.now()).handover(i).0 > 0.
+    }
+
+    /// The tasks J and K walk, and Space can reach: only ones that can be seen (`Shell::nav_tasks_shown`).
+    fn nav_tasks(&self) -> Vec<TaskId> {
+        self.shell.nav_tasks_shown(|c| self.handover_entered(c))
     }
 
     /// Item `i` of tomorrow's hand-over while dusk falls: fading in and rising into place after the
@@ -1874,7 +1961,7 @@ impl ShellView {
                     ),
             )
             .child(plan);
-        // Its children are in the order `handover_child` counts them; it scrolls when taller than the pane.
+        // Its children are in the order `Tomorrow::child` counts them; it scrolls when taller than the pane.
         // While dusk falls they enter in that order too (`reveal`).
         let section_len = |rows: &[TaskRow]| if rows.is_empty() { 0 } else { 1 + rows.len() };
         let also = 2;
@@ -1966,7 +2053,7 @@ impl ShellView {
         let done = self.shell.room.done_today;
         let keys = hints::key_hints(hints::HintState {
             focus: self.focus_now(window, cx),
-            rows: !self.shell.nav_tasks().is_empty(),
+            rows: !self.nav_tasks().is_empty(),
             selected: self
                 .shell
                 .detail
@@ -2056,26 +2143,6 @@ impl ShellView {
     }
 }
 
-/// The child of the hand-over (see `ShellView::tomorrow`) that shows task `id`: the first section label,
-/// tomorrow's first task, then each section's label followed by its tasks.
-fn handover_child(next: &Tomorrow, id: TaskId) -> Option<usize> {
-    if next.first.id == id {
-        return Some(1);
-    }
-    let mut child = 2;
-    for section in [&next.also, &next.week] {
-        if section.is_empty() {
-            continue;
-        }
-        child += 1;
-        if let Some(i) = section.iter().position(|t| t.id == id) {
-            return Some(child + i);
-        }
-        child += section.len();
-    }
-    None
-}
-
 /// The clock the motion runs on: real time, or a fixed moment for a screenshot fixture.
 #[derive(Clone, Copy, Debug)]
 enum Clock {
@@ -2163,7 +2230,6 @@ impl Render for ShellView {
 
 #[cfg(test)]
 mod tests {
-    use super::handover_child;
     use crate::fixtures;
 
     #[test]
@@ -2171,12 +2237,11 @@ mod tests {
         let shell = fixtures::finished().shell();
         let next = shell.room.handover().expect("hands over");
         // Label, first task, "Also on Sunday", its one task, "Rest of the week", its three tasks.
-        let children: Vec<Option<usize>> =
-            next.tasks().map(|t| handover_child(next, t.id)).collect();
+        let children: Vec<Option<usize>> = next.tasks().map(|t| next.child(t.id)).collect();
         assert_eq!(children, [Some(1), Some(3), Some(5), Some(6), Some(7)]);
         // A task the hand-over doesn't show has no child.
         assert_eq!(
-            handover_child(next, todo_core::ids::TaskId::from_uuid(uuid::Uuid::nil())),
+            next.child(todo_core::ids::TaskId::from_uuid(uuid::Uuid::nil())),
             None
         );
     }
