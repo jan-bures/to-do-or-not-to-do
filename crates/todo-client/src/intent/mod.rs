@@ -7,6 +7,7 @@
 
 pub mod organize;
 pub mod quick_add;
+pub mod repeat;
 pub mod suggest;
 
 pub use organize::*;

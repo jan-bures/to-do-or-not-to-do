@@ -5,6 +5,7 @@
 //! [`MenuAction`]; the keyboard walks the same items, so every menu behaves alike. Pure, so what a menu
 //! offers in each room is unit-tested.
 
+pub mod repeat;
 use gpui::SharedString;
 use todo_client::CommandId;
 use todo_client::outbox::FailedEntry;
@@ -35,6 +36,7 @@ pub enum TagPage {
     Pick,
     Edit(TagId),
     Colour(TagId),
+    Confirm(TagId),
 }
 
 /// How many colour swatches a row of the colour page holds: Up and Down move a row at a time.
@@ -101,6 +103,9 @@ pub enum MenuAction {
     AllTags(TaskId),
     /// Renames a tag in place, in the detail pane's Tags row.
     RenameTag(TagId),
+    AskDeleteTag(TagId),
+    DeleteTag(TagId),
+    Repeat(TaskId, repeat::Action),
     /// Turns a task's menu into its links: add one, or remove one.
     AskLinks(TaskId),
     /// Puts the keyboard in the detail pane's link field, for the task.
@@ -180,6 +185,13 @@ pub enum MenuEntry {
     /// Colour swatches, side by side in rows of [`SWATCH_COLUMNS`]: each a disc in its colour, the
     /// current one ticked.
     Swatches(Vec<MenuItem>),
+    /// A labelled group of compact choices in the custom repeat editor. A stepper puts its
+    /// numeric value between its two buttons.
+    Controls {
+        label: &'static str,
+        value: Option<String>,
+        buttons: Vec<MenuItem>,
+    },
     /// A quiet line that wraps, such as "No list matches".
     Note(SharedString),
     /// A change the server refused: what it was and why, beside its Dismiss button.
@@ -197,7 +209,7 @@ impl MenuEntry {
             Self::Item(item) => std::slice::from_ref(item),
             Self::Failure { dismiss, .. } => std::slice::from_ref(dismiss),
             Self::Confirm { buttons, .. } => buttons,
-            Self::Swatches(items) => items,
+            Self::Swatches(items) | Self::Controls { buttons: items, .. } => items,
             Self::Separator
             | Self::Caption { .. }
             | Self::Heading(_)
@@ -309,9 +321,12 @@ pub fn is_confirmation(entries: &[MenuEntry]) -> bool {
 /// Whether the menu is drawn at the confirmation's width: a confirmation, or the "couldn't sync" list,
 /// whose reasons wrap beside their buttons.
 pub fn is_wide(entries: &[MenuEntry]) -> bool {
-    entries
-        .iter()
-        .any(|e| matches!(e, MenuEntry::Confirm { .. } | MenuEntry::Failure { .. }))
+    entries.iter().any(|e| {
+        matches!(
+            e,
+            MenuEntry::Confirm { .. } | MenuEntry::Failure { .. } | MenuEntry::Controls { .. }
+        )
+    })
 }
 
 /// The key of item `i`, as the keyboard counts them. The keyboard's highlight is kept as the item's key,
@@ -458,13 +473,10 @@ pub fn as_asked(entries: Vec<MenuEntry>, asked: &Asked) -> Vec<MenuEntry> {
         .into_iter()
         .map(|e| match e {
             MenuEntry::Confirm { buttons, .. } => {
-                let what = if buttons
-                    .iter()
-                    .any(|b| matches!(b.action, MenuAction::DeleteCollection(_)))
-                {
-                    "collection"
-                } else {
-                    "list"
+                let what = match buttons[0].action {
+                    MenuAction::DeleteCollection(_) => "collection",
+                    MenuAction::DeleteTag(_) => "tag",
+                    _ => "list",
                 };
                 MenuEntry::Confirm {
                     message: asked.question.clone(),
@@ -1298,6 +1310,12 @@ pub fn tag_edit_menu(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> 
             MenuAction::RenameTag(tag),
         ),
         colour_item("tag-colour", tag.into(), tag_hue(g)),
+        danger(
+            "tag-ask-delete",
+            Icon::TrashTwo,
+            "Delete tag…",
+            MenuAction::AskDeleteTag(tag),
+        ),
         MenuEntry::Separator,
         item(
             "tag-back",
@@ -1306,6 +1324,36 @@ pub fn tag_edit_menu(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> 
             MenuAction::AllTags(task),
         ),
     ]
+}
+
+/// Tombstoning a tag hides it on every task, but does not delete tasks or their memberships.
+pub fn tag_confirm(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> {
+    let Some(t) = state
+        .tags
+        .get(&tag)
+        .filter(|_| state.is_live(tag.into()) && state.is_live(task.into()))
+    else {
+        return vec![];
+    };
+    let name = labels::one_line(&t.name);
+    let n = state
+        .tasks
+        .values()
+        .filter(|t| t.tags.contains(&tag) && t.deleted.is_none() && state.is_live(t.list.into()))
+        .count();
+    let noun = if n == 1 { "task" } else { "tasks" };
+    vec![confirm(
+        format!(
+            "Delete the tag “{name}”? It’s on {n} {noun}. The tasks stay. Undo restores the tag."
+        ),
+        danger(
+            "tag-delete",
+            Icon::TrashTwo,
+            "Delete tag",
+            MenuAction::DeleteTag(tag),
+        ),
+        "tag-cancel",
+    )]
 }
 
 /// The refused changes the open "couldn't sync" list shows: of those there now (`failed`), the ones
@@ -1957,6 +2005,7 @@ second line"
                 MenuAction::ToggleTag(task, planning),
                 MenuAction::RenameTag(planning),
                 MenuAction::AskColour(planning.into()),
+                MenuAction::AskDeleteTag(planning),
                 MenuAction::AllTags(task),
             ]
         );
@@ -1972,6 +2021,38 @@ second line"
             by: todo_core::Actor::System,
         });
         assert!(tag_edit_menu(&gone, task, planning).is_empty());
+    }
+
+    #[test]
+    fn deleting_a_tag_rechecks_its_live_task_count_and_name() {
+        let mut f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let tag = commands::tag_named(&f.state, "planning").expect("tag");
+        let menu = tag_confirm(&f.state, task, tag);
+        let asked = Asked::of(&menu).expect("confirmation");
+        assert_eq!(
+            chosen(
+                &menu,
+                key_at(&menu, first_highlight(&menu).expect("cancel")).as_deref()
+            ),
+            Some(MenuAction::Cancel)
+        );
+        assert_eq!(on_confirm(Some(&asked), &menu), Confirmed::Proceed);
+        f.state
+            .tasks
+            .get_mut(&task)
+            .expect("task")
+            .tags
+            .remove(&tag);
+        assert!(matches!(
+            on_confirm(Some(&asked), &tag_confirm(&f.state, task, tag)),
+            Confirmed::AskAgain(_)
+        ));
+        f.state.tags.remove(&tag);
+        assert_eq!(
+            on_confirm(Some(&asked), &tag_confirm(&f.state, task, tag)),
+            Confirmed::Gone
+        );
     }
 
     #[test]

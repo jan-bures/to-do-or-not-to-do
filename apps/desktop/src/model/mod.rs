@@ -577,6 +577,7 @@ pub enum FieldEdit {
     Due,
     /// Picked from the four levels (the P key cycles them).
     Priority,
+    Repeat,
     /// Put on and taken off in the tag picker (the T key).
     Tags,
 }

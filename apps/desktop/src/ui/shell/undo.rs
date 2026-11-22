@@ -23,6 +23,8 @@ pub(super) enum EditKind {
     Delete,
     Move,
     DeleteStep,
+    DeleteTag,
+    Repeat,
     AddLink,
     DeleteLink,
     DeleteList,
@@ -38,11 +40,15 @@ impl EditKind {
             Command::Delete { id } => match id {
                 EntityId::Task(_) => (id, Self::Delete),
                 EntityId::Step(_) => (id, Self::DeleteStep),
+                EntityId::Tag(_) => (id, Self::DeleteTag),
                 EntityId::Link(_) => (id, Self::DeleteLink),
                 EntityId::List(_) => (id, Self::DeleteList),
                 EntityId::Collection(_) => (id, Self::DeleteCollection),
                 _ => return None,
             },
+            Command::UpdateTask { id, ref patch } if patch.recurrence.is_some() => {
+                (id.into(), Self::Repeat)
+            }
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
             Command::MoveList { id, .. } => (id.into(), Self::MoveList),
             // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
@@ -65,6 +71,8 @@ impl EditKind {
             Self::Delete => "Deleted",
             Self::Move | Self::MoveList => "Moved",
             Self::DeleteStep => "Deleted step",
+            Self::DeleteTag => "Deleted tag",
+            Self::Repeat => "Changed schedule for",
             Self::AddLink => "Added link",
             Self::DeleteLink => "Removed link",
             Self::DeleteList => "Deleted list",
@@ -79,6 +87,8 @@ impl EditKind {
                 Self::Delete => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
+                Self::DeleteTag => "Restored tag",
+                Self::Repeat => "Restored schedule for",
                 Self::AddLink => "Removed link",
                 Self::DeleteLink => "Restored link",
                 Self::DeleteList => "Restored list",
@@ -103,6 +113,11 @@ impl EditKind {
 
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
+            (Self::Repeat, EntityId::Task(id)) => before
+                .tasks
+                .get(&id)
+                .zip(after.tasks.get(&id))
+                .is_some_and(|(a, b)| (a.due, &a.recurrence) != (b.due, &b.recurrence)),
             (Self::Move, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)
@@ -219,6 +234,7 @@ pub(super) fn subject_title(state: &State, entity: EntityId) -> String {
     match entity {
         EntityId::Task(id) => state.tasks.get(&id).map(|t| t.title.clone()),
         EntityId::Step(id) => state.steps.get(&id).map(|s| s.title.clone()),
+        EntityId::Tag(id) => state.tags.get(&id).map(|t| t.name.clone()),
         EntityId::Link(id) => {
             (state.links.get(&id)).map(|l| crate::model::menus::link_name(&l.kind))
         }
@@ -245,6 +261,7 @@ fn command_target(command: &Command) -> Option<EntityId> {
         | Command::UncompleteStep { id } => id.into(),
         Command::UpdateList { id, .. } | Command::MoveList { id, .. } => id.into(),
         Command::UpdateCollection { id, .. } => id.into(),
+        Command::UpdateTag { id, .. } => id.into(),
         Command::Reorder { id, .. } | Command::Delete { id } | Command::Restore { id } => id,
         _ => return None,
     })
@@ -827,6 +844,52 @@ mod tests {
             EditKind::Delete.undone_label(&title).as_ref(),
             format!("Restored \u{201c}{title}\u{201d}")
         );
+    }
+
+    #[test]
+    fn undoing_a_new_repeat_removes_the_due_date_it_added() {
+        use crate::store::Store;
+        use todo_client::intent::repeat::{Preset, set_repeat};
+        let f = fixtures::by_name("repeat-none").expect("fixture");
+        let task = f.ui.task.expect("task");
+        let today = f.now.today();
+        let cmd = set_repeat(&f.state, task, Some(Preset::Weekdays.rule(today)), today)
+            .expect("valid")
+            .expect("changed");
+        let (entity, kind) = EditKind::of(&cmd).expect("tracked");
+        assert_eq!(kind, EditKind::Repeat);
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(cmd).expect("repeat");
+        let after = store.view();
+        assert_eq!(after.tasks[&task].due, Some(today));
+        assert!(after.tasks[&task].recurrence.is_some());
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert_eq!(
+            (back.tasks[&task].due, &back.tasks[&task].recurrence),
+            (None, &None)
+        );
+        assert!(kind.undo_changed_view(entity, &after, &back));
+    }
+
+    #[test]
+    fn undoing_a_tag_delete_restores_the_tag_and_memberships() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let tag = *f.state.tasks[&task].tags.first().expect("tag");
+        let cmd = crate::model::commands::delete(tag);
+        let (entity, kind) = EditKind::of(&cmd).expect("tracked");
+        assert_eq!(kind, EditKind::DeleteTag);
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(cmd).expect("delete");
+        let after = store.view();
+        assert!(!after.is_live(entity) && after.is_live(task.into()));
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert!(back.tasks[&task].tags.contains(&tag));
+        assert_eq!(back.tags[&tag].name, f.state.tags[&tag].name);
+        assert!(kind.undo_changed_view(entity, &after, &back));
     }
 
     #[test]

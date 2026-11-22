@@ -2,7 +2,7 @@
 
 use jiff::ZonedDateTime;
 use jiff::tz::TimeZone;
-use todo_core::recurrence::{Recurrence, Rule};
+pub use todo_client::intent::repeat::describe_repeat;
 use todo_core::time::{Date, Timestamp, Weekday, days_between};
 
 use super::Now;
@@ -137,54 +137,6 @@ pub fn due(due: Option<Date>, reminder: Option<Timestamp>, now: &Now) -> DueLabe
     }
 }
 
-/// "Every Monday", "Every 2 weeks on Mon, Thu", "Monthly on the 5th", ...
-pub fn recurrence(r: &Recurrence) -> String {
-    let every = |n: u32, one: &str, many: &str| {
-        if n <= 1 {
-            format!("Every {one}")
-        } else {
-            format!("Every {n} {many}")
-        }
-    };
-    match &r.rule {
-        Rule::Daily { interval } => every(*interval, "day", "days"),
-        Rule::Weekly { interval, days } => {
-            let names: Vec<&str> = days.iter().map(|d| WEEKDAYS[d.offset()]).collect();
-            if *interval <= 1 && names.len() == 1 {
-                format!("Every {}", names[0])
-            } else if *interval <= 1 && names.len() == 5 && !days.contains(&Weekday::Sat) {
-                "Every weekday".into()
-            } else {
-                let short: Vec<&str> = names.iter().map(|n| &n[..3]).collect();
-                format!(
-                    "{} on {}",
-                    every(*interval, "week", "weeks"),
-                    short.join(", ")
-                )
-            }
-        }
-        Rule::Monthly { interval, day } => {
-            format!(
-                "{} on the {}",
-                every(*interval, "month", "months"),
-                ordinal(*day)
-            )
-        }
-        Rule::Yearly { interval } => every(*interval, "year", "years"),
-    }
-}
-
-fn ordinal(n: u8) -> String {
-    let suffix = match (n % 10, n % 100) {
-        (_, 11..=13) => "th",
-        (1, _) => "st",
-        (2, _) => "nd",
-        (3, _) => "rd",
-        _ => "th",
-    };
-    format!("{n}{suffix}")
-}
-
 /// "820 B", "14 KB", "2.4 MB".
 pub fn size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -218,8 +170,10 @@ pub fn one_line(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::describe_repeat as recurrence;
     use super::*;
     use std::collections::BTreeSet;
+    use todo_core::recurrence::{Recurrence, Rule};
 
     fn now() -> Now {
         Now::fixed("2026-11-21T10:35:00Z")

@@ -3,7 +3,7 @@
 //! Title and notes are edited directly in the pane and saved when editing ends (Enter or leaving the
 //! title, Escape or leaving the notes). Steps can be added, completed, renamed (click the title), moved and
 //! deleted. The due date is edited by typing a date, the priority and the tags are picked from menus
-//! anchored to their rows; reminders and repeats are shown but edited elsewhere for now. Web links are
+//! anchored to their rows; reminders are shown but edited elsewhere for now. Web links are
 //! added by typing or pasting an address, removed (Undo brings one back) and open in the browser
 //! (anything else is shown as text). An attachment is saved where the owner chooses; documents and
 //! images can also be opened, from this pairing's attachments directory and marked as downloaded from
@@ -836,6 +836,11 @@ impl ShellView {
                         .text_color(p.ink)
                         .children(renaming.clone())
                         .into_any_element(),
+                    _ if f.edit == Some(FieldEdit::Repeat) && f.kind == FieldKind::Empty => div()
+                        .style(ty::NAV_COLLECTION.with_weight(400))
+                        .text_color(p.ink_3)
+                        .child(f.value.clone())
+                        .into_any_element(),
                     _ if tags && !d.tags.is_empty() => {
                         self.tag_chips(&d.tags, window).into_any_element()
                     }
@@ -889,6 +894,34 @@ impl ShellView {
                             }))
                             .children(
                                 self.menu_anchor(|k| matches!(k, MenuKind::Priority { .. }), cx),
+                            )
+                    })
+                    .when(f.edit == Some(FieldEdit::Repeat) && live, |el| {
+                        el.track_focus(&self.repeat_focus)
+                            .role(gpui::Role::Button)
+                            .tooltip(kit::tooltip(p, format!("Repeat: {}", f.value)))
+                            .when(self.repeat_focus.is_focused(window), |el| {
+                                el.bg(p.tint).border_color(p.accent)
+                            })
+                            .hover(|s| s.bg(p.hover))
+                            .cursor_pointer()
+                            .child(div().flex_1())
+                            .child(kit::kbd(&p, "R"))
+                            .child(self.probe("repeat-row"))
+                            .on_key_down(
+                                cx.listener(|this, e, window, cx| this.control_key(e, window, cx)),
+                            )
+                            .on_click(cx.listener(move |this, e, window, cx| {
+                                this.toggle_menu(
+                                    MenuKind::Repeat { task, draft: None },
+                                    Stop::Repeat,
+                                    e,
+                                    window,
+                                    cx,
+                                )
+                            }))
+                            .children(
+                                self.menu_anchor(|k| matches!(k, MenuKind::Repeat { .. }), cx),
                             )
                     })
                     // The tag picker (T from the list): put tags on, take them off, make new ones.

@@ -103,7 +103,26 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // The menus, open at rest: the room's "more" menu in a list, the account menu and the detail
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
-        "account-menu" | "priority-menu" => Some(my_day()),
+        "account-menu" | "priority-menu" | "delete-tag-confirm" => Some(my_day()),
+        "repeat-menu" | "repeat-none" | "repeat-custom" | "repeat-weekly" | "repeat-monthly" => {
+            let mut f = my_day();
+            let t = f.state.tasks.get_mut(&f.ui.task?)?;
+            t.recurrence = match name {
+                "repeat-none" | "repeat-menu" => {
+                    t.due = None;
+                    None
+                }
+                "repeat-monthly" => Some(Recurrence::new(Rule::Monthly {
+                    interval: 1,
+                    day: 21,
+                })),
+                _ => Some(Recurrence::new(Rule::Weekly {
+                    interval: 2,
+                    days: [Weekday::Mon, Weekday::Thu].into(),
+                })),
+            };
+            Some(f)
+        }
         // A task's context menu, opened on a row other than the selected one; the list picker that
         // moves the selected task (its menu's Move to…, or M), grouped by collection.
         "task-context-menu" | "move-to-picker" => Some(my_day()),

@@ -728,10 +728,11 @@ fn the_detail_offers_due_priority_and_tags_to_edit_and_only_shows_the_rest() {
         detail.fields.iter().map(|f| (f.label, f.edit)).collect();
     assert_eq!(edits[0], ("Due", Some(FieldEdit::Due)));
     assert_eq!(edits[1], ("Priority", Some(FieldEdit::Priority)));
-    // Tags come last, always there to pick from (T); reminders and repeats are only shown.
+    assert!(edits.contains(&("Repeat", Some(FieldEdit::Repeat))));
+    // Tags come last, always there to pick from (T).
     assert_eq!(edits.last(), Some(&("Tags", Some(FieldEdit::Tags))));
     assert!(
-        edits[2..edits.len() - 1]
+        edits[2..edits.len() - 2]
             .iter()
             .all(|(_, edit)| edit.is_none()),
         "{edits:?}"

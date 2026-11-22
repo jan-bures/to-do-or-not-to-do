@@ -727,15 +727,22 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             edit: None,
         });
     }
-    if let Some(r) = &task.recurrence {
-        fields.push(Field {
-            icon: Icon::Repeat,
-            label: "Repeat",
-            value: labels::recurrence(r).into(),
-            kind: FieldKind::Words,
-            edit: None,
-        });
-    }
+    fields.push(Field {
+        icon: Icon::Repeat,
+        label: "Repeat",
+        value: task
+            .recurrence
+            .as_ref()
+            .map(labels::describe_repeat)
+            .unwrap_or_else(|| "Doesn’t repeat".into())
+            .into(),
+        kind: if task.recurrence.is_some() {
+            FieldKind::Words
+        } else {
+            FieldKind::Empty
+        },
+        edit: Some(FieldEdit::Repeat),
+    });
     let mut tags: Vec<&todo_core::model::Tag> = task
         .tags
         .iter()

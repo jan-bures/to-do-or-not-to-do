@@ -61,6 +61,7 @@ actions!(
         MoveTaskTo,
         TaskMenu,
         PickTags,
+        PickRepeat,
         AddLinkKey,
         UndoTask,
         Escape
@@ -84,6 +85,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("alt-down", MoveTaskDown, list),
         KeyBinding::new("m", MoveTaskTo, list),
         KeyBinding::new("t", PickTags, list),
+        KeyBinding::new("r", PickRepeat, list),
         KeyBinding::new("l", AddLinkKey, list),
         KeyBinding::new("shift-f10", TaskMenu, list),
         KeyBinding::new("j", NextTask, list),
@@ -229,6 +231,7 @@ pub struct ShellView {
     sync_focus: FocusHandle,
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
+    repeat_focus: FocusHandle,
     account_focus: FocusHandle,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
@@ -360,6 +363,7 @@ impl ShellView {
             preview_focus: None,
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
+            repeat_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
             inline: None,
             filter,
@@ -455,7 +459,9 @@ impl ShellView {
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
             MenuKind::Room { .. } | MenuKind::Task { .. } => room_changed,
-            MenuKind::Priority { task } | MenuKind::Tags { task, .. } => self.ui.task != Some(task),
+            MenuKind::Priority { task }
+            | MenuKind::Tags { task, .. }
+            | MenuKind::Repeat { task, .. } => self.ui.task != Some(task),
             _ => false,
         });
         if stale_menu {
@@ -841,6 +847,7 @@ impl ShellView {
         let menu_focused = self.menu_focus.is_focused(window);
         if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
             || (menu_focused && !menu_open)
+            || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
             || (self.sync_focus.is_focused(window) && self.store.sync().failed == 0)
         {
@@ -997,6 +1004,21 @@ impl ShellView {
             "account-menu" => Some(MenuKind::Account { confirm: false }),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
+            "repeat-menu" => task.map(|task| MenuKind::Repeat { task, draft: None }),
+            "repeat-custom" => task.and_then(|task| {
+                self.store
+                    .view()
+                    .tasks
+                    .get(&task)
+                    .map(|t| MenuKind::Repeat {
+                        task,
+                        draft: Some(crate::model::menus::repeat::Draft::new(
+                            t,
+                            self.store.now().today(),
+                        )),
+                    })
+            }),
+            "delete-tag-confirm" => tag.and_then(|tag| tags(TagPage::Confirm(tag))),
             "delete-list-confirm" | "delete-collection-confirm" => Some(MenuKind::Room {
                 page: Page::Confirm,
             }),
@@ -2668,6 +2690,21 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &TaskMenu, window, cx| {
                         this.open_task_menu(TaskPage::Main, window, cx);
                     }))
+                    .on_action(cx.listener(|this, _: &PickRepeat, window, cx| {
+                        if this.has_stop(hints::Stop::Repeat)
+                            && let Some(task) = this.ui.task
+                        {
+                            this.scroll_into_view(&this.detail_scroll, "repeat-row");
+                            this.open_menu(
+                                MenuKind::Repeat { task, draft: None },
+                                None,
+                                Some(hints::Stop::List),
+                                window,
+                                cx,
+                            );
+                            this.highlight_first();
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &PickTags, window, cx| {
                         this.pick_tags(window, cx);
                     }))
@@ -3055,6 +3092,7 @@ impl ShellView {
         } else if on(&self.menu_focus) {
             Focus::Menu
         } else if on(&self.room_menu_focus)
+            || on(&self.repeat_focus)
             || on(&self.account_focus)
             || on(&self.sync_focus)
             || on(&self.new_list_focus)
@@ -3219,6 +3257,7 @@ impl ShellView {
             Stop::List => &self.list_focus,
             Stop::Undo => &self.undo_focus,
             Stop::RoomMenu => &self.room_menu_focus,
+            Stop::Repeat => &self.repeat_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::NewList => &self.new_list_focus,
             Stop::NewCollection => &self.new_collection_focus,
@@ -3237,6 +3276,10 @@ impl ShellView {
                     && (self.last_undo.is_some() || !self.animate)
             }
             Stop::RoomMenu => self.has_room_menu(),
+            Stop::Repeat => {
+                self.detail_placement() != DetailPane::Hidden
+                    && self.ui.task.is_some_and(|id| self.task_is_visible(id))
+            }
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter
@@ -3258,6 +3301,9 @@ impl ShellView {
     fn focus_stop(&mut self, stop: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.stop_handle(stop).clone();
         window.focus(&handle, cx);
+        if stop == hints::Stop::Repeat {
+            self.scroll_into_view(&self.detail_scroll, "repeat-row");
+        }
         // In a long sidebar they can be below its fold: scrolled into view.
         let key = match stop {
             hints::Stop::NewList => Some("new-list"),

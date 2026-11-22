@@ -63,6 +63,8 @@ pub enum Stop {
     RoomMenu,
     /// The divider between the list and the docked detail pane, while it shows.
     DetailSplitter,
+    /// Repeat, when a task is open.
+    Repeat,
     /// The sidebar's New list.
     NewList,
     /// The sidebar's New collection.
@@ -77,12 +79,13 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 9] = [
+pub const TAB_ORDER: [Stop; 10] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
     Stop::RoomMenu,
     Stop::DetailSplitter,
+    Stop::Repeat,
     Stop::NewList,
     Stop::NewCollection,
     Stop::SyncFailures,
@@ -162,6 +165,7 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
                     ("P", "priority"),
                     ("Shift P", "pick priority"),
                     ("M", "move"),
+                    ("R", "repeat"),
                     ("T", "tags"),
                     ("L", "link"),
                     ("Del", "delete"),
@@ -207,7 +211,8 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
 /// The hints that give way, in this order, when the status bar is too narrow for all of them: the keys
 /// that have another way in first (the detail pane's Tags, links and Priority rows, the row's context
 /// menu), then the letters. Space, Escape and Ctrl+Z always stay.
-const GIVE_WAY: [&str; 10] = [
+const GIVE_WAY: [&str; 11] = [
+    "R",
     "T",
     "L",
     "Shift P",
@@ -251,7 +256,7 @@ mod tests {
         assert_eq!(fit(all.clone(), full, 10., width), all);
         let keys = |h: Vec<Hint>| h.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
         assert_eq!(
-            keys(fit(all.clone(), full - 1., 10., width)),
+            keys(fit(all.clone(), full - 61., 10., width)),
             [
                 "J K",
                 "Space",
@@ -267,11 +272,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            keys(fit(all.clone(), full - 130., 10., width)),
+            keys(fit(all.clone(), full - 190., 10., width)),
             ["J K", "Space", "E", "D", "P", "M", "Del", "Alt ↑↓", "Esc"]
         );
         assert_eq!(
-            keys(fit(all.clone(), full - 250., 10., width)),
+            keys(fit(all.clone(), full - 310., 10., width)),
             ["J K", "Space", "E", "D", "P", "Alt ↑↓", "Esc"]
         );
         // However narrow, moving, Space and Escape stay.
@@ -310,7 +315,7 @@ mod tests {
         assert_eq!(
             keys(list(true, true, false)),
             [
-                "J K", "Space", "E", "D", "P", "Shift P", "M", "T", "L", "Del", "Esc"
+                "J K", "Space", "E", "D", "P", "Shift P", "M", "R", "T", "L", "Del", "Esc"
             ]
         );
     }
@@ -450,6 +455,7 @@ mod tests {
                 Undo,
                 RoomMenu,
                 DetailSplitter,
+                Repeat,
                 NewList,
                 NewCollection,
                 SyncFailures,
@@ -466,6 +472,7 @@ mod tests {
                 SyncFailures,
                 NewCollection,
                 NewList,
+                Repeat,
                 DetailSplitter,
                 RoomMenu,
                 Undo,
@@ -484,7 +491,8 @@ mod tests {
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
         // sync unless said.)
-        let fixed = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | SyncFailures);
+        let fixed =
+            |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | Repeat | SyncFailures);
         assert_eq!(
             round(List, true, fixed),
             [NewList, NewCollection, Account, SidebarSplitter, List]
@@ -494,7 +502,7 @@ mod tests {
             [SidebarSplitter, Account, NewCollection, NewList, List]
         );
         // Without the detail divider (narrow window, or no task open), both ways.
-        let no_detail = |s: Stop| !matches!(s, DetailSplitter | SyncFailures);
+        let no_detail = |s: Stop| !matches!(s, DetailSplitter | Repeat | SyncFailures);
         assert_eq!(
             round(RoomMenu, true, no_detail),
             [
@@ -520,7 +528,7 @@ mod tests {
             ]
         );
         // A room without a menu skips its button both ways.
-        let no_menu = |s: Stop| !matches!(s, RoomMenu | SyncFailures);
+        let no_menu = |s: Stop| !matches!(s, RoomMenu | Repeat | SyncFailures);
         assert_eq!(
             round(Undo, true, no_menu),
             [
@@ -546,7 +554,7 @@ mod tests {
             ]
         );
         // Without the toast, Undo is skipped.
-        let no_undo = |s: Stop| !matches!(s, Undo | SyncFailures);
+        let no_undo = |s: Stop| !matches!(s, Undo | Repeat | SyncFailures);
         assert_eq!(
             round(List, true, no_undo),
             [
@@ -578,7 +586,7 @@ mod tests {
         assert_eq!(tab_stop(DetailSplitter, true, no_detail), NewList);
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
-        let refused = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter);
+        let refused = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | Repeat);
         assert_eq!(
             round(List, true, refused),
             [

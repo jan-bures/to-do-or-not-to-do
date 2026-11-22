@@ -17,6 +17,7 @@ use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellEvent, ShellView};
+use crate::model::menus::repeat::{self, Draft};
 use crate::model::menus::{self, Asked, Confirmed, MenuAction, MenuEntry, MenuItem, Page, TagPage};
 use crate::model::motion::Overlay;
 use crate::model::{commands, hints::Stop, labels};
@@ -66,19 +67,41 @@ pub(super) enum TaskPage {
 pub(super) enum MenuKind {
     /// The sidebar footer's menu: the server, its admin pages, Sync now and Sign out (`confirm` once
     /// asked).
-    Account { confirm: bool },
+    Account {
+        confirm: bool,
+    },
     /// A list's context menu, or the page one of its items turned it into.
-    List { id: ListId, page: Page },
+    List {
+        id: ListId,
+        page: Page,
+    },
     /// A collection's context menu, or the page one of its items turned it into.
-    Collection { id: CollectionId, page: Page },
+    Collection {
+        id: CollectionId,
+        page: Page,
+    },
     /// The room header's "more" menu, or the page one of its items turned it into.
-    Room { page: Page },
+    Room {
+        page: Page,
+    },
     /// The tag picker, from the detail pane's Tags row (or T), or a tag's own page in it.
-    Tags { task: TaskId, page: TagPage },
+    Tags {
+        task: TaskId,
+        page: TagPage,
+    },
     /// The detail pane's priority picker.
-    Priority { task: TaskId },
+    Priority {
+        task: TaskId,
+    },
+    Repeat {
+        task: TaskId,
+        draft: Option<Draft>,
+    },
     /// A task's context menu (right-click its row, or Shift+F10), or the list picker (M).
-    Task { id: TaskId, page: TaskPage },
+    Task {
+        id: TaskId,
+        page: TaskPage,
+    },
     /// The sidebar footer's "N couldn't sync": the refused changes, to see and dismiss.
     SyncFailures,
 }
@@ -103,7 +126,8 @@ impl MenuKind {
             (Self::List { id: a, .. }, Self::List { id: b, .. }) => a == b,
             (Self::Collection { id: a, .. }, Self::Collection { id: b, .. }) => a == b,
             (Self::Task { id: a, .. }, Self::Task { id: b, .. }) => a == b,
-            (Self::Tags { task: a, .. }, Self::Tags { task: b, .. }) => a == b,
+            (Self::Tags { task: a, .. }, Self::Tags { task: b, .. })
+            | (Self::Repeat { task: a, .. }, Self::Repeat { task: b, .. }) => a == b,
             _ => self == other,
         }
     }
@@ -181,6 +205,16 @@ impl ShellView {
                 task,
                 page: TagPage::Edit(tag),
             } => menus::tag_edit_menu(&state, task, tag),
+            MenuKind::Tags {
+                task,
+                page: TagPage::Confirm(tag),
+            } => menus::tag_confirm(&state, task, tag),
+            MenuKind::Repeat { task, draft } => state
+                .tasks
+                .get(&task)
+                .filter(|_| state.is_live(task.into()))
+                .map(|t| repeat::entries(t, self.store.now().today(), draft))
+                .unwrap_or_default(),
             MenuKind::Tags {
                 page: TagPage::Colour(tag),
                 ..
@@ -427,6 +461,15 @@ impl ShellView {
         cx.stop_propagation();
         let entries = self.menu_entries(menu.kind);
         let count = menus::items(&entries).count();
+        if let Some(Menu {
+            kind: MenuKind::Repeat { draft: Some(d), .. },
+            ..
+        }) = self.menu.as_mut()
+            && d.type_key(key)
+        {
+            cx.notify();
+            return;
+        }
         if let Some(filter) = picker_edit(&menu, e) {
             if let Some(m) = self.menu.as_mut() {
                 m.filter = filter;
@@ -518,8 +561,12 @@ impl ShellView {
         }
         match action {
             // The menu turns into the confirmation, the collection picker or the swatches, in place.
+            MenuAction::Repeat(task, a) => {
+                return self.repeat_action(task, a, keyboard, window, cx);
+            }
             MenuAction::AskDeleteList(_)
             | MenuAction::AskDeleteCollection(_)
+            | MenuAction::AskDeleteTag(_)
             | MenuAction::AskMoveList(_)
             | MenuAction::AskColour(_) => {
                 let kind = match (menu.kind, action) {
@@ -527,6 +574,12 @@ impl ShellView {
                         MenuKind::Tags {
                             task,
                             page: TagPage::Colour(tag),
+                        }
+                    }
+                    (MenuKind::Tags { task, .. }, MenuAction::AskDeleteTag(tag)) => {
+                        MenuKind::Tags {
+                            task,
+                            page: TagPage::Confirm(tag),
                         }
                     }
                     (kind, MenuAction::AskMoveList(_)) => kind.on_page(Page::Move),
@@ -537,7 +590,9 @@ impl ShellView {
                 // A picker starts on the current choice, from the keyboard or not.
                 if !matches!(
                     action,
-                    MenuAction::AskDeleteList(_) | MenuAction::AskDeleteCollection(_)
+                    MenuAction::AskDeleteList(_)
+                        | MenuAction::AskDeleteCollection(_)
+                        | MenuAction::AskDeleteTag(_)
                 ) {
                     self.highlight_first();
                 }
@@ -628,23 +683,27 @@ impl ShellView {
         // it was open, nothing is deleted and the new question is asked, the keyboard on Cancel.
         if matches!(
             action,
-            MenuAction::DeleteList(_) | MenuAction::DeleteCollection(_)
-        ) && let Confirmed::AskAgain(question) =
-            menus::on_confirm(menu.asked.as_ref(), &self.live_menu_entries(menu.kind))
-        {
-            let (now, pace) = (self.now(), self.pace());
-            if let Some(m) = self.menu.as_mut() {
-                m.asked = Some(Asked {
-                    question,
-                    changed: true,
-                });
-                if self.animate {
-                    m.overlay.swap_content(now, pace);
+            MenuAction::DeleteList(_) | MenuAction::DeleteCollection(_) | MenuAction::DeleteTag(_)
+        ) {
+            match menus::on_confirm(menu.asked.as_ref(), &self.live_menu_entries(menu.kind)) {
+                Confirmed::Gone => return self.close_menu(false, window, cx),
+                Confirmed::Proceed => {}
+                Confirmed::AskAgain(question) => {
+                    let (now, pace) = (self.now(), self.pace());
+                    if let Some(m) = self.menu.as_mut() {
+                        m.asked = Some(Asked {
+                            question,
+                            changed: true,
+                        });
+                        if self.animate {
+                            m.overlay.swap_content(now, pace);
+                        }
+                    }
+                    self.highlight_first();
+                    cx.notify();
+                    return;
                 }
             }
-            self.highlight_first();
-            cx.notify();
-            return;
         }
         self.close_menu(keyboard && !action.moves_focus(), window, cx);
         match action {
@@ -662,6 +721,10 @@ impl ShellView {
             }
             MenuAction::ToggleCompleted => {
                 self.ui.show_completed = !self.ui.show_completed;
+                self.refresh(cx);
+            }
+            MenuAction::DeleteTag(id) => {
+                self.submit(vec![commands::delete(id)]);
                 self.refresh(cx);
             }
             MenuAction::DeleteList(id) => {
@@ -737,6 +800,8 @@ impl ShellView {
             | MenuAction::AskMoveList(_)
             | MenuAction::AskColour(_)
             | MenuAction::AskSignOut
+            | MenuAction::AskDeleteTag(_)
+            | MenuAction::Repeat(..)
             | MenuAction::AskPriority(_)
             | MenuAction::AskMove(_)
             | MenuAction::AskLinks(_)
@@ -746,6 +811,79 @@ impl ShellView {
             | MenuAction::CreateTag(_)
             | MenuAction::Cancel => {}
         }
+    }
+
+    fn repeat_action(
+        &mut self,
+        task: TaskId,
+        a: repeat::Action,
+        keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Menu {
+            kind: MenuKind::Repeat { task: id, draft },
+            trigger,
+            ..
+        }) = self.menu.as_ref()
+        else {
+            return;
+        };
+        if *id != task {
+            return;
+        }
+        let today = self.store.now().today();
+        let state = self.store.view();
+        let Some(t) = state
+            .tasks
+            .get(&task)
+            .filter(|_| state.is_live(task.into()))
+        else {
+            return self.close_menu(false, window, cx);
+        };
+        let rule = match a {
+            repeat::Action::Custom => {
+                self.open_menu(
+                    MenuKind::Repeat {
+                        task,
+                        draft: Some(Draft::new(t, today)),
+                    },
+                    None,
+                    *trigger,
+                    window,
+                    cx,
+                );
+                return;
+            }
+            repeat::Action::Preset(p) => p.map(|p| p.rule(t.due.unwrap_or(today))),
+            repeat::Action::Apply => {
+                let Some(d) = draft else { return };
+                Some(d.rule())
+            }
+            edit => {
+                if let Some(Menu {
+                    kind: MenuKind::Repeat { draft: Some(d), .. },
+                    ..
+                }) = self.menu.as_mut()
+                {
+                    d.edit(edit);
+                    cx.notify();
+                }
+                return;
+            }
+        };
+        match commands::repeat::set_repeat(&state, task, rule, today) {
+            Ok(cmd) => {
+                if let Some(cmd) = cmd
+                    && !self.submit(vec![cmd])
+                {
+                    return self.refresh(cx);
+                }
+                self.close_menu(keyboard, window, cx);
+            }
+            Err(error) => self.notice = Some(Notice::error(error.to_string())),
+        }
+        self.refresh(cx);
     }
 
     /// Takes one refused change (or, with `None`, every one the list shows) off the "couldn't sync"
@@ -840,6 +978,17 @@ impl ShellView {
         cx.notify();
     }
 
+    /// Keep the repeat row visible while editing: hang the picker on the roomier side of the row.
+    fn menu_opens_up(&self, kind: MenuKind) -> bool {
+        if matches!(kind, MenuKind::Repeat { .. })
+            && let Some(row) = self.probes.borrow().get("repeat-row")
+        {
+            let pane = self.detail_scroll.bounds();
+            return row.top() - pane.top() > pane.bottom() - row.bottom();
+        }
+        kind.opens_up()
+    }
+
     /// The open menu, if `belongs` says it is drawn here: at the pointer (`at`), or inside its button.
     pub(super) fn popover(
         &self,
@@ -858,6 +1007,15 @@ impl ShellView {
         let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
         let rows: Vec<AnyElement> = menus::scrolling(&entries)
             .map(|entry| match entry {
+                MenuEntry::Item(item)
+                    if matches!(item.action, MenuAction::Repeat(_, repeat::Action::Apply)) =>
+                {
+                    div()
+                        .px(px(space::S2))
+                        .pb(px(space::S2))
+                        .child(self.confirm_button(&p, item, on(item), live, cx))
+                        .into_any_element()
+                }
                 MenuEntry::Item(item) => self
                     .menu_item(&p, item, on(item), live, cx)
                     .into_any_element(),
@@ -962,6 +1120,61 @@ impl ShellView {
                     .text_color(p.ink_3)
                     .child(text.clone())
                     .into_any_element(),
+                MenuEntry::Controls {
+                    label,
+                    value,
+                    buttons,
+                } => {
+                    let mut row = div().flex().items_center().gap(px(space::S1));
+                    for (i, b) in buttons.iter().enumerate() {
+                        if i == 1
+                            && let Some(n) = value
+                        {
+                            row = row.child(
+                                div()
+                                    .flex_1()
+                                    .text_center()
+                                    .style(ty::DUE)
+                                    .text_color(p.ink)
+                                    .child(n.clone()),
+                            );
+                        }
+                        let action = b.action;
+                        row = row.child(
+                            div()
+                                .id(b.key.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(desktop::NAV_ROW))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(radius::BUTTON))
+                                .border(px(elevation::HAIRLINE))
+                                .border_color(if on(b) { p.accent } else { p.line_strong })
+                                .bg(if b.checked { p.tint } else { p.pane })
+                                .text_color(if b.checked { p.accent_strong } else { p.ink })
+                                .style(ty::BUTTON_SMALL)
+                                .child(b.label.clone())
+                                .when(live, |d| {
+                                    d.cursor_pointer().hover(|s| s.bg(p.hover)).on_click(
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.run_menu_action(action, false, window, cx)
+                                        }),
+                                    )
+                                }),
+                        );
+                    }
+                    div()
+                        .px(px(space::S2))
+                        .py(px(space::S1))
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S1))
+                        .child(kit::label(&p, label))
+                        .child(row)
+                        .into_any_element()
+                }
                 MenuEntry::Swatches(items) => div()
                     .px(px(space::S2))
                     .pt(px(space::S1))
@@ -988,7 +1201,8 @@ impl ShellView {
         });
         // It moves the last 4 px away from its anchor as it enters.
         let shift = look.shift * space::S1;
-        let shift = if menu.kind.opens_up() { shift } else { -shift };
+        let opens_up = self.menu_opens_up(menu.kind);
+        let shift = if opens_up { shift } else { -shift };
         let width = if menus::is_wide(&entries) {
             desktop::CONFIRM
         } else {
@@ -1032,7 +1246,7 @@ impl ShellView {
                 .snap_to_window_with_margin(px(space::S2))
                 .child(body),
             None => anchored()
-                .anchor(match (menu.kind.opens_up(), menu.kind.aligns_left()) {
+                .anchor(match (opens_up, menu.kind.aligns_left()) {
                     (true, true) => Anchor::BottomLeft,
                     (true, false) => Anchor::BottomRight,
                     (false, true) => Anchor::TopLeft,
@@ -1110,7 +1324,10 @@ impl ShellView {
         belongs: impl Fn(&MenuKind) -> bool,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let opens_up = self.menu.as_ref().is_some_and(|m| m.kind.opens_up());
+        let opens_up = self
+            .menu
+            .as_ref()
+            .is_some_and(|m| self.menu_opens_up(m.kind));
         let left = self.menu.as_ref().is_some_and(|m| m.kind.aligns_left());
         let popover = self.popover(belongs, cx)?;
         let gap = px(space::S1);
@@ -1327,6 +1544,8 @@ impl ShellView {
                 small(kit::button(p, item.label.clone())).bg(p.danger),
                 p.danger,
             )
+        } else if matches!(item.action, MenuAction::Repeat(_, repeat::Action::Apply)) {
+            (small(kit::button(p, item.label.clone())), p.accent_fill)
         } else {
             (
                 small(kit::button_quiet(p, item.label.clone())),
