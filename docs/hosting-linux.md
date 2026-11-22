@@ -474,12 +474,19 @@ function Test-Sha256Sums([string]$Dir) {
 
    ```powershell
    Disable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
-   ./deploy/windows/stop-pilot.ps1
-   # What must be gone: the supervisor, anything run from the pilot's directory (todo-server, todo-backup),
-   # the pilot's connector, and whatever listens on its port.
+   ./deploy/windows/stop-pilot.ps1 -DataDir $data
+   # What must be gone: the supervisor (PowerShell running bin\run-pilot.ps1), anything run from the pilot's
+   # directory (todo-server, todo-backup), its connector, and whatever listens on its port. Paths are compared
+   # literally, without wildcards.
+   $prefix = (Resolve-Path -LiteralPath $data).Path.TrimEnd('\') + '\'
+   $runner = $prefix + 'bin\run-pilot.ps1'
+   $tokenArg = '--token-file\s+"?' + [regex]::Escape($prefix + 'cloudflared-token') + '("|\s|$)'
    $left = @(Get-CimInstance Win32_Process | Where-Object {
-       $_.CommandLine -like "*$data\bin\run-pilot.ps1*" -or $_.ExecutablePath -like "$data\*" -or
-       ($_.Name -eq 'cloudflared.exe' -and $_.CommandLine -like "*$data\cloudflared-token*")
+       $cmd = [string]$_.CommandLine
+       $file = if ($cmd -match '(?i)\s-File\s+(?:"([^"]*)"|(\S+))') { "$($Matches[1])$($Matches[2])" } else { '' }
+       ($_.ExecutablePath -and ([string]$_.ExecutablePath).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or
+       ($_.Name -in 'powershell.exe', 'pwsh.exe' -and [string]::Equals($file, $runner, [StringComparison]::OrdinalIgnoreCase)) -or
+       ($_.Name -eq 'cloudflared.exe' -and $cmd -match $tokenArg)
    })
    $left += @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
        ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)" })
@@ -512,7 +519,7 @@ function Test-Sha256Sums([string]$Dir) {
 3. **Copy the databases.** The pilot is stopped, so a `VACUUM INTO` copy of each file is complete:
 
    ```powershell
-   New-Item -ItemType Directory "$data\move" | Out-Null
+   New-Item -ItemType Directory -Path "$data\move" | Out-Null
    Copy-Database "$db\attachments.sqlite3" "$data\move\attachments.sqlite3"
    Copy-Database "$db\todo.sqlite3" "$data\move\todo.sqlite3"
    Get-EventCount "$data\move\todo.sqlite3"
@@ -527,7 +534,7 @@ function Test-Sha256Sums([string]$Dir) {
    ```powershell
    $objectKey = '<key>'   # the key from step 2
    & "$data\bin\todo-backup.exe" restore --object $objectKey --identity "$data\identity.tmp" --out "$data\move\todo.sqlite3"
-   Remove-Item "$data\identity.tmp"
+   Remove-Item -LiteralPath "$data\identity.tmp"
    ```
 
    The restore checks integrity and prints `max(seq)` and the event count. The attachment registry isn't
@@ -543,7 +550,7 @@ function Test-Sha256Sums([string]$Dir) {
    For example, with the secrets staged:
 
    ```powershell
-   Copy-Item "$db\attachments.key", "$data\backup-state\budget.json" "$data\move\"
+   Copy-Item -LiteralPath "$db\attachments.key", "$data\backup-state\budget.json" -Destination "$data\move\"
    ```
 
    Leave `attachments-spool\`: it holds only leftovers of interrupted uploads, which the server deletes when
@@ -552,10 +559,10 @@ function Test-Sha256Sums([string]$Dir) {
 
    ```powershell
    Write-Sha256Sums "$data\move"
-   Push-Location "$data\move"
+   Push-Location -LiteralPath "$data\move"
    & $gcloud compute ssh $instance @g --command 'mkdir -p -m 700 move'
    if ($LASTEXITCODE) { Pop-Location; throw "ssh failed (exit code $LASTEXITCODE)" }
-   & $gcloud compute scp @g --recurse * "${instance}:move/"
+   & $gcloud compute scp @g --recurse @(Get-ChildItem -Name) "${instance}:move/"
    if ($LASTEXITCODE) { Pop-Location; throw "scp failed (exit code $LASTEXITCODE): run this block again" }
    Pop-Location
    ```
@@ -582,21 +589,52 @@ function Test-Sha256Sums([string]$Dir) {
 
    Every line of the first must say `disabled`, and of the second `inactive` (or `failed`). If one doesn't,
    `sudo systemctl disable --now` it and check again: a server or a backup running now would write to or read a
-   half-copied database. Then, adjusting the secret names to the ones `server.toml` uses, and leaving out the
-   secrets you staged:
+   half-copied database. Then install what arrived. The block stops at the first command that fails, and
+   prints `INSTALLED` only if every one succeeded. Whatever wasn't collected (staged secrets, blobs with the R2
+   store, the budget file) is skipped. The secrets keep their names here: if `server.toml` uses other names,
+   rename them in `~/move` first.
 
    ```sh
-   cd ~/move
-   sudo install -m 0600 -o todo -g todo todo.sqlite3 attachments.sqlite3 attachments.key /var/lib/todo/
-   # Local attachment store only:
-   sudo cp -r blobs /var/lib/todo/ && sudo chown -R todo:todo /var/lib/todo/blobs && sudo chmod -R go= /var/lib/todo/blobs
-   sudo install -m 0640 -o root -g todo r2-attachments.json r2-backups.json /etc/todo/
-   sudo install -m 0600 -o todo -g todo ingest-email-hmac.secret /etc/todo/
-   sudo install -m 0600 -o root -g root cloudflared-token /root/todo-tunnel.token
-   # Optional: keep this month's backup operation count.
-   sudo install -d -m 0700 -o todo -g todo /var/lib/todo/backup-state
-   sudo install -m 0600 -o todo -g todo budget.json /var/lib/todo/backup-state/
-   cd && find move -type f -exec shred -u {} + && rm -rf move
+   (
+       set -e
+       cd ~/move
+       sudo install -m 0600 -o todo -g todo todo.sqlite3 attachments.sqlite3 attachments.key /var/lib/todo/
+       if [ -d blobs ]; then   # the local attachment store
+           sudo cp -rT blobs /var/lib/todo/blobs
+           sudo chown -R todo:todo /var/lib/todo/blobs
+           sudo chmod -R go= /var/lib/todo/blobs
+       fi
+       for f in r2-attachments.json r2-backups.json; do
+           if [ -e "$f" ]; then sudo install -m 0640 -o root -g todo "$f" /etc/todo/; fi
+       done
+       if [ -e ingest-email-hmac.secret ]; then
+           sudo install -m 0600 -o todo -g todo ingest-email-hmac.secret /etc/todo/
+       fi
+       if [ -e cloudflared-token ]; then
+           sudo install -m 0600 -o root -g root cloudflared-token /root/todo-tunnel.token
+       fi
+       if [ -e budget.json ]; then   # this month's backup operation count
+           sudo install -d -m 0700 -o todo -g todo /var/lib/todo/backup-state
+           sudo install -m 0600 -o todo -g todo budget.json /var/lib/todo/backup-state/
+       fi
+       echo INSTALLED
+   )
+   ```
+
+   If it doesn't print `INSTALLED`, fix the cause (a full disk, for example) and run it again. Then check every
+   installed file against the checksums from the PC, blobs included:
+
+   ```sh
+   sed -E -e 's#  (todo\.sqlite3|attachments\.sqlite3|attachments\.key|blobs/.+)$#  /var/lib/todo/\1#' \
+       -e 's#  budget\.json$#  /var/lib/todo/backup-state/budget.json#' \
+       -e 's#  cloudflared-token$#  /root/todo-tunnel.token#' \
+       -e 's#  ([^/]+\.(json|secret))$#  /etc/todo/\1#' ~/move/SHA256SUMS | sudo sha256sum --check --strict -
+   ```
+
+   Every line must say `OK`. Only then remove the copy from your home:
+
+   ```sh
+   find ~/move -type f -exec shred -u {} + && rm -rf ~/move
    ```
 
    Unless you staged it, write `/etc/todo/backup.toml` from `backup.toml.example`, with the pilot's `recipient`.
@@ -612,7 +650,7 @@ function Test-Sha256Sums([string]$Dir) {
    The count and `max(seq)` must match step 3. Run `sqlite3` as `todo`: as root it could create WAL files that
    the server can't open. Rotating the log epoch isn't needed, because this is the complete log. Once the
    server is healthy on that count, remove the staging copy on the PC, which holds plaintext data and secrets:
-   `Remove-Item -Recurse "$data\move"`.
+   `Remove-Item -LiteralPath "$data\move" -Recurse`.
 8. **Point the tunnel at the VM.**
 
    ```sh
@@ -654,7 +692,7 @@ function Test-Sha256Sums([string]$Dir) {
   ```
 
 - After a day: `systemctl list-timers 'todo-backup-*'` shows recent runs, and `systemctl --failed` is empty.
-- After a week of quiet, retire the pilot: `./deploy/windows/uninstall-pilot.ps1` removes its logon task, and
+- After a week of quiet, retire the pilot: `./deploy/windows/uninstall-pilot.ps1 -DataDir $data` removes its logon task, and
   then you can delete its data directory. Keep the final backup.
 
 ### Roll back
@@ -678,11 +716,14 @@ systemctl is-active todo-tunnel todo-server
 Both files must say `gone`, and both units `inactive` (or `failed`). Only then, on the PC:
 
 ```powershell
-./deploy/windows/install-pilot.ps1 -Start
+Enable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
+./deploy/windows/install-pilot.ps1 -DataDir $data -NoRegister -Start -HealthUrl "http://127.0.0.1:$port/health"
 ```
 
-`install-pilot.ps1` registers the logon task again, enabled, and starts the pilot. The pilot's database is
-exactly as it was when you stopped it. For the next attempt, stage the token at `/root/todo-tunnel.token`
+This enables the logon task as it was registered and starts the supervisor now. Pass `-HealthUrl` with the
+pilot's port: the supervisor starts the connector only once `/health` answers 200 at that URL, which
+otherwise is port 47320, so a pilot on another port would serve locally with no tunnel. The pilot's database
+is exactly as it was when you stopped it. For the next attempt, stage the token at `/root/todo-tunnel.token`
 again.
 
 **After the VM took writes,** bring its data back so they aren't lost. That is both databases (tasks and the
@@ -748,7 +789,7 @@ VM's `blobs/` comes along too.
    Test-Database rollback\todo.sqlite3
    Test-Database rollback\attachments.sqlite3
    Get-EventCount rollback\todo.sqlite3
-   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash "$db\attachments.key").Hash
+   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash -LiteralPath "$db\attachments.key").Hash
    ```
 
    It must print `checksums ok`, `ok` twice, the event count and `max(seq)` from step 2, and `True`. If a file
@@ -766,8 +807,10 @@ VM's `blobs/` comes along too.
    `data_dir`:
 
    ```powershell
-   $aside = New-Item -ItemType Directory "$data\before-rollback-$(Get-Date -Format yyyyMMddTHHmmss)"
-   Move-Item "$db\todo.sqlite3*", "$db\attachments.sqlite3*" $aside
+   $aside = New-Item -ItemType Directory -Path "$data\before-rollback-$(Get-Date -Format yyyyMMddTHHmmss)"
+   Get-ChildItem -LiteralPath $db -File |
+       Where-Object { $_.Name -like 'todo.sqlite3*' -or $_.Name -like 'attachments.sqlite3*' } |
+       Move-Item -Destination $aside.FullName
    Copy-Item rollback\todo.sqlite3, rollback\attachments.sqlite3 $db
    # Local attachment store only:
    Copy-Item -Recurse -Force rollback\blobs\* "$db\blobs\"
@@ -776,16 +819,23 @@ VM's `blobs/` comes along too.
 6. **Verify without the tunnel.** Start only the server, check it, then stop it:
 
    ```powershell
-   ./deploy/windows/install-pilot.ps1 -NoRegister -NoTunnel -Start
+   ./deploy/windows/install-pilot.ps1 -DataDir $data -NoRegister -NoTunnel -Start
    Invoke-RestMethod "http://127.0.0.1:$port/health"
-   ./deploy/windows/stop-pilot.ps1
+   ./deploy/windows/stop-pilot.ps1 -DataDir $data
    ```
 
    `-NoRegister` leaves the logon task disabled meanwhile. Check the log in `$data\logs\` for a clean start.
    With the server stopped, `Get-EventCount "$db\todo.sqlite3"` must match step 2.
-7. **Reconnect the pilot.** `./deploy/windows/install-pilot.ps1 -Start` registers the logon task again,
-   enabled, and starts the server with the tunnel. `./deploy/probe.ps1 -BaseUrl https://todo.example.com` must
-   pass, and the Cloudflare dashboard must list only the PC's connector.
+7. **Reconnect the pilot.** Enable the logon task and start the server with the tunnel, with the pilot's
+   health URL as in the rollback before writes:
+
+   ```powershell
+   Enable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
+   ./deploy/windows/install-pilot.ps1 -DataDir $data -NoRegister -Start -HealthUrl "http://127.0.0.1:$port/health"
+   ./deploy/probe.ps1 -BaseUrl https://todo.example.com
+   ```
+
+   The probe must pass, and the Cloudflare dashboard must list only the PC's connector.
 8. **Clean up.** Remove `rollback\` once the pilot has run for a while. It holds plaintext data and the
    attachment key.
 
