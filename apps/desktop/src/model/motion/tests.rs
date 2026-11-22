@@ -414,6 +414,27 @@ fn j_and_k_reach_only_the_hand_over_tasks_that_have_begun_to_enter() {
 }
 
 #[test]
+fn space_never_reaches_a_selected_hand_over_task_before_it_enters() {
+    // A selection kept across a refresh can point at a hand-over task while dusk falls again.
+    let shell = crate::fixtures::finished().shell();
+    let next = shell.room.handover().expect("hands over");
+    let first = next.tasks().next().expect("a task").id;
+    let mut mo = Motion::default();
+    mo.aim_dusk(MY_DAY, false, ms(0), Pace::FULL);
+    mo.aim_dusk(MY_DAY, true, ms(0), Pace::FULL);
+    let reachable = |t: u32| {
+        let dusk = mo.dusk(ms(t));
+        shell.reachable(first, |c| dusk.handover(c).0 > 0.)
+    };
+    assert!(!reachable(m::DUSK / 2));
+    assert!(reachable(m::DUSK));
+    // A task outside the hand-over is always reachable.
+    let other = TaskId::new_v7(1, [7; 10]);
+    assert!(next.child(other).is_none());
+    assert!(shell.reachable(other, |_| false));
+}
+
+#[test]
 fn rows_below_a_collapsing_row_rise_by_the_share_that_has_gone() {
     assert_eq!(lifts([1., 0.25, 1., 0.5, 1.]), [0., 0., 0.75, 0.75, 1.25]);
     assert!(lifts([]).is_empty());

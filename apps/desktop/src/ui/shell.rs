@@ -1739,6 +1739,7 @@ impl ShellView {
                             cx.stop_propagation();
                             if !e.is_held
                                 && let Some(id) = this.ui.task
+                                && this.shell.reachable(id, |c| this.handover_entered(c))
                             {
                                 this.toggle_complete(id, cx);
                             }

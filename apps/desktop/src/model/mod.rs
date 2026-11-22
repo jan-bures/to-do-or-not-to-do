@@ -601,4 +601,13 @@ impl Shell {
             None => self.rows().map(|r| r.id).collect(),
         }
     }
+
+    /// Whether Space may complete or reopen `id`: not while it is a hand-over task that hasn't begun to
+    /// enter (a selection kept across a refresh can point at one before its row is there).
+    pub fn reachable(&self, id: TaskId, entered: impl Fn(usize) -> bool) -> bool {
+        self.room
+            .handover()
+            .and_then(|next| next.child(id))
+            .is_none_or(entered)
+    }
 }
