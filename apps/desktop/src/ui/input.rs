@@ -120,7 +120,7 @@ impl TextInput {
 
     /// Replaces the content and puts the caret at its end (fixtures, restoring a draft).
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = text.into();
+        self.content = one_line(text.into());
         let end = self.content.len();
         self.selected_range = end..end;
         self.selection_reversed = false;
@@ -238,7 +238,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+            self.replace_text_in_range(None, &text, window, cx);
         }
     }
 
@@ -439,6 +439,8 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Typed, pasted or composed text stays on one line (see `one_line`).
+        let new_text = &crate::model::labels::one_line(new_text);
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -464,6 +466,7 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let new_text = &crate::model::labels::one_line(new_text);
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -763,5 +766,36 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+/// The input's text on one line: every line break or other control character becomes a space, the same
+/// way names are drawn (`labels::one_line`). Whatever is set, typed, pasted or composed goes through it, so
+/// one-line shaping (`shape_line`) never sees a line break. Unchanged text keeps its allocation.
+fn one_line(text: SharedString) -> SharedString {
+    if text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        crate::model::labels::one_line(&text).into()
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::one_line;
+    use crate::model::labels;
+
+    #[test]
+    fn text_set_into_an_input_is_one_line() {
+        assert_eq!(one_line("Plan\nning".into()).as_ref(), "Plan ning");
+        assert_eq!(one_line("a\r\nb\u{2029}c".into()).as_ref(), "a  b c");
+        assert_eq!(one_line("Koupit rohlíky".into()).as_ref(), "Koupit rohlíky");
+        // Typed and pasted text goes through the same function as names drawn elsewhere.
+        for raw in ["x\ny", "\t", "\u{85}", "plain"] {
+            assert_eq!(one_line(raw.into()).as_ref(), labels::one_line(raw));
+        }
     }
 }

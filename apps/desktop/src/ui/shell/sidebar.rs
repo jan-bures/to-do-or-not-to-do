@@ -9,7 +9,7 @@ use gpui::{
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId};
 
 use super::{ShellEvent, ShellView, quick_add_colors};
-use crate::model::{self, RoomKey, Tone, commands};
+use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
@@ -49,11 +49,14 @@ pub(super) enum InlineTarget {
 pub(super) struct Inline {
     pub target: InlineTarget,
     pub input: Entity<TextInput>,
+    /// The text the editor started with: the name as drawn (`labels::one_line`). Only a change from it is
+    /// saved, so opening and leaving the editor never rewrites a stored name.
+    seed: String,
     _subscriptions: [Subscription; 2],
 }
 
 impl ShellView {
-    /// Starts renaming `target` in place, its current name selected.
+    /// Starts renaming `target` in place, its current name selected, on one line.
     pub(super) fn start_inline(
         &mut self,
         target: InlineTarget,
@@ -63,9 +66,10 @@ impl ShellView {
     ) {
         self.commit_inline(cx);
         let colors = quick_add_colors(&self.palette);
+        let seed = labels::one_line(&text);
         let input = cx.new(|cx| {
             let mut i = TextInput::new("", colors, cx);
-            i.set_text(text, cx);
+            i.set_text(seed.clone(), cx);
             i.select_everything(cx);
             i
         });
@@ -91,6 +95,7 @@ impl ShellView {
         self.inline = Some(Inline {
             target,
             input,
+            seed,
             _subscriptions: [events, blur],
         });
         cx.notify();
@@ -102,13 +107,7 @@ impl ShellView {
             return;
         };
         let text = inline.input.read(cx).content.to_string();
-        let state = self.store.view();
-        let cmd = match inline.target {
-            InlineTarget::List(id) => commands::rename_list(&state, id, &text),
-            InlineTarget::Collection(id) => commands::rename_collection(&state, id, &text),
-            InlineTarget::Step(id) => commands::retitle_step(&state, id, &text),
-        };
-        if let Some(cmd) = cmd {
+        if let Some(cmd) = inline_command(&self.store.view(), inline.target, &inline.seed, &text) {
             self.submit(vec![cmd]);
         }
         self.refresh(cx);
@@ -600,7 +599,7 @@ impl ShellView {
             }
             MenuKind::List { id, confirm } => {
                 let list = state.lists.get(&id)?;
-                let name: SharedString = list.name.clone().into();
+                let name: SharedString = labels::one_line(&list.name).into();
                 let open = state
                     .tasks
                     .values()
@@ -669,7 +668,7 @@ impl ShellView {
             }
             MenuKind::Collection { id } => {
                 let c = state.collections.get(&id)?;
-                let name: SharedString = c.name.clone().into();
+                let name: SharedString = labels::one_line(&c.name).into();
                 let (icon, label) = if self.ui.collapsed_collections.contains(&id) {
                     (Icon::ChevronDown, "Expand")
                 } else {
@@ -745,5 +744,77 @@ impl ShellView {
                     },
                 ))),
         ))
+    }
+}
+
+/// What ending an inline rename saves: nothing unless the text differs from what the editor started with
+/// (`seed`), so opening an editor and leaving it, or pressing Enter, leaves the stored name exactly as it
+/// was, even one the editor showed differently (a line break drawn as a space).
+fn inline_command(
+    state: &todo_core::State,
+    target: InlineTarget,
+    seed: &str,
+    text: &str,
+) -> Option<todo_core::Command> {
+    if text == seed {
+        return None;
+    }
+    match target {
+        InlineTarget::List(id) => commands::rename_list(state, id, text),
+        InlineTarget::Collection(id) => commands::rename_collection(state, id, text),
+        InlineTarget::Step(id) => commands::retitle_step(state, id, text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures;
+    use todo_core::Command;
+
+    #[test]
+    fn an_unchanged_inline_rename_saves_nothing() {
+        let mut f = fixtures::my_day();
+        let (&list, _) = f
+            .state
+            .lists
+            .iter()
+            .find(|(_, l)| l.name == "Planning")
+            .expect("Planning");
+        f.state.lists.get_mut(&list).expect("list").name = "Plan\nning".into();
+        let collection = f.state.lists[&list].collection.expect("collection");
+        f.state
+            .collections
+            .get_mut(&collection)
+            .expect("collection")
+            .name = "Wo\trk".into();
+        let step = *f.state.steps.keys().next().expect("a step");
+        f.state.steps.get_mut(&step).expect("step").title = "Draft\nthemes".into();
+        let targets = [
+            (InlineTarget::List(list), "Plan\nning"),
+            (InlineTarget::Collection(collection), "Wo\trk"),
+            (InlineTarget::Step(step), "Draft\nthemes"),
+        ];
+        for (target, stored) in targets {
+            // The editor starts with the name as drawn, and leaving it untouched saves nothing.
+            let seed = labels::one_line(stored);
+            assert_ne!(seed, stored);
+            assert_eq!(inline_command(&f.state, target, &seed, &seed), None);
+            // A real edit is saved.
+            let cmd = inline_command(&f.state, target, &seed, "Renamed");
+            assert!(
+                matches!(
+                    cmd,
+                    Some(
+                        Command::UpdateList { .. }
+                            | Command::UpdateCollection { .. }
+                            | Command::UpdateStep { .. }
+                    )
+                ),
+                "{target:?}: {cmd:?}"
+            );
+        }
+        // Nothing was written: the stored names are as they were.
+        assert_eq!(f.state.lists[&list].name, "Plan\nning");
     }
 }

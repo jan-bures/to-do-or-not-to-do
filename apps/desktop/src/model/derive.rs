@@ -775,7 +775,8 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         .iter()
         .map(|a| AttachmentRow {
             id: a.id,
-            name: labels::one_line(&a.file_name).into(),
+            name: a.file_name.clone().into(),
+            label: labels::one_line(&a.file_name).into(),
             detail: labels::size(a.size_bytes).into(),
         })
         .collect();

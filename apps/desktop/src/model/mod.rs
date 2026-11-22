@@ -495,7 +495,10 @@ pub struct LinkRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttachmentRow {
     pub id: AttachmentId,
+    /// The stored file name, exactly: Save and Open, and whether it can be opened, go by it.
     pub name: SharedString,
+    /// The name as the pane draws it, on one line (`labels::one_line`).
+    pub label: SharedString,
     pub detail: SharedString,
 }
 

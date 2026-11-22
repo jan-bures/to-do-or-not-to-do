@@ -276,21 +276,23 @@ impl ShellView {
             cx.notify();
             return;
         }
+        // The dialog offers the stored name, made safe for Windows; notices show it on one line.
         let chosen = cx.prompt_for_new_path(&downloads_dir(), Some(&files::safe_file_name(&name)));
+        let label = model::labels::one_line(&name);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let path = match chosen.await {
                 Ok(Ok(Some(path))) => path,
                 Ok(Ok(None)) | Err(_) => return,
                 Ok(Err(e)) => {
                     let _ = this.update(cx, |v, cx| {
-                        v.notice = Some(Notice::error(format!("Couldn't save {name}: {e}")));
+                        v.notice = Some(Notice::error(format!("Couldn't save {label}: {e}")));
                         cx.notify();
                     });
                     return;
                 }
             };
             let Ok(Some(job)) = this.update(cx, |v, cx| {
-                v.notice = Some(Notice::info(format!("Downloading {name}…")));
+                v.notice = Some(Notice::info(format!("Downloading {label}…")));
                 cx.notify();
                 v.store.session().map(|s| s.download_to(id, path))
             }) else {
@@ -310,7 +312,7 @@ impl ShellView {
                     )),
                     Err(e) => {
                         tracing::warn!("saving an attachment failed: {e:#}");
-                        Notice::error(format!("Couldn't save {name}: {e}"))
+                        Notice::error(format!("Couldn't save {label}: {e}"))
                     }
                 });
                 cx.notify();
@@ -322,9 +324,10 @@ impl ShellView {
     /// Downloads a document or image (see `files::can_open`) into this pairing's attachments, marked as
     /// from the internet, and opens it with its app. Anything else can only be saved.
     fn open_attachment(&mut self, id: AttachmentId, name: SharedString, cx: &mut Context<Self>) {
+        let label = model::labels::one_line(&name);
         if !files::can_open(&name) {
             self.notice = Some(Notice::info(format!(
-                "{name} can only be saved, not opened here."
+                "{label} can only be saved, not opened here."
             )));
             cx.notify();
             return;
@@ -335,7 +338,7 @@ impl ShellView {
             return;
         };
         let job = session.download_to_open(id, &name);
-        self.notice = Some(Notice::info(format!("Downloading {name}…")));
+        self.notice = Some(Notice::info(format!("Downloading {label}…")));
         cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = job.await;
@@ -352,11 +355,11 @@ impl ShellView {
                         cx.open_with_system(&path);
                     }
                     Ok(_) => {
-                        v.notice = Some(Notice::error(format!("{name} can only be saved.")));
+                        v.notice = Some(Notice::error(format!("{label} can only be saved.")));
                     }
                     Err(e) => {
                         tracing::warn!("opening an attachment failed: {e:#}");
-                        v.notice = Some(Notice::error(format!("Couldn't open {name}: {e}")));
+                        v.notice = Some(Notice::error(format!("Couldn't open {label}: {e}")));
                     }
                 }
                 cx.notify();
@@ -629,7 +632,7 @@ impl ShellView {
                             .truncate()
                             .style(ty::NAV_SUB)
                             .text_color(p.ink)
-                            .child(a.name.clone()),
+                            .child(a.label.clone()),
                     )
                     .child(
                         div()

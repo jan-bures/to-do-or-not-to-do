@@ -457,3 +457,31 @@ fn done_today_counts_only_what_was_completed_since_midnight() {
     assert_eq!(shell.room.completed_count, 2);
     assert_eq!(shell.room.done_today, 0);
 }
+
+#[test]
+fn attachments_keep_their_stored_name_and_draw_a_one_line_label() {
+    let mut f = fixtures::my_day();
+    let q4 = f.ui.task.expect("selected");
+    let pdf = f
+        .state
+        .attachments
+        .values_mut()
+        .find(|a| a.task == q4 && a.file_name.ends_with(".pdf"))
+        .expect("the agenda");
+    pdf.file_name = "Q4\nagenda.pdf".into();
+    let detail = f.shell().detail.expect("detail");
+    let row = detail
+        .attachments
+        .iter()
+        .find(|a| a.name.ends_with(".pdf"))
+        .expect("row");
+    // Save, Open and the open check go by the stored name; only the label is one line.
+    assert_eq!(row.name.as_ref(), "Q4\nagenda.pdf");
+    assert_eq!(row.label.as_ref(), "Q4 agenda.pdf");
+    assert!(crate::model::files::can_open(&row.name));
+    // The save dialog offers the stored name made safe for Windows, not the label.
+    assert_eq!(
+        crate::model::files::safe_file_name(&row.name),
+        "Q4_agenda.pdf"
+    );
+}
