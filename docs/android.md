@@ -21,8 +21,11 @@ What the first version does:
   collection, the moves and the Completed toggle; in My Day, Important, Planned and All, the Completed
   toggle. Completed and Agent activity have no menu, so no button. Renaming asks for the name in a dialog
   (a blank one can't be saved). Deleting asks first, in full, as the desktop does ("Delete the list
-  “Errands” and its 4 tasks? Undo brings them back."), with **Cancel** first and focused. Deleting the
-  open list goes to My Day; the toast's **Undo** brings the list and its tasks back either way.
+  “Errands” and its 4 tasks? Undo brings them back."), with **Cancel** first and focused. Confirming checks
+  the question again (`TodoEngine::delete_list` takes the question the owner saw): if the list was renamed,
+  or tasks synced into it or out of it while the question was open, nothing is deleted and the new
+  question is asked, saying it changed. Deleting the open list goes to My Day, and the drawer closes so the
+  toast's **Undo** is in view; it brings the list and its tasks back either way.
 - **Agents.** Under the lists, the drawer shows the agents seen in the last seven days (at most four), each
   with its letter mark and what it did today ("2 added, 1 edited", "3 edited", "idle"), worded as the
   desktop's sidebar words it (`view::agents` in `todo-ffi`). The rows only tell; they aren't controls.
@@ -36,7 +39,8 @@ What the first version does:
   picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
   (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes
   the date away, and with it a repeat, which needs a date (`intent::set_due`); when the task repeats, a
-  note under the picker says so. The **Priority** row opens a picker with all four levels, highest first
+  note under the picker says so. In a short window (the cover screen on its side) the picker drops its
+  headline and mode toggle, and the calendar scrolls under the buttons, which stay in view. The **Priority** row opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
   high priority or none, as on the desktop.
 - **Steps.** Tap a step's title to rename it in place (Done or leaving the field keeps a changed title; a
@@ -113,6 +117,9 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   the sun. The empty line waits until the last ghost has gone. If a fresh read lists the task again (an
   agent changed it once more), that read lists it as it is, not placed, so the ghost goes at once and the
   live row shows its true state, at rest. Switching rooms ends every ghost.
+- **Refused changes** show in the banner in the app's own words (`todo_client::failure`, the desktop's
+  wording): what the change was and why it was refused, from the rejection's code. The server's message,
+  which can be technical or quote task content, never reaches the screen.
 - **Undo for deletions.** Deleting a step or a list goes through the same tracked path as a completion
   (`SyncClient::submit_tracked`, then `undo_tracked` from the toast): an unsent delete is cancelled, a sent
   one gets a checked inverse. A refused undo shows in the banner in plain words, naming what it reverses
@@ -120,11 +127,13 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   the item belongs to was deleted elsewhere meanwhile, the undo still brings back exactly the item, and the
   toast says why it stays hidden ("Step restored, but its task was deleted elsewhere.").
 - **Menus and dialogs** (moment 12). A menu opens under its button or row (over it, when there's no room
-  below), fading in and growing from 0.97 over `OVERLAY_IN` (`ENTER`) as it moves its last 4 dp away
-  from the anchor, and fades out over `OVERLAY_OUT` (`EXIT`). The chosen action runs at once; the menu
-  only leaves after. A dialog's scrim is the token's (`elevation.scrim`, in the room's hue, never
-  blurred), not the window's dim: it fades with the card, which grows from 0.97 and rises 6 dp, and drops
-  4 dp as it leaves. Menus and the date picker wear the one overlay shadow (`elevation.overlayShadow`, with
+  below), fading in and growing from `OVERLAY_FROM_SCALE` over `OVERLAY_IN` (`ENTER`) as it moves its last
+  `OVERLAY_SHIFT` away from the anchor, and fades out to `OVERLAY_TO_SCALE` over `OVERLAY_OUT` (`EXIT`).
+  The chosen action runs at once; the menu only leaves after, and takes no more taps while it does (a
+  double tap on Delete step deletes once). A dialog's scrim is the token's (`elevation.scrim`, in the
+  room's hue, never blurred), not the window's dim: it fades with the card, which grows from
+  `OVERLAY_FROM_SCALE` and rises `DIALOG_RISE`, and drops `DIALOG_DROP` as it leaves; its buttons are
+  one-shot too. Menus and the date picker wear the one overlay shadow (`elevation.overlayShadow`, with
   a `line-strong` border in dark mode). A reorder (a step, a list or a collection moved from its menu)
   glides the two rows it swaps over `ROW_ENTER` (`STANDARD`); a change from elsewhere moves nothing. These
   are Compose animations, so the animator scale stretches them, and at 0 they snap.
@@ -171,7 +180,8 @@ Popups and dialogs are windows of their own, which Paparazzi can't draw, so the 
 cards in place over the screen, at rest: the date picker (`due_date_picker`, drawn with today's ring off,
 since the picker reads the device's clock for it), the priority picker, a step being renamed and a step's
 menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
-rename dialog (`list_menu`), the delete question (`delete_confirmation`) and the agent summary. The gallery
+rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), and the agent
+summary; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon

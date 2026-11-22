@@ -131,6 +131,21 @@ pub struct Deletion {
     entity: EntityId,
 }
 
+/// What confirming a list's deletion did.
+#[derive(Debug, uniffi::Enum)]
+pub enum ListDeletion {
+    /// Deleted; the handle undoes exactly this deletion.
+    Deleted {
+        /// For the toast's Undo.
+        undo: Arc<Deletion>,
+    },
+    /// Nothing was deleted: the question reads differently now (`None`: the list is gone).
+    Changed {
+        /// The question to ask again.
+        question: Option<String>,
+    },
+}
+
 /// What an undo in the outbox reverses, so a refusal can say so in plain words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Undone {
@@ -221,36 +236,23 @@ fn collection_id(id: &str) -> Result<CollectionId, FfiError> {
     id.parse().map_err(|_| invalid("no such collection"))
 }
 
-/// What a queued change does, in the "Not saved" banner's words. An undo names what it reverses when
-/// this engine queued it ([`Undone`]).
+/// What a refused change was, in the "Not saved" banner's words: the shared wording
+/// (`todo_client::failure::what`) for a command, and for an undo this engine queued, what it reverses
+/// ([`Undone`]).
 fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
-    match entry.command() {
-        Some(Command::CreateTask(_)) => "Add a task",
-        Some(Command::UpdateTask { .. }) => "Edit a task",
-        Some(Command::CompleteTask { .. }) => "Complete a task",
-        Some(Command::UncompleteTask { .. }) => "Reopen a task",
-        Some(Command::SetMyDay { .. }) => "Change My Day",
-        Some(Command::CreateList { .. }) => "Add a list",
-        Some(Command::UpdateList { .. }) => "Rename a list",
-        Some(Command::UpdateCollection { .. }) => "Rename a collection",
-        Some(Command::CreateStep { .. }) => "Add a step",
-        Some(Command::UpdateStep { .. }) => "Rename a step",
-        Some(Command::CompleteStep { .. }) => "Complete a step",
-        Some(Command::UncompleteStep { .. }) => "Reopen a step",
-        Some(Command::Reorder { id, .. }) => match id {
-            EntityId::Step(_) => "Move a step",
-            EntityId::List(_) => "Move a list",
-            EntityId::Collection(_) => "Move a collection",
-            _ => "Move an item",
-        },
-        Some(Command::Delete { id }) => match id {
-            EntityId::Step(_) => "Delete a step",
-            EntityId::List(_) => "Delete a list",
-            EntityId::Task(_) => "Delete a task",
-            _ => "Delete an item",
-        },
-        Some(_) => "A change",
-        None => undone.map_or("Undo a change", Undone::what),
+    match (entry.command(), undone) {
+        (None, Some(undone)) => undone.what(),
+        _ => todo_client::failure::what(entry),
+    }
+}
+
+/// Why the server refused a change, in the app's own words: from the rejection's code, never the
+/// server's message, which can be technical or quote task content.
+fn reason(failed: &todo_client::FailedEntry, undone: Option<Undone>) -> String {
+    if failed.entry.command().is_some() {
+        todo_client::failure::why(failed).to_owned()
+    } else {
+        undo_failure_message(&failed.rejection.code, undone)
     }
 }
 
@@ -763,10 +765,20 @@ impl TodoEngine {
         delete_list_question(&self.client.view(), id.parse().ok()?)
     }
 
-    /// Deletes a list and its tasks. The returned handle undoes exactly this deletion.
-    pub fn delete_list(&self, id: String) -> Result<Arc<Deletion>, FfiError> {
-        let (id, _) = self.live_list(&id)?;
-        self.delete_tracked(id.into())
+    /// Deletes a list and its tasks, if the owner saw what goes with it: `asked` is the question they
+    /// confirmed ([`delete_list_question`](Self::delete_list_question)). When it reads differently now
+    /// (the list was renamed, or tasks synced into it or out of it meanwhile), nothing is deleted and the
+    /// new question comes back, to ask again; `None` in it when the list is gone.
+    pub fn delete_list(&self, id: String, asked: String) -> Result<ListDeletion, FfiError> {
+        let list = list_id(&id)?;
+        let now = delete_list_question(&self.client.view(), list);
+        if now.as_deref() != Some(asked.as_str()) {
+            return Ok(ListDeletion::Changed { question: now });
+        }
+        let (list, _) = self.live_list(&id)?;
+        Ok(ListDeletion::Deleted {
+            undo: self.delete_tracked(list.into())?,
+        })
     }
 
     /// Undoes a deletion: cancels it if unsent, else queues its checked inverse (a refusal shows in
@@ -897,11 +909,7 @@ impl TodoEngine {
                 FailedChange {
                     id: f.entry.command_id.to_string(),
                     what: describe(&f.entry, undone).into(),
-                    reason: if f.entry.command().is_none() {
-                        undo_failure_message(&f.rejection.code, undone)
-                    } else {
-                        f.rejection.message
-                    },
+                    reason: reason(&f, undone),
                 }
             })
             .collect()
@@ -1165,7 +1173,13 @@ mod tests {
                 .expect("move")
         );
         expected.push(intent::nudge(&state, list.into(), by).expect("move"));
-        engine.delete_list(list.to_string()).expect("delete");
+        let asked = engine
+            .delete_list_question(list.to_string())
+            .expect("question");
+        assert!(matches!(
+            engine.delete_list(list.to_string(), asked).expect("delete"),
+            ListDeletion::Deleted { .. }
+        ));
         expected.push(intent::delete(list));
         assert_eq!(queued(&engine, at), expected);
     }
@@ -1195,6 +1209,54 @@ mod tests {
         let detail = engine.task(id, now).expect("task");
         assert_eq!((detail.due, detail.repeats), (None, false));
         assert_eq!(engine.state().tasks[&task].recurrence, None);
+    }
+
+    #[test]
+    fn refused_changes_never_show_the_servers_text() {
+        let secret = "raw: seq 41 conflicts with \u{201c}Secret title\u{201d}";
+        let failed = |op, code: &str| todo_client::FailedEntry {
+            entry: OutboxEntry {
+                command_id: Uuid::from_u128(7),
+                op,
+                submitted_at: Timestamp::UNIX_EPOCH,
+                attempts: 1,
+                acked: None,
+                acked_epoch: None,
+            },
+            failed_at: Timestamp::UNIX_EPOCH,
+            rejection: todo_client::Rejection {
+                status: 409,
+                code: code.into(),
+                message: secret.into(),
+            },
+        };
+        let delete = todo_client::Operation::Command {
+            command: intent::delete(StepId::from_uuid(Uuid::nil())),
+        };
+        for code in ["deleted", "not_found", "invalid", "something_new"] {
+            let f = failed(delete.clone(), code);
+            let why = reason(&f, None);
+            assert!(!why.contains("Secret") && !why.contains("seq"), "{why}");
+            assert_eq!(why, todo_client::failure::why(&f));
+            assert_eq!(describe(&f.entry, None), "Delete a step");
+        }
+        assert_eq!(
+            reason(&failed(delete, "deleted"), None),
+            "It was deleted elsewhere."
+        );
+        let undo = todo_client::Operation::UndoAfter {
+            original: Uuid::from_u128(1),
+        };
+        let f = failed(undo, "undo_conflict");
+        assert_eq!(
+            reason(&f, Some(Undone::Step)),
+            "Couldn't undo: the step was changed again."
+        );
+        assert_eq!(
+            describe(&f.entry, Some(Undone::Step)),
+            "Undo deleting a step"
+        );
+        assert_eq!(describe(&f.entry, None), "Undo a change");
     }
 
     #[test]

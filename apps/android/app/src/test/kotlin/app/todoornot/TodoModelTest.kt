@@ -1664,8 +1664,10 @@ class TodoModelTest {
         val question = m.deleteListQuestion(id)!!
         assertTrue(question, question.startsWith("Delete the list “Admin” and its "))
         val generation = m.ui.value.generation
-        m.deleteList(id)
+        val results = mutableListOf<String?>()
+        m.deleteList(id, question) { results += it }
         s.drain()
+        assertEquals(listOf<String?>(null), results)
         val ui = m.ui.value
         assertEquals(MY_DAY, ui.room.key)
         assertTrue("a new room generation", ui.generation > generation)
@@ -1687,7 +1689,7 @@ class TodoModelTest {
     fun deleting_another_list_keeps_the_room() = runTest {
         val m = model()
         val errands = m.engine.list("Errands") as RoomKey.List
-        m.deleteList(errands.id)
+        m.deleteList(errands.id, m.deleteListQuestion(errands.id)!!) {}
         advanceUntilIdle()
         assertEquals(MY_DAY, m.ui.value.room.key)
         assertEquals("Deleted list “Errands”", m.ui.value.toast?.text)
@@ -1702,5 +1704,34 @@ class TodoModelTest {
         val late = LocalNow(java.time.Instant.parse("2026-11-21T23:30:00Z").toEpochMilli(), 3600)
         assertEquals("2026-11-22", app.todoornot.model.isoDay(late))
         assertEquals("2026-11-21", app.todoornot.model.isoDay(late.copy(utcOffsetSecs = 0)))
+    }
+
+    @Test
+    fun a_delete_question_gone_stale_asks_again_and_deletes_nothing() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val errands = m.engine.list("Errands") as RoomKey.List
+        val asked = m.deleteListQuestion(errands.id)!!
+        // A task arrives in the list while the question is open (a sync, say).
+        m.engine.addTask(errands, "Buy stamps", FIXTURE_NOW)
+        val results = mutableListOf<String?>()
+        m.deleteList(errands.id, asked) { results += it }
+        s.drain()
+        val again = results.single()!!
+        assertNotEquals(asked, again)
+        assertTrue(again, again.startsWith("Delete the list “Errands” and its "))
+        assertTrue("nothing deleted", m.ui.value.home.groups.flatMap { it.lists }.any { it.key == errands })
+        assertNull(m.ui.value.toast)
+        // Confirmed as it reads now: deleted, with Undo.
+        m.deleteList(errands.id, again) { results += it }
+        s.drain()
+        assertEquals(null, results.last())
+        assertTrue(m.ui.value.toast!!.undoable)
+        // Gone by the time it's confirmed: nothing to delete, and the owner is told.
+        m.deleteList(errands.id, again) { results += it }
+        s.drain()
+        assertEquals(null, results.last())
+        assertEquals("That list was deleted elsewhere.", m.ui.value.toast?.text)
     }
 }

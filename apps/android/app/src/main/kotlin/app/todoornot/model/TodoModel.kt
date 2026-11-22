@@ -6,6 +6,7 @@ import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.Home
+import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.Reopening
@@ -829,16 +830,30 @@ class TodoModel(
     override fun deleteListQuestion(id: String): String? = engine.deleteListQuestion(id)
 
     /**
-     * Deletes a list and its tasks. If it's the room on screen, My Day opens (as on the desktop); the toast
-     * names the list and offers Undo either way.
+     * Deletes a list and its tasks, if [asked] is still what deleting it means: the engine checks the
+     * question again behind every write already made, and if the list was renamed or tasks came or went
+     * meanwhile, deletes nothing and [onResult] gets the new question. If it's the room on screen, My Day
+     * opens (as on the desktop); the toast names the list and offers Undo either way.
      */
-    override fun deleteList(id: String) {
+    override fun deleteList(id: String, asked: String, onResult: (String?) -> Unit) {
         val name = _ui.value.home.groups.flatMap { it.lists }.firstOrNull { (it.key as? RoomKey.List)?.id == id }?.name
-        act {
-            val target = engine.deleteList(id)
-            val here = key
-            if (here is RoomKey.List && here.id == id) enter(RoomKey.Smart(SmartList.MY_DAY))
-            show(Toast(++serial, name?.let { "Deleted list “${oneLine(it)}”" } ?: "Deleted a list", deletion = target))
+        scope.launch {
+            var again: String? = null
+            writeEdit {
+                when (val r = engine.deleteList(id, asked)) {
+                    is ListDeletion.Deleted -> {
+                        val here = key
+                        if (here is RoomKey.List && here.id == id) enter(RoomKey.Smart(SmartList.MY_DAY))
+                        show(Toast(++serial, name?.let { "Deleted list “${oneLine(it)}”" } ?: "Deleted a list", deletion = r.undo))
+                    }
+                    is ListDeletion.Changed -> {
+                        again = r.question
+                        if (r.question == null) show(Toast(++serial, "That list was deleted elsewhere."))
+                    }
+                }
+            }?.let { show(Toast(++serial, it)) }
+            refresh()
+            onResult(again)
         }
     }
 

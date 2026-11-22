@@ -180,6 +180,17 @@ pub const UNDO_WINDOW: u32 = 6000;
 pub const TOAST_RISE: f32 = 8.0;
 /// How far the undo toast drops while leaving, in logical pixels.
 pub const TOAST_DROP: f32 = 6.0;
+/// The scale an anchored menu, a popover or a dialog card enters from; it grows to `1.0` over
+/// [`OVERLAY_IN`] ([`ENTER`]).
+pub const OVERLAY_FROM_SCALE: f32 = 0.97;
+/// The scale an anchored menu or popover shrinks to while leaving over [`OVERLAY_OUT`] ([`EXIT`]).
+pub const OVERLAY_TO_SCALE: f32 = 0.98;
+/// How far an anchored menu or popover moves away from its anchor as it enters, in logical pixels.
+pub const OVERLAY_SHIFT: f32 = 4.0;
+/// How far a dialog card rises into place as it enters, in logical pixels.
+pub const DIALOG_RISE: f32 = 6.0;
+/// How far a dialog card drops while leaving, in logical pixels.
+pub const DIALOG_DROP: f32 = 4.0;
 
 /// Named durations in milliseconds, for the exports.
 pub const DURATIONS: [(&str, u32); 23] = [
@@ -211,12 +222,17 @@ pub const DURATIONS: [(&str, u32); 23] = [
 /// The choreography's cues and shapes that aren't durations (a scale, shares of [`DUSK`], a distance in
 /// pixels and an item count), for the exports. Clients that can't link this crate (Android) read them from
 /// `tokens.json` (`motion.cues`).
-pub const CUES: [(&str, f32); 5] = [
+pub const CUES: [(&str, f32); 10] = [
     ("check-fill-from-scale", CHECK_FILL_FROM_SCALE),
     ("dusk-night-at", DUSK_NIGHT_AT),
     ("dusk-handover-at", DUSK_HANDOVER_AT),
     ("dusk-handover-rise", DUSK_HANDOVER_RISE),
     ("stagger-max-items", STAGGER_MAX_ITEMS as f32),
+    ("overlay-from-scale", OVERLAY_FROM_SCALE),
+    ("overlay-to-scale", OVERLAY_TO_SCALE),
+    ("overlay-shift", OVERLAY_SHIFT),
+    ("dialog-rise", DIALOG_RISE),
+    ("dialog-drop", DIALOG_DROP),
 ];
 
 /// The duration to use with reduced motion: movement, scale, rotation and stagger become instant (`0 ms`),
@@ -281,6 +297,15 @@ mod tests {
         let cue = |name: &str| CUES.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
         assert_eq!(cue("stagger-max-items"), Some(STAGGER_MAX_ITEMS as f32));
         assert_eq!(cue("dusk-night-at"), Some(DUSK_NIGHT_AT));
+        assert_eq!(cue("overlay-from-scale"), Some(OVERLAY_FROM_SCALE));
+        // Overlays grow in from just under full size and leave shrinking less than they grew.
+        const {
+            assert!(
+                0.9 < OVERLAY_FROM_SCALE
+                    && OVERLAY_FROM_SCALE < OVERLAY_TO_SCALE
+                    && OVERLAY_TO_SCALE < 1.
+            )
+        };
         // Shares of DUSK, in order.
         const {
             assert!(0. < DUSK_NIGHT_AT && DUSK_NIGHT_AT < DUSK_HANDOVER_AT && DUSK_HANDOVER_AT < 1.)

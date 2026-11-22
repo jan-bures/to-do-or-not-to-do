@@ -9,6 +9,7 @@ use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::{ClientConfig, MemoryStorage, SyncClient};
 use todo_core::command::NewTask;
 use todo_core::{Actor, Command, DeviceId};
+use todo_ffi::engine::{Deletion, ListDeletion};
 use todo_ffi::engine::{EngineConfig, SyncState};
 use todo_ffi::labels::LocalNow;
 use todo_ffi::pairing::{self, PairPoll};
@@ -1057,6 +1058,56 @@ fn due_dates_priorities_and_step_edits() {
     );
 }
 
+/// Confirms deleting a list with the question the owner saw, expecting it to go.
+fn confirm_delete(engine: &TodoEngine, id: &str, asked: String) -> Arc<Deletion> {
+    match engine.delete_list(id.to_owned(), asked).unwrap() {
+        ListDeletion::Deleted { undo } => undo,
+        ListDeletion::Changed { question } => panic!("asked again: {question:?}"),
+    }
+}
+
+/// A question confirmed after it changed deletes nothing and asks again, with what goes with it now.
+#[test]
+fn a_stale_delete_question_asks_again_instead_of_deleting() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let RoomKey::List { id } = engine
+        .create_list("Garden".into(), RoomKey::default())
+        .unwrap()
+    else {
+        panic!("a list")
+    };
+    let room = RoomKey::List { id: id.clone() };
+    let asked = engine.delete_list_question(id.clone()).unwrap();
+    assert_eq!(asked, "Delete the list “Garden”? Undo brings it back.");
+    // A task syncs into the list while the question is open.
+    engine
+        .add_task(room.clone(), "Plant bulbs".into(), now())
+        .unwrap();
+    let ListDeletion::Changed {
+        question: Some(again),
+    } = engine.delete_list(id.clone(), asked).unwrap()
+    else {
+        panic!("deleted with a stale question")
+    };
+    assert_eq!(
+        again,
+        "Delete the list “Garden” and its task? Undo brings them back."
+    );
+    assert_eq!(engine.room(room.clone(), now()).tasks.len(), 1);
+    // Renamed meanwhile: asked again too.
+    engine.rename_list(id.clone(), "Allotment".into()).unwrap();
+    let ListDeletion::Changed {
+        question: Some(renamed),
+    } = engine.delete_list(id.clone(), again).unwrap()
+    else {
+        panic!("deleted with a stale name")
+    };
+    assert!(renamed.contains("“Allotment”"), "{renamed}");
+    // Confirmed as it reads now: deleted.
+    confirm_delete(&engine, &id, renamed);
+    assert!(engine.delete_list_question(id).is_none());
+}
+
 fn collection_named(engine: &TodoEngine, name: &str) -> (String, Vec<todo_ffi::view::NavItem>) {
     let group = engine
         .home(now())
@@ -1138,13 +1189,13 @@ fn lists_and_collections_rename_reorder_and_delete() {
         question,
         format!("Delete the list “Shopping” and its {tasks} tasks? Undo brings them back.")
     );
-    let deleted = engine.delete_list(errands.clone()).unwrap();
+    let deleted = confirm_delete(&engine, &errands, question.clone());
     assert!(engine.delete_list_question(errands.clone()).is_none());
     let (_, lists) = collection_named(&engine, "Home");
     assert!(lists.iter().all(|l| l.name != "Shopping"));
     assert!(matches!(
-        engine.delete_list(errands.clone()),
-        Err(FfiError::Invalid { .. })
+        engine.delete_list(errands.clone(), question).unwrap(),
+        ListDeletion::Changed { question: None }
     ));
     assert_eq!(engine.undo_deletion(deleted).unwrap(), None);
     let back = engine.room(list, now());
@@ -1241,7 +1292,8 @@ async fn undoing_a_deletion_restores_it_on_the_server() {
     })
     .await;
 
-    let deleted = engine.delete_list(list.clone()).unwrap();
+    let question = engine.delete_list_question(list.clone()).unwrap();
+    let deleted = confirm_delete(&engine, &list, question);
     eventually("list deleted", || {
         engine.status().pending == 0 && !remote.state().is_live(list_id.into())
     })

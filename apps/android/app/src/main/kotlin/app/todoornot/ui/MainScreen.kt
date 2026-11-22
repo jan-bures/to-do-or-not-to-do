@@ -126,19 +126,44 @@ private fun Screen(
             if (name == null) {
                 SideEffect { renaming = null }
             } else {
-                OverlayDialog(onDismiss = { renaming = null }) { close ->
-                    RenameCard(renameTitle(room), name, onSave = { actions.renameRoom(room, it); close() }, onCancel = close)
+                OverlayDialog(onDismiss = { renaming = null }) { overlay ->
+                    RenameCard(renameTitle(room), name, onSave = { n -> overlay.choose { actions.renameRoom(room, n) } }, onCancel = overlay::close)
                 }
             }
         }
         deleting?.let { id ->
-            // Asked once: deleting the list mustn't change the question while the dialog leaves.
-            val question = remember(id) { actions.deleteListQuestion(id) }
-            if (question == null) {
+            // The question as the owner reads it. Confirming checks it again: if the list changed meanwhile
+            // (renamed, or tasks synced in or out), nothing is deleted and the new question is asked.
+            var question by remember(id) { mutableStateOf(actions.deleteListQuestion(id)) }
+            var changed by remember(id) { mutableStateOf(false) }
+            var busy by remember(id) { mutableStateOf(false) }
+            val asked = question
+            if (asked == null) {
                 SideEffect { deleting = null }
             } else {
-                OverlayDialog(onDismiss = { deleting = null }) { close ->
-                    DeleteListCard(question, onDelete = { actions.deleteList(id); close() }, onCancel = close)
+                OverlayDialog(onDismiss = { deleting = null }) { overlay ->
+                    DeleteListCard(
+                        asked,
+                        onDelete = {
+                            if (overlay.open && !busy) {
+                                busy = true
+                                actions.deleteList(id, asked) { again ->
+                                    busy = false
+                                    if (again == null) {
+                                        // Done: the toast with Undo is on the room, so the drawer makes way.
+                                        overlay.close()
+                                        scope.launch { drawer.close() }
+                                    } else {
+                                        question = again
+                                        changed = true
+                                    }
+                                }
+                            }
+                        },
+                        onCancel = overlay::close,
+                        changed = changed,
+                        busy = busy,
+                    )
                 }
             }
         }

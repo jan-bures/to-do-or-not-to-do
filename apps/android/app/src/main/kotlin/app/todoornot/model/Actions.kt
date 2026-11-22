@@ -52,8 +52,12 @@ interface Actions {
     /** The question before deleting a list, saying what goes with it; null if it's gone. */
     fun deleteListQuestion(id: String): String?
 
-    /** Deletes a list and its tasks (after the question); the toast offers Undo. */
-    fun deleteList(id: String)
+    /**
+     * Deletes a list and its tasks if [asked] (the question the owner confirmed) still reads the same; the
+     * toast offers Undo. [onResult] gets null when it's done (or the list is gone), else the new question
+     * to ask again.
+     */
+    fun deleteList(id: String, asked: String, onResult: (String?) -> Unit)
 
     /** Filters the open room: the query language when it parses, else words in the title. */
     fun setFilter(text: String)
@@ -102,7 +106,7 @@ interface Actions {
         override fun renameRoom(room: RoomKey, name: String) = Unit
         override fun moveRoom(room: RoomKey, by: Int) = Unit
         override fun deleteListQuestion(id: String): String? = null
-        override fun deleteList(id: String) = Unit
+        override fun deleteList(id: String, asked: String, onResult: (String?) -> Unit) = Unit
         override fun setFilter(text: String) = Unit
         override fun setSearching(on: Boolean) = Unit
         override fun toggleCollection(id: String) = Unit

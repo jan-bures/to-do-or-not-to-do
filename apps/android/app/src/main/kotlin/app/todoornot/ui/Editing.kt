@@ -2,13 +2,17 @@ package app.todoornot.ui
 
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -75,6 +79,9 @@ private fun tokenTypography(): Typography {
  * on the task's date (or today's month), takes a tap on a day (or a typed date), and saves with **Save**.
  * **Clear** takes the date away, and with it a repeat, which the note says. [markToday] rings today's
  * date; the gallery turns it off, as the picker reads the device's clock for it.
+ *
+ * In a short window (the cover screen on its side) it drops the picker's headline and mode toggle, and the
+ * calendar scrolls under the buttons, which always stay in view.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -114,21 +121,35 @@ fun DueDateCard(
         dividerColor = r.line,
     )
     val shape = RoundedCornerShape(Tokens.Radius.XL.dp)
+    BoxWithConstraints(modifier) {
+    val compact = maxHeight < COMPACT_BELOW
     Column(
-        modifier
+        Modifier
             .widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp)
             .overlay(shape, d)
             .semantics { paneTitle = "Due date" },
     ) {
-        MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = tokenTypography()) {
-            DatePicker(
-                state = state,
-                colors = colors,
-                title = { Label("Due", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S6.dp, top = S.S4.dp)) },
-                showModeToggle = true,
-            )
+        Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+            MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = tokenTypography()) {
+                DatePicker(
+                    state = state,
+                    colors = colors,
+                    title = if (compact) null else {
+                        { Label("Due", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S6.dp, top = S.S4.dp)) }
+                    },
+                    headline = if (compact) null else {
+                        { DatePickerDefaults.DatePickerHeadline(state.selectedDateMillis, state.displayMode, DatePickerDefaults.dateFormatter(), Modifier.padding(start = S.S6.dp, end = S.S3.dp, bottom = S.S3.dp)) }
+                    },
+                    showModeToggle = !compact,
+                )
+            }
         }
-        Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S5.dp), verticalArrangement = Arrangement.spacedBy(S.S3.dp)) {
+        Column(
+            // Compact, the calendar scrolls under a line above the buttons.
+            (if (compact) Modifier.hairline(r.line, top = true) else Modifier)
+                .padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S5.dp, top = if (compact) S.S3.dp else 0.dp),
+            verticalArrangement = Arrangement.spacedBy(S.S3.dp),
+        ) {
             if (repeats && due != null) Label(REPEAT_NOTE, Tokens.Type.META_PHONE, r.ink3, maxLines = 2)
             Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                 if (due != null) Button("Clear", primary = false, modifier = Modifier.weight(1f)) { onSave(null) }
@@ -140,7 +161,14 @@ fun DueDateCard(
             }
         }
     }
+    }
 }
+
+/** Below this height the date picker drops its headline (the cover screen on its side). */
+private val COMPACT_BELOW = Tokens.Metrics.Phone.INNER_LIST.dp + Tokens.Space.S10.dp * 2
+
+/** Shown when the list changed (renamed, or tasks came or went) while the delete question was open. */
+const val LIST_CHANGED = "The list changed while the question was open. Check it, then confirm again."
 
 /** Under the picker when the task repeats: what Clear also does. */
 const val REPEAT_NOTE = "This task repeats. Clearing the date also stops the repeat."
@@ -148,8 +176,8 @@ const val REPEAT_NOTE = "This task repeats. Clearing the date also stops the rep
 /** The due date picker in its dialog. */
 @Composable
 fun DueDateDialog(due: String?, today: String, repeats: Boolean, onSave: (String?) -> Unit, onDismiss: () -> Unit) {
-    OverlayDialog(onDismiss) { close ->
-        DueDateCard(due, today, repeats, onSave = { onSave(it); close() }, onCancel = close)
+    OverlayDialog(onDismiss) { overlay ->
+        DueDateCard(due, today, repeats, onSave = { d -> overlay.choose { onSave(d) } }, onCancel = overlay::close)
     }
 }
 
@@ -197,17 +225,27 @@ fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: 
 /**
  * Asks before deleting a list, saying in full which list and how many tasks go with it, and that Undo
  * brings them back. Cancel is the default: first, filled and focused; Back or a tap outside cancels too.
+ * [changed] says the question was asked again because what goes with the list changed while it was open;
+ * while a confirmation is on its way ([busy]) Delete list takes no more taps.
  */
 @Composable
-fun DeleteListCard(question: String, onDelete: () -> Unit, onCancel: () -> Unit, focusCancel: Boolean = true) {
+fun DeleteListCard(
+    question: String,
+    onDelete: () -> Unit,
+    onCancel: () -> Unit,
+    focusCancel: Boolean = true,
+    changed: Boolean = false,
+    busy: Boolean = false,
+) {
     val r = LocalDesign.current.room
     val cancel = remember { FocusRequester() }
     if (focusCancel) LaunchedEffect(Unit) { runCatching { cancel.requestFocus() } }
     DialogCard("Delete list?") {
         Label("Delete list?", Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         Label(question, Tokens.Type.NOTES, r.ink2, maxLines = 8)
+        if (changed) Label(LIST_CHANGED, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)
         Button("Cancel", primary = true, modifier = Modifier.focusRequester(cancel), onClick = onCancel)
-        Button("Delete list", primary = false, danger = true, onClick = onDelete)
+        Button("Delete list", primary = false, danger = true, enabled = !busy, onClick = onDelete)
     }
 }
 

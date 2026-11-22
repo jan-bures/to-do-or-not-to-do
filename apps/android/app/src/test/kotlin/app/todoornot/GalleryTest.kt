@@ -93,13 +93,14 @@ class GalleryTest {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
-    init {
-        // And the JVM's own default, which formats some dates too.
-        java.util.Locale.setDefault(java.util.Locale.US)
-    }
+    /** The JVM's own default locale, which formats some dates too: US English here, put back after. */
+    private val locale: java.util.Locale = java.util.Locale.getDefault().also { java.util.Locale.setDefault(java.util.Locale.US) }
 
     @After
-    fun tearDown() = scope.cancel()
+    fun tearDown() {
+        scope.cancel()
+        java.util.Locale.setDefault(locale)
+    }
 
     private fun state(
         engine: TodoEngine,
@@ -445,6 +446,12 @@ class GalleryTest {
         overlaid("due_date_picker_undated_light", COVER, s, dark = false) {
             DialogBackdrop { DueDateCard(null, s.today, repeats = false, onSave = {}, onCancel = {}, markToday = false) }
         }
+        // A short window (the cover screen on its side): no headline, the calendar scrolls, the buttons stay.
+        val (e2, admin2, id2) = admin()
+        val s2 = state(e2, admin2, select = id2)
+        overlaid("due_date_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
+            DialogBackdrop { DueDateCard(s2.detail?.due, s2.today, repeats = true, onSave = {}, onCancel = {}, markToday = false) }
+        }
     }
 
     /** The priority picker under the Priority row: four levels, the current one ticked. */
@@ -532,6 +539,13 @@ class GalleryTest {
             overlaid("delete_list_${if (dark) "dark" else "light"}", COVER, s, dark) {
                 DialogBackdrop { DeleteListCard(question, {}, {}, focusCancel = false) }
             }
+        }
+        // Asked again: the list changed while the question was open.
+        val e = fixtureEngine()
+        val errands = e.list("Errands") as RoomKey.List
+        val s = state(e, errands)
+        overlaid("delete_list_changed_light", COVER, s, dark = false) {
+            DialogBackdrop { DeleteListCard(requireNotNull(e.deleteListQuestion(errands.id)), {}, {}, focusCancel = false, changed = true) }
         }
     }
 

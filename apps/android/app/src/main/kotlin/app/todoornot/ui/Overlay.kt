@@ -140,11 +140,23 @@ private fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
 
 /**
  * Whether an overlay is up, and how it leaves: [close] plays the exit (`OVERLAY_OUT`), then calls
- * `onGone`. Nothing waits for it: the chosen action has already run.
+ * `onGone`. Nothing waits for it: the chosen action has already run. Choosing is one-shot: once the
+ * overlay is leaving, [choose] does nothing, so a second tap during the exit (a double tap on Delete step)
+ * never runs the action again.
  */
 class OverlayState internal constructor(internal val shown: MutableTransitionState<Boolean>) {
+    /** Up, and not leaving. */
+    val open: Boolean get() = shown.targetState
+
     fun close() {
         shown.targetState = false
+    }
+
+    /** Runs [action] and closes, once: nothing while the overlay is already leaving. */
+    fun choose(action: () -> Unit) {
+        if (!open) return
+        close()
+        action()
     }
 }
 
@@ -193,7 +205,7 @@ fun MenuPopup(
 ) {
     val overlay = rememberOverlay(onDismiss)
     val density = LocalDensity.current
-    val shift = with(density) { S.S1.dp.roundToPx() }
+    val shift = with(density) { M.OVERLAY_SHIFT.dp.roundToPx() }
     val position = remember(start, density) {
         with(density) { MenuPosition(start, S.S2.dp.roundToPx(), S.S2.dp.roundToPx()) }
     }
@@ -206,13 +218,13 @@ fun MenuPopup(
         AnimatedVisibility(
             overlay.shown,
             enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) +
-                scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = 0.97f, transformOrigin = TransformOrigin(origin, 0f)) +
+                scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = M.OVERLAY_FROM_SCALE, transformOrigin = TransformOrigin(origin, 0f)) +
                 slideInVertically(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) { -shift },
             exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) +
-                scaleOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic()), targetScale = 0.98f, transformOrigin = TransformOrigin(origin, 0f)),
+                scaleOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic()), targetScale = M.OVERLAY_TO_SCALE, transformOrigin = TransformOrigin(origin, 0f)),
         ) {
             // Room for the shadow around the card.
-            MenuCard(entries, { action -> onChoose(action); overlay.close() }, Modifier.padding(S.S2.dp), title)
+            MenuCard(entries, { action -> overlay.choose { onChoose(action) } }, Modifier.padding(S.S2.dp), title)
         }
     }
 }
@@ -248,14 +260,15 @@ fun DialogCard(title: String, modifier: Modifier = Modifier, content: @Composabl
  * A modal dialog (`docs/design-language.md`, Motion, 12): the scrim (the token's, in the room's hue, never
  * blurred) fades in over `OVERLAY_IN` while the card fades in, grows from 0.97 and rises 6 dp; leaving,
  * both fade over `OVERLAY_OUT` as the card drops 4 dp. Back or a tap on the scrim cancels.
- * [content] gets `close`, which plays the exit and then calls [onDismiss].
+ * [content] gets the dialog's [OverlayState]: `close` plays the exit and then calls [onDismiss], and
+ * `choose` runs a button's action only once.
  */
 @Composable
-fun OverlayDialog(onDismiss: () -> Unit, content: @Composable (close: () -> Unit) -> Unit) {
+fun OverlayDialog(onDismiss: () -> Unit, content: @Composable (OverlayState) -> Unit) {
     val overlay = rememberOverlay(onDismiss)
     val density = LocalDensity.current
-    val rise = with(density) { (S.S1.dp + S.S1.dp / 2).roundToPx() }
-    val drop = with(density) { S.S1.dp.roundToPx() }
+    val rise = with(density) { M.DIALOG_RISE.dp.roundToPx() }
+    val drop = with(density) { M.DIALOG_DROP.dp.roundToPx() }
     Dialog(
         onDismissRequest = overlay::close,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -281,12 +294,12 @@ fun OverlayDialog(onDismiss: () -> Unit, content: @Composable (close: () -> Unit
                 AnimatedVisibility(
                     overlay.shown,
                     enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) +
-                        scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = 0.97f) +
+                        scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = M.OVERLAY_FROM_SCALE) +
                         slideInVertically(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) { rise },
                     exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) +
                         slideOutVertically(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) { drop },
                 ) {
-                    content(overlay::close)
+                    content(overlay)
                 }
             }
         }
