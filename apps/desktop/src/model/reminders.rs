@@ -273,8 +273,8 @@ pub enum Activation {
     Snooze(Occurrence),
     /// Complete the reminder's task.
     Complete(Occurrence),
-    /// The summary of missed reminders: show the window.
-    Missed,
+    /// The summary of several missed reminders (its token): show the window.
+    Missed(u64),
 }
 
 impl Activation {
@@ -285,18 +285,19 @@ impl Activation {
             Self::Open(o) => named("open", o),
             Self::Snooze(o) => named("snooze", o),
             Self::Complete(o) => named("complete", o),
-            Self::Missed => MISSED_TAG.into(),
+            Self::Missed(token) => format!("{MISSED_TAG}:{token}"),
         }
     }
 
     /// What a toast's argument asks for; `None` for anything else (an empty body click, a stale or
     /// foreign argument).
     pub fn parse(arguments: &str) -> Option<Self> {
-        if arguments == MISSED_TAG {
-            return Some(Self::Missed);
-        }
         let mut parts = arguments.split(':');
         let verb = parts.next()?;
+        if verb == MISSED_TAG {
+            let token = parts.next()?.parse().ok()?;
+            return parts.next().is_none().then_some(Self::Missed(token));
+        }
         let occurrence = Occurrence {
             id: parts.next()?.parse().ok()?,
             at: parts.next()?.parse().ok()?,
@@ -312,6 +313,14 @@ impl Activation {
             _ => return None,
         })
     }
+
+    /// The token of the toast it came from.
+    pub fn token(self) -> u64 {
+        match self {
+            Self::Open(o) | Self::Snooze(o) | Self::Complete(o) => o.token,
+            Self::Missed(token) => token,
+        }
+    }
 }
 
 /// A toast to show: what it says and what its buttons ask for.
@@ -321,7 +330,8 @@ pub struct Toast {
     pub tag: String,
     pub title: String,
     pub body: String,
-    /// What clicking the toast itself asks for.
+    /// What clicking the toast itself asks for. Its token also names the toast when Windows reports
+    /// that it failed after all ([`Reminders::failed`]).
     pub launch: Activation,
     /// Its buttons, in order: the label and what it asks for.
     pub actions: Vec<(&'static str, Activation)>,
@@ -403,10 +413,29 @@ pub fn missed_toast(state: &State, missed: &[Alarm], token: u64, now: &Now) -> O
         tag: MISSED_TAG.into(),
         title: format!("{} missed reminders", missed.len()),
         body: body.join(", "),
-        launch: Activation::Missed,
-        actions: vec![("Open", Activation::Missed)],
+        launch: Activation::Missed(token),
+        actions: vec![("Open", Activation::Missed(token))],
         quiet: false,
     })
+}
+
+/// Whether the reminder of `occurrence` is still as its toast showed it in `state`: live, at the same
+/// time, on `task`, which is open. What a toast's Complete checks again at the moment it queues the
+/// completion (`SyncClient::submit_tracked_if`), so a sync that moved, removed or completed it
+/// meanwhile wins.
+pub fn still_as_shown(state: &State, occurrence: Occurrence, task: TaskId) -> bool {
+    let Some(r) = state.reminders.get(&occurrence.id) else {
+        return false;
+    };
+    let open = state
+        .tasks
+        .get(&task)
+        .is_some_and(|t| !t.is_done() && t.merged_into.is_none());
+    r.task == task
+        && ms(r.at) == occurrence.at
+        && open
+        && state.is_live(occurrence.id.into())
+        && state.is_live(task.into())
 }
 
 /// What a pass did: whether the schedule changed (and should be saved), when to look again, and
@@ -425,8 +454,8 @@ pub enum Claim {
     Open(TaskId),
     /// Snooze was done.
     Snoozed(Outcome),
-    /// Complete this task, which was open as the reminder was shown.
-    Complete(TaskId),
+    /// Complete this task, if [`still_as_shown`] when it is queued; then [`Reminders::dismiss`].
+    Complete(Occurrence, TaskId),
 }
 
 /// Keeps the toasts in line with the reminders ([`plan`] decides, the sink does it) and holds what was
@@ -437,8 +466,11 @@ pub struct Reminders {
     sink: Box<dyn ToastSink>,
     /// The reminder toasts up in this session, by reminder: what their buttons may act on.
     live: BTreeMap<ReminderId, Occurrence>,
-    /// What the summary toast up now covers.
-    summary: Vec<Alarm>,
+    /// What the summary should cover (reminders counted as shown and still listed as they were),
+    /// what the summary up now covers, and its token.
+    summary_want: Vec<Alarm>,
+    summary_up: Vec<Alarm>,
+    summary_token: Option<u64>,
     next_token: u64,
     /// Toasts Windows couldn't show, in a row, and when to try again.
     failures: usize,
@@ -451,7 +483,9 @@ impl Reminders {
             schedule,
             sink,
             live: BTreeMap::new(),
-            summary: Vec::new(),
+            summary_want: Vec::new(),
+            summary_up: Vec::new(),
+            summary_token: None,
             next_token: 0,
             failures: 0,
             retry_at: None,
@@ -473,17 +507,31 @@ impl Reminders {
         self.sink.hide(&id.to_string());
     }
 
+    /// Windows couldn't show something: try again after a back-off, longer each time in a row.
+    fn back_off(&mut self, now: i64) {
+        let wait = RETRY_MS[self.failures.min(RETRY_MS.len() - 1)];
+        self.failures += 1;
+        self.retry_at = Some(now + wait);
+    }
+
     /// Brings the toasts in line with `state`'s reminders at `now`.
     pub fn reconcile(&mut self, state: &State, now: &Now, can_show: bool) -> Outcome {
+        let now_ms = ms(now.at);
         let listed = alarms(state, since(&self.schedule, now.at));
-        let backing_off = self.retry_at.is_some_and(|at| ms(now.at) < at);
+        let backing_off = self.retry_at.is_some_and(|at| now_ms < at);
         let plan = plan(&listed, &self.schedule, now.at, can_show && !backing_off);
         for &id in &plan.hide {
             self.hide(id);
         }
         let mut schedule = plan.schedule;
-        let mut failed = Vec::new();
+        let mut failed: Vec<Alarm> = Vec::new();
+        let mut delivered = false;
         for a in &plan.show {
+            // Once one couldn't be shown, the rest of the batch isn't tried: it would fail alike.
+            if !failed.is_empty() {
+                failed.push(*a);
+                continue;
+            }
             let occurrence = Occurrence {
                 id: a.reminder,
                 at: ms(a.at),
@@ -491,6 +539,7 @@ impl Reminders {
             };
             match self.sink.show(&reminder_toast(state, a, occurrence, now)) {
                 Ok(()) => {
+                    delivered = true;
                     self.live.insert(a.reminder, occurrence);
                 }
                 Err(e) => {
@@ -499,34 +548,49 @@ impl Reminders {
                 }
             }
         }
-        // The summary covers what it covered and is still listed as it was, and what was missed now.
+        // The summary should cover what it covered and is still listed as it was, and what was
+        // missed now. When that differs from what is up, the old one is withdrawn and the new one
+        // shown (quietly unless it brings news); if that fails, it's tried again after a back-off.
         let still = |a: &Alarm| {
             listed
                 .iter()
                 .any(|l| l.reminder == a.reminder && l.at == a.at)
         };
-        let kept: Vec<Alarm> = self.summary.iter().copied().filter(still).collect();
-        let shrank = kept.len() != self.summary.len();
-        if shrank || !plan.missed.is_empty() {
-            let mut covered = kept.clone();
-            covered.extend(plan.missed.iter().copied());
+        self.summary_want.retain(still);
+        let mut want = self.summary_want.clone();
+        want.extend(plan.missed.iter().copied());
+        let may_try = failed.is_empty() && !backing_off;
+        if want != self.summary_up && (may_try || want.is_empty()) {
+            if !self.summary_up.is_empty() || self.summary_token.is_some() {
+                self.sink.hide(MISSED_TAG);
+                self.summary_up.clear();
+                self.summary_token = None;
+            }
             let token = self.token();
-            match missed_toast(state, &covered, token, now) {
-                None => self.sink.hide(MISSED_TAG),
-                Some(toast) => {
-                    let toast = Toast {
-                        quiet: plan.missed.is_empty(),
-                        ..toast
-                    };
-                    if let Err(e) = self.sink.show(&toast) {
+            if let Some(toast) = missed_toast(state, &want, token, now) {
+                let toast = Toast {
+                    quiet: plan.missed.is_empty(),
+                    ..toast
+                };
+                match self.sink.show(&toast) {
+                    Ok(()) => {
+                        delivered = true;
+                        self.summary_up = want.clone();
+                        self.summary_token = Some(token);
+                    }
+                    Err(e) => {
                         tracing::debug!(error = %e, "the missed reminders' toast wasn't shown");
                         failed.extend(plan.missed.iter().copied());
-                        covered = kept;
+                        want.retain(|a| !plan.missed.contains(a));
                     }
                 }
             }
-            self.summary = covered;
+        } else if !plan.missed.is_empty() {
+            // Not tried now: they stay due, uncounted, for the pass that tries.
+            failed.extend(plan.missed.iter().copied());
+            want.retain(|a| !plan.missed.contains(a));
         }
+        self.summary_want = want;
         // What Windows didn't show isn't shown: it's tried again after a back-off.
         for a in &failed {
             if let Some(r) = schedule.records.get(&a.reminder) {
@@ -536,17 +600,18 @@ impl Reminders {
                 });
             }
         }
-        if !failed.is_empty() {
-            let wait = RETRY_MS[self.failures.min(RETRY_MS.len() - 1)];
-            self.failures += 1;
-            self.retry_at = Some(ms(now.at) + wait);
-        } else if !(backing_off || plan.show.is_empty() && plan.missed.is_empty()) {
+        let summary_pending = self.summary_want != self.summary_up;
+        if !failed.is_empty() || (summary_pending && !backing_off && !delivered) {
+            if !backing_off {
+                self.back_off(now_ms);
+            }
+        } else if delivered && !summary_pending {
             self.failures = 0;
             self.retry_at = None;
         }
         if !(plan.show.is_empty() && plan.missed.is_empty() && plan.hide.is_empty()) {
             tracing::debug!(
-                shown = plan.show.len() - failed.len().min(plan.show.len()),
+                shown = plan.show.len().saturating_sub(failed.len()),
                 missed = plan.missed.len(),
                 hidden = plan.hide.len(),
                 failed = failed.len(),
@@ -555,7 +620,8 @@ impl Reminders {
         }
         let changed = schedule != self.schedule;
         self.schedule = schedule;
-        let retry = self.retry_at.filter(|_| plan.held || !failed.is_empty());
+        let waiting = plan.held || !failed.is_empty() || summary_pending;
+        let retry = self.retry_at.filter(|_| waiting);
         let next = match (plan.next, retry) {
             (Some(a), Some(b)) => Some(a.min(at_ms(b))),
             (a, b) => a.or(b.map(at_ms)),
@@ -567,33 +633,68 @@ impl Reminders {
         }
     }
 
-    /// Checks what a toast's button asks for, and claims it: only while its toast is up (or, for the
-    /// summary's Open, while the reminder is listed), only for the reminder as it was shown (still
-    /// live, at the same time, its task still open), and Snooze and Complete only once. `None` when it
-    /// no longer stands: nothing is done then.
+    /// Windows reported, after showing it, that the toast with this launch failed: it isn't up. Its
+    /// occurrence isn't counted as shown any more and is tried again after a back-off. A report about
+    /// a toast that has since been replaced does nothing.
+    pub fn failed(&mut self, launch: Activation, state: &State, now: &Now) -> Option<Outcome> {
+        let token = launch.token();
+        if self.summary_token == Some(token) {
+            self.summary_token = None;
+            self.summary_up.clear();
+        } else {
+            let (&id, occurrence) = self.live.iter().find(|(_, o)| o.token == token)?;
+            let occurrence = *occurrence;
+            self.live.remove(&id);
+            if let Some(r) = self
+                .schedule
+                .records
+                .get(&id)
+                .filter(|r| r.at == occurrence.at)
+            {
+                let fire = r.fire_at();
+                self.schedule.shown.remove(&Shown { id, at: fire });
+            }
+        }
+        self.back_off(ms(now.at));
+        let outcome = self.reconcile(state, now, true);
+        Some(Outcome {
+            changed: true,
+            ..outcome
+        })
+    }
+
+    /// Checks what a toast's button asks for, and claims it: only while its toast is up (the token it
+    /// was shown with), only for the reminder as it was shown (still live, at the same time, its task
+    /// still open), and Snooze and Complete only once. `None` when it no longer stands: nothing is
+    /// done then (a stale Open may still bring the window forward, but selects nothing).
     pub fn claim(&mut self, activation: Activation, state: &State, now: &Now) -> Option<Claim> {
         let as_shown = |o: Occurrence| {
-            let r = state.reminders.get(&o.id)?;
-            let task = state.tasks.get(&r.task)?;
-            let open = state.is_live(o.id.into())
-                && state.is_live(r.task.into())
-                && !task.is_done()
-                && task.merged_into.is_none();
-            (open && ms(r.at) == o.at).then_some(r.task)
+            let task = state.reminders.get(&o.id)?.task;
+            still_as_shown(state, o, task).then_some(task)
         };
         match activation {
-            Activation::Open(o) => as_shown(o).map(Claim::Open),
-            Activation::Missed => None,
+            Activation::Open(o) => {
+                let up = self.live.get(&o.id) == Some(&o)
+                    || (self.summary_token == Some(o.token)
+                        && self.summary_up.iter().any(|a| a.reminder == o.id));
+                if up {
+                    as_shown(o).map(Claim::Open)
+                } else {
+                    None
+                }
+            }
+            Activation::Missed(_) => None,
             Activation::Snooze(o) | Activation::Complete(o) => {
                 if self.live.get(&o.id) != Some(&o) {
                     return None;
                 }
                 let task = as_shown(o)?;
-                // Once: the toast goes, and with it what its buttons may do.
-                self.hide(o.id);
+                // Once: its buttons may do nothing more.
+                self.live.remove(&o.id);
                 if matches!(activation, Activation::Complete(_)) {
-                    return Some(Claim::Complete(task));
+                    return Some(Claim::Complete(o, task));
                 }
+                self.sink.hide(&o.id.to_string());
                 let record = self.schedule.records.get(&o.id).filter(|r| r.at == o.at)?;
                 self.schedule.records.insert(
                     o.id,
@@ -611,10 +712,17 @@ impl Reminders {
         }
     }
 
+    /// Takes a reminder's toast away (its task was completed from it).
+    pub fn dismiss(&mut self, id: ReminderId) {
+        self.hide(id);
+    }
+
     /// Takes every reminder toast away (quitting, signing out).
     pub fn clear(&mut self) {
         self.live.clear();
-        self.summary.clear();
+        self.summary_want.clear();
+        self.summary_up.clear();
+        self.summary_token = None;
         self.sink.clear();
     }
 }

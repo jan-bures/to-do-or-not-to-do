@@ -61,7 +61,7 @@ pub mod sqlite;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
 
-pub use client::{ClientConfig, Connection, ErrorKind, Status, SyncClient, SyncError};
+pub use client::{ClientConfig, Connection, ErrorKind, Readiness, Status, SyncClient, SyncError};
 pub use notify::Backoff;
 pub use outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 pub use platform::{Clock, Entropy, EventStream, Transport};

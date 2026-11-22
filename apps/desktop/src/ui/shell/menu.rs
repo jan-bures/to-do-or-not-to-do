@@ -99,11 +99,13 @@ pub(super) enum MenuKind {
         draft: Option<Draft>,
     },
     /// The detail pane's reminder picker: its presets, or (`draft`) its custom page. `seen` is the
-    /// reminder the row showed when it opened, which an edit is made on.
+    /// reminder the row showed when it opened, which an edit is made on; `opened` (milliseconds since
+    /// the epoch) is when it opened, which its presets are worked out from (`reminder::page_now`).
     Reminder {
         task: TaskId,
         seen: Option<todo_client::intent::reminder::Seen>,
         draft: Option<reminder::Draft>,
+        opened: i64,
     },
     /// A task's context menu (right-click its row, or Shift+F10), or the list picker (M).
     Task {
@@ -222,8 +224,14 @@ impl ShellView {
                 .filter(|_| state.is_live(task.into()))
                 .map(|t| repeat::entries(t, self.store.now().today(), draft))
                 .unwrap_or_default(),
-            MenuKind::Reminder { task, seen, draft } if state.is_live(task.into()) => {
-                reminder::entries(task, seen.map(|s| s.at), draft, &self.store.now())
+            MenuKind::Reminder {
+                task,
+                seen,
+                draft,
+                opened,
+            } if state.is_live(task.into()) => {
+                let now = reminder::page_now(opened, draft, &self.store.now());
+                reminder::entries(task, seen.map(|s| s.at), draft, &now)
             }
             MenuKind::Reminder { .. } => Vec::new(),
             MenuKind::Tags {
@@ -940,6 +948,7 @@ impl ShellView {
                     task: id,
                     seen,
                     draft,
+                    opened,
                 },
             trigger,
             ..
@@ -966,6 +975,7 @@ impl ShellView {
                     task,
                     seen,
                     draft: Some(draft),
+                    opened,
                 };
                 self.open_menu(kind, None, trigger, window, cx);
                 return;
@@ -1022,12 +1032,19 @@ impl ShellView {
                 self.notice = Some(Notice::error(reminder::CHANGED));
                 let seen = commands::reminder::Seen::of(&state, task, &now.eval());
                 if let Some(Menu {
-                    kind: MenuKind::Reminder { seen: s, draft, .. },
+                    kind:
+                        MenuKind::Reminder {
+                            seen: s,
+                            draft,
+                            opened,
+                            ..
+                        },
                     ..
                 }) = self.menu.as_mut()
                 {
                     *s = seen;
                     *draft = None;
+                    *opened = now.at.as_millisecond();
                 }
                 self.highlight_first();
             }

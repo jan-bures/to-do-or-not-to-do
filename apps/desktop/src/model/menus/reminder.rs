@@ -322,6 +322,20 @@ pub fn preview(draft: Draft, now: &Now) -> Result<(Timestamp, String), &'static 
     ))
 }
 
+/// The clock a picker page is worked out with. The presets page keeps the time the picker opened
+/// (`opened`, milliseconds since the epoch), so its instants never change under it: what a click or
+/// Enter (which reads the page again) saves is what was shown, even once the hour rolls over. The
+/// custom page uses the time now, to tell a time that has passed.
+pub fn page_now(opened: i64, draft: Option<Draft>, now: &Now) -> Now {
+    match (draft, Timestamp::from_millisecond(opened)) {
+        (None, Ok(at)) => Now {
+            at,
+            tz: now.tz.clone(),
+        },
+        _ => now.clone(),
+    }
+}
+
 /// The picker for `task`, whose row showed the reminder at `seen` (or none): its presets and Remove,
 /// or (`draft`) the custom page.
 pub fn entries(
@@ -464,6 +478,43 @@ mod tests {
             Some(ts("2026-11-30T09:00:00Z"))
         );
     }
+
+    #[test]
+    fn the_presets_page_keeps_the_instants_it_opened_with_also_for_the_keyboard() {
+        use crate::model::menus::chosen;
+        let opened = ts("2026-11-21T10:59:00Z").as_millisecond();
+        // Drawn at 10:59, and drawn (or Enter read) again at 11:01: the same 13:00.
+        let page = |at: &str| {
+            let now = Now::fixed(at);
+            entries(task(), None, None, &page_now(opened, None, &now))
+        };
+        let drawn = page("2026-11-21T10:59:30Z");
+        let entered = page("2026-11-21T11:01:00Z");
+        assert_eq!(drawn, entered);
+        let action = chosen(&entered, Some("later-today")).expect("Enter on Later today");
+        assert_eq!(
+            action,
+            MenuAction::Reminder(
+                task(),
+                Action::Preset(
+                    Preset::LaterToday,
+                    ts("2026-11-21T13:00:00Z").as_millisecond()
+                )
+            )
+        );
+        // The custom page checks against the time now.
+        let d = Draft::new(
+            Some(ts("2026-11-21T11:00:00Z")),
+            None,
+            &Now::fixed(NOW_LATE),
+        );
+        assert_eq!(
+            page_now(opened, Some(d), &Now::fixed(NOW_LATE)).at,
+            ts(NOW_LATE)
+        );
+    }
+
+    const NOW_LATE: &str = "2026-11-21T11:01:00Z";
 
     #[test]
     fn later_today_is_never_early_when_the_clocks_go_back() {

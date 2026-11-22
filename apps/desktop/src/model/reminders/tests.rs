@@ -168,7 +168,7 @@ fn toast_arguments_round_trip_and_nothing_else_parses() {
         Activation::Open(o),
         Activation::Snooze(o),
         Activation::Complete(o),
-        Activation::Missed,
+        Activation::Missed(4),
     ] {
         assert_eq!(Activation::parse(&a.arguments()), Some(a));
     }
@@ -182,7 +182,9 @@ fn toast_arguments_round_trip_and_nothing_else_parses() {
         format!("open:{r}:1:2:3"),
         format!("delete:{r}:1:2"),
         "open:nope:1:2".into(),
-        "missed:1".into(),
+        "missed".into(),
+        "missed:x".into(),
+        "missed:1:2".into(),
     ] {
         assert_eq!(Activation::parse(&junk), None, "{junk}");
     }
@@ -412,12 +414,29 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
     done.state = w.state.clone();
     done.run(Command::CompleteTask { id: task });
     assert_eq!(r.claim(complete, &done.state, &at), None);
-    // As shown: Complete is claimed once, and its toast goes.
+    // As shown: Complete is claimed once; the toast goes once the completion is queued.
     fake.take();
-    assert_eq!(
-        r.claim(complete, &w.state, &at),
-        Some(Claim::Complete(task))
+    let Some(Claim::Complete(occurrence, claimed)) = r.claim(complete, &w.state, &at) else {
+        panic!("claimed");
+    };
+    assert_eq!(claimed, task);
+    assert!(
+        fake.take().is_empty(),
+        "nothing happens in Windows between the claim and the queue"
     );
+    // A reschedule or a delete that arrives after the claim, before the completion is queued: the
+    // check made when it is queued refuses it.
+    let mut later = World::new();
+    later.state = w.state.clone();
+    later.run(Command::UpdateReminder {
+        id: call,
+        at: ts("2026-11-22T09:00:00Z"),
+    });
+    assert!(still_as_shown(&w.state, occurrence, task));
+    assert!(!still_as_shown(&later.state, occurrence, task));
+    assert!(!still_as_shown(&removed.state, occurrence, task));
+    assert!(!still_as_shown(&done.state, occurrence, task));
+    r.dismiss(call);
     assert_eq!(fake.take(), [format!("hide {call}")]);
     assert_eq!(r.claim(complete, &w.state, &at), None);
     // A made-up token never acts.
@@ -504,4 +523,103 @@ fn a_single_missed_reminder_opens_its_task() {
     assert_eq!(toast.body, "Read the gas meter · Today, 06:00");
     assert!(matches!(toast.launch, Activation::Open(o) if o.id == gas));
     assert_eq!(missed_toast(&w.state, &[], 1, &Now::fixed(NOW)), None);
+}
+
+#[test]
+fn open_acts_only_for_the_toast_up_and_selects_nothing_otherwise() {
+    let mut w = World::new();
+    let (task, call) = w.task("Call the dentist", "2026-11-21T10:00:00Z");
+    let (mut r, fake) = driver();
+    let at = now("2026-11-21T10:00:30Z");
+    r.reconcile(&w.state, &at, true);
+    let open = fake.button(&call.to_string(), "Open");
+    assert_eq!(r.claim(open, &w.state, &at), Some(Claim::Open(task)));
+    // Snoozed and shown again: the first toast's Open is stale, even for the same reminder and time.
+    let snooze = fake.button(&call.to_string(), "Snooze 10 min");
+    assert!(matches!(
+        r.claim(snooze, &w.state, &at),
+        Some(Claim::Snoozed(_))
+    ));
+    assert_eq!(r.claim(open, &w.state, &at), None);
+    r.reconcile(&w.state, &now("2026-11-21T10:10:30Z"), true);
+    let again = fake.button(&call.to_string(), "Open");
+    assert_ne!(again, open);
+    assert_eq!(r.claim(again, &w.state, &at), Some(Claim::Open(task)));
+    assert_eq!(r.claim(open, &w.state, &at), None);
+}
+
+#[test]
+fn a_batch_stops_at_the_first_toast_windows_refuses() {
+    let mut w = World::new();
+    w.task("Call the dentist", "2026-11-21T09:59:00Z");
+    w.task("Water the plants", "2026-11-21T09:58:00Z");
+    w.task("Read the gas meter", "2026-11-21T06:00:00Z");
+    let (mut r, fake) = driver();
+    fake.fail.set(true);
+    let out = r.reconcile(&w.state, &now(NOW), true);
+    assert_eq!(fake.take().len(), 1, "asked once for the whole batch");
+    assert!(r.schedule().shown.is_empty());
+    assert_eq!(out.next, Some(ts("2026-11-21T10:00:30Z")));
+}
+
+#[test]
+fn a_toast_windows_reports_failed_later_is_shown_again() {
+    let mut w = World::new();
+    let (_, call) = w.task("Call the dentist", "2026-11-21T10:00:00Z");
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &now(NOW), true);
+    let launch = fake.button(&call.to_string(), "Open");
+    fake.take();
+    // Windows says it failed after all: not counted as shown, tried again after the back-off.
+    let out = r
+        .failed(launch, &w.state, &now("2026-11-21T10:00:01Z"))
+        .expect("known");
+    assert!(out.changed && out.held);
+    assert!(r.schedule().shown.is_empty());
+    assert_eq!(out.next, Some(ts("2026-11-21T10:00:31Z")));
+    assert!(fake.take().is_empty());
+    r.reconcile(&w.state, &now("2026-11-21T10:00:31Z"), true);
+    assert_eq!(fake.take().len(), 1);
+    assert!(r.schedule().shown.iter().any(|s| s.id == call));
+    // A report about a toast already replaced does nothing.
+    assert_eq!(
+        r.failed(launch, &w.state, &now("2026-11-21T10:00:40Z")),
+        None
+    );
+}
+
+#[test]
+fn a_summary_rebuild_windows_refuses_is_withdrawn_and_tried_again() {
+    let mut w = World::new();
+    let (gas_task, gas) = w.task("Read the gas meter", "2026-11-21T06:00:00Z");
+    w.task("Water the plants", "2026-11-21T07:00:00Z");
+    w.task("Bins out", "2026-11-21T08:00:00Z");
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &now(NOW), true);
+    fake.take();
+    // One is completed, and Windows refuses the replacement: the old summary still goes.
+    w.run(Command::CompleteTask { id: gas_task });
+    fake.fail.set(true);
+    let out = r.reconcile(&w.state, &now("2026-11-21T10:01:00Z"), true);
+    assert_eq!(
+        fake.take(),
+        [
+            format!("hide {gas}"),
+            "hide missed".into(),
+            "failed missed".into()
+        ]
+    );
+    assert_eq!(out.next, Some(ts("2026-11-21T10:01:30Z")), "tried again");
+    // Not before the back-off; then quietly, about the two left.
+    r.reconcile(&w.state, &now("2026-11-21T10:01:10Z"), true);
+    assert!(fake.take().is_empty());
+    fake.fail.set(false);
+    let out = r.reconcile(&w.state, &now("2026-11-21T10:01:30Z"), true);
+    assert_eq!(
+        fake.take(),
+        ["update missed | 2 missed reminders | Water the plants, Bins out | Open"]
+    );
+    assert_eq!(out.next, None, "nothing left to try");
+    r.reconcile(&w.state, &now("2026-11-21T10:02:00Z"), true);
+    assert!(fake.take().is_empty());
 }

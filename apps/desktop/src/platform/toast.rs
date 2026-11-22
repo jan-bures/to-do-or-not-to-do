@@ -17,13 +17,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedSender;
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
 use windows::UI::Notifications::{
-    NotificationSetting, ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
-    ToastNotifier,
+    NotificationSetting, ToastActivatedEventArgs, ToastFailedEventArgs, ToastNotification,
+    ToastNotificationManager, ToastNotifier,
 };
 use windows::core::{HSTRING, IInspectable, Interface as _, h};
 
@@ -84,22 +85,36 @@ pub fn unregister() {
     let _ = windows_registry::CURRENT_USER.remove_tree(registry_key());
 }
 
-/// The reminder toasts, shown through Windows. Each toast's buttons send their arguments to `sender`.
+/// What a toast reports back to the UI thread: a click (its arguments), or that Windows dropped it
+/// after taking it (its launch arguments, which name the occurrence).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToastEvent {
+    Activated(String),
+    Failed(String),
+}
+
+/// How often a failure to show a toast is logged as a warning; in between, at debug level.
+const WARN_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// The reminder toasts, shown through Windows. Each toast's clicks and failure go to `sender`.
 #[allow(missing_debug_implementations)] // Holds WinRT objects.
 pub struct WinToasts {
     notifier: Option<ToastNotifier>,
-    /// The toasts up, by tag: their `Activated` handlers live as long as they do.
-    shown: HashMap<String, ToastNotification>,
-    sender: UnboundedSender<String>,
+    /// The toasts up, by tag, each with the notifier that showed it (so it can be hidden even after a
+    /// later failure dropped the cached one); their handlers live as long as they do.
+    shown: HashMap<String, (ToastNotifier, ToastNotification)>,
+    sender: UnboundedSender<ToastEvent>,
+    warned: Option<Instant>,
 }
 
 impl WinToasts {
     /// The notifier is made when the first toast is shown, and again after it couldn't be.
-    pub fn new(sender: UnboundedSender<String>) -> Self {
+    pub fn new(sender: UnboundedSender<ToastEvent>) -> Self {
         Self {
             notifier: None,
             shown: HashMap::new(),
             sender,
+            warned: None,
         }
     }
 
@@ -150,29 +165,49 @@ impl WinToasts {
                     .and_then(|a| a.Arguments().ok())
                     .map(|a| a.to_string())
                     .unwrap_or_default();
-                let _ = sender.unbounded_send(arguments);
+                let _ = sender.unbounded_send(ToastEvent::Activated(arguments));
                 Ok(())
             },
         ))?;
-        if let Some(previous) = self.shown.remove(&toast.tag) {
-            let _ = notifier.Hide(&previous);
+        let sender = self.sender.clone();
+        let launch = toast.launch.arguments();
+        notification.Failed(
+            &TypedEventHandler::<ToastNotification, ToastFailedEventArgs>::new(move |_, _| {
+                let _ = sender.unbounded_send(ToastEvent::Failed(launch.clone()));
+                Ok(())
+            }),
+        )?;
+        if let Some((by, previous)) = self.shown.remove(&toast.tag) {
+            let _ = by.Hide(&previous);
         }
         notifier.Show(&notification)?;
-        self.shown.insert(toast.tag.clone(), notification);
+        self.shown
+            .insert(toast.tag.clone(), (notifier.clone(), notification));
         Ok(())
     }
 }
 
 impl ToastSink for WinToasts {
     fn show(&mut self, toast: &Toast) -> Result<(), NotShown> {
-        self.try_show(toast).inspect_err(|e| tracing::warn!("{e}"))
+        self.try_show(toast).inspect_err(|e| {
+            let now = Instant::now();
+            if self
+                .warned
+                .is_none_or(|at| now.duration_since(at) >= WARN_EVERY)
+            {
+                self.warned = Some(now);
+                tracing::warn!("{e}");
+            } else {
+                tracing::debug!("{e}");
+            }
+        })
     }
 
     fn hide(&mut self, tag: &str) {
-        // The toast on screen first, then its entry in the action center (also one left there by an
-        // earlier run).
-        if let (Some(toast), Some(notifier)) = (self.shown.remove(tag), &self.notifier) {
-            let _ = notifier.Hide(&toast);
+        // The toast on screen first, by the notifier that showed it, then its entry in the action
+        // center (also one left there by an earlier run).
+        if let Some((by, toast)) = self.shown.remove(tag) {
+            let _ = by.Hide(&toast);
         }
         if let Ok(history) = ToastNotificationManager::History() {
             let _ = history.RemoveGroupedTagWithId(
@@ -184,10 +219,8 @@ impl ToastSink for WinToasts {
     }
 
     fn clear(&mut self) {
-        for (_, toast) in self.shown.drain() {
-            if let Some(notifier) = &self.notifier {
-                let _ = notifier.Hide(&toast);
-            }
+        for (_, (by, toast)) in self.shown.drain() {
+            let _ = by.Hide(&toast);
         }
         if let Ok(history) = ToastNotificationManager::History() {
             let _ = history.ClearWithId(&HSTRING::from(AUMID));

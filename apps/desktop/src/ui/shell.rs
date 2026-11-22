@@ -1162,9 +1162,14 @@ impl ShellView {
         task: TaskId,
         draft: Option<model::menus::reminder::Draft>,
     ) -> MenuKind {
-        let seen =
-            model::commands::reminder::Seen::of(&self.store.view(), task, &self.store.now().eval());
-        MenuKind::Reminder { task, seen, draft }
+        let now = self.store.now();
+        let seen = model::commands::reminder::Seen::of(&self.store.view(), task, &now.eval());
+        MenuKind::Reminder {
+            task,
+            seen,
+            draft,
+            opened: now.at.as_millisecond(),
+        }
     }
 
     /// Shift+R (or Enter on the row): the reminder picker on the detail pane's Reminder row, the
@@ -1352,6 +1357,40 @@ impl ShellView {
         }
         self.notice = None;
         true
+    }
+
+    /// Submits one undoable command only if `guard` holds on the state at the moment it is queued
+    /// (`Store::submit_undoable_if`), with its undo toast. Returns whether it was queued; a refused
+    /// guard is silent, a refused command says why in the status bar.
+    fn submit_if(
+        &mut self,
+        cmd: todo_core::Command,
+        guard: impl FnOnce(&todo_core::State) -> bool,
+    ) -> bool {
+        let Some((entity, kind)) = undo::EditKind::of(&cmd) else {
+            return false;
+        };
+        let label = undo::toast_label(&self.store.view(), &cmd, entity, kind);
+        let room = self.shell.room.key;
+        match self.store.submit_undoable_if(cmd, guard) {
+            Ok(Some(target)) => {
+                let action = undo::Action {
+                    entity,
+                    kind,
+                    target,
+                    room,
+                };
+                self.remember_undo(action, label);
+                self.notice = None;
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!("a change was refused: {e}");
+                self.notice = Some(Notice::error(format!("Couldn't save that: {e}")));
+                false
+            }
+        }
     }
 
     /// Shows a line in the status bar (until the next change replaces it).

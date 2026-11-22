@@ -144,6 +144,39 @@ impl Store {
         }
     }
 
+    /// Like [`submit_undoable`](Self::submit_undoable), but only if `guard` holds on the state at the
+    /// moment the command is queued, under the sync client's lock (`SyncClient::submit_tracked_if`):
+    /// nothing synced can come between the check and the command. `Ok(None)` when it doesn't hold.
+    pub fn submit_undoable_if(
+        &self,
+        cmd: Command,
+        guard: impl FnOnce(&State) -> bool,
+    ) -> Result<Option<UndoTarget>, String> {
+        match self {
+            Self::Local(s) => {
+                if !guard(&s.state.borrow()) {
+                    return Ok(None);
+                }
+                s.submit(&cmd).map(|events| Some(UndoTarget::Local(events)))
+            }
+            Self::Live(s) => s
+                .session
+                .client()
+                .submit_tracked_if(cmd, guard)
+                .map(|t| t.map(UndoTarget::Live))
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    /// The state to show, and whether it has caught up with the server since the app started
+    /// (`SyncClient::view_and_readiness`), read together. A fixture's always has.
+    pub fn view_and_readiness(&self) -> (Arc<State>, todo_client::Readiness) {
+        match self {
+            Self::Local(s) => (s.state.borrow().clone(), todo_client::Readiness::CaughtUp),
+            Self::Live(s) => s.session.client().view_and_readiness(),
+        }
+    }
+
     pub fn undo(&self, target: &UndoTarget) -> Result<TrackedUndo, String> {
         match (self, target) {
             (Self::Local(s), UndoTarget::Local(events)) => {

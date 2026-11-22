@@ -107,6 +107,21 @@ pub enum Connection {
     Online,
 }
 
+/// How far the replica has come since the client started: whether what it shows includes what the
+/// server had when this client first reached it. Unlike [`Connection::Online`] (which the client
+/// reports as soon as the stream opens, before its `hello` frame and backlog), this says the backlog
+/// is in: a client acting on the replica on its own (reminders) can wait for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// No attempt to reach the server has ended yet (or a full resync started over).
+    Starting,
+    /// An attempt failed (offline, refused) before the replica caught up.
+    Failed,
+    /// The replica has every event up to the server's head when it was reached: the `hello` frame's
+    /// `head_seq`, or the end of a catch-up. It stays so until a full resync.
+    CaughtUp,
+}
+
 /// What kind of problem [`Status::last_error`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -175,6 +190,7 @@ struct Shared {
     last_submitted_ms: i64,
     /// The send loop found that the server's log differs from the confirmed state.
     resync_requested: bool,
+    readiness: Readiness,
 }
 
 impl Shared {
@@ -366,6 +382,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     last_error: None,
                     last_submitted_ms,
                     resync_requested: false,
+                    readiness: Readiness::Starting,
                 }),
                 outbox_changed: Notify::default(),
                 saved,
@@ -435,6 +452,30 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// cannot be written.
     pub fn submit(&self, command: Command) -> Result<CommandId, SubmitError> {
         self.enqueue(Operation::Command { command }, |_, id| id)
+    }
+
+    /// Submits a command for which the UI offers Undo, but only if `guard` holds on the view at the
+    /// moment it is queued, under the same lock that applies synced events: nothing can change the
+    /// view between the check and the command. `Ok(None)` when the guard refused (nothing queued).
+    pub fn submit_tracked_if(
+        &self,
+        command: Command,
+        guard: impl FnOnce(&State) -> bool,
+    ) -> Result<Option<TrackedCommand>, SubmitError> {
+        let command_id = self.new_uuid();
+        let now = self.inner.clock.now();
+        let tracked = self.with(|s| {
+            if !guard(&s.replica.view()) {
+                return Ok(None);
+            }
+            s.enqueue(Operation::Command { command }, command_id, now)?;
+            Ok::<_, SubmitError>(Some(s.replica.track(command_id)))
+        })?;
+        if tracked.is_some() {
+            self.inner.outbox_changed.notify();
+            self.changed();
+        }
+        Ok(tracked)
     }
 
     /// Submits a command for which the UI offers Undo. The returned handle correlates the command
@@ -634,6 +675,26 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     #[must_use]
     pub fn view(&self) -> Arc<State> {
         self.with(|s| s.replica.view())
+    }
+
+    /// How far the replica has come since starting ([`Readiness`]).
+    #[must_use]
+    pub fn readiness(&self) -> Readiness {
+        self.with(|s| s.readiness)
+    }
+
+    /// The view and the [`Readiness`] it was read with, together.
+    pub fn view_and_readiness(&self) -> (Arc<State>, Readiness) {
+        self.with(|s| (s.replica.view(), s.readiness))
+    }
+
+    /// The replica has caught up with the server's head as it was reached.
+    fn reached_head(&self) {
+        let changed = self.with(|s| std::mem::replace(&mut s.readiness, Readiness::CaughtUp))
+            != Readiness::CaughtUp;
+        if changed {
+            self.changed();
+        }
     }
 
     /// Runs `f` on the confirmed state (the server's state as of [`cursor`](Self::cursor)).
@@ -1045,6 +1106,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     );
                     match self.with(|s| s.replica.reset()) {
                         Ok(()) => {
+                            // Starting over from nothing: not caught up until it has the log again.
+                            self.with(|s| s.readiness = Readiness::Starting);
                             // Only a durable reset counts: it arms the repeat-divergence guard and
                             // releases a sender waiting to resend a divergent acknowledgement.
                             last_divergence = diverged_at;
@@ -1073,6 +1136,9 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     self.with(|s| {
                         s.stream = StreamState::Down { offline };
                         s.last_error = Some(error);
+                        if s.readiness == Readiness::Starting {
+                            s.readiness = Readiness::Failed;
+                        }
                     });
                     self.changed();
                     self.back_off(&mut failures, retry_after).await;
@@ -1265,6 +1331,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 Err(ConfirmFailure::Step(step)) => return step,
             }
             if !page.has_more {
+                self.reached_head();
                 return Step::Reconnect;
             }
             if self.received() == since {
@@ -1284,6 +1351,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         let mut progressed = false;
         // From the `hello` frame, which comes first.
         let mut epoch: Option<Epoch> = None;
+        // The server's head as the `hello` frame gave it, until the stream has delivered it.
+        let mut head: Option<u64> = None;
         loop {
             let seen = self.inner.resync.generation();
             if self.take_resync_request() {
@@ -1350,6 +1419,11 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     return step;
                 }
                 epoch = Some(hello.epoch);
+                match hello.head_seq {
+                    Some(h) if self.received() < h => head = Some(h),
+                    // Already there, or a server that doesn't say (agent tokens).
+                    _ => self.reached_head(),
+                }
             } else if event == EVENT_FRAME {
                 let Some(epoch) = epoch else {
                     return self.fail(
@@ -1369,7 +1443,12 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     }
                 };
                 match self.confirm(epoch, std::slice::from_ref(&ev)) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if head.is_some_and(|h| self.received() >= h) {
+                            head = None;
+                            self.reached_head();
+                        }
+                    }
                     Err(ConfirmFailure::Gap) => {
                         // Fill the gap from the JSON endpoint, then go on with the stream (it skips
                         // what is now below the cursor).

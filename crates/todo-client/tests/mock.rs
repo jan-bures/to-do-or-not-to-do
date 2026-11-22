@@ -10,7 +10,7 @@ use futures_util::future::join;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use todo_client::{
-    Backoff, ClientConfig, Connection, ErrorKind, MemoryStorage, Replica, SyncClient,
+    Backoff, ClientConfig, Connection, ErrorKind, MemoryStorage, Readiness, Replica, SyncClient,
 };
 use todo_core::Command;
 use uuid::Uuid;
@@ -80,6 +80,79 @@ fn a_new_client_catches_up_and_goes_online() {
         synced(c, &t) && c.status().connection == Connection::Online
     });
     assert_eq!(c.status().last_error, None);
+}
+
+#[test]
+fn readiness_says_caught_up_only_once_the_servers_head_is_in() {
+    let server = seeded_server();
+    let t = MockTransport::new(server.clone(), owner());
+    let storage = MemoryStorage::new();
+    let c = client(&t, &storage, 1);
+    assert_eq!(c.readiness(), Readiness::Starting);
+    run_until(&c, |c| synced(c, &t));
+    assert_eq!(c.readiness(), Readiness::CaughtUp);
+    // Elsewhere, meanwhile: the task is completed. A client on the warm cache starts again.
+    server
+        .lock()
+        .unwrap()
+        .execute(
+            &owner(),
+            Uuid::from_u128(950),
+            &Command::CompleteTask { id: task_id(1) },
+        )
+        .unwrap();
+    let head = server.lock().unwrap().head();
+    let c = client(&t, &storage, 2);
+    assert_eq!(c.readiness(), Readiness::Starting);
+    let early = std::cell::Cell::new(false);
+    run_until(&c, |c| {
+        let (view, readiness) = c.view_and_readiness();
+        if readiness == Readiness::CaughtUp {
+            // Read together: caught up means the completion is in the view it came with.
+            early.set(early.get() || view.tasks[&task_id(1)].completed_at.is_none());
+            return true;
+        }
+        false
+    });
+    assert!(!early.get(), "caught up before the backlog was in");
+    assert!(c.cursor() >= head);
+}
+
+#[test]
+fn readiness_says_failed_when_the_first_attempt_fails_then_catches_up() {
+    let server = seeded_server();
+    let t = MockTransport::new(server.clone(), owner());
+    t.script.lock().unwrap().offline = 3;
+    let c = client(&t, &MemoryStorage::new(), 1);
+    let failed = std::cell::Cell::new(false);
+    run_until(&c, |c| {
+        failed.set(failed.get() || c.readiness() == Readiness::Failed);
+        c.readiness() == Readiness::CaughtUp
+    });
+    assert!(failed.get(), "the offline first attempt was reported");
+}
+
+#[test]
+fn a_guarded_submit_queues_only_while_the_guard_holds() {
+    let server = seeded_server();
+    let t = MockTransport::new(server.clone(), owner());
+    let c = client(&t, &MemoryStorage::new(), 1);
+    run_until(&c, |c| synced(c, &t));
+    let complete = Command::CompleteTask { id: task_id(1) };
+    // The guard sees the view as it is when the command would be queued.
+    let refused = c
+        .submit_tracked_if(complete.clone(), |v| {
+            v.tasks[&task_id(1)].completed_at.is_some()
+        })
+        .unwrap();
+    assert!(refused.is_none());
+    assert!(c.pending().is_empty(), "nothing was queued");
+    let queued = c
+        .submit_tracked_if(complete, |v| v.tasks[&task_id(1)].completed_at.is_none())
+        .unwrap();
+    assert!(queued.is_some());
+    assert_eq!(c.pending().len(), 1);
+    assert!(c.view().tasks[&task_id(1)].completed_at.is_some());
 }
 
 #[test]
