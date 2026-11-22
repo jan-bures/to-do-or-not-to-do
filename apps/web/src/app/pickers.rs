@@ -52,7 +52,20 @@ pub(super) fn choice_focus(ev: leptos::ev::FocusEvent) {
 
 /// Arrow/Home/End move through the current page's actions, not any controls behind it.
 pub(super) fn choice_key(id: &str, columns: usize, ev: &leptos::ev::KeyboardEvent) {
-    if ev.is_composing() || ev.alt_key() || ev.ctrl_key() || ev.meta_key() || typing(ev) {
+    if !typing(ev) {
+        move_choice_focus(id, columns, ev);
+    }
+}
+
+/// In a searchable picker, Up and Down leave the filter; the other keys still edit its text.
+pub(super) fn choice_key_from_filter(id: &str, ev: &leptos::ev::KeyboardEvent) {
+    if !typing(ev) || matches!(ev.key().as_str(), "ArrowUp" | "ArrowDown") {
+        move_choice_focus(id, 1, ev);
+    }
+}
+
+fn move_choice_focus(id: &str, columns: usize, ev: &leptos::ev::KeyboardEvent) {
+    if ev.is_composing() || ev.alt_key() || ev.ctrl_key() || ev.meta_key() {
         return;
     }
     let key = ev.key();
@@ -85,7 +98,7 @@ pub(super) fn choice_key(id: &str, columns: usize, ev: &leptos::ev::KeyboardEven
     });
     let n = items.len();
     let next = match (key.as_str(), at) {
-        ("End", _) => n - 1,
+        ("End", _) | ("ArrowUp", None) => n - 1,
         ("Home", _) | (_, None) => 0,
         ("ArrowUp", Some(i)) => (i + n - columns.min(n)) % n,
         ("ArrowDown", Some(i)) => (i + columns.min(n)) % n,

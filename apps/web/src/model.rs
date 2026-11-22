@@ -951,17 +951,22 @@ impl Tomorrow {
     }
 }
 
-/// Tomorrow's plan, shown when My Day is finished. A completing row keeps its place until it exits.
+/// Tomorrow's plan, shown when My Day is finished. Local exits stay in place until they finish.
 #[must_use]
-pub fn tomorrow(state: &State, now: &Now, leaving: impl Fn(TaskId) -> bool) -> Tomorrow {
+pub fn tomorrow(
+    state: &State,
+    now: &Now,
+    completing: impl Fn(TaskId) -> bool,
+    departing: impl Fn(TaskId) -> bool,
+) -> Tomorrow {
     let today = now.today();
     let tomorrow = today.tomorrow().unwrap_or(today);
     let mut upcoming: Vec<&Task> = state
         .tasks
         .values()
         .filter(|t| {
-            task_live(state, t)
-                && (!t.is_done() || leaving(t.id))
+            (task_live(state, t) || departing(t.id))
+                && (!t.is_done() || completing(t.id))
                 && t.due.is_some_and(|d| d > today)
         })
         .collect();
@@ -1780,7 +1785,7 @@ mod tests {
         let n = now();
         let r = room(&s, &n, &RoomId::Smart("my_day"), "", &BTreeSet::new());
         assert!(r.finished(), "{}", r.summary());
-        let t = tomorrow(&s, &n, |_| false);
+        let t = tomorrow(&s, &n, |_| false, |_| false);
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_some());
         assert_eq!(r.completed.len(), 12);
@@ -1789,7 +1794,12 @@ mod tests {
 
     #[test]
     fn later_tasks_do_not_take_the_place_of_tomorrows_first_task() {
-        let t = tomorrow(&fixtures::finished_without_tomorrow(), &now(), |_| false);
+        let t = tomorrow(
+            &fixtures::finished_without_tomorrow(),
+            &now(),
+            |_| false,
+            |_| false,
+        );
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_none() && t.also.is_empty());
         assert_eq!(t.week[0].title, "Prepare the November board update");
@@ -1800,18 +1810,22 @@ mod tests {
     fn a_completing_handover_task_keeps_its_slot_until_exit() {
         let mut s = fixtures::finished_state();
         let n = now();
-        let t = tomorrow(&s, &n, |_| false);
+        let t = tomorrow(&s, &n, |_| false, |_| false);
         let id = t.first.unwrap().0.id;
         let cmd = intent::set_done(&s, id, true).unwrap();
         let owner = Actor::owner("web").unwrap();
         for event in todo_core::decide(&s, &owner, &cmd, n.at).unwrap() {
             todo_core::apply(&mut s, &event).unwrap();
         }
-        let t = tomorrow(&s, &n, |leaving| leaving == id);
+        let t = tomorrow(&s, &n, |leaving| leaving == id, |_| false);
         let first = t.rows().next().unwrap();
         assert_eq!(first.id, id);
         assert!(first.done);
-        assert!(tomorrow(&s, &n, |_| false).rows().all(|row| row.id != id));
+        assert!(
+            tomorrow(&s, &n, |_| false, |_| false)
+                .rows()
+                .all(|row| row.id != id)
+        );
     }
 
     #[test]

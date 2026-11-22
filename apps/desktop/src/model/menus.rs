@@ -1113,68 +1113,38 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
     ]
 }
 
-/// Whether `filter` (typed into the list picker) finds a list by its name or its collection's: every
-/// word of it, ignoring case and accents.
-fn matches_filter(filter: &str, list: &str, collection: Option<&str>) -> bool {
-    let haystack = fold(&format!("{list} {}", collection.unwrap_or_default()));
-    fold(filter)
-        .split_whitespace()
-        .all(|w| haystack.contains(w))
-}
-
 /// The list picker that moves a task (Move to…): the lists grouped as the sidebar shows them, each
 /// collection's under its name, the task's own list ticked. What's typed (`filter`) narrows them by
 /// name or collection. Empty once the task is gone.
 pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
-    let Some(t) = state
-        .tasks
-        .get(&task)
-        .filter(|_| state.is_live(task.into()))
-    else {
+    let Some(groups) = todo_client::intent::organize::task_move_groups(state, task, filter) else {
         return Vec::new();
     };
-    let groups = commands::list_groups(state);
-    let with_collections = groups.iter().any(|(c, _)| c.is_some());
     let mut entries = vec![MenuEntry::Filter {
         typed: filter.to_string().into(),
         hint: "Type to filter lists",
     }];
-    let mut found = false;
-    for (collection, ids) in groups {
-        let collection = collection.and_then(|c| state.collections.get(&c));
-        let heading = match collection {
-            Some(c) => Some(labels::one_line(&c.name)),
-            None if with_collections => Some("Other lists".to_string()),
-            None => None,
-        };
-        let items: Vec<MenuEntry> = ids
-            .iter()
-            .filter_map(|id| state.lists.get(id))
-            .filter(|l| matches_filter(filter, &l.name, collection.map(|c| c.name.as_str())))
-            .map(|l| {
-                MenuEntry::Item(MenuItem {
-                    key: format!("move-{}", l.id).into(),
-                    icon: Icon::List,
-                    glyph: Some((
-                        lists::list_glyph(&l.name),
-                        lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()),
-                    )),
-                    dot: None,
-                    label: labels::one_line(&l.name).into(),
-                    danger: false,
-                    checked: l.id == t.list,
-                    hint: None,
-                    action: MenuAction::MoveTask(task, l.id),
-                    more: None,
-                })
+    let found = !groups.is_empty();
+    for group in groups {
+        entries.extend(group.heading.map(|h| MenuEntry::Heading(h.into())));
+        entries.extend(group.lists.into_iter().map(|dest| {
+            let l = dest.list;
+            MenuEntry::Item(MenuItem {
+                key: format!("move-{}", l.id).into(),
+                icon: Icon::List,
+                glyph: Some((
+                    lists::list_glyph(&l.name),
+                    lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()),
+                )),
+                dot: None,
+                label: labels::one_line(&l.name).into(),
+                danger: false,
+                checked: dest.current,
+                hint: None,
+                action: MenuAction::MoveTask(task, l.id),
+                more: None,
             })
-            .collect();
-        if items.is_empty() {
-            continue;
-        }
-        found = true;
-        entries.extend(heading.map(|h| MenuEntry::Heading(h.into())));
-        entries.extend(items);
+        }));
     }
     if !found {
         let typed = labels::one_line(filter.trim());

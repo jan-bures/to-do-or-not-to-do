@@ -7,7 +7,7 @@ desktop's and Android's. `todo-server` serves it at `/app`, and it signs in with
 there is no token in the browser.
 
 The web app covers sign-in, smart lists, collections, lists, task detail, adding, completing (with the F2
-check animation), and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
+check animation), deleting and moving tasks, and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
 reminders, tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
 and delete lists and collections, and move lists between collections. Activity shows confirmed changes
 and lets you undo past events.
@@ -69,6 +69,7 @@ browsers that accept gzip.
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
+| `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move picker, and focus hand-off when a row leaves. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
@@ -350,14 +351,24 @@ list's manual order. If there is no destination list, quick-add creates **Tasks*
 current collection when applicable. **Alt+Up/Down** moves the selected task one place among its live
 siblings in its own list, even when the list is filtered. Aggregate rooms don't support manual reordering.
 
+Right-click a task or press **Shift+F10** on its row, or open **Task actions** (⋯) in the detail pane.
+**Delete task** (also **Delete** on the row) acts at once, as on desktop and Android. **Move to…**
+(also **M**) puts the task first in another list's manual order. Type to filter by list or collection name,
+ignoring case and accents. The current list is marked and disabled. Use Up/Down to go from the filter to
+an available list, Enter or Space to choose, and Escape or Cancel to return to the opener. If the task is
+still in the current room after moving, it stays selected. If a row leaves, it collapses over
+`--duration-row-collapse` (instantly with reduced motion). Focus goes to the next surviving row, the
+previous row, or the room heading when neither remains. A modal detail closes so the next row is reachable.
+
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
 running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
-Completion, reorders, list moves, colour changes, repeat and reminder changes, tag edits and membership
-changes, web link edits, and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`. It queues undo of
-the whole original event batch, waiting for its authoritative event if necessary. A tab never
+Completion, reorders, task and list moves, colour changes, repeat and reminder changes, tag edits and membership
+changes, web link edits, and removal of a task, list, collection, step or attachment use
+`SyncClient::compensate_tracked`. It queues undo of the whole original event batch, waiting for its authoritative
+event if necessary. A tab never
 cancels the original locally, because another tab may already be sending it. For recurring tasks, Undo reopens
 the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
 refusals are also listed in Not synced, in plain language. Reduced motion turns movement into instant changes.
@@ -426,7 +437,8 @@ of scope for now, and the generated 192 and 512 px and maskable icons are ready 
 Keyboard: **J/K** or the arrows move the selection, **Space** toggles a selected task from the list, **E**
 edits the detail title, **D** edits its due date, **P** cycles priority (**Shift+P** focuses the picker),
 **R** opens repeat, **T** opens tags, **L** focuses the link field, **Alt+Up/Down** reorders in a list,
-and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
+**Shift+F10** opens the task menu, **M** opens the move picker, **Delete** deletes the task, and **N** focuses
+quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
 the active editor, overlay or filter. App shortcuts don't run while typing and held keys don't repeat actions.
 The status bar shows shortcuts only when their actions are available.
 
@@ -438,12 +450,14 @@ The status bar shows shortcuts only when their actions are available.
 - **Browser tests** (`e2e/tests`, Playwright, Chromium): the fixtures build served by `e2e/serve.mjs` the way
   the server serves it, with the server's exact CSP (read from `spa.rs`). They add and complete tasks, undo,
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
-  any console error or CSP violation. Reminder tests cover keyboard navigation and focus return, custom time
-  validation, cancelling a draft, and Undo. Set `FIXTURE_PORT` to use a different port from the default 4173.
+  any console error or CSP violation. Task action tests cover context and detail menus, keyboard and filter
+  navigation, focus after deletion and moves, reduced motion and Undo. Reminder tests cover keyboard
+  navigation and focus return, custom time validation, cancelling a draft, and Undo. Set `FIXTURE_PORT` to use a different port from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, due-date editor, step controls and delete Undo, attachments (empty, uploading, failed, listed
   and removed with Undo), a collapsed collection, sidebar and room menus,
-  rename and delete dialogs, a delete Undo toast, collection creation, list moves, list and collection swatches,
+  rename and delete dialogs, a delete Undo toast, collection creation, the desktop and phone task move picker,
+  list moves, list and collection swatches,
   repeat presets and custom repeat, reminder presets and the phone custom reminder editor, the tag picker
   and its creation, management, rename, colour and delete views,
   the link field and removal, the phone Not synced list, an active query filter, the finished
@@ -461,7 +475,8 @@ The status bar shows shortcuts only when their actions are available.
   header being refused. Activity reads confirmed edits from another tab and undoes one through the session.
   The suite also uploads, downloads and removes a file with the web session, sets a repeat rule and sees
   the next occurrence on completion, adds and removes tags and links across tabs, checks tag delete confirmation
-  against a live change in membership, and moves a list between collections. It verifies synced reminder
+  against a live change in membership, and moves a list between collections. A task move, deletion and both
+  undos are confirmed by a second tab. The suite verifies synced reminder
   edits and Undo, including clock-change validation and a stale editor that cannot overwrite a change
   from another tab. Then:
   exact Undo of a confirmed recurring completion (including removal of its

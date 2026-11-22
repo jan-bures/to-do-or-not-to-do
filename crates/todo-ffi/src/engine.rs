@@ -894,53 +894,32 @@ impl TodoEngine {
     /// The Move to… picker: every typed word must match the list or its collection, ignoring
     /// case and accents (the same fold as the desktop). Empty groups never get a heading.
     pub fn move_destinations(&self, id: String, filter: String) -> Vec<DestinationGroup> {
-        use todo_core::query::fold;
         let state = self.client.view();
-        let Some(task) = id
-            .parse()
+        id.parse()
             .ok()
-            .and_then(|id| state.tasks.get(&id))
-            .filter(|t| view::task_live(&state, t))
-        else {
-            return vec![];
-        };
-        let groups = intent::list_groups(&state);
-        let has_collections = groups.iter().any(|(c, _)| c.is_some());
-        let filter = fold(&filter);
-        groups
+            .and_then(|id| intent::organize::task_move_groups(&state, id, &filter))
+            .unwrap_or_default()
             .into_iter()
-            .filter_map(|(c, ids)| {
-                let collection = c
-                    .and_then(|id| state.collections.get(&id))
-                    .map(|c| c.name.as_str());
-                let lists = ids
+            .map(|group| DestinationGroup {
+                heading: group.heading,
+                lists: group
+                    .lists
                     .into_iter()
-                    .filter_map(|id| {
-                        let list = state.lists.get(&id)?;
-                        let haystack =
-                            fold(&format!("{} {}", list.name, collection.unwrap_or_default()));
-                        filter
-                            .split_whitespace()
-                            .all(|word| haystack.contains(word))
-                            .then(|| Destination {
-                                id: id.to_string(),
-                                name: crate::labels::one_line(&list.name),
-                                glyph: crate::lists::list_glyph(&list.name).into(),
-                                hue: crate::lists::swatch(
-                                    list.color.as_deref(),
-                                    id.as_uuid().as_bytes(),
-                                )
-                                .into(),
-                                current: id == task.list,
-                            })
+                    .map(|dest| {
+                        let list = dest.list;
+                        Destination {
+                            id: list.id.to_string(),
+                            name: crate::labels::one_line(&list.name),
+                            glyph: crate::lists::list_glyph(&list.name).into(),
+                            hue: crate::lists::swatch(
+                                list.color.as_deref(),
+                                list.id.as_uuid().as_bytes(),
+                            )
+                            .into(),
+                            current: dest.current,
+                        }
                     })
-                    .collect::<Vec<_>>();
-                (!lists.is_empty()).then(|| DestinationGroup {
-                    heading: collection
-                        .map(crate::labels::one_line)
-                        .or_else(|| has_collections.then(|| "Other lists".into())),
-                    lists,
-                })
+                    .collect(),
             })
             .collect()
     }

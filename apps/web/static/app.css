@@ -766,6 +766,48 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 .move-glyph { display: inline-flex; color: var(--list-glyph, var(--color-ink-3)); }
 .move-choice .picker-tick, .tag-choice .picker-tick { margin-inline-start: auto; }
 
+.task-move-picker[open] {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.task-move-picker .room-name-input {
+  min-height: var(--phone-touch);
+  border-color: var(--color-control);
+}
+
+.task-move-choices {
+  margin-block-start: var(--space-3);
+  padding: var(--space-1);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.task-move-group, .task-move-choices .move-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.task-move-group {
+  margin: var(--space-2) 0 var(--space-1);
+  padding-inline: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.task-move-choices .move-choice {
+  width: 100%;
+  min-height: var(--phone-touch);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--hairline) solid var(--color-line);
+  border-radius: var(--radius-button);
+  font: var(--text-body);
+  text-align: start;
+}
+
+.task-move-choices .move-choice:not(:disabled):is(:hover, :focus-visible) { background: var(--color-hover); }
+.task-move-choices .move-choice:disabled { color: var(--color-ink-3); cursor: default; }
+
 .swatches {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

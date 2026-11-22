@@ -9,7 +9,7 @@ use todo_core::State;
 use todo_core::command::{Command, Placement};
 use todo_core::decide::MAX_NAME;
 use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
-use todo_core::model::{LinkKind, Tag, Task};
+use todo_core::model::{Collection, LinkKind, List, Tag, Task};
 use todo_core::query::fold;
 use todo_design::hues::{self, NamedHue};
 use uuid::Uuid;
@@ -116,6 +116,68 @@ pub fn can_move_list(state: &State, id: ListId) -> bool {
             .collections
             .keys()
             .any(|id| state.is_live((*id).into()))
+}
+
+/// One section of the task's "Move to…" picker, in sidebar order.
+#[derive(Debug)]
+pub struct TaskMoveGroup<'a> {
+    pub collection: Option<&'a Collection>,
+    pub heading: Option<String>,
+    pub lists: Vec<TaskMoveDestination<'a>>,
+}
+
+#[derive(Debug)]
+pub struct TaskMoveDestination<'a> {
+    pub list: &'a List,
+    pub current: bool,
+}
+
+/// Every typed word must match the list or its collection, ignoring case and accents.
+/// Empty groups are skipped. `None` means the task itself is no longer available.
+pub fn task_move_groups<'a>(
+    state: &'a State,
+    id: TaskId,
+    filter: &str,
+) -> Option<Vec<TaskMoveGroup<'a>>> {
+    let task = state.tasks.get(&id)?;
+    if task.merged_into.is_some() || !state.is_live(id.into()) {
+        return None;
+    }
+    let groups = super::list_groups(state);
+    let has_collections = groups.iter().any(|(collection, _)| collection.is_some());
+    let filter = fold(filter);
+    let words: Vec<_> = filter.split_whitespace().collect();
+    Some(
+        groups
+            .into_iter()
+            .filter_map(|(collection, ids)| {
+                let collection = collection.and_then(|id| state.collections.get(&id));
+                let collection_name = collection.map_or("", |c| c.name.as_str());
+                let lists: Vec<_> = ids
+                    .into_iter()
+                    .filter_map(|id| state.lists.get(&id))
+                    .filter(|list| {
+                        if words.is_empty() {
+                            return true;
+                        }
+                        let name = fold(&format!("{} {collection_name}", list.name));
+                        words.iter().all(|word| name.contains(word))
+                    })
+                    .map(|list| TaskMoveDestination {
+                        list,
+                        current: list.id == task.list,
+                    })
+                    .collect();
+                (!lists.is_empty()).then(|| TaskMoveGroup {
+                    collection,
+                    heading: collection
+                        .map(|c| confirm::one_line(&c.name))
+                        .or_else(|| has_collections.then(|| "Other lists".into())),
+                    lists,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The swatch with this key (`"lagoon"`), if the design has one.
@@ -476,6 +538,46 @@ mod tests {
             }
             id.expect("task")
         }
+    }
+
+    #[test]
+    fn task_destinations_follow_sidebar_order_and_match_folded_words_across_names() {
+        let mut w = World::new();
+        let first = w.collection("Dům");
+        let current = w.list(Some(first), "Opravy");
+        let other = w.list(Some(first), "Zahrada");
+        let empty = w.collection("Empty");
+        let dead = w.list(Some(empty), "Zahrada");
+        let loose = w.list(None, "Inbox");
+        let task = w.task(current, "Fix the tap");
+        w.run(delete(dead));
+
+        let groups = task_move_groups(&w.state, task, "").unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].heading.as_deref(), Some("Dům"));
+        assert_eq!(groups[0].collection.map(|c| c.id), Some(first));
+        assert_eq!(
+            groups[0]
+                .lists
+                .iter()
+                .map(|d| (d.list.id, d.current))
+                .collect::<Vec<_>>(),
+            vec![(current, true), (other, false)]
+        );
+        assert_eq!(groups[1].heading.as_deref(), Some("Other lists"));
+        assert_eq!(groups[1].lists[0].list.id, loose);
+
+        let groups = task_move_groups(&w.state, task, "  ZÁH dum ").unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lists.len(), 1);
+        assert_eq!(groups[0].lists[0].list.id, other);
+        assert!(
+            task_move_groups(&w.state, task, "empty")
+                .unwrap()
+                .is_empty()
+        );
+        w.run(delete(task));
+        assert!(task_move_groups(&w.state, task, "").is_none());
     }
 
     #[test]

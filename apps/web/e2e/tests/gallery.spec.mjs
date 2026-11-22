@@ -161,6 +161,22 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`task Move to picker (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+      await page.getByRole("button", { name: "Task actions" }).click();
+      await page.getByRole("menuitem", { name: "Move to…" }).click();
+      const picker = page.getByRole("dialog", { name: "Move to…" });
+      await expect(picker.getByRole("textbox", { name: "Filter lists" })).toBeFocused();
+      await expect(picker.getByRole("option", { name: "Planning", selected: true })).toBeDisabled();
+      await shot(page, `desktop-task-move-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await shot(page, `phone-task-move-${scheme}`);
+      await w.check();
+    });
+
     test(`detail organizers (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

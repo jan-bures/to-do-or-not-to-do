@@ -232,6 +232,54 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+test("a task move, delete and both exact undos reach another tab", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  const listLink = (tab, name) => tab.locator(".sidebar").getByRole("link", { name: new RegExp(`^${name}(?: |$)`) });
+  const title = "Pack the exhibit labels";
+  const task = (tab) => tab.getByRole("button", { name: title, exact: true });
+  const undo = () => page.locator(".toast").getByRole("button", { name: "Undo" });
+
+  await page.getByRole("button", { name: "New list" }).click();
+  const name = page.getByRole("textbox", { name: "List name" });
+  await name.fill("Exhibit");
+  await name.press("Enter");
+  await expect(page.locator(".room-title")).toHaveText("Exhibit");
+  await add(page, title);
+
+  const observer = await openApp();
+  const observerProblems = watch(observer);
+  await listLink(observer, "Exhibit").click();
+  await expect(task(observer)).toBeVisible();
+
+  await task(page).click();
+  await page.keyboard.press("m");
+  await page.getByRole("dialog", { name: "Move to…" }).getByRole("option", { name: "Inbox" }).click();
+  await expect(task(observer)).toHaveCount(0, { timeout: 15_000 });
+  await listLink(observer, "Inbox").click();
+  await expect(task(observer)).toBeVisible();
+  await undo().click();
+  await expect(task(observer)).toHaveCount(0, { timeout: 15_000 });
+  await listLink(observer, "Exhibit").click();
+  await expect(task(observer)).toBeVisible();
+
+  await task(page).click();
+  await page.getByRole("button", { name: "Task actions" }).click();
+  await page.getByRole("menuitem", { name: "Delete task" }).click();
+  await expect(task(observer)).toHaveCount(0, { timeout: 15_000 });
+  await undo().click();
+  await expect(task(observer)).toBeVisible();
+
+  // Leave the shared server's top-level list order unchanged for the later sidebar tests.
+  await page.getByRole("button", { name: "Room menu" }).click();
+  await page.getByRole("menuitem", { name: "Delete list" }).click();
+  await page.getByRole("dialog", { name: "Delete list" }).getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(listLink(observer, "Exhibit")).toHaveCount(0);
+  expect([...problems, ...observerProblems]).toEqual([]);
+  await observer.close();
+  await page.close();
+});
+
 test("Activity reads confirmed changes and compensates another tab's past edit", async () => {
   const author = await openApp();
   const reader = await openApp();

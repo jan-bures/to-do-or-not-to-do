@@ -779,7 +779,8 @@ test("detail actions, schedule fields, sync label and context keyboard hints mat
   await expect(page.locator(".sb-counts")).toHaveText("9 open · 3 done today");
   await rows(page).first().locator(".row-title").click();
   const buttons = page.locator(".detail-top button");
-  expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Close"]);
+  expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Task actions", "Close"]);
+  await expect(page.getByRole("button", { name: "Task actions" })).toHaveAttribute("aria-haspopup", "menu");
   const fields = page.getByRole("region", { name: "Schedule and priority" });
   await expect(fields.locator("dt")).toHaveText(["Due", "Priority", "Repeat", "Tags", "Reminder"]);
   await expect(fields.getByRole("button", { name: "Repeat" })).toBeEnabled();

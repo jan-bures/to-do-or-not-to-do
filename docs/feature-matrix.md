@@ -211,7 +211,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 
 | # | Gap | Size |
 |---|---|---|
-| 2.1 | **Done.** Delete a task, and move it to another list. The undo kinds exist already (`D/ui/shell/undo.rs:28`, `:31`). Add a task context menu, the Delete key and "Move to…". | M |
+| 2.1 | **Done on desktop, Android and web.** Delete a task or move it to another list from Task actions, with Undo. Desktop and web also offer a row context menu, Delete and a keyboard-accessible "Move to…" picker. | M |
 | 2.2 | **Done.** Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
 | 2.3 | **Done.** Activity feed with per-event undo and an agent filter. The desktop, web and Android rooms are wired; all three share the pages, undos and wording in `todo-client` (`T/activity.rs`). | L |
 | 2.4 | **Done.** Reminders: edit them, and fire Windows toasts while the app runs in the tray. | L |
@@ -239,7 +239,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
 | 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |
 | 3.11 | **Done.** Upload attachments from the picker or by dropping files onto the task detail. The upload route accepts the owner's session with CSRF and a matching origin; removal offers Undo. | M |
-| 3.12 | **Done:** collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing (2.4); Activity (2.3) and attachments are also wired. Still missing: task delete and move (2.1), reminder alerts (2.4), and merging tasks (2.12). | — |
+| 3.12 | **Done:** task delete and move (2.1), collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing (2.4); Activity (2.3) and attachments are also wired. Still missing: reminder alerts (2.4) and merging tasks (2.12). | — |
 
 ### 4. What Android lacks relative to the desktop
 

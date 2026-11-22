@@ -242,8 +242,8 @@ Scrolling back to the top brings them back. While the keyboard is open, or when 
 visual.
 
 **The detail pane's top bar** holds the breadcrumb on the left and three actions on the right, in this order on
-every client: **My Day** (sun), **Important** (star), **Close** (×). Android also has **Task actions** (⋯)
-right after the star; on its cover screen Back replaces Close. The breadcrumb takes what's left and ends
+every client: **My Day** (sun), **Important** (star), **Close** (×). Android and web also have **Task actions**
+(⋯) right after the star. On Android's cover screen Back replaces Close. The breadcrumb takes what's left and ends
 in an ellipsis; the actions never move, however long the list's name.
 
 **Undo never covers a row.**

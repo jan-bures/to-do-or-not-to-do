@@ -9,6 +9,7 @@ mod reminder;
 mod repeat;
 mod room_actions;
 mod tags;
+mod task_actions;
 
 use crate::backend::{self, Sync, UndoTarget};
 use crate::changes::{self, Failure};
@@ -35,18 +36,34 @@ use todo_design::{Glyph, Icon, motion};
 pub enum Phase {
     /// Fill, tick and hold: the row stays in place, checked and struck through.
     Hold,
-    /// Collapsing out of the list.
+    /// A completed row collapsing out of the list.
     Exit,
+    /// A deleted or moved row collapsing out of this room.
+    Depart,
 }
 
-/// A row that was just completed and is still shown where it was.
+impl Phase {
+    fn exiting(phase: Option<Self>) -> bool {
+        matches!(phase, Some(Self::Exit | Self::Depart))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowSection {
+    Open,
+    Completed,
+    Handover,
+}
+
+/// A row that has left the data but is still shown where it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Linger {
     token: u64,
     room: RoomId,
-    handover: bool,
-    id: TaskId,
-    updated: Stamp,
+    section: RowSection,
+    row: Row,
+    index: usize,
+    completion_stamp: Option<Stamp>,
     phase: Phase,
 }
 
@@ -60,7 +77,7 @@ pub struct Shown {
 struct Undo {
     target: UndoTarget,
     label: String,
-    completing: Option<TaskId>,
+    animated_task: Option<TaskId>,
 }
 
 #[derive(Clone)]
@@ -96,6 +113,7 @@ pub struct Ctx {
     activity_feed: RwSignal<activity::FeedState>,
     activity_revision: RwSignal<Option<(Option<todo_client::Epoch>, u64)>>,
     room_actions: room_actions::Controls,
+    task_actions: task_actions::Controls,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
     drawer: RwSignal<bool>,
@@ -204,13 +222,13 @@ impl Ctx {
         command.is_some_and(|command| self.submit(command))
     }
 
-    fn submit_undoable(self, cmd: Command, label: String, completing: Option<TaskId>) -> bool {
+    fn submit_undoable(self, cmd: Command, label: String, animated_task: Option<TaskId>) -> bool {
         let Some(target) = self.submission(backend::submit_tracked(cmd)) else {
             return false;
         };
         self.undo.set(Some(Undo {
             target,
-            completing,
+            animated_task,
             label: label.clone(),
         }));
         self.show_toast(label, true);
@@ -224,9 +242,9 @@ impl Ctx {
         self.toast.set(None);
         let result = backend::undo(&action.target);
         if matches!(result, Ok(TrackedUndo::Cancelled | TrackedUndo::Queued(_)))
-            && let Some(id) = action.completing
+            && let Some(id) = action.animated_task
         {
-            self.lingering.update(|l| l.retain(|x| x.id != id));
+            self.lingering.update(|l| l.retain(|x| x.row.id != id));
         }
         match result {
             Ok(TrackedUndo::Cancelled) => self.show_toast("Change undone.".into(), false),
@@ -281,6 +299,9 @@ impl Ctx {
 
     fn reset_room_controls(self) {
         self.room_actions.close_menu(false);
+        self.task_actions.close();
+        self.lingering
+            .update(|rows| rows.retain(|l| l.phase != Phase::Depart));
         self.drawer.set(false);
         self.new_room.set(None);
         self.filter_open.set(false);
@@ -349,13 +370,18 @@ impl Ctx {
         // A rapid Undo followed by another completion starts a fresh timer for the same task.
         let token = self.toast_seq.get_untracked();
         self.lingering.update(|l| {
-            l.retain(|x| x.id != id);
+            l.retain(|x| x.row.id != id);
             l.push(Linger {
                 token,
                 room,
-                handover,
-                id,
-                updated,
+                section: if handover {
+                    RowSection::Handover
+                } else {
+                    RowSection::Open
+                },
+                row: row.clone(),
+                index: 0, // The room model keeps held completions in order.
+                completion_stamp: Some(updated),
                 phase: Phase::Hold,
             });
         });
@@ -380,7 +406,7 @@ impl Ctx {
     }
 
     fn uncomplete(self, id: TaskId) {
-        self.lingering.update(|l| l.retain(|x| x.id != id));
+        self.lingering.update(|l| l.retain(|x| x.row.id != id));
         self.submit_intent(|state| intent::set_done(state, id, false));
     }
 
@@ -455,29 +481,49 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let room = RwSignal::new(room0);
     let lingering = RwSignal::new(Vec::<Linger>::new());
     let filter_text = RwSignal::new(String::new());
-    // Rows still playing their completion: the header counts them open until they have left.
+    // Only completions count as open until they have left; moves/deletes are paint only.
     let holding = Memo::new(move |_| {
         let id = room.get();
         lingering.with(|l| {
             l.iter()
-                .filter(|x| !x.handover && x.room == id)
-                .map(|x| (x.id, x.updated.clone()))
+                .filter(|x| x.section == RowSection::Open && x.room == id)
+                .filter_map(|x| Some((x.row.id, x.completion_stamp.clone()?)))
                 .collect::<BTreeMap<_, _>>()
         })
     });
     let (_, view_room) = model::room_memos(state, now, room, holding, filter_text);
-    let shown = Memo::new(move |_| view_room.with(|r| lingering.with(|l| paint_rows(r, l))));
+    let shown = Memo::new(move |_| {
+        view_room.with(|r| lingering.with(|l| rows_with_exits(r, RowSection::Open, l)))
+    });
     let finished = Memo::new(move |_| {
         view_room.with(Room::finished)
-            && lingering.with(|l| l.iter().all(|x| x.handover || x.room != RoomId::default()))
+            && lingering.with(|l| {
+                l.iter()
+                    .all(|x| x.section != RowSection::Open || x.room != RoomId::default())
+            })
     });
     let tomorrow = Memo::new(move |_| {
         (finished.get() && !view_room.with(|r| r.filtered)).then(|| {
             lingering.with(|leaving| {
                 state.with(|s| {
-                    model::tomorrow(s, &now.get(), |id| {
-                        leaving.iter().any(|x| x.handover && x.id == id)
-                    })
+                    model::tomorrow(
+                        s,
+                        &now.get(),
+                        |id| {
+                            leaving.iter().any(|x| {
+                                x.section == RowSection::Handover
+                                    && x.row.id == id
+                                    && x.phase != Phase::Depart
+                            })
+                        },
+                        |id| {
+                            leaving.iter().any(|x| {
+                                x.section == RowSection::Handover
+                                    && x.row.id == id
+                                    && x.phase == Phase::Depart
+                            })
+                        },
+                    )
                 })
             })
         })
@@ -519,6 +565,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         activity_feed: RwSignal::new(activity::FeedState::default()),
         activity_revision: RwSignal::new(None),
         room_actions: room_actions::Controls::new(),
+        task_actions: task_actions::Controls::new(),
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
@@ -620,27 +667,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             <StatusBar/>
         </div>
         <room_actions::Overlays/>
+        <task_actions::Overlays/>
     }
-}
-
-/// Animation is paint only. The shared room supplies the membership and order, including holds.
-fn paint_rows(room: &Room, lingering: &[Linger]) -> Vec<Shown> {
-    room.rows
-        .iter()
-        .cloned()
-        .map(|row| {
-            let phase = row
-                .done
-                .then(|| {
-                    lingering
-                        .iter()
-                        .find(|l| !l.handover && l.room == room.id && l.id == row.id)
-                })
-                .flatten()
-                .map(|l| l.phase);
-            Shown { row, phase }
-        })
-        .collect()
 }
 
 fn track_overlay_focus(c: Ctx) {
@@ -658,8 +686,12 @@ fn track_overlay_focus(c: Ctx) {
             && id.is_none()
             && room == old_room
         {
+            let before = pickers::focused();
             request_animation_frame(move || {
-                if c.selected.get_untracked().is_none() && !platform::focus(&format!("row-{old}")) {
+                if c.selected.get_untracked().is_none()
+                    && pickers::focus_unmoved(before.as_ref())
+                    && !platform::focus(&format!("row-{old}"))
+                {
                     platform::focus("room-title");
                 }
             });
@@ -704,7 +736,11 @@ fn typing(ev: &leptos::ev::KeyboardEvent) -> bool {
 
 fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     use wasm_bindgen::JsCast;
-    if ev.is_composing() || ev.default_prevented() || c.room_actions.dialog_open() {
+    if ev.is_composing()
+        || ev.default_prevented()
+        || c.room_actions.dialog_open()
+        || c.task_actions.open()
+    {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
@@ -804,6 +840,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 }
             }
         }
+        return;
+    }
+    if !c.read_only() && task_actions::shortcut(c, ev) {
         return;
     }
     match key.as_str() {
@@ -1394,6 +1433,7 @@ fn RoomPane() -> impl IntoView {
     view! {
         <div class="room" node_ref=node on:scroll=move |_| {
             c.room_actions.position_menu();
+            c.task_actions.position();
             if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
                 let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
                 // Scroll metrics are rounded; also start before the last row leaves the viewport.
@@ -1424,7 +1464,7 @@ fn RoomPane() -> impl IntoView {
 #[component]
 fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
-    // The sun and the count wait for completing rows to leave (`model::room` holds them).
+    // The shared header counts completing rows as open until they leave.
     let counts = Memo::new(move |_| {
         c.view_room
             .with(|r| (r.header.progress_done, r.header.progress_total))
@@ -1609,6 +1649,46 @@ fn QuickAdd() -> impl IntoView {
     }
 }
 
+fn rows_with_exits(room: &Room, section: RowSection, lingering: &[Linger]) -> Vec<Shown> {
+    let rows = if section == RowSection::Completed {
+        &room.completed
+    } else {
+        &room.rows
+    };
+    let mut shown: Vec<_> = rows
+        .iter()
+        .cloned()
+        .map(|row| {
+            // The shared room supplies membership and order for held completions.
+            let phase = (section == RowSection::Open && row.done)
+                .then(|| {
+                    lingering.iter().find(|l| {
+                        l.section == section && l.room == room.id && l.row.id == row.id
+                            && l.phase != Phase::Depart
+                    })
+                })
+                .flatten()
+                .map(|l| l.phase);
+            Shown { row, phase }
+        })
+        .collect();
+    for l in lingering
+        .iter()
+        .filter(|l| l.section == section && l.room == room.id && l.phase == Phase::Depart)
+    {
+        if !shown.iter().any(|s| s.row.id == l.row.id) {
+            shown.insert(
+                l.index.min(shown.len()),
+                Shown {
+                    row: l.row.clone(),
+                    phase: Some(l.phase),
+                },
+            );
+        }
+    }
+    shown
+}
+
 #[component]
 fn TaskList() -> impl IntoView {
     let c = ctx();
@@ -1630,13 +1710,16 @@ fn TaskList() -> impl IntoView {
 #[component]
 fn CompletedRows() -> impl IntoView {
     let c = ctx();
-    let completed = Memo::new(move |_| c.view_room.with(|r| r.completed.clone()));
+    let completed = Memo::new(move |_| {
+        c.view_room
+            .with(|r| c.lingering.with(|l| rows_with_exits(r, RowSection::Completed, l)))
+    });
     view! {
         <ul id="completed-rows" class="rows completed-rows" role="list" aria-label="Completed tasks"
             hidden=move || !c.completed_open.get() || completed.with(Vec::is_empty)>
             <For each=move || if c.completed_open.get() { completed.get() } else { Vec::new() }
-                key=|r| r.clone() let:row>
-                <TaskRow row=row phase=None/>
+                key=|s| s.clone() let:s>
+                <TaskRow row=s.row phase=s.phase/>
             </For>
         </ul>
     }
@@ -1745,7 +1828,10 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             class="row"
             class:done=row.done
             class:completing=phase == Some(Phase::Hold)
-            class:exiting=phase == Some(Phase::Exit)
+            class:exiting=Phase::exiting(phase)
+            inert=phase == Some(Phase::Depart)
+            data-task-row=id.to_string()
+            on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
             class:overdue=overdue
             class:selected=move || c.selected.get() == Some(id)
             class:with-agent=move || c.columns.with(|cols| cols.agent)
@@ -1970,8 +2056,11 @@ fn Handover() -> impl IntoView {
 
 fn handover_phase(c: Ctx, id: TaskId) -> Memo<Option<Phase>> {
     Memo::new(move |_| {
-        c.lingering
-            .with(|l| l.iter().find(|x| x.handover && x.id == id).map(|x| x.phase))
+        c.lingering.with(|l| {
+            l.iter()
+                .find(|x| x.section == RowSection::Handover && x.row.id == id)
+                .map(|x| x.phase)
+        })
     })
 }
 
@@ -1984,7 +2073,10 @@ fn HandoverFirst(row: Row, date: String) -> impl IntoView {
         <div class="next-task handover-task" class:done=row.done
             class:selected=move || c.selected.get() == Some(id)
             class:completing=move || phase.get() == Some(Phase::Hold)
-            class:exiting=move || phase.get() == Some(Phase::Exit)
+            class:exiting=move || Phase::exiting(phase.get())
+            inert=move || phase.get() == Some(Phase::Depart)
+            data-task-row=id.to_string()
+            on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
             on:click=move |_| c.select(Some(id))>
             <HandoverCheck row=row.clone() phase=phase/>
             <span class="sunrise">{icon(Icon::Sunrise)}</span>
@@ -2008,7 +2100,10 @@ fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
         <li class="t-row handover-task" class:done=row.done
             class:selected=move || c.selected.get() == Some(id)
             class:completing=move || phase.get() == Some(Phase::Hold)
-            class:exiting=move || phase.get() == Some(Phase::Exit)
+            class:exiting=move || Phase::exiting(phase.get())
+            inert=move || phase.get() == Some(Phase::Depart)
+            data-task-row=id.to_string()
+            on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
             on:click=move |_| c.select(Some(id))>
             <HandoverCheck row=row.clone() phase=phase/>
             <button class="t-title" type="button" id=format!("row-{id}")>{row.title}</button>
@@ -2061,7 +2156,10 @@ fn DetailPane() -> impl IntoView {
             inert=move || c.detail.with(Option::is_none)
             on:dragover=move |ev| uploads.drag_over(c, ev)
             on:drop=move |ev| uploads.drop_files(c, ev)>
-            <div class="detail-scroll" on:scroll=move |_| pickers::position_detail_pickers()>
+            <div class="detail-scroll" on:scroll=move |_| {
+                pickers::position_detail_pickers();
+                c.task_actions.position();
+            }>
                 {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered uploads=uploads/> })}
             </div>
             // Modal feedback belongs inside the dialog, outside the inert room.
@@ -2167,6 +2265,7 @@ fn DetailTop(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
             >
                 {icon(Icon::Star)}
             </button>
+            <task_actions::DetailMenu task=id/>
             <button class="icon-button close" aria-label="Close" title="Close (Esc)" aria-keyshortcuts="Escape"
                 on:click=move |_| c.select(None)>
                 {icon(Icon::X)}
