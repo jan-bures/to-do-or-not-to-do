@@ -539,10 +539,8 @@ mod tests {
             ("2026-11-22", "2026-11-22", "2026-11-23"),
             ("2026-11-23", "2026-11-28", "2026-11-30"),
         ] {
-            let ctx = EvalContext {
-                today: today.parse().unwrap(),
-                ..ctx()
-            };
+            let mut ctx = ctx();
+            ctx.today = today.parse().unwrap();
             assert_eq!(due_text("this weekend", &ctx), d(weekend));
             assert_eq!(due_text("next Monday", &ctx), d(next_week));
         }

@@ -1,13 +1,13 @@
 package app.todoornot.core
 
 import java.time.Instant
-import java.util.TimeZone
+import java.time.ZoneId
 
-/** The current instant, its UTC offset, and the actual bounds of its local calendar day. */
-fun localNow(epochMs: Long = System.currentTimeMillis(), zone: TimeZone = TimeZone.getDefault()): LocalNow {
-    val zoneId = zone.toZoneId()
-    val date = Instant.ofEpochMilli(epochMs).atZone(zoneId).toLocalDate()
-    val start = date.atStartOfDay(zoneId).toInstant().toEpochMilli()
-    val end = date.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli()
-    return LocalNow(epochMs, zone.getOffset(epochMs) / 1000, LocalDay(start, end))
+/** Send the zone ID for historical dates and the device's actual day bounds for sidebar counts. */
+fun localNow(epochMs: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): LocalNow {
+    val local = Instant.ofEpochMilli(epochMs).atZone(zone)
+    val date = local.toLocalDate()
+    val start = date.atStartOfDay(zone).toInstant().toEpochMilli()
+    val end = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    return LocalNow(epochMs, local.offset.totalSeconds, zone.id, LocalDay(start, end))
 }

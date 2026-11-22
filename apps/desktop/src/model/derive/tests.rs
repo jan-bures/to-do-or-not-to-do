@@ -25,6 +25,26 @@ fn list_named(state: &State, name: &str) -> ListId {
 }
 
 #[test]
+fn quick_add_progress_reuses_counts_across_frames_until_the_replica_or_day_changes() {
+    let f = fixtures::my_day();
+    let room = f.shell().room;
+    let today = f.now.today();
+    let snapshot = Arc::new(f.state);
+    let mut progress = MyDayProgress::default();
+    assert!(progress.update(&snapshot, today));
+    for _ in 0..120 {
+        assert_eq!(progress.counts(), (room.done, room.total));
+        assert!(!progress.update(&snapshot, today));
+    }
+    let empty = Arc::new(State::new());
+    assert!(progress.update(&empty, today));
+    assert_eq!(progress.counts(), (0, 0));
+    assert!(progress.update(&snapshot, today));
+    assert!(progress.update(&snapshot, today.tomorrow().expect("tomorrow")));
+    assert_eq!(progress.counts(), (0, 0));
+}
+
+#[test]
 fn a_list_room_shows_its_open_tasks_in_order_and_hides_chips() {
     let mut f = fixtures::my_day();
     let office = list_named(&f.state, "Office");

@@ -23,7 +23,7 @@ use jiff::tz::TimeZone;
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::Task;
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query};
+use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Query};
 use todo_core::time::{Date, Timestamp, Weekday};
 
 use crate::activity;
@@ -141,19 +141,30 @@ impl RoomKey<'_> {
 }
 
 /// The owner's clock: the instant and the time zone that says where local midnight is.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LocalTime {
     /// The instant.
     pub at: Timestamp,
-    /// The owner's time zone (a fixed offset where the platform gives only that).
-    pub tz: TimeZone,
+    zone: LocalZone,
 }
 
 impl LocalTime {
     /// The instant in `tz`.
     #[must_use]
     pub fn new(at: Timestamp, tz: TimeZone) -> Self {
-        Self { at, tz }
+        Self {
+            at,
+            zone: LocalZone::Jiff(tz),
+        }
+    }
+
+    /// The instant with offset rules supplied by the platform.
+    #[must_use]
+    pub fn with_offsets(at: Timestamp, offsets: fn(Timestamp) -> i32) -> Self {
+        Self {
+            at,
+            zone: LocalZone::Platform(offsets),
+        }
     }
 
     /// The owner's local date.
@@ -165,14 +176,13 @@ impl LocalTime {
     /// The local date of `ts`.
     #[must_use]
     pub fn date_of(&self, ts: Timestamp) -> Date {
-        ts.to_zoned_datetime(self.tz.clone()).date()
+        self.zone.date_of(ts)
     }
 
-    /// The query evaluation context: local today and the current UTC offset.
+    /// The query evaluation context, with the same local dates as the header.
     #[must_use]
     pub fn eval(&self) -> EvalContext {
-        let offset = self.tz.to_offset(self.at).seconds();
-        EvalContext::new(self.at, self.today(), offset)
+        EvalContext::with_zone(self.at, self.zone.clone())
     }
 }
 
@@ -194,6 +204,19 @@ pub fn list_live(state: &State, id: ListId) -> bool {
 #[must_use]
 pub fn task_live(state: &State, t: &Task) -> bool {
     t.deleted.is_none() && t.merged_into.is_none() && list_live(state, t.list)
+}
+
+/// My Day's raw (done, total) progress for a surface with no rows or completion choreography.
+/// No queries, sorting, or allocation are needed to count the whole plan.
+#[must_use]
+pub fn my_day_progress(state: &State, today: Date) -> (usize, usize) {
+    state
+        .tasks
+        .values()
+        .filter(|t| t.my_day == Some(today) && task_live(state, t))
+        .fold((0, 0), |(done, total), t| {
+            (done + usize::from(t.is_done()), total + 1)
+        })
 }
 
 /// A room's tasks, unfiltered.
@@ -227,6 +250,9 @@ pub fn room_tasks<'s>(
                 .tasks
                 .values()
                 .filter(|t| {
+                    if smart == SmartList::Completed {
+                        return !held(t) && m.matches(t);
+                    }
                     m.matches(t)
                         || (held(t) && task_live(state, t) && {
                             // Still in the room as if it were open, until the completion has played.
@@ -258,7 +284,7 @@ pub fn room_tasks<'s>(
                 }
                 RoomKey::Smart(_) | RoomKey::Activity(_) => false,
             };
-            let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| l.position.clone());
+            let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| &l.position);
             let mut open = Vec::new();
             let mut done = Vec::new();
             for t in state.tasks.values() {
@@ -272,7 +298,12 @@ pub fn room_tasks<'s>(
                 }
             }
             open.sort_by(|a, b| {
-                (list_pos(a), &a.position, a.id).cmp(&(list_pos(b), &b.position, b.id))
+                (list_pos(a), a.list, &a.position, a.id).cmp(&(
+                    list_pos(b),
+                    b.list,
+                    &b.position,
+                    b.id,
+                ))
             });
             done.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then(a.id.cmp(&b.id)));
             RoomTasks { open, done }
@@ -545,19 +576,17 @@ pub fn header_of(
     // A task still playing its completion counts as open: the counts (and the sun) change when it has
     // left the rows.
     let counted_done = |t: &Task| t.is_done() && !holding.contains(&t.id);
-    let finished_on = |t: &Task, pred: &dyn Fn(Date) -> bool| {
-        counted_done(t) && t.completed_at.is_some_and(|c| pred(now.date_of(c)))
-    };
-    let all = || open.iter().chain(done.iter());
-    let done_today = all().filter(|t| finished_on(t, &|d| d == today)).count();
-    let finished_this_month = all()
-        .filter(|t| {
-            finished_on(t, &|d| {
-                d.year() == today.year() && d.month() == today.month()
-            })
-        })
-        .count();
-    let still_open = open.iter().filter(|t| !counted_done(t)).count();
+    let (mut done_today, mut finished_this_month, mut still_open) = (0, 0, 0);
+    for t in open.iter().chain(done) {
+        if let Some(c) = t.completed_at.filter(|_| !holding.contains(&t.id)) {
+            let date = now.date_of(c);
+            done_today += usize::from(date == today);
+            finished_this_month +=
+                usize::from(date.year() == today.year() && date.month() == today.month());
+        } else {
+            still_open += 1;
+        }
+    }
 
     let (progress_done, progress_total) = match key {
         RoomKey::Activity(_) => (0, 0),

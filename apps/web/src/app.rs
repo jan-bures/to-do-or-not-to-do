@@ -93,6 +93,7 @@ pub struct Ctx {
     undo: RwSignal<Option<Undo>>,
     waiting_undo: RwSignal<BTreeMap<CommandId, WaitingUndo>>,
     activity_undos: activity::Undos,
+    activity_feed: RwSignal<activity::FeedState>,
     activity_revision: RwSignal<Option<(Option<todo_client::Epoch>, u64)>>,
     room_actions: room_actions::Controls,
     failures: RwSignal<Vec<Failure>>,
@@ -472,35 +473,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             filter_text.with(|f| state.with(|s| model::room(s, &now.get(), &room.get(), f, held)))
         })
     });
-    let shown = Memo::new(move |_| {
-        let r = view_room.get();
-        let mut rows: Vec<Shown> = r
-            .rows
-            .iter()
-            .cloned()
-            .map(|row| Shown { row, phase: None })
-            .collect();
-        if r.id != RoomId::Smart("completed") {
-            for l in lingering.get().iter().filter(|l| {
-                !l.handover
-                    && l.room == r.id
-                    && (!r.filtered || r.completed.iter().any(|row| row.id == l.row.id))
-            }) {
-                if rows.iter().any(|s| s.row.id == l.row.id) {
-                    continue;
-                }
-                let at = l.index.min(rows.len());
-                rows.insert(
-                    at,
-                    Shown {
-                        row: l.row.clone(),
-                        phase: Some(l.phase),
-                    },
-                );
-            }
-        }
-        rows
-    });
+    let shown = Memo::new(move |_| view_room.with(|r| lingering.with(|l| place_held_rows(r, l))));
     let finished = Memo::new(move |_| {
         view_room.with(Room::finished)
             && lingering.with(|l| l.iter().all(|x| x.handover || x.room != RoomId::default()))
@@ -550,6 +523,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         undo: RwSignal::new(None),
         waiting_undo: RwSignal::new(BTreeMap::new()),
         activity_undos: activity::Undos::new(),
+        activity_feed: RwSignal::new(activity::FeedState::default()),
         activity_revision: RwSignal::new(None),
         room_actions: room_actions::Controls::new(),
         failures: RwSignal::new(Vec::new()),
@@ -627,11 +601,13 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
                 c.refresh();
             }
         });
-        set_interval(move || c.now.set(platform::now()), Duration::from_secs(30));
         platform::on_wake(move || {
             c.now.set(platform::now());
             backend::nudge();
         });
+    }
+    if now.with_untracked(|n| n.browser_time) {
+        set_interval(move || c.now.set(platform::now()), Duration::from_secs(30));
     }
 
     track_overlay_focus(c);
@@ -652,6 +628,36 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         </div>
         <room_actions::Overlays/>
     }
+}
+
+/// Paint held rows at their old slots with the snapshot taken at the point of completion. The
+/// shared rows still determine filtered membership, and the Completed section already excludes holds.
+fn place_held_rows(room: &Room, lingering: &[Linger]) -> Vec<Shown> {
+    let held: Vec<_> = lingering
+        .iter()
+        .filter(|l| !l.handover && l.room == room.id)
+        .collect();
+    let mut rows: Vec<_> = room
+        .rows
+        .iter()
+        .filter(|row| !held.iter().any(|l| l.row.id == row.id))
+        .cloned()
+        .map(|row| Shown { row, phase: None })
+        .collect();
+    if room.id != RoomId::Smart("completed") {
+        for l in held {
+            if !room.filtered || room.rows.iter().any(|row| row.id == l.row.id) {
+                rows.insert(
+                    l.index.min(rows.len()),
+                    Shown {
+                        row: l.row.clone(),
+                        phase: Some(l.phase),
+                    },
+                );
+            }
+        }
+    }
+    rows
 }
 
 fn track_overlay_focus(c: Ctx) {
@@ -1641,18 +1647,7 @@ fn TaskList() -> impl IntoView {
 #[component]
 fn CompletedRows() -> impl IntoView {
     let c = ctx();
-    let completed = Memo::new(move |_| {
-        c.view_room.with(|r| {
-            r.completed
-                .iter()
-                .filter(|row| {
-                    !c.lingering
-                        .with(|l| l.iter().any(|x| x.room == r.id && x.row.id == row.id))
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-    });
+    let completed = Memo::new(move |_| c.view_room.with(|r| r.completed.clone()));
     view! {
         <ul id="completed-rows" class="rows completed-rows" role="list" aria-label="Completed tasks"
             hidden=move || !c.completed_open.get() || completed.with(Vec::is_empty)>
@@ -2689,7 +2684,12 @@ fn StatusBar() -> impl IntoView {
     view! {
         <footer class="statusbar" inert=move || c.detail_modal.get()>
             <span class="sb-counts">
-                {move || c.view_room.with(|r| r.header.status.map(|s| s.text()))}
+                {move || c.room.with(|room| match room {
+                    RoomId::Activity(agent) => Some(c.activity_feed.with(|f| {
+                        f.counts(agent.as_ref(), &c.now.with(Now::local_time)).text()
+                    })),
+                    _ => c.view_room.with(|r| r.header.status.map(|s| s.text())),
+                })}
             </span>
             <span class="sb-keys" aria-hidden="true">
                 <Show when=move || !c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done)))>

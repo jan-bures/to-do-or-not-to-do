@@ -30,6 +30,8 @@ pub struct Now {
     pub at: Timestamp,
     /// The UTC offset of local time, in seconds.
     pub offset_s: i32,
+    /// Use the browser's offset at each instant rather than a fixture's fixed offset.
+    pub browser_time: bool,
 }
 
 impl Now {
@@ -48,12 +50,16 @@ impl Now {
     /// The query evaluation context.
     #[must_use]
     pub fn eval(&self) -> EvalContext {
-        EvalContext::new(self.at, self.today(), self.offset_s)
+        self.local_time().eval()
     }
 
-    /// The clock as the shared room header takes it: the browser gives only the current UTC offset.
+    /// The clock as the shared room header takes it.
     #[must_use]
     pub fn local_time(&self) -> LocalTime {
+        #[cfg(target_arch = "wasm32")]
+        if self.browser_time {
+            return LocalTime::with_offsets(self.at, crate::platform::utc_offset);
+        }
         let off = Offset::from_seconds(self.offset_s).unwrap_or(Offset::UTC);
         LocalTime::new(self.at, TimeZone::fixed(off))
     }
@@ -760,18 +766,8 @@ pub fn shared_key(id: &RoomId) -> room_header::RoomKey<'_> {
     }
 }
 
-/// A room's header. `holding` names the tasks whose completion is still playing: they count as open until
+/// Builds a room. `holding` names the tasks whose completion is still playing: they count as open until
 /// they have left the rows.
-#[must_use]
-pub fn header(state: &State, now: &Now, id: &RoomId, holding: &BTreeSet<TaskId>) -> RoomHeader {
-    room_header::room_header(state, shared_key(id), holding, &now.local_time())
-}
-
-fn sort_done(rows: &mut [(&Task, Row)]) {
-    rows.sort_by_key(|r| std::cmp::Reverse(r.0.completed_at));
-}
-
-/// Builds a room. `holding` names the tasks whose completion is still playing (see [`header`]).
 #[must_use]
 pub fn room(
     state: &State,
@@ -780,59 +776,32 @@ pub fn room(
     filter: &str,
     holding: &BTreeSet<TaskId>,
 ) -> Room {
-    let today = now.today();
-    let ctx = now.eval();
-    let live = |t: &&Task| task_live(state, t);
-    let (title, hue, scope, mode, add): (String, &'static str, Vec<&Task>, _, _) = match id {
+    let time = now.local_time();
+    let ctx = time.eval();
+    let shared = shared_key(id);
+    let tasks = room_header::room_tasks(state, shared, holding, &ctx);
+    let header = room_header::header_of(state, shared, &tasks, holding, &time);
+    let (title, hue, mode, add) = match id {
         RoomId::Activity(_) => (
             "Activity".to_owned(),
             "agent-activity",
-            Vec::new(),
             ChipMode::Hidden,
             None,
         ),
-        RoomId::Smart(s) => {
-            let in_scope: Box<dyn Fn(&Task) -> bool> = match *s {
-                "my_day" => Box::new(move |t: &Task| t.my_day == Some(today)),
-                "important" => Box::new(|t: &Task| t.priority == Priority::High),
-                "planned" => Box::new(|t: &Task| t.due.is_some()),
-                "completed" => Box::new(Task::is_done),
-                "all" => Box::new(|_: &Task| true),
-                other => {
-                    let q = builtin(other).and_then(|b| b.parse().ok());
-                    Box::new(move |t: &Task| q.as_ref().is_some_and(|q| q.matches(state, t, &ctx)))
-                }
-            };
-            let scope: Vec<&Task> = state
-                .tasks
-                .values()
-                .filter(live)
-                .filter(|t| in_scope(t))
-                .collect();
-            let add = (*s != "completed").then(|| "Add a task…".to_owned());
-            (
-                smart_name(s).to_owned(),
-                smart_hue(s),
-                scope,
-                ChipMode::Full,
-                add,
-            )
-        }
+        RoomId::Smart(s) => (
+            smart_name(s).to_owned(),
+            smart_hue(s),
+            ChipMode::Full,
+            (*s != "completed").then(|| "Add a task…".to_owned()),
+        ),
         RoomId::Collection(c) => {
             let coll = state.collections.get(c);
             let lists = lists_in(state, Some(*c));
-            let scope: Vec<&Task> = state
-                .tasks
-                .values()
-                .filter(live)
-                .filter(|t| lists.iter().any(|l| l.id == t.list))
-                .collect();
             (
                 coll.map_or_else(String::new, |c| c.name.clone()),
                 coll.map_or("teal", |c| {
                     swatch(c.color.as_deref(), c.id.as_uuid().as_bytes())
                 }),
-                scope,
                 ChipMode::ListOnly,
                 coll.filter(|c| c.deleted.is_none()).map(|_| {
                     lists.first().map_or_else(
@@ -844,81 +813,37 @@ pub fn room(
         }
         RoomId::List(l) => {
             let list = state.lists.get(l).filter(|l| list_live(state, l));
-            let scope: Vec<&Task> = state
-                .tasks
-                .values()
-                .filter(live)
-                .filter(|t| t.list == *l)
-                .collect();
+
             (
                 list.map_or_else(String::new, |l| l.name.clone()),
                 list.map_or("teal", |l| {
                     swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
                 }),
-                scope,
                 ChipMode::Hidden,
                 list.map(|_| "Add a task…".to_owned()),
             )
         }
     };
-    let header = header(state, now, id, holding);
     let filter = filter.trim();
-    let filtered = !filter.is_empty();
-    let scope = if filtered {
-        filter_tasks(state, &ctx, scope, filter)
-    } else {
-        scope
-    };
-    // Open rows: smart lists in their query's order, lists and collections in manual order.
-    let order: Option<Query> = match id {
-        RoomId::Smart(s) => builtin(s).and_then(|b| b.parse().ok()),
-        _ => None,
-    };
-    let mut open: Vec<&Task> = scope.iter().copied().filter(|t| !t.is_done()).collect();
-    match (&order, id) {
-        (Some(q), _) => open.sort_by_cached_key(|t| q.order_key(state, t)),
-        (None, RoomId::Collection(_)) => {
-            let rank: BTreeMap<ListId, usize> = match id {
-                RoomId::Collection(c) => lists_in(state, Some(*c))
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| (l.id, i))
-                    .collect(),
-                _ => BTreeMap::new(),
-            };
-            open.sort_by(|a, b| {
-                rank.get(&a.list)
-                    .cmp(&rank.get(&b.list))
-                    .then(a.position.cmp(&b.position))
-            });
-        }
-        _ => open.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id))),
-    }
-    let mut done_rows: Vec<(&Task, Row)> = scope
-        .iter()
-        .copied()
-        .filter(|t| t.is_done())
-        .map(|t| (t, row(state, t, today, mode)))
-        .collect();
-    sort_done(&mut done_rows);
-    let done_rows: Vec<Row> = done_rows.into_iter().map(|(_, r)| r).collect();
-    let (rows, completed) = if *id == RoomId::Smart("completed") {
-        (done_rows, Vec::new())
-    } else {
-        (
-            open.into_iter()
-                .map(|t| row(state, t, today, mode))
-                .collect(),
-            done_rows,
-        )
+    let filtered = !shared.is_activity() && !filter.is_empty();
+    let to_rows = |tasks| {
+        let tasks = if filtered {
+            filter_tasks(state, &ctx, tasks, filter)
+        } else {
+            tasks
+        };
+        tasks
+            .into_iter()
+            .map(|t| row(state, t, ctx.today, mode))
+            .collect()
     };
     Room {
         id: id.clone(),
         title,
         hue,
         header,
-        rows,
-        completed,
+        rows: to_rows(tasks.open),
+        completed: to_rows(tasks.done),
         add_placeholder: add,
         filtered,
     }
@@ -1527,8 +1452,25 @@ mod tests {
         assert_eq!(filter("KVULI STK").rows[0].id, fixtures::task(4));
         assert_eq!(filter("(kvuli").rows[0].id, fixtures::task(4));
         let done = filter("done ondrej");
-        assert_eq!(done.completed[0].id, fixtures::task(11));
+        let ondrej = fixtures::task(11);
+        assert_eq!(done.completed[0].id, ondrej);
         assert!(done.rows.is_empty());
+        let held = room(
+            &s,
+            &now(),
+            &RoomId::default(),
+            "done ondrej",
+            &BTreeSet::from([ondrej]),
+        );
+        assert!(held.completed.is_empty());
+        assert_eq!(
+            held.rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ondrej]
+        );
+        assert_eq!(
+            (held.header.progress_done, held.header.progress_total),
+            (2, 12)
+        );
         assert_eq!(
             (done.header.progress_done, done.header.progress_total),
             (3, 12)
@@ -1685,6 +1627,7 @@ mod tests {
         let n = Now {
             at: "2026-11-01T12:00:00Z".parse().unwrap(),
             offset_s: -5 * 3600,
+            browser_time: false,
         };
         let clock_change: Timestamp = "2026-11-01T06:00:00Z".parse().unwrap();
         let date_of = |at| {

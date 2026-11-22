@@ -477,6 +477,7 @@ mod tests {
         Now::new(LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 3600,
+            zone_id: "Europe/Prague".into(),
             local_day: None,
         })
     }

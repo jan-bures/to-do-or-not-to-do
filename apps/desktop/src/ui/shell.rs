@@ -200,6 +200,7 @@ pub struct ShellView {
     store: Rc<Store>,
     ui: UiState,
     shell: Shell,
+    my_day_progress: model::MyDayProgress,
     theme: Theme,
     palette: Palette,
     painted_hue: Hue,
@@ -303,7 +304,10 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let shell = model::derive(&store.view(), &ui, &store.sync(), &store.now());
+        let (state, now) = (store.view(), store.now());
+        let mut my_day_progress = model::MyDayProgress::default();
+        my_day_progress.update(&state, now.today());
+        let shell = model::derive(&state, &ui, &store.sync(), &now);
         let palette = theme::palette(theme, shell.room.hue);
         let placeholder = shell.room.quick_add_placeholder.clone();
         let quick_add = cx.new(|cx| {
@@ -361,6 +365,7 @@ impl ShellView {
             store,
             ui,
             shell,
+            my_day_progress,
             theme,
             palette,
             painted_hue,
@@ -520,7 +525,9 @@ impl ShellView {
         if collapsed_changed || pruned {
             self.save_ui_preferences();
         }
-        let shell = model::derive(&state, &self.ui, &self.store.sync(), &self.store.now());
+        let now = self.store.now();
+        self.my_day_progress.update(&state, now.today());
+        let shell = model::derive(&state, &self.ui, &self.store.sync(), &now);
         // A room that disappeared (deleted elsewhere) falls back to My Day; keep the UI state honest.
         self.ui.room = shell.room.key;
         if shell.detail.is_none() {
@@ -1313,7 +1320,7 @@ impl ShellView {
 
     /// My Day's progress, for the quick-add window's sun.
     pub fn my_day_progress(&self) -> (u32, u32) {
-        model::my_day_progress(&self.store.view(), &self.store.now())
+        self.my_day_progress.counts()
     }
 
     fn submit(&mut self, cmds: Vec<todo_core::Command>) -> bool {

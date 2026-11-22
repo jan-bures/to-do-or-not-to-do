@@ -91,6 +91,7 @@ fn now() -> LocalNow {
     LocalNow {
         epoch_ms: todo_core::time::Timestamp::now().as_millisecond(),
         utc_offset_secs: 0,
+        zone_id: "UTC".into(),
         local_day: None,
     }
 }
@@ -300,25 +301,29 @@ fn notes_and_quick_add_preview_use_the_submit_builders_semantics() {
             .unwrap()
             .as_millisecond(),
         utc_offset_secs: 0,
+        zone_id: "UTC".into(),
         local_day: None,
     };
-    let engine = TodoEngine::fixture("blank".into(), n).unwrap();
+    let engine = TodoEngine::fixture("blank".into(), n.clone()).unwrap();
     let text = "Sow seeds zítra !!";
     assert_eq!(
-        quick_add_date(text.into(), n).as_deref(),
+        quick_add_date(text.into(), n.clone()).as_deref(),
         Some("Sun 22 Nov")
     );
-    assert!(quick_add_date(r"Sow seeds \tomorrow".into(), n).is_none());
-    assert!(quick_add_date("Sow seeds !!".into(), n).is_none());
-    let id = engine.add_task(my_day(), text.into(), n).unwrap();
+    assert!(quick_add_date(r"Sow seeds \tomorrow".into(), n.clone()).is_none());
+    assert!(quick_add_date("Sow seeds !!".into(), n.clone()).is_none());
+    let id = engine.add_task(my_day(), text.into(), n.clone()).unwrap();
     let task = &engine.state().tasks[&id.parse().unwrap()];
-    let today = todo_ffi::labels::Now::new(n).today();
+    let today = todo_ffi::labels::Now::new(n.clone()).today();
     assert_eq!(task.due, todo_core::time::add_days(today, 1));
     assert_eq!(task.title, "Sow seeds");
     let pending = engine.status().pending;
     for text in ["First line\nSecond line\n", "First line\nSecond line", ""] {
         engine.set_notes(id.clone(), text.into()).unwrap();
-        assert_eq!(engine.task(id.clone(), n).unwrap().notes, text.trim_end());
+        assert_eq!(
+            engine.task(id.clone(), n.clone()).unwrap().notes,
+            text.trim_end()
+        );
     }
     assert_eq!(
         engine.status().pending,
@@ -332,13 +337,14 @@ fn only_http_and_https_source_destinations_cross_the_bridge() {
     use todo_core::model::LinkKind;
     use todo_ffi::labels::Now;
     let n = now();
-    let engine = TodoEngine::fixture("world".into(), n).unwrap();
+    let engine = TodoEngine::fixture("world".into(), n.clone()).unwrap();
     let mut state = (*engine.state()).clone();
     let (&link, source) = state.links.iter().next().unwrap();
     let task = source.task.to_string();
     let LinkKind::Email(mail) = source.kind.clone() else {
         panic!("fixture mail")
     };
+    let n = Now::new(n);
     for (raw, expected) in [
         ("HTTPS://example.com", Some("https://example.com/")),
         ("http://example.com/path", Some("http://example.com/path")),
@@ -357,7 +363,7 @@ fn only_http_and_https_source_destinations_cross_the_bridge() {
             },
         ] {
             state.links.get_mut(&link).unwrap().kind = kind;
-            let d = todo_ffi::view::detail(&state, &task, &Now::new(n)).unwrap();
+            let d = todo_ffi::view::detail(&state, &task, &n).unwrap();
             assert_eq!(d.sources.len(), 1);
             assert_eq!(d.sources[0].url.as_deref(), expected);
             if d.sources[0].icon == "link" {
@@ -1262,10 +1268,11 @@ fn the_drawer_lists_only_agents_active_today() {
     let local = LocalNow {
         epoch_ms: at("2026-03-29T10:00:00Z"),
         utc_offset_secs: 7200,
+        zone_id: "+02:00".into(),
         local_day: None,
     };
-    let engine = TodoEngine::fixture("world".into(), local).unwrap();
-    let agents = engine.home(local).agents;
+    let engine = TodoEngine::fixture("world".into(), local.clone()).unwrap();
+    let agents = engine.home(local.clone()).agents;
     let names: Vec<_> = agents
         .iter()
         .map(|a| (a.mark.name.as_str(), a.mark.letter.as_str()))
@@ -1280,10 +1287,10 @@ fn the_drawer_lists_only_agents_active_today() {
     use todo_ffi::labels::LocalDay;
     let early = LocalNow {
         epoch_ms: at("2026-03-28T23:15:00Z"),
-        ..local
+        ..local.clone()
     };
     let engine = TodoEngine::fixture("world".into(), early).unwrap();
-    assert_eq!(engine.home(local).agents.len(), 3); // fixed +02:00 would include the 22:30Z edits
+    assert_eq!(engine.home(local.clone()).agents.len(), 3); // fixed +02:00 would include the 22:30Z edits
     let local = LocalNow {
         local_day: Some(LocalDay {
             start_ms: at("2026-03-28T23:00:00Z"),

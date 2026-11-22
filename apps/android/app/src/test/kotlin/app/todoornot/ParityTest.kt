@@ -6,6 +6,7 @@ import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
+import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
 import app.todoornot.design.Tokens
 import app.todoornot.model.StepDraft
@@ -18,6 +19,8 @@ import app.todoornot.ui.showsAgent
 import app.todoornot.ui.showsPriority
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -31,14 +34,33 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.time.Instant
-import java.util.TimeZone
 
 /** What the UX review asked for, matching the desktop: the star, steps, new lists, the filter, the drawer. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ParityTest {
     private fun TestScope.model(engine: app.todoornot.core.TodoEngine = fixtureEngine(), start: RoomKey = RoomKey.Smart(SmartList.MY_DAY)) =
         TodoModel(engine, CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, start = start)
+
+    @Test
+    fun room_counts_and_agent_cutoffs_use_the_offset_at_the_task_timestamp() {
+        val zone = ZoneId.of("Europe/Prague")
+        fun at(instant: String) = localNow(Instant.parse(instant).toEpochMilli(), zone)
+        // The fixture completes tasks 30 min and updates them 45 min before this seed instant.
+        val seed = at("2026-10-24T23:00:00Z")
+        val engine = TodoEngine.fixture("world", seed)
+        val midday = at("2026-10-25T12:00:00Z")
+        assertEquals("Europe/Prague", midday.zoneId)
+        assertEquals(3600, midday.utcOffsetSecs)
+        val all = RoomKey.Smart(SmartList.ALL)
+        val doneAtSeed = engine.room(all, seed).done
+        assertTrue(doneAtSeed > 0u)
+        assertEquals(doneAtSeed, engine.room(all, midday).done)
+
+        val agents = RoomKey.Smart(SmartList.AGENT_ACTIVITY)
+        val expected = engine.room(agents, seed).tasks.map { it.id }
+        assertTrue(expected.isNotEmpty())
+        assertEquals(expected, engine.room(agents, at("2026-11-01T12:00:00Z")).tasks.map { it.id })
+    }
 
     @Test
     fun the_star_marks_a_task_important_and_back() = runTest {
@@ -434,7 +456,7 @@ class ParityTest {
     @Test
     fun the_local_day_starts_at_midnight_even_when_the_clock_changes() {
         fun ms(instant: String) = Instant.parse(instant).toEpochMilli()
-        val now = localNow(ms("2026-03-29T10:00:00Z"), TimeZone.getTimeZone("Europe/Prague"))
+        val now = localNow(ms("2026-03-29T10:00:00Z"), ZoneId.of("Europe/Prague"))
         assertEquals(7200, now.utcOffsetSecs)
         assertEquals(ms("2026-03-28T23:00:00Z"), now.localDay?.startMs)
         assertEquals(ms("2026-03-29T22:00:00Z"), now.localDay?.endMs)
@@ -455,8 +477,8 @@ class ParityTest {
             syncLine(s(SyncState.OFFLINE, problem = ProblemKind.UNAUTHORIZED), null),
         )
         assertEquals("Not syncing, 1 waiting" to Tone.IDLE, syncLine(s(SyncState.PAUSED, 1u), null))
-        assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600)))
-        assertEquals("23:59", clock(LocalNow(-60_000L, 0)))
+        assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600, "+01:00")))
+        assertEquals("23:59", clock(LocalNow(-60_000L, 0, "UTC")))
     }
 
     @Test

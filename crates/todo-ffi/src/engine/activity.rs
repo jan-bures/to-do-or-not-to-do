@@ -322,13 +322,14 @@ mod tests {
                 .unwrap()
                 .as_millisecond(),
             utc_offset_secs: 3600,
+            zone_id: "Europe/Prague".into(),
             local_day: None,
         };
-        let e = TodoEngine::fixture("blank".into(), now).unwrap();
+        let e = TodoEngine::fixture("blank".into(), now.clone()).unwrap();
         let all = ActivityPager::new(None);
         let first = e.begin_activity(&all, ActivityLoad::Initial).unwrap();
         locked(&all.pages).finish(first, Ok(page(7)));
-        let view = e.activity_view(&all, now);
+        let view = e.activity_view(&all, now.clone());
         assert_eq!(
             view.days[0].heading, "Yesterday",
             "date at the phone's offset"
@@ -347,7 +348,7 @@ mod tests {
             Loaded::Applied
         );
         assert!(matches!(
-            e.activity_view(&filtered, now).footer,
+            e.activity_view(&filtered, now.clone()).footer,
             ActivityFooter::Loading { .. }
         ));
         // Only the sibling is on the replacement page. Looking up its own pending undo would miss.
@@ -371,9 +372,10 @@ mod tests {
         let now = LocalNow {
             epoch_ms: 0,
             utc_offset_secs: 0,
+            zone_id: "UTC".into(),
             local_day: None,
         };
-        let engine = TodoEngine::fixture("blank".into(), now).unwrap();
+        let engine = TodoEngine::fixture("blank".into(), now.clone()).unwrap();
         let pager = ActivityPager::new(None);
         for (undone, expected) in [(true, UndoAction::Undone), (false, UndoAction::Unavailable)] {
             let mut page = page(7);
@@ -390,7 +392,7 @@ mod tests {
                 .begin_activity(&pager, ActivityLoad::Refresh)
                 .unwrap();
             locked(&pager.pages).finish(request, Ok(page));
-            let view = engine.activity_view(&pager, now);
+            let view = engine.activity_view(&pager, now.clone());
             assert_eq!(view.days[0].rows[0].note.as_deref(), Some(expected.label()));
         }
     }

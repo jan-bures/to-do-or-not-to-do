@@ -27,6 +27,7 @@ pub fn now() -> Now {
     Now {
         at: at("2026-11-21T09:35:00Z"),
         offset_s: OFFSET_S,
+        browser_time: false,
     }
 }
 
@@ -256,6 +257,38 @@ pub fn activity() -> Vec<todo_client::activity::ActivityItem> {
         ));
     }
     items
+}
+
+/// Tasks around local midnight before Prague's autumn clock change.
+#[cfg(feature = "fixtures")]
+pub fn fallback_state() -> State {
+    let mut b = Builder {
+        state: State::new(),
+        at: at("2026-10-20T12:00:00Z"),
+        owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
+    };
+    b.run(todo_client::intent::create_list(
+        list(1),
+        None,
+        "Clock change",
+    ));
+    for (n, title, stamp, done) in [
+        (1, "Before midnight", "2026-10-24T21:30:00Z", true),
+        (2, "After midnight", "2026-10-24T22:30:00Z", true),
+        (3, "Newer agent change", "2026-10-25T08:00:00Z", false),
+    ] {
+        b.run(Command::CreateTask(Box::new(NewTask::new(
+            task(n),
+            list(1),
+            title,
+        ))));
+        b.by(task(n), "codex");
+        if let Some(t) = b.state.tasks.get_mut(&task(n)) {
+            t.updated.at = at(stamp);
+            t.completed_at = done.then(|| at(stamp));
+        }
+    }
+    b.state
 }
 
 /// The gallery's state: two collections, a few loose lists, a My Day with 12 tasks (3 done).

@@ -35,7 +35,7 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-jiff.workspace = true
+jiff = { workspace = true, features = ["tzdb-bundle-always"] }
 uuid.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
 # Pairing requests (anonymous, no redirects). The same reqwest and rustls as todo-client's transport.

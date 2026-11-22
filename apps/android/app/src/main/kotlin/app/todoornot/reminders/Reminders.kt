@@ -61,7 +61,7 @@ class Reminders(
     fun reconcile(engine: TodoEngine, force: Boolean = false, catchingUp: Boolean = false) {
         val now = clock()
         val before = load()
-        val alarms = engine.reminderAlarms(ReminderPlan.since(before, now), localNow(now, zone()))
+        val alarms = engine.reminderAlarms(ReminderPlan.since(before, now), localNow(now, zone().toZoneId()))
         val exact = sink.exact()
         val wasExact = store.get(EXACT)?.toBooleanStrictOrNull()
         val plan = ReminderPlan.plan(alarms, before, now, force || fresh || wasExact != exact, canShow = !catchingUp && sink.canShow())
@@ -77,7 +77,7 @@ class Reminders(
         val before = load()
         sink.hide(id)
         val r = ReminderPlan.snooze(before, id, clock()) ?: return
-        val alarm = engine?.let { e -> e.reminderAlarms(r.atMs, localNow(clock(), zone())).firstOrNull { it.id == id && it.atMs == r.atMs } }
+        val alarm = engine?.let { e -> e.reminderAlarms(r.atMs, localNow(clock(), zone().toZoneId())).firstOrNull { it.id == id && it.atMs == r.atMs } }
         if (alarm == null) {
             // Gone meanwhile: the next pass with the engine forgets it.
             sink.cancel(id)

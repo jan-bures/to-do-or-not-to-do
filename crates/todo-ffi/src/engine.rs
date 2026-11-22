@@ -1235,9 +1235,10 @@ mod tests {
         let now = LocalNow {
             epoch_ms: 0,
             utc_offset_secs: 0,
+            zone_id: "UTC".into(),
             local_day: None,
         };
-        let e = TodoEngine::fixture("world".into(), now).unwrap();
+        let e = TodoEngine::fixture("world".into(), now.clone()).unwrap();
         let before = e.state();
         let task = *before
             .tasks
@@ -1251,13 +1252,13 @@ mod tests {
                 .and_then(|p| p.command().cloned())
                 .unwrap()
         };
-        let repeat = intent::repeat::Preset::Daily.rule(Now::new(now).today());
+        let repeat = intent::repeat::Preset::Daily.rule(Now::new(now.clone()).today());
         e.set_repeat(
             task.to_string(),
             RepeatChoice::Preset {
                 preset: intent::repeat::Preset::Daily,
             },
-            now,
+            now.clone(),
         )
         .unwrap();
         assert_eq!(
@@ -1393,13 +1394,14 @@ mod tests {
         let now = LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 0,
+            zone_id: "UTC".into(),
             local_day: None,
         };
-        let engine = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let engine = TodoEngine::fixture("blank".into(), now.clone()).expect("fixture");
         let before = engine.state();
         let text = "Pay the invoice by fri !!";
         let id: TaskId = engine
-            .add_task(RoomKey::default(), text.into(), now)
+            .add_task(RoomKey::default(), text.into(), now.clone())
             .expect("task added")
             .parse()
             .expect("task ID");
@@ -1409,7 +1411,7 @@ mod tests {
             &before,
             TaskRoom::MyDay,
             text,
-            &Now::new(now).eval(),
+            &Now::new(now.clone()).eval(),
             || ids.next().expect("fresh ID"),
         );
         let pending = engine.client.pending();
@@ -1478,6 +1480,7 @@ mod tests {
         LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 0,
+            zone_id: "UTC".into(),
             local_day: None,
         }
     }
@@ -1506,10 +1509,9 @@ mod tests {
     #[test]
     fn ffi_edits_submit_the_shared_builders() {
         use todo_core::model::Priority;
-        let now = fixture_now();
-        let engine = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let engine = TodoEngine::fixture("world".into(), fixture_now()).expect("fixture");
         let id = engine
-            .add_task(RoomKey::default(), "Sow seeds".into(), now)
+            .add_task(RoomKey::default(), "Sow seeds".into(), fixture_now())
             .expect("task");
         let task: TaskId = id.parse().expect("task ID");
         let step = engine
@@ -1590,8 +1592,7 @@ mod tests {
 
     #[test]
     fn task_actions_queue_exactly_the_shared_intents() {
-        let now = fixture_now();
-        let e = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let e = TodoEngine::fixture("blank".into(), fixture_now()).expect("fixture");
         let source = e
             .create_list("Source".into(), RoomKey::default())
             .expect("list");
@@ -1605,9 +1606,11 @@ mod tests {
             panic!("list")
         };
         let other = e
-            .add_task(source.clone(), "First".into(), now)
+            .add_task(source.clone(), "First".into(), fixture_now())
             .expect("task");
-        let id = e.add_task(source, "New".into(), now).expect("task");
+        let id = e
+            .add_task(source, "New".into(), fixture_now())
+            .expect("task");
         let task = task_id(&id).expect("id");
         let at = e.client.pending().len();
         let picks = e.move_destinations(id.clone(), "ZLUTE".into());
@@ -1649,19 +1652,19 @@ mod tests {
     #[test]
     fn reminders_queue_exactly_the_shared_builders_and_undo_them() {
         use intent::reminder::Seen;
-        let now = fixture_now();
-        let e = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let now = fixture_now;
+        let e = TodoEngine::fixture("world".into(), now()).expect("fixture");
         let id = e
-            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .add_task(RoomKey::default(), "Call the dentist".into(), now())
             .expect("task");
         let task = task_id(&id).expect("id");
         let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
         let later: Timestamp = "2026-11-22T08:00:00Z".parse().expect("timestamp");
-        let seen = |e: &TodoEngine| e.task(id.clone(), now).expect("task").reminder;
+        let seen = |e: &TodoEngine| e.task(id.clone(), now()).expect("task").reminder;
         let from = e.client.pending().len();
 
         let state = e.state();
-        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now())
             .expect("set")
             .expect("handle");
         let Some(Command::AddReminder { id: reminder, .. }) = queued(&e, from).first().cloned()
@@ -1683,13 +1686,13 @@ mod tests {
         );
         // The same time again queues nothing.
         assert!(
-            e.set_reminder(id.clone(), Some(shown.clone()), at.as_millisecond(), now)
+            e.set_reminder(id.clone(), Some(shown.clone()), at.as_millisecond(), now())
                 .expect("same")
                 .is_none()
         );
         let state = e.state();
         let moved = e
-            .set_reminder(id.clone(), Some(shown), later.as_millisecond(), now)
+            .set_reminder(id.clone(), Some(shown), later.as_millisecond(), now())
             .expect("move")
             .expect("handle");
         let was = Seen { id: reminder, at };
@@ -1714,7 +1717,7 @@ mod tests {
             Some(REMINDER_CHANGED.into())
         );
         assert_eq!(queued(&e, from), expected);
-        let detail = e.task(id.clone(), now).expect("task");
+        let detail = e.task(id.clone(), now()).expect("task");
         assert_eq!(detail.reminder, None);
         let row = detail
             .fields
@@ -1734,9 +1737,9 @@ mod tests {
 
         // A time that has passed is refused, and queues nothing.
         let pending = e.client.pending().len();
-        let past = Timestamp::from_millisecond(now.epoch_ms - 60_000).expect("past");
+        let past = Timestamp::from_millisecond(now().epoch_ms - 60_000).expect("past");
         assert!(matches!(
-            e.set_reminder(id.clone(), seen(&e), past.as_millisecond(), now),
+            e.set_reminder(id.clone(), seen(&e), past.as_millisecond(), now()),
             Err(FfiError::Invalid { detail }) if detail == reminder_past_note()
         ));
         assert_eq!(e.client.pending().len(), pending);
@@ -1744,29 +1747,29 @@ mod tests {
 
     #[test]
     fn a_picker_left_open_never_edits_a_reminder_that_changed_meanwhile() {
-        let now = fixture_now();
-        let e = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let now = fixture_now;
+        let e = TodoEngine::fixture("world".into(), now()).expect("fixture");
         let id = e
-            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .add_task(RoomKey::default(), "Call the dentist".into(), now())
             .expect("task");
         let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
         let later: Timestamp = "2026-11-22T08:00:00Z".parse().expect("timestamp");
-        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now())
             .expect("set");
         let opened = e
-            .task(id.clone(), now)
+            .task(id.clone(), now())
             .expect("task")
             .reminder
             .expect("shown");
         // Moved elsewhere while the picker was open.
-        let current = e.task(id.clone(), now).expect("task").reminder;
-        e.set_reminder(id.clone(), current, later.as_millisecond(), now)
+        let current = e.task(id.clone(), now()).expect("task").reminder;
+        e.set_reminder(id.clone(), current, later.as_millisecond(), now())
             .expect("moved elsewhere");
         let pending = e.client.pending().len();
         let stale = Some(REMINDER_CHANGED.to_owned());
         let tomorrow = at.as_millisecond() + 86_400_000;
         assert_eq!(
-            refusal(e.set_reminder(id.clone(), Some(opened.clone()), tomorrow, now)),
+            refusal(e.set_reminder(id.clone(), Some(opened.clone()), tomorrow, now())),
             stale
         );
         assert_eq!(
@@ -1775,54 +1778,57 @@ mod tests {
         );
         // Opened on a task without a reminder, which got one elsewhere: no second one is added.
         let bare = e
-            .add_task(RoomKey::default(), "Water the plants".into(), now)
+            .add_task(RoomKey::default(), "Water the plants".into(), now())
             .expect("task");
-        e.set_reminder(bare.clone(), None, at.as_millisecond(), now)
+        e.set_reminder(bare.clone(), None, at.as_millisecond(), now())
             .expect("added elsewhere");
         let pending_bare = e.client.pending().len();
-        assert_eq!(refusal(e.set_reminder(bare, None, tomorrow, now)), stale);
+        assert_eq!(refusal(e.set_reminder(bare, None, tomorrow, now())), stale);
         assert_eq!(e.client.pending().len(), pending_bare);
         assert_eq!(pending + 2, pending_bare);
         assert_eq!(
-            e.task(id, now).expect("task").reminder.map(|r| r.at_ms),
+            e.task(id, now()).expect("task").reminder.map(|r| r.at_ms),
             Some(later.as_millisecond())
         );
     }
 
     #[test]
     fn alarms_follow_the_reminders_of_open_tasks() {
-        let now = fixture_now();
-        let e = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let now = fixture_now;
+        let e = TodoEngine::fixture("blank".into(), now()).expect("fixture");
         let id = e
-            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .add_task(RoomKey::default(), "Call the dentist".into(), now())
             .expect("task");
         let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
-        e.set_reminder(id.clone(), None, at.as_millisecond(), now)
+        e.set_reminder(id.clone(), None, at.as_millisecond(), now())
             .expect("set");
-        let alarms = e.reminder_alarms(now.epoch_ms, now);
+        let alarms = e.reminder_alarms(now().epoch_ms, now());
         assert_eq!(alarms.len(), 1);
         assert_eq!(alarms[0].task, id);
         assert_eq!(alarms[0].title, "Call the dentist");
         assert_eq!(alarms[0].at_ms, at.as_millisecond());
         assert_eq!(alarms[0].label, "Today, 14:00");
         // Gone once it has passed the window's start, and while its task is done.
-        assert!(e.reminder_alarms(at.as_millisecond() + 1, now).is_empty());
+        assert!(e.reminder_alarms(at.as_millisecond() + 1, now()).is_empty());
         let done = e.set_done(id.clone(), true).expect("done").expect("handle");
-        assert!(e.reminder_alarms(now.epoch_ms, now).is_empty());
+        assert!(e.reminder_alarms(now().epoch_ms, now()).is_empty());
         e.undo_completion(done).expect("undo");
-        assert_eq!(e.reminder_alarms(now.epoch_ms, now).len(), 1);
+        assert_eq!(e.reminder_alarms(now().epoch_ms, now()).len(), 1);
         e.fixture_delete_task(id).expect("delete");
-        assert!(e.reminder_alarms(now.epoch_ms, now).is_empty());
+        assert!(e.reminder_alarms(now().epoch_ms, now()).is_empty());
     }
 
     #[test]
     fn clearing_the_due_date_also_clears_the_repeat() {
         use todo_core::command::TaskPatch;
         use todo_core::recurrence::{Recurrence, Rule};
-        let now = fixture_now();
-        let engine = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let engine = TodoEngine::fixture("world".into(), fixture_now()).expect("fixture");
         let id = engine
-            .add_task(RoomKey::default(), "Water the plants tomorrow".into(), now)
+            .add_task(
+                RoomKey::default(),
+                "Water the plants tomorrow".into(),
+                fixture_now(),
+            )
             .expect("task");
         let task: TaskId = id.parse().expect("task ID");
         engine
@@ -1835,9 +1841,14 @@ mod tests {
                 },
             ))
             .expect("repeat");
-        assert!(engine.task(id.clone(), now).expect("task").repeats);
+        assert!(
+            engine
+                .task(id.clone(), fixture_now())
+                .expect("task")
+                .repeats
+        );
         engine.set_due(id.clone(), None).expect("clear");
-        let detail = engine.task(id, now).expect("task");
+        let detail = engine.task(id, fixture_now()).expect("task");
         assert_eq!((detail.due, detail.repeats), (None, false));
         assert_eq!(engine.state().tasks[&task].recurrence, None);
     }

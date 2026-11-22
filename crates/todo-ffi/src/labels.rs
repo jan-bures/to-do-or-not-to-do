@@ -6,15 +6,16 @@ use jiff::tz::{Offset, TimeZone};
 use todo_core::query::EvalContext;
 use todo_core::time::{Date, Timestamp, Weekday, days_between};
 
-/// The current time and the owner's local day, from the device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+/// The current time and the owner's zone, from the device.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct LocalNow {
     /// Milliseconds since the Unix epoch.
     pub epoch_ms: i64,
-    /// The device's current UTC offset in seconds (Prague in winter: 3600).
+    /// The device's current UTC offset in seconds (fallback for a zone not in the bundled database).
     pub utc_offset_secs: i32,
-    /// The device's real local day, which can span a change in UTC offset. When absent, the
-    /// offset above is used for the entire day (for fixed-offset clocks).
+    /// The device's zone ID, for example `Europe/Prague`.
+    pub zone_id: String,
+    /// The device's real local-day bounds for the sidebar. If absent, use the zone rules.
     #[uniffi(default = None)]
     pub local_day: Option<LocalDay>,
 }
@@ -28,7 +29,7 @@ pub struct LocalDay {
     pub end_ms: i64,
 }
 
-/// [`LocalNow`] resolved: a timestamp, a fixed-offset zone and optional real local day bounds.
+/// [`LocalNow`] resolved: a timestamp, the owner's zone rules and optional local-day bounds.
 #[derive(Clone, Debug)]
 pub struct Now {
     /// The time.
@@ -38,15 +39,15 @@ pub struct Now {
 }
 
 impl Now {
-    /// Resolves a [`LocalNow`]; out-of-range values fall back to the epoch and UTC.
+    /// Resolves a [`LocalNow`] against the bundled IANA database, with a fixed offset for zones it
+    /// doesn't know (including Java's custom fixed-offset IDs).
     pub fn new(now: LocalNow) -> Self {
         let at = Timestamp::from_millisecond(now.epoch_ms).unwrap_or(Timestamp::UNIX_EPOCH);
-        let offset = Offset::from_seconds(now.utc_offset_secs).unwrap_or(Offset::UTC);
-        Self {
-            at,
-            tz: TimeZone::fixed(offset),
-            local_day: now.local_day,
-        }
+        let tz = TimeZone::get(&now.zone_id).unwrap_or_else(|_| {
+            let offset = Offset::from_seconds(now.utc_offset_secs).unwrap_or(Offset::UTC);
+            TimeZone::fixed(offset)
+        });
+        Self { at, tz, local_day: now.local_day }
     }
 
     fn zoned(&self, ts: Timestamp) -> ZonedDateTime {
@@ -76,10 +77,9 @@ impl Now {
         )
     }
 
-    /// The query evaluation context: local today and the UTC offset.
+    /// The query evaluation context: local today and the zone's historical rules.
     pub fn eval(&self) -> EvalContext {
-        let offset = self.tz.to_offset(self.at).seconds();
-        EvalContext::new(self.at, self.today(), offset)
+        self.local_time().eval()
     }
 
     /// "17:05".
@@ -220,6 +220,7 @@ mod tests {
         Now::new(LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 3600,
+            zone_id: "Europe/Prague".into(),
             local_day: None,
         })
     }

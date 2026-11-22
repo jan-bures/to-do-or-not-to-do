@@ -33,7 +33,7 @@ use todo_core::query::{BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
 pub use activity::AgentKey;
-pub use derive::{derive, my_day_progress};
+pub use derive::{MyDayProgress, derive, my_day_progress};
 
 use crate::theme::{Agent, Glyph, Hue, Icon, hues};
 
@@ -68,8 +68,7 @@ impl Now {
 
     /// The query evaluation context: local today and the current UTC offset.
     pub fn eval(&self) -> EvalContext {
-        let offset = self.tz.to_offset(self.at).seconds();
-        EvalContext::new(self.at, self.today(), offset)
+        self.local().eval()
     }
 
     /// The local date of `ts`.

@@ -19,6 +19,25 @@ test("My Day shows the morning's tasks and the sun matches the count", async ({ 
   await w.check();
 });
 
+test.describe("rooms spanning the autumn clock change", () => {
+  test.use({ timezoneId: "Europe/Prague" });
+
+  test("the browser dates completions and agent changes using the offset at each instant", async ({ page }) => {
+    const w = watch(page);
+    await page.clock.setFixedTime(new Date("2026-10-25T12:00:00Z"));
+    await open(page, "/app/all?fixture=dst");
+    await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
+    await expect(page.locator(".sb-counts")).toHaveText("1 open · 1 done today");
+    await page.clock.setFixedTime(new Date("2026-11-01T12:00:00Z"));
+    await open(page, "/app/agent-activity?fixture=dst");
+    await expect(rows(page).locator(".row-title")).toHaveText(["Newer agent change", "After midnight"]);
+    await expect(row(page, "After midnight").getByRole("checkbox")).toBeChecked();
+    await expect(page.locator(".completed-toggle")).toHaveCount(0);
+    await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
+    await w.check();
+  });
+});
+
 test("adding a task puts it in My Day", async ({ page }) => {
   const w = watch(page);
   await open(page);
@@ -94,6 +113,7 @@ test("completing a task holds, collapses, moves the sun, and can be undone", asy
   await expect(row(page, title)).toHaveClass(/completing/);
   await expect(page.locator(".toast")).toContainText(title);
   await expect(page.locator(".summary")).toContainText("3 of 12 done");
+  await expect(page.locator(".completed-toggle .count")).toHaveText("3");
   // Then it leaves, and the count moves.
   await expect(row(page, title)).toHaveCount(0, { timeout: 3000 });
   await expect(page.locator(".summary")).toContainText("4 of 12 done");

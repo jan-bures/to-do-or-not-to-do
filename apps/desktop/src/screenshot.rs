@@ -202,7 +202,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             cx.open_window(options(w, h, true), |window, cx| {
                 cx.new(|cx| {
                     QuickAddView::new(
-                        model::my_day_progress(&fixture.state, &fixture.now),
+                        model::my_day_progress(&fixture.state, fixture.now.today()),
                         theme,
                         Some(QUICK_ADD_TYPED),
                         true,

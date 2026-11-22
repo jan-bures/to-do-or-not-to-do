@@ -4,6 +4,7 @@
 //! `todo_client::room_header`, which the web and Android clients share: it says what the sun measures.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 
 use gpui::SharedString;
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
@@ -711,16 +712,37 @@ fn host(url: &str) -> String {
         .to_string()
 }
 
-/// My Day's progress (done, total) for the quick-add window, without deriving a whole shell.
-pub fn my_day_progress(state: &State, now: &Now) -> (u32, u32) {
-    let h = room_header::room_header(
-        state,
-        room_header::RoomKey::Smart(room_header::SmartList::MyDay),
-        &BTreeSet::new(),
-        &now.local(),
-    );
+/// The quick-add window observes all shell notifications, including animation frames. Publish its
+/// raw My Day counts only for a new replica snapshot or local date, never in the observer.
+#[derive(Debug, Default)]
+pub struct MyDayProgress {
+    snapshot: Weak<State>,
+    day: Option<Date>,
+    counts: (u32, u32),
+}
+
+impl MyDayProgress {
+    pub fn counts(&self) -> (u32, u32) {
+        self.counts
+    }
+
+    /// Returns whether the snapshot or date needed a recount. The replica reuses its Arc until its
+    /// view changes; the Weak keeps pointer identity unambiguous without retaining the old data.
+    pub fn update(&mut self, snapshot: &Arc<State>, day: Date) -> bool {
+        if self.day == Some(day) && std::ptr::eq(self.snapshot.as_ptr(), Arc::as_ptr(snapshot)) {
+            return false;
+        }
+        self.snapshot = Arc::downgrade(snapshot);
+        self.day = Some(day);
+        self.counts = my_day_progress(snapshot, day);
+        true
+    }
+}
+
+pub fn my_day_progress(state: &State, day: Date) -> (u32, u32) {
+    let (done, total) = room_header::my_day_progress(state, day);
     let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    (as_u32(h.progress_done), as_u32(h.progress_total))
+    (as_u32(done), as_u32(total))
 }
 
 /// The state as the list places tasks while their choreography plays (see `UiState::holding`,

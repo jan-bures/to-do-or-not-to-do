@@ -16,6 +16,7 @@ test("Activity lists the newest changes by day and pages when scrolled", async (
   await expect(page.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Yesterday", exact: true })).toBeVisible();
   await expect(entries(page)).toHaveCount(20);
+  await expect(page.locator(".sb-counts")).toHaveText("20 shown · 4 today");
   await expect(entries(page).first()).toContainText("Completed task");
   await expect(actors(page).nth(0)).toHaveText("You");
   await expect(actors(page).nth(1)).toHaveText("Codex");
@@ -26,6 +27,7 @@ test("Activity lists the newest changes by day and pages when scrolled", async (
   await expect(page.getByText('Created task "Catalogue inventory, shelf 1"', { exact: true })).toHaveCount(0);
   await page.locator(".room").evaluate((room) => { room.scrollTop = room.scrollHeight; });
   await expect(entries(page)).toHaveCount(31);
+  await expect(page.locator(".sb-counts")).toHaveText("31 shown · 4 today");
   await expect(entries(page).last()).toContainText('Created task "Catalogue inventory, shelf 1"');
   await expect(page.getByRole("heading", { name: "Thu 19 Nov" })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Load older activity" })).toHaveCount(0);
@@ -40,14 +42,31 @@ test("agent links filter by actor, survive reload, and clear via browser history
   await expect(page).toHaveURL(/\/app\/activity\/agent\/codex$/);
   await expect(agent).toHaveAttribute("aria-current", "page");
   await expect(actors(page)).toHaveCount(20);
+  await expect(page.locator(".sb-counts")).toHaveText("20 shown · 1 today");
   expect(new Set(await actors(page).allTextContents())).toEqual(new Set(["Codex"]));
   await page.reload();
   await expect(actors(page)).toHaveCount(20);
   await page.getByRole("link", { name: "Clear filter" }).click();
   await expect(actors(page).first()).toHaveText("You");
+  await expect(page.locator(".sb-counts")).toHaveText("20 shown · 4 today");
   await page.goBack();
   await expect(actors(page).first()).toHaveText("Codex");
   await w.check();
+});
+
+test.describe("Activity's local day", () => {
+  test.use({ timezoneId: "Europe/Prague" });
+
+  test("the status rolls past midnight without reloading pages", async ({ page }) => {
+    const w = watch(page);
+    await page.clock.install({ time: new Date("2026-11-21T22:59:00Z") });
+    await open(page, "/app/activity?fixture=browser-clock");
+    await expect(page.locator(".sb-counts")).toHaveText("20 shown · 4 today");
+    await page.clock.fastForward(90_000);
+    await expect(page.locator(".sb-counts")).toHaveText("20 shown · 0 today");
+    await expect(entries(page)).toHaveCount(20);
+    await w.check();
+  });
 });
 
 test("Activity distinguishes an empty log from a filter with no results", async ({ page }) => {

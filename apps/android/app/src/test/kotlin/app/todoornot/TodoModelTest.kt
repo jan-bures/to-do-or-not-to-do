@@ -2009,9 +2009,9 @@ class TodoModelTest {
         assertFalse(app.todoornot.model.Toast(1, "Saved").undoable)
         assertEquals("2026-11-21", app.todoornot.model.isoDay(FIXTURE_NOW))
         // Just before midnight in UTC is already the next day an hour east.
-        val late = LocalNow(java.time.Instant.parse("2026-11-21T23:30:00Z").toEpochMilli(), 3600)
+        val late = LocalNow(java.time.Instant.parse("2026-11-21T23:30:00Z").toEpochMilli(), 3600, "Europe/Prague")
         assertEquals("2026-11-22", app.todoornot.model.isoDay(late))
-        assertEquals("2026-11-21", app.todoornot.model.isoDay(late.copy(utcOffsetSecs = 0)))
+        assertEquals("2026-11-21", app.todoornot.model.isoDay(late.copy(utcOffsetSecs = 0, zoneId = "UTC")))
     }
 
     @Test

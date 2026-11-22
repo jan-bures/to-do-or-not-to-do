@@ -34,9 +34,17 @@ fn main() {
 async fn start() {
     #[cfg(feature = "fixtures")]
     {
-        // The screenshot gallery: invented data, a fixed clock, nothing sent anywhere.
+        // Invented data, nothing sent anywhere. Only the clock tests use the browser's clock.
         let query = platform::query();
-        let state = if query.contains("fixture=blank") {
+        let dst = query.contains("fixture=dst");
+        let now = if dst || query.contains("fixture=browser-clock") {
+            platform::now()
+        } else {
+            fixtures::now()
+        };
+        let state = if dst {
+            fixtures::fallback_state()
+        } else if query.contains("fixture=blank") {
             todo_core::State::new()
         } else if query.contains("fixture=finished-no-tomorrow") {
             fixtures::finished_without_tomorrow()
@@ -45,8 +53,8 @@ async fn start() {
         } else {
             fixtures::state()
         };
-        backend::open_fixtures(state, fixtures::now());
-        app::mount(fixtures::now(), false, None);
+        backend::open_fixtures(state, now);
+        app::mount(now, false, None);
     }
     #[cfg(not(feature = "fixtures"))]
     {

@@ -7,52 +7,86 @@ use crate::ids::TaskId;
 use crate::model::{Priority, Task};
 use crate::state::State;
 use crate::time::{Date, Timestamp, add_days, utc_date};
+use jiff::tz::{Offset, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-/// What "now" and "today" mean for a query run.
-///
-/// The core has no clock or time-zone database, so the caller supplies both. `today` is the owner's local
-/// date (My Day rolls over at local midnight); `utc_offset_seconds` is the owner's current UTC offset and
-/// is used to turn timestamps (created, updated, completed) into local dates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The owner's zone rules, supplied by the platform without requiring a database in the core.
+#[derive(Clone, Debug)]
+pub enum LocalZone {
+    /// A Jiff zone, which may have historical transitions.
+    Jiff(TimeZone),
+    /// A platform-supplied offset at each instant, in seconds east of UTC.
+    Platform(fn(Timestamp) -> i32),
+}
+
+impl LocalZone {
+    /// The offset at this instant, not the current offset.
+    #[must_use]
+    pub fn offset_at(&self, at: Timestamp) -> Offset {
+        match self {
+            Self::Jiff(tz) => tz.to_offset(at),
+            Self::Platform(offset) => Offset::from_seconds(offset(at)).unwrap_or(Offset::UTC),
+        }
+    }
+
+    /// The owner's civil date at this instant.
+    #[must_use]
+    pub fn date_of(&self, at: Timestamp) -> Date {
+        self.offset_at(at).to_datetime(at).date()
+    }
+}
+
+/// What "now" and "today" mean for a query run. The caller supplies the clock and zone rules.
+#[derive(Clone, Debug)]
 pub struct EvalContext {
     /// The current time.
     pub now: Timestamp,
     /// The owner's local date.
     pub today: Date,
-    /// The owner's UTC offset in seconds (0 for UTC).
-    pub utc_offset_seconds: i32,
+    zone: LocalZone,
 }
 
 impl EvalContext {
     /// A context in UTC: `today` is the UTC date of `now`.
     #[must_use]
     pub fn utc(now: Timestamp) -> Self {
-        Self {
-            now,
-            today: utc_date(now),
-            utc_offset_seconds: 0,
-        }
+        Self::new(now, utc_date(now), 0)
     }
 
-    /// A context with an explicit local date and UTC offset.
+    /// A context with an explicit local date and a fixed UTC offset.
     #[must_use]
     pub fn new(now: Timestamp, today: Date, utc_offset_seconds: i32) -> Self {
+        let offset = Offset::from_seconds(utc_offset_seconds).unwrap_or(Offset::UTC);
         Self {
             now,
             today,
-            utc_offset_seconds,
+            zone: LocalZone::Jiff(TimeZone::fixed(offset)),
         }
+    }
+
+    /// A context which applies the owner's zone rules to every timestamp.
+    #[must_use]
+    pub fn with_zone(now: Timestamp, zone: LocalZone) -> Self {
+        Self {
+            now,
+            today: zone.date_of(now),
+            zone,
+        }
+    }
+
+    /// The owner's current UTC offset in seconds (0 for UTC).
+    #[must_use]
+    pub fn utc_offset_seconds(&self) -> i32 {
+        self.zone.offset_at(self.now).seconds()
     }
 
     /// The owner's local date of `ts`.
     #[must_use]
     pub fn local_date(&self, ts: Timestamp) -> Date {
-        let shifted = Timestamp::from_second(ts.as_second() + i64::from(self.utc_offset_seconds));
-        utc_date(shifted.unwrap_or(ts))
+        self.zone.date_of(ts)
     }
 
     /// The calendar date `d` stands for (`None` if it overflows the calendar).

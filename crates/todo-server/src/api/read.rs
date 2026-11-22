@@ -499,7 +499,7 @@ async fn run_query(
         route,
         &query.to_string(),
         &ctx.today.to_string(),
-        &ctx.utc_offset_seconds.to_string(),
+        &ctx.utc_offset_seconds().to_string(),
     ]);
     let after = decode_cursor(cursor, &binding)?;
     let limit = page_limit(limit);

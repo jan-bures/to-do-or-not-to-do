@@ -329,12 +329,18 @@ fn completed_counts_every_finished_task() {
     w.done_at(new, "2026-11-21T10:00:00Z");
     let held = w.task(list, "held");
     w.done_at(held, "2026-11-21T10:35:00Z");
-    let h = room_header(
-        &w.state,
-        RoomKey::Smart(SmartList::Completed),
-        &BTreeSet::from([held]),
-        &now,
-    );
+    let key = RoomKey::Smart(SmartList::Completed);
+    let holding = BTreeSet::from([held]);
+    let ids = |holding| {
+        room_tasks(&w.state, key, holding, &now.eval())
+            .open
+            .iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&holding), vec![new, old]);
+    assert_eq!(ids(&BTreeSet::new()), vec![held, new, old]);
+    let h = room_header(&w.state, key, &holding, &now);
     assert_eq!(h.summary, Summary::Done { done: 2 });
     assert_eq!(h.summary.text(), "2 done");
     assert_eq!((h.progress_done, h.progress_total), (2, 2));
@@ -404,7 +410,11 @@ struct Gen {
     list: usize,
     my_day: bool,
     important: bool,
-    agent: bool,
+    /// Days since a change by an agent (`None`: owner).
+    changed_days_ago: Option<i64>,
+    due_in: Option<i64>,
+    position: bool,
+    keep: bool,
     /// Days before today it was completed (`None`: open).
     done_days_ago: Option<i64>,
     held: bool,
@@ -416,17 +426,34 @@ fn gen_task() -> impl Strategy<Value = Gen> {
         0..3usize,
         any::<bool>(),
         any::<bool>(),
+        prop::option::of(0..10i64),
+        prop::option::of(0..4i64),
+        any::<bool>(),
         any::<bool>(),
         prop::option::of(0..40i64),
         any::<bool>(),
         prop::bool::weighted(0.1),
     )
         .prop_map(
-            |(list, my_day, important, agent, done_days_ago, held, deleted)| Gen {
+            |(
                 list,
                 my_day,
                 important,
-                agent,
+                changed_days_ago,
+                due_in,
+                position,
+                keep,
+                done_days_ago,
+                held,
+                deleted,
+            )| Gen {
+                list,
+                my_day,
+                important,
+                changed_days_ago,
+                due_in,
+                position,
+                keep,
                 done_days_ago,
                 held,
                 deleted,
@@ -438,23 +465,28 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn progress_never_exceeds_its_total(tasks in prop::collection::vec(gen_task(), 0..24)) {
+    fn room_sections_match_the_plan_in_order(tasks in prop::collection::vec(gen_task(), 1..24)) {
         let mut w = World::new();
         let col = w.collection("Home");
         let lists = [w.list("A", Some(col)), w.list("B", Some(col)), w.list("C", None)];
         let now = prague("2026-11-21T10:35:00Z");
         let today = now.today();
         let mut holding = BTreeSet::new();
+        let mut generated = Vec::new();
         for g in &tasks {
-            let id = w.task(lists[g.list], "t");
+            let id = w.task(lists[g.list], if g.keep { "keep" } else { "omit" });
+            generated.push((id, g));
             let t = w.task_mut(id);
             t.my_day = g.my_day.then_some(today);
+            t.due = g.due_in.and_then(|d| todo_core::time::add_days(today, d));
+            // Two positions, so task-ID tie-breaks are common.
+            t.position = todo_core::ordering::PosKey::new(if g.position { "b" } else { "a" }).unwrap();
             if g.important {
                 t.priority = Priority::High;
             }
-            if g.agent {
+            if let Some(days) = g.changed_days_ago {
                 t.updated = todo_core::model::Stamp {
-                    at: ts("2026-11-20T10:00:00Z"),
+                    at: now.at - jiff::SignedDuration::from_hours(days * 24),
                     by: Actor::agent("claude").expect("agent"),
                 };
             }
@@ -467,38 +499,76 @@ proptest! {
                     by: Actor::owner("test").expect("actor"),
                 });
             }
-            if g.held {
+            if g.held && g.done_days_ago.is_some() {
                 holding.insert(id);
             }
         }
+        // Tied list positions must not interleave the collection's lists.
+        let pos = w.state.lists[&lists[0]].position.clone();
+        w.state.lists.get_mut(&lists[1]).unwrap().position = pos;
         let mut keys: Vec<RoomKey<'_>> = SmartList::ALL.into_iter().map(RoomKey::Smart).collect();
         keys.extend(lists.iter().map(|l| RoomKey::List(*l)));
         keys.push(RoomKey::Collection(col));
         keys.push(RoomKey::Activity(None));
-        for key in keys {
-            let h = room_header(&w.state, key, &holding, &now);
-            prop_assert!(h.progress_done <= h.progress_total, "{key:?}: {h:?}");
-            prop_assert_eq!(h.open(), h.progress_total - h.progress_done);
-            if let Some(s) = h.status {
-                prop_assert_eq!(s.first.0, h.open());
-                prop_assert_eq!(s.second.0, h.done_today);
-            }
-            match h.summary {
-                Summary::Progress { done, total, open } => {
-                    prop_assert_eq!((done, total), (h.progress_done, h.progress_total));
-                    prop_assert_eq!(open, total - done);
+        let eval = now.eval();
+        let query = Query::parse("keep").unwrap();
+        let filter = query.matcher(&w.state, &eval);
+        for released in [false, true] {
+            let no_holds = BTreeSet::new();
+            let holds = if released { &no_holds } else { &holding };
+            for &key in &keys {
+                use SmartList::*;
+                let mut rows = Vec::new();
+                let mut drawer = Vec::new();
+                let (mut open, mut done, mut done_today) = (0, 0, 0);
+                for &(id, g) in &generated {
+                    let done_days = g.done_days_ago.filter(|_| released || !g.held);
+                    let matches = !g.deleted && match key {
+                        RoomKey::Smart(MyDay) => g.my_day,
+                        RoomKey::Smart(Important) => g.important,
+                        RoomKey::Smart(Planned) => g.due_in.is_some(),
+                        RoomKey::Smart(All) => true,
+                        RoomKey::Smart(Completed) => done_days.is_some(),
+                        RoomKey::Smart(AgentActivity) => g.changed_days_ago.is_some_and(|d| d <= 7),
+                        RoomKey::Collection(_) => g.list < 2,
+                        RoomKey::List(l) => lists[g.list] == l,
+                        RoomKey::Activity(_) => false,
+                    };
+                    if !matches { continue; }
+                    done += usize::from(done_days.is_some());
+                    done_today += usize::from(done_days == Some(0));
+                    open += usize::from(done_days.is_none());
+                    if done_days.is_some() && !matches!(key, RoomKey::Smart(Completed | AgentActivity)) {
+                        drawer.push((id, g));
+                    } else {
+                        rows.push((id, g));
+                    }
                 }
-                Summary::AllClear { done, total } => {
-                    prop_assert!(h.finished_day());
-                    prop_assert_eq!(done, total);
+                // Uncollected lists precede collections in smart lists. List ID breaks the tied
+                // list positions before the row's position; task ID follows the row's position.
+                let manual = |g: &Gen| (if g.list == 2 { 0 } else { g.list + 1 }, g.position);
+                rows.sort_by_key(|&(id, g)| match key {
+                    RoomKey::Smart(Important | Planned) => (g.due_in.unwrap_or(i64::MAX), manual(g), id),
+                    RoomKey::Smart(Completed) => (g.done_days_ago.unwrap(), manual(g), id),
+                    RoomKey::Smart(AgentActivity) => (g.changed_days_ago.unwrap(), manual(g), id),
+                    _ => (0, manual(g), id),
+                });
+                drawer.sort_by_key(|&(id, g)| (g.done_days_ago.unwrap(), matches!(key, RoomKey::Smart(_)).then(|| manual(g)), id));
+                let actual = room_tasks(&w.state, key, holds, &eval);
+                prop_assert_eq!(actual.open.iter().map(|t| t.id).collect::<Vec<_>>(), rows.iter().map(|&(id, _)| id).collect::<Vec<_>>(), "{:?}", key);
+                prop_assert_eq!(actual.done.iter().map(|t| t.id).collect::<Vec<_>>(), drawer.iter().map(|&(id, _)| id).collect::<Vec<_>>(), "{:?}", key);
+                prop_assert_eq!(actual.done.iter().filter(|t| filter.matches(t)).map(|t| t.id).collect::<Vec<_>>(), drawer.iter().filter(|(_, g)| g.keep).map(|&(id, _)| id).collect::<Vec<_>>());
+                let h = header_of(&w.state, key, &actual, holds, &now);
+                let expected_done = match key {
+                    RoomKey::Smart(MyDay | AgentActivity | Completed) => done,
+                    _ => done_today,
+                };
+                prop_assert_eq!((h.progress_done, h.progress_total), (expected_done, open + expected_done));
+                prop_assert_eq!(h.status, (!key.is_activity()).then(|| StatusCounts::tasks(open, done_today)));
+                if released && key == RoomKey::Smart(MyDay) {
+                    prop_assert_eq!(my_day_progress(&w.state, today), (done, open + done));
                 }
-                Summary::Done { done } => prop_assert_eq!(done, h.progress_total),
-                Summary::Empty { .. } => prop_assert_eq!(h.progress_total, 0),
-                Summary::None => prop_assert!(key.is_activity()),
             }
-            // A held task never counts done.
-            let tasks = room_tasks(&w.state, key, &holding, &now.eval());
-            prop_assert!(tasks.done.iter().all(|t| !holding.contains(&t.id)));
         }
     }
 }

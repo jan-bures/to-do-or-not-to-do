@@ -6,7 +6,7 @@ import app.todoornot.core.TodoEngine
 import java.time.Instant
 
 /** Saturday 21 November 2026, 10:35 in a UTC+1 zone: the moment the fixtures and mockups are drawn at. */
-val FIXTURE_NOW = LocalNow(Instant.parse("2026-11-21T09:35:00Z").toEpochMilli(), 3600)
+val FIXTURE_NOW = LocalNow(Instant.parse("2026-11-21T09:35:00Z").toEpochMilli(), 3600, "Europe/Prague")
 
 /** An offline engine over the invented fixture data ("world", "finished" or "blank"). */
 fun fixtureEngine(name: String = "world"): TodoEngine = TodoEngine.fixture(name, FIXTURE_NOW)

@@ -57,17 +57,20 @@ pub fn is_fold_key(key: Option<&str>) -> bool {
     key.is_none_or(|key| key.starts_with(FOLD_PREFIX))
 }
 
-/// The real "now": the instant and the browser's current UTC offset.
+/// The real "now": the instant and the browser's local zone.
 #[must_use]
 pub fn now() -> Now {
     let at = todo_client::web::now();
     Now {
         at,
         offset_s: utc_offset(at),
+        browser_time: true,
     }
 }
 
-fn utc_offset(at: Timestamp) -> i32 {
+/// Ask the browser's time-zone database at the timestamp being converted. This avoids shipping a
+/// second database in the WASM bundle.
+pub(crate) fn utc_offset(at: Timestamp) -> i32 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     let date = js_sys::Date::new(&JsValue::from_f64(at.as_millisecond() as f64));
     #[allow(clippy::cast_possible_truncation)]

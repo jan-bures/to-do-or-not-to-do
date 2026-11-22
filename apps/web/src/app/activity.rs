@@ -11,6 +11,7 @@ use todo_client::activity::{
     self, ActivityQuery, Entry, Feed as Pages, Loaded, UndoAction, UndoOutcome,
 };
 use todo_client::protocol::EventRef;
+use todo_client::room_header::{LocalTime, StatusCounts};
 use todo_core::actor::{Actor, AgentId};
 use todo_core::ids::EventId;
 use todo_design::Icon;
@@ -72,12 +73,29 @@ impl Undos {
 /// The pages read so far (shared with every client), and the replica's position when the newest
 /// page was read, for the refresh button's dot.
 #[derive(Default)]
-struct Feed {
+pub(super) struct FeedState {
     pages: Pages,
     revision: Revision,
+    agent: Option<AgentId>,
 }
 
-fn load(c: Ctx, feed: RwSignal<Feed>, agent: Option<AgentId>, before: Option<u64>) {
+impl FeedState {
+    pub(super) fn counts(&self, agent: Option<&AgentId>, now: &LocalTime) -> StatusCounts {
+        if agent != self.agent.as_ref() {
+            return StatusCounts::activity(0, 0);
+        }
+        let today = now.today();
+        StatusCounts::activity(
+            self.pages.len(),
+            self.pages
+                .entries()
+                .filter(|row| now.date_of(row.at) == today)
+                .count(),
+        )
+    }
+}
+
+fn load(c: Ctx, feed: RwSignal<FeedState>, agent: Option<AgentId>, before: Option<u64>) {
     let revision = c.activity_revision.get_untracked();
     let Some(Some(request)) = feed.try_update(|state| state.pages.begin(before)) else {
         return;
@@ -125,7 +143,12 @@ fn load(c: Ctx, feed: RwSignal<Feed>, agent: Option<AgentId>, before: Option<u64
 #[component]
 pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> impl IntoView {
     let c = ctx();
-    let feed = RwSignal::new(Feed::default());
+    let feed = c.activity_feed;
+    // The footer reads the same pages as the list. Drop the previous filter's pages and request.
+    feed.set(FeedState {
+        agent: agent.clone(),
+        ..FeedState::default()
+    });
     let announcement = c.activity_undos.announcement;
     let request = Callback::new({
         let agent = agent.clone();
@@ -154,11 +177,11 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
     });
     // Dates group all entries on the same local calendar day, even across page boundaries.
     let days = Memo::new(move |_| {
-        let offset = c.now.with(|n| n.offset_s);
+        let now = c.now.with(model::Now::local_time);
         feed.with(|state| {
             let pages = &state.pages;
             pages
-                .days(|at| model::local(at, offset).date())
+                .days(|at| now.date_of(at))
                 .into_iter()
                 .map(|(day, seqs)| {
                     let rows = seqs
@@ -276,7 +299,8 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                     <span aria-hidden="true">"·"</span>
                     <time datetime=move || entry.with(|item| item.as_ref().map(|row| row.at.to_string()))
                         title=move || entry.with(|item| item.as_ref().map(|row| {
-                            let local = model::local(row.at, c.now.with(|now| now.offset_s));
+                            let now = c.now.get();
+                            let local = platform::civil_time(row.at, now, now.browser_time);
                             format!("{}, {:02}:{:02}", local.date(), local.hour(), local.minute())
                         }))>
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
