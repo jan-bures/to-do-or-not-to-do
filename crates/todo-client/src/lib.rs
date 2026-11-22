@@ -15,6 +15,8 @@
 //! |---|---|
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
 //! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
+//! | [`intent`] | shared quick-add syntax and gesture-to-command builders |
+//! | [`intent::suggest`] | local, incremental title-to-list suggestions; no storage or network access |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
 //! | [`failure`] | plain words for a "couldn't sync" entry: what it was, its name, why it was refused |
 //! | [`pairing`] | device pairing: start, poll |

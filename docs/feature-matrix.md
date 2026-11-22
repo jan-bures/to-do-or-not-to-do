@@ -105,7 +105,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Quick add in a room | `CreateTask` `C/command.rs:197` | wired `D/ui/shell.rs:248`, `:940` | wired `W/app.rs:1146` | wired `A/ui/RoomPane.kt:152`, `F/engine.rs:440` |
 | The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` |
-| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired, with live date chip (`W/app.rs`, `QuickAdd`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
+| Quick-add syntax: a trailing date (`tomorrow`, `by fri`, `za 2 týdny`, `1 Dec`) and `!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired, with live date chip (`W/app.rs`, `QuickAdd`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
 | Quick-add field's calendar and flag icons | n/a | hidden until the date picker (D2); the date and priority are typed (`D/ui/shell.rs:1564`) | missing | missing |
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
@@ -279,4 +279,16 @@ maps its own room key to the shared task intent. This resolves the creation drif
 - New tasks are placed first in their list's manual order. A smart list may display its own sort order.
 - A task moved to another list is placed first there too (`move_to_list`), and the list picker groups the
   lists as the sidebar does (`list_groups`).
-- Web and Android parse the same trailing date and priority as desktop. Desktop and Android preview the parsed date while typing.
+- Web and Android parse the same trailing date and priority as desktop. All three preview the parsed date while typing.
+
+## Work package: list suggestion
+
+The shared `todo_client::intent::suggest::ListSuggester` learns from live tasks, including completed
+ones. It ranks lists from folded title words, word pairs and character fragments, without storing
+training titles. A list needs three training tasks; the default confidence threshold is 0.9.
+The model checks the winner against the current replica before suggesting it. UI integration in
+My Day, Planned, Important and All is pending on every client; the current destination is unchanged.
+
+To measure it locally, set `TODO_SUGGEST_SNAPSHOT` to a JSON replica snapshot (`State` or a record
+with a `state` field) and run `cargo test -p todo-client --lib suggest_eval -- --ignored --nocapture`.
+It prints only aggregate metrics for a repeatable five-fold split and a chronological holdout.

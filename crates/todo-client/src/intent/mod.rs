@@ -6,6 +6,7 @@
 //! and the task second. This is not atomic: the list can remain if the task is refused.
 
 pub mod quick_add;
+pub mod suggest;
 
 use todo_core::State;
 use todo_core::command::{Command, NewTask, Placement, TaskPatch};
@@ -428,6 +429,88 @@ mod tests {
             self.run(create_list(id, None, name));
             id
         }
+    }
+
+    impl World {
+        fn task(&mut self, list: ListId, title: &str) -> TaskId {
+            let id = TaskId::from_uuid(self.id());
+            self.run(Command::CreateTask(Box::new(NewTask::new(id, list, title))));
+            id
+        }
+    }
+
+    #[test]
+    fn suggestions_learn_live_open_and_completed_tasks_and_recheck_the_destination() {
+        use suggest::ListSuggester;
+        let mut w = World::new();
+        let tools = w.list("Tools");
+        let seeds = w.list("Seeds");
+        for _ in 0..3 {
+            w.task(tools, "blue wrench");
+        }
+        w.task(seeds, "žlutá řepa");
+        let done = w.task(seeds, "žlutá řepa");
+        w.run(Command::CompleteTask { id: done });
+        let deleted = w.task(seeds, "žlutá řepa");
+        w.run(Command::Delete { id: deleted.into() });
+        let mut model = ListSuggester::from_state(&w.state);
+        // The deleted example must not qualify the class. Completion must not disqualify it.
+        assert_ne!(
+            model.suggest("zluta repa", &w.state).map(|s| s.list),
+            Some(seeds)
+        );
+        w.task(seeds, "ŽLUTÁ ŘEPA");
+        model.observe("ŽLUTÁ ŘEPA", seeds);
+        let expected = model.suggest("zluta repa", &w.state).unwrap();
+        assert_eq!(expected.list, seeds);
+        assert_eq!(
+            ListSuggester::from_state(&w.state).suggest("Žlutá řepa", &w.state),
+            Some(expected)
+        );
+        assert_eq!(model.suggest("blue wrench", &w.state).unwrap().list, tools);
+        for title in ["", "?!", " r !", "ř"] {
+            assert_eq!(model.suggest(title, &w.state), None);
+        }
+        w.run(Command::Delete { id: seeds.into() });
+        assert_eq!(model.suggest("zluta repa", &w.state), None);
+        w.state.lists.remove(&seeds);
+        assert_eq!(model.suggest("zluta repa", &w.state), None);
+    }
+
+    #[test]
+    fn suggestion_threshold_is_inclusive_and_ties_are_stable() {
+        use suggest::ListSuggester;
+        let mut w = World::new();
+        let a = w.list("A");
+        let b = w.list("B");
+        let mut model = ListSuggester::default();
+        for _ in 0..3 {
+            for id in [b, a] {
+                model.observe("identical sample", id);
+            }
+        }
+        assert_eq!(model.suggest("identical sample", &w.state), None);
+        let s = model
+            .with_threshold(0.5)
+            .suggest("identical sample", &w.state)
+            .unwrap();
+        assert_eq!((s.list, s.confidence), (a.min(b), 0.5));
+    }
+
+    #[test]
+    #[ignore = "synthetic training benchmark; run in release mode"]
+    fn suggest_train_1000() {
+        let mut w = World::new();
+        let lists: Vec<_> = (0..8).map(|i| w.list(&format!("List {i}"))).collect();
+        for i in 0..1000 {
+            w.task(
+                lists[i % lists.len()],
+                &format!("Generate sample number {i}"),
+            );
+        }
+        let start = std::time::Instant::now();
+        std::hint::black_box(suggest::ListSuggester::from_state(&w.state));
+        println!("Training on 1000 synthetic tasks: {:?}", start.elapsed());
     }
 
     fn today() -> Date {
