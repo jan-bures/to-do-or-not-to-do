@@ -202,7 +202,19 @@ sudo apt-get install build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 ```
 
-Open a new WSL shell afterwards, so `~/.cargo/bin` is on `PATH`. The release script installs the
+Node.js doesn't need sudo either. This installs the version CI uses under `~/.local/node`, after checking
+the tarball against the release's published checksums:
+
+```sh
+v=24.15.0 && cd /tmp
+curl -fsSLO "https://nodejs.org/dist/v$v/node-v$v-linux-x64.tar.xz"
+curl -fsSL "https://nodejs.org/dist/v$v/SHASUMS256.txt" | grep " node-v$v-linux-x64.tar.xz\$" | sha256sum -c -
+mkdir -p ~/.local/node && tar -xJf "node-v$v-linux-x64.tar.xz" -C ~/.local/node --strip-components=1
+echo 'export PATH="$HOME/.local/node/bin:$PATH"' >> ~/.profile
+```
+
+Open a new WSL shell afterwards, so `~/.cargo/bin` and `~/.local/node/bin` are on `PATH` (`node --version`
+prints `v24.15.0`). The release script installs the
 pinned toolchain and the Linux and wasm32 targets. It uses `wasm-bindgen-cli` at the exact version in
 `apps/web/Cargo.lock`; if the CLI on `PATH` doesn't match, it installs the pinned version under the
 build cache without replacing the operator's CLI. The production Node build needs no npm install.
@@ -381,6 +393,19 @@ itself interrupted can always be run again.
 
 Don't delete the marker by hand. If you must, stop the server first, and check that `/opt/todo/current` points
 at a release that can open the databases.
+
+### SSH lands without a home directory
+
+If SSH prints `Could not chdir to home directory /home/<user>: Permission denied` and `deploy-linux.ps1`
+fails to create its remote directory, OS Login has given your username a new POSIX UID: Google can issue a
+second one for the same account, and the VM then uses it while your home directory still belongs to the old
+one. Check, and if the home directory is the only thing owned by the old UID, give it to the new one:
+
+```sh
+id -u; sudo stat -c '%u %n' "/home/$USER"     # differ when this is the cause
+sudo find / -xdev -uid "$(sudo stat -c %u "/home/$USER")" -not -path "/home/$USER/*" -print -quit   # prints nothing
+sudo chown -R "$(id -u):$(id -g)" "/home/$USER"
+```
 
 ### Known limits
 
