@@ -5,9 +5,11 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use todo_client::{Connection, ErrorKind};
+use todo_client::{CommandId, Connection, ErrorKind, TrackedCommand, TrackedUndo};
+use todo_core::event::Event;
 use todo_core::time::Timestamp;
-use todo_core::{Actor, Command, State, apply, decide};
+use todo_core::undo::undo_batch;
+use todo_core::{Actor, Command, State, UndoOptions, apply, decide};
 use uuid::Uuid;
 
 use crate::fixtures::Fixture;
@@ -24,6 +26,29 @@ pub struct LocalStore {
     /// Tests: refuse every submit, as a cache that can't be written would.
     #[cfg(test)]
     refuse: Cell<bool>,
+}
+
+#[derive(Debug)]
+pub enum UndoTarget {
+    Local(Vec<Event>),
+    Live(TrackedCommand),
+}
+
+impl LocalStore {
+    fn submit(&self, cmd: &Command) -> Result<Vec<Event>, String> {
+        #[cfg(test)]
+        if self.refuse.get() {
+            return Err("storage backend error: disk full".into());
+        }
+        let actor = Actor::owner("desktop").map_err(|e| e.to_string())?;
+        let mut state = (**self.state.borrow()).clone();
+        let events = decide(&state, &actor, cmd, self.now.at).map_err(|e| e.to_string())?;
+        for e in &events {
+            apply(&mut state, e).map_err(|e| e.to_string())?;
+        }
+        *self.state.borrow_mut() = Arc::new(state);
+        Ok(events)
+    }
 }
 
 /// The live session, plus when it was last in sync.
@@ -80,20 +105,7 @@ impl Store {
     /// user; nothing was changed then.
     pub fn submit(&self, cmd: Command) -> Result<(), String> {
         match self {
-            Self::Local(s) => {
-                #[cfg(test)]
-                if s.refuse.get() {
-                    return Err("storage backend error: disk full".into());
-                }
-                let actor = Actor::owner("desktop").map_err(|e| e.to_string())?;
-                let mut state = (**s.state.borrow()).clone();
-                let events = decide(&state, &actor, &cmd, s.now.at).map_err(|e| e.to_string())?;
-                for e in &events {
-                    apply(&mut state, e).map_err(|e| e.to_string())?;
-                }
-                *s.state.borrow_mut() = Arc::new(state);
-                Ok(())
-            }
+            Self::Local(s) => s.submit(&cmd).map(drop),
             Self::Live(s) => s
                 .session
                 .client()
@@ -101,6 +113,62 @@ impl Store {
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
         }
+    }
+
+    pub fn submit_undoable(&self, cmd: Command) -> Result<UndoTarget, String> {
+        match self {
+            Self::Local(s) => s.submit(&cmd).map(UndoTarget::Local),
+            Self::Live(s) => s
+                .session
+                .client()
+                .submit_tracked(cmd)
+                .map(UndoTarget::Live)
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    pub fn undo(&self, target: &UndoTarget) -> Result<TrackedUndo, String> {
+        match (self, target) {
+            (Self::Local(s), UndoTarget::Local(events)) => {
+                let actor = Actor::owner("desktop").map_err(|e| e.to_string())?;
+                let mut state = (**s.state.borrow()).clone();
+                let inverse = undo_batch(&state, events, &actor, s.now.at, UndoOptions::default())
+                    .map_err(|e| e.to_string())?;
+                for event in &inverse {
+                    apply(&mut state, event).map_err(|e| e.to_string())?;
+                }
+                *s.state.borrow_mut() = Arc::new(state);
+                Ok(TrackedUndo::Cancelled)
+            }
+            (Self::Live(s), UndoTarget::Live(t)) => s
+                .session
+                .client()
+                .undo_tracked(t)
+                .map_err(|e| e.to_string()),
+            _ => Ok(TrackedUndo::Unavailable),
+        }
+    }
+
+    pub fn undo_preview(&self, target: &UndoTarget) -> Option<Arc<State>> {
+        let (Self::Live(s), UndoTarget::Live(t)) = (self, target) else {
+            return None;
+        };
+        s.session.client().preview_tracked_undo(t).map(Arc::new)
+    }
+
+    /// None while the compensation is pending, otherwise its outcome.
+    pub fn undo_result(&self, id: CommandId) -> Option<Result<(), String>> {
+        let client = self.session()?.client();
+        if client.pending().iter().any(|entry| entry.command_id == id) {
+            return None;
+        }
+        Some(
+            client
+                .failed()
+                .iter()
+                .find(|entry| entry.entry.command_id == id)
+                .map_or(Ok(()), |err| Err(err.rejection.message.clone())),
+        )
     }
 
     /// A fresh ID for something a command creates.
@@ -154,6 +222,30 @@ impl Store {
         match self {
             Self::Local(_) => None,
             Self::Live(s) => Some(&s.session),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use todo_core::state::Scope;
+
+    proptest! {
+        #[test]
+        fn local_undo_restores_the_exact_order(index in any::<usize>()) {
+            let store = Store::fixture(&crate::fixtures::my_day());
+            let before = store.view();
+            let scope = before.lists.keys().copied().map(Scope::Tasks)
+                .find(|&scope| before.siblings(scope).len() > 1).expect("a populated list");
+            let order = before.siblings(scope);
+            let id = order[1 + index % (order.len() - 1)].1;
+            let move_up = crate::model::commands::nudge(&before, id, -1).expect("task can move up");
+            let undo = store.submit_undoable(move_up).expect("valid reorder");
+            prop_assert_ne!(store.view().siblings(scope), order.clone());
+            store.undo(&undo).expect("valid inverse");
+            prop_assert_eq!(store.view().siblings(scope), order);
         }
     }
 }

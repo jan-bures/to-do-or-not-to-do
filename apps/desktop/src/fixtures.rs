@@ -51,6 +51,9 @@ pub enum Moment {
         from: (u32, u32),
         at: u32,
     },
+    UndoToast {
+        at: u32,
+    },
     /// Dusk falling over the finished day.
     Dusk {
         at: u32,
@@ -122,6 +125,8 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE / 2,
         )),
         "sun-travel-50" => Some(sun_travel(m::SUN_TRAVEL / 2)),
+        "undo-toast" | "narrow-undo-toast" => Some(undo_toast(m::UNDO_WINDOW / 2)),
+        "toast-in-50" => Some(undo_toast(m::TOAST_IN / 2)),
         "reopening-collapse-50" => Some(reopening(m::OVERLAY_OUT + m::ROW_COLLAPSE / 2)),
         // A list longer than the room, part way through a collapse: at the top (the row from below the
         // fold rises into view), and scrolled to its end (the rows above come down instead).
@@ -131,6 +136,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // way (tomorrow's hand-over entering, staggered).
         "dusk-50" => Some(dusk(m::DUSK / 2)),
         "dusk-75" => Some(dusk(m::DUSK * 3 / 4)),
+        "dusk-one-task-50" => Some(dusk_one_task(m::SUN_TRAVEL / 2)),
         "room-switch-50" => Some(room_switch(m::CONTENT_SWAP / 2)),
         "room-hue-50" => Some(room_switch(m::ROOM_HUE / 2)),
         "detail-open-50" => Some(Fixture {
@@ -787,6 +793,13 @@ fn completing(at: u32) -> Fixture {
     f
 }
 
+fn undo_toast(at: u32) -> Fixture {
+    let mut f = completing(0);
+    f.ui.holding.clear();
+    f.moment = Some(Moment::UndoToast { at });
+    f
+}
+
 /// `long-task-list` with the task titled `title` `percent` of the way through its collapse, the list
 /// scrolled to its end or not.
 fn long_list_collapse(title: &str, percent: u32, end: bool) -> Fixture {
@@ -1082,6 +1095,34 @@ pub fn finished() -> Fixture {
 /// The finished day with dusk falling, `at` ms in.
 fn dusk(at: u32) -> Fixture {
     let mut f = finished();
+    f.moment = Some(Moment::Dusk { at });
+    f
+}
+
+/// My Day had just one task, which finished: the sun is still travelling from the far left.
+fn dusk_one_task(at: u32) -> Fixture {
+    let (mut b, _) = sample();
+    let one = titled(&b.state, COMPLETED);
+    let today = date("2026-11-21");
+    let others: Vec<_> = b
+        .state
+        .tasks
+        .values()
+        .filter(|t| t.id != one && t.my_day == Some(today))
+        .map(|t| t.id)
+        .collect();
+    for id in others {
+        b.run(&owner(), MORNING, Command::SetMyDay { id, date: None });
+    }
+    b.run(&owner(), MORNING, Command::CompleteTask { id: one });
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            ..UiState::default()
+        },
+        MORNING,
+    );
     f.moment = Some(Moment::Dusk { at });
     f
 }

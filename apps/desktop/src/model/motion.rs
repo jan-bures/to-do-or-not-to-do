@@ -36,8 +36,10 @@ use crate::theme::motion as m;
 
 mod chrome;
 mod panes;
+mod toast;
 pub use chrome::ScrollbarMotion;
 pub use panes::{DetailMotion, Navigation, Track};
+pub use toast::Toast;
 
 /// How long things take: the design's durations, or their reduced-motion variants (Windows' *Animation
 /// effects* turned off), read when a transition starts.
@@ -333,7 +335,7 @@ pub enum Wake {
 }
 
 impl Wake {
-    fn or(self, other: Self) -> Self {
+    pub fn or(self, other: Self) -> Self {
         match (self, other) {
             (Self::Frame, _) | (_, Self::Frame) => Self::Frame,
             (Self::Idle, w) | (w, Self::Idle) => w,
@@ -527,6 +529,30 @@ impl Motion {
         }
     }
 
+    /// A task restored by Undo either reverses the held completion (in `reconcile`) or enters its
+    /// list directly. Unlike manually reopening a task, Undo doesn't linger in Completed.
+    pub fn restore(&mut self, id: TaskId, done: bool, now: Duration, pace: Pace) {
+        if self.phase(id) != Some(Phase::Complete) {
+            self.rows.insert(
+                id,
+                RowMotion {
+                    phase: Phase::Enter { done },
+                    start: now,
+                    from: RowLook {
+                        height: 0.,
+                        opacity: 0.,
+                        ..RowLook::rest(done)
+                    },
+                    pace,
+                },
+            );
+        }
+    }
+
+    pub fn completing(&self, id: TaskId) -> bool {
+        self.phase(id) == Some(Phase::Complete)
+    }
+
     fn phase(&self, id: TaskId) -> Option<Phase> {
         self.rows.get(&id).map(|r| r.phase)
     }
@@ -654,6 +680,20 @@ impl Motion {
                 .is_none_or(|look| look.height > 0. && look.opacity > 0.)
     }
 
+    /// Retargets both layers of the header together. The sun keeps travelling at the usual pace
+    /// while dusk falls; a one-task day starts at the left end of the arc, not the setting position.
+    pub fn aim_header(
+        &mut self,
+        room: RoomKey,
+        target: Option<f32>,
+        finished: bool,
+        now: Duration,
+        pace: Pace,
+    ) {
+        self.aim_sun(room, target, now, pace);
+        self.aim_dusk(room, finished, now, pace);
+    }
+
     /// Points the sun at `target` (its place on the arc, or `None` when the room has no sun). In the same
     /// room it glides there from wherever it is now; a new room, or a sun that appears or goes, snaps.
     pub fn aim_sun(&mut self, room: RoomKey, target: Option<f32>, now: Duration, pace: Pace) {
@@ -682,8 +722,7 @@ impl Motion {
         }
     }
 
-    /// Puts the sun at `to` at once, without travelling: the finished day's dusk scene sets it behind the
-    /// hills itself. Leaving that scene, the sun then glides back from the end of the arc.
+    /// Puts the sun at `to` at once, e.g. establishing the starting count of a gallery fixture.
     pub fn place_sun(&mut self, room: RoomKey, to: f32, now: Duration) {
         self.sun = Some(Travel {
             room,

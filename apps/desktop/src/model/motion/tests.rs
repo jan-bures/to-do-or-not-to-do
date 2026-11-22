@@ -306,17 +306,61 @@ fn a_refresh_keeps_the_suns_presence_track_during_room_navigation() {
 }
 
 #[test]
-fn a_placed_sun_glides_back_from_where_it_was_put() {
+fn a_one_task_day_travels_while_dusk_falls_and_can_reverse_in_flight() {
     let mut mo = Motion::default();
-    mo.aim_sun(MY_DAY, Some(11. / 12.), ms(0), Pace::FULL);
-    // The day finishes: the dusk scene takes the sun, with no travel to draw.
-    mo.place_sun(MY_DAY, 1., ms(100));
-    assert_eq!(mo.sun(ms(100)), Some(1.));
-    assert_eq!(mo.wake(ms(100)), Wake::Idle);
-    // A task reopens: it glides back from the end of the arc.
-    mo.aim_sun(MY_DAY, Some(11. / 12.), ms(200), Pace::FULL);
-    assert_eq!(mo.sun(ms(200)), Some(1.));
-    assert_eq!(mo.wake(ms(200)), Wake::Frame);
+    let pace = Pace::FULL;
+    mo.aim_header(MY_DAY, Some(0.), false, ms(0), pace);
+    let start = ms(100);
+    mo.aim_header(MY_DAY, Some(1.), true, start, pace);
+    assert_eq!(mo.sun(start), Some(0.));
+    let mid = start + ms(m::SUN_TRAVEL / 2);
+    assert!(close(mo.sun(mid).expect("travelling sun"), 0.5));
+    assert!(mo.dusk(mid).scene() > 0.);
+    assert_eq!(mo.sun(start + ms(m::SUN_TRAVEL)), Some(1.));
+    let before = mo.sun(mid);
+    mo.aim_header(MY_DAY, Some(0.), false, mid, pace);
+    assert_eq!(mo.sun(mid), before);
+    assert_eq!(mo.sun(mid + ms(m::SUN_TRAVEL)), Some(0.));
+
+    let mut mo = Motion::default();
+    let pace = Pace::REDUCED;
+    mo.aim_header(MY_DAY, Some(0.), false, ms(0), pace);
+    mo.aim_header(MY_DAY, Some(1.), true, start, pace);
+    assert_eq!(mo.sun(start), Some(1.));
+    assert_eq!(mo.dusk(start).scene(), 0.);
+}
+
+proptest! {
+    #[test]
+    fn undo_during_completion_reconciles_from_the_displayed_frame(at in 0..RELEASE_AT) {
+        let id = task(1);
+        let mut mo = Motion::default();
+        mo.complete(id, ms(0), Pace::FULL);
+        let now = ms(at);
+        let before = mo.row(id, now);
+        mo.restore(id, false, now, Pace::FULL);
+        mo.reconcile(now, Pace::FULL, |_| Some(false));
+        prop_assert_eq!(mo.row(id, now), before);
+        prop_assert_eq!(mo.holding().count(), 0);
+        prop_assert!(mo.advance(now + ms(m::UNDO_WINDOW)).is_empty());
+        prop_assert_eq!(mo.row(id, now + ms(m::UNDO_WINDOW)), None);
+    }
+}
+
+#[test]
+fn undo_enters_a_restored_row_without_waiting_for_a_completed_row_exit() {
+    let id = task(1);
+    let mut mo = Motion::default();
+    mo.restore(id, false, ms(0), Pace::FULL);
+    assert_eq!(mo.row(id, ms(0)).expect("restoring row").opacity, 0.);
+    assert!(
+        mo.row(id, ms(m::ROW_ENTER / 2))
+            .expect("entering row")
+            .opacity
+            > 0.
+    );
+    assert!(mo.advance(ms(m::ROW_ENTER)).is_empty());
+    assert!(mo.row(id, ms(m::ROW_ENTER)).is_none());
 }
 
 #[test]

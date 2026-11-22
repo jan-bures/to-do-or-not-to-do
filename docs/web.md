@@ -284,7 +284,7 @@ with `motion::SUN`) and the count change. The toast offers Undo for `--duration-
 running out; Ctrl+Z works while it's shown. Undo reopens the task, which is exact for an ordinary task. A
 recurring task with a due date is different: completing it also creates the next occurrence, and reopening
 would leave that behind. Undoing both needs the server's undo of the whole command, which needs the confirmed
-event, so for now (as in the desktop app) completing a recurring task offers no Undo; the toast says the next
+event, so for now completing a recurring task on the web offers no Undo; the toast says the next
 one is scheduled. Reduced motion turns movement into instant changes.
 
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.

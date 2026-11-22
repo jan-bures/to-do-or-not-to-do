@@ -240,6 +240,7 @@
   --desktop-chip-max: 180px;
   --desktop-toast-inset: 56px;
   --desktop-toast: 40px;
+  --desktop-toast-countdown: 2px;
   --desktop-nav-row: 32px;
   --desktop-nav-sub-row: 28px;
   --desktop-sidebar-footer: 44px;

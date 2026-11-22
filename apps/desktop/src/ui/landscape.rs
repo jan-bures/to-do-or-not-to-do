@@ -170,7 +170,7 @@ fn build(key: Key) -> Vec<(Path, Ink)> {
     if let Some(progress) = key.sun.or(finished.then_some(1.0)) {
         if finished {
             push(
-                polyline(origin, &land.travelled(1.0), TRAVELLED_STROKE_FINISHED),
+                polyline(origin, &land.travelled(progress), TRAVELLED_STROKE_FINISHED),
                 Ink::Travelled,
             );
         } else {
@@ -183,7 +183,7 @@ fn build(key: Key) -> Vec<(Path, Ink)> {
                 Ink::Travelled,
             );
         }
-        let sun = land.sun(progress);
+        let sun = land.travelling_sun(progress);
         for (i, (r, _)) in sun.rings.iter().enumerate() {
             push(
                 ring(origin, sun.center, *r, RING_STROKE),
@@ -380,7 +380,7 @@ pub fn header_landscape(
             let night = (blend.scene > 0.).then(|| {
                 cache.dusk.paths(Key {
                     bounds: bottom(bounds, geo::HEIGHT_FINISHED),
-                    sun: Some(1.),
+                    sun,
                     scene: Scene::Finished,
                     stars: true,
                 })

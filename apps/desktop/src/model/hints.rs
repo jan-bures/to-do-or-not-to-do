@@ -23,6 +23,13 @@ pub enum Focus {
     Elsewhere,
 }
 
+impl Focus {
+    /// Never take the task shortcut from an input that is editing text.
+    pub fn allows_task_undo(self) -> bool {
+        matches!(self, Self::List | Self::Elsewhere)
+    }
+}
+
 /// What the hints depend on besides the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HintState {
@@ -34,6 +41,8 @@ pub struct HintState {
     pub selected: Option<Selected>,
     /// The room is a list, whose own order Alt+Up and Alt+Down change.
     pub reorder: bool,
+    /// A task change can still be undone, even if its toast has expired.
+    pub undo: bool,
 }
 
 /// The selected task, as far as the hints care.
@@ -80,6 +89,9 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
         Focus::Rename => hints.extend([("Enter", "save"), ("Esc", "cancel")]),
         Focus::Elsewhere => {}
     }
+    if s.undo && s.focus.allows_task_undo() {
+        hints.push(("Ctrl Z", "undo"));
+    }
     if hints.is_empty() {
         // Nothing else to do from here: the filter (Ctrl N, adding a task, is on the right).
         hints.push(("Ctrl K", "filter"));
@@ -97,6 +109,7 @@ mod tests {
             rows,
             selected: selected.then_some(Selected { done: false }),
             reorder,
+            undo: false,
         }
     }
 
@@ -140,6 +153,7 @@ mod tests {
                 rows: true,
                 selected: Some(Selected { done: false }),
                 reorder: true,
+                undo: true,
             });
             assert_eq!(k, ["Enter", "Esc"], "{focus:?}");
         }
@@ -152,8 +166,16 @@ mod tests {
             rows: true,
             selected: Some(Selected { done: false }),
             reorder: true,
+            undo: false,
         });
         assert_eq!(k, ["Ctrl K"]);
+    }
+
+    #[test]
+    fn undo_hint_does_not_depend_on_the_toast_or_a_selected_task() {
+        let mut state = list(false, false, false);
+        state.undo = true;
+        assert_eq!(keys(state), ["Ctrl Z"]);
     }
 
     #[test]
@@ -170,6 +192,7 @@ mod tests {
                     done: task.is_done(),
                 }),
                 reorder: false,
+                undo: false,
             });
             let space = hint.iter().find(|(k, _)| *k == "Space").map(|(_, w)| *w);
             let expected = match commands::toggle_complete(&f.state, task.id) {

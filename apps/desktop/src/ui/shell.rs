@@ -4,6 +4,7 @@
 
 mod detail;
 mod sidebar;
+mod undo;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,7 +25,8 @@ use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::layout::{self, DetailPane, Width};
 use crate::model::motion::{
-    DetailMotion, Keep, Motion, Pace, RowLook, Wake, anchored_scroll, lifts, rows_rising_into,
+    DetailMotion, Keep, Motion, Pace, RowLook, Toast, Wake, anchored_scroll, lifts,
+    rows_rising_into,
 };
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
@@ -50,6 +52,7 @@ actions!(
         CyclePriority,
         MoveTaskUp,
         MoveTaskDown,
+        UndoTask,
         Escape
     ]
 );
@@ -62,6 +65,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     vec![
         KeyBinding::new("ctrl-n", FocusQuickAdd, Some("Shell")),
         KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
+        KeyBinding::new("ctrl-z", UndoTask, Some("Shell")),
         KeyBinding::new("e", EditTask, list),
         KeyBinding::new("d", EditDue, list),
         KeyBinding::new("p", CyclePriority, list),
@@ -188,6 +192,11 @@ pub struct ShellView {
     edit: Editors,
     /// The completion choreography and the sun's travel (`model::motion`), sampled at `clock`.
     motion: Motion,
+    toast: Toast<SharedString>,
+    undo_focus: FocusHandle,
+    toast_hover: bool,
+    last_undo: Option<undo::Action>,
+    pending_undo: Vec<undo::Pending>,
     clock: Clock,
     /// The time this frame draws (`clock` when the render started), so every row samples the same moment.
     frame: Duration,
@@ -297,6 +306,11 @@ impl ShellView {
             filter,
             edit,
             motion: Motion::default(),
+            toast: Toast::default(),
+            undo_focus: cx.focus_handle(),
+            toast_hover: false,
+            last_undo: None,
+            pending_undo: Vec::new(),
             clock: Clock::Live(Instant::now()),
             frame: Duration::ZERO,
             row_lifts: Vec::new(),
@@ -308,6 +322,10 @@ impl ShellView {
             closing_groups: HashMap::new(),
             animate: true,
         };
+        cx.on_focus(&this.undo_focus, window, |_, _, cx| cx.notify())
+            .detach();
+        cx.on_blur(&this.undo_focus, window, |_, _, cx| cx.notify())
+            .detach();
         this.load_detail(cx);
         this.settle_detail();
         let _ = this.follow_shell();
@@ -353,7 +371,7 @@ impl ShellView {
     }
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
-        let state = self.store.view();
+        let state = self.undo_state();
         // Capture the painted rows before releasing the old room's holds and deriving new counts.
         let room_changed = self.ui.room.resolved(&state) != self.shell.room.key;
         let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
@@ -459,17 +477,20 @@ impl ShellView {
         self.ui.reopening.retain(|id, _| reopening.contains(id));
     }
 
-    /// After deriving: the sun heads for the new count (the dusk scene takes it at once), and rows the
+    /// After deriving: the sun heads for the new count, and rows the
     /// list doesn't show stop moving (see `Motion::retain_shown`). Returns whether that let a held task
     /// go, so the shell must be derived again.
     fn follow_shell(&mut self) -> bool {
         let now = self.now();
         let room = &self.shell.room;
         let pace = self.pace();
-        self.motion
-            .aim_dusk(room.key, room.finished_day(), now, pace);
-        self.motion
-            .aim_sun(room.key, sun_at(room.done, room.total), now, pace);
+        self.motion.aim_header(
+            room.key,
+            sun_at(room.done, room.total),
+            room.finished_day(),
+            now,
+            pace,
+        );
         let shown: std::collections::HashSet<TaskId> = self.shell.rows().map(|r| r.id).collect();
         self.motion.retain_shown(now, |id| shown.contains(&id))
     }
@@ -502,7 +523,17 @@ impl ShellView {
         if !self.animate {
             return;
         }
-        match self.motion.wake(now) {
+        self.toast.advance(now, self.pace());
+        let undo_focused = self.undo_focus.is_focused(window);
+        if self.toast.look(now).is_some_and(|t| t.active) {
+            self.toast.pause(self.toast_hover || undo_focused, now);
+        } else {
+            self.toast_hover = false;
+            if undo_focused {
+                window.focus(&self.list_focus, cx);
+            }
+        }
+        match self.motion.wake(now).or(self.toast.wake(now)) {
             Wake::Idle => {}
             Wake::Frame => window.request_animation_frame(),
             Wake::At(at) if self.alarm == Some(at) => {}
@@ -596,8 +627,20 @@ impl ShellView {
             }
             Moment::Dusk { at } => {
                 let room = self.shell.room.key;
+                let done = self.shell.room.done.saturating_sub(1);
+                let total = self.shell.room.total;
+                self.motion
+                    .place_sun(room, sun_at(done, total).unwrap_or(0.), Duration::ZERO);
                 self.motion
                     .aim_dusk(room, false, Duration::ZERO, Pace::FULL);
+                at
+            }
+            Moment::UndoToast { at } => {
+                self.toast.show(
+                    "Completed \u{201c}Send venue\u{201d}".into(),
+                    Duration::ZERO,
+                    Pace::FULL,
+                );
                 at
             }
             Moment::RoomSwitch { at, .. }
@@ -779,7 +822,16 @@ impl ShellView {
 
     fn submit(&mut self, cmds: Vec<todo_core::Command>) -> bool {
         for cmd in cmds {
-            if let Err(e) = self.store.submit(cmd) {
+            let result = if let Some((id, kind)) = undo::EditKind::of(&cmd) {
+                let state = self.store.view();
+                let title = state.tasks.get(&id).map_or("Task", |t| t.title.as_str());
+                self.store
+                    .submit_undoable(cmd)
+                    .map(|target| self.remember_undo(undo::Action { id, kind, target }, title))
+            } else {
+                self.store.submit(cmd)
+            };
+            if let Err(e) = result {
                 tracing::warn!("a change was refused: {e}");
                 self.notice = Some(Notice::error(format!("Couldn't save that: {e}")));
                 return false;
@@ -893,6 +945,16 @@ impl ShellView {
             return;
         };
         let (was_done, completed_at) = (task.is_done(), task.completed_at);
+        if was_done
+            && self.motion.completing(id)
+            && self
+                .last_undo
+                .as_ref()
+                .is_some_and(|u| u.id == id && u.kind == undo::EditKind::Complete)
+        {
+            self.request_undo(cx);
+            return;
+        }
         let Some(cmd) = commands::toggle_complete(&state, id) else {
             return;
         };
@@ -1959,40 +2021,6 @@ impl ShellView {
             .size_full()
             .into_any_element()
         };
-        // The reserved strip at the bottom: "Completed n" on the left, room for the undo toast on the right.
-        let open = self.ui.show_completed;
-        let completed = (room.completed_count > 0).then(|| {
-            div()
-                .id("completed-toggle")
-                .h(px(desktop::TOAST_INSET))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(space::S2))
-                .px(px(desktop::LIST_PAD_X))
-                .border_t_1()
-                .border_color(p.line)
-                .child(kit::icon(
-                    if open {
-                        Icon::ChevronDown
-                    } else {
-                        Icon::ChevronRight
-                    },
-                    component::ICON_SMALL,
-                    p.ink_3,
-                ))
-                .child(kit::label(&p, "Completed"))
-                .child(
-                    div()
-                        .style(ty::CAPS_LABEL)
-                        .text_color(p.ink_3)
-                        .child(room.completed_count.to_string()),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.ui.show_completed = !this.ui.show_completed;
-                    this.refresh(cx);
-                }))
-        });
         div()
             .flex_1()
             .min_h_0()
@@ -2015,8 +2043,16 @@ impl ShellView {
                     // Space completes or reopens the selected task. It's a key handler rather than a
                     // binding so a held key's repeats can be told apart: only the first press counts,
                     // and holding Space never flips a task back and forth.
-                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
-                        if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
+                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                        if e.keystroke.key == "tab"
+                            && !e.keystroke.modifiers.modified()
+                            && this.toast.look(this.frame).is_some_and(|t| t.active)
+                        {
+                            cx.stop_propagation();
+                            if !e.is_held {
+                                window.focus(&this.undo_focus, cx);
+                            }
+                        } else if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
                             cx.stop_propagation();
                             if !e.is_held
                                 && let Some(id) = this.ui.task
@@ -2057,7 +2093,6 @@ impl ShellView {
                             }),
                     ),
             )
-            .children(completed)
     }
 
     /// The plan button: planning the next day happens in Planned, where tomorrow's tasks are.
@@ -2394,6 +2429,8 @@ impl ShellView {
                 .as_ref()
                 .map(|d| hints::Selected { done: d.done }),
             reorder: matches!(self.ui.room, RoomKey::List(_)),
+            undo: self.last_undo.is_some()
+                || (!self.animate && self.toast.look(self.frame).is_some_and(|t| t.active)),
         });
         let hint = |key: &'static str, what: &'static str| {
             div()
@@ -2500,9 +2537,15 @@ impl Render for ShellView {
         let quick_add = self.quick_add_field(window, cx);
         let detail = self.docked().then(|| self.detail_pane(window, cx));
         let overlay = self.detail_overlay(window, cx);
+        let footer = self.list_footer(overlay.is_none(), window, cx);
         div()
             .id("shell")
             .key_context("Shell")
+            .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
+                if this.focus_now(window, cx).allows_task_undo() {
+                    this.request_undo(cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 let handle = this.filter.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
@@ -2547,10 +2590,19 @@ impl Render for ShellView {
                             .flex()
                             .flex_col()
                             .bg(p.pane)
-                            .child(self.header())
-                            .child(quick_add)
-                            .child(self.list(window, cx))
-                            .children(overlay.into_iter().flatten()),
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(self.header())
+                                    .child(quick_add)
+                                    .child(self.list(window, cx))
+                                    .children(overlay.into_iter().flatten()),
+                            )
+                            .child(footer),
                     )
                     .children(detail),
             )

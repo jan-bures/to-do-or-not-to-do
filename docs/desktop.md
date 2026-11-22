@@ -228,14 +228,26 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   `SCROLLBAR_HOLD` without requesting frames, then fades out. A room or detail scroll reset doesn't
   reveal the thumb. Windows’ *Always show scrollbars* keeps
   overflowing thumbs visible. At rest, gallery fixtures show them regardless of OS preference.
-- **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`): the scene
-  fades in over the strip, the text switches to the dark theme's ink and the moon and stars fade in at
-  `DUSK_NIGHT_AT`, and tomorrow's hand-over enters from `DUSK_HANDOVER_AT`, its first items `STAGGER` apart.
+- **Undo.** Completing a task or moving it up/down in a list shows one toast in the reserved footer,
+  to the right of Completed and outside the rows' viewport and narrow detail overlay. It enters over
+  `TOAST_IN`, swaps its message in place over `CONTENT_SWAP`, and leaves over `TOAST_OUT`. The
+  `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. **Ctrl+Z**
+  outside text fields can still undo the last change once the toast has expired or been dismissed.
+  Undo cancels the latest unsent command when nothing follows it in the outbox; otherwise it queues
+  a non-forced undo tied to that command's exact server event. This also undoes a repeat's spawned
+  occurrence. Conflicts appear in the status bar; Undo does not overwrite another device's changes.
+  Undo during a held completion reverses the row in place; other restored rows enter over `ROW_ENTER`.
+  Task deletion and cross-list moving have no desktop controls yet.
+- **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`).
+  The sun travels from where it is over `SUN_TRAVEL` in both scenes. The scene fades in over the strip,
+  the text switches to the dark theme's ink and the moon and stars fade in at `DUSK_NIGHT_AT`, and
+  tomorrow's hand-over enters from `DUSK_HANDOVER_AT`, its first items `STAGGER` apart.
   Reopening or adding a task turns it back over `ROOM_HUE`.
 - **Reduced motion** (Windows' *Animation effects* off, `SPI_GETCLIENTAREAANIMATION`, read whenever a
   transition starts): `motion::reduced` everywhere. The checkbox and the strike switch at once, the title dims
   and the row fades in `REDUCED_FADE` but never slides, the hold keeps its full length, the sun jumps, and
-  dusk crossfades while the header takes its new height at once.
+  dusk crossfades while the header takes its new height at once. Toasts fade without sliding, and
+  their countdown keeps its full duration.
 - **Idle is idle.** The view asks for the next frame only while something moves; a row holding still waits
   on a single one-shot timer; at rest there are no frames and no timers. The landscape's paths are rebuilt
   per frame only while the sun travels or dusk falls.
@@ -289,8 +301,9 @@ opened" screen after a recovery that can't finish, before and while confirming *
 the second with the detail pane over the list. `finished-nothing-tomorrow` is the finished day with nothing due
 tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `completing-fill`, `completing-hold`,
 `completing-collapse-50`, `sun-travel-50`, `reopening-collapse-50`, `long-list-collapse-80`,
-`long-list-end-collapse-50`, `dusk-50`, `dusk-75`, `room-switch-50`, `room-hue-50`, `detail-open-50`,
-`detail-dusk-50`, `collection-collapse-50` and `scrollbar-fade-50`.
+`long-list-end-collapse-50`, `dusk-50`, `dusk-75`, `dusk-one-task-50`, `room-switch-50`, `room-hue-50`,
+`detail-open-50`, `detail-dusk-50`, `collection-collapse-50`, `scrollbar-fade-50`, `undo-toast`,
+`narrow-undo-toast` and `toast-in-50`.
 These states are set by the fixture, not by moving the pointer or maximizing the capture window.
 
 The runner requests five settling frames before reading back the next frame. It doesn't capture the

@@ -15,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm', 'completing-fill', 'completing-hold', 'completing-collapse-50', 'sun-travel-50', 'reopening-collapse-50', 'long-list-collapse-80', 'long-list-end-collapse-50', 'dusk-50', 'dusk-75', 'room-switch-50', 'room-hue-50', 'detail-open-50', 'detail-dusk-50', 'collection-collapse-50', 'scrollbar-fade-50'),
+    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm', 'completing-fill', 'completing-hold', 'completing-collapse-50', 'sun-travel-50', 'undo-toast', 'narrow-undo-toast', 'toast-in-50', 'reopening-collapse-50', 'long-list-collapse-80', 'long-list-end-collapse-50', 'dusk-50', 'dusk-75', 'dusk-one-task-50', 'room-switch-50', 'room-hue-50', 'detail-open-50', 'detail-dusk-50', 'collection-collapse-50', 'scrollbar-fade-50'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )
@@ -39,7 +39,7 @@ if (-not (Test-Path $exe)) { throw "missing $exe; build first" }
 function Get-ExpectedSize([string]$fixture, [double]$scale) {
     $logical = switch ($fixture) {
         'quick-add' { @(640, 196) }
-        { $_ -in 'long-names-narrow', 'narrow-detail' } { @(960, 900) }
+        { $_ -in 'long-names-narrow', 'narrow-detail', 'narrow-undo-toast' } { @(960, 900) }
         'finished-short' { @(1440, 700) }
         default { @(1440, 900) }
     }

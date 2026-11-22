@@ -264,16 +264,27 @@ impl Landscape {
         self.polyline(progress, 1.0, 64)
     }
 
-    /// The sun at `progress`. In the finished scene the sun is setting behind the hills on the right, whatever
-    /// the progress.
+    /// The sun at `progress`, or at rest behind the hills for the finished scene.
     pub fn sun(&self, progress: f32) -> Sun {
+        self.travelling_sun(if self.big() { 1.0 } else { progress })
+    }
+
+    /// The sun travelling along the arc during a transition, including the finished scene.
+    pub fn travelling_sun(&self, progress: f32) -> Sun {
         let scale = if self.big() { 2.2 } else { 1.0 };
-        let center = if self.big() {
-            let (_, x1) = self.arc_ends();
-            pt(x1 - 6.0, self.arc_base() + 10.0)
-        } else {
-            self.arc_point(progress)
-        };
+        let progress = progress.clamp(0.0, 1.0);
+        let mut center = self.arc_point(progress);
+        if self.big() {
+            // Ease into the exact original setting position at the end of the finished arc.
+            if progress == 1.0 {
+                let (_, x1) = self.arc_ends();
+                center = pt(x1 - 6.0, self.arc_base() + 10.0);
+            } else {
+                let setting = progress.powi(8);
+                center.x -= 6.0 * setting;
+                center.y += 10.0 * setting;
+            }
+        }
         let rays = std::array::from_fn(|i| {
             let a = (i as f32 * 45.0).to_radians();
             let at = |r: f32| pt(center.x + r * a.sin(), center.y - r * a.cos());
@@ -427,6 +438,18 @@ mod tests {
         let sun = l.sun(u).center;
         assert_eq!(l.travelled(u).last().copied(), Some(sun));
         assert_eq!(l.remaining(u).first().copied(), Some(sun));
+    }
+
+    #[test]
+    fn the_dusk_sun_travels_but_keeps_its_original_resting_place() {
+        let land = Landscape::finished(720.0);
+        let start = land.travelling_sun(0.0).center;
+        let middle = land.travelling_sun(0.5).center;
+        let end = land.travelling_sun(1.0).center;
+        assert!(start.x < middle.x && middle.x < end.x);
+        assert!(middle.y < end.y);
+        assert_eq!(end, land.sun(1.0).center);
+        assert_eq!(land.sun(0.5).center, end);
     }
 
     #[test]

@@ -176,6 +176,10 @@ pub const COMPLETE_HOLD: u32 = 450;
 pub const SCROLLBAR_HOLD: u32 = 1000;
 /// Timer: how long the undo toast stays (its countdown line runs linearly for this long). Ctrl+Z works after that too.
 pub const UNDO_WINDOW: u32 = 6000;
+/// How far the undo toast rises into place, in logical pixels.
+pub const TOAST_RISE: f32 = 8.0;
+/// How far the undo toast drops while leaving, in logical pixels.
+pub const TOAST_DROP: f32 = 6.0;
 
 /// Named durations in milliseconds, for the exports.
 pub const DURATIONS: [(&str, u32); 23] = [
