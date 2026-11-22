@@ -126,7 +126,7 @@ are 4, 8, 12, 16, 20, 24, 32 and 40.
 
 **The desktop window** is laid out at the reference size of 1440 × 900:
 
-- three panes: sidebar **248**, list **800** (flexible) and detail **392**;
+- three panes at default widths: sidebar **248**, list **800** (flexible) and detail **392**;
 - a 36 px title bar and a 28 px status bar. Windows caption buttons are 46 px wide with matching 10 px
   glyphs and 1 px optical strokes; the close button uses the Windows red on hover;
 - 32 px horizontal padding in the list column;
@@ -138,6 +138,27 @@ width. The detail pane opens over the right part of the list, with the overlay s
 of it (the shared `elevation::scrim`: room ink at 16% in light mode, black at 40% in dark mode).
 Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
 move to a line of their own under it, so the title never gives way to them.
+
+**Desktop pane dividers.** Drag the sidebar’s right edge or the docked detail’s left edge. The 12 px hit strip
+(`desktop::PANE_HANDLE_HIT`) overlaps the list gutter without taking the sidebar scrollbar’s target. Only the
+1 px line is visible at rest. Hover strengthens it (`line → line-strong`, `HOVER`, `STANDARD`) and shows a
+column-resize cursor; while held, the line is `accent` and follows the pointer 1:1 with no easing.
+
+- **Widths (logical px):** sidebar **200–320**, default **248**; docked detail **320–560**, default **392**.
+  The list keeps at least **556** (`desktop::LIST_MIN`, not counting the divider hairlines). A drag stops at
+  the available limit. The **1200** docking breakpoint is fixed: a narrow window never docks, and a wide
+  window never switches to an overlay just because the chosen panes are wide. If both preferences won’t fit,
+  the docked detail gives up width first and recovers it as room becomes available. Narrow desktop keeps
+  the sidebar handle; the detail overlay keeps its original default width and has no handle.
+- **Keys and focus:** Tab reaches the dividers, which expose their name and current width as vertical
+  splitters. Left and Right move the divider in that direction by **8** px (**32** with Shift). Keyboard
+  focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade.
+- **Reset:** Double-click the divider or press Home or Enter while it has focus. The width settles to its
+  default (or as much as fits) in `OVERLAY_IN` (**150 ms**, `STANDARD`); reduced motion snaps. A new grab or
+  width change can interrupt the reset. Idle dividers request no frames.
+- **Remembered locally:** Save the two preferred widths with the desktop pairing’s UI preferences. Passive
+  window resizing never writes them, and saved values are clamped to the current tokens on load. Web and
+  phone layouts are unchanged.
 
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.
@@ -450,8 +471,9 @@ Completing a task is the one choreographed moment in the app.
 - **Reduced motion:** Open, close, and switch drop all translation and width slides, using `REDUCED_FADE`
   (`100 ms`) opacity crossfade (`0 ms` on key-repeat).
 - **Platform notes:**
-  - *GPUI:* Keep the 392 px column width constant on wide desktop so the task list never reflows text while
-    animating; animate only the detail content container's opacity and small horizontal offset.
+  - *GPUI:* Keep the docked column's current width constant during task navigation so the list never reflows
+    while the detail content fades and shifts. Only deliberate divider resizing (including reset) changes its
+    width while it remains docked.
   - *Compose:* `AnimatedContent` for in-place tablet task switches; `NavHost` slide or `SharedTransitionLayout`
     on phones (see Android transitions below).
   - *Web:* CSS `transform`/`opacity` drawer on narrow viewports; View Transitions API optional on route change.

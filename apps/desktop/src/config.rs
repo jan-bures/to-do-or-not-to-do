@@ -5,7 +5,7 @@
 //! | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL learnt at pairing, the device ID and a random pairing ID |
 //! | `device-token.bin` | same | the device token, encrypted with DPAPI for the current user |
 //! | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
-//! | `pairings\<pairing ID>\ui.json` | same | local sidebar preferences |
+//! | `pairings\<pairing ID>\ui.json` | same | local sidebar and pane-width preferences |
 //! | `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
 //!
 //! `TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile).
@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use todo_client::Entropy as _;
 use todo_core::{DeviceId, ids::CollectionId};
 
+use crate::model::layout::PaneWidths;
 use crate::platform::dpapi;
 
 const APP_DIR: &str = "to-do-or-not-to-do";
@@ -116,11 +117,11 @@ impl DataDir {
         self.path.join(CACHE_FILE)
     }
 
-    /// Returns the sidebar preferences, defaulting to expanded if the file is missing or unreadable.
-    pub fn load_collapsed(&self) -> BTreeSet<CollectionId> {
-        self.read_ui()
-            .map(|ui| ui.collapsed_collections)
-            .unwrap_or_default()
+    /// Returns local preferences, falling back to defaults if the file is missing or unreadable.
+    pub fn load_ui(&self) -> UiPreferences {
+        let mut ui = self.read_ui().unwrap_or_default();
+        ui.panes = ui.panes.clamped();
+        ui
     }
 
     fn read_ui(&self) -> anyhow::Result<UiPreferences> {
@@ -136,15 +137,10 @@ impl DataDir {
 
     /// Writes into the existing pairing directory, using a flushed temporary file and a durable
     /// replacement. A failed or interrupted write never leaves a partially written `ui.json`.
-    pub fn save_collapsed(&self, ids: &BTreeSet<CollectionId>) -> anyhow::Result<()> {
+    pub fn save_ui(&self, prefs: &UiPreferences) -> anyhow::Result<()> {
         self.check()?;
         let mut tmp = tempfile::NamedTempFile::new_in(self.path())?;
-        serde_json::to_writer(
-            &mut tmp,
-            &UiPreferences {
-                collapsed_collections: ids.clone(),
-            },
-        )?;
+        serde_json::to_writer(&mut tmp, prefs)?;
         tmp.flush()?;
         tmp.as_file().sync_all()?;
         let tmp = tmp.into_temp_path();
@@ -186,10 +182,11 @@ impl DataDir {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct UiPreferences {
-    #[serde(default)]
-    collapsed_collections: BTreeSet<CollectionId>,
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UiPreferences {
+    pub collapsed_collections: BTreeSet<CollectionId>,
+    pub panes: PaneWidths,
 }
 
 /// Fails if `dir` exists and is a link (junction, symlink) or not a directory. A missing one is fine.
@@ -575,23 +572,27 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_preferences_round_trip_and_are_removed_with_the_pairing() {
+    fn ui_preferences_round_trip_and_are_removed_with_the_pairing() {
+        use crate::model::layout::Pane;
+        use crate::theme::desktop;
         let dir = tempfile::tempdir().expect("temp dir");
         let paths = Paths::in_dir(dir.path().to_owned());
         let data = paths.data(&PairingId::random());
         let other = paths.data(&PairingId::random());
         std::fs::create_dir_all(data.path()).expect("pairing directory");
         let id = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
-        let ids = BTreeSet::from([id]);
+        let mut prefs = UiPreferences {
+            collapsed_collections: BTreeSet::from([id]),
+            panes: PaneWidths::default().with(Pane::Sidebar, desktop::SIDEBAR_MAX),
+        };
+        data.save_ui(&prefs).expect("save preferences");
+        assert_eq!(data.load_ui(), prefs);
+        assert_eq!(other.load_ui(), UiPreferences::default());
 
-        data.save_collapsed(&ids).expect("save preferences");
-        assert_eq!(data.load_collapsed(), ids);
-        assert!(other.load_collapsed().is_empty());
-
-        // A second write replaces the file without leaving a temporary file behind.
-        data.save_collapsed(&BTreeSet::new())
-            .expect("replace preferences");
-        assert!(data.load_collapsed().is_empty());
+        // A collapse change doesn't lose the widths, nor does a width change lose the sidebar state.
+        prefs.collapsed_collections.clear();
+        data.save_ui(&prefs).expect("replace preferences");
+        assert_eq!(data.load_ui(), prefs);
         assert_eq!(std::fs::read_dir(data.path()).expect("contents").count(), 1);
 
         remove_data(&data).expect("remove pairing data");
@@ -599,17 +600,41 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_corrupt_sidebar_preferences_default_to_expanded() {
+    fn missing_or_corrupt_ui_preferences_use_defaults() {
         let dir = tempfile::tempdir().expect("temp dir");
         let paths = Paths::in_dir(dir.path().to_owned());
         let data = paths.data(&PairingId::random());
         std::fs::create_dir_all(data.path()).expect("pairing directory");
-        assert!(data.load_collapsed().is_empty());
+        assert_eq!(data.load_ui(), UiPreferences::default());
         let path = data.path().join(UI_FILE);
         for corrupt in ["{", r#"{"collapsed_collections":["not an id"]}"#] {
             std::fs::write(&path, corrupt).expect("corrupt preferences");
-            assert!(data.load_collapsed().is_empty());
+            assert_eq!(data.load_ui(), UiPreferences::default());
         }
+    }
+
+    #[test]
+    fn old_files_get_default_widths_and_stored_widths_are_clamped() {
+        use crate::model::layout::Pane;
+        use crate::theme::desktop;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data = Paths::in_dir(dir.path().to_owned()).data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        let path = data.path().join(UI_FILE);
+        let id = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        std::fs::write(&path, format!(r#"{{"collapsed_collections":["{id}"]}}"#))
+            .expect("old preferences");
+        let old = data.load_ui();
+        assert_eq!(old.collapsed_collections, BTreeSet::from([id]));
+        assert_eq!(old.panes, PaneWidths::default());
+        std::fs::write(&path, r#"{"panes":{"sidebar":1,"detail":10000}}"#).expect("widths");
+        assert_eq!(
+            data.load_ui().panes,
+            PaneWidths::default()
+                .with(Pane::Sidebar, desktop::SIDEBAR_MIN)
+                .with(Pane::Detail, desktop::DETAIL_MAX)
+        );
     }
 
     #[test]

@@ -14,8 +14,9 @@ use todo_core::recurrence::{Recurrence, Rule};
 use todo_core::time::{Date, Timestamp, Weekday};
 use todo_core::{AccessLevel, Actor, AgentId, Grants, State, apply, decide};
 
+use crate::model::layout::Pane;
 use crate::model::{Now, RoomKey, Smart, SyncInfo, UiState};
-use crate::theme::motion as m;
+use crate::theme::{desktop, motion as m};
 
 /// A fixture: data, UI state, sync status and clock.
 #[derive(Clone, Debug)]
@@ -109,6 +110,17 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             ..long_sidebar()
         }),
         "long-sidebar" => Some(long_sidebar()),
+        "sidebar-wide" => {
+            let mut f = long_sidebar();
+            f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MAX);
+            Some(f)
+        }
+        "detail-narrow" => {
+            let mut f = long_names();
+            f.ui.panes = f.ui.panes.with(Pane::Detail, desktop::DETAIL_MIN);
+            Some(f)
+        }
+        "resize-handle-hover" => Some(my_day()),
         "long-names" | "narrow-detail" => Some(long_names()),
         "long-names-narrow" => Some(long_names_narrow()),
         "long-task-list" => Some(long_task_list()),

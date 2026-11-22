@@ -211,8 +211,16 @@
   --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-sun: cubic-bezier(0.45, 0, 0.55, 1);
   --desktop-sidebar: 248px;
+  --desktop-sidebar-min: 200px;
+  --desktop-sidebar-max: 320px;
   --desktop-list: 800px;
+  --desktop-list-min: 556px;
   --desktop-detail: 392px;
+  --desktop-detail-min: 320px;
+  --desktop-detail-max: 560px;
+  --desktop-pane-handle-hit: 12px;
+  --desktop-pane-key-step: 8px;
+  --desktop-pane-key-step-large: 32px;
   --desktop-three-pane-min: 1200px;
   --desktop-titlebar: 36px;
   --desktop-caption-width: 46px;

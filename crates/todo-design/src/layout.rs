@@ -164,16 +164,31 @@ pub mod elevation {
 
 /// Desktop window metrics.
 pub mod desktop {
-    /// Sidebar width.
+    /// Default sidebar width.
     pub const SIDEBAR: f32 = 248.0;
-    /// Task list width at the reference window size (1440 × 900). The list column flexes; the others don't.
+    /// Sidebar resize limits.
+    pub const SIDEBAR_MIN: f32 = 200.0;
+    /// Widest sidebar, leaving room for the list and the smallest detail at the three-pane breakpoint.
+    pub const SIDEBAR_MAX: f32 = 320.0;
+    /// Task list width at the reference window size (1440 × 900).
     pub const LIST: f32 = 800.0;
-    /// Detail pane width.
+    /// Smallest readable list width (not counting the divider hairlines).
+    pub const LIST_MIN: f32 = 556.0;
+    /// Default detail width, also used when the detail is an overlay.
     pub const DETAIL: f32 = 392.0;
+    /// Narrowest docked detail pane.
+    pub const DETAIL_MIN: f32 = 320.0;
+    /// Widest docked detail pane.
+    pub const DETAIL_MAX: f32 = 560.0;
+    /// Hit width of a pane divider; only its hairline is visible at rest.
+    pub const PANE_HANDLE_HIT: f32 = 12.0;
+    /// Width change per arrow key on a pane divider.
+    pub const PANE_KEY_STEP: f32 = 8.0;
+    /// Width change per Shift+arrow on a pane divider.
+    pub const PANE_KEY_STEP_LARGE: f32 = 32.0;
     /// The narrowest window that shows the three panes side by side. Below it the window is narrow: the
     /// detail pane opens over the list (with a scrim over the rest of it) instead of beside it, and the room
-    /// header puts its counts under the title. 1200 leaves the list at least 560 beside both side panes, as
-    /// on the web.
+    /// header puts its counts under the title. This breakpoint is independent of preferred pane widths.
     pub const THREE_PANE_MIN: f32 = 1200.0;
     /// Title bar height.
     pub const TITLEBAR: f32 = 36.0;
@@ -247,10 +262,18 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 39] = [
+    pub const ALL: [(&str, f32); 47] = [
         ("sidebar", SIDEBAR),
+        ("sidebar-min", SIDEBAR_MIN),
+        ("sidebar-max", SIDEBAR_MAX),
         ("list", LIST),
+        ("list-min", LIST_MIN),
         ("detail", DETAIL),
+        ("detail-min", DETAIL_MIN),
+        ("detail-max", DETAIL_MAX),
+        ("pane-handle-hit", PANE_HANDLE_HIT),
+        ("pane-key-step", PANE_KEY_STEP),
+        ("pane-key-step-large", PANE_KEY_STEP_LARGE),
         ("three-pane-min", THREE_PANE_MIN),
         ("titlebar", TITLEBAR),
         ("caption-width", CAPTION_WIDTH),

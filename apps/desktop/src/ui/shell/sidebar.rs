@@ -9,6 +9,7 @@ use gpui::{
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId};
 
 use super::{ShellEvent, ShellView, quick_add_colors};
+use crate::model::layout::Pane;
 use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
@@ -278,7 +279,7 @@ impl ShellView {
         )
     }
 
-    pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn sidebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let t = self.theme;
         let sb = &self.shell.sidebar;
@@ -526,7 +527,7 @@ impl ShellView {
             }));
 
         div()
-            .w(px(desktop::SIDEBAR))
+            .w(px(self.columns(window).width(Pane::Sidebar)))
             .flex_none()
             .h_full()
             .flex()

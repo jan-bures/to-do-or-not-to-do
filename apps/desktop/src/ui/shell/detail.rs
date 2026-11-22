@@ -974,7 +974,7 @@ impl ShellView {
         div()
             .id("detail")
             .relative()
-            .w(px(desktop::DETAIL))
+            .w(px(self.columns(window).width(super::Pane::Detail)))
             .flex_none()
             .h_full()
             .overflow_hidden()

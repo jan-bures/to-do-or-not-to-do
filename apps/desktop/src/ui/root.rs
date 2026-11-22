@@ -325,8 +325,10 @@ impl RootView {
     }
 
     fn show_shell(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        let prefs = session.data().load_ui();
         let ui = UiState {
-            collapsed_collections: session.data().load_collapsed(),
+            collapsed_collections: prefs.collapsed_collections,
+            panes: prefs.panes,
             ..UiState::default()
         };
         session.start();

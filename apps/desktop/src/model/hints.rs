@@ -19,6 +19,8 @@ pub enum Focus {
     Due,
     /// Renaming a list, a collection or a step in place.
     Rename,
+    /// A resize divider next to the list.
+    Splitter,
     /// Nothing that takes keys: only the window's Ctrl shortcuts work.
     Elsewhere,
 }
@@ -26,7 +28,7 @@ pub enum Focus {
 impl Focus {
     /// Never take the task shortcut from an input that is editing text.
     pub fn allows_task_undo(self) -> bool {
-        matches!(self, Self::List | Self::Elsewhere)
+        matches!(self, Self::List | Self::Splitter | Self::Elsewhere)
     }
 }
 
@@ -87,6 +89,11 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
         Focus::Step => hints.extend([("Enter", "add step"), ("Esc", "back to the list")]),
         Focus::Due => hints.extend([("Enter", "set"), ("Esc", "cancel")]),
         Focus::Rename => hints.extend([("Enter", "save"), ("Esc", "cancel")]),
+        Focus::Splitter => hints.extend([
+            ("← →", "resize"),
+            ("Shift ← →", "larger steps"),
+            ("Home", "reset"),
+        ]),
         Focus::Elsewhere => {}
     }
     if s.undo && s.focus.allows_task_undo() {
@@ -115,6 +122,13 @@ mod tests {
 
     fn keys(s: HintState) -> Vec<&'static str> {
         key_hints(s).into_iter().map(|(k, _)| k).collect()
+    }
+
+    #[test]
+    fn splitter_focus_replaces_list_keys_with_resize_controls() {
+        let mut s = list(true, true, true);
+        s.focus = Focus::Splitter;
+        assert_eq!(keys(s), ["← →", "Shift ← →", "Home"]);
     }
 
     #[test]

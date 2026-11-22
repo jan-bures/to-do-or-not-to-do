@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Context, Div, KeyDownEvent, MouseButton, Role, SharedString, div, prelude::*, px};
+use gpui::{Context, Div, MouseButton, Role, SharedString, div, prelude::*, px};
 use todo_client::{CommandId, TrackedUndo};
 use todo_core::ids::{EntityId, TaskId};
 use todo_core::{Command, State};
@@ -84,16 +84,6 @@ impl EditKind {
 
 fn task_label(verb: &str, title: &str) -> SharedString {
     format!("{verb} \u{201c}{}\u{201d}", one_line(title)).into()
-}
-
-/// Both directions can reach Undo without stealing system or application Tab shortcuts.
-pub(super) fn undo_tab(event: &KeyDownEvent) -> bool {
-    let key = &event.keystroke;
-    key.key == "tab"
-        && !key.modifiers.control
-        && !key.modifiers.alt
-        && !key.modifiers.platform
-        && !key.modifiers.function
 }
 
 /// A later local edit makes the old one-step undo target stale, including edits to a task's children.
@@ -378,12 +368,7 @@ impl ShellView {
                         this.request_undo(cx);
                     }))
                     .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                        if undo_tab(e) {
-                            cx.stop_propagation();
-                            if !e.is_held {
-                                window.focus(&this.list_focus, cx);
-                            }
-                        } else if !e.keystroke.modifiers.modified()
+                        if !e.keystroke.modifiers.modified()
                             && matches!(e.keystroke.key.as_str(), "enter" | "space" | "escape")
                         {
                             cx.stop_propagation();
@@ -481,7 +466,6 @@ impl ShellView {
 mod tests {
     use super::*;
     use crate::{fixtures, model::Smart};
-    use gpui::Keystroke;
     use todo_core::command::TaskPatch;
 
     #[test]
@@ -540,19 +524,6 @@ mod tests {
         assert!(EditKind::Complete.needs_row_restore());
         assert!(EditKind::Delete.needs_row_restore());
         assert!(!EditKind::Move.needs_row_restore());
-    }
-
-    #[test]
-    fn undo_focus_is_reachable_from_both_tab_directions() {
-        let key = |binding| KeyDownEvent {
-            keystroke: Keystroke::parse(binding).expect("keystroke"),
-            is_held: false,
-            prefer_character_input: false,
-        };
-        assert!(undo_tab(&key("tab")));
-        assert!(undo_tab(&key("shift-tab")));
-        assert!(!undo_tab(&key("ctrl-tab")));
-        assert!(!undo_tab(&key("alt-tab")));
     }
 
     #[test]

@@ -209,7 +209,7 @@ into the app**: it is learnt here and saved in the user's config.
 | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL, the device ID and a random pairing ID |
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
-| `pairings\<pairing ID>\ui.json` | same | local sidebar preferences (collapsed collections, never synced) |
+| `pairings\<pairing ID>\ui.json` | same | collapsed collections and preferred pane widths (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
 | `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
 | `pairings\<pairing ID>.signed-out` | same | the record that the pairing beside it was signed out and its data is to be removed |
@@ -292,7 +292,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 | Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. If the check can't be set up (an elevated copy created the objects, say), the app logs it and runs standalone: visible, and not listening for second launches. |
 | Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to My Day (before pairing, it shows the pairing window instead). Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
-| Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. The panes show a quiet scrollbar only when they overflow; drag the thumb or click its gutter to page. The caption buttons keep Windows' native hit testing for Snap Layouts. |
+| Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. The panes show quiet scrollbars when they overflow. Drag the sidebar or docked detail divider to resize it, or Tab to a divider and use the arrows. Double-click, Home or Enter resets the divider. The caption buttons keep Windows' native hit testing for Snap Layouts. |
 | Header landscape | `src/ui/landscape.rs` | The sky with two flat hills and the sun on its arc at *done / total*, or the tall dusk scene once My Day is done. The geometry is `todo_design::landscape`; the paths are built once per size and progress, and are cached. |
 
 ### Motion
@@ -340,8 +340,8 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
 - **Undo.** Completing a task or moving it up/down in a list shows one toast in the reserved footer,
   to the right of Completed and outside the rows' viewport and narrow detail overlay. It enters over
   `TOAST_IN`, swaps its message in place over `CONTENT_SWAP`, and leaves over `TOAST_OUT`. The
-  `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. **Tab**
-  and **Shift+Tab** reach Undo from the list. **Ctrl+Z** outside text fields can still undo the last
+  `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. The Undo button
+  is the next **Tab** stop after the task list. **Ctrl+Z** outside text fields can still undo the last
   change after the toast closes, with feedback in the status bar. Leaving the room or editing that
   task clears the old target. Undo cancels the latest unsent command when nothing follows it in the
   outbox; otherwise it queues a non-forced undo tied to that command's exact server event. The
@@ -410,6 +410,8 @@ screen before and after asking for a code. `open-failed` and `open-failed-confir
 opened" screen after a recovery that can't finish, before and while confirming **Start fresh**.
 `long-sidebar` and `long-task-list` show the scrollbar thumbs (the latter also overflows the detail pane).
 `caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
+`sidebar-wide` and `detail-narrow` show the resize extremes, and `resize-handle-hover` shows the sidebar
+separator at the end of its hover fade.
 `long-names-narrow` and `narrow-detail` are 960 px wide (the narrowest window): the first with nothing open,
 the second with the detail pane over the list. `finished-nothing-tomorrow` is the finished day with nothing due
 tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `completing-fill`, `completing-hold`,

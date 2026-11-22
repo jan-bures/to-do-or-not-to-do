@@ -20,7 +20,8 @@ Options:
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, collapsed-collection, long-sidebar, long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
-                    caption-hover, caption-close-hover, empty, finished, finished-short (700 px
+                    sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
+                    caption-close-hover, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, quick-add, pairing, pairing-code, open-failed
                     or open-failed-confirm.
   --theme           Light or dark (default light).
@@ -42,6 +43,9 @@ pub const FIXTURES: &[&str] = &[
     "long-names-narrow",
     "narrow-detail",
     "long-task-list",
+    "sidebar-wide",
+    "detail-narrow",
+    "resize-handle-hover",
     "caption-hover",
     "caption-close-hover",
     "empty",

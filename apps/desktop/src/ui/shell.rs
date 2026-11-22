@@ -3,6 +3,7 @@
 //! state changes, and turns clicks and keys into commands for the store.
 
 mod detail;
+mod panes;
 mod sidebar;
 mod undo;
 
@@ -23,7 +24,7 @@ use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
-use crate::model::layout::{self, DetailPane, Width};
+use crate::model::layout::{DetailPane, Pane, Width};
 use crate::model::motion::{
     DetailMotion, Keep, Motion, Pace, RowLook, Toast, Track, Wake, anchored_scroll, lifts,
     rows_rising_into,
@@ -182,6 +183,7 @@ pub struct ShellView {
     rows_bar: kit::Scrollbar,
     sidebar_scroll: ScrollHandle,
     sidebar_bar: kit::Scrollbar,
+    splitters: panes::Splitters,
     detail_scroll: ScrollHandle,
     detail_bar: kit::Scrollbar,
     caption_preview: kit::CaptionPreview,
@@ -292,13 +294,14 @@ impl ShellView {
             painted_hue,
             landscape: HeaderCache::default(),
             quick_add,
-            list_focus: cx.focus_handle(),
+            list_focus: cx.focus_handle().tab_index(1).tab_stop(true),
             rows: UniformListScrollHandle::new(),
             handover_scroll: ScrollHandle::new(),
             handover_bar: kit::Scrollbar::default(),
             rows_bar: kit::Scrollbar::default(),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_bar: kit::Scrollbar::default(),
+            splitters: panes::Splitters::new(window, cx),
             detail_scroll: ScrollHandle::new(),
             detail_bar: kit::Scrollbar::default(),
             caption_preview: kit::CaptionPreview::Live,
@@ -308,7 +311,7 @@ impl ShellView {
             edit,
             motion: Motion::default(),
             toast: Toast::default(),
-            undo_focus: cx.focus_handle(),
+            undo_focus: cx.focus_handle().tab_index(2).tab_stop(true),
             undo_ring: Track::rest(0.),
             toast_hover: false,
             last_undo: None,
@@ -397,14 +400,8 @@ impl ShellView {
         let can_prune =
             session.is_none_or(|s| s.client().status().connection == Connection::Online);
         let pruned = can_prune && self.ui.prune_collapsed_collections(&state);
-        if (collapsed_changed || pruned)
-            && let Some(session) = session
-            && let Err(e) = session
-                .data()
-                .save_collapsed(&self.ui.collapsed_collections)
-        {
-            tracing::warn!("couldn't save sidebar preferences: {e}");
-            self.notice = Some(Notice::error("Couldn't save sidebar preferences."));
+        if collapsed_changed || pruned {
+            self.save_ui_preferences();
         }
         let shell = model::derive(&state, &self.ui, &self.store.sync(), &self.store.now());
         // A room that disappeared (deleted elsewhere) falls back to My Day; keep the UI state honest.
@@ -1571,12 +1568,7 @@ impl ShellView {
 
     /// The room pane's width (and so a row's): the window less the sidebar and a docked detail pane.
     fn room_width(&self, window: &Window) -> f32 {
-        let pane = if self.docked() {
-            DetailPane::Docked
-        } else {
-            DetailPane::Hidden
-        };
-        layout::room_width(f32::from(window.viewport_size().width), pane)
+        self.columns(window).room_width()
     }
 
     /// The narrow window's detail: over the right part of the room, with a scrim over the rest of it.
@@ -2093,16 +2085,8 @@ impl ShellView {
                     // Space completes or reopens the selected task. It's a key handler rather than a
                     // binding so a held key's repeats can be told apart: only the first press counts,
                     // and holding Space never flips a task back and forth.
-                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                        if undo::undo_tab(e)
-                            && this.last_undo.is_some()
-                            && this.toast.look(this.frame).is_some_and(|t| t.active)
-                        {
-                            cx.stop_propagation();
-                            if !e.is_held {
-                                window.focus(&this.undo_focus, cx);
-                            }
-                        } else if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
+                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                        if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
                             cx.stop_propagation();
                             if !e.is_held
                                 && let Some(id) = this.ui.task
@@ -2438,6 +2422,8 @@ impl ShellView {
         let on = |h: &FocusHandle| h.is_focused(window);
         if on(&self.list_focus) {
             Focus::List
+        } else if self.splitters.has_focus(window) {
+            Focus::Splitter
         } else if on(&self.quick_add.read(cx).focus_handle) {
             Focus::QuickAdd
         } else if on(&self.filter.read(cx).focus_handle) {
@@ -2583,6 +2569,7 @@ impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.resize(Width::of(f32::from(window.viewport_size().width)));
         self.drive_motion(window, cx);
+        self.drive_splitters(window, cx);
         let p = self.palette;
         let quick_add = self.quick_add_field(window, cx);
         let detail = self.docked().then(|| self.detail_pane(window, cx));
@@ -2591,6 +2578,17 @@ impl Render for ShellView {
         div()
             .id("shell")
             .key_context("Shell")
+            .tab_group()
+            .on_key_down(|e, window, cx| {
+                if navigation_tab(e) {
+                    if e.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
                 if this.focus_now(window, cx).allows_task_undo() {
                     this.request_undo(cx);
@@ -2625,12 +2623,13 @@ impl Render for ShellView {
             .child(self.titlebar(window, cx))
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .border_t_1()
                     .border_color(p.line)
-                    .child(self.sidebar(cx))
+                    .child(self.sidebar(window, cx))
                     .child(
                         div()
                             .relative()
@@ -2654,16 +2653,48 @@ impl Render for ShellView {
                             )
                             .child(footer),
                     )
-                    .children(detail),
+                    .children(detail)
+                    .child(self.pane_handle(Pane::Sidebar, window, cx))
+                    .when(self.show_detail_splitter(), |body| {
+                        body.child(self.pane_handle(Pane::Detail, window, cx))
+                    }),
             )
             .child(self.status_bar(window, cx))
+            .child(self.pane_capture(cx))
+            .when(self.dragging_pane(), |shell| {
+                shell.child(div().absolute().inset_0().occlude().cursor_col_resize())
+            })
             .children(self.menu(cx))
     }
+}
+
+/// Both tab directions navigate without stealing system or application shortcuts.
+fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
+    let key = &event.keystroke;
+    key.key == "tab"
+        && !key.modifiers.control
+        && !key.modifiers.alt
+        && !key.modifiers.platform
+        && !key.modifiers.function
 }
 
 #[cfg(test)]
 mod tests {
     use crate::fixtures;
+
+    #[test]
+    fn tab_navigation_does_not_steal_modified_tab() {
+        use gpui::{KeyDownEvent, Keystroke};
+        let key = |text| KeyDownEvent {
+            keystroke: Keystroke::parse(text).expect("keystroke"),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        assert!(super::navigation_tab(&key("tab")));
+        assert!(super::navigation_tab(&key("shift-tab")));
+        assert!(!super::navigation_tab(&key("ctrl-tab")));
+        assert!(!super::navigation_tab(&key("alt-tab")));
+    }
 
     #[test]
     fn each_hand_over_task_maps_to_its_own_child() {

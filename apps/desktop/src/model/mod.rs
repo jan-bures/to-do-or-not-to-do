@@ -208,6 +208,8 @@ pub struct UiState {
     pub reopening: BTreeMap<TaskId, Timestamp>,
     /// Collection IDs whose child lists are hidden in the sidebar.
     pub collapsed_collections: BTreeSet<CollectionId>,
+    /// Device-local preferred widths of the main window's side panes.
+    pub panes: layout::PaneWidths,
 }
 
 impl UiState {
