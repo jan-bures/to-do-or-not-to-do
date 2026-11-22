@@ -18,7 +18,7 @@ interface Actions {
     fun setDone(id: String, done: Boolean, generation: Long? = null, row: Boolean = generation != null)
     fun deleteTask(id: String)
     suspend fun moveDestinations(id: String, filter: String): List<DestinationGroup>
-    fun moveTaskTo(id: String, list: String)
+    fun moveTaskTo(id: String, from: String, list: String)
     fun reorderTask(list: String, id: String, neighbour: String, by: Int)
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft
@@ -116,7 +116,7 @@ interface Actions {
         override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) = Unit
         override fun deleteTask(id: String) = Unit
         override suspend fun moveDestinations(id: String, filter: String) = emptyList<DestinationGroup>()
-        override fun moveTaskTo(id: String, list: String) = Unit
+        override fun moveTaskTo(id: String, from: String, list: String) = Unit
         override fun reorderTask(list: String, id: String, neighbour: String, by: Int) = Unit
         override fun rename(id: String, title: String) = Unit
         override fun notesDraft(task: String) = NotesDraft(task)

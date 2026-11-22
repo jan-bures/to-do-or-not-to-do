@@ -299,7 +299,7 @@ impl Ctx {
 
     fn reset_room_controls(self) {
         self.room_actions.close_menu(false);
-        self.task_actions.close();
+        let _ = self.task_actions.close();
         self.lingering
             .update(|rows| rows.retain(|l| l.phase != Phase::Depart));
         self.drawer.set(false);
@@ -420,7 +420,12 @@ impl Ctx {
 
     fn actionable_rows(self) -> Vec<Row> {
         if let Some(plan) = self.tomorrow.get_untracked() {
-            return plan.rows().filter(|r| !r.done).cloned().collect();
+            return self.lingering.with_untracked(|leaving| {
+                plan.rows()
+                    .filter(|r| !r.done && handover_row_phase(leaving, r.id).is_none())
+                    .cloned()
+                    .collect()
+            });
         }
         self.shown.with_untracked(|rows| {
             rows.iter()
@@ -2054,14 +2059,15 @@ fn Handover() -> impl IntoView {
     }
 }
 
+fn handover_row_phase(leaving: &[Linger], id: TaskId) -> Option<Phase> {
+    leaving
+        .iter()
+        .find(|x| x.section == RowSection::Handover && x.row.id == id)
+        .map(|x| x.phase)
+}
+
 fn handover_phase(c: Ctx, id: TaskId) -> Memo<Option<Phase>> {
-    Memo::new(move |_| {
-        c.lingering.with(|l| {
-            l.iter()
-                .find(|x| x.section == RowSection::Handover && x.row.id == id)
-                .map(|x| x.phase)
-        })
-    })
+    Memo::new(move |_| c.lingering.with(|l| handover_row_phase(l, id)))
 }
 
 #[component]
@@ -2776,7 +2782,8 @@ fn StatusBar() -> impl IntoView {
                 </Show>
                 <Show when=move || !c.read_only() && c.selected.with(|id| id.is_some_and(|id|
                     c.shown.with(|rows| rows.iter().any(|s| s.row.id == id && s.phase.is_none()))
-                    || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| r.id == id && !r.done)))))>
+                    || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| r.id == id && !r.done
+                        && c.lingering.with(|l| handover_row_phase(l, id).is_none()))))))>
                     <span><kbd class="keycap">"Space"</kbd>" toggle completion"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.detail.with(Option::is_some)>

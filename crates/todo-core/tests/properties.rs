@@ -154,6 +154,7 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
             Command::MoveTask {
                 id: pick(&live_tasks, a)?,
                 list,
+                from_list: None,
                 placement: placement(w, &task_scope(&w.state, list), a ^ b, c),
             }
         }

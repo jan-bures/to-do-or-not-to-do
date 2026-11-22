@@ -382,9 +382,16 @@ impl<'a> Decider<'a> {
         &mut self,
         id: TaskId,
         list: crate::ids::ListId,
+        from_list: Option<crate::ids::ListId>,
         pl: &Placement,
     ) -> Result<(), DomainError> {
         let t = self.task(id)?;
+        if from_list.is_some_and(|from| from != t.list || t.merged_into.is_some()) {
+            return Err(DomainError::invalid(
+                "from_list",
+                "the task changed lists or was merged",
+            ));
+        }
         self.require_live(list.into())?;
         let pos = self
             .state
@@ -868,8 +875,9 @@ impl<'a> Decider<'a> {
             C::MoveTask {
                 id,
                 list,
+                from_list,
                 placement,
-            } => self.move_task(*id, *list, placement)?,
+            } => self.move_task(*id, *list, *from_list, placement)?,
             C::CompleteTask { id } => self.set_completed(*id, true)?,
             C::UncompleteTask { id } => self.set_completed(*id, false)?,
             C::SetMyDay { id, date } => {

@@ -246,6 +246,7 @@ fn build(s: &State, head: u64, (kind, a, b, c): Op) -> Option<Step> {
         12 => Command::MoveTask {
             id: pick(&tasks, a)?,
             list: pick(&lists, b)?,
+            from_list: None,
             placement: Placement::First,
         },
         13 => Command::MergeTasks {

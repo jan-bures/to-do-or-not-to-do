@@ -883,6 +883,7 @@ fn a_task_moved_out_of_a_list_keeps_its_place_until_its_row_has_left() {
         Command::MoveTask {
             id: row.id,
             list: errands,
+            from_list: None,
             placement: todo_core::command::Placement::First,
         },
     );
@@ -921,6 +922,7 @@ fn a_hand_over_task_deleted_leaves_its_line_and_one_moved_stays() {
         Command::MoveTask {
             id: task.id,
             list: other,
+            from_list: None,
             placement: todo_core::command::Placement::First,
         },
     );

@@ -130,7 +130,7 @@ fun DetailPane(
                 if (important) "Not important" else "Mark important",
                 tint = if (important) r.accentStrong else r.ink3,
             ) { actions.setImportant(detail.id, !important) }
-            TaskActionsAnchor(state, actions, detail.id, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
+            TaskActionsAnchor(state, actions, detail.id, detail.list, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
                 IconButton("ellipsis", "Task actions", onClick = open)
             }
             if (!standalone) IconButton("x", "Close") { actions.select(null) }

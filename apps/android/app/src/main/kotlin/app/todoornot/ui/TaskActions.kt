@@ -48,10 +48,11 @@ private enum class Picker { ACTIONS, PRIORITY, LIST }
 /** Anchor shared by the task row's long press and the detail header's overflow button. */
 @Composable
 fun TaskActionsAnchor(
-    state: UiState, actions: Actions, id: String, done: Boolean, myDay: Boolean, priority: Int,
+    state: UiState, actions: Actions, id: String, list: String, done: Boolean, myDay: Boolean, priority: Int,
     row: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable (open: () -> Unit) -> Unit,
 ) {
-    var picker by remember(id, state.generation, enabled) { mutableStateOf<Picker?>(null) }
+    // A move elsewhere invalidates the old picker, including its pending choice.
+    var picker by remember(id, list, state.generation, enabled) { mutableStateOf<Picker?>(null) }
     val focus = LocalFocusManager.current
     Box(modifier) {
         content {
@@ -82,7 +83,7 @@ fun TaskActionsAnchor(
                 // and a renamed destination appears under its new name.
                 var groups by remember(id, filter) { mutableStateOf<List<DestinationGroup>?>(null) }
                 LaunchedEffect(state, filter) { groups = actions.moveDestinations(id, filter) }
-                MoveTaskCard(filter, { filter = it }, groups, { list -> overlay.choose { actions.moveTaskTo(id, list) } }, overlay::close, focus = true)
+                MoveTaskCard(filter, { filter = it }, groups, { to -> overlay.choose { actions.moveTaskTo(id, list, to) } }, overlay::close, focus = true)
             }
             null -> Unit
         }

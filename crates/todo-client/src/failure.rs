@@ -380,6 +380,7 @@ mod tests {
         let moved = command(Command::MoveTask {
             id: task,
             list,
+            from_list: None,
             placement: Placement::First,
         });
         assert_eq!(what(&moved), "Move a task");

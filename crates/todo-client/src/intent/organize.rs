@@ -118,6 +118,26 @@ pub fn can_move_list(state: &State, id: ListId) -> bool {
             .any(|id| state.is_live((*id).into()))
 }
 
+/// A task that can be moved or deleted: it is live and is not a merged-away task.
+pub fn actionable_task(state: &State, id: TaskId) -> Option<&Task> {
+    state
+        .tasks
+        .get(&id)
+        .filter(|task| task.merged_into.is_none() && state.is_live(id.into()))
+}
+
+/// Moves a task to the first position in another list, provided it is still in the shown source.
+/// Keep the source in the command too: the server may have moved it before the replica catches up.
+pub fn move_task(state: &State, id: TaskId, from: ListId, to: ListId) -> Option<Command> {
+    let task = actionable_task(state, id)?;
+    (task.list == from && to != from && state.is_live(to.into())).then_some(Command::MoveTask {
+        id,
+        list: to,
+        from_list: Some(from),
+        placement: Placement::First,
+    })
+}
+
 /// One section of the task's "Move to…" picker, in sidebar order.
 #[derive(Debug)]
 pub struct TaskMoveGroup<'a> {
@@ -139,10 +159,7 @@ pub fn task_move_groups<'a>(
     id: TaskId,
     filter: &str,
 ) -> Option<Vec<TaskMoveGroup<'a>>> {
-    let task = state.tasks.get(&id)?;
-    if task.merged_into.is_some() || !state.is_live(id.into()) {
-        return None;
-    }
+    let task = actionable_task(state, id)?;
     let groups = super::list_groups(state);
     let has_collections = groups.iter().any(|(collection, _)| collection.is_some());
     let filter = fold(filter);
@@ -578,6 +595,31 @@ mod tests {
         );
         w.run(delete(task));
         assert!(task_move_groups(&w.state, task, "").is_none());
+    }
+
+    #[test]
+    fn a_picker_cannot_move_from_a_stale_source_or_act_on_a_restored_merged_task() {
+        let mut w = World::new();
+        let first = w.list(None, "First");
+        let second = w.list(None, "Second");
+        let third = w.list(None, "Third");
+        let task = w.task(first, "Proof");
+        let target = w.task(second, "Draft");
+        w.run(move_task(&w.state, task, first, second).unwrap());
+        assert!(move_task(&w.state, task, first, third).is_none());
+        assert!(move_task(&w.state, task, second, third).is_some());
+        w.run(Command::MergeTasks {
+            source: task,
+            target,
+        });
+        w.run(Command::Restore { id: task.into() });
+        assert!(
+            w.state.is_live(task.into()),
+            "restore clears only the tombstone"
+        );
+        assert!(task_move_groups(&w.state, task, "").is_none());
+        assert!(move_task(&w.state, task, second, third).is_none());
+        assert!(super::super::delete_task(&w.state, task).is_none());
     }
 
     #[test]

@@ -288,6 +288,8 @@ pub struct StepCount {
 pub struct TaskRow {
     /// Task ID.
     pub id: String,
+    /// Its current list, for guarding a move from this row.
+    pub list: String,
     /// Title.
     pub title: String,
     /// Completed.
@@ -552,6 +554,8 @@ fn browser_url(raw: &str) -> Option<String> {
 pub struct TaskDetail {
     /// Task ID.
     pub id: String,
+    /// Its current list, for guarding a move from detail.
+    pub list: String,
     /// Title.
     pub title: String,
     /// Notes.
@@ -685,6 +689,7 @@ fn list_chip(state: &State, list: ListId) -> Option<Chip> {
 fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow {
     TaskRow {
         id: task.id.to_string(),
+        list: task.list.to_string(),
         title: task.title.clone(),
         done: task.is_done(),
         my_day: task.my_day == Some(now.today()),
@@ -1217,6 +1222,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
     breadcrumb.extend(list_chip(state, task.list));
     Some(TaskDetail {
         id: id.to_string(),
+        list: task.list.to_string(),
         title: task.title.clone(),
         notes: task.notes.clone(),
         done: task.is_done(),

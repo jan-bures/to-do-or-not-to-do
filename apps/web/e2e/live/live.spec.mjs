@@ -137,6 +137,24 @@ async function add(page, title) {
   await expect(row(page, title)).toHaveCount(1);
 }
 
+const listLink = (page, name) => page.locator(".sidebar").getByRole("link", { name: new RegExp(`^${name}(?: |$)`) });
+const taskButton = (page, title) => page.locator(".room").getByRole("button", { name: title, exact: true });
+const movePicker = (page) => page.getByRole("dialog", { name: "Move to…" });
+
+async function createRoom(page, kind, name) {
+  await page.getByRole("button", { name: `New ${kind}`, exact: true }).click();
+  const input = page.getByRole("textbox", { name: `${kind === "list" ? "List" : "Collection"} name` });
+  await input.fill(name);
+  await input.press("Enter");
+  await expect(page.locator(".room-title")).toHaveText(name);
+}
+
+async function deleteRoom(page, kind) {
+  await page.getByRole("button", { name: "Room menu" }).click();
+  await page.getByRole("menuitem", { name: `Delete ${kind}`, exact: true }).click();
+  await page.getByRole("dialog", { name: `Delete ${kind}` }).getByRole("button", { name: "Delete", exact: true }).click();
+}
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 } });
 });
@@ -235,16 +253,11 @@ test("set up, sign in, and use the app against the server", async () => {
 test("a task move, delete and both exact undos reach another tab", async () => {
   const page = await openApp();
   const problems = watch(page);
-  const listLink = (tab, name) => tab.locator(".sidebar").getByRole("link", { name: new RegExp(`^${name}(?: |$)`) });
   const title = "Pack the exhibit labels";
-  const task = (tab) => tab.getByRole("button", { name: title, exact: true });
+  const task = (tab) => taskButton(tab, title);
   const undo = () => page.locator(".toast").getByRole("button", { name: "Undo" });
 
-  await page.getByRole("button", { name: "New list" }).click();
-  const name = page.getByRole("textbox", { name: "List name" });
-  await name.fill("Exhibit");
-  await name.press("Enter");
-  await expect(page.locator(".room-title")).toHaveText("Exhibit");
+  await createRoom(page, "list", "Exhibit");
   await add(page, title);
 
   const observer = await openApp();
@@ -271,13 +284,97 @@ test("a task move, delete and both exact undos reach another tab", async () => {
   await expect(task(observer)).toBeVisible();
 
   // Leave the shared server's top-level list order unchanged for the later sidebar tests.
-  await page.getByRole("button", { name: "Room menu" }).click();
-  await page.getByRole("menuitem", { name: "Delete list" }).click();
-  await page.getByRole("dialog", { name: "Delete list" }).getByRole("button", { name: "Delete", exact: true }).click();
+  await deleteRoom(page, "list");
   await expect(listLink(observer, "Exhibit")).toHaveCount(0);
   expect([...problems, ...observerProblems]).toEqual([]);
   await observer.close();
   await page.close();
+});
+
+test("a source change on another tab invalidates the open move picker", async () => {
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [watch(a), watch(b)];
+  for (const name of ["Move source", "Move second", "Move third"]) {
+    await createRoom(b, "list", name);
+  }
+  const title = "Proof from the original list";
+  await listLink(b, "Move source").click();
+  await add(b, title);
+  await listLink(a, "All").click();
+  await taskButton(a, title).click();
+  await a.keyboard.press("m");
+  const filter = movePicker(a).getByRole("textbox", { name: "Filter lists" });
+  await filter.fill("Move third");
+  await filter.press("ArrowDown");
+  await expect(movePicker(a).getByRole("option", { name: "Move third" })).toBeFocused();
+
+  await taskButton(b, title).press("m");
+  await movePicker(b).getByRole("option", { name: "Move second" }).click();
+  await expect(a.locator(".crumb-list")).toHaveText("Move second");
+  await expect(movePicker(a)).toBeHidden();
+  await a.keyboard.press("Enter");
+  await listLink(b, "Move third").click();
+  await expect(taskButton(b, title)).toHaveCount(0);
+  await listLink(b, "Move second").click();
+  await expect(taskButton(b, title)).toBeVisible();
+
+  for (const name of ["Move source", "Move second", "Move third"]) {
+    await listLink(b, name).click();
+    await deleteRoom(b, "list");
+    await expect(listLink(a, name)).toHaveCount(0);
+  }
+  expect(problems.flat()).toEqual([]);
+  await b.close();
+  await a.close();
+});
+
+test("remote picker updates preserve option focus and removals focus the filter", async () => {
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [watch(a), watch(b)];
+  await createRoom(b, "collection", "Picker destinations");
+  await createRoom(b, "list", "Option one");
+  await add(a, "Focus check task");
+  const task = taskButton(a, "Focus check task");
+  await task.press("m");
+  const picker = movePicker(a);
+  const filter = picker.getByRole("textbox", { name: "Filter lists" });
+  await filter.fill("Option");
+  await filter.press("ArrowDown");
+  const group = picker.getByRole("group", { name: "Picker destinations" });
+  await expect(group.getByRole("option", { name: "Option one" })).toBeFocused();
+
+  await listLink(b, "Picker destinations").click();
+  await createRoom(b, "list", "Option two");
+  const second = group.getByRole("option", { name: "Option two" });
+  await expect(second).toBeVisible();
+  await expect(group.getByRole("option", { name: "Option one" })).toBeFocused();
+  await a.keyboard.press("ArrowDown");
+  await expect(second).toBeFocused();
+
+  await b.getByRole("button", { name: "Room menu" }).click();
+  await b.getByRole("menuitem", { name: "Rename list" }).click();
+  const renameInput = b.getByRole("dialog", { name: "Rename list" }).getByRole("textbox", { name: "List name" });
+  await renameInput.fill("Option renamed");
+  await renameInput.press("Enter");
+  const renamed = group.getByRole("option", { name: "Option renamed" });
+  await expect(renamed).toBeFocused();
+  await deleteRoom(b, "list");
+  await expect(renamed).toHaveCount(0);
+  await expect(filter).toBeFocused();
+  await filter.press("ArrowDown");
+  await expect(group.getByRole("option", { name: "Option one" })).toBeFocused();
+  await a.keyboard.press("Escape");
+  await expect(task).toBeFocused();
+  await a.keyboard.press("Delete");
+  await expect(task).toHaveCount(0);
+  await listLink(b, "Picker destinations").click();
+  await deleteRoom(b, "collection");
+  await expect(listLink(a, "Picker destinations")).toHaveCount(0);
+  expect(problems.flat()).toEqual([]);
+  await b.close();
+  await a.close();
 });
 
 test("Activity reads confirmed changes and compensates another tab's past edit", async () => {

@@ -441,7 +441,7 @@ pub fn state() -> State {
             sender: "petra@example.com".into(),
             received_at: at("2026-11-14T08:12:00Z"),
             message_id: "<board-pack@example.com>".into(),
-            web_link: None,
+            web_link: Some("https://example.com/mail/board-pack".into()),
         }),
     });
     b.run(Command::AddAttachment {

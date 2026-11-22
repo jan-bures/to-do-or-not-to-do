@@ -1347,14 +1347,21 @@ async fn task_actions_and_move_conflict_on_the_server() {
     e.undo_deletion(deleted).unwrap();
     settled().await;
     assert!(remote.state().is_live(task.into()));
-    let moved = e.move_task_to(id.clone(), list.clone()).unwrap().unwrap();
+    let from = before.list.to_string();
+    let moved = e
+        .move_task_to(id.clone(), from.clone(), list.clone())
+        .unwrap()
+        .unwrap();
     settled().await;
     assert_eq!(remote.state().tasks[&task].list.to_string(), list);
     e.undo_task_move(moved).unwrap();
     settled().await;
     assert_eq!(remote.state().tasks[&task].list, before.list);
     assert_eq!(remote.state().tasks[&task].position, before.position);
-    let moved = e.move_task_to(id.clone(), list.clone()).unwrap().unwrap();
+    let moved = e
+        .move_task_to(id.clone(), from, list.clone())
+        .unwrap()
+        .unwrap();
     settled().await;
     let first = remote.state().tasks[&task].position.clone();
     let reorder = e.reorder_task(list, id, other, 1).unwrap().unwrap();

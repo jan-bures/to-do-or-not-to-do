@@ -39,6 +39,7 @@ private fun Motion.look(id: String, t: Long): RowLook = row(id, t) ?: error("$id
 /** A task's row as a read listed it, for a ghost. */
 private fun taskRow(id: String, done: Boolean = false) = TaskRow(
     id = id,
+    list = "fixture-list",
     title = "Task $id",
     done = done,
     myDay = false,

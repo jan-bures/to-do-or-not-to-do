@@ -1783,11 +1783,11 @@ class TodoModelTest {
         val list = (admin as RoomKey.List).id
         val dest = (m.engine.list("Errands") as RoomKey.List).id
         val pending = m.ui.value.status.pending
-        m.moveTaskTo(id, list) // Current destination: no command or toast.
+        m.moveTaskTo(id, list, list) // Current destination: no command or toast.
         s.drain()
         assertEquals(pending, m.ui.value.status.pending)
         assertNull(m.ui.value.toast)
-        m.moveTaskTo(id, dest)
+        m.moveTaskTo(id, list, dest)
         s.drain()
         assertFalse(m.ui.value.room.tasks.any { it.id == id })
         assertNull(m.ui.value.detail)

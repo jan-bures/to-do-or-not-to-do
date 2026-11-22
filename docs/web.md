@@ -354,8 +354,9 @@ siblings in its own list, even when the list is filtered. Aggregate rooms don't 
 Right-click a task or press **Shift+F10** on its row, or open **Task actions** (⋯) in the detail pane.
 **Delete task** (also **Delete** on the row) acts at once, as on desktop and Android. **Move to…**
 (also **M**) puts the task first in another list's manual order. Type to filter by list or collection name,
-ignoring case and accents. The current list is marked and disabled. Use Up/Down to go from the filter to
-an available list, Enter or Space to choose, and Escape or Cancel to return to the opener. If the task is
+ignoring case and accents. The current list is marked and disabled. If another device moves the task,
+this picker closes instead of overwriting the move. Use Up/Down to go from the filter to an available list,
+Enter or Space to choose, and Escape or Cancel to return to the opener. If the task is
 still in the current room after moving, it stays selected. If a row leaves, it collapses over
 `--duration-row-collapse` (instantly with reduced motion). Focus goes to the next surviving row, the
 previous row, or the room heading when neither remains. A modal detail closes so the next row is reachable.
@@ -476,7 +477,8 @@ The status bar shows shortcuts only when their actions are available.
   The suite also uploads, downloads and removes a file with the web session, sets a repeat rule and sees
   the next occurrence on completion, adds and removes tags and links across tabs, checks tag delete confirmation
   against a live change in membership, and moves a list between collections. A task move, deletion and both
-  undos are confirmed by a second tab. The suite verifies synced reminder
+  undos are confirmed by a second tab. The suite also checks that a remote task move invalidates the
+  picker and that remote list edits preserve keyboard focus. It verifies synced reminder
   edits and Undo, including clock-change validation and a stale editor that cannot overwrite a change
   from another tab. Then:
   exact Undo of a confirmed recurring completion (including removal of its
@@ -523,5 +525,4 @@ The status bar shows shortcuts only when their actions are available.
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
-- **Moving tasks between lists** isn't available.
 - **The wasm size.** `wasm-opt` and Leptos's `erase_components` haven't been tried in the release build yet.

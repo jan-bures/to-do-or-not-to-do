@@ -858,7 +858,7 @@ class TodoModel(
 
     override suspend fun moveDestinations(id: String, filter: String) = withContext(io) { engine.moveDestinations(id, filter) }
 
-    override fun moveTaskTo(id: String, list: String) {
+    override fun moveTaskTo(id: String, from: String, list: String) {
         val here = key
         noteDrafts[id]?.save(this)
         act {
@@ -866,7 +866,7 @@ class TodoModel(
             val dest = RoomKey.List(list)
             val group = _ui.value.home.groups.firstOrNull { g -> g.lists.any { it.key == dest } }
             val name = group?.lists?.firstOrNull { it.key == dest }?.name
-            engine.moveTaskTo(id, list)?.let { target ->
+            engine.moveTaskTo(id, from, list)?.let { target ->
                 val leaves = when (here) {
                     is RoomKey.List -> here != dest
                     is RoomKey.Collection -> group != null && group.collection?.key != here

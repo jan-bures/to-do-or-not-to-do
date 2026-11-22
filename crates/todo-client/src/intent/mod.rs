@@ -335,20 +335,13 @@ pub fn restore_step(id: StepId) -> Command {
 
 /// Deletes a live task (Undo brings it back); `None` when it is already gone.
 pub fn delete_task(state: &State, id: TaskId) -> Option<Command> {
-    state.is_live(id.into()).then(|| delete(id))
+    organize::actionable_task(state, id).map(|_| delete(id))
 }
 
-/// Moves a live task to another live list, first in that list's manual order, as a new task would be;
-/// `None` when it is already there or either is gone.
+/// Moves a task without a picker, using the source in this state. A picker must use
+/// [`organize::move_task`] with the source it showed when opened.
 pub fn move_to_list(state: &State, id: TaskId, list: ListId) -> Option<Command> {
-    let task = state.tasks.get(&id)?;
-    (task.list != list && state.is_live(id.into()) && state.is_live(list.into())).then_some(
-        Command::MoveTask {
-            id,
-            list,
-            placement: Placement::First,
-        },
-    )
+    organize::move_task(state, id, organize::actionable_task(state, id)?.list, list)
 }
 
 /// Where a task can be moved, grouped as the sidebar shows them: each live collection in order with

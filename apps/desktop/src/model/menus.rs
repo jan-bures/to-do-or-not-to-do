@@ -1032,11 +1032,7 @@ pub fn priority_menu(task: TaskId, current: Priority) -> Vec<MenuEntry> {
 /// reopen, My Day, Important, the priority picker), then Move to…, Links… and Delete. Deleting doesn't
 /// ask: Undo brings the task back. Empty once the task is gone.
 pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
-    let Some(t) = state
-        .tasks
-        .get(&task)
-        .filter(|_| state.is_live(task.into()))
-    else {
+    let Some(t) = commands::organize::actionable_task(state, task) else {
         return Vec::new();
     };
     let done = if t.is_done() { "Reopen" } else { "Complete" };

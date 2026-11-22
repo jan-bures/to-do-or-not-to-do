@@ -208,6 +208,9 @@ pub enum Command {
         id: TaskId,
         /// Destination list.
         list: ListId,
+        /// If supplied, move only from this list. Older clients omit this precondition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_list: Option<ListId>,
         /// Position among the new siblings.
         #[serde(default)]
         placement: Placement,

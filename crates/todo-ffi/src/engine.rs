@@ -924,15 +924,17 @@ impl TodoEngine {
             .collect()
     }
 
-    /// Moves to the front of another list. Choosing the current list queues nothing.
+    /// Moves to the front of another list. Queues nothing if the picker is stale or the list is the same.
     pub fn move_task_to(
         &self,
         id: String,
+        from: String,
         list: String,
     ) -> Result<Option<Arc<TaskMove>>, FfiError> {
-        self.track_move(intent::move_to_list(
+        self.track_move(intent::organize::move_task(
             &self.client.view(),
             task_id(&id)?,
+            list_id(&from)?,
             list_id(&list)?,
         ))
     }
@@ -1598,7 +1600,7 @@ mod tests {
         assert_eq!(picks[0].lists[0].id, dest);
         assert!(!picks[0].lists[0].current);
         assert!(
-            e.move_task_to(id.clone(), list.clone())
+            e.move_task_to(id.clone(), list.clone(), list.clone())
                 .expect("same list")
                 .is_none()
         );
@@ -1614,15 +1616,20 @@ mod tests {
             .expect("reorder")
             .expect("handle");
         assert!(
-            e.reorder_task(list, id.clone(), other, 1)
+            e.reorder_task(list.clone(), id.clone(), other, 1)
                 .expect("already moved")
                 .is_none()
         );
         let moved =
             intent::move_to_list(&e.state(), task, list_id(&dest).expect("list")).expect("move");
-        e.move_task_to(id.clone(), dest)
+        e.move_task_to(id.clone(), list.clone(), dest)
             .expect("move")
             .expect("handle");
+        assert!(
+            e.move_task_to(id.clone(), list.clone(), list)
+                .expect("stale move")
+                .is_none()
+        );
         let deleted = intent::delete_task(&e.state(), task).expect("delete");
         e.delete_task(id).expect("delete");
         assert_eq!(queued(&e, at), [cmd, moved, deleted]);

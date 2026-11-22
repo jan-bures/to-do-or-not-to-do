@@ -13,6 +13,7 @@ use gpui::{
     Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, ScrollHandle, SharedString,
     Window, anchored, deferred, div, prelude::*, px,
 };
+use todo_client::intent::organize::actionable_task;
 use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
@@ -52,6 +53,8 @@ pub(super) struct Menu {
     /// A delete confirmation's question as it was drawn when it opened (or was asked again). It stays as
     /// asked while data changes under it, and confirming compares it with what it would say now.
     pub asked: Option<Asked>,
+    /// The source the move picker opened on; never infer it again when choosing.
+    pub(super) move_from: Option<ListId>,
 }
 
 /// What a task's context menu shows: its items, or in their place the priority picker, the list
@@ -259,8 +262,12 @@ impl ShellView {
                 id,
                 page: TaskPage::Move,
             } => {
-                let filter = self.menu.as_ref().map_or("", |m| m.filter.as_str());
-                menus::move_menu(&state, id, filter)
+                let menu = self.menu.as_ref().filter(|m| m.kind == kind);
+                if menu.is_some_and(|m| actionable_task(&state, id).map(|t| t.list) != m.move_from)
+                {
+                    return Vec::new();
+                }
+                menus::move_menu(&state, id, menu.map_or("", |m| m.filter.as_str()))
             }
             MenuKind::SyncFailures => {
                 let shown = self
@@ -331,6 +338,7 @@ impl ShellView {
                 trigger,
                 filter: String::new(),
                 asked: None,
+                move_from: None,
                 failures: if kind == MenuKind::SyncFailures {
                     (self.store.failed().iter())
                         .map(|f| f.entry.command_id)
@@ -344,7 +352,22 @@ impl ShellView {
         let keyboard = menu.highlight.is_some();
         // A confirmation keeps its question as asked now.
         let asked = Asked::of(&self.live_menu_entries(kind));
-        self.menu = Some(Menu { asked, ..menu });
+        let move_from = match kind {
+            MenuKind::Task {
+                page: TaskPage::Move,
+                ..
+            } if open.is_some_and(|m| m.kind == kind) => menu.move_from,
+            MenuKind::Task {
+                id,
+                page: TaskPage::Move,
+            } => actionable_task(&self.store.view(), id).map(|t| t.list),
+            _ => None,
+        };
+        self.menu = Some(Menu {
+            asked,
+            move_from,
+            ..menu
+        });
         // A new menu, or a new page of it, starts scrolled to its top.
         self.menu_scroll = ScrollHandle::new();
         if keyboard {
@@ -824,7 +847,11 @@ impl ShellView {
                 }
                 self.refresh(cx);
             }
-            MenuAction::MoveTask(task, list) => self.move_task_to(task, list, cx),
+            MenuAction::MoveTask(task, list) => {
+                if let Some(from) = menu.move_from {
+                    self.move_task_to(task, from, list, cx);
+                }
+            }
             MenuAction::DeleteTask(task) => self.delete_task(task, cx),
             MenuAction::DismissAllFailures => {
                 self.dismiss_failure(None, &menu);
@@ -1968,6 +1995,7 @@ mod tests {
             filter: filter.into(),
             failures: Vec::new(),
             asked: None,
+            move_from: None,
         };
         let key = |text: &'static str| KeyDownEvent {
             keystroke: Keystroke::parse(text).expect("keystroke"),
@@ -2109,6 +2137,7 @@ mod tests {
             filter: "rec".into(),
             failures: Vec::new(),
             asked: None,
+            move_from: None,
         };
         let key = gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse("e->e").expect("keystroke"),

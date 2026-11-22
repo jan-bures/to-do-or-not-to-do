@@ -119,6 +119,7 @@ pub fn referenced(cmd: &Command) -> Vec<EntityId> {
             id,
             list,
             placement,
+            ..
         } => {
             v.push(EntityId::Task(*id));
             v.push(EntityId::List(*list));

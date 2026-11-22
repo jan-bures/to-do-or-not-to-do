@@ -892,6 +892,7 @@ pub fn failed_changes(state: &State) -> Vec<todo_client::FailedEntry> {
             Command::MoveTask {
                 id: titled(state, "Order printer toner"),
                 list: errands,
+                from_list: None,
                 placement: Placement::First,
             },
             "forbidden",

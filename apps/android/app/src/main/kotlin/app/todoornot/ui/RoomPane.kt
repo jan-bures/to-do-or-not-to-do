@@ -357,7 +357,7 @@ private fun LazyItemScope.MovingRow(
     // A ghost whose choreography is over is gone, whatever the list has yet to hear.
     val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
     val done = checked ?: t.done
-    TaskActionsAnchor(state, actions, t.id, done, t.myDay, t.priority.toInt(), row = true,
+    TaskActionsAnchor(state, actions, t.id, t.list, done, t.myDay, t.priority.toInt(), row = true,
         enabled = !s.ghost && l?.gone != true,
         modifier = Modifier.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
@@ -471,7 +471,7 @@ private fun Caps(text: String, modifier: Modifier = Modifier) {
 private fun HandoverRow(t: TaskRow, state: UiState, actions: Actions, enabled: Boolean, gap: Dp,
     modifier: Modifier = Modifier, inset: Modifier = Modifier, content: @Composable RowScope.() -> Unit,
 ) {
-    TaskActionsAnchor(state, actions, t.id, t.done, t.myDay, t.priority.toInt(), row = true, enabled = enabled) { menu ->
+    TaskActionsAnchor(state, actions, t.id, t.list, t.done, t.myDay, t.priority.toInt(), row = true, enabled = enabled) { menu ->
         Row(modifier.fillMaxWidth().combinedClickable(enabled = enabled, onLongClickLabel = "Task actions", onLongClick = menu,
             onClick = { actions.select(t.id) }).then(inset), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(gap), content = content)

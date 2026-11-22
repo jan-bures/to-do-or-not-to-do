@@ -7,9 +7,8 @@ use super::{
 use leptos::html;
 use leptos::prelude::*;
 use std::time::Duration;
-use todo_client::intent::{self, organize, organize::confirm::one_line};
-use todo_core::State;
-use todo_core::ids::{ListId, TaskId};
+use todo_client::intent::{self, organize, organize::actionable_task, organize::confirm::one_line};
+use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::query::fold;
 use todo_design::{Glyph, Icon, motion};
 use wasm_bindgen::JsCast;
@@ -30,13 +29,18 @@ impl Origin {
         format!("{prefix}-{}", self.task)
     }
 
-    fn restore(self, c: Ctx) {
+    fn restore(self, c: Ctx, opener: Option<web_sys::HtmlElement>) {
         let before = pickers::focused();
         let room = c.room.get_untracked();
         request_animation_frame(move || {
             if c.room.get_untracked() == room
                 && !c.task_actions.open()
                 && pickers::focus_unmoved(before.as_ref())
+                && !opener.is_some_and(|el| {
+                    el.is_connected()
+                        && el.focus().is_ok()
+                        && pickers::focused().as_ref() == Some(el.as_ref())
+                })
                 && !platform::focus(&self.anchor())
                 && !platform::focus("task-detail")
             {
@@ -46,11 +50,18 @@ impl Origin {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Move {
+    origin: Origin,
+    from: ListId,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Controls {
+    opener: StoredValue<Option<web_sys::HtmlElement>, LocalStorage>,
     menu: RwSignal<Option<Origin>>,
     popover: NodeRef<html::Div>,
-    moving: RwSignal<Option<Origin>>,
+    moving: RwSignal<Option<Move>>,
     dialog: NodeRef<html::Dialog>,
     filter: RwSignal<String>,
 }
@@ -58,6 +69,7 @@ pub(super) struct Controls {
 impl Controls {
     pub(super) fn new() -> Self {
         Self {
+            opener: StoredValue::new_local(None),
             menu: RwSignal::new(None),
             popover: NodeRef::new(),
             moving: RwSignal::new(None),
@@ -70,15 +82,17 @@ impl Controls {
         self.menu.with_untracked(Option::is_some) || self.moving.with_untracked(Option::is_some)
     }
 
-    fn show_menu(self, c: Ctx, origin: Origin) {
+    fn show_menu(self, c: Ctx, origin: Origin, opener: Option<web_sys::HtmlElement>) {
         if self.menu.get_untracked() == Some(origin) {
-            self.close();
-            origin.restore(c);
+            self.dismiss(c);
             return;
         }
         if let Some(el) = self.popover.get_untracked() {
             // Give the popover a real return target, including after a pointer context click.
-            platform::focus(&origin.anchor());
+            if opener.is_none() {
+                platform::focus(&origin.anchor());
+            }
+            self.opener.set_value(opener);
             self.menu.set(Some(origin));
             if el.show_popover().is_err() {
                 self.menu.set(None);
@@ -96,19 +110,24 @@ impl Controls {
         }
     }
 
-    fn show_move(self, c: Ctx, origin: Origin) {
-        self.close();
-        if let Some(dialog) = self.dialog.get_untracked() {
+    fn show_move(self, c: Ctx, origin: Origin, opener: Option<web_sys::HtmlElement>) {
+        let menu_opener = self.close();
+        let opener = opener.or(menu_opener);
+        let from = c
+            .state
+            .with_untracked(|s| actionable_task(s, origin.task).map(|t| t.list));
+        if let Some((dialog, from)) = self.dialog.get_untracked().zip(from) {
+            let moving = Move { origin, from };
             self.filter.set(String::new());
-            self.moving.set(Some(origin));
+            self.opener.set_value(opener);
+            self.moving.set(Some(moving));
             if dialog.show_modal().is_err() {
-                self.moving.set(None);
-                origin.restore(c);
+                origin.restore(c, self.close());
                 return;
             }
             let before = pickers::focused();
             request_animation_frame(move || {
-                if self.moving.get_untracked() == Some(origin)
+                if self.moving.get_untracked() == Some(moving)
                     && pickers::focus_unmoved(before.as_ref())
                 {
                     platform::focus(FILTER);
@@ -121,11 +140,12 @@ impl Controls {
         if let Some((origin, menu)) = self.menu.get_untracked().zip(self.popover.get_untracked())
             && !platform::place_room_menu(&menu, &origin.anchor())
         {
-            self.close();
+            let _ = self.close();
         }
     }
 
-    pub(super) fn close(self) {
+    pub(super) fn close(self) -> Option<web_sys::HtmlElement> {
+        let opener = self.opener.try_update_value(Option::take).flatten();
         if self.menu.try_update(Option::take).flatten().is_some()
             && let Some(el) = self.popover.get_untracked()
         {
@@ -134,29 +154,27 @@ impl Controls {
         if self.moving.try_update(Option::take).flatten().is_some() {
             super::room_actions::close_dialog(self.dialog);
         }
+        opener
     }
 
     fn dismiss(self, c: Ctx) {
         let origin = self
             .menu
             .get_untracked()
-            .or_else(|| self.moving.get_untracked());
-        self.close();
+            .or_else(|| self.moving.get_untracked().map(|m| m.origin));
+        let opener = self.close();
         if let Some(origin) = origin {
-            origin.restore(c);
+            origin.restore(c, opener);
         }
     }
 }
 
-fn task_available(state: &State, id: TaskId) -> bool {
-    state
-        .tasks
-        .get(&id)
-        .is_some_and(|t| t.merged_into.is_none() && state.is_live(id.into()))
-}
-
 pub(super) fn row_menu(c: Ctx, task: TaskId, ev: &leptos::ev::MouseEvent) {
-    if c.read_only() || !c.state.with_untracked(|s| task_available(s, task)) {
+    if c.read_only()
+        || !c
+            .state
+            .with_untracked(|s| actionable_task(s, task).is_some())
+    {
         return;
     }
     ev.prevent_default();
@@ -166,6 +184,7 @@ pub(super) fn row_menu(c: Ctx, task: TaskId, ev: &leptos::ev::MouseEvent) {
             task,
             detail: false,
         },
+        None,
     );
 }
 
@@ -208,40 +227,44 @@ pub(super) fn shortcut(c: Ctx, ev: &leptos::ev::KeyboardEvent) -> bool {
     } else {
         return false;
     };
-    if !c.state.with_untracked(|s| task_available(s, origin.task)) {
+    if !c
+        .state
+        .with_untracked(|s| actionable_task(s, origin.task).is_some())
+    {
         return false;
     }
     ev.prevent_default();
+    let opener = (target.tag_name() != "BODY")
+        .then(|| target.dyn_into::<web_sys::HtmlElement>().ok())
+        .flatten();
     if menu {
-        c.task_actions.show_menu(c, origin);
+        c.task_actions.show_menu(c, origin, opener);
     } else if moving {
-        c.task_actions.show_move(c, origin);
+        c.task_actions.show_move(c, origin, opener);
     } else {
         change(c, origin, None);
     }
     true
 }
 
-/// Visible order, including the completed drawer (only when expanded). Departures are paint-only.
-fn rows(c: Ctx) -> Vec<(RowSection, Row)> {
+/// Painted order, including rows in flight for their animation slots, not for focus.
+fn rows(c: Ctx) -> Vec<(RowSection, Row, Option<Phase>)> {
     let leaving = c.lingering.get_untracked();
-    let departed = |r: &Row| {
-        leaving
-            .iter()
-            .any(|l| l.phase == Phase::Depart && l.row.id == r.id)
-    };
     let mut rows: Vec<_> = if let Some(plan) = c.tomorrow.get_untracked() {
         plan.rows()
-            .filter(|r| !departed(r))
-            .cloned()
-            .map(|r| (RowSection::Handover, r))
+            .map(|r| {
+                (
+                    RowSection::Handover,
+                    r.clone(),
+                    super::handover_row_phase(&leaving, r.id),
+                )
+            })
             .collect()
     } else {
         c.shown.with_untracked(|shown| {
             shown
                 .iter()
-                .filter(|s| s.phase != Some(Phase::Depart))
-                .map(|s| (RowSection::Open, s.row.clone()))
+                .map(|s| (RowSection::Open, s.row.clone(), s.phase))
                 .collect()
         })
     };
@@ -250,56 +273,62 @@ fn rows(c: Ctx) -> Vec<(RowSection, Row)> {
             rows.extend(
                 super::rows_with_exits(room, RowSection::Completed, &leaving)
                     .into_iter()
-                    .filter(|s| s.phase.is_none())
-                    .map(|s| (RowSection::Completed, s.row)),
-            )
+                    .map(|s| (RowSection::Completed, s.row, s.phase)),
+            );
         });
     }
     rows
 }
 
-fn change(c: Ctx, origin: Origin, destination: Option<ListId>) {
+fn change(c: Ctx, origin: Origin, destination: Option<(ListId, ListId)>) {
     let task = origin.task;
     let cmd = c.state.with_untracked(|s| {
-        if c.read_only() || !task_available(s, task) {
+        if c.read_only() {
             return None;
         }
-        let title = one_line(&s.tasks.get(&task)?.title);
+        let title = one_line(&actionable_task(s, task)?.title);
         match destination {
-            Some(list) => Some((
-                intent::move_to_list(s, task, list)?,
+            Some((from, list)) => Some((
+                organize::move_task(s, task, from, list)?,
                 format!("Moved “{title}” to {}", one_line(&s.lists.get(&list)?.name)),
             )),
             None => Some((intent::delete_task(s, task)?, format!("Deleted “{title}”"))),
         }
     });
-    c.task_actions.close();
+    let opener = c.task_actions.close();
     let Some((cmd, label)) = cmd else {
-        return origin.restore(c);
+        return origin.restore(c, opener);
     };
     let before = rows(c);
     if !c.submit_undoable(cmd, label, Some(task)) {
-        return origin.restore(c);
+        return origin.restore(c, opener);
     }
     c.lingering.update(|rows| rows.retain(|l| l.row.id != task));
     let after = rows(c);
-    if after.iter().any(|(_, r)| r.id == task) {
+    if after
+        .iter()
+        .any(|(_, r, phase)| r.id == task && phase.is_none())
+    {
         // A move in a smart room, for example, only changes the list chip and breadcrumb.
-        return origin.restore(c);
+        return origin.restore(c, opener);
     }
     let room = c.room.get_untracked();
     let mut next = None;
-    if let Some(at) = before.iter().position(|(_, row)| row.id == task) {
-        let (section, row) = &before[at];
-        let usable = |(_, row): &&(RowSection, Row)| after.iter().any(|(_, r)| r.id == row.id);
+    if let Some(at) = before.iter().position(|(_, row, _)| row.id == task) {
+        let (section, row, _) = &before[at];
+        let surviving = |id| {
+            after
+                .iter()
+                .any(|(_, row, phase)| row.id == id && phase.is_none())
+        };
         next = before[at + 1..]
             .iter()
             .chain(before[..at].iter().rev())
-            .find(usable)
-            .map(|(_, r)| r.id);
+            .find(|(_, r, phase)| phase.is_none() && surviving(r.id))
+            .map(|(_, r, _)| r.id);
         if !platform::reduced_motion() {
             let token = c.toast_seq.get_untracked();
-            let index = before[..at].iter().filter(|(s, _)| s == section).count();
+            let index = before[..at].iter().filter(|(s, _, _)| s == section).count();
             c.lingering.update(|rows| {
                 rows.push(Linger {
                     token,
@@ -356,7 +385,12 @@ fn focus_after(c: Ctx, room: RoomId, next: Option<TaskId>) {
         if c.room.get_untracked() == room
             && !c.task_actions.open()
             && pickers::focus_unmoved(before.as_ref())
-            && !next.is_some_and(|id| platform::focus(&format!("row-{id}")))
+            && !next.is_some_and(|id| {
+                rows(c)
+                    .iter()
+                    .any(|(_, row, phase)| row.id == id && phase.is_none())
+                    && platform::focus(&format!("row-{id}"))
+            })
             && !platform::focus("room-title")
         {
             platform::focus("task-detail");
@@ -374,7 +408,11 @@ pub(super) fn DetailMenu(task: TaskId) -> impl IntoView {
             aria-label="Task actions" aria-haspopup="menu" aria-controls=MENU popovertarget=MENU
             aria-expanded=move || (controls.menu.get() == Some(origin)).to_string()
             disabled=move || c.read_only()
-            on:click=move |ev| { ev.prevent_default(); controls.show_menu(c, origin); }>
+            on:click=move |ev| {
+                ev.prevent_default();
+                let opener = ev.current_target().and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok());
+                controls.show_menu(c, origin, opener);
+            }>
             {icon(Icon::Ellipsis)}
         </button>
     }
@@ -387,9 +425,13 @@ pub(super) fn Overlays() -> impl IntoView {
     let resize = window_event_listener(leptos::ev::resize, move |_| controls.position());
     on_cleanup(move || resize.remove());
     Effect::new(move |_| {
-        if let Some(origin) = controls.menu.get().or_else(|| controls.moving.get()) {
+        let moving = controls.moving.get();
+        if let Some(origin) = controls.menu.get().or_else(|| moving.map(|m| m.origin)) {
             if c.read_only()
-                || !c.state.with(|s| task_available(s, origin.task))
+                || !c.state.with(|s| {
+                    actionable_task(s, origin.task)
+                        .is_some_and(|t| moving.is_none_or(|m| t.list == m.from))
+                })
                 || (origin.detail && c.selected.get() != Some(origin.task))
                 || c.drawer.get()
             {
@@ -403,8 +445,10 @@ pub(super) fn Overlays() -> impl IntoView {
         <div id=MENU class="room-action-menu task-action-menu" role="menu" aria-label="Task actions"
             popover="auto" node_ref=controls.popover
             on:toggle=move |_| {
-                if controls.popover.get_untracked().is_some_and(|el| !el.matches(":popover-open").unwrap_or(false)) {
-                    controls.menu.set(None);
+                if controls.popover.get_untracked().is_some_and(|el| !el.matches(":popover-open").unwrap_or(false))
+                    && controls.menu.try_update(Option::take).flatten().is_some()
+                {
+                    controls.opener.set_value(None);
                 }
             }
             on:keydown=move |ev| {
@@ -418,7 +462,7 @@ pub(super) fn Overlays() -> impl IntoView {
                 }
             }>
             <button type="button" id="task-action-move" data-picker-option="" role="menuitem" aria-haspopup="dialog"
-                on:click=move |_| { if let Some(origin) = controls.menu.get_untracked() { controls.show_move(c, origin); } }>
+                on:click=move |_| { if let Some(origin) = controls.menu.get_untracked() { controls.show_move(c, origin, None); } }>
                 {icon(Icon::List)}"Move to…"
             </button>
             <button type="button" class="danger" data-picker-option="" role="menuitem"
@@ -430,7 +474,7 @@ pub(super) fn Overlays() -> impl IntoView {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 struct Choice {
     id: ListId,
     name: String,
@@ -439,8 +483,9 @@ struct Choice {
     current: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 struct Group {
+    id: Option<CollectionId>,
     heading: Option<String>,
     mark: Option<(&'static str, Glyph)>,
     choices: Vec<Choice>,
@@ -451,15 +496,16 @@ fn MovePicker() -> impl IntoView {
     let c = ctx();
     let controls = c.task_actions;
     let groups = Memo::new(move |_| {
-        let Some(origin) = controls.moving.get() else {
+        let Some(moving) = controls.moving.get() else {
             return Vec::new();
         };
         controls.filter.with(|filter| {
             c.state.with(|s| {
-                organize::task_move_groups(s, origin.task, filter)
+                organize::task_move_groups(s, moving.origin.task, filter)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|group| Group {
+                        id: group.collection.map(|c| c.id),
                         heading: group.heading,
                         mark: group.collection.map(|col| {
                             (
@@ -489,10 +535,31 @@ fn MovePicker() -> impl IntoView {
             })
         })
     });
+    // Keep the actual focused option until it moves elsewhere. Keyed lists preserve that node on
+    // edits; if it was removed, wait for the DOM update and return to the filter, not the body.
+    let focused_option = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    Effect::new(move |_| {
+        groups.track();
+        if let Some(moving) = controls.moving.get()
+            && let Some(option) = focused_option.get_value()
+        {
+            request_animation_frame(move || {
+                if controls.moving.get_untracked() == Some(moving)
+                    && !option.is_connected()
+                    && pickers::focus_unmoved(Some(option.as_ref()))
+                {
+                    platform::focus(FILTER);
+                }
+            });
+        }
+    });
     view! {
         <dialog id=MOVE class="room-dialog task-move-picker" node_ref=controls.dialog aria-labelledby="task-move-heading"
             on:cancel=move |ev: web_sys::Event| { ev.prevent_default(); controls.dismiss(c); }
             on:click=move |ev| { if super::room_actions::scrim_click(&ev) { controls.dismiss(c); } }
+            on:focusin=move |ev| focused_option.set_value(ev.target()
+                .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+                .filter(|el| el.has_attribute("data-picker-option")))
             on:keydown=move |ev| {
                 ev.stop_propagation();
                 if ev.is_composing() { return; }
@@ -512,8 +579,9 @@ fn MovePicker() -> impl IntoView {
                     <p role="status">{move || format!("No list matches “{}”.", one_line(controls.filter.get().trim()))}</p>
                 }>
                     <div role="listbox" aria-label="Destination lists">
-                        <For each=move || groups.get() key=Clone::clone let:group>
-                            <MoveGroup group=group/>
+                        <For each=move || groups.with(|groups| groups.iter().map(|g| g.id).collect::<Vec<_>>())
+                            key=|id| *id let:id>
+                            <MoveGroup id=id groups=groups/>
                         </For>
                     </div>
                 </Show>
@@ -526,30 +594,46 @@ fn MovePicker() -> impl IntoView {
 }
 
 #[component]
-fn MoveGroup(group: Group) -> impl IntoView {
-    let c = ctx();
-    let name = group.heading.clone().unwrap_or_else(|| "Lists".into());
+fn MoveGroup(#[prop(into)] id: Option<CollectionId>, groups: Memo<Vec<Group>>) -> impl IntoView {
+    let group =
+        Memo::new(move |_| groups.with(|groups| groups.iter().find(|g| g.id == id).cloned()));
+    let heading = Memo::new(move |_| group.with(|g| g.as_ref().and_then(|g| g.heading.clone())));
+    let mark = Memo::new(move |_| group.with(|g| g.as_ref().and_then(|g| g.mark)));
     view! {
-        <div role="group" aria-label=name>
-            {group.heading.map(|name| view! {
+        <div role="group" aria-label=move || heading.get().unwrap_or_else(|| "Lists".into())>
+            <Show when=move || heading.with(Option::is_some)>
                 <h3 class="caps task-move-group" aria-hidden="true">
-                    {group.mark.map(|(hue, mark)| view! { <span class="move-glyph" data-list-hue=hue>{glyph(mark)}</span> })}
-                    {name}
+                    {move || mark.get().map(|(hue, mark)| view! { <span class="move-glyph" data-list-hue=hue>{glyph(mark)}</span> })}
+                    {move || heading.get()}
                 </h3>
-            })}
-            {group.choices.into_iter().map(|choice| view! {
-                <button type="button" data-picker-option="" class="move-choice" role="option"
-                    disabled=choice.current aria-selected=choice.current.to_string()
-                    on:click=move |_| {
-                        if let Some(origin) = c.task_actions.moving.get_untracked() {
-                            change(c, origin, Some(choice.id));
-                        }
-                    }>
-                    <span class="move-glyph" data-list-hue=choice.hue>{glyph(choice.glyph)}</span>
-                    <span class="picker-label">{choice.name}</span>
-                    <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
-                </button>
-            }).collect_view()}
+            </Show>
+            <For each=move || group.with(|g| g.iter().flat_map(|g| g.choices.iter().map(|choice| choice.id)).collect::<Vec<_>>())
+                key=|id| *id let:id>
+                <MoveChoice id=id group=group/>
+            </For>
         </div>
+    }
+}
+
+#[component]
+fn MoveChoice(id: ListId, group: Memo<Option<Group>>) -> impl IntoView {
+    let c = ctx();
+    let choice = Memo::new(move |_| {
+        group.with(|g| g.as_ref()?.choices.iter().find(|c| c.id == id).cloned())
+    });
+    let current = move || choice.with(|c| c.as_ref().is_some_and(|c| c.current));
+    let mark = Memo::new(move |_| choice.with(|c| c.as_ref().map(|c| (c.hue, c.glyph))));
+    view! {
+        <button type="button" data-picker-option="" class="move-choice" role="option"
+            disabled=current aria-selected=move || current().to_string()
+            on:click=move |_| {
+                if let Some(moving) = c.task_actions.moving.get_untracked() {
+                    change(c, moving.origin, Some((moving.from, id)));
+                }
+            }>
+            {move || mark.get().map(|(hue, mark)| view! { <span class="move-glyph" data-list-hue=hue>{glyph(mark)}</span> })}
+            <span class="picker-label">{move || choice.with(|c| c.as_ref().map(|c| c.name.clone()))}</span>
+            <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
+        </button>
     }
 }

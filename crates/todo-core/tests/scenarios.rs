@@ -512,6 +512,7 @@ fn agents_follow_grants_and_undo_only_their_own_events() {
             Command::MoveTask {
                 id: p,
                 list: personal,
+                from_list: None,
                 placement: Placement::Last
             }
         ),
@@ -957,6 +958,7 @@ fn undoing_a_move_or_merge_needs_access_to_the_destination() {
             Command::MoveTask {
                 id: t,
                 list: b,
+                from_list: None,
                 placement: Placement::Last,
             },
         )
@@ -2006,6 +2008,42 @@ fn tasks_in(state: &State, list: todo_core::ids::ListId) -> Vec<EntityId> {
         .collect()
 }
 
+#[test]
+fn a_conditional_move_cannot_overwrite_another_devices_move() {
+    let mut w = World::new();
+    let inbox = w.list(None, "Inbox");
+    let second = w.list(None, "Second");
+    let third = w.list(None, "Third");
+    let id = w.task(inbox, "Send the proof");
+    let stale = Command::MoveTask {
+        id,
+        list: third,
+        from_list: Some(inbox),
+        placement: Placement::First,
+    };
+    let first = Command::MoveTask {
+        id,
+        list: second,
+        from_list: None,
+        placement: Placement::First,
+    };
+    // The unguarded wire format still round-trips unchanged for older clients and command IDs.
+    let json = serde_json::to_value(&first).unwrap();
+    assert!(json.get("from_list").is_none());
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), first);
+    w.run(first);
+    let now = w.now();
+    assert!(matches!(
+        decide(&w.state, &w.owner, &stale, now),
+        Err(DomainError::Invalid {
+            field: "from_list",
+            ..
+        })
+    ));
+    assert_eq!(tasks_in(&w.state, second), [id.into()]);
+    assert!(tasks_in(&w.state, third).is_empty());
+}
+
 /// A move to another list records the position even when its key stays the same, so a later reorder
 /// there makes undoing the move a conflict instead of taking the task back to the wrong place.
 #[test]
@@ -2020,6 +2058,7 @@ fn undoing_a_move_after_a_reorder_in_the_new_list_conflicts() {
         id: first,
         list: b,
         placement: Placement::First,
+        from_list: Some(a),
     });
     // Into an empty list, it keeps its key; the event still says so.
     assert_eq!(w.state.tasks[&first].position, key);
@@ -2055,6 +2094,7 @@ fn undoing_a_move_after_a_reorder_in_the_new_list_conflicts() {
         id: first,
         list: b,
         placement: Placement::First,
+        from_list: Some(a),
     });
     w.task(b, "other");
     w.undo(&moved[0]).unwrap();
@@ -2077,6 +2117,7 @@ fn a_move_stored_without_its_position_still_applies_and_undoes() {
         &Command::MoveTask {
             id: first,
             list: b,
+            from_list: Some(a),
             placement: Placement::First,
         },
         now,

@@ -1565,8 +1565,8 @@ impl ShellView {
 
     /// Moves a task to another list, first in its manual order. A row that leaves the room (another
     /// list's room) leaves with the completion's exit; in a smart list it stays where it is.
-    fn move_task_to(&mut self, id: TaskId, list: ListId, cx: &mut Context<Self>) {
-        let cmd = commands::move_to_list(&self.store.view(), id, list);
+    fn move_task_to(&mut self, id: TaskId, from: ListId, list: ListId, cx: &mut Context<Self>) {
+        let cmd = commands::organize::move_task(&self.store.view(), id, from, list);
         self.change_task(id, cmd, cx);
     }
 

@@ -42,7 +42,19 @@ test("row context delete exits, hands off focus and offers exact Undo", async ({
   await expect(row(page, board)).toHaveCount(0);
   expect(await page.evaluate(() => window.taskExits)).toEqual(["row-exit"]);
   await toast(page).getByRole("button", { name: "Undo" }).click();
-  await expect(row(page, board)).toBeVisible();
+  await row(page, board).click();
+  const detail = page.locator("#task-detail");
+  await expect(detail.locator(".step-title")).toHaveText([
+    "Collect numbers from finance", "Update the roadmap slide", "Ask Jana for the hiring summary",
+    "Write the risks section", "Send the draft for review",
+  ]);
+  expect(await detail.locator('.step-rows [role="checkbox"]').evaluateAll(
+    (steps) => steps.map((step) => step.getAttribute("aria-checked")),
+  )).toEqual(["true", "true", "false", "false", "false"]);
+  await expect(detail.getByRole("button", { name: "Tags", exact: true })).toHaveAccessibleDescription("docs, quarterly");
+  await expect(detail.getByRole("button", { name: "Reminder", exact: true })).toHaveAccessibleDescription("Today, 15:30");
+  await expect(detail.getByRole("region", { name: "Attachments" })).toContainText("board-pack-draft.pdf");
+  await expect(detail.getByRole("link", { name: /^Board pack — November/ })).toHaveAttribute("href", "https://example.com/mail/board-pack");
   await w.check();
 });
 
@@ -77,6 +89,11 @@ test("Delete ignores editors and repeats; Ctrl+Z restores the selected row with 
 test("keyboard move from a list filters grouped destinations, skips the current list and undoes", async ({ page }) => {
   const w = watch(page);
   await planning(page);
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  await add.fill("Newest planning task");
+  await add.press("Enter");
+  const order = page.locator(".rows:not(.completed-rows) .row-title");
+  await expect(order).toHaveText(["Newest planning task", board, hiring]);
   await row(page, board).click();
   await page.keyboard.press("Shift+F10");
   const move = menu(page).getByRole("menuitem", { name: "Move to…" });
@@ -108,7 +125,7 @@ test("keyboard move from a list filters grouped destinations, skips the current 
   await expect(toast(page)).toContainText(`Moved “${board}” to Domácnost`);
   expect(await page.evaluate(() => window.taskExits)).toEqual(["row-exit"]);
   await toast(page).getByRole("button", { name: "Undo" }).click();
-  await expect(row(page, board)).toBeVisible();
+  await expect(order).toHaveText(["Newest planning task", board, hiring]);
   await w.check();
 });
 
@@ -122,7 +139,13 @@ test("M and Escape restore focus; moving in My Day keeps the task selected", asy
   await page.keyboard.press("Escape");
   await expect(row(page, board)).toBeFocused();
 
-  await page.keyboard.press("m");
+  const close = page.locator("#task-detail").getByRole("button", { name: "Close", exact: true });
+  await close.press("m");
+  await expect(picker(page).getByRole("textbox", { name: "Filter lists" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(close).toBeFocused();
+
+  await row(page, board).press("m");
   await picker(page).getByRole("option", { name: "Finance" }).click();
   await expect(row(page, board)).toBeFocused();
   await expect(page.locator(".crumb-list")).toHaveText("Finance");
@@ -156,6 +179,50 @@ test("completed and hand-over rows can be deleted and restored", async ({ page }
   await expect(next).toBeFocused();
   await page.keyboard.press("Control+z");
   await expect(first).toBeVisible();
+  await w.check();
+});
+
+test("deleting a row skips a completing neighbour without disturbing its exit", async ({ page }) => {
+  const w = watch(page);
+  await planning(page);
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  const completing = "Second planning task";
+  for (const title of [completing, "First planning task"]) {
+    await add.fill(title);
+    await add.press("Enter");
+  }
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  await page.getByRole("checkbox", { name: `Complete “${completing}”` }).click();
+  await expect(page.locator(".row.completing .row-title")).toHaveText(completing);
+  await row(page, "First planning task").press("Delete");
+  await page.clock.runFor(50);
+  await expect(row(page, board)).toBeFocused();
+  await expect(page.locator(".row.completing .row-title")).toHaveText(completing);
+  await page.clock.runFor(1_000);
+  await expect(row(page, completing)).toHaveCount(0);
+  await expect(row(page, board)).toBeFocused();
+  await w.check();
+});
+
+test("K cannot select a deleted hand-over task during its exit", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, "/app?fixture=finished");
+  const handover = page.locator(".tomorrow");
+  const first = handover.getByRole("button", { name: "Připravit nedělní oběd", exact: true });
+  const next = handover.getByRole("button", { name: board, exact: true });
+  await first.click();
+  const deletedUrl = page.url();
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  await first.press("Delete");
+  await page.clock.runFor(50);
+  await expect(next).toBeFocused();
+  await expect(page.locator(".handover-task.exiting[inert] .next-title")).toHaveText("Připravit nedělní oběd");
+  await page.keyboard.press("k");
+  await expect(page).not.toHaveURL(deletedUrl);
+  await expect(next).toBeFocused();
   await w.check();
 });
 
