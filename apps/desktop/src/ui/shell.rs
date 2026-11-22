@@ -5,23 +5,24 @@
 mod detail;
 mod sidebar;
 
-use std::collections::BTreeSet;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, AsyncApp, Context, Div, Entity, EventEmitter,
     FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle, SharedString, Stateful,
-    UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions, div, prelude::*, px,
-    uniform_list,
+    StrikethroughStyle, UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions,
+    div, prelude::*, px, uniform_list,
 };
 use todo_client::Connection;
 use todo_core::ids::{CollectionId, TaskId};
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
-use super::landscape::{LandscapeCache, Sky, landscape};
+use super::landscape::{LandscapeCache, Sky, landscape, sun_at};
+use crate::fixtures::Moment;
 use crate::model::layout::{self, DetailPane, OverlayMotion, OverlayPhase, Width};
+use crate::model::motion::{Keep, Motion, Pace, RowLook, Wake, lifts};
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
     quick_add,
@@ -42,7 +43,6 @@ actions!(
         FocusFilter,
         NextTask,
         PreviousTask,
-        ToggleTask,
         EditTask,
         EditDue,
         CyclePriority,
@@ -69,7 +69,6 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("down", NextTask, list),
         KeyBinding::new("k", PreviousTask, list),
         KeyBinding::new("up", PreviousTask, list),
-        KeyBinding::new("space", ToggleTask, list),
         KeyBinding::new("escape", Escape, list),
     ]
 }
@@ -143,8 +142,15 @@ pub struct ShellView {
     /// The filter typed into the title bar.
     filter: Entity<TextInput>,
     edit: Editors,
-    /// Completed tasks fading out of the list (the last part of the completion hold).
-    leaving: BTreeSet<TaskId>,
+    /// The completion choreography and the sun's travel (`model::motion`), sampled at `clock`.
+    motion: Motion,
+    clock: Clock,
+    /// The time this frame draws (`clock` when the render started), so every row samples the same moment.
+    frame: Duration,
+    /// How far each row is drawn up its slot while rows above it collapse; empty at rest.
+    row_lifts: Vec<f32>,
+    /// The pending one-shot timer that wakes the view when a holding row starts to leave.
+    alarm: Option<Duration>,
     /// A message for the status bar (a command the domain refused, a failed download).
     notice: Option<Notice>,
     /// The window's width class, as of the last frame.
@@ -250,7 +256,11 @@ impl ShellView {
             inline: None,
             filter,
             edit,
-            leaving: BTreeSet::new(),
+            motion: Motion::default(),
+            clock: Clock::Live(Instant::now()),
+            frame: Duration::ZERO,
+            row_lifts: Vec::new(),
+            alarm: None,
             notice: None,
             width: Width::of(f32::from(window.viewport_size().width)),
             overlay_motion: OverlayMotion::new(false),
@@ -262,6 +272,7 @@ impl ShellView {
             animate: true,
         };
         this.load_detail(cx);
+        this.follow_shell();
         this.watch(cx);
         this
     }
@@ -304,13 +315,14 @@ impl ShellView {
     }
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
+        let state = self.store.view();
+        self.follow_data(&state);
         let session = self.store.session();
         // Prune only once the stream is live and caught up: during catch-up after a new or rebuilt
         // cache, a collection from a later page isn't in the replica yet. Stale IDs are harmless
         // meanwhile, since deriving the sidebar only asks whether an ID is collapsed.
         let can_prune =
             session.is_none_or(|s| s.client().status().connection == Connection::Online);
-        let state = self.store.view();
         let pruned = can_prune && self.ui.prune_collapsed_collections(&state);
         if (collapsed_changed || pruned)
             && let Some(session) = session
@@ -346,8 +358,139 @@ impl ShellView {
         }
         self.overlay_transition(&shell, cx);
         self.shell = shell;
+        self.follow_shell();
         self.load_detail(cx);
         cx.notify();
+    }
+
+    /// The motion clock's time now.
+    fn now(&self) -> Duration {
+        match self.clock {
+            Clock::Live(epoch) => epoch.elapsed(),
+            Clock::Frozen(at) => at,
+        }
+    }
+
+    /// How fast transitions starting now run: Windows' *Animation effects* setting, read each time (it's
+    /// cheap), so a change made while the app runs applies to the next one. The fixtures use full motion.
+    fn pace(&self) -> Pace {
+        if self.animate && win::reduced_motion() {
+            Pace::REDUCED
+        } else {
+            Pace::FULL
+        }
+    }
+
+    /// Before deriving: a choreography follows the data when it changed underneath (another device, an
+    /// agent, a refused command), and the window's state holds back exactly the rows the motion does.
+    fn follow_data(&mut self, state: &todo_core::State) {
+        let (now, pace) = (self.now(), self.pace());
+        self.motion
+            .reconcile(now, pace, |id| state.tasks.get(&id).map(|t| t.is_done()));
+        self.ui.holding = self.motion.holding().collect();
+        let reopening: Vec<TaskId> = self.motion.reopening().collect();
+        self.ui.reopening.retain(|id, _| reopening.contains(id));
+    }
+
+    /// After deriving: the sun heads for the new count (the dusk scene takes it at once), and a released
+    /// row with no place in this list stops entering.
+    fn follow_shell(&mut self) {
+        let now = self.now();
+        let room = &self.shell.room;
+        if room.finished_day() {
+            self.motion.place_sun(room.key, 1., now);
+        } else {
+            let pace = self.pace();
+            self.motion
+                .aim_sun(room.key, sun_at(room.done, room.total), now, pace);
+        }
+        let gone: Vec<TaskId> = self
+            .motion
+            .entering()
+            .filter(|id| !self.shell.rows().any(|r| r.id == *id))
+            .collect();
+        for id in gone {
+            self.motion.forget(id);
+        }
+    }
+
+    /// At the start of each frame: releases rows that have finished leaving (re-deriving the list, the
+    /// counts and the sun's target), then asks for exactly the frames the motion needs: the next one while
+    /// something moves, a single timer while rows only hold still, and nothing at rest.
+    fn drive_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = self.now();
+        self.frame = now;
+        if self.animate && self.motion.due(now) && !self.motion.advance(now).is_empty() {
+            self.refresh(cx);
+        }
+        self.measure_lifts();
+        if !self.animate {
+            return;
+        }
+        match self.motion.wake(now) {
+            Wake::Idle => {}
+            Wake::Frame => window.request_animation_frame(),
+            Wake::At(at) if self.alarm == Some(at) => {}
+            Wake::At(at) => {
+                self.alarm = Some(at);
+                let wait = at.saturating_sub(now);
+                cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    cx.background_executor().timer(wait).await;
+                    let _ = this.update(cx, |v, cx| {
+                        if v.alarm == Some(at) {
+                            v.alarm = None;
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Each row's lift this frame (see `motion::lifts`), or none when nothing is collapsing or entering.
+    fn measure_lifts(&mut self) {
+        self.row_lifts.clear();
+        let frame = self.frame;
+        let heights: Vec<f32> = self
+            .shell
+            .rows()
+            .map(|r| self.motion.row(r.id, frame).map_or(1., |l| l.height))
+            .collect();
+        if heights.iter().any(|&h| h < 1.) {
+            self.row_lifts = lifts(heights);
+        }
+    }
+
+    /// Freezes a screenshot fixture at a moment of a transition (see `fixtures::Moment`), so the gallery
+    /// can show its frames. The view stays still: it never asks for frames.
+    pub fn freeze(&mut self, moment: Moment, cx: &mut Context<Self>) {
+        self.motion = Motion::default();
+        self.clock = Clock::Frozen(Duration::ZERO);
+        let at = match moment {
+            Moment::Completing { task, at } => {
+                self.motion.complete(task, Duration::ZERO, Pace::FULL);
+                at
+            }
+            Moment::Reopening {
+                task,
+                completed,
+                at,
+            } => {
+                self.motion.reopen(task, Duration::ZERO, Pace::FULL);
+                self.ui.reopening.insert(task, completed);
+                at
+            }
+            Moment::SunTravel { from, at } => {
+                let room = self.shell.room.key;
+                let (done, total) = from;
+                let place = sun_at(done, total).unwrap_or_default();
+                self.motion.place_sun(room, place, Duration::ZERO);
+                at
+            }
+        };
+        self.refresh(cx);
+        self.clock = Clock::Frozen(Duration::from_millis(u64::from(at)));
     }
 
     /// In a narrow window, the detail overlay fades out when its task closes (Esc, the scrim, the close
@@ -481,6 +624,8 @@ impl ShellView {
         let revealed = self.ui.select_room(&self.store.view(), room);
         if room_changed {
             self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
+            // A new room starts at rest: rows part way through their choreography are released at once.
+            self.motion.settle_all();
         }
         self.refresh_with_collapse_change(revealed, cx);
     }
@@ -509,37 +654,30 @@ impl ShellView {
         }
     }
 
-    /// Completes or reopens a task. A task completed in the open list holds its place for a moment
-    /// (the checkbox fills, the title dims and strikes through), fades, and then leaves the list.
+    /// Completes or reopens a task. The command applies at once; the row then plays the choreography
+    /// (`model::motion`): a completed task fills, holds its place struck through, collapses and only then
+    /// leaves the open rows, and the counts and the sun follow. A reopened one clears and leaves its
+    /// completed place for the open rows. Toggling it again part way reverses it from where it is.
     fn toggle_complete(&mut self, id: TaskId, cx: &mut Context<Self>) {
         let state = self.store.view();
-        let completing = state.tasks.get(&id).is_some_and(|t| !t.is_done());
-        if let Some(cmd) = commands::toggle_complete(&state, id) {
-            if self.submit(vec![cmd]) && completing {
-                self.ui.holding.insert(id);
-                cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                    let ms = |n: u32| Duration::from_millis(u64::from(n));
-                    cx.background_executor()
-                        .timer(ms(motion::CHECK_TICK_DELAY
-                            + motion::CHECK_TICK
-                            + motion::COMPLETE_HOLD))
-                        .await;
-                    let _ = this.update(cx, |v, cx| {
-                        v.leaving.insert(id);
-                        cx.notify();
-                    });
-                    cx.background_executor()
-                        .timer(ms(motion::ROW_COLLAPSE))
-                        .await;
-                    let _ = this.update(cx, |v, cx| {
-                        v.leaving.remove(&id);
-                        v.ui.holding.remove(&id);
-                        v.refresh(cx);
-                    });
-                })
-                .detach();
-            } else if !completing {
-                self.ui.holding.remove(&id);
+        let Some(task) = state.tasks.get(&id) else {
+            return;
+        };
+        let (was_done, completed_at) = (task.is_done(), task.completed_at);
+        let Some(cmd) = commands::toggle_complete(&state, id) else {
+            return;
+        };
+        if self.submit(vec![cmd]) && self.animate {
+            let (now, pace) = (self.now(), self.pace());
+            let keep = if was_done {
+                self.motion.reopen(id, now, pace)
+            } else {
+                self.motion.complete(id, now, pace)
+            };
+            if keep == Keep::Reopening
+                && let Some(at) = completed_at
+            {
+                self.ui.reopening.insert(id, at);
             }
         }
         self.refresh(cx);
@@ -889,8 +1027,7 @@ impl ShellView {
             .child(div().overflow_hidden().child(landscape(
                 &self.landscape,
                 sky,
-                room.done,
-                room.total,
+                self.motion.sun(self.frame),
             )))
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
     }
@@ -997,7 +1134,9 @@ impl ShellView {
         }
     }
 
-    /// A row, fading out while it leaves after completion.
+    /// A row in its slot of the list. While it plays its choreography it fades and collapses (or grows)
+    /// inside the slot, and the rows below rise by what the rows above them have given up, so the gap
+    /// closes smoothly. The slots keep the list's fixed row height until the row is released.
     fn row_element(
         &self,
         i: usize,
@@ -1005,15 +1144,28 @@ impl ShellView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let row = self.row(i, task, window, cx);
-        if self.leaving.contains(&task.id) {
-            let fade = Animation::new(Duration::from_millis(u64::from(motion::ROW_COLLAPSE)))
-                .with_easing(|t| motion::EXIT.ease(t));
-            row.with_animation(("leaving", i), fade, |el, t| el.opacity(1. - t))
-                .into_any_element()
-        } else {
-            row.into_any_element()
+        let look = self.motion.row(task.id, self.frame);
+        let lift = self.row_lifts.get(i).copied().unwrap_or(0.);
+        let row = self.row(i, task, look, window, cx);
+        if look.is_none() && lift == 0. {
+            return row.into_any_element();
         }
+        let (height, opacity) = look.map_or((1., 1.), |l| (l.height, l.opacity));
+        div()
+            .w_full()
+            .h(px(desktop::ROW))
+            .flex_none()
+            .child(
+                div()
+                    .relative()
+                    .top(px(-lift * desktop::ROW))
+                    .w_full()
+                    .h(px(desktop::ROW * height))
+                    .overflow_hidden()
+                    .opacity(opacity)
+                    .child(row),
+            )
+            .into_any_element()
     }
 
     /// Where the detail pane goes: docked beside the room, over it (a narrow window), or nowhere (see
@@ -1217,6 +1369,7 @@ impl ShellView {
         &self,
         i: usize,
         task: &TaskRow,
+        look: Option<RowLook>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
@@ -1247,12 +1400,16 @@ impl ShellView {
         title_width -= desktop::ROW_GAP;
         let meta = self.meta(task, title_width, window);
         let id = task.id;
-        let check = if task.done && self.ui.holding.contains(&id) {
-            kit::checking(p, selected, desktop::COL_CHECK, ("checking", i)).into_any_element()
-        } else if task.done {
-            kit::checked(p, selected, desktop::COL_CHECK).into_any_element()
-        } else {
-            kit::checkbox(p, overdue, desktop::COL_CHECK).into_any_element()
+        let check = match look {
+            Some(l) => kit::checkbox_at(
+                p,
+                overdue,
+                selected,
+                desktop::COL_CHECK,
+                (l.fill, l.scale, l.tick),
+            ),
+            None if task.done => kit::checked(p, selected, desktop::COL_CHECK),
+            None => kit::checkbox(p, overdue, desktop::COL_CHECK),
         };
         let check = div()
             .id(SharedString::from(format!("check-{id}")))
@@ -1262,15 +1419,7 @@ impl ShellView {
                 cx.stop_propagation();
                 this.toggle_complete(id, cx);
             }));
-        let title = div()
-            .style(ty::TASK_TITLE)
-            .truncate()
-            .child(task.title.clone());
-        let title = if task.done {
-            title.text_color(p.ink_3).line_through()
-        } else {
-            title.text_color(p.ink)
-        };
+        let title = self.title(task, look, title_width, window);
         let row = div()
             .id(SharedString::from(format!("task-{id}")))
             .relative()
@@ -1343,6 +1492,49 @@ impl ShellView {
             let hover = p.hover;
             row.hover(move |s| s.bg(hover))
         }
+    }
+
+    /// A row's title: dimmed and struck through when it's done. While it's being completed or reopened
+    /// the colour fades and the strike-through draws (or withdraws) from the left, in step with the tick;
+    /// at rest it's GPUI's own strike-through, drawn in exactly the same place.
+    fn title(&self, task: &TaskRow, look: Option<RowLook>, width: f32, window: &Window) -> Div {
+        let p = &self.palette;
+        let text = || {
+            div()
+                .style(ty::TASK_TITLE)
+                .truncate()
+                .child(task.title.clone())
+        };
+        let Some(l) = look else {
+            return if task.done {
+                text().text_color(p.ink_3).line_through()
+            } else {
+                text().text_color(p.ink)
+            };
+        };
+        let ink = theme::mix(p.ink, p.ink_3, l.dim);
+        if l.strike >= 1. {
+            return text().text_color(ink).line_through();
+        }
+        if l.strike <= 0. {
+            return text().text_color(ink);
+        }
+        // The same line again, invisible but for its strike-through, cut off where the stroke has reached.
+        let reach = kit::text_width(window, ty::TASK_TITLE, &task.title).min(width);
+        let mut strike = text().w(px(width)).text_color(gpui::transparent_black());
+        strike.text_style().strikethrough = Some(StrikethroughStyle {
+            thickness: px(elevation::HAIRLINE),
+            color: Some(ink),
+        });
+        div().relative().child(text().text_color(ink)).child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(px(reach * l.strike))
+                .overflow_hidden()
+                .child(strike),
+        )
     }
 
     fn list(&self, cx: &mut Context<Self>) -> Div {
@@ -1446,9 +1638,17 @@ impl ShellView {
                     .on_action(
                         cx.listener(|this, _: &PreviousTask, _, cx| this.move_selection(-1, cx)),
                     )
-                    .on_action(cx.listener(|this, _: &ToggleTask, _, cx| {
-                        if let Some(id) = this.ui.task {
-                            this.toggle_complete(id, cx);
+                    // Space completes or reopens the selected task. It's a key handler rather than a
+                    // binding so a held key's repeats can be told apart: only the first press counts,
+                    // and holding Space never flips a task back and forth.
+                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                        if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
+                            cx.stop_propagation();
+                            if !e.is_held
+                                && let Some(id) = this.ui.task
+                            {
+                                this.toggle_complete(id, cx);
+                            }
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, _, cx| this.select_task(None, cx)))
@@ -1830,6 +2030,14 @@ fn handover_child(next: &Tomorrow, id: TaskId) -> Option<usize> {
     None
 }
 
+/// The clock the motion runs on: real time, or a fixed moment for a screenshot fixture.
+#[derive(Clone, Copy, Debug)]
+enum Clock {
+    /// Time since this instant.
+    Live(Instant),
+    Frozen(Duration),
+}
+
 /// The window's focus starts on the task list, where the single-letter keys work.
 impl Focusable for ShellView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -1839,6 +2047,7 @@ impl Focusable for ShellView {
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drive_motion(window, cx);
         let p = self.palette;
         self.mount_overlay(Width::of(f32::from(window.viewport_size().width)));
         let quick_add = self.quick_add_field(window, cx);

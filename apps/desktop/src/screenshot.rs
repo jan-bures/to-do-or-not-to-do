@@ -239,6 +239,9 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                     );
                     shell.preview_caption(caption);
                     shell.still();
+                    if let Some(moment) = fixture.moment {
+                        shell.freeze(moment, cx);
+                    }
                     shell
                 });
                 // GPUI's own focus, inside the window: nothing is activated or shown.

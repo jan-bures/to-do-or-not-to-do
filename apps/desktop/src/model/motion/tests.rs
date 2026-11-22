@@ -251,6 +251,20 @@ fn the_sun_snaps_in_a_new_room_with_reduced_motion_and_when_it_appears() {
 }
 
 #[test]
+fn a_placed_sun_glides_back_from_where_it_was_put() {
+    let mut mo = Motion::default();
+    mo.aim_sun(MY_DAY, Some(11. / 12.), ms(0), Pace::FULL);
+    // The day finishes: the dusk scene takes the sun, with no travel to draw.
+    mo.place_sun(MY_DAY, 1., ms(100));
+    assert_eq!(mo.sun(ms(100)), Some(1.));
+    assert_eq!(mo.wake(ms(100)), Wake::Idle);
+    // A task reopens: it glides back from the end of the arc.
+    mo.aim_sun(MY_DAY, Some(11. / 12.), ms(200), Pace::FULL);
+    assert_eq!(mo.sun(ms(200)), Some(1.));
+    assert_eq!(mo.wake(ms(200)), Wake::Frame);
+}
+
+#[test]
 fn rows_below_a_collapsing_row_rise_by_the_share_that_has_gone() {
     assert_eq!(lifts([1., 0.25, 1., 0.5, 1.]), [0., 0., 0.75, 0.75, 1.25]);
     assert!(lifts([]).is_empty());

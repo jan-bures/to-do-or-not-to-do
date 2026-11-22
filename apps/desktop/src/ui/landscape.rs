@@ -1,8 +1,9 @@
 //! The header landscape: the sky with two flat hills and the sun on its arc, or the finished day's dusk.
 //!
 //! The geometry is `todo_design::landscape::Landscape`, the same shapes Compose and the web draw. Here it
-//! becomes a handful of single-colour GPUI paths, cached per bounds and progress: they are rebuilt when the
-//! window is resized or the count changes, never per frame. No clipping, blur or masks.
+//! becomes a handful of single-colour GPUI paths, cached per bounds and the sun's place: they are rebuilt
+//! when the window is resized or the sun moves (every frame only while it travels to a new count, see
+//! `model::motion`), and never at rest. No clipping, blur or masks.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,8 +37,8 @@ enum Ink {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Key {
     bounds: Bounds<Pixels>,
-    done: u32,
-    total: u32,
+    /// The sun's place on its arc, 0 to 1, or `None` for hills only.
+    sun: Option<f32>,
     scene: Scene,
     stars: bool,
 }
@@ -152,7 +153,6 @@ fn build(key: Key) -> Vec<(Path, Ink)> {
         Scene::Finished => Landscape::finished(width),
     };
     let finished = key.scene == Scene::Finished;
-    let progress = Landscape::progress(key.done as usize, key.total as usize);
     let mut out = Vec::new();
     let mut push = |path: Option<Path>, ink| {
         if let Some(path) = path {
@@ -167,7 +167,7 @@ fn build(key: Key) -> Vec<(Path, Ink)> {
     if let Some(moon) = land.moon() {
         push(shape(origin, &moon), Ink::Moon);
     }
-    if Landscape::shows_sun(key.total as usize) || finished {
+    if let Some(progress) = key.sun.or(finished.then_some(1.0)) {
         if finished {
             push(
                 polyline(origin, &land.travelled(1.0), TRAVELLED_STROKE_FINISHED),
@@ -237,10 +237,16 @@ fn color(sky: &Sky, ink: Ink) -> Hsla {
     }
 }
 
-/// The landscape. It fills its parent's width; its height is the scene's (`desktop::LANDSCAPE` or
+/// Where `done` of `total` puts the sun on its arc, or `None` when there's nothing to keep score of.
+pub fn sun_at(done: u32, total: u32) -> Option<f32> {
+    Landscape::shows_sun(total as usize).then(|| Landscape::progress(done as usize, total as usize))
+}
+
+/// The landscape, with the sun at `sun` on its arc (0 to 1; `None` for a room without tasks, which shows
+/// hills only). It fills its parent's width; its height is the scene's (`desktop::LANDSCAPE` or
 /// `landscape::HEIGHT_FINISHED`). In the finished scene the dusk gradient also runs behind the header text,
 /// so the parent paints `dusk.top` above it.
-pub fn landscape(cache: &LandscapeCache, sky: Sky, done: u32, total: u32) -> impl IntoElement {
+pub fn landscape(cache: &LandscapeCache, sky: Sky, sun: Option<f32>) -> impl IntoElement {
     let cache = cache.clone();
     let (scene, stars, height) = match sky {
         Sky::Slim(p) => (Scene::Slim, p.night(), crate::theme::desktop::LANDSCAPE),
@@ -250,8 +256,7 @@ pub fn landscape(cache: &LandscapeCache, sky: Sky, done: u32, total: u32) -> imp
         move |bounds, _window, _cx| {
             let key = Key {
                 bounds,
-                done,
-                total,
+                sun,
                 scene,
                 stars,
             };

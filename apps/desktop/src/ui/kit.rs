@@ -14,8 +14,8 @@ use gpui::{
 use crate::assets::{glyph_path, icon_path};
 use crate::model::ListRef;
 use crate::theme::{
-    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, desktop, elevation, motion,
-    radius, space, ty,
+    self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius,
+    space, ty,
 };
 
 /// A Lucide icon, tinted like text. `size` is `component::ICON` (18) in toolbars and rows and
@@ -53,6 +53,9 @@ pub fn checkbox(p: &Palette, overdue: bool, size: f32) -> Div {
         .bg(bg)
 }
 
+/// The tick's size against its checkbox.
+const TICK: f32 = 0.75;
+
 /// A checked checkbox. On a selected (`wash`) row it uses `check_selected`, which keeps 3:1 there.
 pub fn checked(p: &Palette, on_wash: bool, size: f32) -> Div {
     div()
@@ -63,57 +66,56 @@ pub fn checked(p: &Palette, on_wash: bool, size: f32) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(Icon::Check, size * 0.75, p.on_accent))
+        .child(icon(Icon::Check, size * TICK, p.on_accent))
 }
 
-/// A checkbox being checked: the fill pops in (`CHECK_FILL`, the overshoot curve), then the tick draws
-/// from left to right (`CHECK_TICK` after `CHECK_TICK_DELAY`). Plays once.
-pub fn checking(
+/// A checkbox on its way between empty and checked (see `model::motion::RowLook`): the disc at `fill`
+/// opacity and `scale`, over the empty ring until it covers it, and the tick drawn `tick` of the way from
+/// the left. At `(1, 1, 1)` it is exactly [`checked`], and at `fill` 0 exactly [`checkbox`].
+pub fn checkbox_at(
     p: &Palette,
+    overdue: bool,
     on_wash: bool,
     size: f32,
-    id: impl Into<gpui::ElementId>,
-) -> impl IntoElement {
-    use gpui::{Animation, AnimationExt};
-    use std::time::Duration;
-    let ms = |n: u32| Duration::from_millis(u64::from(n));
-    let fill = if on_wash { p.check_selected } else { p.accent };
-    let id = id.into();
-    let disc = div().size(px(size)).rounded_full().bg(fill).with_animation(
-        (id.clone(), "fill"),
-        Animation::new(ms(motion::CHECK_FILL)).with_easing(|t| motion::POP.ease(t)),
-        move |el, t| {
-            let s = size * (0.55 + 0.45 * t);
-            el.size(px(s))
-        },
-    );
-    let tick_size = size * 0.75;
-    let tick_total = motion::CHECK_TICK_DELAY + motion::CHECK_TICK;
-    let delay = motion::CHECK_TICK_DELAY as f32 / tick_total as f32;
-    let tick = div()
-        .absolute()
-        .left(px((size - tick_size) / 2.))
-        .top(px((size - tick_size) / 2.))
-        .h(px(tick_size))
-        .overflow_hidden()
-        .child(icon(Icon::Check, tick_size, p.on_accent))
-        .with_animation(
-            (id, "tick"),
-            Animation::new(ms(tick_total)),
-            move |el, t| {
-                let drawn = ((t - delay) / (1. - delay)).clamp(0., 1.);
-                el.w(px(tick_size * motion::STANDARD.ease(drawn)))
-            },
-        );
+    (fill, scale, tick): (f32, f32, f32),
+) -> Div {
+    let covered = fill >= 1. && scale >= 1.;
+    let disc = size * scale;
+    let tick_size = size * TICK;
+    let inset = |s: f32| px((size - s) / 2.);
+    let color = if on_wash { p.check_selected } else { p.accent };
     div()
         .relative()
         .size(px(size))
         .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(disc)
-        .child(tick)
+        .when(!covered, |d| {
+            d.child(checkbox(p, overdue, size).absolute().top_0().left_0())
+        })
+        .when(fill > 0., |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .left(inset(disc))
+                    .top(inset(disc))
+                    .size(px(disc))
+                    .rounded_full()
+                    .bg(theme::with_alpha(color, color.a * fill)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(inset(tick_size))
+                    .top(inset(tick_size))
+                    .h(px(tick_size))
+                    .w(px(tick_size * tick))
+                    .overflow_hidden()
+                    .child(icon(
+                        Icon::Check,
+                        tick_size,
+                        theme::with_alpha(p.on_accent, p.on_accent.a * fill),
+                    )),
+            )
+        })
 }
 
 /// An agent's round letter mark: the letter at half the mark's size, with a 1 px inset ring.

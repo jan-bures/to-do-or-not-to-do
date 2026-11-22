@@ -15,6 +15,7 @@ use todo_core::time::{Date, Timestamp, Weekday};
 use todo_core::{AccessLevel, Actor, AgentId, Grants, State, apply, decide};
 
 use crate::model::{Now, RoomKey, Smart, SyncInfo, UiState};
+use crate::theme::motion as m;
 
 /// A fixture: data, UI state, sync status and clock.
 #[derive(Clone, Debug)]
@@ -25,6 +26,24 @@ pub struct Fixture {
     pub now: Now,
     /// Text typed into the room's quick-add, to show its focused state.
     pub quick_add_text: Option<&'static str>,
+    /// A moment part way through a transition, which the screenshot freezes (`ShellView::freeze`).
+    pub moment: Option<Moment>,
+}
+
+/// A moment part way through a transition, for the gallery's frozen frames. Times are milliseconds into
+/// the transition, made from the design's durations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moment {
+    /// `task` was just completed.
+    Completing { task: TaskId, at: u32 },
+    /// `task`, completed at `completed`, was just reopened.
+    Reopening {
+        task: TaskId,
+        completed: Timestamp,
+        at: u32,
+    },
+    /// The sun travelling from `from` (done, total) to the fixture's count.
+    SunTravel { from: (u32, u32), at: u32 },
 }
 
 impl Fixture {
@@ -54,6 +73,18 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "finished" | "finished-short" => Some(finished()),
         "finished-nothing-tomorrow" => Some(finished_nothing_tomorrow()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
+        // The completion choreography, frozen: the disc popping and the tick drawing, the hold, half way
+        // through the collapse; the sun half way to the new count; a reopened task half way out of
+        // Completed.
+        "completing-fill" => Some(completing(m::CHECK_TICK_DELAY + m::CHECK_TICK / 4)),
+        "completing-hold" => Some(completing(
+            m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD / 2,
+        )),
+        "completing-collapse-50" => Some(completing(
+            m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE / 2,
+        )),
+        "sun-travel-50" => Some(sun_travel(m::SUN_TRAVEL / 2)),
+        "reopening-collapse-50" => Some(reopening(m::OVERLAY_OUT + m::ROW_COLLAPSE / 2)),
         _ => None,
     }
 }
@@ -650,7 +681,85 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
         sync: online("2026-11-21T10:34:00Z"),
         now: Now::fixed(now),
         quick_add_text: None,
+        moment: None,
     }
+}
+
+/// The task whose title starts with `prefix`.
+fn titled(state: &State, prefix: &str) -> TaskId {
+    state
+        .tasks
+        .values()
+        .find(|t| t.title.starts_with(prefix))
+        .map(|t| t.id)
+        .unwrap_or_else(|| TaskId::from_uuid(uuid::Uuid::nil()))
+}
+
+/// The task the motion fixtures complete: a plain one-off task in My Day, from mail, due within the hour.
+const COMPLETED: &str = "Send venue";
+
+/// My Day with the venue task just completed, `at` ms into its choreography (still in the open rows).
+fn completing(at: u32) -> Fixture {
+    let (mut b, l) = sample();
+    let task = titled(&b.state, COMPLETED);
+    b.run(&owner(), MORNING, Command::CompleteTask { id: task });
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    );
+    f.ui.holding.insert(task);
+    f.moment = Some(Moment::Completing { task, at });
+    f
+}
+
+/// My Day after the venue task has left: the sun `at` ms into its travel from 3 to 4 of 12.
+fn sun_travel(at: u32) -> Fixture {
+    let (mut b, l) = sample();
+    let task = titled(&b.state, COMPLETED);
+    b.run(&owner(), MORNING, Command::CompleteTask { id: task });
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    );
+    f.moment = Some(Moment::SunTravel { from: (3, 12), at });
+    f
+}
+
+/// My Day with Completed open and its newest task just reopened, `at` ms into leaving its place there.
+fn reopening(at: u32) -> Fixture {
+    let (mut b, l) = sample();
+    let task = titled(&b.state, "Reply to the landlord");
+    let completed = b.state.tasks.get(&task).and_then(|t| t.completed_at);
+    b.run(&owner(), MORNING, Command::UncompleteTask { id: task });
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            show_completed: true,
+            ..UiState::default()
+        },
+        MORNING,
+    );
+    if let Some(completed) = completed {
+        f.ui.reopening.insert(task, completed);
+        f.moment = Some(Moment::Reopening {
+            task,
+            completed,
+            at,
+        });
+    }
+    f
 }
 
 /// My Day, 3 of 12 done (the F2 light mockup).
@@ -905,6 +1014,7 @@ pub fn pairing() -> Fixture {
         sync: SyncInfo::signed_out(),
         now: Now::fixed(MORNING),
         quick_add_text: None,
+        moment: None,
     }
 }
 

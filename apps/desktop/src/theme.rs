@@ -27,6 +27,21 @@ pub fn with_alpha(c: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..c }
 }
 
+/// `a` blended towards `b` by `t` (0 to 1), in sRGB, for colour fades (a title dimming as it's struck
+/// through). Blending the channels avoids the hue wrapping round that mixing HSL would risk.
+pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let t = t.clamp(0., 1.);
+    let (a, b) = (a.to_rgb(), b.to_rgb());
+    let ch = |x: f32, y: f32| x + (y - x) * t;
+    gpui::Rgba {
+        r: ch(a.r, b.r),
+        g: ch(a.g, b.g),
+        b: ch(a.b, b.b),
+        a: ch(a.a, b.a),
+    }
+    .into()
+}
+
 /// The room palette in GPUI colours: the tokens the shell draws with. See `todo_design::Palette` for what
 /// each one is for.
 #[derive(Clone, Copy, Debug, PartialEq)]

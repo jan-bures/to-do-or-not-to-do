@@ -683,7 +683,7 @@ impl Render for PairingView {
                             )
                             .child(div().style(ty::ROOM_TITLE).text_color(p.ink).child(title)),
                     )
-                    .child(landscape(&self.landscape, Sky::Slim(p), 0, 0)),
+                    .child(landscape(&self.landscape, Sky::Slim(p), None)),
             )
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
             .child(

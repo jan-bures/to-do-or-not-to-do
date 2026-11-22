@@ -512,16 +512,20 @@ impl Motion {
                     span: pace.movement(m::SUN_TRAVEL),
                 });
             }
-            _ => {
-                self.sun = Some(Travel {
-                    room,
-                    from: to,
-                    to,
-                    start: now,
-                    span: Duration::ZERO,
-                });
-            }
+            _ => self.place_sun(room, to, now),
         }
+    }
+
+    /// Puts the sun at `to` at once, without travelling: the finished day's dusk scene sets it behind the
+    /// hills itself. Leaving that scene, the sun then glides back from the end of the arc.
+    pub fn place_sun(&mut self, room: RoomKey, to: f32, now: Duration) {
+        self.sun = Some(Travel {
+            room,
+            from: to,
+            to,
+            start: now,
+            span: Duration::ZERO,
+        });
     }
 
     /// The sun's place on its arc now (0 to 1), or `None` without a sun.

@@ -53,6 +53,11 @@ pub const FIXTURES: &[&str] = &[
     "pairing-code",
     "open-failed",
     "open-failed-confirm",
+    "completing-fill",
+    "completing-hold",
+    "completing-collapse-50",
+    "sun-travel-50",
+    "reopening-collapse-50",
 ];
 
 /// What to do.

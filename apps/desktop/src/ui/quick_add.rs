@@ -10,7 +10,7 @@ use gpui::{
 
 use super::input::{InputEvent, TextInput};
 use super::kit;
-use super::landscape::{LandscapeCache, Sky, landscape};
+use super::landscape::{LandscapeCache, Sky, landscape, sun_at};
 use super::shell::quick_add_colors;
 use crate::model::Smart;
 use crate::theme::{
@@ -201,8 +201,7 @@ impl Render for QuickAddView {
                     .child(landscape(
                         &self.landscape,
                         Sky::Slim(p),
-                        self.done,
-                        self.total,
+                        sun_at(self.done, self.total),
                     )),
             )
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
