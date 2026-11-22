@@ -388,31 +388,58 @@ sessions, device and agent tokens, and share links all keep working, because the
 change. Forwarded emails wait in the Email Worker's retry queue meanwhile.
 
 Plan for 30 minutes. Besides the variables from [Google Cloud: create the VM](#google-cloud-create-the-vm),
-the blocks below use two of the pilot's directories:
+the blocks below use two of the pilot's directories and its port:
 
 ```powershell
 $data = "$env:LOCALAPPDATA\todo"   # the pilot's directory: server.toml, backup.toml, secrets, bin\, backup-state\
 $db = $data                        # the pilot's data_dir: the databases and attachments.key
+$port = 47320                      # the port in the pilot's bind
 ```
 
 `$db` must be the `data_dir` from `$data\server.toml`, as an absolute path. It needn't be `$data` itself: a
 pilot whose `data_dir` is a `data` subdirectory keeps its databases and `attachments.key` in `$data\data`,
-and `$data` then holds no database at all. Check before the day.
+and `$data` then holds no database at all. `$port` is the port in its `bind`, which the tunnel's public
+hostname points at. Check both before the day. The VM's shell blocks below use 47320; put the pilot's port
+there if it differs.
 
 The copies below are taken with SQLite's `VACUUM INTO`, which writes one complete, self-contained file, WAL
 included. **Never copy the raw `*.sqlite3*` files:** a pilot stopped from outside may leave changes in its
 `-wal` file, and the `-shm` file must not travel at all. The PC needs Python 3 (`python` on `PATH`) for these
-two helpers; paste them into the session:
+helpers; paste them into the session:
 
 ```powershell
+# Prints the integrity check of an SQLite database, opened read-only. It must print 'ok'.
+function Test-Database([string]$Path) {
+    python -c "import sqlite3,sys,pathlib; print(sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=ro', uri=True).execute('pragma integrity_check').fetchone()[0])" $Path
+}
 # Writes a consistent copy of an SQLite database with VACUUM INTO. The source is opened read-only, so it
 # stays exactly as it was. Prints the copy's integrity check, which must be 'ok'.
 function Copy-Database([string]$From, [string]$To) {
-    python -c "import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro', uri=True); c.execute('VACUUM INTO ?', (sys.argv[2],)); c.close(); print(sqlite3.connect(sys.argv[2]).execute('pragma integrity_check').fetchone()[0])" $From $To
+    python -c "import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=ro', uri=True); c.execute('VACUUM INTO ?', (sys.argv[2],)); c.close()" $From $To
+    if ($LASTEXITCODE) { throw "could not copy $From" }
+    Test-Database $To
 }
 # Prints the event count and max(seq) of a task database.
 function Get-EventCount([string]$Path) {
-    python -c "import sqlite3,sys,pathlib; print(sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro', uri=True).execute('select count(*), max(seq) from events').fetchone())" $Path
+    python -c "import sqlite3,sys,pathlib; print(sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=ro', uri=True).execute('select count(*), max(seq) from events').fetchone())" $Path
+}
+# Writes SHA256SUMS, in sha256sum's format, for every file below a directory.
+function Write-Sha256Sums([string]$Dir) {
+    $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\') + '\'
+    $lines = Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object Name -ne 'SHA256SUMS' | ForEach-Object {
+        '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.FullName.Substring($root.Length).Replace('\', '/')
+    }
+    [IO.File]::WriteAllText("${root}SHA256SUMS", (($lines -join "`n") + "`n"))
+}
+# Checks every file that a directory's SHA256SUMS lists. Throws if one is missing or differs.
+function Test-Sha256Sums([string]$Dir) {
+    Get-Content -LiteralPath (Join-Path $Dir 'SHA256SUMS') | ForEach-Object {
+        $hash, $name = $_ -split '\s+\*?', 2
+        $file = Join-Path $Dir $name
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "$name is missing" }
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash) { throw "$name differs" }
+    }
+    'checksums ok'
 }
 ```
 
@@ -448,12 +475,27 @@ function Get-EventCount([string]$Path) {
    ```powershell
    Disable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
    ./deploy/windows/stop-pilot.ps1
-   try { $null = Invoke-WebRequest http://127.0.0.1:47320/health -UseBasicParsing -TimeoutSec 3; 'STILL RUNNING' } catch { 'stopped' }
+   # What must be gone: the supervisor, anything run from the pilot's directory (todo-server, todo-backup),
+   # the pilot's connector, and whatever listens on its port.
+   $left = @(Get-CimInstance Win32_Process | Where-Object {
+       $_.CommandLine -like "*$data\bin\run-pilot.ps1*" -or $_.ExecutablePath -like "$data\*" -or
+       ($_.Name -eq 'cloudflared.exe' -and $_.CommandLine -like "*$data\cloudflared-token*")
+   })
+   $left += @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+       ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)" })
+   if ($left) {
+       $left | Format-Table ProcessId, Name, CommandLine -AutoSize | Out-Host
+       throw 'THE PILOT IS STILL RUNNING. Stop these processes, then run this block again.'
+   } else { 'stopped' }
    ```
 
-   It must print `stopped`. The disabled logon task can't start a second server on the old database at the
-   next logon, and it stays in place for a [rollback](#roll-back). Neither command needs admin rights. Remove
-   the task with `uninstall-pilot.ps1` once the VM has run for a while (see [Verify](#verify)).
+   It must print `stopped`. If it lists processes instead, don't go on: the copies in step 3 would miss what
+   the pilot still writes, and its connector would keep serving next to the VM's. Stop them
+   (`Stop-Process -Id <pid>`) and run the block again.
+
+   The disabled logon task can't start a second server on the old database at the next logon, and it stays in
+   place for a [rollback](#roll-back). None of this needs admin rights. Remove the task with
+   `uninstall-pilot.ps1` once the VM has run for a while (see [Verify](#verify)).
 
    **Downtime starts.** Until the VM's connector registers in step 8, the hostname answers with a Cloudflare
    tunnel error. Expect 502 rather than 530 at first: stopping the processes doesn't unregister the pilot's
@@ -506,18 +548,31 @@ function Get-EventCount([string]$Path) {
 
    Leave `attachments-spool\`: it holds only leftovers of interrupted uploads, which the server deletes when
    it starts.
-5. **Copy and remove.** From inside `$data\move`, with relative names:
+5. **Copy to the VM.** Record the checksums, then copy from inside `$data\move`, with relative names:
 
    ```powershell
+   Write-Sha256Sums "$data\move"
    Push-Location "$data\move"
-   & $gcloud compute ssh $instance @g --command 'mkdir -m 700 move'
+   & $gcloud compute ssh $instance @g --command 'mkdir -p -m 700 move'
+   if ($LASTEXITCODE) { Pop-Location; throw "ssh failed (exit code $LASTEXITCODE)" }
    & $gcloud compute scp @g --recurse * "${instance}:move/"
+   if ($LASTEXITCODE) { Pop-Location; throw "scp failed (exit code $LASTEXITCODE): run this block again" }
    Pop-Location
-   Remove-Item -Recurse "$data\move"
    ```
 
-6. **Put everything in place.** On the VM, in an interactive session. First check that nothing on the VM runs
-   or would start by itself:
+   Keep `$data\move` until step 7 has passed: it is the fallback if the copy on the VM turns out damaged.
+6. **Check and put everything in place.** On the VM, in an interactive session. First check what arrived:
+
+   ```sh
+   cd ~/move
+   sha256sum --check --strict SHA256SUMS
+   for db in todo attachments; do sqlite3 -readonly "$db.sqlite3" 'PRAGMA integrity_check'; done
+   sqlite3 -readonly todo.sqlite3 'select count(*), max(seq) from events'
+   cd
+   ```
+
+   Every file must say `OK`, both checks `ok`, and the count and `max(seq)` must match step 3. If not, copy
+   again (step 5). Then check that nothing on the VM runs or would start by itself:
 
    ```sh
    systemctl is-enabled todo-server todo-tunnel todo-backup-frequent.timer todo-backup-daily.timer
@@ -541,7 +596,7 @@ function Get-EventCount([string]$Path) {
    # Optional: keep this month's backup operation count.
    sudo install -d -m 0700 -o todo -g todo /var/lib/todo/backup-state
    sudo install -m 0600 -o todo -g todo budget.json /var/lib/todo/backup-state/
-   cd && shred -u move/* 2> /dev/null; rm -rf move
+   cd && find move -type f -exec shred -u {} + && rm -rf move
    ```
 
    Unless you staged it, write `/etc/todo/backup.toml` from `backup.toml.example`, with the pilot's `recipient`.
@@ -555,7 +610,9 @@ function Get-EventCount([string]$Path) {
    ```
 
    The count and `max(seq)` must match step 3. Run `sqlite3` as `todo`: as root it could create WAL files that
-   the server can't open. Rotating the log epoch isn't needed, because this is the complete log.
+   the server can't open. Rotating the log epoch isn't needed, because this is the complete log. Once the
+   server is healthy on that count, remove the staging copy on the PC, which holds plaintext data and secrets:
+   `Remove-Item -Recurse "$data\move"`.
 8. **Point the tunnel at the VM.**
 
    ```sh
@@ -602,42 +659,55 @@ function Get-EventCount([string]$Path) {
 
 ### Roll back
 
+The VM's connector must never start again next to the pilot's. `provision.sh` enables and starts the tunnel
+whenever `/etc/cloudflared/todo-tunnel.token` exists, and replaying step 8 would install the staged
+`/root/todo-tunnel.token` again, so a rollback removes both copies of the token from the VM.
+
 **Before the VM took any writes,** for example because step 7 or 8 failed:
 
 ```sh
 sudo systemctl disable --now todo-tunnel
 sudo systemctl stop todo-server
-sudo shred -u /etc/cloudflared/todo-tunnel.token
+for f in /etc/cloudflared/todo-tunnel.token /root/todo-tunnel.token; do
+    if sudo test -e "$f"; then sudo shred -u "$f"; fi
+    if sudo test -e "$f"; then echo "STILL THERE: $f"; else echo "gone: $f"; fi
+done
+systemctl is-active todo-tunnel todo-server
 ```
+
+Both files must say `gone`, and both units `inactive` (or `failed`). Only then, on the PC:
 
 ```powershell
 ./deploy/windows/install-pilot.ps1 -Start
 ```
 
 `install-pilot.ps1` registers the logon task again, enabled, and starts the pilot. The pilot's database is
-exactly as it was when you stopped it. The token comes off the VM because `provision.sh` enables and starts
-the tunnel whenever `/etc/cloudflared/todo-tunnel.token` exists: a later run would otherwise put the VM's
-connector next to the pilot's. For the next attempt, stage the token at `/root/todo-tunnel.token` again.
+exactly as it was when you stopped it. For the next attempt, stage the token at `/root/todo-tunnel.token`
+again.
 
 **After the VM took writes,** bring its data back so they aren't lost. That is both databases (tasks and the
 attachment registry), and the attachment key with them. With the R2 attachment store (`store = "r2"`), the
 attachments themselves are already in R2 and there are no local blobs to bring; with the local store, the
 VM's `blobs/` comes along too.
 
-1. **Stop everything on the VM, and check.**
+1. **Stop everything on the VM, remove the token, and check.**
 
    ```sh
    sudo systemctl disable --now todo-tunnel todo-backup-frequent.timer todo-backup-daily.timer
    sudo systemctl stop 'todo-backup@*' todo-server
    sudo systemctl disable todo-server
-   sudo shred -u /etc/cloudflared/todo-tunnel.token
+   for f in /etc/cloudflared/todo-tunnel.token /root/todo-tunnel.token; do
+       if sudo test -e "$f"; then sudo shred -u "$f"; fi
+       if sudo test -e "$f"; then echo "STILL THERE: $f"; else echo "gone: $f"; fi
+   done
    systemctl is-active todo-tunnel todo-server todo-backup-frequent.timer todo-backup-daily.timer \
        todo-backup@frequent todo-backup@daily
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:47320/health
    ```
 
-   Every `is-active` line must say `inactive` (or `failed`), and curl must print `000`. Don't go on until they
-   do: a server or a backup still running could change the files while you copy them.
+   Both token files must say `gone`, every `is-active` line `inactive` (or `failed`), and curl must print
+   `000`. Don't go on until they do: a server or a backup still running could change the files while you copy
+   them.
 2. **Take consistent copies.** `VACUUM INTO` writes a complete, self-contained copy of each database, WAL
    included; never copy the raw files. As `todo`, so no file in the data directory changes owner:
 
@@ -651,14 +721,15 @@ VM's `blobs/` comes along too.
        sqlite3 -readonly rollback/todo.sqlite3 "select count(*), max(seq) from events"
        cd rollback && sha256sum todo.sqlite3 attachments.sqlite3 attachments.key > SHA256SUMS'
    # Local attachment store only:
-   sudo -u todo cp -r /var/lib/todo/blobs /var/lib/todo/rollback/
+   sudo -u todo sh -c 'set -e; umask 077; cd /var/lib/todo/rollback && cp -r ../blobs . &&
+       find blobs -type f -exec sha256sum {} + >> SHA256SUMS'
    ```
 
    Each `integrity_check` must print `ok`. Note the event count and `max(seq)`. Instead of the `VACUUM INTO`
    copies you can also take a backup (`sudo systemctl start todo-backup@daily`, then `todo-backup restore` on
    the PC as in step 3 of the cutover), but only for `todo.sqlite3`: the attachment registry isn't backed up.
-3. **Fetch them.** Move the copies to your home on the VM, fetch them into a folder of yours on the PC
-   (relative names again), then remove them from the VM:
+3. **Fetch them.** Move the copies to your home on the VM, then fetch them into a folder of yours on the PC
+   (relative names again):
 
    ```sh
    sudo mv /var/lib/todo/rollback ~/rollback && sudo chown -R "$USER": ~/rollback
@@ -666,25 +737,31 @@ VM's `blobs/` comes along too.
 
    ```powershell
    & $gcloud compute scp @g --recurse "${instance}:rollback" .
+   if ($LASTEXITCODE) { throw "scp failed (exit code $LASTEXITCODE): run it again" }
    ```
+
+   Leave the copy on the VM until the next step has passed.
+4. **Check them on the PC,** in the folder you fetched to:
+
+   ```powershell
+   Test-Sha256Sums rollback
+   Test-Database rollback\todo.sqlite3
+   Test-Database rollback\attachments.sqlite3
+   Get-EventCount rollback\todo.sqlite3
+   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash "$db\attachments.key").Hash
+   ```
+
+   It must print `checksums ok`, `ok` twice, the event count and `max(seq)` from step 2, and `True`. If a file
+   is missing or differs, fetch it again (step 3). `True` means the VM ran with the pilot's attachment key. If
+   it prints `False`, the VM made a key of its own, and attachments uploaded on the VM need the VM's key. Stop
+   here and sort that out before anything replaces the pilot's key.
+
+   Only once everything passed, remove the copy from the VM:
 
    ```sh
    find ~/rollback -type f -exec shred -u {} + && rm -rf ~/rollback
    ```
 
-4. **Check them on the PC.** In the folder you fetched to, compare each file with `SHA256SUMS`:
-
-   ```powershell
-   Get-Content rollback\SHA256SUMS | ForEach-Object {
-       $hash, $name = $_ -split '\s+\*?', 2
-       if ((Get-FileHash "rollback\$name" -Algorithm SHA256).Hash -ne $hash) { throw "$name differs" }
-   }
-   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash "$db\attachments.key").Hash
-   ```
-
-   The last line must print `True`: the VM ran with the pilot's attachment key. If it prints `False`, the VM
-   made a key of its own, and attachments uploaded on the VM need the VM's key. Stop here and sort that out
-   before anything replaces the pilot's key.
 5. **Swap them in.** Move the pilot's databases aside, then put the copies in their place, in the pilot's
    `data_dir`:
 
@@ -700,7 +777,7 @@ VM's `blobs/` comes along too.
 
    ```powershell
    ./deploy/windows/install-pilot.ps1 -NoRegister -NoTunnel -Start
-   Invoke-RestMethod http://127.0.0.1:47320/health   # the pilot's port, if it uses another
+   Invoke-RestMethod "http://127.0.0.1:$port/health"
    ./deploy/windows/stop-pilot.ps1
    ```
 
@@ -847,12 +924,15 @@ The always-free tier covers:
 
 Things that can cost money, so check them:
 
-- **The external IPv4 address.** It is billed by the hour, and at the time of writing the first 720 hours a
-  month per billing account are free. A 30-day month has exactly 720 hours, so it costs nothing; a 31-day
-  month costs the remaining 24 hours, a small amount but enough to trip a budget alert at 1% (see below).
-  Check the current terms on the VPC pricing page.
-- **IPv6 instead of IPv4.** External IPv6 addresses aren't charged, but a VM gets one only on the **Premium
-  tier**, whose free internet egress is 1 GB a month instead of the Standard tier's 200 GB. Backups and
+- **The external IPv4 address.** The VPC pricing page lists an hourly charge for in-use external IPv4
+  addresses. When this runbook was written, the SKU for a VM's address in the Cloud Billing catalog (Billing →
+  Pricing in the console, "External IP Charge on a Standard VM") had a free tier of 720 hours a month per
+  billing account; the pricing page itself doesn't mention it. Look the SKU up for your account. If that tier
+  still applies, a 30-day month costs nothing for the address and a 31-day month about 24 hours' worth: a
+  small amount, but enough to trip a budget alert at 1% (see below).
+- **IPv6 instead of IPv4.** The VPC pricing page lists no charge for external IPv6 addresses, but a VM gets
+  one only on the **Premium tier** (`gcloud compute instances network-interfaces update --ipv6-network-tier`
+  accepts only `PREMIUM`), whose free internet egress is 1 GB a month instead of the Standard tier's 200 GB. Backups and
   attachment downloads can pass 1 GB in a busy month. Even trying it costs: with a dual-stack interface, Linux
   prefers IPv6 wherever the other end has it (apt, R2 and Cloudflare's edge all do), so egress moves to the
   Premium tier as soon as the address is added. Keep the VM on IPv4 and the Standard tier, and accept the
@@ -878,4 +958,4 @@ $billingAccount = '<billing-account-id>'
 ```
 
 Or use Billing → Budgets & alerts in the console. The alert emails the billing admins. It doesn't stop
-anything. Expect the 1% alert in every 31-day month, for the IPv4 address's extra hours.
+anything. If the IPv4 address has the free hours described above, expect the 1% alert in every 31-day month.
