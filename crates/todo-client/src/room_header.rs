@@ -17,17 +17,19 @@
 //! A task still playing its completion (the client's *holding* set) counts as open until it has left the
 //! rows, so the counts and the sun change only then.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
-use todo_core::model::Task;
+use todo_core::model::{Stamp, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Query};
 use todo_core::time::{Date, Timestamp, Weekday};
 
 use crate::activity;
 use crate::intent::confirm::one_line;
+pub use crate::intent::organize::{is_actionable as task_live, list_live};
 use crate::intent::quick_add::long_date;
 
 /// A built-in smart list, in sidebar order.
@@ -176,7 +178,13 @@ impl LocalTime {
     /// The local date of `ts`.
     #[must_use]
     pub fn date_of(&self, ts: Timestamp) -> Date {
-        self.zone.date_of(ts)
+        self.civil_time_at(ts).date()
+    }
+
+    /// The owner's wall time at `ts`, with that instant's offset.
+    #[must_use]
+    pub fn civil_time_at(&self, ts: Timestamp) -> DateTime {
+        self.zone.offset_at(ts).to_datetime(ts)
     }
 
     /// The query evaluation context, with the same local dates as the header.
@@ -184,26 +192,6 @@ impl LocalTime {
     pub fn eval(&self) -> EvalContext {
         EvalContext::with_zone(self.at, self.zone.clone())
     }
-}
-
-/// A live list: not deleted, and not in a deleted collection.
-#[must_use]
-pub fn list_live(state: &State, id: ListId) -> bool {
-    state.lists.get(&id).is_some_and(|l| {
-        l.deleted.is_none()
-            && l.collection.is_none_or(|c| {
-                state
-                    .collections
-                    .get(&c)
-                    .is_some_and(|c| c.deleted.is_none())
-            })
-    })
-}
-
-/// A live task: not deleted or merged, in a live list. `State::is_live` without its clones.
-#[must_use]
-pub fn task_live(state: &State, t: &Task) -> bool {
-    t.deleted.is_none() && t.merged_into.is_none() && list_live(state, t.list)
 }
 
 /// My Day's raw (done, total) progress for a surface with no rows or completion choreography.
@@ -239,41 +227,78 @@ pub fn room_tasks<'s>(
     holding: &BTreeSet<TaskId>,
     ctx: &EvalContext,
 ) -> RoomTasks<'s> {
+    room_tasks_impl(state, key, holding, ctx, |_| None)
+}
+
+/// Like [`room_tasks`], also preserving a held row's pre-completion update stamp. Completing a
+/// task changes its update actor and time, so Agent activity needs the old stamp to keep the same
+/// membership and order until the hold releases. Other fields and liveness follow the replica.
+#[must_use]
+pub fn room_tasks_with_updates<'s>(
+    state: &'s State,
+    key: RoomKey<'_>,
+    holding: &BTreeSet<TaskId>,
+    updates: &BTreeMap<TaskId, Stamp>,
+    ctx: &EvalContext,
+) -> RoomTasks<'s> {
+    room_tasks_impl(state, key, holding, ctx, |id| updates.get(&id))
+}
+
+fn room_tasks_impl<'s, 'u>(
+    state: &'s State,
+    key: RoomKey<'_>,
+    holding: &BTreeSet<TaskId>,
+    ctx: &EvalContext,
+    previous_update: impl Fn(TaskId) -> Option<&'u Stamp>,
+) -> RoomTasks<'s> {
     let held = |t: &Task| holding.contains(&t.id) && t.is_done();
     match key {
         RoomKey::Smart(smart) => {
             let Ok(q) = smart.builtin().parse() else {
                 return RoomTasks::default();
             };
-            let m = q.matcher(state, ctx);
-            let mut open: Vec<&Task> = state
-                .tasks
-                .values()
-                .filter(|t| {
+            let drawer = smart.done_query().and_then(|s| Query::parse(s).ok());
+            let mut rows = RoomTasks::default();
+            let mut agent_holds = BTreeMap::new();
+            for t in state.tasks.values().filter(|t| task_live(state, t)) {
+                if held(t) {
                     if smart == SmartList::Completed {
-                        return !held(t) && m.matches(t);
+                        continue;
                     }
-                    m.matches(t)
-                        || (held(t) && task_live(state, t) && {
-                            // Still in the room as if it were open, until the completion has played.
-                            let mut as_open = (*t).clone();
-                            as_open.completed_at = None;
-                            q.matches(state, &as_open, ctx)
-                        })
-                })
-                .collect();
-            open.sort_by_cached_key(|t| q.order_key(state, t));
-            let done = smart
-                .done_query()
-                .and_then(|s| Query::parse(s).ok())
-                .map(|dq| {
-                    dq.run(state, ctx)
-                        .into_iter()
-                        .filter(|t| !holding.contains(&t.id))
-                        .collect()
-                })
-                .unwrap_or_default();
-            RoomTasks { open, done }
+                    let mut before = t.clone();
+                    before.completed_at = None;
+                    if smart == SmartList::AgentActivity
+                        && let Some(stamp) = previous_update(t.id)
+                    {
+                        before.updated = stamp.clone();
+                        if q.matches(state, &before, ctx) {
+                            agent_holds.insert(t.id, q.order_key(state, &before));
+                            rows.open.push(t);
+                        }
+                        continue;
+                    }
+                    if q.matches(state, &before, ctx) {
+                        rows.open.push(t);
+                    }
+                } else if t.is_done()
+                    && let Some(dq) = &drawer
+                {
+                    if dq.matches(state, t, ctx) {
+                        rows.done.push(t);
+                    }
+                } else if q.matches(state, t, ctx) {
+                    rows.open.push(t);
+                }
+            }
+            rows.open.sort_by_cached_key(|t| {
+                agent_holds
+                    .remove(&t.id)
+                    .unwrap_or_else(|| q.order_key(state, t))
+            });
+            if let Some(dq) = drawer {
+                rows.done.sort_by_cached_key(|t| dq.order_key(state, t));
+            }
+            rows
         }
         RoomKey::Activity(_) => RoomTasks::default(),
         RoomKey::List(_) | RoomKey::Collection(_) => {

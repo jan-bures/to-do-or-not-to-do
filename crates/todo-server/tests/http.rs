@@ -402,6 +402,42 @@ async fn queries_and_smart_lists() {
 }
 
 #[tokio::test]
+async fn query_dates_use_the_configured_zone_at_each_update() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    use todo_core::time::Timestamp;
+    let second = |s: &str| s.parse::<Timestamp>().unwrap().as_second();
+    let time = Arc::new(AtomicI64::new(second("2026-10-24T21:30:00Z")));
+    let clock = time.clone();
+    let t = TestServer::start_with_options(
+        |cfg| cfg.time_zone = "Europe/Prague".into(),
+        todo_server::Options {
+            clock: Arc::new(move || Timestamp::from_second(clock.load(Ordering::Relaxed)).unwrap()),
+            ..todo_server::Options::default()
+        },
+    )
+    .await;
+    let list = t.create_list("Clock change").await;
+    t.create_task(&list, "Before local midnight", json!({}))
+        .await;
+    time.store(second("2026-10-24T22:30:00Z"), Ordering::Relaxed);
+    let after = t
+        .create_task(&list, "After local midnight", json!({}))
+        .await;
+    t.ok(json!({"cmd": "update_task", "id": after, "patch": {"title": "After midnight edit"}}))
+        .await;
+    time.store(second("2026-11-01T12:00:00Z"), Ordering::Relaxed);
+
+    let (status, page) = t.query_tasks("updated>=-7d").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items"][0]["id"], after);
+    assert_eq!(page["items"][0]["title"], "After midnight edit");
+}
+
+#[tokio::test]
 async fn body_limit_is_configurable_and_applies_to_json_commands() {
     let t = TestServer::start_with(|c| c.limits.max_body_bytes = 4096).await;
     let list = t.create_list("L").await;

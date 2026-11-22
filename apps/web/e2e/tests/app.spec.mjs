@@ -36,6 +36,29 @@ test.describe("rooms spanning the autumn clock change", () => {
     await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
     await w.check();
   });
+
+  test("task detail dates the completion using the offset at the time it happened", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-25T12:00:00Z"));
+    await open(page, "/app/completed?fixture=dst");
+    await row(page, "After midnight").getByRole("button", { name: "After midnight" }).click();
+    const completed = page.locator("ul.activity li").filter({ hasText: "completed this" });
+    await expect(completed.locator(".act-when")).toHaveText("today 00:30");
+  });
+
+  test("Agent activity holds the old membership and score until the row leaves", async ({ page }) => {
+    await page.clock.install({ time: new Date("2026-11-01T12:00:00Z") });
+    await open(page, "/app/agent-activity?fixture=dst");
+    await page.clock.pauseAt(new Date("2026-11-01T12:01:00Z"));
+    const active = row(page, "Newer agent change");
+    await active.getByRole("checkbox").evaluate((checkbox) => checkbox.click());
+    await expect(active).toHaveClass(/completing/);
+    await expect(rows(page).locator(".row-title")).toHaveText(["Newer agent change", "After midnight"]);
+    await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
+    await expect(page.locator(".sb-counts")).toHaveText("1 open · 0 done today");
+    await page.clock.runFor(1100);
+    await expect(rows(page).locator(".row-title")).toHaveText(["After midnight"]);
+    await expect(page.locator(".summary")).toContainText("1 of 1 done");
+  });
 });
 
 test("adding a task puts it in My Day", async ({ page }) => {
@@ -122,6 +145,22 @@ test("completing a task holds, collapses, moves the sun, and can be undone", asy
   await expect(row(page, title)).toHaveCount(1);
   await expect(page.locator(".summary")).toContainText("3 of 12 done");
   await w.check();
+});
+
+test("two simultaneous holds keep the shared My Day order", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-11-21T09:35:00Z") });
+  await open(page);
+  await page.clock.pauseAt(new Date("2026-11-21T09:36:00Z"));
+  const titles = await rows(page).locator(".row-title").allTextContents();
+  await rows(page).nth(2).getByRole("checkbox").evaluate((checkbox) => checkbox.click());
+  await expect(rows(page).nth(2)).toHaveClass(/completing/);
+  await rows(page).first().getByRole("checkbox").evaluate((checkbox) => checkbox.click());
+  await expect(rows(page).first()).toHaveClass(/completing/);
+  await expect(rows(page).locator(".row-title")).toHaveText(titles);
+  await expect(page.locator(".summary")).toContainText("3 of 12 done");
+  await page.clock.runFor(1100);
+  await expect(rows(page).locator(".row-title")).toHaveText(titles.filter((_, index) => index !== 0 && index !== 2));
+  await expect(page.locator(".summary")).toContainText("5 of 12 done");
 });
 
 test("exact undo restores a recurring task and removes its next occurrence", async ({ page }) => {

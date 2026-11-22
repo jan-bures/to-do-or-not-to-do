@@ -402,13 +402,19 @@ impl Matcher<'_> {
     /// [`Query::matcher_until`]) the answer is meaningless once the check returned true.
     #[must_use]
     pub fn matches(&self, task: &Task) -> bool {
+        self.state.is_live(task.id.into()) && self.matches_fields(task)
+    }
+
+    /// Tests only the task's fields. Use when the caller has already checked liveness.
+    #[must_use]
+    pub fn matches_fields(&self, task: &Task) -> bool {
         let env = Env {
             state: self.state,
             ctx: self.ctx,
             steps: self.index.as_ref(),
             stop: self.stop,
         };
-        self.state.is_live(task.id.into()) && self.query.expr.eval(&env, task, &OnceCell::new())
+        self.query.expr.eval(&env, task, &OnceCell::new())
     }
 }
 

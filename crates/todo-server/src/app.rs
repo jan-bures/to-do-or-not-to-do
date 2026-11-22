@@ -37,7 +37,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use todo_core::query::EvalContext;
+use todo_core::query::{EvalContext, LocalZone};
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
@@ -84,8 +84,7 @@ impl AppState {
     #[must_use]
     pub fn eval_context(&self) -> EvalContext {
         let now = self.engine.now();
-        let zoned = jiff::ZonedDateTime::new(now, self.zone.clone());
-        EvalContext::new(now, zoned.date(), zoned.offset().seconds())
+        EvalContext::with_zone(now, LocalZone::Jiff(self.zone.clone()))
     }
 }
 

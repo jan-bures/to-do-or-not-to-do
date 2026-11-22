@@ -25,7 +25,7 @@ use std::time::Duration;
 use todo_client::room_header::Summary;
 use todo_client::{CommandId, Connection, SubmitError, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
-use todo_core::model::Priority;
+use todo_core::model::{Priority, Stamp};
 use todo_core::{Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
 use todo_design::{Glyph, Icon, motion};
@@ -45,8 +45,8 @@ pub struct Linger {
     token: u64,
     room: RoomId,
     handover: bool,
-    row: Row,
-    index: usize,
+    id: TaskId,
+    updated: Stamp,
     phase: Phase,
 }
 
@@ -226,7 +226,7 @@ impl Ctx {
         if matches!(result, Ok(TrackedUndo::Cancelled | TrackedUndo::Queued(_)))
             && let Some(id) = action.completing
         {
-            self.lingering.update(|l| l.retain(|x| x.row.id != id));
+            self.lingering.update(|l| l.retain(|x| x.id != id));
         }
         match result {
             Ok(TrackedUndo::Cancelled) => self.show_toast("Change undone.".into(), false),
@@ -334,14 +334,13 @@ impl Ctx {
             plan.as_ref()
                 .is_some_and(|plan| plan.rows().any(|r| r.id == row.id))
         });
-        let index = self
-            .shown
-            .get_untracked()
-            .iter()
-            .position(|s| s.row.id == row.id)
-            .unwrap_or(0);
         let id = row.id;
-        let Some(cmd) = self.state.with_untracked(|s| intent::set_done(s, id, true)) else {
+        let Some((cmd, updated)) = self.state.with_untracked(|s| {
+            Some((
+                intent::set_done(s, id, true)?,
+                s.tasks.get(&id)?.updated.clone(),
+            ))
+        }) else {
             return;
         };
         if !self.submit_undoable(cmd, format!("Completed “{}”", row.title), Some(id)) {
@@ -349,16 +348,14 @@ impl Ctx {
         }
         // A rapid Undo followed by another completion starts a fresh timer for the same task.
         let token = self.toast_seq.get_untracked();
-        let mut done = row.clone();
-        done.done = true;
         self.lingering.update(|l| {
-            l.retain(|x| x.row.id != id);
+            l.retain(|x| x.id != id);
             l.push(Linger {
                 token,
                 room,
                 handover,
-                row: done,
-                index,
+                id,
+                updated,
                 phase: Phase::Hold,
             });
         });
@@ -383,7 +380,7 @@ impl Ctx {
     }
 
     fn uncomplete(self, id: TaskId) {
-        self.lingering.update(|l| l.retain(|x| x.row.id != id));
+        self.lingering.update(|l| l.retain(|x| x.id != id));
         self.submit_intent(|state| intent::set_done(state, id, false));
     }
 
@@ -464,16 +461,12 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         lingering.with(|l| {
             l.iter()
                 .filter(|x| !x.handover && x.room == id)
-                .map(|x| x.row.id)
-                .collect::<BTreeSet<TaskId>>()
+                .map(|x| (x.id, x.updated.clone()))
+                .collect::<BTreeMap<_, _>>()
         })
     });
-    let view_room = Memo::new(move |_| {
-        holding.with(|held| {
-            filter_text.with(|f| state.with(|s| model::room(s, &now.get(), &room.get(), f, held)))
-        })
-    });
-    let shown = Memo::new(move |_| view_room.with(|r| lingering.with(|l| place_held_rows(r, l))));
+    let (_, view_room) = model::room_memos(state, now, room, holding, filter_text);
+    let shown = Memo::new(move |_| view_room.with(|r| lingering.with(|l| paint_rows(r, l))));
     let finished = Memo::new(move |_| {
         view_room.with(Room::finished)
             && lingering.with(|l| l.iter().all(|x| x.handover || x.room != RoomId::default()))
@@ -483,7 +476,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             lingering.with(|leaving| {
                 state.with(|s| {
                     model::tomorrow(s, &now.get(), |id| {
-                        leaving.iter().any(|x| x.handover && x.row.id == id)
+                        leaving.iter().any(|x| x.handover && x.id == id)
                     })
                 })
             })
@@ -630,34 +623,24 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     }
 }
 
-/// Paint held rows at their old slots with the snapshot taken at the point of completion. The
-/// shared rows still determine filtered membership, and the Completed section already excludes holds.
-fn place_held_rows(room: &Room, lingering: &[Linger]) -> Vec<Shown> {
-    let held: Vec<_> = lingering
+/// Animation is paint only. The shared room supplies the membership and order, including holds.
+fn paint_rows(room: &Room, lingering: &[Linger]) -> Vec<Shown> {
+    room.rows
         .iter()
-        .filter(|l| !l.handover && l.room == room.id)
-        .collect();
-    let mut rows: Vec<_> = room
-        .rows
-        .iter()
-        .filter(|row| !held.iter().any(|l| l.row.id == row.id))
         .cloned()
-        .map(|row| Shown { row, phase: None })
-        .collect();
-    if room.id != RoomId::Smart("completed") {
-        for l in held {
-            if !room.filtered || room.rows.iter().any(|row| row.id == l.row.id) {
-                rows.insert(
-                    l.index.min(rows.len()),
-                    Shown {
-                        row: l.row.clone(),
-                        phase: Some(l.phase),
-                    },
-                );
-            }
-        }
-    }
-    rows
+        .map(|row| {
+            let phase = row
+                .done
+                .then(|| {
+                    lingering
+                        .iter()
+                        .find(|l| !l.handover && l.room == room.id && l.id == row.id)
+                })
+                .flatten()
+                .map(|l| l.phase);
+            Shown { row, phase }
+        })
+        .collect()
 }
 
 fn track_overlay_focus(c: Ctx) {
@@ -1987,11 +1970,8 @@ fn Handover() -> impl IntoView {
 
 fn handover_phase(c: Ctx, id: TaskId) -> Memo<Option<Phase>> {
     Memo::new(move |_| {
-        c.lingering.with(|l| {
-            l.iter()
-                .find(|x| x.handover && x.row.id == id)
-                .map(|x| x.phase)
-        })
+        c.lingering
+            .with(|l| l.iter().find(|x| x.handover && x.id == id).map(|x| x.phase))
     })
 }
 

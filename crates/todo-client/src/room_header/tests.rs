@@ -471,6 +471,21 @@ proptest! {
         let lists = [w.list("A", Some(col)), w.list("B", Some(col)), w.list("C", None)];
         let now = prague("2026-11-21T10:35:00Z");
         let today = now.today();
+        // Restoring a merge source clears its tombstone, but not the merge link. It must stay
+        // out of both the primary rows and the drawer even though State::is_live sees it.
+        let target = w.task(lists[0], "merge target");
+        for completed in [false, true] {
+            let source = w.task(lists[0], "keep merge source");
+            w.task_mut(source).my_day = Some(today);
+            if completed {
+                w.done_at(source, "2026-11-21T09:00:00Z");
+            }
+            w.run(Command::MergeTasks { source, target });
+            w.run(Command::Restore { id: source.into() });
+            prop_assert!(w.state.is_live(source.into()));
+            prop_assert_eq!(w.task_mut(source).merged_into, Some(target));
+        }
+        w.run(Command::Delete { id: target.into() });
         let mut holding = BTreeSet::new();
         let mut generated = Vec::new();
         for g in &tasks {

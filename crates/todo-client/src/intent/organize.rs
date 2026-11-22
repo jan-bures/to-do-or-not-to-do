@@ -9,7 +9,7 @@ use todo_core::State;
 use todo_core::command::{Command, Placement};
 use todo_core::decide::MAX_NAME;
 use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
-use todo_core::model::{LinkKind, Tag};
+use todo_core::model::{LinkKind, Tag, Task};
 use todo_core::query::fold;
 use todo_design::hues::{self, NamedHue};
 use uuid::Uuid;
@@ -17,6 +17,27 @@ use uuid::Uuid;
 use super::delete;
 
 pub mod confirm;
+
+/// A list that is not deleted or hidden under a deleted collection.
+#[must_use]
+pub fn list_live(state: &State, id: ListId) -> bool {
+    state.lists.get(&id).is_some_and(|list| {
+        list.deleted.is_none()
+            && list.collection.is_none_or(|id| {
+                state
+                    .collections
+                    .get(&id)
+                    .is_some_and(|c| c.deleted.is_none())
+            })
+    })
+}
+
+/// A task present in the client's active data: not deleted or merged, and in a live list.
+/// Takes the borrowed task so an eligibility check never clones it or its ancestors.
+#[must_use]
+pub fn is_actionable(state: &State, task: &Task) -> bool {
+    task.deleted.is_none() && task.merged_into.is_none() && list_live(state, task.list)
+}
 
 /// A fresh collection at the end of the sidebar, with a swatch picked from its ID (like a new list).
 pub fn create_collection(id: CollectionId, name: &str) -> Command {

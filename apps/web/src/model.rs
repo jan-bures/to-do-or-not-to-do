@@ -13,11 +13,13 @@
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::{Offset, TimeZone};
+use leptos::prelude::{Get, Memo, RwSignal, With};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use todo_client::intent::{self, TaskRoom, quick_add};
 use todo_client::room_header::{self, LocalTime, RoomHeader, SmartList};
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, TaskId};
-use todo_core::model::{Collection, LinkKind, List, Priority, Task};
+use todo_core::model::{Collection, LinkKind, List, Priority, Stamp, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::{Actor, Command, State};
 use todo_design::Glyph;
@@ -38,7 +40,13 @@ impl Now {
     /// The local civil date and time.
     #[must_use]
     pub fn local(&self) -> DateTime {
-        local(self.at, self.offset_s)
+        self.civil_time_at(self.at)
+    }
+
+    /// The owner's wall time at `at`, with that instant's UTC offset.
+    #[must_use]
+    pub fn civil_time_at(&self, at: Timestamp) -> DateTime {
+        self.local_time().civil_time_at(at)
     }
 
     /// Today's local date.
@@ -766,20 +774,47 @@ pub fn shared_key(id: &RoomId) -> room_header::RoomKey<'_> {
     }
 }
 
-/// Builds a room. `holding` names the tasks whose completion is still playing: they count as open until
-/// they have left the rows.
-#[must_use]
-pub fn room(
+/// Keep room membership and the header independent of the filter signal. Editing filter text
+/// searches only the already derived sections, not the whole replica for the room scope again.
+pub fn room_memos(
+    state: RwSignal<Arc<State>>,
+    now: RwSignal<Now>,
+    id: RwSignal<RoomId>,
+    holds: Memo<BTreeMap<TaskId, Stamp>>,
+    text: RwSignal<String>,
+) -> (Memo<Arc<Room>>, Memo<Room>) {
+    let unfiltered = Memo::new(move |_| {
+        let now = now.get();
+        let id = id.get();
+        holds.with(|updates| {
+            let held = updates.keys().copied().collect();
+            state.with(|s| Arc::new(unfiltered_room(s, &now, &id, &held, updates)))
+        })
+    });
+    let filtered = Memo::new(move |_| {
+        unfiltered
+            .with(|room| text.with(|text| state.with(|s| filter_room(room, s, &now.get(), text))))
+    });
+    (unfiltered, filtered)
+}
+
+#[cfg(test)]
+fn room(state: &State, now: &Now, id: &RoomId, filter: &str, holding: &BTreeSet<TaskId>) -> Room {
+    let unfiltered = unfiltered_room(state, now, id, holding, &BTreeMap::new());
+    filter_room(&unfiltered, state, now, filter)
+}
+
+fn unfiltered_room(
     state: &State,
     now: &Now,
     id: &RoomId,
-    filter: &str,
     holding: &BTreeSet<TaskId>,
+    updates: &BTreeMap<TaskId, Stamp>,
 ) -> Room {
     let time = now.local_time();
     let ctx = time.eval();
     let shared = shared_key(id);
-    let tasks = room_header::room_tasks(state, shared, holding, &ctx);
+    let tasks = room_header::room_tasks_with_updates(state, shared, holding, updates, &ctx);
     let header = room_header::header_of(state, shared, &tasks, holding, &time);
     let (title, hue, mode, add) = match id {
         RoomId::Activity(_) => (
@@ -824,14 +859,7 @@ pub fn room(
             )
         }
     };
-    let filter = filter.trim();
-    let filtered = !shared.is_activity() && !filter.is_empty();
-    let to_rows = |tasks| {
-        let tasks = if filtered {
-            filter_tasks(state, &ctx, tasks, filter)
-        } else {
-            tasks
-        };
+    let to_rows = |tasks: Vec<&Task>| {
         tasks
             .into_iter()
             .map(|t| row(state, t, ctx.today, mode))
@@ -845,32 +873,46 @@ pub fn room(
         rows: to_rows(tasks.open),
         completed: to_rows(tasks.done),
         add_placeholder: add,
-        filtered,
+        filtered: false,
     }
 }
 
-/// Like Desktop, keep free-text search useful while entering an incomplete query.
-fn filter_tasks<'a>(
-    state: &State,
-    ctx: &EvalContext,
-    mut tasks: Vec<&'a Task>,
-    text: &str,
-) -> Vec<&'a Task> {
-    if let Ok(query) = Query::parse(text) {
-        let matcher = query.matcher(state, ctx);
-        tasks.retain(|task| matcher.matches(task));
-    } else {
-        let folded = fold(text);
-        let words: Vec<_> = folded
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
-            .collect();
-        tasks.retain(|task| {
-            let title = fold(&task.title);
-            words.iter().all(|word| title.contains(word))
-        });
+fn filter_room(room: &Room, state: &State, now: &Now, text: &str) -> Room {
+    let text = text.trim();
+    if text.is_empty() || room.id.is_activity() {
+        return room.clone();
     }
-    tasks
+    let query = Query::parse(text);
+    let ctx = now.eval();
+    let matcher = query.as_ref().ok().map(|q| q.matcher(state, &ctx));
+    // Like Desktop, keep free-text search useful while entering an incomplete query.
+    let folded = matcher.is_none().then(|| fold(text));
+    let matches = |row: &&Row| {
+        if let Some(matcher) = &matcher {
+            state
+                .tasks
+                .get(&row.id)
+                .is_some_and(|task| matcher.matches_fields(task))
+        } else {
+            let title = fold(&row.title);
+            folded
+                .as_deref()
+                .unwrap_or_default()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .all(|word| title.contains(word))
+        }
+    };
+    Room {
+        id: room.id.clone(),
+        title: room.title.clone(),
+        hue: room.hue,
+        header: room.header.clone(),
+        rows: room.rows.iter().filter(matches).cloned().collect(),
+        completed: room.completed.iter().filter(matches).cloned().collect(),
+        add_placeholder: room.add_placeholder.clone(),
+        filtered: true,
+    }
 }
 
 // ---- tomorrow (the finished day) ---------------------------------------------------------------------------
@@ -1068,7 +1110,7 @@ fn clock(dt: DateTime) -> String {
 }
 
 fn when(at: Timestamp, now: &Now) -> String {
-    let dt = local(at, now.offset_s);
+    let dt = now.civil_time_at(at);
     let today = now.today();
     let d = dt.date();
     if d == today {
@@ -1084,7 +1126,7 @@ fn when(at: Timestamp, now: &Now) -> String {
 
 /// `Sat 21 Nov, 17:00` or `Today, 15:30`.
 fn long_when(at: Timestamp, now: &Now) -> String {
-    local_date_time(local(at, now.offset_s), now.today())
+    local_date_time(now.civil_time_at(at), now.today())
 }
 
 /// A civil date and time, relative to today.
@@ -1442,6 +1484,40 @@ mod tests {
         );
         assert!(!r.finished());
         assert!(r.add_placeholder.is_some());
+    }
+
+    #[test]
+    fn typing_a_filter_reuses_the_unfiltered_room_and_header_in_a_large_replica() {
+        use leptos::prelude::{Owner, Set};
+        Owner::new().with(|| {
+            let mut state = fixtures::state();
+            let mut archived = state.tasks[&fixtures::task(11)].clone();
+            archived.my_day = None;
+            for n in 100..5100 {
+                archived.id = fixtures::task(n);
+                state.tasks.insert(archived.id, archived.clone());
+            }
+            let state = RwSignal::new(Arc::new(state));
+            let now = RwSignal::new(now());
+            let id = RwSignal::new(RoomId::default());
+            let text = RwSignal::new(String::new());
+            let (base, view) = room_memos(state, now, id, Memo::new(|_| BTreeMap::new()), text);
+            let cached = base.get();
+            for input in ["tag:d", "tag:docs", "done ondrej", "nonexistent", ""] {
+                text.set(input.to_owned());
+                let visible = view.get();
+                assert_eq!(visible.header, cached.header);
+                assert!(
+                    Arc::ptr_eq(&base.get(), &cached),
+                    "filter {input:?} rebuilt the room"
+                );
+            }
+            id.set(RoomId::Smart("important"));
+            assert!(
+                !Arc::ptr_eq(&base.get(), &cached),
+                "navigation invalidates membership"
+            );
+        });
     }
 
     #[test]

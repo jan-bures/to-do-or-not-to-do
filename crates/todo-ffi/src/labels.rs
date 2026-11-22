@@ -47,7 +47,11 @@ impl Now {
             let offset = Offset::from_seconds(now.utc_offset_secs).unwrap_or(Offset::UTC);
             TimeZone::fixed(offset)
         });
-        Self { at, tz, local_day: now.local_day }
+        Self {
+            at,
+            tz,
+            local_day: now.local_day,
+        }
     }
 
     fn zoned(&self, ts: Timestamp) -> ZonedDateTime {

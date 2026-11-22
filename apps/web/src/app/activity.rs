@@ -299,8 +299,7 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                     <span aria-hidden="true">"·"</span>
                     <time datetime=move || entry.with(|item| item.as_ref().map(|row| row.at.to_string()))
                         title=move || entry.with(|item| item.as_ref().map(|row| {
-                            let now = c.now.get();
-                            let local = platform::civil_time(row.at, now, now.browser_time);
+                            let local = c.now.with(|now| now.civil_time_at(row.at));
                             format!("{}, {:02}:{:02}", local.date(), local.hour(), local.minute())
                         }))>
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
