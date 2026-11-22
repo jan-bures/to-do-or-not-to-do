@@ -366,7 +366,7 @@ impl ShellView {
             MenuAction::SyncNow => self.sync_now(cx),
             MenuAction::SignOut => cx.emit(ShellEvent::SignOut),
             MenuAction::SetPriority(task, level) => {
-                if let Some(cmd) = commands::set_priority(&self.store.view(), task, level) {
+                if let Some(cmd) = commands::pick_priority(&self.store.view(), task, level) {
                     self.submit(vec![cmd]);
                 }
                 self.refresh(cx);

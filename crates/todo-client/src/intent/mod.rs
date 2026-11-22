@@ -198,7 +198,7 @@ pub fn set_priority(id: TaskId, priority: Priority) -> Command {
 }
 
 /// Sets the priority (the detail pane's picker); `None` when it already has it.
-pub fn set_priority(state: &State, id: TaskId, priority: Priority) -> Option<Command> {
+pub fn pick_priority(state: &State, id: TaskId, priority: Priority) -> Option<Command> {
     let t = state.tasks.get(&id)?;
     (t.priority != priority).then(|| {
         update_task(
@@ -565,13 +565,13 @@ mod tests {
             Priority::High,
             Priority::None,
         ] {
-            let cmd = set_priority(&state, id, level).expect("cmd");
+            let cmd = pick_priority(&state, id, level).expect("cmd");
             assert!(
                 matches!(&cmd, Command::UpdateTask { patch, .. } if patch.priority == Some(level)),
                 "{cmd:?}"
             );
             state.tasks.get_mut(&id).expect("task").priority = level;
-            assert!(set_priority(&state, id, level).is_none());
+            assert!(pick_priority(&state, id, level).is_none());
         }
         assert!(retitle(&w.state, id, " Stamps ").is_none());
         w.run(retitle(&w.state, id, "Stamps and envelopes").expect("cmd"));
