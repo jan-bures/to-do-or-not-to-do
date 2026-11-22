@@ -178,9 +178,10 @@ pub const SCROLLBAR_HOLD: u32 = 1000;
 pub const UNDO_WINDOW: u32 = 6000;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 22] = [
+pub const DURATIONS: [(&str, u32); 23] = [
     ("hover", HOVER),
     ("content-swap", CONTENT_SWAP),
+    ("room-title-overlap", ROOM_TITLE_OVERLAP),
     ("overlay-in", OVERLAY_IN),
     ("overlay-out", OVERLAY_OUT),
     ("check-fill", CHECK_FILL),

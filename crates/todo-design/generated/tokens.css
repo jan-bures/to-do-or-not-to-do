@@ -184,6 +184,7 @@
   --selection-bar: 3px;
   --duration-hover: 90ms;
   --duration-content-swap: 120ms;
+  --duration-room-title-overlap: 40ms;
   --duration-overlay-in: 150ms;
   --duration-overlay-out: 120ms;
   --duration-check-fill: 140ms;

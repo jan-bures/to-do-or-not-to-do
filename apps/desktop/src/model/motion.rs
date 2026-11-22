@@ -34,7 +34,9 @@ use todo_core::ids::TaskId;
 use super::RoomKey;
 use crate::theme::motion as m;
 
+mod chrome;
 mod panes;
+pub use chrome::ScrollbarMotion;
 pub use panes::{DetailMotion, Navigation, Track};
 
 /// How long things take: the design's durations, or their reduced-motion variants (Windows' *Animation
@@ -479,6 +481,7 @@ pub struct Motion {
     dusk: Option<Dusking>,
     pub navigation: Navigation,
     pub detail: DetailMotion,
+    pub sidebar: chrome::SidebarMotion,
 }
 
 impl Motion {
@@ -774,7 +777,11 @@ impl Motion {
         } else {
             Wake::Idle
         };
-        let panes = self.navigation.wake(now).or(self.detail.wake(now));
+        let panes = self
+            .navigation
+            .wake(now)
+            .or(self.detail.wake(now))
+            .or(self.sidebar.wake(now));
         self.rows
             .values()
             .fold(sun.or(panes), |w, r| w.or(r.wake(now)))

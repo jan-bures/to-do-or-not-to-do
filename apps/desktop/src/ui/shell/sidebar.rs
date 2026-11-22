@@ -146,19 +146,56 @@ impl ShellView {
         cx.notify();
     }
 
-    /// A sidebar row's selected look: raised, with a hairline ring.
-    fn nav_row(&self, on: bool, el: Div) -> Div {
-        let p = &self.palette;
-        if on {
-            el.bg(p.raised)
-                .border(px(elevation::HAIRLINE))
-                .border_color(p.line)
-                .text_color(p.ink)
-                .font_weight(FontWeight::SEMIBOLD)
-        } else {
-            el.border(px(elevation::HAIRLINE))
-                .border_color(gpui::transparent_black())
+    /// Which row has the ring. A collapsed collection can stand in for the active list.
+    fn sidebar_selection(shell: &model::Shell) -> RoomKey {
+        shell
+            .sidebar
+            .collections
+            .iter()
+            .find(|c| c.selected)
+            .map_or(shell.sidebar.selected, |c| RoomKey::Collection(c.id))
+    }
+
+    pub(super) fn aim_sidebar(&mut self, next: &model::Shell) {
+        let (now, pace) = (self.now(), self.pace());
+        for c in &next.sidebar.collections {
+            let Some(old) = self
+                .shell
+                .sidebar
+                .collections
+                .iter()
+                .find(|old| old.id == c.id)
+            else {
+                continue;
+            };
+            if old.collapsed == c.collapsed {
+                continue;
+            }
+            self.motion.sidebar.disclose(c.id, !c.collapsed, now, pace);
+            if c.collapsed {
+                self.closing_groups.insert(c.id, old.lists.clone());
+            } else {
+                self.closing_groups.remove(&c.id);
+            }
         }
+        self.motion.sidebar.select(
+            Self::sidebar_selection(&self.shell),
+            Self::sidebar_selection(next),
+            now,
+            pace,
+        );
+    }
+
+    /// The existing inset ring and the wash transfer to the new active row, not the label geometry.
+    fn nav_row(&self, key: RoomKey, on: bool, el: Div) -> Div {
+        let p = &self.palette;
+        let alpha = self.motion.sidebar.ring(key, on, self.frame);
+        el.bg(theme::with_alpha(p.wash, alpha))
+            .border(px(elevation::HAIRLINE))
+            .border_color(theme::with_alpha(p.line, alpha))
+            .when(on, |el| {
+                el.text_color(p.ink).font_weight(FontWeight::SEMIBOLD)
+            })
     }
 
     fn clickable(
@@ -175,11 +212,17 @@ impl ShellView {
             .on_click(cx.listener(f))
     }
 
-    fn list_row(&self, nav: &model::ListNav, indent: f32, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn list_row(
+        &self,
+        nav: &model::ListNav,
+        indent: f32,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let p = self.palette;
         let id = nav.id;
         let on = self.shell.sidebar.selected == RoomKey::List(id);
-        let name = match self.inline_for(InlineTarget::List(id)) {
+        let name = match self.inline_for(InlineTarget::List(id)).filter(|_| live) {
             Some(input) => div()
                 .flex_1()
                 .min_w_0()
@@ -215,19 +258,18 @@ impl ShellView {
                     .child(nav.count.to_string()),
             );
         let name = nav.list.name.clone();
-        self.clickable(
-            self.nav_row(on, row),
-            SharedString::from(format!("list-{id}")),
-            on,
-            cx,
-            move |this, e, window, cx| {
-                if e.click_count() >= 2 {
-                    this.start_inline(InlineTarget::List(id), name.clone(), window, cx);
-                } else {
-                    this.select_room(RoomKey::List(id), cx);
-                }
-            },
-        )
+        let row = self.nav_row(RoomKey::List(id), on && live, row);
+        let element_id = SharedString::from(format!("list-{id}"));
+        if !live {
+            return row.id(element_id);
+        }
+        self.clickable(row, element_id, on, cx, move |this, e, window, cx| {
+            if e.click_count() >= 2 {
+                this.start_inline(InlineTarget::List(id), name.clone(), window, cx);
+            } else {
+                this.select_room(RoomKey::List(id), cx);
+            }
+        })
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, e: &MouseDownEvent, _, cx| {
@@ -286,7 +328,7 @@ impl ShellView {
                             .child(pip)
                     }));
                 self.clickable(
-                    self.nav_row(on, row),
+                    self.nav_row(RoomKey::Smart(s), on, row),
                     SharedString::from(format!("smart-{s:?}")),
                     on,
                     cx,
@@ -300,11 +342,16 @@ impl ShellView {
             let cid = c.id;
             // A gap sets the collections off from the smart lists, and an open collection from the
             // next one. Collapsed collections stack like ordinary rows.
-            let gap = match i.checked_sub(1).map(|prev| sb.collections[prev].collapsed) {
-                None => space::S3,
-                Some(false) => space::S2,
-                Some(true) => 0.,
-            };
+            let gap = i.checked_sub(1).map_or(space::S3, |i| {
+                let prev = &sb.collections[i];
+                space::S2
+                    * self
+                        .motion
+                        .sidebar
+                        .group(prev.id, !prev.collapsed, self.frame)
+                        .0
+            });
+            let (shown, angle) = self.motion.sidebar.group(cid, !c.collapsed, self.frame);
             let on = c.selected;
             let name = match self.inline_for(InlineTarget::Collection(cid)) {
                 Some(input) => div().flex_1().min_w_0().child(input).into_any_element(),
@@ -315,10 +362,14 @@ impl ShellView {
                     .child(c.name.clone())
                     .into_any_element(),
             };
-            let chevron = if c.collapsed {
-                Icon::ChevronRight
+            let chevron = if angle == 0. {
+                kit::icon(Icon::ChevronRight, component::ICON_SMALL, p.ink_3)
             } else {
-                Icon::ChevronDown
+                kit::icon(Icon::ChevronDown, component::ICON_SMALL, p.ink_3).with_transformation(
+                    gpui::Transformation::rotate(gpui::Radians(
+                        -(1. - angle) * std::f32::consts::FRAC_PI_2,
+                    )),
+                )
             };
             let toggle = div()
                 .id("toggle-collection")
@@ -328,7 +379,7 @@ impl ShellView {
                 .items_center()
                 .pl(px(space::S1))
                 .cursor_pointer()
-                .child(kit::icon(chevron, component::ICON_SMALL, p.ink_3))
+                .child(chevron)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.toggle_collection(cid, cx);
@@ -350,7 +401,7 @@ impl ShellView {
             let cname = c.name.clone();
             let head = self
                 .clickable(
-                    self.nav_row(on, head),
+                    self.nav_row(RoomKey::Collection(cid), on, head),
                     SharedString::from(format!("collection-{cid}")),
                     on,
                     cx,
@@ -373,17 +424,36 @@ impl ShellView {
                         this.open_menu(e.position, MenuKind::Collection { id: cid }, cx);
                     }),
                 );
-            let lists: Vec<_> = c
-                .lists
-                .iter()
-                .map(|l| self.list_row(l, space::S6 + space::S1, cx))
-                .collect();
-            collections.push(div().flex().flex_col().child(head).children(lists));
+            let lists = self
+                .closing_groups
+                .get(&cid)
+                .map_or(c.lists.as_slice(), Vec::as_slice);
+            let group =
+                (shown > 0. && !lists.is_empty()).then(|| {
+                    div()
+                        .flex_none()
+                        .overflow_hidden()
+                        .h(px(desktop::NAV_SUB_ROW * lists.len() as f32 * shown))
+                        .opacity(shown)
+                        .child(
+                            div().flex().flex_col().children(lists.iter().map(|l| {
+                                self.list_row(l, space::S6 + space::S1, !c.collapsed, cx)
+                            })),
+                        )
+                });
+            collections.push(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .child(head)
+                    .children(group),
+            );
         }
         let top: Vec<_> = sb
             .lists
             .iter()
-            .map(|l| self.list_row(l, space::S2, cx))
+            .map(|l| self.list_row(l, space::S2, true, cx))
             .collect();
         let new_list = div()
             .id("new-list")
@@ -496,7 +566,10 @@ impl ShellView {
                                     .children(agents),
                             ),
                     )
-                    .child(self.sidebar_bar.overlay(&self.sidebar_scroll, &p)),
+                    .child(
+                        self.sidebar_bar
+                            .overlay(&self.sidebar_scroll, &p, self.animate),
+                    ),
             )
             .child(
                 div()

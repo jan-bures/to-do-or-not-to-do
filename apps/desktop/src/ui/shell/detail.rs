@@ -18,7 +18,9 @@ use super::{Notice, ShellView, quick_add_colors};
 use crate::model::draft::Draft;
 use crate::model::files;
 use crate::model::{self, Detail, FieldKind, commands, quick_add};
-use crate::theme::{Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty};
+use crate::theme::{
+    self, Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty,
+};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
 use crate::ui::text_area::TextArea;
@@ -896,6 +898,13 @@ impl ShellView {
         let p = &self.palette;
         let look = self.motion.detail.look(self.frame);
         let narrow = self.width == super::Width::Narrow;
+        // Fade the column surface, not the whole subtree: the task and placeholder already
+        // have their own exit curves. The narrow overlay fades its own container instead.
+        let surface = if narrow || self.detail_placement() == super::DetailPane::Docked {
+            1.
+        } else {
+            look.task.max(look.placeholder)
+        };
         let live = self.shell.detail.is_some();
         let placeholder = (look.placeholder > 0.).then(|| {
             div()
@@ -948,7 +957,10 @@ impl ShellView {
                     .opacity(if narrow { 1. } else { look.task })
                     .child(scroll)
                     .when(live, |el| {
-                        el.child(self.detail_bar.overlay(&self.detail_scroll, p))
+                        el.child(
+                            self.detail_bar
+                                .overlay(&self.detail_scroll, p, self.animate),
+                        )
                     })
                     .when(!live, |el| {
                         el.child(
@@ -967,16 +979,9 @@ impl ShellView {
             .flex_none()
             .h_full()
             .overflow_hidden()
-            .bg(p.pane)
+            .bg(theme::with_alpha(p.pane, surface))
             .border_l_1()
-            .border_color(p.line)
-            .opacity(
-                if narrow || self.detail_placement() == super::DetailPane::Docked {
-                    1.
-                } else {
-                    look.task.max(look.placeholder)
-                },
-            )
+            .border_color(theme::with_alpha(p.line, surface))
             .children(placeholder)
             .children(task)
     }

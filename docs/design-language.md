@@ -268,6 +268,7 @@ touch tracking; it has no custom curve token.
 |---|---|---|---|---|
 | `HOVER` | `hover` | 90 ms | animation | Hover, press release, focus ring, selection bar, scrollbar appear. |
 | `CONTENT_SWAP` | `content-swap` | 120 ms | animation | Fast in-place crossfade: switching tasks in an open detail pane, room title/eyebrow swap, sync status label/dot change. |
+| `ROOM_TITLE_OVERLAP` | `room-title-overlap` | 40 ms | offset | Overlap between outgoing and incoming room title/eyebrow. |
 | `OVERLAY_OUT` | `overlay-out` | 120 ms | animation | Menus, popovers, date pickers, dialogs, and quick-add date chips dismissing. |
 | `CHECK_FILL` | `check-fill` | 140 ms | animation | Checkbox disc filling with `accent` (`POP`). |
 | `TOAST_OUT` | `toast-out` | 140 ms | animation | Toast leaving. |
@@ -467,8 +468,8 @@ Completing a task is the one choreographed moment in the app.
 - **Reduced motion:** Chevron snaps (`0 ms`); child rows snap in/out of layout (`0 ms` height, `0 ms` stagger,
   optional `REDUCED_FADE` `100 ms` opacity on expand).
 - **Platform notes:**
-  - *GPUI:* Sidebar sub-rows have fixed height (`desktop::NAV_SUB_ROW`), so wrap the group in an `overflow_hidden`
-    `div` whose height is driven by `with_animation` (`PANEL`, `ENTER`/`EXIT`).
+  - *GPUI:* The motion model drives a clipped group of fixed-height sub-rows (`desktop::NAV_SUB_ROW`), its
+    opacity and the chevron angle. Closing rows are paint-only; reversing samples the current height and angle.
   - *Compose:* `AnimatedVisibility(enter = expandVertically(tween(PANEL)) + fadeIn(...), exit =
     shrinkVertically(tween(PANEL)) + fadeOut(...))`.
   - *Web:* CSS `grid-template-rows: 0fr ↔ 1fr` with `overflow: hidden` on the inner track — no JS height
@@ -514,7 +515,7 @@ Completing a task is the one choreographed moment in the app.
   by keeping thumbs permanently visible and skipping fade-out.
 - **Platform notes:**
   - *GPUI:* Overlay thumb painted in the scroll container's gutter so content width never shifts; driven by one
-    resettable timer + opacity `with_animation`.
+    resettable hold timer per pane. The pure motion model requests frames only while opacity or emphasis changes.
   - *Compose:* Custom `LazyColumn` scrollbar overlay driven by `LazyListState.isScrollInProgress`.
   - *Web:* Use `scrollbar-gutter: stable` and themed thin scrollbars (`scrollbar-color`) so layout width never
     jumps when scrollbars appear.

@@ -1,21 +1,33 @@
 //! A vertical scrollbar for a GPUI scroll handle. Like Zed's scrollbar, it reads the
 //! handle after the scroller has laid out and maps the available thumb travel to its offset.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     Bounds, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, Styled, UniformListScrollHandle, canvas,
-    fill, point, px, size,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, Styled, Task, UniformListScrollHandle,
+    canvas, fill, point, px, size,
 };
 
+use crate::model::motion::{Pace, ScrollbarMotion, Wake, mix};
+use crate::platform::win;
 use crate::theme::{Palette, chrome, desktop, with_alpha};
 
 #[derive(Default)]
 pub struct Scrollbar {
     // The pointer's distance from the top of the thumb, if dragging. Keep it across paints.
     grab: Rc<Cell<Option<Pixels>>>,
+    fade: Rc<RefCell<Fade>>,
+    frozen_alpha: Option<f32>,
+}
+
+#[derive(Default)]
+struct Fade {
+    epoch: Option<Instant>,
+    motion: ScrollbarMotion,
+    alarm: Option<(Duration, Task<()>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,19 +72,44 @@ impl Thumb {
 }
 
 impl Scrollbar {
+    /// Snapshot the ordinary scroll/hold/fade path, without reading the OS preference or a clock.
+    pub fn freeze_fade(&mut self, at: u32) {
+        let mut motion = ScrollbarMotion::default();
+        motion.sample(Duration::ZERO, 1., false, false, Pace::FULL);
+        self.frozen_alpha = Some(
+            motion
+                .sample(
+                    Duration::from_millis(at.into()),
+                    1.,
+                    false,
+                    false,
+                    Pace::FULL,
+                )
+                .alpha,
+        );
+    }
+
     pub fn for_list(
         &self,
         list: &UniformListScrollHandle,
         p: &Palette,
+        animate: bool,
     ) -> impl IntoElement + use<> {
-        self.overlay(&list.0.borrow().base_handle, p)
+        self.overlay(&list.0.borrow().base_handle, p, animate)
     }
 
     /// Append after the scroll view, in its unscrolled parent. The edge gutter must be at least
     /// `SCROLLBAR_INSET + SCROLLBAR_HOVER_WIDTH` wide, so the track never covers row content.
-    pub fn overlay(&self, handle: &ScrollHandle, p: &Palette) -> impl IntoElement + use<> {
+    pub fn overlay(
+        &self,
+        handle: &ScrollHandle,
+        p: &Palette,
+        animate: bool,
+    ) -> impl IntoElement + use<> {
         let handle = handle.clone();
         let grab = self.grab.clone();
+        let fade = self.fade.clone();
+        let frozen_alpha = self.frozen_alpha.unwrap_or(1.);
         let ink = p.ink;
         let inset = px(desktop::SCROLLBAR_INSET);
         let wide = px(desktop::SCROLLBAR_HOVER_WIDTH);
@@ -98,8 +135,11 @@ impl Scrollbar {
                 let hitbox = window.insert_hitbox(track, HitboxBehavior::BlockMouseExceptScroll);
                 Some((handle, grab, hitbox, thumb, viewport.size.height))
             },
-            move |_, state, window, _| {
+            move |_, state, window, cx| {
                 let Some((handle, grab, hitbox, thumb, viewport)) = state else {
+                    if animate {
+                        *fade.borrow_mut() = Fade::default();
+                    }
                     return;
                 };
                 let track = hitbox.bounds;
@@ -110,16 +150,58 @@ impl Scrollbar {
                 } else {
                     px(desktop::SCROLLBAR_WIDTH)
                 };
-                let alpha = if hot {
-                    chrome::SCROLLBAR_HOVER_ALPHA
+                let (visible, emphasis) = if animate {
+                    let mut fade = fade.borrow_mut();
+                    let now = fade.epoch.get_or_insert_with(Instant::now).elapsed();
+                    let pace = if win::reduced_motion() {
+                        Pace::REDUCED
+                    } else {
+                        Pace::FULL
+                    };
+                    let sample = fade.motion.sample(
+                        now,
+                        f32::from(handle.offset().y),
+                        hot,
+                        !cx.should_auto_hide_scrollbars(),
+                        pace,
+                    );
+                    match sample.wake {
+                        Wake::Frame => {
+                            fade.alarm = None;
+                            window.request_animation_frame();
+                        }
+                        Wake::At(at) if fade.alarm.as_ref().is_none_or(|(old, _)| *old != at) => {
+                            let timer = cx.background_executor().timer(at.saturating_sub(now));
+                            fade.alarm = Some((
+                                at,
+                                window.spawn(cx, async move |cx| {
+                                    timer.await;
+                                    let _ = cx.update(|window, _| window.refresh());
+                                }),
+                            ));
+                        }
+                        Wake::Idle => fade.alarm = None,
+                        Wake::At(_) => {}
+                    }
+                    (sample.alpha, sample.emphasis)
                 } else {
-                    chrome::SCROLLBAR_ALPHA
+                    // Fixtures remain deterministic, regardless of the machine's settings or clock.
+                    (frozen_alpha, 0.)
                 };
+                let alpha = visible
+                    * mix(
+                        chrome::SCROLLBAR_ALPHA,
+                        chrome::SCROLLBAR_HOVER_ALPHA,
+                        emphasis,
+                    );
                 let bounds = Bounds::new(
                     point(track.right() - width, track.top() + thumb.top),
                     size(width, thumb.length),
                 );
-                window.paint_quad(fill(bounds, with_alpha(ink, alpha)).corner_radii(width / 2.));
+                if alpha > 0. {
+                    window
+                        .paint_quad(fill(bounds, with_alpha(ink, alpha)).corner_radii(width / 2.));
+                }
 
                 let down_handle = handle.clone();
                 let down_grab = grab.clone();

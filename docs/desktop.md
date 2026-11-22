@@ -188,7 +188,7 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 
 ### Motion
 
-The motion follows `docs/design-language.md` (Motion, moments 1 and 2). Its timing and state live in a pure
+The motion follows `docs/design-language.md` (completion, dusk, room and detail navigation, sidebar and scrollbars). Its timing and state live in a pure
 model, `src/model/motion.rs`, driven by a monotonic clock the view passes in and unit- and property-tested
 there; the view only samples it each frame. Every duration, curve and cue comes from `todo_design::motion`.
 
@@ -203,7 +203,7 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
 - **Interrupting.** Toggling a row again part way (a second click, Space, or the detail pane's checkbox)
   reverses it from where it is, in place: a row in its hold or half collapsed comes back without a jump, and
   nothing is released. A change from elsewhere (another device, an agent, a refused command) settles a
-  choreography the same way; switching rooms puts everything at rest at once.
+  choreography the same way; switching rooms releases the old room's held rows.
 - **The list.** Its rows keep `uniform_list`'s fixed slots until a row is released: a leaving row collapses
   inside its slot and the rows below rise by what the rows above them gave up. Rows rising into view from
   below the last rendered slot are drawn (and take clicks) with it. In a list scrolled to its end, the scroll
@@ -212,7 +212,19 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
 - **Navigation follows what shows.** While dusk falls, J, K and clicks reach a hand-over task only once it has
   begun to enter.
 - **The sun** eases from where it is to wherever the count puts it, whatever changed it, retargeting
-  mid-travel. A new room places it without travel.
+  mid-travel. Switching between populated rooms carries it along the arc; at an empty endpoint it fades in or out.
+- **Room switches.** The palette follows the shortest hue arc over `ROOM_HUE`. The title and eyebrow overlap
+  briefly as they trade places; the list crossfades and resets to the top. Outgoing layers are paint-only.
+  Switching again keeps the stronger title and list layers independently, without stacking old rooms.
+- **Wide detail.** The placeholder fades into the selected task, which enters from the right by 8 px. The
+  column stays at full width until its exit finishes, including when dusk removes the empty column. Switching
+  between tasks fades the body in place; rapid J/K selection switches immediately. Resize across the narrow
+  breakpoint settles the pane instead of replaying the entrance.
+- **Sidebar.** The selection ring and wash crossfade. A collection clips and fades its child rows while its
+  chevron turns; clicking again reverses from the displayed height. Reduced motion snaps the disclosure.
+- **Scrollbars.** Scrolling or hovering reveals the thumb. When neither hovered nor dragged, it holds for
+  `SCROLLBAR_HOLD` without requesting frames, then fades out. Windows’ *Always show scrollbars* keeps
+  overflowing thumbs visible. At rest, gallery fixtures show them regardless of OS preference.
 - **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`): the scene
   fades in over the strip, the text switches to the dark theme's ink and the moon and stars fade in at
   `DUSK_NIGHT_AT`, and tomorrow's hand-over enters from `DUSK_HANDOVER_AT`, its first items `STAGGER` apart.
@@ -274,7 +286,8 @@ opened" screen after a recovery that can't finish, before and while confirming *
 the second with the detail pane over the list. `finished-nothing-tomorrow` is the finished day with nothing due
 tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `completing-fill`, `completing-hold`,
 `completing-collapse-50`, `sun-travel-50`, `reopening-collapse-50`, `long-list-collapse-80`,
-`long-list-end-collapse-50`, `dusk-50` and `dusk-75`.
+`long-list-end-collapse-50`, `dusk-50`, `dusk-75`, `room-switch-50`, `room-hue-50`, `detail-open-50`,
+`detail-dusk-50`, `collection-collapse-50` and `scrollbar-fade-50`.
 These states are set by the fixture, not by moving the pointer or maximizing the capture window.
 
 The runner requests five settling frames before reading back the next frame. It doesn't capture the

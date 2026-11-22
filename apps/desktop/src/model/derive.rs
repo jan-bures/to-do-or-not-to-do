@@ -254,11 +254,7 @@ fn completed_on(now: &Now, t: &Task, pred: impl Fn(jiff::civil::Date) -> bool) -
 
 fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -> Room {
     let today = ctx.today;
-    let key = match ui.room {
-        RoomKey::List(l) if !state.is_live(l.into()) => RoomKey::default(),
-        RoomKey::Collection(c) if !state.is_live(c.into()) => RoomKey::default(),
-        k => k,
-    };
+    let key = ui.room.resolved(state);
     let (open, done) = room_tasks(state, key, &ui.holding, ctx);
     // A task still playing its completion counts as open: the counts (and the sun) change when it has
     // left the rows.

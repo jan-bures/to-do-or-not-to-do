@@ -173,6 +173,17 @@ pub enum RoomKey {
     List(ListId),
 }
 
+impl RoomKey {
+    /// A deleted room takes the owner back to My Day.
+    pub fn resolved(self, state: &State) -> Self {
+        match self {
+            Self::List(l) if !state.is_live(l.into()) => Self::default(),
+            Self::Collection(c) if !state.is_live(c.into()) => Self::default(),
+            key => key,
+        }
+    }
+}
+
 impl Default for RoomKey {
     fn default() -> Self {
         Self::Smart(Smart::MyDay)
@@ -605,9 +616,9 @@ impl Shell {
     /// Whether Space may complete or reopen `id`: not while it is a hand-over task that hasn't begun to
     /// enter (a selection kept across a refresh can point at one before its row is there).
     pub fn reachable(&self, id: TaskId, entered: impl Fn(usize) -> bool) -> bool {
-        self.room
-            .handover()
-            .and_then(|next| next.child(id))
-            .is_none_or(entered)
+        match self.room.handover() {
+            Some(next) => next.child(id).is_some_and(entered),
+            None => self.rows().any(|row| row.id == id),
+        }
     }
 }

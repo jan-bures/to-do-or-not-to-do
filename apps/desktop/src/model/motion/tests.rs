@@ -428,10 +428,16 @@ fn space_never_reaches_a_selected_hand_over_task_before_it_enters() {
     };
     assert!(!reachable(m::DUSK / 2));
     assert!(reachable(m::DUSK));
-    // A task outside the hand-over is always reachable.
+    // A stale selection from the outgoing room must never resolve against hidden content.
     let other = TaskId::new_v7(1, [7; 10]);
     assert!(next.child(other).is_none());
-    assert!(shell.reachable(other, |_| false));
+    assert!(!shell.reachable(other, |_| true));
+    let ordinary = crate::fixtures::by_name("work")
+        .expect("work fixture")
+        .shell();
+    let row = ordinary.rows().next().expect("work row");
+    assert!(ordinary.reachable(row.id, |_| false));
+    assert!(!ordinary.reachable(other, |_| true));
 }
 
 #[test]

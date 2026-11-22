@@ -95,17 +95,28 @@ impl SwapLook {
     };
 }
 
+/// On interruption keep the stronger layer of each pair. Never promote a barely visible title
+/// or list to full opacity, and don't keep a stack of outgoing rooms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepLayers {
+    pub title: bool,
+    pub list: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Swap {
     start: Duration,
     pace: Pace,
+    list_alpha: f32,
+    title_alpha: f32,
+    title_y: f32,
 }
 
 impl Swap {
     fn list(self, now: Duration) -> SwapLook {
         let incoming = m::ENTER.ease(stretch(now, self.start, self.pace.fade(m::CONTENT_SWAP)));
         SwapLook {
-            outgoing: 1. - incoming,
+            outgoing: self.list_alpha * (1. - incoming),
             incoming,
             ..SwapLook::REST
         }
@@ -122,9 +133,13 @@ impl Swap {
         let inc = m::ENTER.ease(stretch(now, self.start + delay, span));
         let glide = if self.pace.reduced { 0. } else { space::S1 };
         SwapLook {
-            outgoing: 1. - out,
+            outgoing: self.title_alpha * (1. - out),
             incoming: inc,
-            outgoing_y: if out == 1. { 0. } else { -glide * out },
+            outgoing_y: if out == 1. || self.pace.reduced {
+                0.
+            } else {
+                mix(self.title_y, -glide, out)
+            },
             incoming_y: glide * (1. - inc),
         }
     }
@@ -137,9 +152,26 @@ pub struct Navigation {
 }
 
 impl Navigation {
-    pub fn switch(&mut self, from: Hue, to: Hue, now: Duration, pace: Pace) {
+    pub fn switch(&mut self, from: Hue, to: Hue, now: Duration, pace: Pace) -> KeepLayers {
+        let (title, list) = (self.title(now), self.list(now));
+        let keep = KeepLayers {
+            title: title.outgoing > title.incoming,
+            list: list.outgoing > list.incoming,
+        };
+        let title_y = if keep.title {
+            title.outgoing_y
+        } else {
+            title.incoming_y
+        };
         self.aim_hue(from, to, now, pace);
-        self.swap = Some(Swap { start: now, pace });
+        self.swap = Some(Swap {
+            start: now,
+            pace,
+            title_y,
+            list_alpha: list.outgoing.max(list.incoming),
+            title_alpha: title.outgoing.max(title.incoming),
+        });
+        keep
     }
 
     pub fn aim_hue(&mut self, from: Hue, to: Hue, now: Duration, pace: Pace) {
@@ -334,6 +366,24 @@ mod tests {
         assert_eq!(nav.hue(half * 2, 335.), 350.);
         assert_eq!(nav.hue(half * 3, 335.), 335.);
         assert_eq!(nav.wake(half * 3), Wake::Idle);
+    }
+
+    #[test]
+    fn interrupted_swaps_keep_the_dominant_layer_at_its_current_opacity_and_position() {
+        let mut nav = Navigation::default();
+        nav.switch(0., 90., Duration::ZERO, Pace::FULL);
+        let at = millis(m::CONTENT_SWAP / 2);
+        let (title, list) = (nav.title(at), nav.list(at));
+        assert_eq!(
+            nav.switch(90., 180., at, Pace::FULL),
+            KeepLayers {
+                title: true,
+                list: false
+            }
+        );
+        assert_eq!(nav.title(at).outgoing, title.outgoing);
+        assert_eq!(nav.title(at).outgoing_y, title.outgoing_y);
+        assert_eq!(nav.list(at).outgoing, list.incoming);
     }
 
     #[test]

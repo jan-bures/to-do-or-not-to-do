@@ -5,6 +5,7 @@
 mod detail;
 mod sidebar;
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -193,6 +194,8 @@ pub struct ShellView {
     /// Paint-only views of the outgoing room and detail; never used to resolve a command.
     outgoing: Option<OutgoingRoom>,
     closing: Option<model::Detail>,
+    /// Old child rows, drawn without hitboxes until their collection finishes closing.
+    closing_groups: HashMap<CollectionId, Vec<model::ListNav>>,
     /// Whether panes animate. The screenshot fixtures draw them at rest.
     animate: bool,
 }
@@ -294,6 +297,7 @@ impl ShellView {
             width: Width::of(f32::from(window.viewport_size().width)),
             outgoing: None,
             closing: None,
+            closing_groups: HashMap::new(),
             animate: true,
         };
         this.load_detail(cx);
@@ -342,6 +346,10 @@ impl ShellView {
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
         let state = self.store.view();
+        // Release the old room's row holds *before* deriving the new counts and sidebar.
+        if self.ui.room.resolved(&state) != self.shell.room.key {
+            self.motion.settle_all();
+        }
         self.follow_data(&state);
         let session = self.store.session();
         // Prune only once the stream is live and caught up: during catch-up after a new or rebuilt
@@ -389,6 +397,9 @@ impl ShellView {
                 self.closing = None;
                 self.detail_scroll.set_offset(gpui::point(px(0.), px(0.)));
             }
+        }
+        if self.animate {
+            self.aim_sidebar(&shell);
         }
         self.shell = shell;
         if self.animate {
@@ -472,6 +483,9 @@ impl ShellView {
         if self.motion.detail.look(now).task == 0. {
             self.closing = None;
         }
+        self.motion.sidebar.prune(now);
+        self.closing_groups
+            .retain(|&id, _| self.motion.sidebar.group(id, false, now).0 > 0.);
         self.measure_lifts();
         self.anchor_scroll();
         if !self.animate {
@@ -577,6 +591,8 @@ impl ShellView {
             }
             Moment::RoomSwitch { at, .. }
             | Moment::DetailOpen { at }
+            | Moment::CollectionCollapse { at }
+            | Moment::ScrollbarFade { at }
             | Moment::DetailDusk { at, .. } => at,
         };
         self.refresh(cx);
@@ -597,9 +613,26 @@ impl ShellView {
                 self.motion = Motion::default();
                 let _ = self.follow_shell();
                 self.begin_navigation(&next, f32::from(window.viewport_size().height));
+                self.aim_sidebar(&next);
                 self.shell = next;
                 self.settle_detail();
             }
+            Moment::CollectionCollapse { .. } => {
+                let before = UiState {
+                    collapsed_collections: Default::default(),
+                    ..self.ui.clone()
+                };
+                let open = model::derive(
+                    &self.store.view(),
+                    &before,
+                    &self.store.sync(),
+                    &self.store.now(),
+                );
+                let closed = std::mem::replace(&mut self.shell, open);
+                self.aim_sidebar(&closed);
+                self.shell = closed;
+            }
+            Moment::ScrollbarFade { at } => self.sidebar_bar.freeze_fade(at),
             Moment::DetailOpen { .. } => {
                 self.motion.detail = DetailMotion::rest(None, self.width == Width::Wide);
                 self.aim_detail();
@@ -674,7 +707,6 @@ impl ShellView {
         if self.animate {
             self.begin_navigation(next, 0.);
         }
-        self.motion.settle_all();
         self.rows
             .0
             .borrow()
@@ -686,18 +718,28 @@ impl ShellView {
 
     fn begin_navigation(&mut self, next: &Shell, capture_height: f32) {
         let now = self.now();
-        // Keep at most one outgoing room. A rapid switch before the next room is legible
-        // reuses the departing layer, rather than flashing an unseen intermediate room.
-        if self.outgoing.is_none()
-            || self.motion.navigation.list(now).incoming
-                >= self.motion.navigation.list(now).outgoing
-        {
-            self.outgoing = Some(self.capture_room(capture_height));
-        }
         let pace = self.pace();
-        self.motion
+        let keep = self
+            .motion
             .navigation
             .switch(self.shell.room.hue, next.room.hue, now, pace);
+        // The title enters later than the list: their dominant layers may be different rooms.
+        let old = self.outgoing.take();
+        let (title, eyebrow) = match &old {
+            Some(old) if keep.title => (old.title.clone(), old.eyebrow.clone()),
+            _ => (
+                self.shell.room.title.clone(),
+                self.shell.room.eyebrow.clone(),
+            ),
+        };
+        let body = old
+            .filter(|_| keep.list)
+            .map_or_else(|| self.capture_body(capture_height), |old| old.body);
+        self.outgoing = Some(OutgoingRoom {
+            title,
+            eyebrow,
+            body,
+        });
         self.motion
             .navigate_dusk(next.room.key, next.room.finished_day(), now, pace);
         self.motion.navigate_sun(
@@ -1606,7 +1648,7 @@ impl ShellView {
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    if this.shell.room.key == room && this.row_is_visible(id) {
+                    if this.shell.room.key == room && this.task_is_visible(id) {
                         this.toggle_complete(id, cx);
                     }
                 }))
@@ -1655,7 +1697,7 @@ impl ShellView {
                         .when_some(room, |el, room| {
                             el.on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                if this.shell.room.key == room && this.row_is_visible(id) {
+                                if this.shell.room.key == room && this.task_is_visible(id) {
                                     this.cycle_priority(id, cx);
                                 }
                             }))
@@ -1737,9 +1779,9 @@ impl ShellView {
         )
     }
 
-    fn capture_room(&self, min_height: f32) -> OutgoingRoom {
+    fn capture_body(&self, min_height: f32) -> OutgoingBody {
         let room = &self.shell.room;
-        let body = if let Some(next) = room.handover() {
+        if let Some(next) = room.handover() {
             OutgoingBody::Handover {
                 tomorrow: Box::new(next.clone()),
                 top: self.handover_scroll.offset().y,
@@ -1771,11 +1813,6 @@ impl ShellView {
                 cut,
                 chips: room.chips,
             }
-        };
-        OutgoingRoom {
-            title: room.title.clone(),
-            eyebrow: room.eyebrow.clone(),
-            body,
         }
     }
 
@@ -2000,7 +2037,7 @@ impl ShellView {
                             .child(body)
                             // Overlay in the task rows' existing right padding.
                             .when(has_rows, |d| {
-                                d.child(self.rows_bar.for_list(&self.rows, &p))
+                                d.child(self.rows_bar.for_list(&self.rows, &p, self.animate))
                             }),
                     ),
             )
@@ -2286,7 +2323,10 @@ impl ShellView {
             .size_full()
             .child(scroll)
             .when(interactive, |el| {
-                el.child(self.handover_bar.overlay(&self.handover_scroll, p))
+                el.child(
+                    self.handover_bar
+                        .overlay(&self.handover_scroll, p, self.animate),
+                )
             })
     }
 

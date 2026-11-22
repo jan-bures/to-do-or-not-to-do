@@ -62,6 +62,12 @@ pub enum Moment {
     DetailOpen {
         at: u32,
     },
+    CollectionCollapse {
+        at: u32,
+    },
+    ScrollbarFade {
+        at: u32,
+    },
     DetailDusk {
         task: TaskId,
         at: u32,
@@ -87,6 +93,16 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
+        "collection-collapse-50" => Some(Fixture {
+            moment: Some(Moment::CollectionCollapse { at: m::PANEL / 2 }),
+            ..collapsed_collection()
+        }),
+        "scrollbar-fade-50" => Some(Fixture {
+            moment: Some(Moment::ScrollbarFade {
+                at: m::SCROLLBAR_HOLD + m::SCROLLBAR_OUT / 2,
+            }),
+            ..long_sidebar()
+        }),
         "long-sidebar" => Some(long_sidebar()),
         "long-names" | "narrow-detail" => Some(long_names()),
         "long-names-narrow" => Some(long_names_narrow()),

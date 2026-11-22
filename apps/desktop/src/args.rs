@@ -66,6 +66,8 @@ pub const FIXTURES: &[&str] = &[
     "room-hue-50",
     "detail-open-50",
     "detail-dusk-50",
+    "collection-collapse-50",
+    "scrollbar-fade-50",
 ];
 
 /// What to do.
