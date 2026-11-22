@@ -720,7 +720,7 @@ fn a_hand_over_task_completed_from_its_box_keeps_its_place_until_released() {
 }
 
 #[test]
-fn the_detail_offers_due_and_priority_to_edit_and_only_shows_the_rest() {
+fn the_detail_offers_due_priority_and_tags_to_edit_and_only_shows_the_rest() {
     let f = fixtures::my_day();
     let shell = f.shell();
     let detail = shell.detail.expect("a task is open");
@@ -728,10 +728,26 @@ fn the_detail_offers_due_and_priority_to_edit_and_only_shows_the_rest() {
         detail.fields.iter().map(|f| (f.label, f.edit)).collect();
     assert_eq!(edits[0], ("Due", Some(FieldEdit::Due)));
     assert_eq!(edits[1], ("Priority", Some(FieldEdit::Priority)));
+    // Tags come last, always there to pick from (T); reminders and repeats are only shown.
+    assert_eq!(edits.last(), Some(&("Tags", Some(FieldEdit::Tags))));
     assert!(
-        edits[2..].iter().all(|(_, edit)| edit.is_none()),
+        edits[2..edits.len() - 1]
+            .iter()
+            .all(|(_, edit)| edit.is_none()),
         "{edits:?}"
     );
+    // The tags, by name, each with its colour.
+    let names: Vec<&str> = detail.tags.iter().map(|t| t.name.as_ref()).collect();
+    assert_eq!(names, ["planning", "q4"]);
+    // A task without tags still has the row, with a quiet dash.
+    let mut bare = fixtures::my_day();
+    let id = bare.ui.task.expect("selected");
+    bare.state.tasks.get_mut(&id).expect("task").tags.clear();
+    let d = bare.shell().detail.expect("detail");
+    let tags = d.fields.last().expect("tags");
+    assert_eq!((tags.label, tags.value.as_ref()), ("Tags", "–"));
+    assert_eq!(tags.kind, FieldKind::Empty);
+    assert!(d.tags.is_empty());
     // The priority reads as its name, or a dash when there's none.
     let mut f = fixtures::my_day();
     for (level, value) in [

@@ -17,6 +17,8 @@ pub enum Focus {
     Step,
     /// The due-date field.
     Due,
+    /// The detail pane's link field.
+    Link,
     /// Renaming a list, a collection or a step in place.
     Rename,
     /// A resize divider next to the list.
@@ -42,6 +44,7 @@ impl Focus {
             | Self::Notes
             | Self::Step
             | Self::Due
+            | Self::Link
             | Self::Rename => false,
         }
     }
@@ -60,6 +63,10 @@ pub enum Stop {
     RoomMenu,
     /// The divider between the list and the docked detail pane, while it shows.
     DetailSplitter,
+    /// The sidebar's New list.
+    NewList,
+    /// The sidebar's New collection.
+    NewCollection,
     /// The sidebar footer's "N couldn't sync", while something couldn't sync.
     SyncFailures,
     /// The account gear in the sidebar footer.
@@ -70,12 +77,14 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 7] = [
+pub const TAB_ORDER: [Stop; 9] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
     Stop::RoomMenu,
     Stop::DetailSplitter,
+    Stop::NewList,
+    Stop::NewCollection,
     Stop::SyncFailures,
     Stop::Account,
 ];
@@ -153,6 +162,8 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
                     ("P", "priority"),
                     ("Shift P", "pick priority"),
                     ("M", "move"),
+                    ("T", "tags"),
+                    ("L", "link"),
                     ("Del", "delete"),
                 ]);
                 if s.reorder {
@@ -167,6 +178,7 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
         Focus::Notes => hints.extend([("Enter", "new line"), ("Esc", "save")]),
         Focus::Step => hints.extend([("Enter", "add step"), ("Esc", "back to the list")]),
         Focus::Due => hints.extend([("Enter", "set"), ("Esc", "cancel")]),
+        Focus::Link => hints.extend([("Enter", "add link"), ("Esc", "back to the list")]),
         Focus::Rename => hints.extend([("Enter", "save"), ("Esc", "cancel")]),
         Focus::Splitter => hints.extend([
             ("← →", "resize"),
@@ -193,9 +205,20 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
 }
 
 /// The hints that give way, in this order, when the status bar is too narrow for all of them: the keys
-/// that have another way in first (the priority picker's row, the row's context menu), then the letters.
-/// Space, Escape and Ctrl+Z always stay.
-const GIVE_WAY: [&str; 8] = ["Shift P", "Del", "M", "Alt ↑↓", "D", "P", "E", "J K"];
+/// that have another way in first (the detail pane's Tags, links and Priority rows, the row's context
+/// menu), then the letters. Space, Escape and Ctrl+Z always stay.
+const GIVE_WAY: [&str; 10] = [
+    "T",
+    "L",
+    "Shift P",
+    "Del",
+    "M",
+    "Alt ↑↓",
+    "D",
+    "P",
+    "E",
+    "J K",
+];
 
 /// The hints that fit in `room` pixels, in their order, `gap` apart, each `width(hint)` wide: those in
 /// [`GIVE_WAY`] are left out, in its order, until the rest fit.
@@ -229,10 +252,26 @@ mod tests {
         let keys = |h: Vec<Hint>| h.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
         assert_eq!(
             keys(fit(all.clone(), full - 1., 10., width)),
-            ["J K", "Space", "E", "D", "P", "M", "Del", "Alt ↑↓", "Esc"]
+            [
+                "J K",
+                "Space",
+                "E",
+                "D",
+                "P",
+                "Shift P",
+                "M",
+                "L",
+                "Del",
+                "Alt ↑↓",
+                "Esc"
+            ]
         );
         assert_eq!(
             keys(fit(all.clone(), full - 130., 10., width)),
+            ["J K", "Space", "E", "D", "P", "M", "Del", "Alt ↑↓", "Esc"]
+        );
+        assert_eq!(
+            keys(fit(all.clone(), full - 250., 10., width)),
             ["J K", "Space", "E", "D", "P", "Alt ↑↓", "Esc"]
         );
         // However narrow, moving, Space and Escape stay.
@@ -270,7 +309,9 @@ mod tests {
         assert_eq!(keys(list(true, false, true)), ["J K"]);
         assert_eq!(
             keys(list(true, true, false)),
-            ["J K", "Space", "E", "D", "P", "Shift P", "M", "Del", "Esc"]
+            [
+                "J K", "Space", "E", "D", "P", "Shift P", "M", "T", "L", "Del", "Esc"
+            ]
         );
     }
 
@@ -289,6 +330,7 @@ mod tests {
             Focus::Notes,
             Focus::Step,
             Focus::Due,
+            Focus::Link,
             Focus::Rename,
         ] {
             let k = keys(HintState {
@@ -360,6 +402,7 @@ mod tests {
             Focus::Notes,
             Focus::Step,
             Focus::Due,
+            Focus::Link,
             Focus::Rename,
         ] {
             assert!(!focus.allows_task_undo(), "{focus:?}");
@@ -407,6 +450,8 @@ mod tests {
                 Undo,
                 RoomMenu,
                 DetailSplitter,
+                NewList,
+                NewCollection,
                 SyncFailures,
                 Account,
                 SidebarSplitter,
@@ -419,6 +464,8 @@ mod tests {
                 SidebarSplitter,
                 Account,
                 SyncFailures,
+                NewCollection,
+                NewList,
                 DetailSplitter,
                 RoomMenu,
                 Undo,
@@ -435,55 +482,124 @@ mod tests {
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
-        // fixed stops only. (Below, nothing couldn't sync unless said.)
+        // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
+        // sync unless said.)
         let fixed = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | SyncFailures);
-        assert_eq!(round(List, true, fixed), [Account, SidebarSplitter, List]);
-        assert_eq!(round(List, false, fixed), [SidebarSplitter, Account, List]);
+        assert_eq!(
+            round(List, true, fixed),
+            [NewList, NewCollection, Account, SidebarSplitter, List]
+        );
+        assert_eq!(
+            round(List, false, fixed),
+            [SidebarSplitter, Account, NewCollection, NewList, List]
+        );
         // Without the detail divider (narrow window, or no task open), both ways.
         let no_detail = |s: Stop| !matches!(s, DetailSplitter | SyncFailures);
         assert_eq!(
             round(RoomMenu, true, no_detail),
-            [Account, SidebarSplitter, List, Undo, RoomMenu]
+            [
+                NewList,
+                NewCollection,
+                Account,
+                SidebarSplitter,
+                List,
+                Undo,
+                RoomMenu
+            ]
         );
         assert_eq!(
             round(RoomMenu, false, no_detail),
-            [Undo, List, SidebarSplitter, Account, RoomMenu]
+            [
+                Undo,
+                List,
+                SidebarSplitter,
+                Account,
+                NewCollection,
+                NewList,
+                RoomMenu
+            ]
         );
         // A room without a menu skips its button both ways.
         let no_menu = |s: Stop| !matches!(s, RoomMenu | SyncFailures);
         assert_eq!(
             round(Undo, true, no_menu),
-            [DetailSplitter, Account, SidebarSplitter, List, Undo]
+            [
+                DetailSplitter,
+                NewList,
+                NewCollection,
+                Account,
+                SidebarSplitter,
+                List,
+                Undo
+            ]
         );
         assert_eq!(
             round(Undo, false, no_menu),
-            [List, SidebarSplitter, Account, DetailSplitter, Undo]
+            [
+                List,
+                SidebarSplitter,
+                Account,
+                NewCollection,
+                NewList,
+                DetailSplitter,
+                Undo
+            ]
         );
         // Without the toast, Undo is skipped.
         let no_undo = |s: Stop| !matches!(s, Undo | SyncFailures);
         assert_eq!(
             round(List, true, no_undo),
-            [RoomMenu, DetailSplitter, Account, SidebarSplitter, List]
+            [
+                RoomMenu,
+                DetailSplitter,
+                NewList,
+                NewCollection,
+                Account,
+                SidebarSplitter,
+                List
+            ]
         );
         assert_eq!(
             round(List, false, no_undo),
-            [SidebarSplitter, Account, DetailSplitter, RoomMenu, List]
+            [
+                SidebarSplitter,
+                Account,
+                NewCollection,
+                NewList,
+                DetailSplitter,
+                RoomMenu,
+                List
+            ]
         );
         // From a stop that has just gone (the toast expired while Undo had the keyboard, the detail
         // closed under its divider), it goes on from that stop's place.
         assert_eq!(tab_stop(Undo, true, no_undo), RoomMenu);
         assert_eq!(tab_stop(Undo, false, no_undo), List);
-        assert_eq!(tab_stop(DetailSplitter, true, no_detail), Account);
+        assert_eq!(tab_stop(DetailSplitter, true, no_detail), NewList);
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
         let refused = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter);
         assert_eq!(
             round(List, true, refused),
-            [SyncFailures, Account, SidebarSplitter, List]
+            [
+                NewList,
+                NewCollection,
+                SyncFailures,
+                Account,
+                SidebarSplitter,
+                List
+            ]
         );
         assert_eq!(
             round(List, false, refused),
-            [SidebarSplitter, Account, SyncFailures, List]
+            [
+                SidebarSplitter,
+                Account,
+                SyncFailures,
+                NewCollection,
+                NewList,
+                List
+            ]
         );
         // The list is always there, even if asked otherwise.
         assert_eq!(tab_stop(Account, true, |_| false), List);

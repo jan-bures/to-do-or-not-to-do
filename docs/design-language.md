@@ -60,7 +60,9 @@ cool. The neutrals (canvas, pane, ink) carry a trace of the room's hue, which ke
 
 Smart lists have fixed hues. Collections and lists pick from twelve **swatches** that are spread around the wheel:
 rose, coral, clay, olive, fern, jade, teal, lagoon, azure, cornflower, orchid and pink. The swatch names are stable
-keys, used in settings, CSS and JSON.
+keys, used in settings, CSS and JSON. Tags take the same swatches, shown as a small dot (the list's `dot` colour) before
+the tag's name. Choosing a colour offers exactly these twelve, as discs in two rows of six with the current one ticked;
+there is no free-form colour.
 
 ### Palette rules
 
@@ -633,9 +635,12 @@ Completing a task is the one choreographed moment in the app.
     - *Dialog card (opaque `pane`):* Enters with `opacity: 0 → 1`, `scale: 0.97 → 1.0`, `translateY: 6 px → 0`
       (`OVERLAY_IN` 150 ms, `ENTER`); leaves with `opacity: 1 → 0`, `translateY: 0 → 4 px` (`OVERLAY_OUT` 120 ms,
       `EXIT`).
+  - **A menu's next page** (a picker, a confirmation or the colour swatches that one of its items opens in
+    place): the menu stays where it is, and the new page's content fades in over `CONTENT_SWAP` (`120 ms`,
+    `ENTER`).
 - **Stagger:** None.
 - **Reduced motion:** Drop scale and translation (`0 px`, `scale: 1.0`); scrim and overlay fade over
-  `REDUCED_FADE` (`100 ms`).
+  `REDUCED_FADE` (`100 ms`), and so does a menu's next page.
 - **Platform notes:**
   - *GPUI:* `anchored` overlays omit `scale` (keeps 1 px borders pixel-crisp at 100–150 % DPI) and animate
     `opacity` + `4 px` vertical offset over `OVERLAY_IN` / `OVERLAY_OUT`.

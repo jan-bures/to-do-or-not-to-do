@@ -101,7 +101,10 @@ fn web_url(s: &str) -> Result<(), DomainError> {
     }
 }
 
-fn validate_link(kind: &LinkKind) -> Result<(), DomainError> {
+/// Checks a link the way [`decide`] checks `Command::AddLink`: a web link needs an `http` or `https` URL
+/// without whitespace, at most [`MAX_URL`] bytes, and an email link needs a sender and a message ID.
+/// Clients use it to say what's wrong before they submit.
+pub fn validate_link(kind: &LinkKind) -> Result<(), DomainError> {
     match kind {
         LinkKind::Web { url, title } => {
             web_url(url)?;

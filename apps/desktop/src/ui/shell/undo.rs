@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gpui::{Context, Div, MouseButton, Role, SharedString, div, prelude::*, px};
 use todo_client::{CommandId, TrackedUndo};
-use todo_core::ids::{EntityId, TaskId};
+use todo_core::ids::{CollectionId, EntityId, TaskId};
 use todo_core::model::Entity;
 use todo_core::{Command, State};
 
@@ -15,14 +15,18 @@ use crate::model::labels::one_line;
 use crate::store::UndoTarget;
 use crate::theme::TextStyled;
 
-/// What an undoable change did: a task change, or deleting a step or a whole list.
+/// What an undoable change did: a task change, deleting a step, a link, a list or a whole collection,
+/// or moving a list to another collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
     Complete,
     Delete,
     Move,
     DeleteStep,
+    DeleteLink,
     DeleteList,
+    MoveList,
+    DeleteCollection,
 }
 
 impl EditKind {
@@ -33,10 +37,13 @@ impl EditKind {
             Command::Delete { id } => match id {
                 EntityId::Task(_) => (id, Self::Delete),
                 EntityId::Step(_) => (id, Self::DeleteStep),
+                EntityId::Link(_) => (id, Self::DeleteLink),
                 EntityId::List(_) => (id, Self::DeleteList),
+                EntityId::Collection(_) => (id, Self::DeleteCollection),
                 _ => return None,
             },
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
+            Command::MoveList { id, .. } => (id.into(), Self::MoveList),
             Command::Reorder {
                 id: id @ EntityId::Task(_),
                 ..
@@ -53,9 +60,11 @@ impl EditKind {
         match self {
             Self::Complete => "Completed",
             Self::Delete => "Deleted",
-            Self::Move => "Moved",
+            Self::Move | Self::MoveList => "Moved",
             Self::DeleteStep => "Deleted step",
+            Self::DeleteLink => "Removed link",
             Self::DeleteList => "Deleted list",
+            Self::DeleteCollection => "Deleted collection",
         }
     }
 
@@ -64,9 +73,11 @@ impl EditKind {
             match self {
                 Self::Complete => "Reopened",
                 Self::Delete => "Restored",
-                Self::Move => "Moved back",
+                Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
+                Self::DeleteLink => "Restored link",
                 Self::DeleteList => "Restored list",
+                Self::DeleteCollection => "Restored collection",
             },
             title,
         )
@@ -86,18 +97,28 @@ impl EditKind {
     }
 
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
-        if self == Self::Move {
-            let EntityId::Task(id) = entity else {
-                return false;
-            };
-            before
+        match (self, entity) {
+            (Self::Move, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)
                 .zip(after.tasks.get(&id))
-                .is_some_and(|(old, new)| old.list != new.list || old.position != new.position)
-        } else {
-            !self.is_restored(entity, before) && self.is_restored(entity, after)
+                .is_some_and(|(old, new)| old.list != new.list || old.position != new.position),
+            (Self::MoveList, EntityId::List(id)) => before
+                .lists
+                .get(&id)
+                .zip(after.lists.get(&id))
+                .is_some_and(|(old, new)| {
+                    old.collection != new.collection || old.position != new.position
+                }),
+            (Self::Move | Self::MoveList, _) => false,
+            _ => !self.is_restored(entity, before) && self.is_restored(entity, after),
         }
+    }
+
+    /// The change took the room the window showed away with it (deleting its list or collection, or
+    /// the collection its list is in): the window goes to My Day, and the undo goes along.
+    pub(super) fn leaves_room(self) -> bool {
+        matches!(self, Self::DeleteList | Self::DeleteCollection)
     }
 }
 
@@ -108,7 +129,7 @@ impl EditKind {
 pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) -> Option<String> {
     if !matches!(
         kind,
-        EditKind::Delete | EditKind::DeleteStep | EditKind::DeleteList
+        EditKind::Delete | EditKind::DeleteStep | EditKind::DeleteLink | EditKind::DeleteList
     ) || state.tombstone(entity).is_some()
         || state.is_live(entity)
     {
@@ -131,6 +152,7 @@ pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) 
     };
     let subject = match kind {
         EditKind::DeleteStep => "Step",
+        EditKind::DeleteLink => "Link",
         EditKind::DeleteList => "List",
         _ => "Task",
     };
@@ -144,8 +166,9 @@ fn task_label(verb: &str, title: &str) -> SharedString {
     format!("{verb} \u{201c}{}\u{201d}", one_line(title)).into()
 }
 
-/// What the toast says a change did: Deleted “Buy stamps”, or for a move to another list, where it
-/// went: Moved “Buy stamps” to Errands. `state` is the state before the change.
+/// What the toast says a change did: Deleted “Buy stamps”, or for a move, where it went: Moved “Buy
+/// stamps” to Errands, Moved “Garden” to Home, or Moved “Garden” out of Home. `state` is the state
+/// before the change.
 pub(super) fn toast_label(
     state: &State,
     command: &Command,
@@ -153,33 +176,48 @@ pub(super) fn toast_label(
     kind: EditKind,
 ) -> SharedString {
     let title = subject_title(state, entity);
+    let moved = |to: &str| -> SharedString {
+        format!("Moved \u{201c}{}\u{201d} {to}", one_line(&title)).into()
+    };
     match (command, kind) {
         (Command::MoveTask { list, .. }, EditKind::Move) => match state.lists.get(list) {
-            Some(list) => format!(
-                "Moved \u{201c}{}\u{201d} to {}",
-                one_line(title),
-                one_line(&list.name)
-            )
-            .into(),
-            None => kind.label(title),
+            Some(list) => moved(&format!("to {}", one_line(&list.name))),
+            None => kind.label(&title),
         },
-        _ => kind.label(title),
+        (Command::MoveList { id, collection, .. }, EditKind::MoveList) => {
+            let name = |c: &CollectionId| state.collections.get(c).map(|c| one_line(&c.name));
+            match (collection, state.lists.get(id).and_then(|l| l.collection)) {
+                (Some(to), _) => match name(to) {
+                    Some(to) => moved(&format!("to {to}")),
+                    None => kind.label(&title),
+                },
+                (None, Some(from)) => match name(&from) {
+                    Some(from) => moved(&format!("out of {from}")),
+                    None => kind.label(&title),
+                },
+                (None, None) => kind.label(&title),
+            }
+        }
+        _ => kind.label(&title),
     }
 }
 
-/// What the toast names: a task's or a step's title, or a list's name.
-pub(super) fn subject_title(state: &State, entity: EntityId) -> &str {
+/// What the toast names: a task's or a step's title, a link's title (or address), or a list's or a
+/// collection's name.
+pub(super) fn subject_title(state: &State, entity: EntityId) -> String {
     match entity {
-        EntityId::Task(id) => state.tasks.get(&id).map(|t| t.title.as_str()),
-        EntityId::Step(id) => state.steps.get(&id).map(|s| s.title.as_str()),
-        EntityId::List(id) => state.lists.get(&id).map(|l| l.name.as_str()),
+        EntityId::Task(id) => state.tasks.get(&id).map(|t| t.title.clone()),
+        EntityId::Step(id) => state.steps.get(&id).map(|s| s.title.clone()),
+        EntityId::Link(id) => state.links.get(&id).map(crate::model::menus::link_name),
+        EntityId::List(id) => state.lists.get(&id).map(|l| l.name.clone()),
+        EntityId::Collection(id) => state.collections.get(&id).map(|c| c.name.clone()),
         _ => None,
     }
-    .unwrap_or("Task")
+    .unwrap_or_else(|| "Task".into())
 }
 
 /// A later local edit makes the old one-step undo target stale: for a task, an edit to it or to its
-/// children; for a step or a list, an edit to that step or list.
+/// children; for a step, a link, a list or a collection, an edit to that one.
 pub(super) fn touches(command: &Command, entity: EntityId, state: &State) -> bool {
     match entity {
         EntityId::Task(id) => touches_task(command, id, state),
@@ -193,6 +231,7 @@ fn command_target(command: &Command) -> Option<EntityId> {
         | Command::CompleteStep { id }
         | Command::UncompleteStep { id } => id.into(),
         Command::UpdateList { id, .. } | Command::MoveList { id, .. } => id.into(),
+        Command::UpdateCollection { id, .. } => id.into(),
         Command::Reorder { id, .. } | Command::Delete { id } | Command::Restore { id } => id,
         _ => return None,
     })
@@ -322,7 +361,7 @@ impl ShellView {
         self.notice = hidden.map(Notice::info).or_else(|| {
             before.map(|before| {
                 if kind.undo_changed_view(entity, &before, &state) {
-                    Notice::info(kind.undone_label(subject_title(&state, entity)))
+                    Notice::info(kind.undone_label(&subject_title(&state, entity)))
                 } else if queued.is_some() {
                     Notice::info("Undo queued.")
                 } else {
@@ -772,6 +811,129 @@ mod tests {
         assert_eq!(
             EditKind::Delete.undone_label(&title).as_ref(),
             format!("Restored \u{201c}{title}\u{201d}")
+        );
+    }
+
+    #[test]
+    fn deleting_a_collection_hides_its_lists_and_undo_brings_them_all_back() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let state = &f.state;
+        let work = commands_collection(state, "Work");
+        let lists: Vec<_> = (state.lists.values())
+            .filter(|l| l.collection == Some(work))
+            .map(|l| l.id)
+            .collect();
+        let delete = crate::model::commands::delete_collection(state, work).expect("delete");
+        let (entity, kind) = EditKind::of(&delete).expect("undoable");
+        assert_eq!((entity, kind), (work.into(), EditKind::DeleteCollection));
+        assert!(kind.leaves_room());
+        assert_eq!(
+            toast_label(state, &delete, entity, kind).as_ref(),
+            "Deleted collection “Work”"
+        );
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(delete).expect("deleted");
+        let after = store.view();
+        assert!(lists.iter().all(|l| !after.is_live((*l).into())));
+        // Only the collection carries the tombstone: its lists are hidden with it.
+        assert!(lists.iter().all(|l| after.lists[l].deleted.is_none()));
+        assert!(!kind.undo_changed_view(entity, &after, &after));
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert!(lists.iter().all(|l| back.is_live((*l).into())));
+        assert!(kind.undo_changed_view(entity, &after, &back));
+        assert_eq!(
+            kind.undone_label(&subject_title(&back, entity)).as_ref(),
+            "Restored collection “Work”"
+        );
+        assert_eq!(hidden_by_parent(kind, entity, &back), None);
+    }
+
+    fn commands_collection(state: &State, name: &str) -> todo_core::ids::CollectionId {
+        state
+            .collections
+            .values()
+            .find(|c| c.name == name)
+            .map(|c| c.id)
+            .expect("collection")
+    }
+
+    #[test]
+    fn a_list_moved_to_another_collection_says_where_and_moves_back() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let state = &f.state;
+        let personal = commands_collection(state, "Personal");
+        let office = (state.lists.values())
+            .find(|l| l.name == "Office")
+            .expect("Office")
+            .id;
+        let into = crate::model::commands::move_list(state, office, Some(personal)).expect("move");
+        let (entity, kind) = EditKind::of(&into).expect("undoable");
+        assert_eq!((entity, kind), (office.into(), EditKind::MoveList));
+        assert!(!kind.leaves_room() && !kind.needs_row_restore());
+        assert_eq!(
+            toast_label(state, &into, entity, kind).as_ref(),
+            "Moved “Office” to Personal"
+        );
+        let out = crate::model::commands::move_list(state, office, None).expect("out");
+        assert_eq!(
+            toast_label(state, &out, entity, kind).as_ref(),
+            "Moved “Office” out of Work"
+        );
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(into).expect("moved");
+        let moved = store.view();
+        assert_eq!(moved.lists[&office].collection, Some(personal));
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert_eq!(back.lists[&office], state.lists[&office]);
+        assert!(kind.undo_changed_view(entity, &moved, &back));
+        assert!(!kind.undo_changed_view(entity, &back, &back));
+        assert_eq!(
+            kind.undone_label(&subject_title(&back, entity)).as_ref(),
+            "Moved back “Office”"
+        );
+        // A later rename of the list makes the old target stale; a recolour of its collection doesn't.
+        let rename = crate::model::commands::rename_list(&back, office, "Desk").expect("rename");
+        assert!(touches(&rename, entity, &back));
+        let recolour =
+            crate::model::commands::set_color(&back, personal.into(), "teal").expect("colour");
+        assert!(!touches(&recolour, entity, &back));
+        assert!(touches(&recolour, personal.into(), &back));
+    }
+
+    #[test]
+    fn a_removed_link_comes_back_with_undo() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected task");
+        let link = (f.state.links.values())
+            .find(|l| l.task == task)
+            .expect("a link")
+            .id;
+        let remove = crate::model::commands::delete_link(&f.state, link).expect("remove");
+        let (entity, kind) = EditKind::of(&remove).expect("undoable");
+        assert_eq!(kind, EditKind::DeleteLink);
+        assert_eq!(
+            toast_label(&f.state, &remove, entity, kind).as_ref(),
+            "Removed link “Q4 roadmap: pre-read and agenda”"
+        );
+        // Removing a link is an edit of its task: an older target for the task goes stale.
+        assert!(touches(&remove, task.into(), &f.state));
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(remove).expect("removed");
+        // Its task deleted elsewhere, the restored link stays hidden, and the status bar says why.
+        store
+            .submit(Command::Delete { id: task.into() })
+            .expect("the task deleted elsewhere");
+        store.undo(&target).expect("exact inverse");
+        let state = store.view();
+        assert!(state.links[&link].deleted.is_none());
+        assert_eq!(
+            hidden_by_parent(kind, entity, &state).as_deref(),
+            Some("Link restored, but its task was deleted elsewhere.")
         );
     }
 

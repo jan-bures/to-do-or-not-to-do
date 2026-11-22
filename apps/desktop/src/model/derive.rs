@@ -736,22 +736,41 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             edit: None,
         });
     }
-    let tags: Vec<String> = task
+    let mut tags: Vec<&todo_core::model::Tag> = task
         .tags
         .iter()
         .filter_map(|t| state.tags.get(t))
         .filter(|t| t.deleted.is_none())
+        .collect();
+    tags.sort_by_cached_key(|t| (todo_core::query::fold(&t.name), t.id));
+    let names: Vec<String> = tags
+        .iter()
         .map(|t| format!("#{}", labels::one_line(&t.name)))
         .collect();
-    if !tags.is_empty() {
-        fields.push(Field {
-            icon: Icon::Hash,
-            label: "Tags",
-            value: tags.join(" ").into(),
-            kind: FieldKind::Tags,
-            edit: None,
-        });
-    }
+    // Always there, like Due and Priority: the tag picker opens from it (or T).
+    fields.push(Field {
+        icon: Icon::Hash,
+        label: "Tags",
+        value: if names.is_empty() {
+            "–".into()
+        } else {
+            names.join(" ").into()
+        },
+        kind: if names.is_empty() {
+            FieldKind::Empty
+        } else {
+            FieldKind::Tags
+        },
+        edit: Some(FieldEdit::Tags),
+    });
+    let tags = tags
+        .iter()
+        .map(|t| TagChip {
+            id: t.id,
+            name: labels::one_line(&t.name).into(),
+            hue: super::menus::tag_hue(t),
+        })
+        .collect();
 
     let mut links: Vec<&todo_core::model::Link> = state
         .links
@@ -827,6 +846,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             .collect(),
         notes: task.notes.clone().into(),
         fields,
+        tags,
         links,
         attachments,
     })

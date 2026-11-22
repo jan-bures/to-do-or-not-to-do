@@ -1,17 +1,19 @@
-//! The sidebar: smart lists, collections and lists with their counts, the agents seen today and the sync
-//! line, and inline renaming. Its menus (a list's or collection's context menu, the account menu) are
-//! drawn by `menu.rs`.
+//! The sidebar: smart lists, collections and lists with their counts, New list and New collection, the
+//! agents seen today and the sync line, and inline renaming (lists, collections, and the steps and tags
+//! of the detail pane). Its menus (a list's or collection's context menu, the account menu) are drawn by
+//! `menu.rs`.
 
 use gpui::{
     ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
     SharedString, Stateful, Subscription, Window, div, prelude::*, px,
 };
-use todo_core::ids::{CollectionId, EntityId, ListId, StepId};
+use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TagId};
 
 use super::menu::{MenuKind, ring};
-use super::{ShellView, quick_add_colors};
+use super::{Notice, ShellView, quick_add_colors};
 use crate::model::hints::Stop;
 use crate::model::layout::Pane;
+use crate::model::menus::Page;
 use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
@@ -23,6 +25,8 @@ pub(super) enum InlineTarget {
     List(ListId),
     Collection(CollectionId),
     Step(StepId),
+    /// A tag, in the detail pane's Tags row.
+    Tag(TagId),
 }
 
 /// An inline rename in progress.
@@ -87,8 +91,12 @@ impl ShellView {
             return;
         };
         let text = inline.input.read(cx).content.to_string();
-        if let Some(cmd) = inline_command(&self.store.view(), inline.target, &inline.seed, &text) {
-            self.submit(vec![cmd]);
+        match inline_command(&self.store.view(), inline.target, &inline.seed, &text) {
+            Ok(Some(cmd)) => {
+                self.submit(vec![cmd]);
+            }
+            Ok(None) => {}
+            Err(e) => self.notice = Some(Notice::error(format!("Couldn't rename that tag: {e}."))),
         }
         self.refresh(cx);
     }
@@ -114,11 +122,35 @@ impl ShellView {
         }
     }
 
+    /// Adds a collection at the end of the sidebar, opens it and starts naming it in place, as New list
+    /// does.
+    pub(super) fn new_collection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = CollectionId::from_uuid(self.store.new_uuid());
+        let name = "New collection";
+        if self.submit(vec![commands::create_collection(id, name)]) {
+            self.select_room(RoomKey::Collection(id), cx);
+            self.start_inline(InlineTarget::Collection(id), name.into(), window, cx);
+        }
+    }
+
     pub(super) fn nudge(&mut self, id: EntityId, by: i32, cx: &mut Context<Self>) {
         if let Some(cmd) = commands::nudge(&self.store.view(), id, by) {
             self.submit(vec![cmd]);
         }
         self.refresh(cx);
+    }
+
+    /// Records where a list's or collection's row was painted (`nav_bounds`).
+    fn nav_bounds_probe(&self, key: RoomKey) -> impl IntoElement {
+        let bounds = self.nav_bounds.clone();
+        gpui::canvas(
+            move |b, _, _| {
+                bounds.borrow_mut().insert(key, b);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
     }
 
     /// Which row has the ring. A collapsed collection can stand in for the active list.
@@ -212,6 +244,7 @@ impl ShellView {
                 .into_any_element(),
         };
         let row = div()
+            .relative()
             .h(px(desktop::NAV_SUB_ROW))
             .flex()
             .items_center()
@@ -238,6 +271,7 @@ impl ShellView {
         if !live {
             return row.id(element_id);
         }
+        let row = row.child(self.nav_bounds_probe(RoomKey::List(id)));
         self.clickable(row, element_id, on, cx, move |this, e, window, cx| {
             if e.click_count() >= 2 {
                 this.start_inline(InlineTarget::List(id), name.clone(), window, cx);
@@ -248,7 +282,10 @@ impl ShellView {
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                let kind = MenuKind::List { id, confirm: false };
+                let kind = MenuKind::List {
+                    id,
+                    page: Page::Main,
+                };
                 this.open_menu(kind, Some(e.position), None, window, cx);
             }),
         )
@@ -396,6 +433,7 @@ impl ShellView {
                     this.toggle_collection(cid, cx);
                 }));
             let head = div()
+                .relative()
                 .h(px(desktop::NAV_SUB_ROW))
                 .mt(px(gap))
                 .flex()
@@ -408,7 +446,8 @@ impl ShellView {
                 .child(toggle)
                 .child(kit::glyph(c.glyph, theme::list_colors(t, c.hue).glyph))
                 .child(name)
-                .child(count(c.count));
+                .child(count(c.count))
+                .child(self.nav_bounds_probe(RoomKey::Collection(cid)));
             let cname = c.name.clone();
             let head = self
                 .clickable(
@@ -432,7 +471,10 @@ impl ShellView {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                        let kind = MenuKind::Collection { id: cid };
+                        let kind = MenuKind::Collection {
+                            id: cid,
+                            page: Page::Main,
+                        };
                         this.open_menu(kind, Some(e.position), None, window, cx);
                     }),
                 );
@@ -467,21 +509,50 @@ impl ShellView {
             .iter()
             .map(|l| self.list_row(l, space::S2, true, cx))
             .collect();
-        let new_list = div()
-            .id("new-list")
+        // New list and New collection: quiet rows, each a Tab stop (Enter or Space adds).
+        type Add = fn(&mut ShellView, &mut Window, &mut Context<ShellView>);
+        let add_row = |id: &'static str, icon: Icon, label: &'static str, stop: Stop, add: Add| {
+            let focused = self.stop_handle(stop).is_focused(window);
+            let row = div()
+                .id(id)
+                .h(px(desktop::NAV_SUB_ROW))
+                .flex()
+                .items_center()
+                .gap(px(space::S2 + 2.))
+                .pl(px(space::S2))
+                .style(ty::NAV_SUB)
+                .text_color(if focused { p.ink } else { p.ink_3 })
+                .cursor_pointer()
+                .track_focus(self.stop_handle(stop))
+                .hover(|s| s.bg(p.hover))
+                .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
+                .child(label)
+                .on_click(cx.listener(move |this, _, window, cx| add(this, window, cx)))
+                .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                    this.control_key(e, window, cx);
+                }));
+            ring(&p, focused, radius::MD, row)
+        };
+        let new_list = add_row(
+            "new-list",
+            Icon::Plus,
+            "New list",
+            Stop::NewList,
+            |this, window, cx| this.new_list(None, window, cx),
+        );
+        let new_collection = add_row(
+            "new-collection",
+            Icon::FolderPlus,
+            "New collection",
+            Stop::NewCollection,
+            |this, window, cx| this.new_collection(window, cx),
+        );
+        let adds = div()
             .mt(px(space::S2))
-            .h(px(desktop::NAV_SUB_ROW))
             .flex()
-            .items_center()
-            .gap(px(space::S2 + 2.))
-            .pl(px(space::S2))
-            .rounded(px(radius::MD))
-            .style(ty::NAV_SUB)
-            .text_color(p.ink_3)
-            .hover(|s| s.bg(p.hover))
-            .child(kit::icon(Icon::Plus, component::ICON_SMALL, p.ink_3))
-            .child("New list")
-            .on_click(cx.listener(|this, _, window, cx| this.new_list(None, window, cx)));
+            .flex_col()
+            .child(new_list)
+            .child(new_collection);
 
         let agents = (!sb.agents.is_empty()).then(|| {
             div()
@@ -586,7 +657,7 @@ impl ShellView {
                                     .when(!top.is_empty(), |d| {
                                         d.child(div().h(px(space::S3))).children(top)
                                     })
-                                    .child(new_list)
+                                    .child(adds)
                                     .child(div().flex_1().min_h(px(space::S3)))
                                     .children(agents),
                             ),
@@ -622,15 +693,17 @@ fn inline_command(
     target: InlineTarget,
     seed: &str,
     text: &str,
-) -> Option<todo_core::Command> {
+) -> Result<Option<todo_core::Command>, commands::TagError> {
     if text == seed {
-        return None;
+        return Ok(None);
     }
-    match target {
+    Ok(match target {
         InlineTarget::List(id) => commands::rename_list(state, id, text),
         InlineTarget::Collection(id) => commands::rename_collection(state, id, text),
         InlineTarget::Step(id) => commands::retitle_step(state, id, text),
-    }
+        // A tag's name must stay unique: a taken one is refused with a reason.
+        InlineTarget::Tag(id) => return commands::rename_tag(state, id, text),
+    })
 }
 
 #[cfg(test)]
@@ -666,9 +739,9 @@ mod tests {
             // The editor starts with the name as drawn, and leaving it untouched saves nothing.
             let seed = labels::one_line(stored);
             assert_ne!(seed, stored);
-            assert_eq!(inline_command(&f.state, target, &seed, &seed), None);
+            assert_eq!(inline_command(&f.state, target, &seed, &seed), Ok(None));
             // A real edit is saved.
-            let cmd = inline_command(&f.state, target, &seed, "Renamed");
+            let cmd = inline_command(&f.state, target, &seed, "Renamed").expect("a valid name");
             assert!(
                 matches!(
                     cmd,
@@ -683,5 +756,26 @@ mod tests {
         }
         // Nothing was written: the stored names are as they were.
         assert_eq!(f.state.lists[&list].name, "Plan\nning");
+    }
+
+    #[test]
+    fn renaming_a_tag_in_place_keeps_names_unique() {
+        let f = fixtures::my_day();
+        let docs = commands::tag_named(&f.state, "docs").expect("docs");
+        let target = InlineTarget::Tag(docs);
+        assert_eq!(inline_command(&f.state, target, "docs", "docs"), Ok(None));
+        assert!(matches!(
+            inline_command(&f.state, target, "docs", "documents"),
+            Ok(Some(Command::UpdateTag { name: Some(n), .. })) if n == "documents"
+        ));
+        // Another tag's name, in any case, is refused with a reason.
+        assert_eq!(
+            inline_command(&f.state, target, "docs", "Legal"),
+            Err(commands::TagError::Taken("legal".into()))
+        );
+        assert_eq!(
+            inline_command(&f.state, target, "docs", "  "),
+            Err(commands::TagError::Empty)
+        );
     }
 }

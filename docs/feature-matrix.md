@@ -80,6 +80,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Keyboard: J/K, arrows, Space, E, Esc | n/a | wired `D/ui/shell.rs:66`–`78`, `:2089` | wired `W/app.rs:492` | n/a |
 | Keyboard: D (due), P (priority), Shift+P (priority picker), Alt+Up/Down (reorder) | n/a | wired `D/ui/shell.rs:2251`–`2264` | wired `W/app.rs` (`on_key`) | n/a |
 | Keyboard: Delete (delete), M (move to another list), Shift+F10 (the task's menu) | n/a | wired `D/ui/shell.rs` (`list_key`, `MoveTaskTo`, `TaskMenu`) | missing | n/a |
+| Keyboard: T (tag picker), L (add a link) | n/a | wired `D/ui/shell.rs` (`PickTags`, `AddLinkKey`; `pick_tags` `:1023`, `D/ui/shell/detail.rs:254`) | missing | n/a |
 | Keyboard: Ctrl+N or N focuses quick add | n/a | wired `D/ui/shell.rs:2604` | wired `W/app.rs:583` | n/a |
 
 ### Lists and collections
@@ -91,13 +92,13 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:241`, `D/ui/shell/menu.rs:385`) | wired: sidebar and room menus (`W/app/room_actions.rs`) | wired: its drawer menu (long press) or the room menu, then a dialog (`A/ui/MainScreen.kt`, `A/model/Menus.kt`, `F/engine.rs::rename_list`) |
 | Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | wired: Move up and down, with undo (`W/app/room_actions.rs`) | wired: Move up and down in its drawer menu or the room menu (`A/model/Menus.kt`, `F/engine.rs::move_room`) |
 | Delete a list | `Delete` `C/command.rs:365` | wired from its context menu or the room menu, after a confirmation, with undo (`D/ui/shell/menu.rs:401`, `D/ui/shell/undo.rs:35`) | wired: both menus, with confirmation and undo (`W/app/room_actions.rs`) | wired from its drawer menu or the room menu, after a confirmation checked again on confirm, with undo (`A/ui/Editing.kt` `DeleteListCard`, `F/engine.rs::delete_list`, `undo_deletion`) |
-| Move a list to another collection | `MoveList` `C/command.rs:187` | missing | missing | missing |
-| List colour | `UpdateList.color` | missing (a swatch is set at creation only) | missing | missing |
-| New collection | `CreateCollection` `C/command.rs:128` | missing | missing | missing |
+| Move a list to another collection | `MoveList` `C/command.rs:187` | wired: Move to… in its context menu or the room menu opens a collection picker (and No collection), with undo (`D/model/menus.rs:703`, `D/ui/shell/menu.rs:720`, `T/intent/organize.rs:75`) | missing | missing |
+| List colour | `UpdateList.color` | wired: Colour… in its context menu or the room menu, the design's twelve swatches (`D/model/menus.rs:516`, `D/ui/shell/menu.rs:629`, `T/intent/organize.rs:103`) | missing | missing |
+| New collection | `CreateCollection` `C/command.rs:128` | wired: the sidebar's New collection (a Tab stop), then named in place (`D/ui/shell/sidebar.rs:127`, `T/intent/organize.rs:19`) | missing | missing |
 | Rename a collection | `UpdateCollection` `C/command.rs:141` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:384`, `D/ui/shell/menu.rs:386`) | wired: sidebar and room menus (`W/app/room_actions.rs`) | wired: its drawer menu (long press) or the room menu, then a dialog (`F/engine.rs::rename_collection`) |
 | Reorder collections | `Reorder` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | wired: Move up and down, with undo (`W/app/room_actions.rs`) | wired: Move up and down in its drawer menu or the room menu (`F/engine.rs::move_room`) |
-| Delete a collection | `Delete` | missing | wired: both menus, with confirmation and undo (`W/app/room_actions.rs`) | missing |
-| Collection colour | `UpdateCollection.color` | missing | missing | missing |
+| Delete a collection | `Delete`; its lists and their tasks are hidden with it, not deleted | wired from its context menu or the room menu, after a confirmation that counts the lists and tasks that go with it, with undo (`D/model/menus.rs:437`, `D/ui/shell/menu.rs:622`, `D/ui/shell/undo.rs:29`) | wired: both menus, with confirmation and undo (`W/app/room_actions.rs`) | missing |
+| Collection colour | `UpdateCollection.color` | wired: Colour… in its context menu or the room menu (`D/model/menus.rs:516`) | missing | missing |
 
 ### Task list
 
@@ -115,10 +116,10 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Move a task to another list | `MoveTask` `C/command.rs:206`; the event records the position too, so undoing it after a reorder in the new list conflicts | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | missing | wired: grouped, filterable Move to… picker, with undo (`A/ui/TaskActions.kt`, `F/engine.rs::move_task_to`) |
 | Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | missing | wired: Delete task without confirmation, with undo (`F/engine.rs::delete_task`, `undo_deletion`) |
 | Trash and restore | `Restore` `C/command.rs:370` | missing | missing | missing |
-| Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:533`) | missing | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
+| Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Links…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:915`) | missing | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
-| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, move, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ button opens the room menu with what applies: rename, move, show or hide completed, delete list (`A/ui/RoomPane.kt`, `A/model/Menus.kt` `roomMenu`); no sliders |
+| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, colour, move a list to another collection, show or hide completed, delete the list or collection (`D/ui/shell.rs:1382`, `D/model/menus.rs:549`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, move, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ button opens the room menu with what applies: rename, move, show or hide completed, delete list (`A/ui/RoomPane.kt`, `A/model/Menus.kt` `roomMenu`); no sliders |
 | Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | wired: click or J/K selects (`W/app.rs`, `Handover`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
 | Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | wired: completes in place, with the usual completion undo (`W/app.rs`, `HandoverCheck`) | wired `A/ui/RoomPane.kt:465` |
 | Plan <weekday> (opens Planned) | n/a | wired `D/ui/shell.rs:2160` | wired `W/app.rs:1538` | wired `A/ui/RoomPane.kt:398`, `:438` |
@@ -140,11 +141,11 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | wired: the Due row opens a Material date picker in the tokens' colours and type; Clear also clears the repeat (`A/ui/Editing.kt` `DueDateCard`, `F/engine.rs::set_due`, `T/intent/mod.rs` `set_due`) |
 | Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | shown |
 | Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:733`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown. Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`), and the date picker says so. |
-| Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:749`) | shown "read only" | shown |
-| Create, rename or recolour a tag | `CreateTag` / `UpdateTag` `C/command.rs:291`, `:301` | missing | missing | missing |
+| Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | wired: the detail pane's Tags row (always there, each tag a dot in its colour) or T opens the tag picker; choosing a tag puts it on or takes it off, and the picker stays open (`D/model/derive.rs:764`, `D/model/menus.rs:1133`, `D/ui/shell/menu.rs:576`, `T/intent/organize.rs:293`) | shown "read only" | shown |
+| Create, rename or recolour a tag | `CreateTag` / `UpdateTag` `C/command.rs:291`, `:301` | wired: type a new name into the tag picker to create it (and put it on the task); a tag's own page (its chevron, or Right) renames it in place in the Tags row or recolours it; names stay unique (`D/ui/shell/menu.rs:733`, `D/model/menus.rs:1187`, `T/intent/organize.rs:250`, `:268`). Deleting a tag: missing. | missing | missing |
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
 | Links: open a web or email link | `Link` | wired, http(s) only (`D/ui/shell/detail.rs:600`) | wired `W/app.rs:1906` | wired: `SourceCard` opens an HTTP(S) destination through `ACTION_VIEW`; otherwise text only (`A/ui/Detail.kt`, `F/view.rs`) |
-| Add or remove a link | `AddLink` `C/command.rs:316`; `Delete` | missing | missing | missing |
+| Add or remove a link | `AddLink` `C/command.rs:316`; `Delete` | wired: the detail pane's link field (L) adds a web link, checked by the core's rules (a bare `example.com` gets `https://`); a link's remove button or the task's Links… page removes it, with undo (`D/ui/shell/detail.rs:228`, `:625`, `D/model/menus.rs:1095`, `T/intent/organize.rs:148`) | missing | missing |
 | Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired (`W/app/attachments.rs`, `W/platform.rs::download`) | missing (not in `TaskDetail`, `F/view.rs:402`) |
 | Attachments: open | same | wired: documents and images only (`D/ui/shell/detail.rs:656`) | n/a (the browser opens downloads) | missing |
 | Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs`), bearer or owner session with CSRF and matching origin | missing | wired: **Add file** or drop onto task detail (`W/app/attachments.rs`) | missing |
@@ -161,7 +162,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | wired: compensates the whole completion, including the next occurrence (`W/backend.rs`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | wired: tasks, steps, lists and collections (`W/app.rs`, `W/app/room_actions.rs`) | wired for tasks (`F/engine.rs::undo_task_move`) |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step, list, collection or attachment (`W/app.rs`, `W/app/room_actions.rs`, `W/app/attachments.rs`) | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a step, a link, a list or a collection, and moving a task to another list or a list to another collection, can be undone (`D/ui/shell/undo.rs:29`); renames, recolours, tags and edits can't | partial: restores a deleted step, list, collection or attachment (`W/app.rs`, `W/app/room_actions.rs`, `W/app/attachments.rs`) | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
@@ -185,14 +186,14 @@ Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), 
 
 - **Tasks.** Restore from the trash, `Restore` (desktop and Android Undo can restore a task just deleted).
   Merge, `MergeTasks` (MCP `merge_tasks`).
-- **Collections.** Create (`CreateCollection`) and recolour.
-- **Lists.** Move into another collection (`MoveList`) and recolour.
-- **Tags.** Create, rename and recolour (`CreateTag`, `UpdateTag`; MCP `create_tag`). Attach and detach
-  them on a task (`AddTag`, `RemoveTag`; MCP `tag_task`, `untag_task`).
+- **Collections.** Creating and recolouring them are on the desktop only (the web deletes them too).
+- **Lists.** Moving into another collection (`MoveList`) and recolouring are on the desktop only.
+- **Tags.** Creating, renaming and recolouring them, and attaching and detaching them on a task, are
+  on the desktop only. No client deletes a tag (`Delete`).
 - **Reminders.** Add, change and delete (`AddReminder`, `UpdateReminder`; MCP `add_reminder`,
   `update_reminder`).
 - **Repeat rules.** `UpdateTask.recurrence` (MCP `update_task`).
-- **Links.** Add and delete (`AddLink`; MCP `add_link`).
+- **Links.** Adding and deleting a web link are on the desktop only.
 - **Activity.** The feed (`GET /api/v1/activity`; MCP `get_activity`) and undoing any event in it,
   including an agent's.
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
@@ -209,7 +210,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 |---|---|---|---|
 | 1.1 | **Done in D1** (ellipsis wired, sliders hidden). The room header's sliders and ellipsis icons do nothing. Wire them, or remove them until they work. Sliders: sort and view options, such as showing completed tasks. Ellipsis: a room menu with rename, delete, pop out and copy a share link. | `D/ui/shell.rs:1349`, `:1379`, `:1380` | S to hide, M to wire |
 | 1.2 | **Hidden in D1** until the date picker (D2). The quick-add field's calendar and flag icons do nothing. Make them pick a due date and a priority for the task being typed (a small popover, or insert the syntax). | `D/ui/shell.rs:1474`, `:1475` | M |
-| 1.3 | **Tooltip in D1**; editing is D3 and D6. Reminder, Repeat and Tags rows look like the editable Due row but are inert, and they appear only when set, so nothing can be added. Make each always present and editable. | `D/model/derive.rs:681`–`737`, `D/ui/shell/detail.rs:669` | M each (tags L, with tag creation) |
+| 1.3 | **Tooltip in D1; Tags done.** Reminder and Repeat rows look like the editable Due row but are inert, and they appear only when set, so nothing can be added. Make each always present and editable. Tags are: always present, picked from the tag picker. | `D/model/derive.rs:681`–`737`, `D/ui/shell/detail.rs:669` | M each |
 | 1.4 | **Done in D1.** The hand-over rows' checkboxes are drawn but only select the task. Make them complete it, as on Android. | `D/ui/shell.rs:2315` | S |
 | 1.5 | **Done.** "N couldn't sync" in the sidebar has no way to see or dismiss what failed. Android has a banner. | `D/model/derive.rs:636` | S–M |
 | 1.6 | The sidebar's agent rows look like rows but are inert. Make them open the activity feed filtered to that agent (see 2.3). | `D/ui/shell/sidebar.rs:474` | S, after 2.3 |
@@ -221,12 +222,12 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | # | Gap | Size |
 |---|---|---|
 | 2.1 | **Done.** Delete a task, and move it to another list. The undo kinds exist already (`D/ui/shell/undo.rs:28`, `:31`). Add a task context menu, the Delete key and "Move to…". | M |
-| 2.2 | Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
+| 2.2 | **Done.** Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
 | 2.3 | Activity feed with per-event undo, grouped by agent. Needs a `todo-client` call for `GET /activity`. | L |
 | 2.4 | Reminders: edit them, and fire Windows toasts while the app runs in the tray. | L |
 | 2.5 | Repeat editor: presets plus interval. | M |
-| 2.6 | Tags: create, rename, recolour, add to and remove from a task. | M–L |
-| 2.7 | Links: add and remove a web link. Attachments: upload by file picker or drop, and remove. Upload needs a `todo-client` call. | M |
+| 2.6 | **Done**, apart from deleting a tag. Tags: create, rename, recolour, add to and remove from a task. | M–L |
+| 2.7 | **Links done.** Links: add and remove a web link. Attachments: upload by file picker or drop, and remove. Upload needs a `todo-client` call. | M |
 | 2.8 | Pop-out list windows. | L |
 | 2.9 | Drop a `.eml` from Outlook to create a task. | M (New Outlook), L (classic Outlook) |
 | 2.10 | **Done in D1.** Settings: a link to the admin pages, Sync now. | S |
@@ -264,7 +265,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
 | 4.9 | **Done.** Agent summary in the drawer. | S |
 | 4.10 | Reminder notifications (local alarms from synced reminders). | L |
-| 4.11 | **Done: task actions** (menu, delete, move between lists, manual reorder and undo). Still missing: tags, reminders and repeat. | — |
+| 4.11 | **Done: task actions** (menu, delete, move between lists, manual reorder and undo). Still missing: tags, reminders and repeat. The shared builders for tags and links (`intent::toggle_tag`, `tag_task_named`, `add_link`, `delete_link`) and for collections and colours (`intent::create_collection`, `move_list`, `set_color`) exist. | — |
 
 ## Shared gesture-to-command code
 
@@ -277,6 +278,10 @@ maps its own room key to the shared task intent. This resolves the creation drif
 - New tasks are placed first in their list's manual order. A smart list may display its own sort order.
 - A task moved to another list is placed first there too (`move_to_list`), and the list picker groups the
   lists as the sidebar does (`list_groups`).
+- `intent::organize` builds the rest of the organizing: a new collection gets a swatch from its ID like a
+  list, a list moves last into its new collection, colours are only the design's swatches, a typed link
+  is checked by the core's own rules (`todo_core::decide::validate_link`), and tag names stay unique
+  ignoring case, as the domain requires.
 - Web and Android parse the same trailing date and priority as desktop. All three preview the parsed date while typing.
 
 ## Work package: list suggestion

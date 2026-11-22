@@ -116,6 +116,22 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // Deleting a list with a long name, confirmed from its room's menu: the whole name and the
         // count wrap above the buttons.
         "delete-list-confirm" => Some(long_list_room()),
+        // Organizing: a new collection being named in place; a collection's and a list's context
+        // menus at their sidebar rows; deleting the Work collection from its room's menu; a list's
+        // room menu turned into the collection picker and the colour swatches.
+        "new-collection" => Some(new_collection()),
+        "collection-menu" | "list-context-menu" => Some(my_day()),
+        "delete-collection-confirm" => {
+            let mut f = work();
+            f.quick_add_text = None;
+            Some(f)
+        }
+        "move-list-picker" | "list-colour" => Some(list_room()),
+        // Tags: the picker on the detail pane's Tags row, with a new name typed, a tag's own page, its
+        // colour swatches, and renaming it in the row.
+        "tag-picker" | "tag-create" | "tag-edit" | "tag-colour" | "tag-rename" => Some(my_day()),
+        // Links: the task's Links… page, and a link being typed into the detail pane's field.
+        "task-links" | "add-link" => Some(with_web_link()),
         "collapsed-collection" => Some(collapsed_collection()),
         "collection-collapse-50" => Some(Fixture {
             moment: Some(Moment::CollectionCollapse { at: m::PANEL / 2 }),
@@ -996,6 +1012,48 @@ pub fn list_room() -> Fixture {
         b,
         UiState {
             room: RoomKey::List(l.planning),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// My Day with a collection just added (empty, and open), as New collection leaves it.
+fn new_collection() -> Fixture {
+    let (mut b, _) = sample();
+    let id = b.collection("New collection", "orchid");
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::Collection(id),
+            task: None,
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// My Day, the Q4 task with a web link besides its email source.
+fn with_web_link() -> Fixture {
+    let (mut b, l) = sample();
+    let id = LinkId::from_uuid(b.uuid());
+    b.run(
+        &owner(),
+        "2026-11-20T17:30:00Z",
+        Command::AddLink {
+            id,
+            task: l.q4,
+            kind: LinkKind::Web {
+                url: "https://docs.example.com/q4/roadmap".into(),
+                title: Some("Q4 roadmap draft".into()),
+            },
+        },
+    );
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
             task: Some(l.q4),
             ..UiState::default()
         },

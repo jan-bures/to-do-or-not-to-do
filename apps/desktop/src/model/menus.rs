@@ -1,6 +1,7 @@
 //! What each popover menu offers, as data: the room's menu (the header's "more" button), a list's, a
 //! collection's or a task's context menu, the account menu, the priority picker, the list picker that
-//! moves a task, and the "couldn't sync" list. The view draws the entries and runs an item's
+//! moves a task, the collection picker that moves a list, the colour swatches, the tag picker, a task's
+//! links, and the "couldn't sync" list. The view draws the entries and runs an item's
 //! [`MenuAction`]; the keyboard walks the same items, so every menu behaves alike. Pure, so what a menu
 //! offers in each room is unit-tested.
 
@@ -8,13 +9,36 @@ use gpui::SharedString;
 use todo_client::CommandId;
 use todo_client::outbox::FailedEntry;
 use todo_core::State;
-use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
+use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
 use todo_core::model::Priority;
 use todo_core::query::fold;
 use todo_core::time::Date;
 
 use super::{RoomKey, commands, labels, lists};
-use crate::theme::{Glyph, Hue, Icon};
+use crate::theme::{Glyph, Hue, Icon, hues};
+
+/// What a list's, a collection's or the room's menu shows: its items, or in their place the delete
+/// confirmation, the collection picker that moves a list, or the colour swatches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Page {
+    #[default]
+    Main,
+    Confirm,
+    Move,
+    Colour,
+}
+
+/// What the tag picker shows: every tag to put on the task or take off, one tag's own page (rename,
+/// recolour), or that tag's colour swatches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagPage {
+    Pick,
+    Edit(TagId),
+    Colour(TagId),
+}
+
+/// How many colour swatches a row of the colour page holds: Up and Down move a row at a time.
+pub const SWATCH_COLUMNS: usize = 6;
 
 /// What choosing a menu item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +79,34 @@ pub enum MenuAction {
     MoveTask(TaskId, ListId),
     /// Deletes the task, without asking: Undo brings it back.
     DeleteTask(TaskId),
+    /// Ask before deleting a collection: the menu turns into the confirmation.
+    AskDeleteCollection(CollectionId),
+    /// Delete the collection, its lists and their tasks with it (Undo brings them back).
+    DeleteCollection(CollectionId),
+    /// Turns a list's menu into the collection picker, in place.
+    AskMoveList(ListId),
+    /// Moves the list into the collection, or out of any (nothing when it's there already).
+    MoveList(ListId, Option<CollectionId>),
+    /// Turns the menu into the colour swatches of a collection, list or tag, in place.
+    AskColour(EntityId),
+    /// Recolours a collection, list or tag with the swatch of this key.
+    SetColour(EntityId, &'static str),
+    /// Puts the tag on the task, or takes it off. The picker stays open.
+    ToggleTag(TaskId, TagId),
+    /// Creates a tag named as typed into the picker and puts it on the task.
+    CreateTag(TaskId),
+    /// Turns the tag picker into the tag's own page (rename, colour).
+    EditTag(TaskId, TagId),
+    /// Back from a tag's own page to every tag.
+    AllTags(TaskId),
+    /// Renames a tag in place, in the detail pane's Tags row.
+    RenameTag(TagId),
+    /// Turns a task's menu into its links: add one, or remove one.
+    AskLinks(TaskId),
+    /// Puts the keyboard in the detail pane's link field, for the task.
+    AddLink(TaskId),
+    /// Removes a link from its task, without asking: Undo brings it back.
+    RemoveLink(LinkId),
     /// Takes one refused change off the "couldn't sync" list.
     DismissFailure(CommandId),
     DismissAllFailures,
@@ -62,16 +114,19 @@ pub enum MenuAction {
 
 impl MenuAction {
     /// Whether choosing it takes the keyboard somewhere of its own: an editor opens (renaming, a new
-    /// list), the room it was opened from goes away (deleting the list), or the whole window changes
-    /// (signing out). Any other item chosen from the keyboard gives the keyboard back to the menu's
-    /// button.
+    /// list, the link field), the room it was opened from goes away (deleting the list or collection),
+    /// or the whole window changes (signing out). Any other item chosen from the keyboard gives the
+    /// keyboard back to the menu's button.
     pub fn moves_focus(self) -> bool {
         matches!(
             self,
             Self::RenameList(_)
                 | Self::RenameCollection(_)
+                | Self::RenameTag(_)
                 | Self::NewListIn(_)
                 | Self::DeleteList(_)
+                | Self::DeleteCollection(_)
+                | Self::AddLink(_)
                 | Self::SignOut
         )
     }
@@ -84,6 +139,8 @@ pub struct MenuItem {
     pub icon: Icon,
     /// A list's own glyph and hue, drawn instead of the icon (the list picker).
     pub glyph: Option<(Glyph, Hue)>,
+    /// A colour disc, drawn instead of the icon: a tag's colour, a swatch, or the colour Colour… changes.
+    pub dot: Option<Hue>,
     pub label: SharedString,
     /// Destructive: drawn in the danger colour.
     pub danger: bool,
@@ -92,6 +149,8 @@ pub struct MenuItem {
     /// Quiet text on the right, such as the priority's marks.
     pub hint: Option<SharedString>,
     pub action: MenuAction,
+    /// A second action, behind a chevron on the right (and the Right key): a tag's own page.
+    pub more: Option<MenuAction>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,8 +170,14 @@ pub enum MenuEntry {
     },
     /// A quiet section label: a collection's name in the list picker.
     Heading(SharedString),
-    /// What has been typed to narrow the list picker (empty: a hint that typing filters).
-    Filter(SharedString),
+    /// What has been typed to narrow a picker, or (nothing typed yet) a hint that typing narrows it.
+    Filter {
+        typed: SharedString,
+        hint: &'static str,
+    },
+    /// Colour swatches, side by side in rows of [`SWATCH_COLUMNS`]: each a disc in its colour, the
+    /// current one ticked.
+    Swatches(Vec<MenuItem>),
     /// A quiet line that wraps, such as "No list matches".
     Note(SharedString),
     /// A change the server refused: what it was and why, beside its Dismiss button.
@@ -130,10 +195,11 @@ impl MenuEntry {
             Self::Item(item) => std::slice::from_ref(item),
             Self::Failure { dismiss, .. } => std::slice::from_ref(dismiss),
             Self::Confirm { buttons, .. } => buttons,
+            Self::Swatches(items) => items,
             Self::Separator
             | Self::Caption { .. }
             | Self::Heading(_)
-            | Self::Filter(_)
+            | Self::Filter { .. }
             | Self::Note(_) => &[],
         }
     }
@@ -149,12 +215,22 @@ fn item(
         key: key.into(),
         icon,
         glyph: None,
+        dot: None,
         label: label.into(),
         danger: false,
         checked: false,
         hint: None,
         action,
+        more: None,
     })
+}
+
+/// `entry` (an item) with `f` applied to its item.
+fn with(entry: MenuEntry, f: impl FnOnce(MenuItem) -> MenuItem) -> MenuEntry {
+    match entry {
+        MenuEntry::Item(i) => MenuEntry::Item(f(i)),
+        other => other,
+    }
 }
 
 fn danger(
@@ -174,12 +250,39 @@ pub fn items(entries: &[MenuEntry]) -> impl Iterator<Item = &MenuItem> {
     entries.iter().flat_map(MenuEntry::items)
 }
 
-/// The entries that scroll in a long menu: all but the list picker's filter line, which stays put above
-/// them.
+/// The entries that scroll in a long menu: all but a picker's filter line, which stays put above them.
 pub fn scrolling(entries: &[MenuEntry]) -> impl Iterator<Item = &MenuEntry> {
     entries
         .iter()
-        .filter(|e| !matches!(e, MenuEntry::Filter(_)))
+        .filter(|e| !matches!(e, MenuEntry::Filter { .. }))
+}
+
+/// Whether the menu is the colour swatches, which the arrows walk as a grid.
+pub fn is_grid(entries: &[MenuEntry]) -> bool {
+    entries.iter().any(|e| matches!(e, MenuEntry::Swatches(_)))
+}
+
+/// The keyboard highlight after an arrow key in the swatch grid of `count` items, [`SWATCH_COLUMNS`] to
+/// a row: Left and Right walk them in order and wrap round; Up and Down move a row, staying put at the
+/// top or bottom row. The first press lands on the first (Down, Right) or last (Up, Left) swatch.
+pub fn grid_step(current: Option<usize>, key: &str, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let Some(at) = current else {
+        return Some(if matches!(key, "up" | "left") {
+            count - 1
+        } else {
+            0
+        });
+    };
+    Some(match key {
+        "left" => (at + count - 1) % count,
+        "right" => (at + 1) % count,
+        "up" => at.checked_sub(SWATCH_COLUMNS).unwrap_or(at),
+        "down" if at + SWATCH_COLUMNS < count => at + SWATCH_COLUMNS,
+        _ => at,
+    })
 }
 
 /// Which of the [`scrolling`] entries holds item `item` (as the keyboard counts them): the one to
@@ -328,20 +431,153 @@ fn delete_list_confirm(
     ))
 }
 
-/// The room's menu (the header's "more" button): only what applies to the room. Empty when nothing
-/// does (Completed, Agent activity), and then the button isn't drawn.
-pub fn room_menu(
+/// The confirmation that replaces a collection's menu once Delete was chosen. Deleting a collection hides
+/// its lists and their tasks with it (the domain tombstones only the collection), so it says, in full,
+/// how many of each go, and that Undo brings them all back.
+fn delete_collection_confirm(
     state: &State,
-    room: RoomKey,
-    show_completed: bool,
-    confirm: bool,
-) -> Vec<MenuEntry> {
-    if confirm && let RoomKey::List(id) = room {
-        return delete_list_confirm(state, id, ("room-delete-confirm", "room-delete-cancel"))
+    id: CollectionId,
+    keys: (&'static str, &'static str),
+) -> Option<MenuEntry> {
+    let collection = state
+        .collections
+        .get(&id)
+        .filter(|_| state.is_live(id.into()))?;
+    let name = labels::one_line(&collection.name);
+    let commands::Contents { lists, tasks } = commands::collection_contents(state, id);
+    let lists_said = match lists {
+        1 => "its list".to_string(),
+        n => format!("its {n} lists"),
+    };
+    let whose = if lists == 1 { "its" } else { "their" };
+    let what = match (lists, tasks) {
+        (0, _) => format!("Delete the collection “{name}”?"),
+        (_, 0) => format!("Delete the collection “{name}” with {lists_said}?"),
+        (_, 1) => format!("Delete the collection “{name}” with {lists_said} and {whose} task?"),
+        (_, n) => {
+            format!("Delete the collection “{name}” with {lists_said} and {whose} {n} tasks?")
+        }
+    };
+    let back = if lists == 0 { "it" } else { "them all" };
+    Some(confirm(
+        format!("{what} Undo brings {back} back."),
+        danger(
+            keys.0,
+            Icon::TrashTwo,
+            "Delete collection",
+            MenuAction::DeleteCollection(id),
+        ),
+        keys.1,
+    ))
+}
+
+/// The "Colour…" item: the colour disc it changes, beside the label.
+fn colour_item(key: &'static str, id: EntityId, hue: Hue) -> MenuEntry {
+    with(
+        item(key, Icon::Pencil, "Colour…", MenuAction::AskColour(id)),
+        |i| MenuItem {
+            dot: Some(hue),
+            ..i
+        },
+    )
+}
+
+/// A collection's, list's or tag's colour as drawn: its swatch (`lists::hue`).
+fn colour_of(state: &State, id: EntityId) -> Option<Hue> {
+    match id {
+        EntityId::Collection(c) => {
+            let c = state.collections.get(&c)?;
+            Some(lists::hue(c.color.as_deref(), c.id.as_uuid().as_bytes()))
+        }
+        EntityId::List(l) => {
+            let l = state.lists.get(&l)?;
+            Some(lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()))
+        }
+        EntityId::Tag(t) => {
+            let t = state.tags.get(&t)?;
+            Some(lists::hue(t.color.as_deref(), t.id.as_uuid().as_bytes()))
+        }
+        _ => None,
+    }
+    .filter(|_| state.is_live(id))
+}
+
+/// A swatch's name, for its tooltip and screen readers: "Cornflower".
+fn swatch_name(key: &str) -> String {
+    let mut chars = key.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The colour page of a collection, list or tag: the design's swatches, the current one ticked. Empty
+/// once it's gone.
+pub fn colour_menu(state: &State, id: EntityId) -> Vec<MenuEntry> {
+    let Some(current) = colour_of(state, id) else {
+        return Vec::new();
+    };
+    let heading = match id {
+        EntityId::Collection(_) => "Collection colour",
+        EntityId::List(_) => "List colour",
+        _ => "Tag colour",
+    };
+    let swatches = hues::SWATCHES
+        .iter()
+        .map(|s| MenuItem {
+            key: format!("colour-{}", s.key).into(),
+            icon: Icon::Check,
+            glyph: None,
+            dot: Some(s.degrees),
+            label: swatch_name(s.key).into(),
+            danger: false,
+            checked: (s.degrees - current).abs() < 0.5,
+            hint: None,
+            action: MenuAction::SetColour(id, s.key),
+            more: None,
+        })
+        .collect();
+    vec![
+        MenuEntry::Heading(heading.into()),
+        MenuEntry::Swatches(swatches),
+    ]
+}
+
+/// The room's menu (the header's "more" button): only what applies to the room. Empty when nothing
+/// does (Completed, Agent activity), and then the button isn't drawn. `page` turns it into a delete
+/// confirmation, the collection picker (a list's room) or the colour swatches.
+pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page) -> Vec<MenuEntry> {
+    match (room, page) {
+        (RoomKey::List(id), Page::Confirm) => {
+            return delete_list_confirm(state, id, ("room-delete-confirm", "room-delete-cancel"))
+                .into_iter()
+                .collect();
+        }
+        (RoomKey::Collection(id), Page::Confirm) => {
+            return delete_collection_confirm(
+                state,
+                id,
+                ("room-delete-confirm", "room-delete-cancel"),
+            )
             .into_iter()
             .collect();
+        }
+        (RoomKey::List(id), Page::Move) => return move_list_menu(state, id),
+        (RoomKey::List(id), Page::Colour) => return colour_menu(state, id.into()),
+        (RoomKey::Collection(id), Page::Colour) => return colour_menu(state, id.into()),
+        (_, Page::Main) => {}
+        // A smart list has none of these pages.
+        _ => return Vec::new(),
     }
     let mut entries = Vec::new();
+    let colour = colour_of(
+        state,
+        match room {
+            RoomKey::List(id) => id.into(),
+            RoomKey::Collection(id) => id.into(),
+            RoomKey::Smart(_) => return completed_only(room, show_completed),
+        },
+    );
     match room {
         RoomKey::List(id) if state.is_live(id.into()) => {
             entries.push(item(
@@ -350,6 +586,15 @@ pub fn room_menu(
                 "Rename list",
                 MenuAction::RenameList(id),
             ));
+            entries.extend(colour.map(|hue| colour_item("room-colour", id.into(), hue)));
+            if commands::can_move_list(state, id) {
+                entries.push(item(
+                    "room-move",
+                    Icon::List,
+                    "Move to…",
+                    MenuAction::AskMoveList(id),
+                ));
+            }
         }
         RoomKey::Collection(id) if state.is_live(id.into()) => {
             entries.push(item(
@@ -358,43 +603,77 @@ pub fn room_menu(
                 "Rename collection",
                 MenuAction::RenameCollection(id),
             ));
+            entries.extend(colour.map(|hue| colour_item("room-colour", id.into(), hue)));
         }
         _ => {}
     }
-    if has_completed_section(room) {
-        entries.push(completed_item(show_completed));
-    }
-    if let RoomKey::List(id) = room
-        && state.is_live(id.into())
-    {
-        entries.push(MenuEntry::Separator);
-        entries.push(danger(
-            "room-delete",
-            Icon::TrashTwo,
-            "Delete list…",
-            MenuAction::AskDeleteList(id),
-        ));
+    entries.push(completed_item(show_completed));
+    match room {
+        RoomKey::List(id) if state.is_live(id.into()) => {
+            entries.push(MenuEntry::Separator);
+            entries.push(danger(
+                "room-delete",
+                Icon::TrashTwo,
+                "Delete list…",
+                MenuAction::AskDeleteList(id),
+            ));
+        }
+        RoomKey::Collection(id) if state.is_live(id.into()) => {
+            entries.push(MenuEntry::Separator);
+            entries.push(danger(
+                "room-delete",
+                Icon::TrashTwo,
+                "Delete collection…",
+                MenuAction::AskDeleteCollection(id),
+            ));
+        }
+        _ => {}
     }
     entries
 }
 
-/// A list's context menu in the sidebar.
-pub fn list_menu(state: &State, id: ListId, confirm: bool) -> Vec<MenuEntry> {
+/// A smart list's room menu: the Completed toggle, where it has a Completed section.
+fn completed_only(room: RoomKey, show_completed: bool) -> Vec<MenuEntry> {
+    if has_completed_section(room) {
+        vec![completed_item(show_completed)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// A list's context menu in the sidebar, or (`page`) its delete confirmation, collection picker or
+/// colour swatches.
+pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
     if !state.is_live(id.into()) {
         return Vec::new();
     }
-    if confirm {
-        return delete_list_confirm(state, id, ("list-delete-confirm", "list-delete-cancel"))
-            .into_iter()
-            .collect();
+    match page {
+        Page::Confirm => {
+            return delete_list_confirm(state, id, ("list-delete-confirm", "list-delete-cancel"))
+                .into_iter()
+                .collect();
+        }
+        Page::Move => return move_list_menu(state, id),
+        Page::Colour => return colour_menu(state, id.into()),
+        Page::Main => {}
     }
-    vec![
-        item(
-            "list-rename",
-            Icon::Pencil,
-            "Rename",
-            MenuAction::RenameList(id),
-        ),
+    let mut entries = vec![item(
+        "list-rename",
+        Icon::Pencil,
+        "Rename",
+        MenuAction::RenameList(id),
+    )];
+    entries
+        .extend(colour_of(state, id.into()).map(|hue| colour_item("list-colour", id.into(), hue)));
+    if commands::can_move_list(state, id) {
+        entries.push(item(
+            "list-move",
+            Icon::List,
+            "Move to…",
+            MenuAction::AskMoveList(id),
+        ));
+    }
+    entries.extend([
         item(
             "list-up",
             Icon::ChevronUp,
@@ -414,20 +693,88 @@ pub fn list_menu(state: &State, id: ListId, confirm: bool) -> Vec<MenuEntry> {
             "Delete list…",
             MenuAction::AskDeleteList(id),
         ),
-    ]
+    ]);
+    entries
 }
 
-/// A collection's context menu in the sidebar.
-pub fn collection_menu(state: &State, id: CollectionId, collapsed: bool) -> Vec<MenuEntry> {
+/// The collection picker that moves a list (its menu's Move to…): every collection, as the sidebar
+/// orders them, with its glyph and colour, then "No collection" for the top level. Where the list is
+/// now is ticked. Empty once the list is gone.
+pub fn move_list_menu(state: &State, id: ListId) -> Vec<MenuEntry> {
+    let Some(list) = state.lists.get(&id).filter(|_| state.is_live(id.into())) else {
+        return Vec::new();
+    };
+    let collections: Vec<MenuEntry> = commands::collections(state)
+        .into_iter()
+        .filter_map(|c| state.collections.get(&c))
+        .map(|c| {
+            MenuEntry::Item(MenuItem {
+                key: format!("move-list-{}", c.id).into(),
+                icon: Icon::List,
+                glyph: Some((
+                    lists::list_glyph(&c.name),
+                    lists::hue(c.color.as_deref(), c.id.as_uuid().as_bytes()),
+                )),
+                dot: None,
+                label: labels::one_line(&c.name).into(),
+                danger: false,
+                checked: list.collection == Some(c.id),
+                hint: None,
+                action: MenuAction::MoveList(id, Some(c.id)),
+                more: None,
+            })
+        })
+        .collect();
+    let mut entries = Vec::new();
+    if !collections.is_empty() {
+        entries.push(MenuEntry::Heading("Collections".into()));
+        entries.extend(collections);
+        entries.push(MenuEntry::Separator);
+    }
+    entries.push(with(
+        item(
+            "move-list-none",
+            Icon::List,
+            "No collection",
+            MenuAction::MoveList(id, None),
+        ),
+        |i| MenuItem {
+            checked: list.collection.is_none(),
+            ..i
+        },
+    ));
+    entries
+}
+
+/// A collection's context menu in the sidebar, or (`page`) its delete confirmation or colour swatches.
+pub fn collection_menu(
+    state: &State,
+    id: CollectionId,
+    collapsed: bool,
+    page: Page,
+) -> Vec<MenuEntry> {
     if !state.is_live(id.into()) {
         return Vec::new();
+    }
+    match page {
+        Page::Confirm => {
+            return delete_collection_confirm(
+                state,
+                id,
+                ("collection-delete-confirm", "collection-delete-cancel"),
+            )
+            .into_iter()
+            .collect();
+        }
+        Page::Colour => return colour_menu(state, id.into()),
+        Page::Move | Page::Main => {}
     }
     let (icon, label) = if collapsed {
         (Icon::ChevronDown, "Expand")
     } else {
         (Icon::ChevronRight, "Collapse")
     };
-    vec![
+    let mut entries = vec![
         item(
             "collection-toggle",
             icon,
@@ -446,6 +793,11 @@ pub fn collection_menu(state: &State, id: CollectionId, collapsed: bool) -> Vec<
             "Rename",
             MenuAction::RenameCollection(id),
         ),
+    ];
+    entries.extend(
+        colour_of(state, id.into()).map(|hue| colour_item("collection-colour", id.into(), hue)),
+    );
+    entries.extend([
         item(
             "collection-up",
             Icon::ChevronUp,
@@ -458,7 +810,15 @@ pub fn collection_menu(state: &State, id: CollectionId, collapsed: bool) -> Vec<
             "Move down",
             MenuAction::Nudge(id.into(), 1),
         ),
-    ]
+        MenuEntry::Separator,
+        danger(
+            "collection-delete",
+            Icon::TrashTwo,
+            "Delete collection…",
+            MenuAction::AskDeleteCollection(id),
+        ),
+    ]);
+    entries
 }
 
 /// The account menu (the sidebar footer's gear): the server the app is paired with, its admin pages,
@@ -537,19 +897,21 @@ pub fn priority_menu(task: TaskId, current: Priority) -> Vec<MenuEntry> {
             key: key.into(),
             icon: Icon::Flag,
             glyph: None,
+            dot: None,
             label: label.into(),
             danger: false,
             checked: level == current,
             hint: (!marks.is_empty()).then(|| marks.into()),
             action: MenuAction::SetPriority(task, level),
+            more: None,
         })
     })
     .collect()
 }
 
 /// A task's context menu (right-click a row): what its row and the list's keys already do (complete or
-/// reopen, My Day, Important, the priority picker), then Move to… and Delete. Deleting doesn't ask:
-/// Undo brings the task back. Empty once the task is gone.
+/// reopen, My Day, Important, the priority picker), then Move to…, Links… and Delete. Deleting doesn't
+/// ask: Undo brings the task back. Empty once the task is gone.
 pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
     let Some(t) = state
         .tasks
@@ -570,18 +932,31 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
         "Mark as important"
     };
     let marks = priority_label(t.priority).1;
-    let priority = match item(
-        "task-priority",
-        Icon::Flag,
-        "Priority…",
-        MenuAction::AskPriority(task),
-    ) {
-        MenuEntry::Item(i) => MenuEntry::Item(MenuItem {
+    let priority = with(
+        item(
+            "task-priority",
+            Icon::Flag,
+            "Priority…",
+            MenuAction::AskPriority(task),
+        ),
+        |i| MenuItem {
             hint: (!marks.is_empty()).then(|| marks.into()),
             ..i
-        }),
-        other => other,
-    };
+        },
+    );
+    let links = live_links(state, task).len();
+    let links = with(
+        item(
+            "task-links",
+            Icon::Link,
+            "Links…",
+            MenuAction::AskLinks(task),
+        ),
+        |i| MenuItem {
+            hint: (links > 0).then(|| links.to_string().into()),
+            ..i
+        },
+    );
     vec![
         item(
             "task-done",
@@ -608,6 +983,7 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
             "Move to…",
             MenuAction::AskMove(task),
         ),
+        links,
         MenuEntry::Separator,
         danger(
             "task-delete",
@@ -640,7 +1016,10 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
     };
     let groups = commands::list_groups(state);
     let with_collections = groups.iter().any(|(c, _)| c.is_some());
-    let mut entries = vec![MenuEntry::Filter(filter.to_string().into())];
+    let mut entries = vec![MenuEntry::Filter {
+        typed: filter.to_string().into(),
+        hint: "Type to filter lists",
+    }];
     let mut found = false;
     for (collection, ids) in groups {
         let collection = collection.and_then(|c| state.collections.get(&c));
@@ -661,11 +1040,13 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
                         lists::list_glyph(&l.name),
                         lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()),
                     )),
+                    dot: None,
                     label: labels::one_line(&l.name).into(),
                     danger: false,
                     checked: l.id == t.list,
                     hint: None,
                     action: MenuAction::MoveTask(task, l.id),
+                    more: None,
                 })
             })
             .collect();
@@ -683,6 +1064,164 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
         ));
     }
     entries
+}
+
+/// A task's live links, oldest first, as the detail pane lists them.
+fn live_links(state: &State, task: TaskId) -> Vec<&todo_core::model::Link> {
+    let mut links: Vec<_> = state
+        .links
+        .values()
+        .filter(|l| l.task == task && state.is_live(l.id.into()))
+        .collect();
+    links.sort_by_key(|l| (l.created.at, l.id));
+    links
+}
+
+/// What a link is called: its title, else its address (or an email's subject).
+pub fn link_name(link: &todo_core::model::Link) -> String {
+    use todo_core::model::LinkKind;
+    match &link.kind {
+        LinkKind::Web { url, title } => title
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(url)
+            .to_string(),
+        LinkKind::Email(e) => e.subject.clone(),
+    }
+}
+
+/// A task's links (its menu's Links…): add one (in the detail pane's link field), or remove one, without
+/// asking: Undo brings it back. Empty once the task is gone.
+pub fn links_menu(state: &State, task: TaskId) -> Vec<MenuEntry> {
+    if !state.is_live(task.into()) {
+        return Vec::new();
+    }
+    let mut entries = vec![
+        MenuEntry::Heading("Links".into()),
+        item(
+            "link-add",
+            Icon::Plus,
+            "Add a link…",
+            MenuAction::AddLink(task),
+        ),
+    ];
+    let links = live_links(state, task);
+    if !links.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Heading("Remove".into()));
+    }
+    entries.extend(links.into_iter().map(|l| {
+        danger(
+            format!("link-remove-{}", l.id),
+            Icon::TrashTwo,
+            labels::one_line(&link_name(l)),
+            MenuAction::RemoveLink(l.id),
+        )
+    }));
+    entries
+}
+
+/// A tag's colour as drawn: its swatch, or one picked from its ID.
+pub fn tag_hue(tag: &todo_core::model::Tag) -> Hue {
+    lists::hue(tag.color.as_deref(), tag.id.as_uuid().as_bytes())
+}
+
+/// The tag picker (the detail pane's Tags row, or T): every tag, by name, those on the task ticked;
+/// choosing one puts it on or takes it off, and the picker stays open. What's typed (`filter`) narrows
+/// them, and when no tag has exactly that name, the first item creates it. Each tag's chevron (or Right)
+/// opens its own page. Empty once the task is gone.
+pub fn tag_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
+    let Some(t) = state
+        .tasks
+        .get(&task)
+        .filter(|_| state.is_live(task.into()))
+    else {
+        return Vec::new();
+    };
+    let mut entries = vec![MenuEntry::Filter {
+        typed: filter.to_string().into(),
+        hint: "Type to find or create a tag",
+    }];
+    let typed = labels::one_line(filter.trim());
+    if !typed.is_empty() && commands::tag_named(state, &typed).is_none() {
+        entries.push(item(
+            "tag-create",
+            Icon::Plus,
+            format!("Create tag \u{201c}{typed}\u{201d}"),
+            MenuAction::CreateTag(task),
+        ));
+    }
+    let words = fold(filter);
+    let tags: Vec<MenuEntry> = commands::tags(state)
+        .into_iter()
+        .filter(|tag| {
+            let name = fold(&tag.name);
+            words.split_whitespace().all(|w| name.contains(w))
+        })
+        .map(|tag| {
+            MenuEntry::Item(MenuItem {
+                key: format!("tag-{}", tag.id).into(),
+                icon: Icon::Hash,
+                glyph: None,
+                dot: Some(tag_hue(tag)),
+                label: labels::one_line(&tag.name).into(),
+                danger: false,
+                checked: t.tags.contains(&tag.id),
+                hint: None,
+                action: MenuAction::ToggleTag(task, tag.id),
+                more: Some(MenuAction::EditTag(task, tag.id)),
+            })
+        })
+        .collect();
+    if tags.is_empty() && typed.is_empty() {
+        entries.push(MenuEntry::Note(
+            "No tags yet. Type a name to create one.".into(),
+        ));
+    }
+    entries.extend(tags);
+    entries
+}
+
+/// A tag's own page in the tag picker: put it on the task or take it off, rename it, recolour it, or go
+/// back to every tag. Empty once the tag or the task is gone.
+pub fn tag_edit_menu(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> {
+    let (Some(t), Some(g)) = (
+        state
+            .tasks
+            .get(&task)
+            .filter(|_| state.is_live(task.into())),
+        state.tags.get(&tag).filter(|_| state.is_live(tag.into())),
+    ) else {
+        return Vec::new();
+    };
+    let on = t.tags.contains(&tag);
+    vec![
+        MenuEntry::Heading(format!("#{}", labels::one_line(&g.name)).into()),
+        item(
+            "tag-toggle",
+            if on { Icon::X } else { Icon::Hash },
+            if on {
+                "Remove from task"
+            } else {
+                "Add to task"
+            },
+            MenuAction::ToggleTag(task, tag),
+        ),
+        item(
+            "tag-rename",
+            Icon::Pencil,
+            "Rename tag",
+            MenuAction::RenameTag(tag),
+        ),
+        colour_item("tag-colour", tag.into(), tag_hue(g)),
+        MenuEntry::Separator,
+        item(
+            "tag-back",
+            Icon::ChevronLeft,
+            "All tags",
+            MenuAction::AllTags(task),
+        ),
+    ]
 }
 
 /// The refused changes the open "couldn't sync" list shows: of those there now (`failed`), the ones
@@ -723,11 +1262,13 @@ pub fn failures_menu(state: &State, failed: &[FailedEntry]) -> Vec<MenuEntry> {
                 key: format!("dismiss-{id}").into(),
                 icon: Icon::X,
                 glyph: None,
+                dot: None,
                 label: "Dismiss".into(),
                 danger: false,
                 checked: false,
                 hint: None,
                 action: MenuAction::DismissFailure(id),
+                more: None,
             },
         });
     }
@@ -770,21 +1311,33 @@ mod tests {
     }
 
     #[test]
-    fn a_lists_room_menu_renames_toggles_completed_and_deletes() {
+    fn a_lists_room_menu_renames_recolours_moves_toggles_completed_and_deletes() {
         let f = fixtures::my_day();
         let office = list_named(&f.state, "Office");
-        let menu = room_menu(&f.state, RoomKey::List(office), false, false);
+        let menu = room_menu(&f.state, RoomKey::List(office), false, Page::Main);
         assert_eq!(
             actions(&menu),
             [
                 MenuAction::RenameList(office),
+                MenuAction::AskColour(office.into()),
+                MenuAction::AskMoveList(office),
                 MenuAction::ToggleCompleted,
                 MenuAction::AskDeleteList(office),
             ]
         );
+        // Colour… shows the list's own colour.
+        let colour = items(&menu).nth(1).expect("colour");
+        let list = &f.state.lists[&office];
+        assert_eq!(
+            colour.dot,
+            Some(lists::hue(
+                list.color.as_deref(),
+                office.as_uuid().as_bytes()
+            ))
+        );
         assert!(items(&menu).last().is_some_and(|i| i.danger));
         // Confirming says, in full, what goes with it, above short buttons: Delete list and Cancel.
-        let confirm = room_menu(&f.state, RoomKey::List(office), false, true);
+        let confirm = room_menu(&f.state, RoomKey::List(office), false, Page::Confirm);
         assert_eq!(
             actions(&confirm),
             [MenuAction::DeleteList(office), MenuAction::Cancel]
@@ -820,7 +1373,7 @@ second line"
             .values()
             .filter(|t| t.list == office && t.deleted.is_none())
             .count();
-        let menu = list_menu(&f.state, office, true);
+        let menu = list_menu(&f.state, office, Page::Confirm);
         let [MenuEntry::Confirm { message, .. }] = menu.as_slice() else {
             panic!("{menu:?}");
         };
@@ -837,7 +1390,7 @@ second line"
                 by: todo_core::Actor::System,
             });
         }
-        let menu = list_menu(&f.state, office, true);
+        let menu = list_menu(&f.state, office, Page::Confirm);
         let [MenuEntry::Confirm { message, .. }] = menu.as_slice() else {
             panic!("{menu:?}");
         };
@@ -852,11 +1405,15 @@ second line"
         let list = ListId::from_uuid(uuid::Uuid::nil());
         let col = CollectionId::from_uuid(uuid::Uuid::nil());
         let task = TaskId::from_uuid(uuid::Uuid::nil());
+        let tag = TagId::from_uuid(uuid::Uuid::nil());
         for action in [
             MenuAction::RenameList(list),
             MenuAction::RenameCollection(col),
             MenuAction::NewListIn(col),
             MenuAction::DeleteList(list),
+            MenuAction::DeleteCollection(col),
+            MenuAction::RenameTag(tag),
+            MenuAction::AddLink(task),
             MenuAction::SignOut,
         ] {
             assert!(action.moves_focus(), "{action:?}");
@@ -881,6 +1438,17 @@ second line"
             MenuAction::DeleteTask(task),
             MenuAction::DismissFailure(uuid::Uuid::nil()),
             MenuAction::DismissAllFailures,
+            MenuAction::AskDeleteCollection(col),
+            MenuAction::AskMoveList(list),
+            MenuAction::MoveList(list, Some(col)),
+            MenuAction::AskColour(list.into()),
+            MenuAction::SetColour(col.into(), "rose"),
+            MenuAction::ToggleTag(task, tag),
+            MenuAction::CreateTag(task),
+            MenuAction::EditTag(task, tag),
+            MenuAction::AllTags(task),
+            MenuAction::AskLinks(task),
+            MenuAction::RemoveLink(LinkId::from_uuid(uuid::Uuid::nil())),
         ] {
             assert!(!action.moves_focus(), "{action:?}");
         }
@@ -890,7 +1458,7 @@ second line"
     fn smart_rooms_offer_only_what_applies() {
         let f = fixtures::my_day();
         for smart in Smart::ALL {
-            let menu = room_menu(&f.state, RoomKey::Smart(smart), false, false);
+            let menu = room_menu(&f.state, RoomKey::Smart(smart), false, Page::Main);
             let expected: &[MenuAction] = match smart {
                 Smart::Completed | Smart::AgentActivity => &[],
                 _ => &[MenuAction::ToggleCompleted],
@@ -898,26 +1466,365 @@ second line"
             assert_eq!(actions(&menu), expected, "{smart:?}");
             // A smart list can't be deleted, even when asked to confirm.
             assert!(
-                !actions(&room_menu(&f.state, RoomKey::Smart(smart), false, true))
-                    .iter()
-                    .any(|a| matches!(a, MenuAction::DeleteList(_)))
+                !actions(&room_menu(
+                    &f.state,
+                    RoomKey::Smart(smart),
+                    false,
+                    Page::Confirm
+                ))
+                .iter()
+                .any(|a| matches!(a, MenuAction::DeleteList(_)))
             );
         }
     }
 
     #[test]
-    fn a_collections_room_menu_renames_it_and_never_deletes() {
+    fn a_collections_room_menu_renames_recolours_and_deletes_it() {
         let f = fixtures::work();
         let (&id, _) = f.state.collections.iter().next().expect("collection");
-        let menu = room_menu(&f.state, RoomKey::Collection(id), true, false);
+        let menu = room_menu(&f.state, RoomKey::Collection(id), true, Page::Main);
         assert_eq!(
             actions(&menu),
             [
                 MenuAction::RenameCollection(id),
-                MenuAction::ToggleCompleted
+                MenuAction::AskColour(id.into()),
+                MenuAction::ToggleCompleted,
+                MenuAction::AskDeleteCollection(id),
             ]
         );
-        assert_eq!(items(&menu).nth(1).expect("toggle").label, "Hide completed");
+        assert_eq!(items(&menu).nth(2).expect("toggle").label, "Hide completed");
+        assert!(items(&menu).last().is_some_and(|i| i.danger));
+        // A collection's own pages: its confirmation and its colours. It has no collection picker.
+        let confirm = room_menu(&f.state, RoomKey::Collection(id), true, Page::Confirm);
+        assert_eq!(
+            actions(&confirm),
+            [MenuAction::DeleteCollection(id), MenuAction::Cancel]
+        );
+        assert!(is_grid(&room_menu(
+            &f.state,
+            RoomKey::Collection(id),
+            true,
+            Page::Colour
+        )));
+        assert!(room_menu(&f.state, RoomKey::Collection(id), true, Page::Move).is_empty());
+    }
+
+    #[test]
+    fn a_collections_menu_offers_colour_and_delete_and_its_confirmation_counts_what_goes() {
+        let f = fixtures::my_day();
+        let work = f
+            .state
+            .collections
+            .values()
+            .find(|c| c.name == "Work")
+            .expect("Work")
+            .id;
+        let menu = collection_menu(&f.state, work, false, Page::Main);
+        assert_eq!(
+            actions(&menu),
+            [
+                MenuAction::ToggleCollection(work),
+                MenuAction::NewListIn(work),
+                MenuAction::RenameCollection(work),
+                MenuAction::AskColour(work.into()),
+                MenuAction::Nudge(work.into(), -1),
+                MenuAction::Nudge(work.into(), 1),
+                MenuAction::AskDeleteCollection(work),
+            ]
+        );
+        assert!(matches!(menu[menu.len() - 2], MenuEntry::Separator));
+        let confirm = collection_menu(&f.state, work, false, Page::Confirm);
+        let [MenuEntry::Confirm { message, buttons }] = confirm.as_slice() else {
+            panic!("{confirm:?}");
+        };
+        let contents = commands::collection_contents(&f.state, work);
+        assert_eq!(contents.lists, 4);
+        assert_eq!(
+            message.as_ref(),
+            format!(
+                "Delete the collection “Work” with its 4 lists and their {} tasks? Undo brings \
+                 them all back.",
+                contents.tasks
+            )
+        );
+        assert_eq!(buttons[0].label, "Delete collection");
+        assert!(buttons[0].danger);
+        assert_eq!(first_highlight(&confirm), Some(1), "on Cancel");
+
+        // The wording follows what goes with it.
+        let mut state = f.state.clone();
+        let say =
+            |state: &State| match collection_menu(state, work, false, Page::Confirm).as_slice() {
+                [MenuEntry::Confirm { message, .. }] => message.to_string(),
+                other => panic!("{other:?}"),
+            };
+        let lists: Vec<ListId> = state
+            .lists
+            .values()
+            .filter(|l| l.collection == Some(work))
+            .map(|l| l.id)
+            .collect();
+        let gone = |state: &mut State, keep: usize| {
+            let tomb = todo_core::model::Tombstone {
+                at: f.now.at,
+                by: todo_core::Actor::System,
+            };
+            for l in &lists[keep..] {
+                state.lists.get_mut(l).expect("list").deleted = Some(tomb.clone());
+            }
+        };
+        gone(&mut state, 1);
+        assert!(
+            say(&state).contains("with its list and its "),
+            "{}",
+            say(&state)
+        );
+        for t in state.tasks.values_mut().filter(|t| t.list == lists[0]) {
+            t.deleted = Some(todo_core::model::Tombstone {
+                at: f.now.at,
+                by: todo_core::Actor::System,
+            });
+        }
+        assert_eq!(
+            say(&state),
+            "Delete the collection “Work” with its list? Undo brings them all back."
+        );
+        gone(&mut state, 0);
+        assert_eq!(
+            say(&state),
+            "Delete the collection “Work”? Undo brings it back."
+        );
+    }
+
+    #[test]
+    fn the_collection_picker_ticks_where_a_list_is_and_offers_the_top_level() {
+        let f = fixtures::my_day();
+        let office = list_named(&f.state, "Office");
+        let menu = move_list_menu(&f.state, office);
+        let collections = commands::collections(&f.state);
+        let mut expected: Vec<MenuAction> = collections
+            .iter()
+            .map(|&c| MenuAction::MoveList(office, Some(c)))
+            .collect();
+        expected.push(MenuAction::MoveList(office, None));
+        assert_eq!(actions(&menu), expected);
+        let ticked: Vec<MenuAction> = items(&menu)
+            .filter(|i| i.checked)
+            .map(|i| i.action)
+            .collect();
+        let own = f.state.lists[&office].collection;
+        assert_eq!(ticked, [MenuAction::MoveList(office, own)]);
+        // The keyboard starts where the list is; the collections wear their glyphs and colours.
+        assert_eq!(
+            first_highlight(&menu)
+                .and_then(|i| items(&menu).nth(i))
+                .map(|i| i.action),
+            Some(MenuAction::MoveList(office, own))
+        );
+        assert!(
+            items(&menu)
+                .take(collections.len())
+                .all(|i| i.glyph.is_some())
+        );
+        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "Collections"));
+        // A top-level list has "No collection" ticked; the list and room menus open this page.
+        let mut top = f.state.clone();
+        top.lists.get_mut(&office).expect("list").collection = None;
+        let ticked: Vec<MenuAction> = items(&move_list_menu(&top, office))
+            .filter(|i| i.checked)
+            .map(|i| i.action)
+            .collect();
+        assert_eq!(ticked, [MenuAction::MoveList(office, None)]);
+        assert_eq!(list_menu(&f.state, office, Page::Move), menu);
+        assert_eq!(
+            room_menu(&f.state, RoomKey::List(office), false, Page::Move),
+            menu
+        );
+        // With nowhere to go (a top-level list and no collections), no Move to….
+        let mut alone = top.clone();
+        alone.collections.clear();
+        assert!(
+            !actions(&list_menu(&alone, office, Page::Main))
+                .contains(&MenuAction::AskMoveList(office))
+        );
+    }
+
+    #[test]
+    fn the_colour_page_offers_every_swatch_and_ticks_the_current_one() {
+        let f = fixtures::my_day();
+        let office = list_named(&f.state, "Office");
+        let menu = colour_menu(&f.state, office.into());
+        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "List colour"));
+        assert!(is_grid(&menu));
+        let swatches: Vec<&MenuItem> = items(&menu).collect();
+        assert_eq!(swatches.len(), hues::SWATCHES.len());
+        for (item, swatch) in swatches.iter().zip(hues::SWATCHES) {
+            assert_eq!(
+                item.action,
+                MenuAction::SetColour(office.into(), swatch.key)
+            );
+            assert_eq!(item.dot, Some(swatch.degrees));
+            assert!(!item.label.is_empty());
+        }
+        // Office is cornflower in the sample data.
+        let ticked: Vec<&str> = swatches
+            .iter()
+            .filter(|i| i.checked)
+            .map(|i| i.label.as_ref())
+            .collect();
+        assert_eq!(ticked, ["Cornflower"]);
+        // The keyboard starts on it.
+        assert_eq!(
+            first_highlight(&menu).map(|i| swatches[i].label.as_ref()),
+            Some("Cornflower")
+        );
+        // A collection's and a tag's pages say whose colour it is; a task has none.
+        let work = commands::collections(&f.state)[0];
+        assert!(
+            matches!(&colour_menu(&f.state, work.into())[0], MenuEntry::Heading(h) if h == "Collection colour")
+        );
+        let tag = commands::tags(&f.state)[0].id;
+        assert!(
+            matches!(&colour_menu(&f.state, tag.into())[0], MenuEntry::Heading(h) if h == "Tag colour")
+        );
+        let task = f.ui.task.expect("task");
+        assert!(colour_menu(&f.state, task.into()).is_empty());
+    }
+
+    #[test]
+    fn the_arrows_walk_the_swatches_as_a_grid() {
+        let n = hues::SWATCHES.len();
+        assert_eq!(grid_step(None, "down", n), Some(0));
+        assert_eq!(grid_step(None, "right", n), Some(0));
+        assert_eq!(grid_step(None, "up", n), Some(n - 1));
+        assert_eq!(grid_step(None, "left", n), Some(n - 1));
+        // Left and Right go through them in order, wrapping round.
+        assert_eq!(grid_step(Some(0), "right", n), Some(1));
+        assert_eq!(grid_step(Some(n - 1), "right", n), Some(0));
+        assert_eq!(grid_step(Some(0), "left", n), Some(n - 1));
+        // Up and Down move a row and stay put at the edges.
+        assert_eq!(grid_step(Some(1), "down", n), Some(1 + SWATCH_COLUMNS));
+        assert_eq!(grid_step(Some(1 + SWATCH_COLUMNS), "up", n), Some(1));
+        assert_eq!(grid_step(Some(1), "up", n), Some(1));
+        assert_eq!(grid_step(Some(n - 1), "down", n), Some(n - 1));
+        assert_eq!(grid_step(None, "down", 0), None);
+    }
+
+    #[test]
+    fn the_tag_picker_ticks_the_tasks_tags_finds_by_name_and_offers_to_create() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let menu = tag_menu(&f.state, task, "");
+        assert!(matches!(&menu[0], MenuEntry::Filter { typed, .. } if typed.is_empty()));
+        let all = commands::tags(&f.state);
+        assert_eq!(items(&menu).count(), all.len(), "every tag, once");
+        // By name, each with its colour, toggling it on the task and opening its own page on the side.
+        for (item, tag) in items(&menu).zip(&all) {
+            assert_eq!(item.label, labels::one_line(&tag.name));
+            assert_eq!(item.action, MenuAction::ToggleTag(task, tag.id));
+            assert_eq!(item.more, Some(MenuAction::EditTag(task, tag.id)));
+            assert_eq!(item.dot, Some(tag_hue(tag)));
+        }
+        let ticked: Vec<&str> = items(&menu)
+            .filter(|i| i.checked)
+            .map(|i| i.label.as_ref())
+            .collect();
+        assert_eq!(ticked, ["planning", "q4"]);
+        // Typing narrows them, ignoring case and accents; a tag's own name (in any case) offers no
+        // Create, while the same letters without the accent are another name, which can be created.
+        let narrowed = tag_menu(&f.state, task, "DOMÁCNOST");
+        let labels: Vec<&str> = items(&narrowed).map(|i| i.label.as_ref()).collect();
+        assert_eq!(labels, ["domácnost"]);
+        let plain = tag_menu(&f.state, task, "domacnost");
+        let labels: Vec<&str> = items(&plain).map(|i| i.label.as_ref()).collect();
+        assert_eq!(labels, ["Create tag “domacnost”", "domácnost"]);
+        let exact = tag_menu(&f.state, task, "docs");
+        assert!(!actions(&exact).contains(&MenuAction::CreateTag(task)));
+        // A new name: Create first, so Enter makes it at once.
+        let new = tag_menu(&f.state, task, "receipts");
+        assert_eq!(actions(&new), [MenuAction::CreateTag(task)]);
+        assert_eq!(
+            items(&new).next().map(|i| i.label.as_ref()),
+            Some("Create tag “receipts”")
+        );
+        assert_eq!(first_highlight(&new), Some(0));
+        // No tags at all: a quiet line says how to make one.
+        let mut bare = f.state.clone();
+        bare.tags.clear();
+        let empty = tag_menu(&bare, task, "");
+        assert!(matches!(empty.last(), Some(MenuEntry::Note(_))));
+        // Gone, it offers nothing.
+        let mut gone = f.state.clone();
+        gone.tasks.get_mut(&task).expect("task").deleted = Some(todo_core::model::Tombstone {
+            at: f.now.at,
+            by: todo_core::Actor::System,
+        });
+        assert!(tag_menu(&gone, task, "").is_empty());
+    }
+
+    #[test]
+    fn a_tags_own_page_toggles_renames_recolours_and_goes_back() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let planning = commands::tag_named(&f.state, "planning").expect("tag");
+        let docs = commands::tag_named(&f.state, "docs").expect("tag");
+        let menu = tag_edit_menu(&f.state, task, planning);
+        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "#planning"));
+        assert_eq!(
+            actions(&menu),
+            [
+                MenuAction::ToggleTag(task, planning),
+                MenuAction::RenameTag(planning),
+                MenuAction::AskColour(planning.into()),
+                MenuAction::AllTags(task),
+            ]
+        );
+        let label = |m: &[MenuEntry]| items(m).next().map(|i| i.label.to_string());
+        assert_eq!(label(&menu).as_deref(), Some("Remove from task"));
+        assert_eq!(
+            label(&tag_edit_menu(&f.state, task, docs)).as_deref(),
+            Some("Add to task")
+        );
+        let mut gone = f.state.clone();
+        gone.tags.get_mut(&planning).expect("tag").deleted = Some(todo_core::model::Tombstone {
+            at: f.now.at,
+            by: todo_core::Actor::System,
+        });
+        assert!(tag_edit_menu(&gone, task, planning).is_empty());
+    }
+
+    #[test]
+    fn a_tasks_links_page_adds_one_or_removes_each() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let link = *f
+            .state
+            .links
+            .values()
+            .find(|l| l.task == task)
+            .map(|l| &l.id)
+            .expect("a link");
+        let menu = links_menu(&f.state, task);
+        assert_eq!(
+            actions(&menu),
+            [MenuAction::AddLink(task), MenuAction::RemoveLink(link)]
+        );
+        let remove = items(&menu).nth(1).expect("remove");
+        assert!(remove.danger);
+        assert_eq!(remove.label, "Q4 roadmap: pre-read and agenda");
+        // The task's menu says how many it has.
+        let task_menu = task_menu(&f.state, task, f.now.today());
+        let links = items(&task_menu)
+            .find(|i| i.action == MenuAction::AskLinks(task))
+            .expect("Links…");
+        assert_eq!(links.hint.as_deref(), Some("1"));
+        // Without links: only Add.
+        let mut bare = f.state.clone();
+        bare.links.clear();
+        assert_eq!(
+            actions(&links_menu(&bare, task)),
+            [MenuAction::AddLink(task)]
+        );
     }
 
     #[test]
@@ -928,9 +1835,9 @@ second line"
             at: f.now.at,
             by: todo_core::Actor::System,
         });
-        assert!(list_menu(&f.state, office, false).is_empty());
-        assert!(list_menu(&f.state, office, true).is_empty());
-        assert!(room_menu(&f.state, RoomKey::List(office), false, true).is_empty());
+        assert!(list_menu(&f.state, office, Page::Main).is_empty());
+        assert!(list_menu(&f.state, office, Page::Confirm).is_empty());
+        assert!(room_menu(&f.state, RoomKey::List(office), false, Page::Confirm).is_empty());
     }
 
     #[test]
@@ -1003,7 +1910,7 @@ second line"
             &fixtures::my_day().state,
             RoomKey::Smart(Smart::MyDay),
             false,
-            false,
+            Page::Main,
         );
         assert_eq!(first_highlight(&none), Some(0));
         assert_eq!(first_highlight(&[]), None);
@@ -1026,17 +1933,22 @@ second line"
         let col = *f.state.collections.keys().next().expect("collection");
         let task = *f.state.tasks.keys().next().expect("task");
         let menus = [
-            room_menu(&f.state, RoomKey::List(list), false, false),
-            list_menu(&f.state, list, false),
-            collection_menu(&f.state, col, false),
+            room_menu(&f.state, RoomKey::List(list), false, Page::Main),
+            list_menu(&f.state, list, Page::Main),
+            collection_menu(&f.state, col, false, Page::Main),
             account_menu(Some("https://todo.example.com"), false),
             account_menu(Some("https://todo.example.com"), true),
-            list_menu(&f.state, list, true),
-            room_menu(&f.state, RoomKey::List(list), false, true),
+            list_menu(&f.state, list, Page::Confirm),
+            room_menu(&f.state, RoomKey::List(list), false, Page::Confirm),
             priority_menu(task, Priority::None),
             task_menu(&f.state, task, f.now.today()),
             move_menu(&f.state, task, ""),
             failures_menu(&f.state, &failed(&f.state, 3)),
+            collection_menu(&f.state, col, false, Page::Confirm),
+            list_menu(&f.state, list, Page::Move),
+            list_menu(&f.state, list, Page::Colour),
+            tag_menu(&f.state, task, "x"),
+            links_menu(&f.state, task),
         ];
         for menu in menus {
             let keys: Vec<&str> = items(&menu).map(|i| i.key.as_ref()).collect();
@@ -1073,6 +1985,7 @@ second line"
                 MenuAction::ToggleImportant(id),
                 MenuAction::AskPriority(id),
                 MenuAction::AskMove(id),
+                MenuAction::AskLinks(id),
                 MenuAction::DeleteTask(id),
             ]
         );
@@ -1110,7 +2023,7 @@ second line"
         let own = f.state.tasks[&task].list;
         let menu = move_menu(&f.state, task, "");
         // The filter line first, then each collection's name above its lists, as in the sidebar.
-        assert!(matches!(&menu[0], MenuEntry::Filter(t) if t.is_empty()));
+        assert!(matches!(&menu[0], MenuEntry::Filter { typed: t, .. } if t.is_empty()));
         let headings: Vec<&str> = menu
             .iter()
             .filter_map(|e| match e {
@@ -1184,7 +2097,7 @@ second line"
         let errands = list_named(&f.state, "Errands");
         let narrowed = move_menu(&f.state, task, "ERRAND");
         assert_eq!(actions(&narrowed), [MenuAction::MoveTask(task, errands)]);
-        assert!(matches!(&narrowed[0], MenuEntry::Filter(t) if t == "ERRAND"));
+        assert!(matches!(&narrowed[0], MenuEntry::Filter { typed: t, .. } if t == "ERRAND"));
         let work = shell
             .sidebar
             .collections

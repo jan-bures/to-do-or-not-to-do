@@ -25,7 +25,7 @@ use gpui::SharedString;
 use jiff::tz::TimeZone;
 use todo_client::Connection;
 use todo_core::State;
-use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TaskId};
+use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TagId, TaskId};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
@@ -577,6 +577,8 @@ pub enum FieldEdit {
     Due,
     /// Picked from the four levels (the P key cycles them).
     Priority,
+    /// Put on and taken off in the tag picker (the T key).
+    Tags,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -586,6 +588,14 @@ pub struct Field {
     pub value: SharedString,
     pub kind: FieldKind,
     pub edit: Option<FieldEdit>,
+}
+
+/// A tag on the task, as the detail pane's Tags row shows it: a dot in its colour and its name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TagChip {
+    pub id: TagId,
+    pub name: SharedString,
+    pub hue: Hue,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -621,6 +631,8 @@ pub struct Detail {
     pub steps: Vec<StepRow>,
     pub notes: SharedString,
     pub fields: Vec<Field>,
+    /// The task's tags, by name (the Tags field's value, drawn as chips).
+    pub tags: Vec<TagChip>,
     pub links: Vec<LinkRow>,
     pub attachments: Vec<AttachmentRow>,
 }

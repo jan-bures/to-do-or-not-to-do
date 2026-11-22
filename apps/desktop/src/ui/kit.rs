@@ -424,12 +424,13 @@ pub fn label(p: &Palette, s: &'static str) -> Div {
 /// A hover tooltip (`.tooltip(kit::tooltip(p, "…"))`): one quiet line on the overlay surface.
 pub fn tooltip(
     p: Palette,
-    text: &'static str,
+    text: impl Into<SharedString>,
 ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    let text = text.into();
     move |_, cx| {
         cx.new(|_| Tooltip {
             p,
-            text: text.into(),
+            text: text.clone(),
         })
         .into()
     }

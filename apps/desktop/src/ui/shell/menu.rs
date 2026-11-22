@@ -1,5 +1,6 @@
-//! The popover menus: a list's or a collection's context menu (at the pointer), and the menus that open
-//! from a button (the room header's "more", the account gear, the detail pane's priority row).
+//! The popover menus: a list's, a collection's or a task's context menu (at the pointer), and the menus
+//! that open from a button (the room header's "more", the account gear, the detail pane's Priority and
+//! Tags rows).
 //!
 //! What a menu offers is data (`model::menus`); this draws it and runs the chosen item. Every menu
 //! takes the keyboard while it is open: Up and Down (Left and Right between a confirmation's buttons)
@@ -12,11 +13,11 @@ use gpui::{
     Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, ScrollHandle, SharedString,
     Window, anchored, deferred, div, prelude::*, px,
 };
-use todo_core::ids::{CollectionId, ListId, TaskId};
+use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellEvent, ShellView};
-use crate::model::menus::{self, MenuAction, MenuEntry, MenuItem};
+use crate::model::menus::{self, MenuAction, MenuEntry, MenuItem, Page, TagPage};
 use crate::model::motion::Overlay;
 use crate::model::{commands, hints::Stop, labels};
 use crate::theme::{
@@ -48,43 +49,33 @@ pub(super) struct Menu {
     pub failures: Vec<todo_client::CommandId>,
 }
 
-/// What a task's context menu shows: its items, or in their place the priority picker or the list
-/// picker that one of them opened.
+/// What a task's context menu shows: its items, or in their place the priority picker, the list
+/// picker or the task's links that one of them opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TaskPage {
     Main,
     Priority,
     Move,
+    Links,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum MenuKind {
     /// The sidebar footer's menu: the server, its admin pages, Sync now and Sign out (`confirm` once
     /// asked).
-    Account {
-        confirm: bool,
-    },
-    /// A list's context menu (`confirm` once Delete was chosen).
-    List {
-        id: ListId,
-        confirm: bool,
-    },
-    Collection {
-        id: CollectionId,
-    },
-    /// The room header's "more" menu (`confirm` once Delete list was chosen).
-    Room {
-        confirm: bool,
-    },
+    Account { confirm: bool },
+    /// A list's context menu, or the page one of its items turned it into.
+    List { id: ListId, page: Page },
+    /// A collection's context menu, or the page one of its items turned it into.
+    Collection { id: CollectionId, page: Page },
+    /// The room header's "more" menu, or the page one of its items turned it into.
+    Room { page: Page },
+    /// The tag picker, from the detail pane's Tags row (or T), or a tag's own page in it.
+    Tags { task: TaskId, page: TagPage },
     /// The detail pane's priority picker.
-    Priority {
-        task: TaskId,
-    },
+    Priority { task: TaskId },
     /// A task's context menu (right-click its row, or Shift+F10), or the list picker (M).
-    Task {
-        id: TaskId,
-        page: TaskPage,
-    },
+    Task { id: TaskId, page: TaskPage },
     /// The sidebar footer's "N couldn't sync": the refused changes, to see and dismiss.
     SyncFailures,
 }
@@ -107,7 +98,9 @@ impl MenuKind {
             (Self::Account { .. }, Self::Account { .. })
             | (Self::Room { .. }, Self::Room { .. }) => true,
             (Self::List { id: a, .. }, Self::List { id: b, .. }) => a == b,
+            (Self::Collection { id: a, .. }, Self::Collection { id: b, .. }) => a == b,
             (Self::Task { id: a, .. }, Self::Task { id: b, .. }) => a == b,
+            (Self::Tags { task: a, .. }, Self::Tags { task: b, .. }) => a == b,
             _ => self == other,
         }
     }
@@ -117,6 +110,30 @@ impl MenuKind {
         match self {
             Self::Task { id, .. } => Some(id),
             _ => None,
+        }
+    }
+
+    /// Whether what's typed goes to the menu's filter line: the list picker and the tag picker.
+    fn filters(self) -> bool {
+        matches!(
+            self,
+            Self::Task {
+                page: TaskPage::Move,
+                ..
+            } | Self::Tags {
+                page: TagPage::Pick,
+                ..
+            }
+        )
+    }
+
+    /// The same menu on another page (a confirmation, a picker, the colour swatches), where it has one.
+    fn on_page(self, page: Page) -> Self {
+        match self {
+            Self::List { id, .. } => Self::List { id, page },
+            Self::Collection { id, .. } => Self::Collection { id, page },
+            Self::Room { .. } => Self::Room { page },
+            other => other,
         }
     }
 }
@@ -129,13 +146,35 @@ impl ShellView {
             MenuKind::Account { confirm } => {
                 menus::account_menu(self.store.server().as_deref(), confirm)
             }
-            MenuKind::List { id, confirm } => menus::list_menu(&state, id, confirm),
-            MenuKind::Collection { id } => {
-                menus::collection_menu(&state, id, self.ui.collapsed_collections.contains(&id))
+            MenuKind::List { id, page } => menus::list_menu(&state, id, page),
+            MenuKind::Collection { id, page } => menus::collection_menu(
+                &state,
+                id,
+                self.ui.collapsed_collections.contains(&id),
+                page,
+            ),
+            MenuKind::Room { page } => {
+                menus::room_menu(&state, self.shell.room.key, self.ui.show_completed, page)
             }
-            MenuKind::Room { confirm } => {
-                menus::room_menu(&state, self.shell.room.key, self.ui.show_completed, confirm)
+            MenuKind::Tags {
+                task,
+                page: TagPage::Pick,
+            } => {
+                let filter = self.menu.as_ref().map_or("", |m| m.filter.as_str());
+                menus::tag_menu(&state, task, filter)
             }
+            MenuKind::Tags {
+                task,
+                page: TagPage::Edit(tag),
+            } => menus::tag_edit_menu(&state, task, tag),
+            MenuKind::Tags {
+                page: TagPage::Colour(tag),
+                ..
+            } => menus::colour_menu(&state, tag.into()),
+            MenuKind::Task {
+                id,
+                page: TaskPage::Links,
+            } => menus::links_menu(&state, id),
             MenuKind::Priority { task }
             | MenuKind::Task {
                 id: task,
@@ -174,7 +213,7 @@ impl ShellView {
             &self.store.view(),
             self.shell.room.key,
             self.ui.show_completed,
-            false,
+            Page::Main,
         )
         .is_empty()
     }
@@ -194,12 +233,22 @@ impl ShellView {
             .menu
             .as_ref()
             .filter(|m| m.overlay.look(now).open && m.kind.same_menu(kind));
+        let animate = self.animate;
+        let pace = self.pace();
         let menu = match open {
-            Some(m) => Menu {
-                kind,
-                filter: String::new(),
-                ..m.clone()
-            },
+            // The same menu on its next page: the page fades in where the menu stands.
+            Some(m) => {
+                let mut overlay = m.overlay;
+                if animate && m.kind != kind {
+                    overlay.swap_content(now, pace);
+                }
+                Menu {
+                    kind,
+                    overlay,
+                    filter: String::new(),
+                    ..m.clone()
+                }
+            }
             None => Menu {
                 kind,
                 at,
@@ -374,14 +423,40 @@ impl ShellView {
             cx.notify();
             return;
         }
+        let at = (menu.highlight.as_deref()).and_then(|k| menus::index_of(&entries, k));
+        // Right opens a tag's own page (its chevron); Left on that page goes back to every tag.
+        let more = at
+            .and_then(|i| menus::items(&entries).nth(i))
+            .and_then(|i| i.more);
+        let back = match menu.kind {
+            MenuKind::Tags {
+                task,
+                page: TagPage::Edit(_),
+            } => Some(MenuAction::AllTags(task)),
+            _ => None,
+        };
         match key {
+            "right" if more.is_some() => {
+                if let Some(action) = more {
+                    self.run_menu_action(action, true, window, cx);
+                }
+            }
+            "left" if back.is_some() => {
+                if let Some(action) = back {
+                    self.run_menu_action(action, true, window, cx);
+                }
+            }
+            // The colour swatches are a grid: Up and Down move a row.
+            "down" | "up" | "right" | "left" if menus::is_grid(&entries) => {
+                self.highlight(menus::grid_step(at, key, count));
+                cx.notify();
+            }
             "down" | "up" | "right" | "left" => {
                 let by = if matches!(key, "down" | "right") {
                     1
                 } else {
                     -1
                 };
-                let at = (menu.highlight.as_deref()).and_then(|k| menus::index_of(&entries, k));
                 let next = menus::step_highlight(at, by, count);
                 self.highlight(next);
                 cx.notify();
@@ -425,12 +500,31 @@ impl ShellView {
                 .map(|i| i.key.clone());
         }
         match action {
-            MenuAction::AskDeleteList(id) => {
-                let kind = match menu.kind {
-                    MenuKind::Room { .. } => MenuKind::Room { confirm: true },
-                    _ => MenuKind::List { id, confirm: true },
+            // The menu turns into the confirmation, the collection picker or the swatches, in place.
+            MenuAction::AskDeleteList(_)
+            | MenuAction::AskDeleteCollection(_)
+            | MenuAction::AskMoveList(_)
+            | MenuAction::AskColour(_) => {
+                let kind = match (menu.kind, action) {
+                    (MenuKind::Tags { task, .. }, MenuAction::AskColour(EntityId::Tag(tag))) => {
+                        MenuKind::Tags {
+                            task,
+                            page: TagPage::Colour(tag),
+                        }
+                    }
+                    (kind, MenuAction::AskMoveList(_)) => kind.on_page(Page::Move),
+                    (kind, MenuAction::AskColour(_)) => kind.on_page(Page::Colour),
+                    (kind, _) => kind.on_page(Page::Confirm),
                 };
-                return self.open_menu(kind, menu.at, menu.trigger, window, cx);
+                self.open_menu(kind, menu.at, menu.trigger, window, cx);
+                // A picker starts on the current choice, from the keyboard or not.
+                if !matches!(
+                    action,
+                    MenuAction::AskDeleteList(_) | MenuAction::AskDeleteCollection(_)
+                ) {
+                    self.highlight_first();
+                }
+                return;
             }
             MenuAction::AskSignOut => {
                 return self.open_menu(
@@ -442,15 +536,62 @@ impl ShellView {
                 );
             }
             // A task's menu turns into the picker in place; the keyboard starts on the current choice.
-            MenuAction::AskPriority(id) | MenuAction::AskMove(id) => {
-                let page = if matches!(action, MenuAction::AskMove(_)) {
-                    TaskPage::Move
-                } else {
-                    TaskPage::Priority
+            MenuAction::AskPriority(id) | MenuAction::AskMove(id) | MenuAction::AskLinks(id) => {
+                let page = match action {
+                    MenuAction::AskMove(_) => TaskPage::Move,
+                    MenuAction::AskLinks(_) => TaskPage::Links,
+                    _ => TaskPage::Priority,
                 };
                 let kind = MenuKind::Task { id, page };
                 self.open_menu(kind, menu.at, menu.trigger, window, cx);
                 self.highlight_first();
+                return;
+            }
+            // The tag picker and a tag's own page turn into each other in place.
+            MenuAction::EditTag(task, _) | MenuAction::AllTags(task) => {
+                let page = match action {
+                    MenuAction::EditTag(_, tag) => TagPage::Edit(tag),
+                    _ => TagPage::Pick,
+                };
+                let back_to = match (menu.kind, action) {
+                    (
+                        MenuKind::Tags {
+                            page: TagPage::Edit(tag) | TagPage::Colour(tag),
+                            ..
+                        },
+                        MenuAction::AllTags(_),
+                    ) => Some(format!("tag-{tag}")),
+                    _ => None,
+                };
+                self.open_menu(
+                    MenuKind::Tags { task, page },
+                    menu.at,
+                    menu.trigger,
+                    window,
+                    cx,
+                );
+                // Back on every tag, the keyboard is on the tag it came from.
+                match back_to {
+                    Some(key) => {
+                        let entries = self.menu_entries(MenuKind::Tags { task, page });
+                        self.highlight(menus::index_of(&entries, &key));
+                    }
+                    None if keyboard || menu.highlight.is_some() => self.highlight_first(),
+                    None => {}
+                }
+                cx.notify();
+                return;
+            }
+            // Tags go on and off with the picker open, the keyboard staying on the same tag.
+            MenuAction::ToggleTag(task, tag) => {
+                if let Some(cmd) = commands::toggle_tag(&self.store.view(), task, tag) {
+                    self.submit(vec![cmd]);
+                }
+                self.refresh(cx);
+                return;
+            }
+            MenuAction::CreateTag(task) => {
+                self.create_tag(task, &menu, cx);
                 return;
             }
             // The list stays open while more are left, the keyboard on the item that took its place.
@@ -486,6 +627,33 @@ impl ShellView {
             }
             MenuAction::DeleteList(id) => {
                 self.submit(vec![commands::delete(id)]);
+                self.refresh(cx);
+            }
+            MenuAction::DeleteCollection(id) => {
+                if let Some(cmd) = commands::delete_collection(&self.store.view(), id) {
+                    self.submit(vec![cmd]);
+                }
+                self.refresh(cx);
+            }
+            MenuAction::MoveList(id, to) => self.move_list(id, to, cx),
+            MenuAction::SetColour(id, key) => {
+                if let Some(cmd) = commands::set_color(&self.store.view(), id, key) {
+                    self.submit(vec![cmd]);
+                }
+                self.refresh(cx);
+            }
+            MenuAction::RenameTag(tag) => {
+                let name = (self.store.view().tags.get(&tag))
+                    .map(|t| SharedString::from(labels::one_line(&t.name)));
+                if let Some(name) = name {
+                    self.start_inline(InlineTarget::Tag(tag), name, window, cx);
+                }
+            }
+            MenuAction::AddLink(task) => self.start_link(task, window, cx),
+            MenuAction::RemoveLink(link) => {
+                if let Some(cmd) = commands::delete_link(&self.store.view(), link) {
+                    self.submit(vec![cmd]);
+                }
                 self.refresh(cx);
             }
             MenuAction::Nudge(id, by) => self.nudge(id, by, cx),
@@ -526,9 +694,17 @@ impl ShellView {
             }
             MenuAction::DismissFailure(_) => self.refresh(cx),
             MenuAction::AskDeleteList(_)
+            | MenuAction::AskDeleteCollection(_)
+            | MenuAction::AskMoveList(_)
+            | MenuAction::AskColour(_)
             | MenuAction::AskSignOut
             | MenuAction::AskPriority(_)
             | MenuAction::AskMove(_)
+            | MenuAction::AskLinks(_)
+            | MenuAction::EditTag(..)
+            | MenuAction::AllTags(_)
+            | MenuAction::ToggleTag(..)
+            | MenuAction::CreateTag(_)
             | MenuAction::Cancel => {}
         }
     }
@@ -547,6 +723,40 @@ impl ShellView {
                 "Couldn't dismiss that: this computer's copy couldn't be saved.",
             ));
         }
+    }
+
+    /// Moves a list into a collection, or out of any (`None`). Its new collection unfolds, so the list
+    /// stays in sight. The toast's Undo moves it back.
+    fn move_list(&mut self, id: ListId, to: Option<CollectionId>, cx: &mut Context<Self>) {
+        let Some(cmd) = commands::move_list(&self.store.view(), id, to) else {
+            return self.refresh(cx);
+        };
+        if self.submit(vec![cmd]) {
+            let revealed = to.is_some_and(|c| self.ui.collapsed_collections.remove(&c));
+            return self.refresh_with_collapse_change(revealed, cx);
+        }
+        self.refresh(cx);
+    }
+
+    /// The tag picker's Create: a tag named as typed, put on the task. The picker stays open, its filter
+    /// cleared and the keyboard on the new tag. A name that can't be used says why in the status bar.
+    fn create_tag(&mut self, task: TaskId, menu: &Menu, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let name = labels::one_line(menu.filter.trim());
+        match commands::tag_task_named(&store.view(), task, &name, || store.new_uuid()) {
+            Ok((tag, cmds)) => {
+                if self.submit(cmds) {
+                    if let Some(m) = self.menu.as_mut() {
+                        m.filter.clear();
+                    }
+                    self.menu_scroll = ScrollHandle::new();
+                    let entries = self.menu_entries(menu.kind);
+                    self.highlight(menus::index_of(&entries, &format!("tag-{tag}")));
+                }
+            }
+            Err(e) => self.notice = Some(Notice::error(format!("Couldn't create that tag: {e}."))),
+        }
+        self.refresh(cx);
     }
 
     /// Renames a list in place in the sidebar, unfolding its collection first so the editor shows.
@@ -703,12 +913,28 @@ impl ShellView {
                     .text_color(p.ink_3)
                     .child(text.clone())
                     .into_any_element(),
-                MenuEntry::Filter(_) => div().into_any_element(),
+                MenuEntry::Swatches(items) => div()
+                    .px(px(space::S2))
+                    .pt(px(space::S1))
+                    .pb(px(space::S2))
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(space::S1))
+                    .children(
+                        items
+                            .iter()
+                            .map(|item| self.swatch(&p, item, on(item), live, cx)),
+                    )
+                    .into_any_element(),
+                MenuEntry::Filter { .. } => div().into_any_element(),
             })
             .collect();
         // The list picker's filter line stays above the lists, which scroll.
         let filter = entries.iter().find_map(|e| match e {
-            MenuEntry::Filter(typed) => Some(self.filter_line(&p, typed.clone())),
+            MenuEntry::Filter { typed, hint } => Some(
+                self.filter_line(&p, typed.clone(), hint)
+                    .opacity(look.content),
+            ),
             _ => None,
         });
         // It moves the last 4 px away from its anchor as it enters.
@@ -722,6 +948,7 @@ impl ShellView {
         // A long menu (the list picker, many refused changes) scrolls past `MENU_ROWS` rows.
         let items = div()
             .id("menu-items")
+            .opacity(look.content)
             .flex()
             .flex_col()
             .max_h(px(desktop::NAV_ROW * MENU_ROWS))
@@ -768,8 +995,8 @@ impl ShellView {
         Some(deferred(popover).with_priority(2).into_any_element())
     }
 
-    /// The list picker's filter line: what's been typed, or a hint that typing narrows the lists.
-    fn filter_line(&self, p: &Palette, typed: SharedString) -> Div {
+    /// A picker's filter line: what's been typed, or a hint that typing narrows it.
+    fn filter_line(&self, p: &Palette, typed: SharedString, hint: &'static str) -> Div {
         let empty = typed.is_empty();
         div()
             .mx(px(space::S1))
@@ -790,7 +1017,7 @@ impl ShellView {
                     .truncate()
                     .text_color(if empty { p.ink_3 } else { p.ink })
                     .child(if empty {
-                        SharedString::from("Type to filter lists")
+                        SharedString::from(hint)
                     } else {
                         typed
                     }),
@@ -863,6 +1090,7 @@ impl ShellView {
         let hover = p.hover;
         div()
             .id(item.key.clone())
+            .group(item.key.clone())
             .mx(px(space::S1))
             .h(px(desktop::NAV_ROW))
             .px(px(space::S2))
@@ -879,14 +1107,31 @@ impl ShellView {
             .when(highlighted, |d| d.bg(p.hover))
             .style(ty::NAV_SUB)
             .text_color(ink)
-            .child(match item.glyph {
+            .child(match (item.glyph, item.dot) {
                 // A list's own glyph in its colour, as in the sidebar.
-                Some((glyph, hue)) => kit::glyph(glyph, theme::list_colors(self.theme, hue).glyph),
-                None => kit::icon(
+                (Some((glyph, hue)), _) => {
+                    kit::glyph(glyph, theme::list_colors(self.theme, hue).glyph).into_any_element()
+                }
+                // A tag's colour, or the colour Colour… changes: a disc in the icon's place.
+                (None, Some(hue)) => div()
+                    .size(px(component::ICON_SMALL))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(component::CHIP_DOT + space::S1))
+                            .rounded_full()
+                            .bg(theme::list_colors(self.theme, hue).dot),
+                    )
+                    .into_any_element(),
+                (None, None) => kit::icon(
                     item.icon,
                     component::ICON_SMALL,
                     if item.danger { p.danger } else { p.ink_3 },
-                ),
+                )
+                .into_any_element(),
             })
             .child(
                 div()
@@ -914,6 +1159,36 @@ impl ShellView {
                         ))
                     }),
             )
+            // A second action behind a chevron (Right from the keyboard): a tag's own page.
+            .children(item.more.map(|more| {
+                let wash = p.wash;
+                div()
+                    .id(SharedString::from(format!("{}-more", item.key)))
+                    // Shown on the row under the pointer or the keyboard, so the list stays calm.
+                    .opacity(if highlighted { 1. } else { 0. })
+                    .group_hover(item.key.clone(), |s| s.opacity(1.))
+                    .flex_none()
+                    .size(px(component::ICON_BUTTON - space::S2))
+                    .mr(px(-space::S1))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::SM))
+                    .child(kit::icon(
+                        Icon::ChevronRight,
+                        component::ICON_SMALL,
+                        p.ink_3,
+                    ))
+                    .when(live, |d| {
+                        d.hover(move |s| s.bg(wash)).on_click(cx.listener(
+                            move |this, e: &gpui::ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                let keyboard = e.mouse_position().is_none();
+                                this.run_menu_action(more, keyboard, window, cx);
+                            },
+                        ))
+                    })
+            }))
             .when(live, |d| {
                 d.hover(move |s| s.bg(hover)).on_click(cx.listener(
                     move |this, e: &gpui::ClickEvent, window, cx| {
@@ -926,6 +1201,61 @@ impl ShellView {
 }
 
 impl ShellView {
+    /// A colour swatch: a disc in its colour, ticked when it's the current one. The keyboard's choice
+    /// wears the focus ring; hovering lifts it into a ring of its own colour.
+    fn swatch(
+        &self,
+        p: &Palette,
+        item: &MenuItem,
+        highlighted: bool,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let action = item.action;
+        let colors = theme::list_colors(self.theme, item.dot.unwrap_or_default());
+        let size = component::ICON_BUTTON;
+        let disc = component::ICON + space::S1;
+        let tint = colors.tint;
+        div()
+            .id(item.key.clone())
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border(px(elevation::HAIRLINE))
+            .border_color(if highlighted {
+                p.accent
+            } else if item.checked {
+                colors.dot
+            } else {
+                gpui::transparent_black()
+            })
+            .when(highlighted, |d| d.bg(p.tint))
+            .child(
+                div()
+                    .size(px(disc))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(colors.dot)
+                    .when(item.checked, |d| {
+                        d.child(kit::icon(Icon::Check, component::ICON_SMALL, p.on_accent))
+                    }),
+            )
+            .when(live, |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(tint))
+                    .tooltip(kit::tooltip(*p, item.label.clone()))
+                    .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
+                        let keyboard = e.mouse_position().is_none();
+                        this.run_menu_action(action, keyboard, window, cx);
+                    }))
+            })
+    }
+
     /// One of a confirmation's short buttons: the destructive action filled in `danger`, Cancel quiet.
     /// The keyboard's choice wears the focus ring.
     fn confirm_button(
@@ -988,21 +1318,14 @@ pub(super) fn keyboard_back_to_list(
     dropped && (menu_focused || nothing_focused)
 }
 
-/// What a key does to the list picker's filter (Move to…): the filter it leaves, or `None` when the key
-/// isn't typing there. Letters add to it, Backspace takes the last one back, and Escape clears it before
+/// What a key does to a picker's filter (the list picker's Move to…, the tag picker): the filter it
+/// leaves, or `None` when the key isn't typing there. Letters add to it, Backspace takes the last one back, and Escape clears it before
 /// it closes the picker. Space types once something is typed (before that it chooses, as in any menu).
 /// A held key's repeats type nothing (only Backspace repeats), so holding M, which opens the picker,
 /// doesn't fill it with m's.
 fn picker_edit(menu: &Menu, e: &KeyDownEvent) -> Option<String> {
-    let picking = matches!(
-        menu.kind,
-        MenuKind::Task {
-            page: TaskPage::Move,
-            ..
-        }
-    );
     let m = &e.keystroke.modifiers;
-    if !picking || m.control || m.alt || m.platform || m.function {
+    if !menu.kind.filters() || m.control || m.alt || m.platform || m.function {
         return None;
     }
     if e.is_held && e.keystroke.key != "backspace" {
@@ -1118,7 +1441,7 @@ mod tests {
 
     #[test]
     fn clicking_an_open_menus_button_closes_it_and_leaves_it_closed() {
-        let room = MenuKind::Room { confirm: false };
+        let room = MenuKind::Room { page: Page::Main };
         let mut guard = PressGuard::default();
         // The press on the button lands outside the open menu, which closes: its click must not reopen it.
         guard.press();
@@ -1129,7 +1452,9 @@ mod tests {
         assert!(!guard.swallows(room));
         // A confirmation is the same menu.
         guard.press();
-        guard.closed(MenuKind::Room { confirm: true });
+        guard.closed(MenuKind::Room {
+            page: Page::Confirm,
+        });
         assert!(guard.swallows(room));
     }
 
@@ -1156,7 +1481,7 @@ mod tests {
     #[test]
     fn a_press_that_closed_another_menu_doesnt_stop_this_one_opening() {
         let list = ListId::from_uuid(uuid::Uuid::nil());
-        let room = MenuKind::Room { confirm: false };
+        let room = MenuKind::Room { page: Page::Main };
         let mut guard = PressGuard::default();
         guard.press();
         guard.closed(MenuKind::Account { confirm: false });
@@ -1164,7 +1489,7 @@ mod tests {
         guard.press();
         guard.closed(MenuKind::List {
             id: list,
-            confirm: false,
+            page: Page::Main,
         });
         assert!(!guard.swallows(room));
         // Nothing closed: a click opens it.
@@ -1258,6 +1583,86 @@ mod tests {
     }
 
     #[test]
+    fn a_menus_pages_are_one_menu_and_only_the_pickers_take_typing() {
+        let list = ListId::from_uuid(uuid::Uuid::nil());
+        let col = CollectionId::from_uuid(uuid::Uuid::nil());
+        let other = CollectionId::from_uuid(uuid::Uuid::max());
+        let task = TaskId::from_uuid(uuid::Uuid::nil());
+        let tag = todo_core::ids::TagId::from_uuid(uuid::Uuid::nil());
+        let main = MenuKind::List {
+            id: list,
+            page: Page::Main,
+        };
+        // Asking for a page turns the same menu into it.
+        for page in [Page::Confirm, Page::Move, Page::Colour] {
+            assert_eq!(main.on_page(page), MenuKind::List { id: list, page });
+            assert!(main.same_menu(main.on_page(page)));
+            assert_eq!(
+                MenuKind::Room { page: Page::Main }.on_page(page),
+                MenuKind::Room { page }
+            );
+        }
+        let collection = MenuKind::Collection {
+            id: col,
+            page: Page::Main,
+        };
+        assert!(collection.same_menu(collection.on_page(Page::Colour)));
+        assert!(!collection.same_menu(MenuKind::Collection {
+            id: other,
+            page: Page::Main
+        }));
+        let pick = MenuKind::Tags {
+            task,
+            page: TagPage::Pick,
+        };
+        let edit = MenuKind::Tags {
+            task,
+            page: TagPage::Edit(tag),
+        };
+        assert!(pick.same_menu(edit));
+        // What's typed goes to the list picker and the tag picker, nowhere else.
+        assert!(pick.filters());
+        assert!(
+            MenuKind::Task {
+                id: task,
+                page: TaskPage::Move
+            }
+            .filters()
+        );
+        for kind in [
+            edit,
+            main,
+            collection,
+            MenuKind::Task {
+                id: task,
+                page: TaskPage::Links,
+            },
+        ] {
+            assert!(!kind.filters(), "{kind:?}");
+        }
+        let typing = Menu {
+            kind: pick,
+            at: None,
+            highlight: None,
+            overlay: Overlay::rest(),
+            trigger: None,
+            filter: "rec".into(),
+            failures: Vec::new(),
+        };
+        let key = gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("e->e").expect("keystroke"),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        assert_eq!(picker_edit(&typing, &key).as_deref(), Some("rece"));
+        let on_edit = Menu {
+            kind: edit,
+            ..typing
+        };
+        assert_eq!(picker_edit(&on_edit, &key), None);
+    }
+
+    #[test]
     fn a_confirmation_is_modal_until_it_starts_closing() {
         // A plain menu has no scrim.
         assert_eq!(Scrim::of(false, true), Scrim::None);
@@ -1271,23 +1676,29 @@ mod tests {
     #[test]
     fn a_confirmation_is_the_same_menu() {
         let list = ListId::from_uuid(uuid::Uuid::nil());
-        assert!(MenuKind::Room { confirm: false }.same_menu(MenuKind::Room { confirm: true }));
+        assert!(
+            MenuKind::Room { page: Page::Main }.same_menu(MenuKind::Room {
+                page: Page::Confirm
+            })
+        );
         assert!(
             MenuKind::Account { confirm: false }.same_menu(MenuKind::Account { confirm: true })
         );
         assert!(
             MenuKind::List {
                 id: list,
-                confirm: false
+                page: Page::Main
             }
             .same_menu(MenuKind::List {
                 id: list,
-                confirm: true
+                page: Page::Confirm
             })
         );
-        assert!(!MenuKind::Room { confirm: false }.same_menu(MenuKind::Account { confirm: false }));
+        assert!(
+            !MenuKind::Room { page: Page::Main }.same_menu(MenuKind::Account { confirm: false })
+        );
         // Only the account menu opens upwards (from the sidebar footer).
         assert!(MenuKind::Account { confirm: false }.opens_up());
-        assert!(!MenuKind::Room { confirm: false }.opens_up());
+        assert!(!MenuKind::Room { page: Page::Main }.opens_up());
     }
 }

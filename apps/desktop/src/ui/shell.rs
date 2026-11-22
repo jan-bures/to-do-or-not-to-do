@@ -27,6 +27,7 @@ use super::kit;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::layout::{DetailPane, Pane, Width};
+use crate::model::menus::{Page, TagPage};
 use crate::model::motion::{
     DetailMotion, Keep, Motion, Pace, RowLook, Toast, Track, Wake, anchored_scroll, lifts,
     rows_rising_into,
@@ -42,7 +43,7 @@ use crate::theme::{
 };
 use detail::Editors;
 use menu::{Menu, MenuKind, TaskPage};
-use sidebar::Inline;
+use sidebar::{Inline, InlineTarget};
 
 actions!(
     shell,
@@ -59,6 +60,8 @@ actions!(
         MoveTaskDown,
         MoveTaskTo,
         TaskMenu,
+        PickTags,
+        AddLinkKey,
         UndoTask,
         Escape
     ]
@@ -80,6 +83,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("alt-up", MoveTaskUp, list),
         KeyBinding::new("alt-down", MoveTaskDown, list),
         KeyBinding::new("m", MoveTaskTo, list),
+        KeyBinding::new("t", PickTags, list),
+        KeyBinding::new("l", AddLinkKey, list),
         KeyBinding::new("shift-f10", TaskMenu, list),
         KeyBinding::new("j", NextTask, list),
         KeyBinding::new("down", NextTask, list),
@@ -209,6 +214,14 @@ pub struct ShellView {
     /// Where each task row in the room was last painted: a task's menu opened from the keyboard hangs
     /// under its row.
     row_bounds: Rc<RefCell<HashMap<TaskId, Bounds<Pixels>>>>,
+    /// Where each list and collection row in the sidebar was last painted: a screenshot fixture opens
+    /// its context menu there, as a right-click would.
+    nav_bounds: Rc<RefCell<HashMap<RoomKey, Bounds<Pixels>>>>,
+    /// The sidebar's New list and New collection, which Tab reaches.
+    new_list_focus: FocusHandle,
+    new_collection_focus: FocusHandle,
+    /// Where a screenshot fixture that typed into a field puts the keyboard.
+    preview_focus: Option<FocusHandle>,
     /// The sidebar footer's "N couldn't sync", a button while something couldn't sync.
     sync_focus: FocusHandle,
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
@@ -337,6 +350,10 @@ impl ShellView {
             menu_scroll: ScrollHandle::new(),
             menu_dropped: false,
             row_bounds: Rc::default(),
+            nav_bounds: Rc::default(),
+            new_list_focus: cx.focus_handle(),
+            new_collection_focus: cx.focus_handle(),
+            preview_focus: None,
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
@@ -434,7 +451,7 @@ impl ShellView {
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
             MenuKind::Room { .. } | MenuKind::Task { .. } => room_changed,
-            MenuKind::Priority { task } => self.ui.task != Some(task),
+            MenuKind::Priority { task } | MenuKind::Tags { task, .. } => self.ui.task != Some(task),
             _ => false,
         });
         if stale_menu {
@@ -827,13 +844,16 @@ impl ShellView {
         }
     }
 
-    /// Opens a menu for a screenshot fixture, at rest, from its button. A task's context menu opens
-    /// once its row has been laid out, under the row as from the keyboard (`task-context-menu` on the
-    /// row after the selected one, `move-to-picker` on the selected one, both from the keyboard).
+    /// Opens a menu (or an editor) for a screenshot fixture, at rest. A task's context menu opens once
+    /// its row has been laid out, under the row as from the keyboard (`task-context-menu` on the row
+    /// after the selected one, `move-to-picker` and `task-links` on the selected one); a list's or a
+    /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
+    /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
         let task_page = match fixture {
             "task-context-menu" => Some(TaskPage::Main),
             "move-to-picker" => Some(TaskPage::Move),
+            "task-links" => Some(TaskPage::Links),
             _ => None,
         };
         if let Some(page) = task_page {
@@ -855,7 +875,7 @@ impl ShellView {
                         // As a right-click leaves it: at the row, nothing highlighted.
                         this.open_menu(kind, Some(at), None, window, cx);
                     } else {
-                        // As M leaves it: the keyboard on the task's own list.
+                        // As the keyboard leaves it: on the task's own list, or the first link item.
                         this.open_menu(kind, Some(at), Some(hints::Stop::List), window, cx);
                         this.highlight_first();
                     }
@@ -864,20 +884,117 @@ impl ShellView {
             });
             return;
         }
+        let state = self.store.view();
+        let list_named = |name: &str| state.lists.values().find(|l| l.name == name).map(|l| l.id);
+        let collection_named =
+            |name: &str| (state.collections.values().find(|c| c.name == name)).map(|c| c.id);
+        // A list's or collection's context menu, at its sidebar row once it has been laid out.
+        let nav = match fixture {
+            "collection-menu" => collection_named("Work").map(|id| {
+                (
+                    RoomKey::Collection(id),
+                    MenuKind::Collection {
+                        id,
+                        page: Page::Main,
+                    },
+                )
+            }),
+            "list-context-menu" => list_named("Errands").map(|id| {
+                (
+                    RoomKey::List(id),
+                    MenuKind::List {
+                        id,
+                        page: Page::Main,
+                    },
+                )
+            }),
+            _ => None,
+        };
+        if let Some((key, kind)) = nav {
+            let view = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                view.update(cx, |this, cx| {
+                    let bounds = this.nav_bounds.borrow().get(&key).copied();
+                    if let Some(b) = bounds {
+                        let at = gpui::point(
+                            b.origin.x + px(space::S10 * 2.),
+                            b.origin.y + b.size.height - px(space::S1),
+                        );
+                        this.open_menu(kind, Some(at), None, window, cx);
+                    }
+                })
+                .ok();
+            });
+            return;
+        }
+        let task = self.ui.task;
+        // The first of the open task's tags, by name.
+        let tag = self
+            .shell
+            .detail
+            .as_ref()
+            .and_then(|d| d.tags.first())
+            .map(|t| t.id);
+        match fixture {
+            "new-collection" => {
+                if let RoomKey::Collection(id) = self.ui.room {
+                    self.start_inline(
+                        InlineTarget::Collection(id),
+                        "New collection".into(),
+                        window,
+                        cx,
+                    );
+                }
+                return;
+            }
+            "tag-rename" => {
+                if let Some(chip) = self.shell.detail.as_ref().and_then(|d| d.tags.first()) {
+                    let (id, name) = (chip.id, chip.name.clone());
+                    self.start_inline(InlineTarget::Tag(id), name, window, cx);
+                }
+                return;
+            }
+            "add-link" => {
+                self.edit.link.update(cx, |i, cx| {
+                    i.set_text("docs.example.com/q4/brief".to_string(), cx);
+                });
+                self.preview_focus = Some(self.edit.link.read(cx).focus_handle.clone());
+                let scroll = self.detail_scroll.clone();
+                window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
+                return;
+            }
+            _ => {}
+        }
+        let tags = |page| task.map(|task| MenuKind::Tags { task, page });
         let kind = match fixture {
-            "room-menu" => MenuKind::Room { confirm: false },
-            "account-menu" => MenuKind::Account { confirm: false },
-            "sync-failures" => MenuKind::SyncFailures,
-            "priority-menu" => match self.ui.task {
-                Some(task) => MenuKind::Priority { task },
-                None => return,
-            },
-            "delete-list-confirm" => MenuKind::Room { confirm: true },
-            _ => return,
+            "room-menu" => Some(MenuKind::Room { page: Page::Main }),
+            "account-menu" => Some(MenuKind::Account { confirm: false }),
+            "sync-failures" => Some(MenuKind::SyncFailures),
+            "priority-menu" => task.map(|task| MenuKind::Priority { task }),
+            "delete-list-confirm" | "delete-collection-confirm" => Some(MenuKind::Room {
+                page: Page::Confirm,
+            }),
+            "move-list-picker" => Some(MenuKind::Room { page: Page::Move }),
+            "list-colour" => Some(MenuKind::Room { page: Page::Colour }),
+            "tag-picker" | "tag-create" => tags(TagPage::Pick),
+            "tag-edit" => tag.and_then(|tag| tags(TagPage::Edit(tag))),
+            "tag-colour" => tag.and_then(|tag| tags(TagPage::Colour(tag))),
+            _ => None,
+        };
+        let Some(kind) = kind else {
+            return;
         };
         self.open_menu(kind, None, None, window, cx);
-        // The confirmation as the keyboard reaches it: on Cancel.
-        if fixture == "delete-list-confirm" {
+        if fixture == "tag-create"
+            && let Some(menu) = self.menu.as_mut()
+        {
+            menu.filter = "receipts".into();
+        }
+        // A confirmation as the keyboard reaches it (on Cancel); a picker or page on its first choice.
+        if !matches!(
+            fixture,
+            "room-menu" | "account-menu" | "sync-failures" | "priority-menu"
+        ) {
             self.highlight_first();
         }
     }
@@ -898,6 +1015,23 @@ impl ShellView {
             window,
             cx,
         );
+        self.highlight_first();
+    }
+
+    /// T: the tag picker, from the keyboard, on the detail pane's Tags row. The keyboard starts on the
+    /// first tag and comes back to the list when the picker closes.
+    fn pick_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.ui.task else {
+            return;
+        };
+        if self.detail_placement() == DetailPane::Hidden || !self.task_is_visible(task) {
+            return;
+        }
+        let kind = MenuKind::Tags {
+            task,
+            page: TagPage::Pick,
+        };
+        self.open_menu(kind, None, Some(hints::Stop::List), window, cx);
         self.highlight_first();
     }
 
@@ -927,7 +1061,12 @@ impl ShellView {
         self.painted_hue = hue;
         self.palette = theme::palette(self.theme, hue);
         let colors = quick_add_colors(&self.palette);
-        for input in [&self.quick_add, &self.filter, &self.edit.step] {
+        for input in [
+            &self.quick_add,
+            &self.filter,
+            &self.edit.step,
+            &self.edit.link,
+        ] {
             input.update(cx, |i, cx| {
                 i.colors = colors;
                 cx.notify();
@@ -983,12 +1122,16 @@ impl ShellView {
         );
     }
 
-    /// Where a screenshot fixture puts the keyboard: an open menu, the quick-add when it has typed text,
-    /// else the list, as in the running app.
+    /// Where a screenshot fixture puts the keyboard: an open menu, an editor it opened, a field it typed
+    /// into, the quick-add when it has typed text, else the list, as in the running app.
     pub fn fixture_focus(&self, cx: &App) -> FocusHandle {
         let quick_add = self.quick_add.read(cx);
         if self.menu.is_some() {
             self.menu_focus.clone()
+        } else if let Some(inline) = &self.inline {
+            inline.input.read(cx).focus_handle.clone()
+        } else if let Some(focus) = &self.preview_focus {
+            focus.clone()
         } else if quick_add.content.is_empty() {
             self.list_focus.clone()
         } else {
@@ -1012,8 +1155,9 @@ impl ShellView {
                 let label = undo::toast_label(&state, &cmd, entity, kind);
                 let room = self.shell.room.key;
                 self.store.submit_undoable(cmd).map(|target| {
-                    // Deleting the list the room shows takes the window to My Day: the undo goes along.
-                    let room = if kind == undo::EditKind::DeleteList {
+                    // Deleting the list (or collection) the room shows takes the window to My Day: the
+                    // undo goes along.
+                    let room = if kind.leaves_room() {
                         self.ui.room.resolved(&self.store.view())
                     } else {
                         room
@@ -1568,7 +1712,7 @@ impl ShellView {
             .child(kit::icon(Icon::Ellipsis, component::ICON, ink))
             .on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
                 this.toggle_menu(
-                    MenuKind::Room { confirm: false },
+                    MenuKind::Room { page: Page::Main },
                     hints::Stop::RoomMenu,
                     e,
                     window,
@@ -2464,6 +2608,14 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &TaskMenu, window, cx| {
                         this.open_task_menu(TaskPage::Main, window, cx);
                     }))
+                    .on_action(cx.listener(|this, _: &PickTags, window, cx| {
+                        this.pick_tags(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &AddLinkKey, window, cx| {
+                        if let Some(task) = this.ui.task {
+                            this.start_link(task, window, cx);
+                        }
+                    }))
                     .children(self.outgoing_list(swap.outgoing, window, cx))
                     .child(
                         div()
@@ -2825,6 +2977,8 @@ impl ShellView {
             Focus::Notes
         } else if on(&self.edit.step.read(cx).focus_handle) {
             Focus::Step
+        } else if on(&self.edit.link.read(cx).focus_handle) {
+            Focus::Link
         } else if self
             .edit
             .due
@@ -2840,7 +2994,12 @@ impl ShellView {
             Focus::Rename
         } else if on(&self.menu_focus) {
             Focus::Menu
-        } else if on(&self.room_menu_focus) || on(&self.account_focus) || on(&self.sync_focus) {
+        } else if on(&self.room_menu_focus)
+            || on(&self.account_focus)
+            || on(&self.sync_focus)
+            || on(&self.new_list_focus)
+            || on(&self.new_collection_focus)
+        {
             Focus::Control
         } else {
             Focus::Elsewhere
@@ -3001,6 +3160,8 @@ impl ShellView {
             Stop::Undo => &self.undo_focus,
             Stop::RoomMenu => &self.room_menu_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
+            Stop::NewList => &self.new_list_focus,
+            Stop::NewCollection => &self.new_collection_focus,
             Stop::SyncFailures => &self.sync_focus,
             Stop::Account => &self.account_focus,
         }
@@ -3018,7 +3179,11 @@ impl ShellView {
             Stop::RoomMenu => self.has_room_menu(),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
-            Stop::SidebarSplitter | Stop::List | Stop::Account => true,
+            Stop::SidebarSplitter
+            | Stop::List
+            | Stop::NewList
+            | Stop::NewCollection
+            | Stop::Account => true,
         }
     }
 

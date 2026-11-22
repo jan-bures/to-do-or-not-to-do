@@ -2,10 +2,12 @@
 //!
 //! Title and notes are edited directly in the pane and saved when editing ends (Enter or leaving the
 //! title, Escape or leaving the notes). Steps can be added, completed, renamed (click the title), moved and
-//! deleted. The due date is edited by typing a date; reminders and repeats are shown but edited elsewhere
-//! for now. Web links open in the browser (anything else is shown as text). An attachment is saved where
-//! the owner chooses; documents and images can also be opened, from this pairing's attachments directory
-//! and marked as downloaded from the internet.
+//! deleted. The due date is edited by typing a date, the priority and the tags are picked from menus
+//! anchored to their rows; reminders and repeats are shown but edited elsewhere for now. Web links are
+//! added by typing or pasting an address, removed (Undo brings one back) and open in the browser
+//! (anything else is shown as text). An attachment is saved where the owner chooses; documents and
+//! images can also be opened, from this pairing's attachments directory and marked as downloaded from
+//! the internet.
 
 use gpui::{
     AnyElement, AsyncApp, Context, Div, Entity, FontWeight, SharedString, Subscription, WeakEntity,
@@ -19,7 +21,8 @@ use super::{Notice, ShellView, quick_add_colors};
 use crate::model::draft::Draft;
 use crate::model::files;
 use crate::model::hints::Stop;
-use crate::model::{self, Detail, FieldEdit, FieldKind, commands, quick_add};
+use crate::model::menus::TagPage;
+use crate::model::{self, Detail, FieldEdit, FieldKind, commands, fit, quick_add};
 use crate::theme::{
     self, Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty,
 };
@@ -33,6 +36,8 @@ pub(super) struct Editors {
     pub title: Entity<TextArea>,
     pub notes: Entity<TextArea>,
     pub step: Entity<TextInput>,
+    /// The field that adds a web link (L).
+    pub link: Entity<TextInput>,
     /// The due-date field while it is being edited.
     pub due: Option<(Entity<TextInput>, [Subscription; 2])>,
     /// The task whose title and notes the editors hold.
@@ -52,7 +57,25 @@ impl Editors {
         });
         let notes = cx.new(|cx| TextArea::new("Add notes", colors, cx));
         let step = cx.new(|cx| TextInput::new("Add step", colors, cx));
+        let link = cx.new(|cx| TextInput::new("Add a link", colors, cx));
         let mut subs = Vec::new();
+        subs.push(cx.subscribe_in(
+            &link,
+            window,
+            |this, input, e: &InputEvent, window, cx| match e {
+                InputEvent::Submit => {
+                    let text = input.read(cx).content.to_string();
+                    if this.add_link(&text, cx) {
+                        input.update(cx, |i, cx| i.reset(window, cx));
+                    }
+                }
+                InputEvent::Cancel => {
+                    input.update(cx, |i, cx| i.reset(window, cx));
+                    window.focus(&this.list_focus, cx);
+                }
+                InputEvent::Changed => cx.notify(),
+            },
+        ));
         subs.push(
             cx.subscribe_in(&title, window, |this, _, e: &InputEvent, window, cx| {
                 match e {
@@ -108,6 +131,7 @@ impl Editors {
             title,
             notes,
             step,
+            link,
             due: None,
             loaded: None,
             title_draft: Draft::default(),
@@ -132,6 +156,10 @@ impl ShellView {
             self.edit.title_draft.discard();
             self.edit.notes_draft.discard();
             self.edit.due = None;
+            // A link half typed for another task doesn't follow the selection.
+            self.edit
+                .link
+                .update(cx, |i, cx| i.set_text(String::new(), cx));
         }
         let (title, notes) = (d.title.clone(), d.notes.clone());
         if self.edit.title_draft.accepts_incoming() && self.edit.title.read(cx).content != title {
@@ -193,6 +221,48 @@ impl ShellView {
             .is_some_and(|cmd| self.submit(vec![cmd]));
         self.refresh(cx);
         ok
+    }
+
+    /// Adds the web link typed into the link field to the open task. Returns whether it was added; what
+    /// can't be added says why in the status bar, and the text stays to be corrected.
+    fn add_link(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        let Some(task) = self.edit.loaded else {
+            return false;
+        };
+        let store = self.store.clone();
+        let ok = match commands::add_link(&store.view(), task, text, || store.new_uuid()) {
+            Ok(cmd) => self.submit(vec![cmd]),
+            Err(commands::LinkError::Empty) => false,
+            Err(commands::LinkError::NotWeb) => {
+                self.notice = Some(Notice::error(format!(
+                    "\u{201c}{}\u{201d} isn't a web address. Try https://example.com or example.com.",
+                    model::labels::one_line(text.trim())
+                )));
+                false
+            }
+            Err(commands::LinkError::TaskGone) => {
+                self.notice = Some(Notice::error("That task is gone."));
+                false
+            }
+        };
+        self.refresh(cx);
+        ok
+    }
+
+    /// L, or a task's Links… menu: the keyboard goes to the detail pane's link field, for `task`
+    /// (selected first, if it isn't), scrolled into view.
+    pub(super) fn start_link(&mut self, task: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ui.task != Some(task) {
+            self.select_task(Some(task), cx);
+        }
+        if self.ui.task != Some(task) || self.shell.detail.is_none() {
+            return;
+        }
+        let handle = self.edit.link.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+        let scroll = self.detail_scroll.clone();
+        window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
+        cx.notify();
     }
 
     fn step_command(&mut self, cmd: Option<todo_core::Command>, cx: &mut Context<Self>) {
@@ -543,70 +613,126 @@ impl ShellView {
                     if on { p.accent_strong } else { p.ink_3 },
                 ))
         };
-        let links = d.links.iter().map(|l| {
-            let url = l.url.clone();
-            div()
-                .id(SharedString::from(format!("link-{}", l.id)))
-                .mx(px(desktop::DETAIL_PAD_X))
-                .mb(px(space::S2))
-                .p(px(space::S3))
-                .flex()
-                .items_center()
-                .gap(px(space::S3))
-                .rounded(px(radius::LG))
-                .border(px(elevation::HAIRLINE))
-                .border_color(p.line_strong)
-                .bg(p.raised)
-                .child(
-                    div()
-                        .size(px(component::ICON_BUTTON))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(radius::MD))
-                        .bg(p.wash)
-                        .child(kit::icon(
-                            if l.email { Icon::Mail } else { Icon::Link },
-                            component::ICON_SMALL,
-                            p.accent_strong,
-                        )),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .truncate()
-                                .style(ty::NAV_SUB.with_weight(600))
-                                .text_color(p.ink)
-                                .child(l.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .style(ty::TAG)
-                                .text_color(p.ink_3)
-                                .child(l.detail.clone()),
-                        ),
-                )
-                .when(url.is_some(), |el| {
-                    el.child(kit::icon(
-                        Icon::ArrowUpRight,
-                        component::ICON_SMALL,
-                        p.ink_3,
-                    ))
+        let links: Vec<_> = d
+            .links
+            .iter()
+            .map(|l| {
+                let url = l.url.clone();
+                let link = l.id;
+                let group: SharedString = format!("link-{}", l.id).into();
+                // Remove shows on hover, over the card's right end; Undo brings the link back.
+                let remove = div()
+                    .id(SharedString::from(format!("link-remove-{}", l.id)))
+                    .flex_none()
+                    .size(px(component::ICON_BUTTON - space::S2))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::SM))
+                    .opacity(0.)
+                    .group_hover(group.clone(), |s| s.opacity(1.))
                     .hover(|s| s.bg(p.hover))
-                    .on_click(move |_, _, cx| {
-                        if let Some(u) = &url {
-                            cx.open_url(u);
-                        }
+                    .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
+                    .when(live, |el| {
+                        el.tooltip(kit::tooltip(p, "Remove link"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                let cmd = commands::delete_link(&this.store.view(), link);
+                                this.step_command(cmd, cx);
+                            }))
+                    });
+                div()
+                    .id(group.clone())
+                    .group(group)
+                    .mx(px(desktop::DETAIL_PAD_X))
+                    .mb(px(space::S2))
+                    .p(px(space::S3))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S3))
+                    .rounded(px(radius::LG))
+                    .border(px(elevation::HAIRLINE))
+                    .border_color(p.line_strong)
+                    .bg(p.raised)
+                    .child(
+                        div()
+                            .size(px(component::ICON_BUTTON))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(radius::MD))
+                            .bg(p.wash)
+                            .child(kit::icon(
+                                if l.email { Icon::Mail } else { Icon::Link },
+                                component::ICON_SMALL,
+                                p.accent_strong,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .style(ty::NAV_SUB.with_weight(600))
+                                    .text_color(p.ink)
+                                    .child(l.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .style(ty::TAG)
+                                    .text_color(p.ink_3)
+                                    .child(l.detail.clone()),
+                            ),
+                    )
+                    .when(url.is_some(), |el| {
+                        el.child(kit::icon(
+                            Icon::ArrowUpRight,
+                            component::ICON_SMALL,
+                            p.ink_3,
+                        ))
+                        .hover(|s| s.bg(p.hover))
+                        .on_click(move |_, _, cx| {
+                            if let Some(u) = &url {
+                                cx.open_url(u);
+                            }
+                        })
                     })
-                })
-        });
+                    .when(live, |el| el.child(remove))
+            })
+            .collect();
+        let link_focused = live && self.edit.link.read(cx).focus_handle.is_focused(window);
+        // Below the links: the field that adds one (L), like Add step.
+        let add_link = div()
+            .mx(px(desktop::DETAIL_PAD_X))
+            .h(px(desktop::STEP_ROW))
+            .flex()
+            .items_center()
+            .gap(px(space::S3))
+            .style(ty::STEP)
+            .text_color(p.ink_3)
+            .child(kit::icon(
+                Icon::Link,
+                component::ICON_SMALL,
+                if link_focused {
+                    p.accent_strong
+                } else {
+                    p.ink_3
+                },
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(live, |el| el.child(self.edit.link.clone()))
+                    .when(!live, |el| el.child("Add a link")),
+            )
+            .child(kit::kbd(&p, if link_focused { "Enter" } else { "L" }));
         let steps: Vec<AnyElement> = d
             .steps
             .iter()
@@ -676,6 +802,16 @@ impl ShellView {
             .map(|(i, f)| {
                 let due = f.edit == Some(FieldEdit::Due);
                 let priority = f.edit == Some(FieldEdit::Priority);
+                let tags = f.edit == Some(FieldEdit::Tags);
+                // A tag of this task being renamed: its editor takes the row's value.
+                let renaming = tags
+                    .then(|| {
+                        d.tags
+                            .iter()
+                            .find_map(|t| self.inline_for(InlineTarget::Tag(t.id)))
+                    })
+                    .flatten()
+                    .filter(|_| live);
                 let value = match (&self.edit.due, due) {
                     (Some((input, _)), true) => div()
                         .flex_1()
@@ -683,6 +819,16 @@ impl ShellView {
                         .text_color(p.ink)
                         .child(input.clone())
                         .into_any_element(),
+                    _ if renaming.is_some() => div()
+                        .flex_1()
+                        .min_w_0()
+                        .style(ty::TAG)
+                        .text_color(p.ink)
+                        .children(renaming.clone())
+                        .into_any_element(),
+                    _ if tags && !d.tags.is_empty() => {
+                        self.tag_chips(&d.tags, window).into_any_element()
+                    }
                     _ if priority && d.priority != Priority::None => div()
                         .flex()
                         .items_center()
@@ -734,6 +880,26 @@ impl ShellView {
                             .children(
                                 self.menu_anchor(|k| matches!(k, MenuKind::Priority { .. }), cx),
                             )
+                    })
+                    // The tag picker (T from the list): put tags on, take them off, make new ones.
+                    .when(tags && live && renaming.is_none(), |el| {
+                        el.hover(|s| s.bg(p.hover))
+                            .when(d.tags.is_empty(), |el| el.child(div().flex_1()))
+                            .child(kit::kbd(&p, "T"))
+                            .on_click(cx.listener(move |this, e, window, cx| {
+                                let kind = MenuKind::Tags {
+                                    task,
+                                    page: TagPage::Pick,
+                                };
+                                this.toggle_menu(kind, Stop::List, e, window, cx);
+                                if this.menu.as_ref().is_some_and(|m| m.kind.same_menu(kind)) {
+                                    this.highlight_first();
+                                }
+                            }))
+                    })
+                    // The picker hangs from the row, and fades out there even once a rename opens.
+                    .when(tags && live, |el| {
+                        el.children(self.menu_anchor(|k| matches!(k, MenuKind::Tags { .. }), cx))
                     })
                     // Shown, not edited here yet: say so rather than look like the rows that are.
                     .when(f.edit.is_none(), |el| {
@@ -911,10 +1077,9 @@ impl ShellView {
                             .border_color(p.line)
                             .children(fields),
                     )
-                    .when(!d.links.is_empty(), |el| {
-                        el.child(section(if has_mail { "Source" } else { "Links" }))
-                            .children(links)
-                    })
+                    .child(section(if has_mail { "Source" } else { "Links" }))
+                    .children(links)
+                    .child(add_link)
                     .when(!d.attachments.is_empty(), |el| {
                         el.child(section("Attachments")).children(attachments)
                     })
@@ -1017,6 +1182,69 @@ impl ShellView {
             .border_color(theme::with_alpha(p.line, surface))
             .children(placeholder)
             .children(task)
+    }
+}
+
+impl ShellView {
+    /// The Tags row's value: each tag as a dot in its colour and its name, side by side. Tags that don't
+    /// fit whole are counted as `+N` (`fit::fit_tags`, as on a row), never cut.
+    fn tag_chips(&self, tags: &[model::TagChip], window: &Window) -> Div {
+        let p = self.palette;
+        let gap = space::S3;
+        // What the row leaves the value: its icon, its label, the T keycap and the gaps between them.
+        let room = self.columns(window).width(super::Pane::Detail)
+            - 2. * desktop::DETAIL_PAD_X
+            - component::ICON_SMALL
+            - space::S10 * 2.
+            - kit::kbd_width(window, "T")
+            - 3. * (space::S2 + 2.);
+        let widths: Vec<f32> = tags
+            .iter()
+            .map(|t| {
+                component::CHIP_DOT
+                    + component::CHIP_GAP
+                    + kit::text_width(window, ty::TAG, &t.name)
+            })
+            .collect();
+        let more_width = |n: usize| kit::text_width(window, ty::TAG, &fit::more_label(n));
+        // The first tag has no gap before it.
+        let fit = fit::fit_tags(room + gap, &widths, gap, more_width);
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap(px(gap))
+            .children(tags.iter().take(fit.shown).map(|t| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(component::CHIP_GAP))
+                    .child(
+                        div()
+                            .size(px(component::CHIP_DOT))
+                            .rounded_full()
+                            .bg(theme::list_colors(self.theme, t.hue).dot),
+                    )
+                    .child(
+                        div()
+                            .whitespace_nowrap()
+                            .style(ty::TAG)
+                            .text_color(p.ink_2)
+                            .child(t.name.clone()),
+                    )
+            }))
+            .when(fit.more > 0, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .style(ty::TAG)
+                        .text_color(p.ink_3)
+                        .child(fit::more_label(fit.more)),
+                )
+            })
     }
 }
 
