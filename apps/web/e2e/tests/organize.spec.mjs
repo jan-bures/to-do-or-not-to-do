@@ -208,7 +208,8 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await name.fill("Workshop");
   await name.press("Enter");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Workshop");
-  await page.getByRole("button", { name: "Room menu" }).click();
+  const roomMenu = page.getByRole("button", { name: "Room menu" });
+  await roomMenu.click();
   const menu = page.getByRole("menu", { name: "Room actions" });
   await expect(action(page, "Colour…")).toHaveAttribute("aria-haspopup", "dialog");
   await action(page, "Colour…").click();
@@ -218,9 +219,13 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await expect(colours.getByRole("option", { selected: true })).toBeFocused();
   await colours.getByRole("option", { name: "Orchid" }).click();
   await expect(room(page, "Workshop")).toHaveAttribute("data-list-hue", "orchid");
+  await expect(roomMenu).toBeFocused();
 
   const finance = room(page, "Finance");
-  await finance.press("Shift+F10");
+  await finance.focus();
+  await expect(finance).toBeFocused();
+  await page.keyboard.press("Shift+F10");
+  await expect(action(page, "Rename list")).toBeFocused();
   await expect(action(page, "Move to…")).toHaveAttribute("aria-haspopup", "dialog");
   await action(page, "Move to…").click();
   const move = dialog(page, "Move to");
@@ -247,6 +252,40 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await expect(finance).toHaveAttribute("data-list-hue", "pink");
   await page.keyboard.press("Control+z");
   await expect(finance).not.toHaveAttribute("data-list-hue", "pink");
+  await w.check();
+});
+
+test("closing a room picker does not steal focus from the next keyboard target", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await room(page, "Planning").click();
+  await page.getByRole("button", { name: "Room menu" }).click();
+  await action(page, "Colour…").click();
+  const colours = dialog(page, "List colour");
+  await expect(colours.getByRole("option", { selected: true })).toBeFocused();
+  // Hold the frame callbacks scheduled by this click so the next focus move wins the race.
+  await colours.getByRole("option", { name: "Orchid" }).evaluate((swatch) => {
+    const frame = window.requestAnimationFrame;
+    const callbacks = [];
+    window.requestAnimationFrame = (callback) => callbacks.push(callback);
+    try {
+      swatch.click();
+    } finally {
+      window.requestAnimationFrame = frame;
+    }
+    window.flushRoomPickerFrames = () => new Promise((resolve) => frame.call(window, (now) => {
+      for (const callback of callbacks) callback(now);
+      resolve(callbacks.length);
+    }));
+  });
+  await expect(room(page, "Planning")).toHaveAttribute("data-list-hue", "orchid");
+  const finance = room(page, "Finance");
+  await finance.focus();
+  await expect(finance).toBeFocused();
+  expect(await page.evaluate(() => window.flushRoomPickerFrames())).toBeGreaterThan(0);
+  await expect(finance).toBeFocused();
+  await page.keyboard.press("Shift+F10");
+  await expect(action(page, "Move to…")).toBeVisible();
   await w.check();
 });
 

@@ -100,10 +100,15 @@ impl Origin {
     }
 
     fn restore_focus(self, controls: Controls) {
+        let previous = document().active_element();
         request_animation_frame(move || {
-            // The browser also restores dialog focus synchronously. A new menu may already
-            // have opened by the time this fallback runs; don't steal its focus.
-            if !controls.dialog_open()
+            // Wait for a reordered sidebar to render, but don't steal focus from a control
+            // reached in the meantime. A removed opener can leave focus on the body.
+            let still_restoring = document().active_element().is_none_or(|active| {
+                previous.as_ref() == Some(&active) || active.tag_name() == "BODY"
+            });
+            if still_restoring
+                && !controls.dialog_open()
                 && controls.menu.with_untracked(Option::is_none)
                 && !platform::focus(&self.dom_id())
                 && !platform::focus("open-drawer")
