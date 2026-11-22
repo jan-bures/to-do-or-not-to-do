@@ -24,7 +24,8 @@ private fun vector(key: String, data: IconData): ImageVector = synchronized(cach
         val b = ImageVector.Builder(key, 24.dp, 24.dp, 24f, 24f)
         for (d in data.paths) {
             b.addPath(
-                pathData = PathParser().parsePathString(d).toNodes(),
+                pathData = PathParser().parsePathString(d.d).toNodes(),
+                fill = if (d.filled) SolidColor(Color.Black) else null,
                 stroke = SolidColor(Color.Black),
                 strokeLineWidth = data.strokeWidth,
                 strokeLineCap = StrokeCap.Round,

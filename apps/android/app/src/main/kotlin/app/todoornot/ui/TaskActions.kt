@@ -1,5 +1,6 @@
 package app.todoornot.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -118,11 +119,14 @@ fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<Destin
             groups.orEmpty().forEach { group ->
                 group.heading?.let { Label(it, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(vertical = s.S2.dp)) }
                 group.lists.forEach { dest ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = Tokens.Metrics.Phone.TOUCH.dp).clickable { onChoose(dest.id) }
+                    Row(Modifier.fillMaxWidth().heightIn(min = Tokens.Metrics.Phone.TOUCH.dp)
+                        .then(if (dest.current) Modifier.background(r.wash) else Modifier)
+                        .clickable { onChoose(dest.id) }
                         .semantics { selected = dest.current }.hairline(r.line),
                         horizontalArrangement = Arrangement.spacedBy(s.S3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Glyph(dest.glyph, design.list(dest.hue).glyph)
-                        Label(dest.name, Tokens.Type.NAV_SUB, r.ink, Modifier.weight(1f))
+                        Label(dest.name, Tokens.Type.NAV_SUB, if (dest.current) r.accentStrong else r.ink, Modifier.weight(1f),
+                            weight = if (dest.current) Tokens.Type.BUTTON.weight else null)
                         if (dest.current) Icon("check", r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
                     }
                 }

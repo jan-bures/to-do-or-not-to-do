@@ -5,7 +5,7 @@
 //! The hand-drawn list glyphs ([`Glyph`]) are the app's own: slightly irregular single-stroke drawings that give
 //! lists character without colour blocks. They are drawn in the list's `glyph` colour.
 //!
-//! Both are single-colour SVGs (`stroke="currentColor"`, no fills), so GPUI can tint them. The SVG source is
+//! Both are single-colour SVGs (`currentColor` for strokes and any fills), so GPUI can tint them. The SVG source is
 //! embedded with `include_str!`.
 
 macro_rules! svg_set {
@@ -145,8 +145,12 @@ svg_set! {
         Square => "square",
         /// Important.
         Star => "star",
+        /// Important toggle, on.
+        StarFilled => "star-filled",
         /// My Day; light theme.
         Sun => "sun",
+        /// My Day toggle, on; only the disc is filled.
+        SunFilled => "sun-filled",
         /// Tomorrow's first task.
         Sunrise => "sunrise",
         /// Finished day.

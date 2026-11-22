@@ -1581,6 +1581,24 @@ class TodoModelTest {
     }
 
     @Test
+    fun row_and_detail_read_the_same_important_state() = runTest {
+        val engine = fixtureEngine()
+        val personal = engine.collection("Personal")
+        val id = engine.taskId(personal, "Refill the prescription")
+        val m = model(engine = engine)
+        m.open(personal)
+        advanceUntilIdle()
+        m.select(id)
+        for (on in listOf(true, false)) {
+            m.setImportant(id, on)
+            advanceUntilIdle()
+            val ui = m.ui.value
+            assertEquals(on, ui.room.tasks.single { it.id == id }.priority == 3u.toUByte())
+            assertEquals(on, ui.detail?.priority == 3u.toUByte())
+        }
+    }
+
+    @Test
     fun an_empty_title_is_refused_with_a_message() = runTest {
         val m = model()
         m.add("   ")

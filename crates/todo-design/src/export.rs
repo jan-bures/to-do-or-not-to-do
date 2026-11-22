@@ -153,6 +153,10 @@ pub fn css() -> String {
     for (k, v) in motion::DURATIONS {
         root.push((format!("duration-{k}"), format!("{v}ms")));
     }
+    root.push((
+        "toggle-fill-from-scale".into(),
+        motion::TOGGLE_FILL_FROM_SCALE.to_string(),
+    ));
     for (k, e) in motion::EASINGS {
         root.push((format!("ease-{k}"), e.css()));
     }

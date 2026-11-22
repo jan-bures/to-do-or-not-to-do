@@ -111,16 +111,17 @@ test("hover preserves the selected surface and overflow keeps the count accessib
   await planning.click();
   await expect(planning).toHaveAttribute("aria-current", "page");
   const hue = await planning.getAttribute("data-list-hue");
-  const raised = rgb(tokens.colors.light.rooms[hue].raised);
+  const wash = rgb(tokens.colors.light.rooms[hue].wash);
   await planning.hover();
-  await expect(planning).toHaveCSS("background-color", raised);
+  await expect(planning).toHaveCSS("background-color", wash);
+  expect(await planning.evaluate((el) => getComputedStyle(el, "::before").width)).not.toBe("0px");
 
   const toggle = nav.getByRole("button", { name: "Collapse Work" });
   await toggle.click();
   const work = nav.getByRole("link", { name: /^Work / });
   await expect(work).toHaveClass(/contains-active/);
   await work.hover();
-  await expect(work).toHaveCSS("background-color", raised);
+  await expect(work).toHaveCSS("background-color", wash);
   await w.check();
 });
 

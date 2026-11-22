@@ -40,7 +40,7 @@ test.describe("rooms spanning the autumn clock change", () => {
   test("task detail dates the completion using the offset at the time it happened", async ({ page }) => {
     await page.clock.setFixedTime(new Date("2026-10-25T12:00:00Z"));
     await open(page, "/app/completed?fixture=dst");
-    await row(page, "After midnight").getByRole("button", { name: "After midnight" }).click();
+    await row(page, "After midnight").getByRole("button", { name: "After midnight", exact: true }).click();
     const completed = page.locator("ul.activity li").filter({ hasText: "completed this" });
     await expect(completed.locator(".act-when")).toHaveText("today 00:30");
   });
@@ -279,6 +279,39 @@ test("the due date accepts relative and past dates, rejects bad input, and can b
   await expect(due).toHaveText("Set date");
   await expect(board.locator(".col-due")).toBeEmpty();
   await expect(page.getByRole("button", { name: "Repeat", exact: true })).toHaveText("Does not repeat");
+  await w.check();
+});
+
+test("row and detail toggles use filled glyphs independently of focus", async ({ page }) => {
+  const w = watch(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page, "/app/all");
+  const task = row(page, "Prepare the November board update");
+  const rowStar = task.getByRole("button", { name: "Important: Prepare the November board update" });
+  await rowStar.focus();
+  await expect(rowStar).toHaveAttribute("aria-pressed", "false");
+  await expect(rowStar.locator(".toggle-outline")).toHaveCSS("opacity", "1");
+  await rowStar.press("Space");
+  await expect(rowStar).toBeFocused();
+  await expect(rowStar).toHaveAttribute("aria-pressed", "true");
+  await expect(rowStar.locator(".toggle-fill")).toHaveCSS("opacity", "1");
+  await expect(rowStar.locator(".toggle-fill")).toHaveCSS("scale", "1");
+  await expect(rowStar.locator('.toggle-fill path[fill="currentColor"]')).toHaveCount(1);
+  await expect(task).not.toHaveClass(/selected/);
+
+  await task.locator(".row-title").click();
+  const detail = page.locator(".detail");
+  const detailStar = detail.getByRole("button", { name: "Important" });
+  const sun = detail.getByRole("button", { name: "My Day" });
+  await expect(detailStar).toHaveAttribute("aria-pressed", "true");
+  await detailStar.click();
+  await expect(rowStar).toHaveAttribute("aria-pressed", "false");
+  await expect(sun).toHaveAttribute("aria-pressed", "true");
+  await expect(sun.locator('.toggle-fill circle[fill="currentColor"]')).toHaveCount(1);
+  await expect(sun.locator('.toggle-fill path[fill="currentColor"]')).toHaveCount(0);
+  await sun.click();
+  await expect(sun).toHaveAttribute("aria-pressed", "false");
+  await expect(sun.locator(".toggle-outline")).toHaveCSS("opacity", "1");
   await w.check();
 });
 
@@ -589,7 +622,7 @@ test("filter: slash and Ctrl+K focus it, with core queries and Czech text in the
   await filter.fill("done ondrej");
   await expect(page.getByRole("button", { name: "Completed 1" })).toHaveAttribute("aria-expanded", "false");
   await page.getByRole("button", { name: "Completed 1" }).click();
-  await expect(page.getByRole("list", { name: "Completed tasks" }).getByRole("button", { name: "Reply to Ondřej about the offsite" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Completed tasks" }).getByRole("button", { name: "Reply to Ondřej about the offsite", exact: true })).toBeVisible();
   await w.check();
 });
 

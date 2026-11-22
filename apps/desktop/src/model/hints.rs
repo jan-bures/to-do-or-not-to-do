@@ -78,6 +78,10 @@ pub enum Stop {
     ActivityMore,
     /// The divider between the list and the docked detail pane, while it shows.
     DetailSplitter,
+    /// My Day toggle in the detail toolbar.
+    DetailMyDay,
+    /// Important toggle in the detail toolbar.
+    DetailImportant,
     /// Reminder, when a task is open.
     Reminder,
     /// Repeat, when a task is open.
@@ -96,7 +100,7 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 14] = [
+pub const TAB_ORDER: [Stop; 16] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
@@ -105,6 +109,8 @@ pub const TAB_ORDER: [Stop; 14] = [
     Stop::ActivityRefresh,
     Stop::ActivityMore,
     Stop::DetailSplitter,
+    Stop::DetailMyDay,
+    Stop::DetailImportant,
     Stop::Reminder,
     Stop::Repeat,
     Stop::NewList,
@@ -137,6 +143,8 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
         | Stop::DetailSplitter
+        | Stop::DetailMyDay
+        | Stop::DetailImportant
         // New list and New collection are pinned below the sidebar's scrolled rooms.
         | Stop::NewList
         | Stop::NewCollection
@@ -551,6 +559,8 @@ mod tests {
                 ActivityRefresh,
                 ActivityMore,
                 DetailSplitter,
+                DetailMyDay,
+                DetailImportant,
                 Reminder,
                 Repeat,
                 NewList,
@@ -571,6 +581,8 @@ mod tests {
                 NewList,
                 Repeat,
                 Reminder,
+                DetailImportant,
+                DetailMyDay,
                 DetailSplitter,
                 ActivityMore,
                 ActivityRefresh,
@@ -589,21 +601,23 @@ mod tests {
     #[test]
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
+        let detail_toggle = |s| matches!(s, DetailMyDay | DetailImportant);
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
         // sync unless said.)
         let fixed = |s: Stop| {
-            !matches!(
-                s,
-                Undo | RoomMenu
-                    | DetailSplitter
-                    | Reminder
-                    | Repeat
-                    | ActivityFilter
-                    | ActivityRefresh
-                    | ActivityMore
-                    | SyncFailures
-            )
+            !detail_toggle(s)
+                && !matches!(
+                    s,
+                    Undo | RoomMenu
+                        | DetailSplitter
+                        | Reminder
+                        | Repeat
+                        | ActivityFilter
+                        | ActivityRefresh
+                        | ActivityMore
+                        | SyncFailures
+                )
         };
         assert_eq!(
             round(List, true, fixed),
@@ -615,16 +629,17 @@ mod tests {
         );
         // Without the detail divider (narrow window, or no task open), both ways.
         let no_detail = |s: Stop| {
-            !matches!(
-                s,
-                DetailSplitter
-                    | Reminder
-                    | Repeat
-                    | ActivityFilter
-                    | ActivityRefresh
-                    | ActivityMore
-                    | SyncFailures
-            )
+            !detail_toggle(s)
+                && !matches!(
+                    s,
+                    DetailSplitter
+                        | Reminder
+                        | Repeat
+                        | ActivityFilter
+                        | ActivityRefresh
+                        | ActivityMore
+                        | SyncFailures
+                )
         };
         assert_eq!(
             round(RoomMenu, true, no_detail),
@@ -652,16 +667,17 @@ mod tests {
         );
         // A room without a menu skips its button both ways.
         let no_menu = |s: Stop| {
-            !matches!(
-                s,
-                RoomMenu
-                    | Reminder
-                    | Repeat
-                    | ActivityFilter
-                    | ActivityRefresh
-                    | ActivityMore
-                    | SyncFailures
-            )
+            !detail_toggle(s)
+                && !matches!(
+                    s,
+                    RoomMenu
+                        | Reminder
+                        | Repeat
+                        | ActivityFilter
+                        | ActivityRefresh
+                        | ActivityMore
+                        | SyncFailures
+                )
         };
         assert_eq!(
             round(Undo, true, no_menu),
@@ -689,15 +705,16 @@ mod tests {
         );
         // Without the toast, Undo is skipped.
         let no_undo = |s: Stop| {
-            !matches!(
-                s,
-                Undo | Reminder
-                    | Repeat
-                    | ActivityFilter
-                    | ActivityRefresh
-                    | ActivityMore
-                    | SyncFailures
-            )
+            !detail_toggle(s)
+                && !matches!(
+                    s,
+                    Undo | Reminder
+                        | Repeat
+                        | ActivityFilter
+                        | ActivityRefresh
+                        | ActivityMore
+                        | SyncFailures
+                )
         };
         assert_eq!(
             round(List, true, no_undo),
@@ -731,16 +748,17 @@ mod tests {
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
         let refused = |s: Stop| {
-            !matches!(
-                s,
-                Undo | RoomMenu
-                    | DetailSplitter
-                    | Reminder
-                    | Repeat
-                    | ActivityFilter
-                    | ActivityRefresh
-                    | ActivityMore
-            )
+            !detail_toggle(s)
+                && !matches!(
+                    s,
+                    Undo | RoomMenu
+                        | DetailSplitter
+                        | Reminder
+                        | Repeat
+                        | ActivityFilter
+                        | ActivityRefresh
+                        | ActivityMore
+                )
         };
         assert_eq!(
             round(List, true, refused),
@@ -795,8 +813,17 @@ mod tests {
     fn the_activity_rooms_buttons_come_after_its_menu_button() {
         use Stop::*;
         // Activity filtered to an agent, with older changes to read; no toast, detail or refusals.
-        let activity =
-            |s: Stop| !matches!(s, Undo | DetailSplitter | Reminder | Repeat | SyncFailures);
+        let activity = |s: Stop| {
+            !matches!(
+                s,
+                Undo | DetailSplitter
+                    | DetailMyDay
+                    | DetailImportant
+                    | Reminder
+                    | Repeat
+                    | SyncFailures
+            )
+        };
         assert_eq!(
             round(List, true, activity),
             [

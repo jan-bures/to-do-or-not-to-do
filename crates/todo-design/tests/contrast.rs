@@ -182,7 +182,7 @@ fn every_hue_passes() {
             let h = f64::from(h);
             for k in [1.0, 0.85] {
                 let t = palette_scaled(theme, h, k);
-                let pairs: [(&str, Rgb, Rgb, f64); 18] = [
+                let pairs = [
                     ("ink/pane", t.ink, t.pane, 4.5),
                     ("ink-2/pane", t.ink_2, t.pane, 4.5),
                     ("ink-3/pane", t.ink_3, t.pane, 4.5),
@@ -201,6 +201,15 @@ fn every_hue_passes() {
                     ("ink-2/sky", t.ink_2, t.sky, 4.5),
                     ("accent-strong/sky", t.accent_strong, t.sky, 4.5),
                     ("arc/sky", t.arc, t.sky, 3.0),
+                    ("ink-3/hover", t.ink_3, t.hover, 3.0),
+                    ("sun-ink/pane", t.sun_ink, t.pane, 3.0),
+                    ("sun-ink/hover", t.sun_ink, t.hover, 3.0),
+                    ("important-fill/pane", t.important_fill, t.pane, 3.0),
+                    ("important-fill/wash", t.important_fill, t.wash, 3.0),
+                    ("important-fill/hover", t.important_fill, t.hover, 3.0),
+                    ("accent-strong/wash", t.accent_strong, t.wash, 4.5),
+                    ("accent-strong/tint", t.accent_strong, t.tint, 4.5),
+                    ("accent-strong/canvas", t.accent_strong, t.canvas, 3.0),
                 ];
                 for (name, fg, bg, target) in pairs {
                     let r = fg.contrast(bg);

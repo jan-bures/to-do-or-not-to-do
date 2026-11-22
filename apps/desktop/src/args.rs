@@ -44,6 +44,8 @@ Options:
 /// The fixtures `--screenshot` can render. Invented sample data only.
 pub const FIXTURES: &[&str] = &[
     "my-day",
+    "toggle-states-on",
+    "toggle-states-off",
     "work",
     "room-menu",
     "account-menu",

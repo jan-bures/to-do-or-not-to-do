@@ -28,6 +28,32 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// A binary glyph: quiet outline off, semantic fill on. The fill may fade and pop without resizing
+/// the hit target or displacing the outline.
+pub fn task_toggle(p: &Palette, glyph: Icon, size: f32, fill: f32, scale: f32) -> Div {
+    let (filled, color) = match glyph {
+        Icon::Sun => (Icon::SunFilled, p.sun_ink),
+        _ => (Icon::StarFilled, p.important_fill),
+    };
+    let scaled = size * scale;
+    let inset = px((size - scaled) / 2.);
+    div()
+        .relative()
+        .size(px(size))
+        .flex_none()
+        .when(fill < 1., |d| {
+            d.child(icon(glyph, size, theme::with_alpha(p.ink_3, 1. - fill)))
+        })
+        .when(fill > 0., |d| {
+            d.child(
+                icon(filled, scaled, theme::with_alpha(color, fill))
+                    .absolute()
+                    .left(inset)
+                    .top(inset),
+            )
+        })
+}
+
 /// A hand-drawn list glyph at `component::GLYPH`.
 pub fn glyph(glyph: Glyph, color: Hsla) -> Svg {
     svg()

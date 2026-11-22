@@ -225,7 +225,7 @@ abstract class GenerateDesignTokens : DefaultTask() {
 
 /**
  * Generates `IconPaths.kt`: the Lucide subset and the hand-drawn glyphs as SVG path data (circles, lines
- * and rectangles converted to paths), drawn by the app as stroked vectors in `currentColor`.
+ * and rectangles converted to paths), preserving which shapes are filled with `currentColor`.
  */
 abstract class GenerateIcons : DefaultTask() {
     @get:InputDirectory
@@ -242,10 +242,10 @@ abstract class GenerateIcons : DefaultTask() {
 
     private fun fmt(d: Double): String = if (d == Math.floor(d)) d.toLong().toString() else d.toString()
 
-    private fun paths(svg: String): List<String> =
+    private fun paths(svg: String): List<Pair<String, Boolean>> =
         Regex("""<(path|circle|line|rect|polyline|polygon)\b([^>]*)/?>""", RegexOption.DOT_MATCHES_ALL).findAll(svg).map { m ->
             val tag = " " + m.groupValues[2].replace(Regex("\\s+"), " ")
-            when (m.groupValues[1]) {
+            val path = when (m.groupValues[1]) {
                 "path" -> attr(tag, "d") ?: error("path without d")
                 "circle" -> {
                     val (cx, cy, r) = listOf(num(tag, "cx"), num(tag, "cy"), num(tag, "r"))
@@ -269,6 +269,7 @@ abstract class GenerateIcons : DefaultTask() {
                     "M" + pts.joinToString("L") { "${it[0]} ${it[1]}" } + if (m.groupValues[1] == "polygon") "Z" else ""
                 }
             }
+            path to (attr(tag, "fill") == "currentColor")
         }.toList()
 
     @TaskAction
@@ -278,8 +279,9 @@ abstract class GenerateIcons : DefaultTask() {
         out.appendLine()
         out.appendLine("package app.todoornot.design")
         out.appendLine()
-        out.appendLine("/** A single-colour stroke icon on a 24-unit grid: SVG path data and the stroke width. */")
-        out.appendLine("class IconData(val strokeWidth: Float, val paths: List<String>)")
+        out.appendLine("/** A single-colour icon on a 24-unit grid: SVG path data and the stroke width. */")
+        out.appendLine("class IconPath(val d: String, val filled: Boolean)")
+        out.appendLine("class IconData(val strokeWidth: Float, val paths: List<IconPath>)")
         out.appendLine()
         out.appendLine("object IconPaths {")
         for ((prop, sub) in listOf("lucide" to "lucide", "glyphs" to "glyphs")) {
@@ -290,7 +292,7 @@ abstract class GenerateIcons : DefaultTask() {
                 val svg = file.readText()
                 val root = Regex("<svg\\b([^>]*)>", RegexOption.DOT_MATCHES_ALL).find(svg)!!.groupValues[1].replace(Regex("\\s+"), " ")
                 val stroke = attr(" $root", "stroke-width")?.toDouble() ?: 2.0
-                val ps = paths(svg).joinToString(", ") { kstr(it) }
+                val ps = paths(svg).joinToString(", ") { (d, fill) -> "IconPath(${kstr(d)}, $fill)" }
                 out.appendLine("            ${kstr(file.nameWithoutExtension)} to IconData(${stroke}f, listOf($ps)),")
             }
             out.appendLine("        )")

@@ -85,6 +85,7 @@ pub struct Palette {
     pub horizon: Hsla,
     pub sun: Hsla,
     pub sun_ink: Hsla,
+    pub important_fill: Hsla,
     pub star: Hsla,
     pub scrim: Hsla,
 }
@@ -135,6 +136,7 @@ pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
         horizon: color(t.horizon),
         sun: color(t.sun),
         sun_ink: color(t.sun_ink),
+        important_fill: color(t.important_fill),
         star: color(t.star),
         scrim: with_alpha(color(scrim.rgb), scrim.alpha),
     }

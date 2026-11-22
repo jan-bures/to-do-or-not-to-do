@@ -113,7 +113,7 @@ fun RoomPill(item: NavItem, on: Boolean, onClick: () -> Unit) {
                 on && item.icon != null -> Icon(item.icon!!, mark, size = Tokens.Metrics.Component.GLYPH.dp)
                 else -> Box(Modifier.size(Micro.pillDot).background(if (on) l.onStrong else l.dot, CircleShape))
             }
-            Label(item.name, Tokens.Type.ROOM_PILL, ink)
+            Label(item.name, Tokens.Type.ROOM_PILL, ink, weight = if (on) Tokens.Type.BUTTON.weight else null)
         }
     }
 }

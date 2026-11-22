@@ -36,6 +36,26 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`resting toggle states (${scheme})`, async ({ page }) => {
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app/all");
+      await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+      const detail = page.locator(".detail");
+      const sun = detail.getByRole("button", { name: "My Day" });
+      const star = detail.getByRole("button", { name: "Important" });
+      await expect(sun).toHaveAttribute("aria-pressed", "true");
+      await star.click();
+      await expect(star).toHaveAttribute("aria-pressed", "true");
+      await page.mouse.move(0, 0);
+      await shot(page, `toggle-states-on-${scheme}`);
+      await star.click();
+      await sun.click();
+      await expect(sun).toHaveAttribute("aria-pressed", "false");
+      await expect(star).toHaveAttribute("aria-pressed", "false");
+      await page.mouse.move(0, 0);
+      await shot(page, `toggle-states-off-${scheme}`);
+    });
+
     test(`editing due date and steps (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -13,6 +15,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -37,11 +41,35 @@ internal fun PickerCard(title: String, content: @Composable ColumnScope.() -> Un
 }
 
 @Composable
-internal fun Choice(label: String, selected: Boolean = false, onClick: () -> Unit) {
+internal fun Choice(label: String, selected: Boolean? = null, multiple: Boolean = false, onClick: () -> Unit) {
     val r = LocalDesign.current.room
-    Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).clickable(onClick = onClick).padding(horizontal = S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Label(label, Tokens.Type.NAV, r.ink, Modifier.weight(1f))
-        if (selected) Icon("check", r.accentStrong)
+    val on = selected == true
+    val action = when {
+        selected == null -> Modifier.clickable(onClick = onClick)
+        multiple -> Modifier.toggleable(selected, role = Role.Checkbox) { onClick() }
+        else -> Modifier.selectable(selected, role = Role.RadioButton, onClick = onClick)
+    }
+    Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
+        .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
+        .then(if (on) Modifier.background(r.wash) else Modifier)
+        .then(action).padding(horizontal = S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Label(label, Tokens.Type.NAV, if (on) r.accentStrong else r.ink, Modifier.weight(1f),
+            weight = if (on) Tokens.Type.BUTTON.weight else null)
+        if (on) Icon("check", r.accentStrong)
+    }
+}
+
+@Composable
+private fun Segment(label: String, on: Boolean, modifier: Modifier, multiple: Boolean = false, choose: () -> Unit) {
+    val r = LocalDesign.current.room
+    val shape = RoundedCornerShape(Tokens.Radius.BUTTON.dp)
+    Box(modifier.heightIn(min = P.TOUCH.dp).clip(shape)
+        .background(if (on) r.accentFill else r.raised)
+        .then(if (multiple) Modifier.toggleable(on, role = Role.Checkbox) { choose() }
+            else Modifier.selectable(on, role = Role.RadioButton, onClick = choose)),
+        contentAlignment = Alignment.Center) {
+        Label(label, Tokens.Type.BUTTON, if (on) r.onAccent else r.ink2,
+            weight = if (on) Tokens.Type.BUTTON.weight else Tokens.Type.NAV.weight)
     }
 }
 
@@ -60,7 +88,7 @@ internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Uni
     if (!custom) {
         PickerCard("Repeat") {
             detail.repeatOptions.forEach { option -> Choice(option.label, option.selected) { choose(option.choice) } }
-            Choice("Custom…", detail.repeats && detail.repeatOptions.none { it.selected }, onCustom)
+            Choice("Custom…", detail.repeats && detail.repeatOptions.none { it.selected }, onClick = onCustom)
             Choice("Don’t repeat", !detail.repeats) { choose(RepeatChoice.Stop) }
             if (detail.due == null) Label(undatedRepeatNote(), Tokens.Type.META_PHONE, LocalDesign.current.room.ink3, maxLines = Int.MAX_VALUE)
             Button("Cancel", false, onClick = cancel)
@@ -73,12 +101,12 @@ internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Uni
             Label("Interval", Tokens.Type.CAPS_LABEL, LocalDesign.current.room.ink3)
             Input("Interval", interval) { interval = it.filter(Char::isDigit) }
             Row(horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-                RepeatUnit.entries.forEach { u -> Button(u.name.lowercase(Locale.ROOT).replaceFirstChar(Char::uppercaseChar), unit == u, Modifier.weight(1f)) { unit = u } }
+                RepeatUnit.entries.forEach { u -> Segment(u.name.lowercase(Locale.ROOT).replaceFirstChar(Char::uppercaseChar), unit == u, Modifier.weight(1f)) { unit = u } }
             }
             if (unit == RepeatUnit.WEEK) {
                 Label("On weekdays", Tokens.Type.CAPS_LABEL, LocalDesign.current.room.ink3)
                 listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su").withIndex().chunked(4).forEach { group -> Row(horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-                    group.forEach { (i, day) -> val bit = 1 shl i; Button(day, days and bit != 0, Modifier.weight(1f)) { days = days xor bit } }
+                    group.forEach { (i, day) -> val bit = 1 shl i; Segment(day, days and bit != 0, Modifier.weight(1f), multiple = true) { days = days xor bit } }
                 } }
             }
             val edit = CustomRepeat(unit, interval.toUIntOrNull() ?: 0u, days.toUByte())
@@ -107,9 +135,18 @@ internal fun SwatchCard(target: ColorTarget, selected: String, choose: (String) 
     val d = LocalDesign.current
     PickerCard(colourHeading(target)) {
         Tokens.swatches.chunked(6).forEach { group -> Row(Modifier.fillMaxWidth()) {
-            group.forEach { hue -> Box(Modifier.weight(1f).height(P.TOUCH.dp).clickable { choose(hue) }.semantics { contentDescription = swatchName(hue) + if (hue == selected) ", selected" else "" }, contentAlignment = Alignment.Center) {
-                Box(Modifier.size(S.S8.dp).background(d.list(hue).tint, CircleShape).border(Tokens.Elevation.HAIRLINE.dp, d.list(hue).dot, CircleShape), contentAlignment = Alignment.Center) { if (hue == selected) Icon("check", d.list(hue).ink) }
-            } }
+            group.forEach { hue ->
+                val on = hue == selected
+                val colors = d.list(hue)
+                Box(Modifier.weight(1f).height(P.TOUCH.dp)
+                    .selectable(on, role = Role.RadioButton) { choose(hue) }
+                    .semantics { contentDescription = swatchName(hue) }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(S.S8.dp).background(if (on) colors.strong else colors.tint, CircleShape)
+                        .border(Tokens.Elevation.HAIRLINE.dp, colors.dot, CircleShape), contentAlignment = Alignment.Center) {
+                        if (on) Icon("check", colors.onStrong)
+                    }
+                }
+            }
         } }
         Button("Cancel", false, onClick = cancel)
     }
@@ -126,7 +163,7 @@ internal fun TagsCard(tags: List<TagChoice>, toggle: (TagChoice) -> Unit, manage
         }
         tags.filter { it.name.contains(name.trim(), ignoreCase = true) }.forEach { t -> Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(LocalDesign.current.list(t.hue).dot, CircleShape))
-            Box(Modifier.weight(1f)) { Choice("#${t.name}", t.selected) { toggle(t) } }
+            Box(Modifier.weight(1f)) { Choice("#${t.name}", t.selected, multiple = true) { toggle(t) } }
             IconButton("chevron-right", "Options for #${t.name}") { manage(t) }
         } }
         if (tags.isEmpty() && typed.isEmpty()) Label("No tags yet. Type a name to create one.", Tokens.Type.META_PHONE, LocalDesign.current.room.ink3)

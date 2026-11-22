@@ -106,8 +106,30 @@ a {
   color: var(--color-ink);
 }
 
-.icon-button.on {
-  color: var(--color-accent-strong);
+.toggle-icon {
+  display: inline-grid;
+  color: var(--color-ink-3);
+}
+
+.toggle-icon > .icon { grid-area: 1 / 1; }
+.toggle-outline { transition: opacity var(--duration-check-fill) var(--ease-standard); }
+.toggle-fill {
+  opacity: 0;
+  scale: var(--toggle-fill-from-scale);
+  transition: opacity var(--duration-check-fill) var(--ease-standard),
+    scale var(--duration-check-fill) var(--ease-pop);
+}
+
+.important-toggle .toggle-fill { color: var(--color-important-fill); }
+.my-day-toggle .toggle-fill { color: var(--color-sun-ink); }
+.task-toggle[aria-pressed="true"] .toggle-outline { opacity: 0; }
+.task-toggle[aria-pressed="true"] .toggle-fill { opacity: 1; scale: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle-outline, .toggle-fill {
+    transition: opacity var(--duration-reduced-fade) var(--ease-standard);
+    scale: 1;
+  }
 }
 
 .button {
@@ -226,8 +248,8 @@ a {
 
 .filter-field {
   flex: 1;
-  border: var(--hairline) solid var(--color-line-strong);
-  background: var(--color-raised);
+  border: var(--hairline) solid var(--color-control);
+  background: var(--color-wash);
 }
 
 .filter-field:focus-within,
@@ -409,10 +431,21 @@ a {
 
 .nav-item.active,
 .nav-item.contains-active {
-  background: var(--color-raised);
+  background: var(--color-wash);
   border-color: var(--color-line);
   color: var(--color-ink);
   font-weight: 600;
+  position: relative;
+}
+
+.nav-item:is(.active, .contains-active)::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--space-1);
+  inset-inline-start: 0;
+  width: var(--selection-bar);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-strong);
 }
 
 .nav-name {
@@ -622,7 +655,7 @@ a {
   cursor: default;
 }
 
-.room-action-menu button:is(:hover, :focus):not([aria-disabled="true"], :disabled, .primary),
+.room-action-menu button:hover:not([aria-disabled="true"], :disabled, .primary),
 .room-dialog .button:not(.primary, .danger):hover:not(:disabled) {
   background: var(--color-hover);
 }
@@ -766,6 +799,16 @@ a {
 .room-action-menu button.primary:not(:disabled) {
   background: var(--color-accent-fill);
   color: var(--color-on-accent);
+}
+
+.room-action-menu button:is([aria-selected="true"], [aria-pressed="true"]) {
+  background: var(--color-wash);
+  color: var(--color-accent-strong);
+  font-weight: 600;
+}
+
+.room-action-menu button:is([aria-selected="true"], [aria-pressed="true"]):hover {
+  background: var(--color-tint);
 }
 
 .picker-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1261,7 +1304,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   position: relative;
   display: grid;
   grid-template-columns: var(--desktop-col-check) minmax(0, 1fr)
-    var(--row-agent, ) var(--row-priority, ) var(--row-due, );
+    var(--row-agent, ) var(--row-priority, ) var(--row-due, ) var(--component-icon-button);
   column-gap: var(--desktop-row-gap);
   align-items: start;
   height: var(--desktop-row);
@@ -1293,8 +1336,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   top: 0;
   bottom: 0;
   width: var(--selection-bar);
-  background: var(--color-accent);
+  background: var(--color-accent-strong);
 }
+
+.row-important {
+  margin-block-start: calc((var(--component-chip) - var(--component-icon-button)) / 2);
+}
+
+.row-important:disabled { cursor: default; }
 
 .row-main {
   display: flex;
@@ -2664,6 +2713,7 @@ a.source:hover {
   .pill.active {
     background: var(--list-strong);
     color: var(--list-on-strong);
+    font-weight: 600;
   }
 
   .quick-add {
@@ -2688,7 +2738,7 @@ a.source:hover {
 
   .row {
     --row-height: var(--phone-row);
-    grid-template-columns: var(--phone-col-check) minmax(0, 1fr) var(--row-agent, ) var(--row-priority, );
+    grid-template-columns: var(--phone-col-check) minmax(0, 1fr) var(--row-agent, ) var(--row-priority, ) var(--phone-touch);
     column-gap: var(--space-2);
     height: var(--phone-row);
     padding: var(--phone-row-pad-top) var(--phone-row-pad-right) 0 var(--phone-row-pad-left);
@@ -2706,10 +2756,24 @@ a.source:hover {
   .meta {
     gap: var(--space-1);
     font: var(--text-meta-phone);
+    /* Use the otherwise empty second line under agent and priority, without covering the star. */
+    margin-inline-end: calc(-1 * (var(--meta-under-agent, 0px) + var(--meta-under-priority, 0px)));
   }
 
-  .row.with-agent { --row-agent: var(--phone-col-agent); }
-  .row.with-priority { --row-priority: var(--phone-col-priority); }
+  .row-important {
+    width: var(--phone-touch);
+    height: var(--phone-touch);
+    margin-block-start: 0;
+  }
+
+  .row.with-agent {
+    --row-agent: var(--phone-col-agent);
+    --meta-under-agent: calc(var(--row-agent) + var(--space-2));
+  }
+  .row.with-priority {
+    --row-priority: var(--phone-col-priority);
+    --meta-under-priority: calc(var(--row-priority) + var(--space-2));
+  }
 
   /* Keep every chip aligned when the view has any due dates. */
   .with-due .meta .due-slot {

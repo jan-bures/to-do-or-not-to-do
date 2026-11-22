@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DueTone
@@ -33,7 +35,7 @@ private val S = Tokens.Space
 
 /**
  * A task row on the phone: 64 dp, columns `22 | 1fr | 20 | 24` (check, title and metadata, agent,
- * priority). Empty agent and priority columns to the left of every filled one are left out, so the title
+ * priority), then the Important touch target. Empty agent and priority columns are left out, so the title
  * uses their room. On a dated row the date sits in a 100 dp slot so list chips line up down the list; an
  * undated row's chips start flush with the title. The row is
  * at least 64 dp and grows with the font scale: its bottom inset is what's left of 64 dp under the
@@ -51,6 +53,7 @@ fun TaskRowView(
     selected: Boolean,
     checked: Boolean,
     onCheck: (Boolean) -> Unit,
+    onImportant: (Boolean) -> Unit,
     onOpen: () -> Unit,
     onActions: () -> Unit,
     modifier: Modifier = Modifier,
@@ -61,13 +64,15 @@ fun TaskRowView(
     val l = look ?: RowLook.rest(task.done)
     val live = !l.gone && !inert
     val titleLine = Tokens.Type.TASK_TITLE_PHONE.lineHeight.dp
-    val bottom = (P.ROW.dp - P.ROW_PAD_TOP.dp - titleLine - S.S1.dp - metaLine).coerceAtLeast(0.dp)
+    val contentHeight = maxOf(titleLine + S.S1.dp + metaLine, P.TOUCH.dp)
+    val bottom = (P.ROW.dp - P.ROW_PAD_TOP.dp - contentHeight).coerceAtLeast(0.dp)
     val m = modifier
         .rowMotion(look)
         .then(if (inert) Modifier.clearAndSetSemantics { } else Modifier)
         .fillMaxWidth()
         .heightIn(min = P.ROW.dp)
-        .then(if (selected) Modifier.background(r.wash).selectionBar(r.accent) else Modifier)
+        .then(if (selected) Modifier.background(r.wash).selectionBar(r.accentStrong) else Modifier)
+        .semantics { this.selected = selected }
         .hairline(r.line)
         .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = "Task actions", onLongClick = onActions)
         .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = P.ROW_PAD_TOP.dp, bottom = bottom)
@@ -80,26 +85,29 @@ fun TaskRowView(
                 overdue = task.due?.tone == DueTone.OVERDUE,
                 enabled = live,
                 look = l,
+                onWash = selected,
             )
         }
         Column(Modifier.weight(1f)) {
-            Title(task.title, lerp(r.ink, r.ink3, l.dim), l.strike)
+            // The title shares its line with agent and priority, but metadata can use their space below.
+            Row(Modifier.fillMaxWidth().height(titleLine), horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
+                Box(Modifier.weight(1f)) { Title(task.title, lerp(r.ink, r.ink3, l.dim), l.strike) }
+                if (showsAgent(task)) {
+                    Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {
+                        task.agent?.let { AgentBadge(it) }
+                    }
+                }
+                if (showsPriority(task)) {
+                    Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
+                        Priority(task.priority.toInt())
+                    }
+                }
+            }
             Spacer(Modifier.height(S.S1.dp))
             MetaLine(task)
         }
-        // The trailing columns keep their places from the right edge, but empty ones to the left of every
-        // filled one are left out, so the title runs on into their room (as on the desktop).
-        val agentColumn = showsAgent(task)
-        if (agentColumn) {
-            Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {
-                task.agent?.let { AgentBadge(it) }
-            }
-        }
-        if (showsPriority(task)) {
-            Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
-                Priority(task.priority.toInt())
-            }
-        }
+        TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live,
+            label = "Important: ${task.title}", alignment = Alignment.TopCenter, onChange = onImportant)
     }
 }
 

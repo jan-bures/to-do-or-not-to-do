@@ -947,6 +947,16 @@ fn icon(i: Icon) -> impl IntoView {
     view! { <span class="icon" aria-hidden="true" inner_html=i.svg()></span> }
 }
 
+/// Render both shapes so a state change can cross-fade without remounting the button.
+fn toggle_icon(outline: Icon, filled: Icon) -> impl IntoView {
+    view! {
+        <span class="toggle-icon" aria-hidden="true">
+            <span class="icon toggle-outline" inner_html=outline.svg()></span>
+            <span class="icon toggle-fill" inner_html=filled.svg()></span>
+        </span>
+    }
+}
+
 fn glyph(g: Glyph) -> impl IntoView {
     view! { <span class="glyph" data-glyph=g.key() aria-hidden="true" inner_html=g.svg()></span> }
 }
@@ -1389,6 +1399,7 @@ fn RoomPills() -> impl IntoView {
                     .map(|n| {
                         let room = n.room.clone();
                         let active_room = n.room.clone();
+                        let active = move || c.room.get() == active_room;
                         let lead = match (&n.room, n.glyph) {
                             (RoomId::Smart(id), _) => icon(model::smart_icon(id)).into_any(),
                             (_, Some(g)) => glyph(g).into_any(),
@@ -1397,7 +1408,8 @@ fn RoomPills() -> impl IntoView {
                         view! {
                             <a
                                 class="pill"
-                                class:active=move || c.room.get() == active_room
+                                class:active=active.clone()
+                                aria-current=move || active().then_some("page")
                                 href=n.room.path()
                                 data-list-hue=n.hue
                                 on:click=link_room(c, room)
@@ -1707,7 +1719,7 @@ fn TaskList() -> impl IntoView {
             <p class="empty-line">{move || c.view_room.with(Room::empty_line)}</p>
         </Show>
         <ul class="rows" role="list">
-            <For each=move || c.shown.get() key=|s| s.clone() let:s>
+            <For each=move || c.shown.get() key=|s| (row_key(&s.row), s.phase) let:s>
                 <TaskRow row=s.row phase=s.phase/>
             </For>
         </ul>
@@ -1727,7 +1739,7 @@ fn CompletedRows() -> impl IntoView {
         <ul id="completed-rows" class="rows completed-rows" role="list" aria-label="Completed tasks"
             hidden=move || !c.completed_open.get() || completed.with(Vec::is_empty)>
             <For each=move || if c.completed_open.get() { completed.get() } else { Vec::new() }
-                key=|s| s.clone() let:s>
+                key=|s| (row_key(&s.row), s.phase) let:s>
                 <TaskRow row=s.row phase=s.phase/>
             </For>
         </ul>
@@ -1793,11 +1805,30 @@ impl Columns {
     }
 }
 
+// Priority is read reactively. Do not replace the row on an Important toggle: that would lose
+// keyboard focus and the transition's starting frame.
+fn row_key(row: &Row) -> Row {
+    Row {
+        priority: 0,
+        ..row.clone()
+    }
+}
+
 #[component]
 fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
     let c = ctx();
     let id = row.id;
     let r = row.clone();
+    let priority_at_mount = row.priority;
+    let priority = move || {
+        c.state.with(|s| {
+            s.tasks
+                .get(&id)
+                .map_or(priority_at_mount, |t| model::priority_marks(t.priority))
+        })
+    };
+    let important = move || priority() == model::priority_marks(Priority::High);
+    let important_label = format!("Important: {}", row.title);
     let on_check = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
         if phase.is_none() {
@@ -1859,7 +1890,8 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 {tick_svg()}
             </button>
             <div class="row-main">
-                <button type="button" class="row-title" id=format!("row-{id}")>{row.title.clone()}</button>
+                <button type="button" class="row-title" id=format!("row-{id}")
+                    aria-current=move || (c.selected.get() == Some(id)).then_some("true")>{row.title.clone()}</button>
                 <span class="meta">
                     <span class="due-slot">{due_view("due")}</span>
                     {row.chip.clone().map(|ch| chip(ch.label, ch.hue))}
@@ -1869,11 +1901,21 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 </span>
             </div>
             <span class="col-agent">{row.agent.as_ref().map(mark)}</span>
-            <span class="col-priority" data-p=row.priority.to_string()
-                aria-label=(row.priority > 0).then(|| format!("Priority {}", row.priority))>
-                {"!".repeat(usize::from(row.priority))}
+            <span class="col-priority" data-p=move || priority().to_string()
+                aria-label=move || (priority() > 0).then(|| format!("Priority {}", priority()))>
+                {move || "!".repeat(usize::from(priority()))}
             </span>
             <span class="col-due">{due_view("due")}</span>
+            <button type="button" class="icon-button task-toggle important-toggle row-important"
+                aria-pressed=move || important().to_string() aria-label=important_label
+                title=move || if important() { "Remove importance" } else { "Mark as important" }
+                disabled=move || c.read_only() || phase.is_some()
+                on:click=move |ev| {
+                    ev.stop_propagation();
+                    c.submit_intent(|state| intent::toggle_important(state, id));
+                }>
+                {toggle_icon(Icon::Star, Icon::StarFilled)}
+            </button>
         </li>
     }
 }
@@ -2254,26 +2296,24 @@ fn DetailTop(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                 })}
             </div>
             <button
-                class="icon-button"
-                class:on=my_day
+                class="icon-button task-toggle my-day-toggle"
                 aria-pressed=move || my_day().to_string()
                 title=move || if my_day() { "Remove from My Day" } else { "Add to My Day" }
                 aria-label="My Day"
                 disabled=move || c.read_only()
                 on:click=toggle_my_day
             >
-                {icon(Icon::Sun)}
+                {toggle_icon(Icon::Sun, Icon::SunFilled)}
             </button>
             <button
-                class="icon-button"
-                class:on=important
+                class="icon-button task-toggle important-toggle"
                 aria-pressed=move || important().to_string()
-                title="Important"
+                title=move || if important() { "Remove importance" } else { "Mark as important" }
                 aria-label="Important"
                 disabled=move || c.read_only()
                 on:click=toggle_important
             >
-                {icon(Icon::Star)}
+                {toggle_icon(Icon::Star, Icon::StarFilled)}
             </button>
             <task_actions::DetailMenu task=id/>
             <button class="icon-button close" aria-label="Close" title="Close (Esc)" aria-keyshortcuts="Escape"

@@ -266,7 +266,8 @@ private fun ActivityRows(state: UiState, onActivity: (String?) -> Unit) {
     val d = LocalDesign.current
     DrawerRow(on = state.activity == "", indent = false, onClick = { onActivity(null) }) {
         Icon("clock", d.list("agent-activity").glyph)
-        Label("Activity", Tokens.Type.NAV, d.room.ink, Modifier.weight(1f))
+        Label("Activity", Tokens.Type.NAV, d.room.ink, Modifier.weight(1f),
+            weight = if (state.activity == "") Tokens.Type.BUTTON.weight else null)
     }
     state.home.agents.forEach { a -> AgentRow(a, state.activity == a.id) { onActivity(a.id) } }
 }
@@ -282,7 +283,8 @@ internal fun AgentRow(agent: AgentSummary, on: Boolean, onClick: () -> Unit) {
         modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "Agent: ${agent.mark.name}, ${agent.today}" },
     ) {
         AgentBadge(agent.mark)
-        Label(agent.mark.name, Tokens.Type.NAV_SUB, r.ink, Modifier.weight(1f))
+        Label(agent.mark.name, Tokens.Type.NAV_SUB, r.ink, Modifier.weight(1f),
+            weight = if (on) Tokens.Type.BUTTON.weight else null)
         Label(agent.today, Tokens.Type.COUNT, r.ink3)
     }
 }
@@ -313,7 +315,8 @@ private fun DrawerRow(
                 .fillMaxWidth()
                 .height(P.NAV_ROW.dp)
                 .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
-                .background(if (on) r.raised else r.canvas)
+                .background(if (on) r.wash else r.canvas)
+                .then(if (on) Modifier.selectionBar(r.accentStrong) else Modifier)
                 .then(press)
                 .padding(start = if (indent) S.S8.dp else S.S2.dp, end = S.S3.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -352,7 +355,8 @@ internal fun NavRow(
             indent -> Tokens.Type.NAV_SUB
             else -> Tokens.Type.NAV
         }
-        Label(item.name, token, r.ink, Modifier.weight(1f))
+        Label(item.name, token, if (on) r.ink else r.ink2, Modifier.weight(1f),
+            weight = if (on) Tokens.Type.BUTTON.weight else null)
         if (item.open > 0u) Label("${item.open}", Tokens.Type.COUNT, r.ink3)
     }
 }

@@ -78,9 +78,6 @@ private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
 private val C = Tokens.Metrics.Component
 
-/** Important is high priority (`!!!`), as the desktop's star sets it. */
-private const val IMPORTANT: UByte = 3u
-
 /**
  * A task's detail: breadcrumb, title (editable), steps (tick, rename, move or delete them, or add one),
  * notes, fields (the due date and the priority are edited from their rows) and sources. The bar's actions
@@ -119,17 +116,8 @@ fun DetailPane(
                     if (i == 0) ListChip(c) else Label(c.label, Tokens.Type.BUTTON_SMALL, r.ink)
                 }
             }
-            IconButton(
-                "sun",
-                if (detail.myDay) "Remove from My Day" else "Add to My Day",
-                tint = if (detail.myDay) r.accentStrong else r.ink3,
-            ) { actions.setMyDay(detail.id, !detail.myDay) }
-            val important = detail.priority >= IMPORTANT
-            IconButton(
-                "star",
-                if (important) "Not important" else "Mark important",
-                tint = if (important) r.accentStrong else r.ink3,
-            ) { actions.setImportant(detail.id, !important) }
+            TaskToggleButton(TaskToggle.MY_DAY, detail.myDay) { actions.setMyDay(detail.id, it) }
+            TaskToggleButton(TaskToggle.IMPORTANT, detail.priority == IMPORTANT) { actions.setImportant(detail.id, it) }
             TaskActionsAnchor(state, actions, detail.id, detail.list, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
                 IconButton("ellipsis", "Task actions", onClick = open)
             }

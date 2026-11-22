@@ -37,7 +37,8 @@ class TokensTest {
         "arc" to { it.arc }, "canvas" to { it.canvas }, "check-selected" to { it.checkSelected },
         "control" to { it.control }, "danger" to { it.danger }, "danger-bg" to { it.dangerBg },
         "danger-ink" to { it.dangerInk }, "hill-far" to { it.hillFar }, "hill-near" to { it.hillNear },
-        "horizon" to { it.horizon }, "hover" to { it.hover }, "ink" to { it.ink }, "ink-2" to { it.ink2 },
+        "horizon" to { it.horizon }, "hover" to { it.hover }, "important-fill" to { it.importantFill },
+        "ink" to { it.ink }, "ink-2" to { it.ink2 },
         "ink-3" to { it.ink3 }, "ink-4" to { it.ink4 }, "line" to { it.line }, "line-strong" to { it.lineStrong },
         "on-accent" to { it.onAccent }, "pane" to { it.pane }, "raised" to { it.raised }, "sky" to { it.sky },
         "star" to { it.star }, "success" to { it.success }, "sun" to { it.sun }, "sun-ink" to { it.sunInk },
@@ -100,7 +101,8 @@ class TokensTest {
 
         val cues = json.getJSONObject("motion").getJSONObject("cues")
         mapOf(
-            "check-fill-from-scale" to m.CHECK_FILL_FROM_SCALE, "dusk-night-at" to m.DUSK_NIGHT_AT,
+            "check-fill-from-scale" to m.CHECK_FILL_FROM_SCALE, "toggle-fill-from-scale" to m.TOGGLE_FILL_FROM_SCALE,
+            "dusk-night-at" to m.DUSK_NIGHT_AT,
             "dusk-handover-at" to m.DUSK_HANDOVER_AT, "dusk-handover-rise" to m.DUSK_HANDOVER_RISE,
             "stagger-max-items" to m.STAGGER_MAX_ITEMS,
         ).forEach { (k, v) -> assertEquals(k, cues.getDouble(k).toFloat(), v, 0f) }

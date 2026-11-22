@@ -50,6 +50,7 @@ fun Check(
     size: Dp = Tokens.Metrics.Component.CHECKBOX.dp,
     enabled: Boolean = true,
     look: RowLook? = null,
+    onWash: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     val m = Tokens.Motion
@@ -84,7 +85,8 @@ fun Check(
             if (overdue && !done) drawCircle(r.dangerBg, radius - ring / 2)
             drawCircle(if (overdue && !done) r.danger else r.control, radius - ring / 2, style = Stroke(ring))
             val disc = if (look == null) (radius * scale).coerceAtMost(radius * 1.08f) else radius * scale
-            if (fill > 0f && scale > 0f) drawCircle(r.accent.copy(alpha = r.accent.alpha * fill), disc)
+            val color = if (onWash) r.checkSelected else r.accent
+            if (fill > 0f && scale > 0f) drawCircle(color.copy(alpha = fill), disc)
             if (tick > 0f && fill > 0f) {
                 // The tick sits in 76% of the box, as in the mockups.
                 val inner = this.size.minDimension * 0.76f

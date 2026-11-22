@@ -122,6 +122,29 @@ pub enum ShellEvent {
     SignOut,
 }
 
+#[derive(Clone, Copy)]
+struct ToggleMotion {
+    start: Duration,
+    span: Duration,
+    from: f32,
+    on: bool,
+    reduced: bool,
+}
+
+impl ToggleMotion {
+    fn at(self, now: Duration) -> (f32, f32) {
+        use todo_design::motion as m;
+        let t = (now.saturating_sub(self.start).as_secs_f32() / self.span.as_secs_f32()).min(1.);
+        let fill = self.from + (f32::from(self.on) - self.from) * m::STANDARD.ease(t);
+        let scale = if self.on && !self.reduced {
+            m::TOGGLE_FILL_FROM_SCALE + (1. - m::TOGGLE_FILL_FROM_SCALE) * m::POP.ease(t)
+        } else {
+            1.
+        };
+        (fill, scale)
+    }
+}
+
 /// A line for the status bar.
 #[derive(Clone, Debug, PartialEq)]
 struct Notice {
@@ -247,6 +270,8 @@ pub struct ShellView {
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
     repeat_focus: FocusHandle,
+    detail_my_day_focus: FocusHandle,
+    detail_important_focus: FocusHandle,
     reminder_focus: FocusHandle,
     account_focus: FocusHandle,
     inline: Option<Inline>,
@@ -264,6 +289,7 @@ pub struct ShellView {
     clock: Clock,
     /// The time this frame draws (`clock` when the render started), so every row samples the same moment.
     frame: Duration,
+    task_toggles: HashMap<(TaskId, Icon), ToggleMotion>,
     /// How far each row is drawn up its slot while rows above it collapse; empty at rest.
     row_lifts: Vec<f32>,
     /// The pending one-shot timer that wakes the view when a holding row starts to leave.
@@ -396,6 +422,8 @@ impl ShellView {
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
             repeat_focus: cx.focus_handle(),
+            detail_my_day_focus: cx.focus_handle(),
+            detail_important_focus: cx.focus_handle(),
             reminder_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
             inline: None,
@@ -410,6 +438,7 @@ impl ShellView {
             pending_undo: Vec::new(),
             clock: Clock::Live(Instant::now()),
             frame: Duration::ZERO,
+            task_toggles: HashMap::new(),
             row_lifts: Vec::new(),
             alarm: None,
             notice: None,
@@ -910,6 +939,10 @@ impl ShellView {
             || (menu_focused && !menu_open)
             || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
             || (self.reminder_focus.is_focused(window) && !self.has_stop(hints::Stop::Reminder))
+            || (self.detail_my_day_focus.is_focused(window)
+                && !self.has_stop(hints::Stop::DetailMyDay))
+            || (self.detail_important_focus.is_focused(window)
+                && !self.has_stop(hints::Stop::DetailImportant))
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
             || [
                 hints::Stop::ActivityFilter,
@@ -1549,6 +1582,60 @@ impl ShellView {
         self.select_task(Some(id), cx);
     }
 
+    fn toggle_task_glyph(&mut self, id: TaskId, icon: Icon, cx: &mut Context<Self>) {
+        let state = self.store.view();
+        let Some(task) = state.tasks.get(&id) else {
+            return;
+        };
+        let today = self.store.now().today();
+        let (on, command) = if icon == Icon::Sun {
+            (
+                task.my_day != Some(today),
+                commands::toggle_my_day(&state, id, today),
+            )
+        } else {
+            (
+                task.priority != todo_core::model::Priority::High,
+                commands::toggle_important(&state, id),
+            )
+        };
+        if let Some(command) = command {
+            use todo_design::motion as m;
+            let start = self.now();
+            let reduced = self.pace().reduced;
+            let from = self
+                .task_toggles
+                .get(&(id, icon))
+                .map_or(f32::from(!on), |a| a.at(start).0);
+            let ms = if reduced {
+                m::reduced(m::CHECK_FILL, true)
+            } else {
+                m::CHECK_FILL
+            };
+            self.task_toggles.insert(
+                (id, icon),
+                ToggleMotion {
+                    start,
+                    span: Duration::from_millis(u64::from(ms)),
+                    from,
+                    on,
+                    reduced,
+                },
+            );
+            self.submit(vec![command]);
+            self.refresh(cx);
+        }
+    }
+
+    fn task_glyph(&self, p: &Palette, task: TaskId, icon: Icon, on: bool, size: f32) -> Div {
+        let (fill, scale) = self
+            .task_toggles
+            .get(&(task, icon))
+            .filter(|a| a.on == on)
+            .map_or((f32::from(on), 1.), |a| a.at(self.frame));
+        kit::task_toggle(p, icon, size, fill, scale)
+    }
+
     fn cycle_priority(&mut self, id: TaskId, cx: &mut Context<Self>) {
         if let Some(cmd) = commands::cycle_priority(&self.store.view(), id) {
             self.submit(vec![cmd]);
@@ -1746,12 +1833,17 @@ impl ShellView {
                     .pr(px(space::S1))
                     .rounded(px(radius::MD))
                     .border(px(elevation::HAIRLINE))
-                    .border_color(if focused || filtering {
-                        p.accent
-                    } else {
-                        p.line_strong
+                    .border_color(if focused { p.accent_strong } else { p.control })
+                    .bg(if filtering { p.wash } else { p.pane })
+                    .when(focused, |d| {
+                        d.shadow(vec![gpui::BoxShadow {
+                            color: p.tint,
+                            offset: gpui::point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(elevation::FOCUS_RING),
+                            inset: false,
+                        }])
                     })
-                    .bg(p.pane)
                     .child(kit::icon(
                         Icon::Search,
                         component::ICON_SMALL,
@@ -2422,7 +2514,7 @@ impl ShellView {
         if show_agent {
             title_width -= desktop::ROW_GAP + desktop::COL_AGENT;
         }
-        title_width -= desktop::ROW_GAP;
+        title_width -= 2. * desktop::ROW_GAP + component::ICON_BUTTON;
         let meta_width = fit::row_meta_width(room_width, title_width);
         let meta = self.meta(task, chips, meta_width, window);
         let (meta, compact_meta) = if meta_width > title_width {
@@ -2530,6 +2622,44 @@ impl ShellView {
                     .justify_end()
                     .child(Self::due(p, &task.due)),
             )
+            .child({
+                let on = task.priority == 3;
+                div()
+                    .id(SharedString::from(format!("important-{id}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(component::ICON_BUTTON))
+                    .mt(px((component::CHIP - component::ICON_BUTTON) / 2.))
+                    .rounded(px(radius::BUTTON))
+                    .child(self.task_glyph(p, id, Icon::Star, on, component::ICON))
+                    .when_some(room, |el, room| {
+                        el.cursor_pointer()
+                            .hover(|s| s.bg(p.hover))
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Important: {}", task.title))
+                            .aria_toggled(if on {
+                                gpui::Toggled::True
+                            } else {
+                                gpui::Toggled::False
+                            })
+                            .tooltip(kit::tooltip(
+                                *p,
+                                if on {
+                                    "Remove importance"
+                                } else {
+                                    "Mark as important"
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if this.row_can_act(room, id) {
+                                    this.toggle_task_glyph(id, Icon::Star, cx);
+                                }
+                            }))
+                    })
+            })
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, _, window, cx| {
                     if this.row_can_act(room, id) {
@@ -3356,6 +3486,8 @@ impl ShellView {
         } else if on(&self.room_menu_focus)
             || on(&self.repeat_focus)
             || on(&self.reminder_focus)
+            || on(&self.detail_my_day_focus)
+            || on(&self.detail_important_focus)
             || on(&self.account_focus)
             || on(&self.sync_focus)
             || on(&self.new_list_focus)
@@ -3533,6 +3665,8 @@ impl ShellView {
             Stop::ActivityMore => &self.activity_more_focus,
             Stop::Repeat => &self.repeat_focus,
             Stop::Reminder => &self.reminder_focus,
+            Stop::DetailMyDay => &self.detail_my_day_focus,
+            Stop::DetailImportant => &self.detail_important_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::NewList => &self.new_list_focus,
             Stop::NewCollection => &self.new_collection_focus,
@@ -3560,7 +3694,9 @@ impl ShellView {
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }
-            Stop::Repeat | Stop::Reminder => self.repeat_target().is_some(),
+            Stop::Repeat | Stop::Reminder | Stop::DetailMyDay | Stop::DetailImportant => {
+                self.repeat_target().is_some()
+            }
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter
@@ -3633,6 +3769,11 @@ impl Render for ShellView {
         self.resize(Width::of(f32::from(window.viewport_size().width)));
         self.activity_read_ahead(cx);
         self.drive_motion(window, cx);
+        self.task_toggles
+            .retain(|_, a| self.frame.saturating_sub(a.start) < a.span);
+        if !self.task_toggles.is_empty() {
+            window.request_animation_frame();
+        }
         self.drive_splitters(window, cx);
         self.keep_focus(window, cx);
         let p = self.palette;

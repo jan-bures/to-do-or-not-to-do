@@ -1560,9 +1560,15 @@ impl ShellView {
         live: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let ink = if item.danger { p.danger_ink } else { p.ink };
+        let ink = if item.danger {
+            p.danger_ink
+        } else if item.checked {
+            p.accent_strong
+        } else {
+            p.ink
+        };
         let action = item.action;
-        let hover = p.hover;
+        let hover = if item.checked { p.tint } else { p.hover };
         div()
             .id(item.key.clone())
             .group(item.key.clone())
@@ -1575,12 +1581,14 @@ impl ShellView {
             .rounded(px(radius::MD))
             .border(px(elevation::HAIRLINE))
             .border_color(if highlighted {
-                p.accent
+                p.accent_strong
             } else {
                 gpui::transparent_black()
             })
-            .when(highlighted, |d| d.bg(p.hover))
+            .when(item.checked, |d| d.bg(p.wash))
+            .when(highlighted, |d| d.bg(hover))
             .style(ty::NAV_SUB)
+            .when(item.checked, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
             .text_color(ink)
             .child(match (item.glyph, item.dot) {
                 // A list's own glyph in its colour, as in the sidebar.

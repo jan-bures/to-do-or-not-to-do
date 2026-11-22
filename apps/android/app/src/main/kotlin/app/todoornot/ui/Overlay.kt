@@ -117,12 +117,14 @@ private fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
     val ink = when {
         !item.enabled -> r.ink4
         item.danger -> r.dangerInk
+        item.checked -> r.accentStrong
         else -> r.ink
     }
     Row(
         Modifier
             .fillMaxWidth()
             .height(Tokens.Metrics.Phone.TOUCH.dp)
+            .then(if (item.checked) Modifier.background(r.wash) else Modifier)
             .clickable(enabled = item.enabled, onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -133,7 +135,8 @@ private fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
     ) {
         Icon(item.icon, if (!item.enabled) r.ink4 else if (item.danger) r.danger else r.ink3, size = C.ICON_SMALL.dp)
-        Label(item.label, Tokens.Type.NAV_SUB, ink, Modifier.weight(1f))
+        Label(item.label, Tokens.Type.NAV_SUB, ink, Modifier.weight(1f),
+            weight = if (item.checked) Tokens.Type.BUTTON.weight else null)
         item.hint?.let { Label(it, Tokens.Type.PRIORITY, r.ink3) }
         Box(Modifier.size(C.ICON_SMALL.dp)) {
             if (item.checked) Icon("check", r.accentStrong, size = C.ICON_SMALL.dp)

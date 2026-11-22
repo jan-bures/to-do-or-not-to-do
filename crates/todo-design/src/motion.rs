@@ -102,7 +102,7 @@ pub const STANDARD: CubicBezier = CubicBezier::new(0.2, 0.0, 0.0, 1.0);
 pub const ENTER: CubicBezier = CubicBezier::new(0.0, 0.0, 0.2, 1.0);
 /// For things that leave (completed rows, dismissed toasts and overlays, fading scrollbars): gentle start, quick exit.
 pub const EXIT: CubicBezier = CubicBezier::new(0.3, 0.0, 1.0, 1.0);
-/// The checkbox fill: a small overshoot, the only bounce in the app.
+/// The checkbox and icon-toggle fills: a small overshoot, the only bounce in the app.
 pub const POP: CubicBezier = CubicBezier::new(0.34, 1.56, 0.64, 1.0);
 /// The sun on its arc, room sky hue morphs and the dusk transition: slow in, slow out, like the real thing.
 pub const SUN: CubicBezier = CubicBezier::new(0.45, 0.0, 0.55, 1.0);
@@ -131,6 +131,8 @@ pub const CHECK_FILL: u32 = 140;
 /// The checkbox disc's scale when its fill starts; it pops to `1.0` with [`POP`] over [`CHECK_FILL`]. A scale,
 /// not a duration, so it isn't exported with them.
 pub const CHECK_FILL_FROM_SCALE: f32 = 0.55;
+/// The smaller pop of a filled icon toggle, over [`CHECK_FILL`].
+pub const TOGGLE_FILL_FROM_SCALE: f32 = 0.85;
 /// Toast leaving.
 pub const TOAST_OUT: u32 = 140;
 /// Menus, popovers, date pickers and dialogs entering.
@@ -222,8 +224,9 @@ pub const DURATIONS: [(&str, u32); 23] = [
 /// The choreography's cues and shapes that aren't durations (a scale, shares of [`DUSK`], a distance in
 /// pixels and an item count), for the exports. Clients that can't link this crate (Android) read them from
 /// `tokens.json` (`motion.cues`).
-pub const CUES: [(&str, f32); 10] = [
+pub const CUES: [(&str, f32); 11] = [
     ("check-fill-from-scale", CHECK_FILL_FROM_SCALE),
+    ("toggle-fill-from-scale", TOGGLE_FILL_FROM_SCALE),
     ("dusk-night-at", DUSK_NIGHT_AT),
     ("dusk-handover-at", DUSK_HANDOVER_AT),
     ("dusk-handover-rise", DUSK_HANDOVER_RISE),

@@ -141,6 +141,7 @@ const fn kebab(s: &'static str) -> &'static str {
         b"hill_far" => "hill-far",
         b"hill_near" => "hill-near",
         b"sun_ink" => "sun-ink",
+        b"important_fill" => "important-fill",
         b"check_selected" => "check-selected",
         b"on_strong" => "on-strong",
         b"silhouette_far" => "silhouette-far",
@@ -215,10 +216,12 @@ token_struct! {
         arc = h(0.640, 0.050), h(0.530, 0.040);
         /// The band under the hills. Drawn in dark only.
         horizon = h(0.950, 0.040), h(0.315, 0.035);
-        /// The sun. The only amber on screen, at a fixed hue.
+        /// The landscape sun, at a fixed hue.
         sun = fixed(0.800, 0.150, 75.0), fixed(0.810, 0.140, 72.0);
-        /// The sun's travelled path.
+        /// The sun's travelled path and the filled My Day toggle.
         sun_ink = fixed(0.580, 0.130, 62.0), fixed(0.810, 0.140, 72.0);
+        /// Gold for the filled Important star, independent of the room's hue.
+        important_fill = fixed(0.615, 0.135, 87.0), fixed(0.835, 0.152, 91.0);
         /// Stars (drawn in dark only) and the moon.
         star = h(0.990, 0.000), h(0.880, 0.020);
     }
@@ -289,11 +292,11 @@ pub const LIST_ON_STRONG_DARK: (f64, f64) = (0.24, 0.05);
 /// against any of its backgrounds is below the minimum moves away from them in lightness, in steps of
 /// [`GUARD_STEP`], until it passes. Pairs that already pass, including every pair in the approved contrast table,
 /// are untouched.
-pub const GUARDS: [(&str, &[&str], f64); 15] = [
+pub const GUARDS: [(&str, &[&str], f64); 16] = [
     ("ink", &["pane", "canvas", "wash"], 4.5),
     ("ink-2", &["pane", "sky"], 4.5),
     ("ink-3", &["pane", "canvas", "wash"], 4.5),
-    ("accent-strong", &["pane", "sky"], 4.5),
+    ("accent-strong", &["pane", "sky", "wash", "tint"], 4.5),
     ("danger-ink", &["danger-bg"], 4.5),
     ("toast-ink", &["toast"], 4.5),
     ("toast-ink-2", &["toast"], 4.5),
@@ -304,7 +307,8 @@ pub const GUARDS: [(&str, &[&str], f64); 15] = [
     ("control", &["pane", "wash"], 3.0),
     ("danger", &["pane"], 3.0),
     ("arc", &["sky"], 3.0),
-    ("sun-ink", &["sky"], 3.0),
+    ("sun-ink", &["sky", "pane", "wash", "hover"], 3.0),
+    ("important-fill", &["pane", "wash", "hover"], 3.0),
 ];
 
 /// The lightness step of a contrast guard.

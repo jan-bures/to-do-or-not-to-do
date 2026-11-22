@@ -1,5 +1,5 @@
 //! The bundled fonts and icons: every face in `fonts::FACES` exists, carries the family, weight and slant the
-//! tokens ask for, and covers Czech; every icon file is listed in the enums and is a single-colour stroke SVG.
+//! tokens ask for, and covers Czech; every icon file is listed in the enums and is a single-colour SVG.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -70,13 +70,39 @@ fn assert_single_colour(name: &str, svg: &str) {
     );
     assert!(svg.contains("stroke=\"currentColor\""), "{name}: tintable");
     for attr in svg.split_whitespace().filter(|a| a.starts_with("fill=")) {
-        assert_eq!(
-            attr.trim_end_matches('>'),
-            "fill=\"none\"",
-            "{name}: no fills"
+        assert!(
+            matches!(
+                attr.trim_end_matches('>'),
+                "fill=\"none\"" | "fill=\"currentColor\""
+            ),
+            "{name}: tintable fill"
         );
     }
     assert!(!svg.contains("#"), "{name}: no hard-coded colours");
+}
+
+#[test]
+fn filled_variants_keep_the_outline_geometry() {
+    for (outline, filled, shape) in [
+        (Icon::Star, Icon::StarFilled, "<path"),
+        (Icon::Sun, Icon::SunFilled, "<circle"),
+    ] {
+        assert!(
+            filled
+                .svg()
+                .lines()
+                .any(|l| l.contains(shape) && l.contains("fill=\"currentColor\""))
+        );
+        let shapes = |svg: &str| {
+            svg.lines()
+                .filter(|l| {
+                    l.trim_start().starts_with("<path") || l.trim_start().starts_with("<circle")
+                })
+                .map(|l| l.replace(" fill=\"currentColor\"", ""))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shapes(outline.svg()), shapes(filled.svg()));
+    }
 }
 
 #[test]
@@ -86,6 +112,12 @@ fn icons_are_listed_and_single_colour() {
     for icon in Icon::ALL {
         assert_eq!(Icon::from_key(icon.key()), Some(*icon));
         assert_single_colour(icon.key(), icon.svg());
+        assert_eq!(
+            icon.svg().matches("fill=\"currentColor\"").count(),
+            usize::from(matches!(icon, Icon::SunFilled | Icon::StarFilled)),
+            "{}",
+            icon.key()
+        );
         assert!(
             icon.svg().contains("stroke-width=\"1.6\""),
             "{}",
@@ -97,5 +129,6 @@ fn icons_are_listed_and_single_colour() {
     assert_eq!(svg_names("assets/icons/glyphs"), listed);
     for glyph in Glyph::ALL {
         assert_single_colour(glyph.key(), glyph.svg());
+        assert!(!glyph.svg().contains("fill=\"currentColor\""));
     }
 }

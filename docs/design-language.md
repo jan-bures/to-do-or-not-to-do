@@ -14,7 +14,7 @@ Every room has a header, whether it's My Day, a collection or a list. The header
 and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop, 36 dp on a phone's cover screen and
 40 dp on a large inner screen.
 
-- **The sun has exactly one meaning: completed tasks.** It climbs a faint arc as tasks are done. The part of the
+- **The landscape sun measures completed tasks.** It climbs a faint arc as tasks are done. The part of the
   arc it has travelled is drawn in `sun-ink`, and the part still to go in `arc`. The arc is measured to 3:1 against
   the sky, so it reads as information, not decoration.
 - **The count sits beside the sun.** The header summary reads `3 of 12 done · 9 open · est. 5h 40m`. The sun and
@@ -45,8 +45,8 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   token, not by the words.
 - **The status bar counts the same room.** `9 open · 3 done today`: what is open now and what was finished since
   local midnight. Activity counts its feed instead: `20 shown · 4 today`.
-- **There is only one sun.** No sun icon in the title, no clock ticks, no crescent endpoints. The sun's amber is the
-  only amber on screen, at a fixed hue whatever the room's hue.
+- **There is only one sun in the landscape.** No sun icon in the title, no clock ticks, no crescent endpoints.
+  The landscape and the My Day toggle use the same warm family, independent of the room's hue.
 - **The finished day.** When My Day's last task is done, the scene grows to 164 px.
   - The sky becomes a two-stop dusk gradient.
   - The sun sets behind the hills with three thin rings.
@@ -103,7 +103,6 @@ there is no free-form colour.
 - **An overdue row has at most two reds:** the checkbox ring and the overdue badge. Priority stays neutral.
 - **Priority is never colour.** It is `!` / `!!` / `!!!` in Geist Mono. Count, weight and ink step together from
   `ink-3` up to `ink`.
-- **Selection** is a `wash` background plus a 3 px `accent` bar on the left edge.
 - **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings), in neutral
   modal scrims and in small desktop chrome overlays (caption button tints and scrollbar thumbs). UI surfaces
   are opaque.
@@ -128,6 +127,34 @@ The crate's tests check two things:
 
 - every pair in the approved contrast table, at its exact hex values;
 - every text and control pair at every whole-degree hue, in both themes.
+
+### Persistent states: fill, not an outline shift
+
+Use the same rule on desktop, web and Android. A state must be apparent at rest, without hover, focus or
+animation, and without relying on hue alone.
+
+- **Icon toggles:** Off is the quiet Lucide outline in `ink-3`. On keeps the same silhouette and fills its
+  closed shape: `important-fill` gold for the Important star, warm `sun-ink` amber for the My Day sun, and
+  `danger` red for a true flag toggle. Fill only the sun's disc; its rays stay strokes. A flag used as a
+  field label and a pin used as decoration are not toggles. The neutral `!` / `!!` / `!!!` priority scale
+  stays separate. The row star and the detail star show and edit the same high-priority state.
+- **Selected rows, chips, segments and options:** Use a filled or tinted container (`wash`, or the stronger
+  fill for a compact segment) and a stronger label. Selected navigation and task rows also get a 3 px
+  leading selection bar. Preset, tag and list choices retain their tick; for colour-only swatches the tick
+  takes the place of the stronger label. A chip that just identifies a list or tag isn't selected by being
+  coloured. A suggestion offered as a one-shot action isn't a toggle. Checkboxes keep their filled disc and
+  tick when checked, a bare ring when unchecked; a switch needs a filled track **and** a moved thumb.
+- **Contrast and focus:** Both the off outline and the on glyph must reach 3:1 on the surfaces they sit on,
+  in light and dark, including a selected row. Keep labels at 4.5:1. A tinted background alone may be subtle;
+  pair it with a contrast-checked tick, bar or equivalent state mark. Keyboard focus adds a distinct ring
+  or edge and never changes the state; both indicators can be visible at once.
+- **Motion:** Crossfade the outline and fill over `CHECK_FILL` with `STANDARD`. On activation, scale the fill
+  from `TOGGLE_FILL_FROM_SCALE` to 1 with `POP` over the same duration; don't resize the hit target. With
+  reduced motion use only the fade (`REDUCED_FADE`), no scaling. The resting state must work without either.
+- **Accessibility:** Keep the toggle's accessible name stable and expose its state (`aria-pressed` on web,
+  `toggleable` on Compose). A tooltip can describe the action that will happen next. Use selected/current
+  semantics for navigation and choices, checked for completion, and expanded for disclosure. A chevron
+  opening content isn't a persistent pressed state.
 
 ## Type
 
@@ -217,8 +244,8 @@ bottom:
 Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
 room rows are not Tab stops.
 
-**Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
-checkbox, title (with the metadata line under it), agent mark, priority and due date.
+**Desktop rows** are 56 px tall on a fixed grid with 12 px gaps. The columns are checkbox, title (with the
+metadata line under it), agent mark, priority, due date and the Important toggle.
 
 - The agent, priority and due columns keep their places from the right edge, so filled ones line up down the
   list. Empty columns to the left of every filled one are left out, so the title runs on into their room
@@ -232,7 +259,8 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
   items give way in order (tags, then the mail mark, then the step meter, then the step count) and the chip narrows
   last, down to its dot and an ellipsis.
 
-**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. As on the desktop, the agent and priority columns keep their
+**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`, followed by the Important touch target. The metadata can
+use the space below the agent and priority columns. As on the desktop, those columns keep their
 places from the right edge, and empty ones to the left of every filled one are left out, so the title uses their
 room. On a dated row the due date comes first, in a 100 dp slot, so the list chips of dated rows start at the
 same x. On Android an undated row has no slot: its chips start flush with the title, because a blank 100 dp gap
@@ -284,7 +312,6 @@ stay distinct from each other.
 
 The design is **flat**. Surfaces are separated by colour steps and 1 px lines.
 
-- The selected sidebar item gets a 1 px ring.
 - A focused input gets an `accent` border plus a 3 px ring in `tint`.
 - There is exactly one shadow, a soft two-layer one for transient overlays: menus, popovers and the date picker.
   In dark mode it comes with a 1 px `line-strong` border.
@@ -299,8 +326,8 @@ comes from `todo_design::motion` (`--duration-*` and `--ease-*` in `tokens.css`;
 ### Principles
 
 - **Calm.** The pace belongs to Daybreak: crisp on controls (90–200 ms), unhurried on the sky and sun
-  (360–1200 ms). Nothing spins, pulses, breathes, or bounces for attention. The checkbox fill (`POP`) is the
-  only overshoot in the app.
+  (360–1200 ms). Nothing spins, pulses, breathes, or bounces for attention. Checkbox and icon-toggle fills
+  (`POP`) are the only overshoots in the app.
 - **Purposeful.** Motion answers one of three spatial questions: *where did it come from?*, *what changed?*, or
   *where did it go?*. If a state change is already unmistakable without movement, it snaps.
 - **Never blocks input.** Commands apply optimistically on the first frame. Animations play alongside input and
@@ -493,7 +520,7 @@ Completing a task is the one choreographed moment in the app.
     edge.
   - **Task list (`CONTENT_SWAP` 120 ms, `ENTER`):** Crisp opacity crossfade of the list body; scroll resets
     immediately to top (`0 ms`). Never cascade individual rows on room switch.
-  - **Active sidebar item / phone room pill:** Sidebar active ring and `raised` fill crossfade over `HOVER` (`90 ms`,
+  - **Active sidebar item / phone room pill:** The sidebar's active fill and leading mark crossfade over `HOVER` (`90 ms`,
     `STANDARD`). On phones, the active room pill crossfades colour (`ROOM_HUE` 360 ms, `SUN`) while the pill
     strip scrolls smoothly to keep it visible.
 - **Stagger:** None.
@@ -546,7 +573,7 @@ Completing a task is the one choreographed moment in the app.
   - **Child list group:** Height animates `0 ↔ natural height` with clipping (`overflow: hidden`) and
     `opacity: 0 ↔ 1` over `PANEL` (`200 ms`, `ENTER` on expand, `EXIT` on collapse).
   - **Hidden active list indicator:** When collapsing a collection that contains the active list, the collection
-    header takes on the selected `1 px` ring and `raised` fill over `HOVER` (`90 ms`, `STANDARD`).
+    header takes on the selected fill and leading mark over `HOVER` (`90 ms`, `STANDARD`).
 - **Stagger:** When expanding a collection of ≤ `STAGGER_MAX_ITEMS` (5) lists, child rows may stagger opacity by
   `STAGGER` (`25 ms`); collapse always uses `0 ms` stagger so closing feels immediate.
 - **Reduced motion:** Chevron snaps (`0 ms`); child rows snap in/out of layout (`0 ms` height, `0 ms` stagger,

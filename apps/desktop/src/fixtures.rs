@@ -102,6 +102,16 @@ pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
         "work" => Some(work()),
+        // Keep the same detail and task row in both captures, outside the My Day filter.
+        "toggle-states-on" | "toggle-states-off" => {
+            let mut f = my_day();
+            f.ui.room = RoomKey::Smart(Smart::All);
+            let task = f.state.tasks.get_mut(&f.ui.task?)?;
+            let on = name == "toggle-states-on";
+            task.my_day = on.then(|| f.now.today());
+            task.priority = if on { Priority::High } else { Priority::None };
+            Some(f)
+        }
         // The menus, open at rest: the room's "more" menu in a list, the account menu and the detail
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),

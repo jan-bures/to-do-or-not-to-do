@@ -628,7 +628,7 @@ impl ShellView {
                 ),
             None => crumbs.child(kit::chip(t, &d.list, false)),
         };
-        let toggle = |id: &'static str, icon: Icon, on: bool| {
+        let top_button = |id: &'static str, label: &'static str, glyph: AnyElement| {
             div()
                 .id(id)
                 .size(px(component::ICON_BUTTON))
@@ -637,12 +637,58 @@ impl ShellView {
                 .justify_center()
                 .rounded(px(radius::MD))
                 .hover(|s| s.bg(p.hover))
-                .child(kit::icon(
-                    icon,
-                    component::GLYPH,
-                    if on { p.accent_strong } else { p.ink_3 },
-                ))
+                .tooltip(kit::tooltip(p, label))
+                .child(glyph)
         };
+        let top_toggle = |id, label, action, icon, on, handle: &gpui::FocusHandle| {
+            top_button(
+                id,
+                action,
+                self.task_glyph(&p, task, icon, on, component::GLYPH)
+                    .into_any_element(),
+            )
+            .when(live, |el| {
+                el.track_focus(handle)
+                    .role(gpui::Role::Button)
+                    .aria_label(label)
+                    .aria_toggled(if on {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .border(px(elevation::HAIRLINE))
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(move |s| s.border_color(p.accent_strong))
+                    .on_key_down(cx.listener(|this, e, window, cx| this.control_key(e, window, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.toggle_task_glyph(task, icon, cx)),
+                    )
+            })
+        };
+        let my_day = top_toggle(
+            "detail-my-day",
+            "My Day",
+            if d.my_day {
+                "Remove from My Day"
+            } else {
+                "Add to My Day"
+            },
+            Icon::Sun,
+            d.my_day,
+            &self.detail_my_day_focus,
+        );
+        let important = top_toggle(
+            "detail-important",
+            "Important",
+            if d.important {
+                "Remove importance"
+            } else {
+                "Mark as important"
+            },
+            Icon::Star,
+            d.important,
+            &self.detail_important_focus,
+        );
         let links: Vec<_> = d
             .links
             .iter()
@@ -1058,26 +1104,19 @@ impl ShellView {
                             .flex_none()
                             .flex()
                             .gap(px(space::S1))
-                            .child(toggle("detail-my-day", Icon::Sun, d.my_day).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    let today = this.store.now().today();
-                                    let cmd =
-                                        commands::toggle_my_day(&this.store.view(), task, today);
-                                    this.step_command(cmd, cx);
-                                }),
-                            ))
+                            .child(my_day)
+                            .child(important)
                             .child(
-                                toggle("detail-important", Icon::Star, d.important).on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        let cmd =
-                                            commands::toggle_important(&this.store.view(), task);
-                                        this.step_command(cmd, cx);
-                                    }),
-                                ),
-                            )
-                            .child(toggle("close-detail", Icon::X, false).on_click(
-                                cx.listener(|this, _, _, cx| this.select_task(None, cx)),
-                            )),
+                                top_button(
+                                    "close-detail",
+                                    "Close (Esc)",
+                                    kit::icon(Icon::X, component::GLYPH, p.ink_3)
+                                        .into_any_element(),
+                                )
+                                .role(gpui::Role::Button)
+                                .aria_label("Close")
+                                .on_click(cx.listener(|this, _, _, cx| this.select_task(None, cx))),
+                            ),
                     ),
             )
             .child(

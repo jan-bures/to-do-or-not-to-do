@@ -245,6 +245,28 @@ class GalleryTest {
     }
 
     @Test
+    fun toggle_states() {
+        val e = fixtureEngine()
+        val admin = e.list("Admin")
+        val id = e.taskId(admin, "Renew passport appointment")
+        val original = requireNotNull(state(e, admin, select = id).detail)
+        fun capture(isOn: Boolean): UiState {
+            e.setMyDay(id, isOn, FIXTURE_NOW)
+            e.setImportant(id, isOn)
+            val s = state(e, admin, select = id)
+            // An event submitted to the engine can have the host's real time. Keep the caption fixed.
+            return s.copy(detail = requireNotNull(s.detail).copy(subtitle = original.subtitle))
+        }
+        val off = capture(false)
+        val on = capture(true)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            main("toggle_states_off_$theme", INNER, off, dark)
+            main("toggle_states_on_$theme", INNER, on, dark)
+        }
+    }
+
+    @Test
     fun editing_notes_and_sources() {
         val e = fixtureEngine()
         val admin = e.list("Admin")

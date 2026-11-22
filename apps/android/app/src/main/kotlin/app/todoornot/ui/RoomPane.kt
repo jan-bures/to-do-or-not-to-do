@@ -60,9 +60,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.Dp
@@ -142,7 +144,7 @@ fun RoomPane(
         Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
             RoomHeader(room, landscape, collapse, onMenu, bar) {
                 SyncChip(state.status, actions::nudge)
-                IconButton("search", "Filter", tint = if (state.searching) LocalDesign.current.room.accentStrong else null) {
+                IconButton("search", "Filter", expanded = state.searching) {
                     actions.setSearching(!state.searching)
                 }
                 val entries = roomMenu(state.home, room.key, state.showCompleted)
@@ -179,6 +181,7 @@ fun RoomPane(
 private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () -> Unit) {
     val r = LocalDesign.current.room
     val focus = remember { FocusRequester() }
+    var focused by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { if (text.isEmpty()) runCatching { focus.requestFocus() } }
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
     Box(Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S4.dp, vertical = S.S2.dp)) {
@@ -187,8 +190,8 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
                 .fillMaxWidth()
                 .heightIn(min = P.TOUCH.dp)
                 .clip(shape)
-                .background(r.raised)
-                .border(Tokens.Elevation.HAIRLINE.dp, if (text.isEmpty()) r.control else r.accent, shape)
+                .background(r.wash)
+                .border(Tokens.Elevation.HAIRLINE.dp, if (focused) r.accentStrong else r.control, shape)
                 .padding(start = S.S3.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
@@ -197,7 +200,8 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
             BasicTextField(
                 value = text,
                 onValueChange = { onChange(it.replace("\n", "")) },
-                modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "Filter" },
+                modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { focused = it.isFocused }
+                    .semantics { contentDescription = "Filter" },
                 textStyle = Tokens.Type.SUMMARY.style(r.ink),
                 singleLine = true,
                 cursorBrush = SolidColor(r.accent),
@@ -217,13 +221,19 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
 
 /** 48 dp touch target around an 18 dp icon. */
 @Composable
-fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, enabled: Boolean = true, onClick: () -> Unit) {
+fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, enabled: Boolean = true, expanded: Boolean? = null, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     Box(
-        Modifier.size(P.TOUCH.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick).semantics { contentDescription = label },
+        Modifier.size(P.TOUCH.dp).clip(CircleShape)
+            .then(if (expanded == true) Modifier.background(r.wash) else Modifier)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics {
+                contentDescription = label
+                if (expanded != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, if (enabled) tint ?: r.ink2 else r.ink4)
+        Icon(icon, if (enabled) tint ?: if (expanded == true) r.accentStrong else r.ink2 else r.ink4)
     }
 }
 
@@ -367,6 +377,7 @@ private fun LazyItemScope.MovingRow(
     ) { openMenu ->
         TaskRowView(t, selected = !s.ghost && t.id == state.selected, checked = done,
             onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
+            onImportant = { if (!s.ghost) actions.setImportant(t.id, it) },
             onOpen = { if (!s.ghost) actions.select(t.id) }, onActions = openMenu, look = l, inert = s.ghost)
     }
 }

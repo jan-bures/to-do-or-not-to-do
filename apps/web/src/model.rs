@@ -587,7 +587,7 @@ pub fn due(d: Date, today: Date) -> Due {
     Due { text, tone }
 }
 
-fn priority_marks(p: Priority) -> u8 {
+pub(crate) fn priority_marks(p: Priority) -> u8 {
     match p {
         Priority::None => 0,
         Priority::Low => 1,

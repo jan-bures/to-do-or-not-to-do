@@ -265,13 +265,24 @@ impl ShellView {
         );
     }
 
-    /// The existing inset ring and raised fill transfer to the new active row, not the label geometry.
+    /// The tint and leading mark transfer to the active room, without moving its label.
     fn nav_row(&self, key: RoomKey, on: bool, el: Div) -> Div {
         let p = &self.palette;
         let alpha = self.motion.sidebar.ring(key, on, self.frame);
-        el.bg(theme::with_alpha(p.raised, alpha))
+        el.relative()
+            .bg(theme::with_alpha(p.wash, alpha))
             .border(px(elevation::HAIRLINE))
             .border_color(theme::with_alpha(p.line, alpha))
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(space::S1))
+                    .bottom(px(space::S1))
+                    .w(px(elevation::SELECTION_BAR))
+                    .rounded_full()
+                    .bg(theme::with_alpha(p.accent_strong, alpha)),
+            )
             .when(on, |el| {
                 el.text_color(p.ink).font_weight(FontWeight::SEMIBOLD)
             })
