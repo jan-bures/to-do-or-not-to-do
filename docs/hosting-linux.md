@@ -716,13 +716,13 @@ systemctl is-active todo-tunnel todo-server
 Both files must say `gone`, and both units `inactive` (or `failed`). Only then, on the PC:
 
 ```powershell
-Enable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
-./deploy/windows/install-pilot.ps1 -DataDir $data -NoRegister -Start -HealthUrl "http://127.0.0.1:$port/health"
+./deploy/windows/install-pilot.ps1 -DataDir $data -Start -HealthUrl "http://127.0.0.1:$port/health"
 ```
 
-This enables the logon task as it was registered and starts the supervisor now. Pass `-HealthUrl` with the
+This registers the logon task again, enabled, and starts the supervisor now. Pass `-HealthUrl` with the
 pilot's port: the supervisor starts the connector only once `/health` answers 200 at that URL, which
-otherwise is port 47320, so a pilot on another port would serve locally with no tunnel. The pilot's database
+otherwise is port 47320, so a pilot on another port would serve locally with no tunnel. The task's action
+gets the same URL, so the next logon starts the tunnel too. The pilot's database
 is exactly as it was when you stopped it. For the next attempt, stage the token at `/root/todo-tunnel.token`
 again.
 
@@ -826,12 +826,11 @@ VM's `blobs/` comes along too.
 
    `-NoRegister` leaves the logon task disabled meanwhile. Check the log in `$data\logs\` for a clean start.
    With the server stopped, `Get-EventCount "$db\todo.sqlite3"` must match step 2.
-7. **Reconnect the pilot.** Enable the logon task and start the server with the tunnel, with the pilot's
-   health URL as in the rollback before writes:
+7. **Reconnect the pilot.** Register the logon task again and start the server with the tunnel, with the
+   pilot's health URL as in the rollback before writes:
 
    ```powershell
-   Enable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
-   ./deploy/windows/install-pilot.ps1 -DataDir $data -NoRegister -Start -HealthUrl "http://127.0.0.1:$port/health"
+   ./deploy/windows/install-pilot.ps1 -DataDir $data -Start -HealthUrl "http://127.0.0.1:$port/health"
    ./deploy/probe.ps1 -BaseUrl https://todo.example.com
    ```
 

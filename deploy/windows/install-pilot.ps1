@@ -33,13 +33,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# run-pilot.ps1 refuses such a directory: Start-Process can't redirect its logs there.
+if ($DataDir -match '[\[\]]') { throw "The data directory must not contain [ or ]: $DataDir" }
+
 $binDir = Join-Path $DataDir 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 $runner = Join-Path $binDir 'run-pilot.ps1'
-Copy-Item -Path (Join-Path $PSScriptRoot 'run-pilot.ps1') -Destination $runner -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-pilot.ps1') -Destination $runner -Force
 
 $serverExe = Join-Path $binDir 'todo-server.exe'
-if (-not (Test-Path $serverExe)) {
+if (-not (Test-Path -LiteralPath $serverExe)) {
     Write-Warning "todo-server.exe is not in $binDir yet. Copy it there before the pilot starts."
 }
 

@@ -44,6 +44,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Start-Process can't redirect output into a path with [ or ] in either PowerShell, so the logs couldn't be
+# written. Paths are otherwise used literally.
+if ($DataDir -match '[\[\]]') { throw "The data directory must not contain [ or ]: $DataDir" }
+
 # Paths not given explicitly live under the data directory.
 if (-not $ServerExe) { $ServerExe = Join-Path $DataDir 'bin\todo-server.exe' }
 if (-not $ServerConfig) { $ServerConfig = Join-Path $DataDir 'server.toml' }
@@ -59,7 +63,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-PilotLog([string]$Message) {
     $line = '{0:yyyy-MM-ddTHH:mm:ss.fffK} {1}' -f (Get-Date), $Message
-    Add-Content -Path (Join-Path $logDir ('pilot-{0:yyyy-MM-dd}.log' -f (Get-Date))) -Value $line
+    Add-Content -LiteralPath (Join-Path $logDir ('pilot-{0:yyyy-MM-dd}.log' -f (Get-Date))) -Value $line
 }
 
 # One supervisor per data directory, so a second pilot on another directory (a test deploy, say) can
@@ -120,7 +124,7 @@ function Save-State($Children) {
     } elseif ($script:leftoverBackup) {
         $pids['todo-backup'] = $script:leftoverBackup
     }
-    $pids | ConvertTo-Json | Set-Content -Path $stateFile
+    $pids | ConvertTo-Json | Set-Content -LiteralPath $stateFile
 }
 
 # Reads a property that may be missing. Under StrictMode, $obj.$name throws for a missing property.
@@ -174,9 +178,9 @@ function Find-RecordedProcess($Record, [string]$Name) {
 function Read-BackupSchedule {
     $schedule = @{}
     $json = $null
-    if (Test-Path $backupScheduleFile) {
+    if (Test-Path -LiteralPath $backupScheduleFile) {
         try {
-            $json = Get-Content -Raw -Path $backupScheduleFile | ConvertFrom-Json
+            $json = Get-Content -Raw -LiteralPath $backupScheduleFile | ConvertFrom-Json
         } catch {
             Write-PilotLog "could not read $backupScheduleFile; treating every backup as due"
         }
@@ -196,8 +200,8 @@ function Save-BackupSchedule($Schedule) {
         if ($t -ne [datetime]::MinValue) { $out[$key] = $t.ToString('o') } else { $out[$key] = $null }
     }
     $tmp = "$backupScheduleFile.tmp"
-    $out | ConvertTo-Json | Set-Content -Path $tmp
-    Move-Item -Path $tmp -Destination $backupScheduleFile -Force
+    $out | ConvertTo-Json | Set-Content -LiteralPath $tmp
+    Move-Item -LiteralPath $tmp -Destination $backupScheduleFile -Force
 }
 
 function Test-BackupDue([string]$Kind, $Schedule, [datetime]$NowUtc) {
@@ -237,12 +241,12 @@ function Complete-BackupJob($Job, [string]$Result) {
     $log = Join-Path $logDir ('backup-{0:yyyy-MM-dd}.log' -f (Get-Date))
     $lines = @('{0:yyyy-MM-ddTHH:mm:ss.fffK} backup {1}: {2}' -f (Get-Date), $Job.Kind, $Result)
     foreach ($f in @($Job.Out, $Job.Err)) {
-        if (Test-Path $f) {
-            $lines += @(Get-Content -Path $f | ForEach-Object { "  $_" })
-            Remove-Item -Path $f -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $f) {
+            $lines += @(Get-Content -LiteralPath $f | ForEach-Object { "  $_" })
+            Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue
         }
     }
-    Add-Content -Path $log -Value $lines
+    Add-Content -LiteralPath $log -Value $lines
 }
 
 function Invoke-BackupScheduler {
@@ -347,20 +351,20 @@ function Stop-Children($Children) {
     }
 }
 
-if (-not (Test-Path $ServerExe)) {
+if (-not (Test-Path -LiteralPath $ServerExe)) {
     Write-PilotLog "todo-server not found at $ServerExe; exiting"
     exit 1
 }
 # The config path goes through the environment, which the child inherits.
-if (Test-Path $ServerConfig) { $env:TODO_SERVER_CONFIG = $ServerConfig }
+if (Test-Path -LiteralPath $ServerConfig) { $env:TODO_SERVER_CONFIG = $ServerConfig }
 $server = New-Child 'todo-server' $ServerExe @('serve')
 $children = @($server)
 
 $tunnel = $null
 if (-not $NoTunnel) {
-    if (-not $CloudflaredExe -or -not (Test-Path $CloudflaredExe)) {
+    if (-not $CloudflaredExe -or -not (Test-Path -LiteralPath $CloudflaredExe)) {
         Write-PilotLog 'cloudflared not found; running without the tunnel'
-    } elseif (-not (Test-Path $TunnelTokenFile)) {
+    } elseif (-not (Test-Path -LiteralPath $TunnelTokenFile)) {
         Write-PilotLog "tunnel token file not found at $TunnelTokenFile; running without the tunnel"
     } else {
         $tunnel = New-Child 'cloudflared' $CloudflaredExe @(
@@ -371,9 +375,9 @@ if (-not $NoTunnel) {
 
 # A supervisor that was killed outright (not stopped via stop-pilot.ps1) leaves its children running.
 # Clean them up, but only processes that still look like ours.
-if (Test-Path $stateFile) {
+if (Test-Path -LiteralPath $stateFile) {
     try {
-        $old = Get-Content -Raw -Path $stateFile | ConvertFrom-Json
+        $old = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
         foreach ($name in @('cloudflared', 'todo-server')) {
             $oldPid = Get-JsonValue $old $name
             if ($oldPid) {
@@ -405,7 +409,7 @@ if (Test-Path $stateFile) {
     }
 }
 
-$backupEnabled = (Test-Path $BackupExe) -and (Test-Path $BackupConfig)
+$backupEnabled = (Test-Path -LiteralPath $BackupExe) -and (Test-Path -LiteralPath $BackupConfig)
 if ($backupEnabled) {
     Write-PilotLog ("backups enabled: frequent every {0} min, daily once a day, first check after {1} min" -f `
         $FrequentBackupMinutes, $BackupStartDelayMinutes)
@@ -413,20 +417,20 @@ if ($backupEnabled) {
     Write-PilotLog 'backups disabled (needs bin\todo-backup.exe and backup.toml in the data directory)'
 }
 
-Remove-Item -Path $stopFile -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $stopFile -ErrorAction SilentlyContinue
 Write-PilotLog "supervisor started (pid $PID)"
 
 # Prune old logs once per start.
-Get-ChildItem -Path $logDir -Filter '*.log' |
+Get-ChildItem -LiteralPath $logDir -Filter '*.log' |
     Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-14) } |
     Remove-Item -ErrorAction SilentlyContinue
 # Output of backup runs that were cut off by a killed supervisor.
-Get-ChildItem -Path $logDir -Filter 'backup-*.tmp' |
+Get-ChildItem -LiteralPath $logDir -Filter 'backup-*.tmp' |
     Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-1) } |
     Remove-Item -ErrorAction SilentlyContinue
 
 try {
-    while (-not (Test-Path $stopFile)) {
+    while (-not (Test-Path -LiteralPath $stopFile)) {
         foreach ($c in $children) {
             $running = $c.Process -and -not $c.Process.HasExited
             if ($running) { continue }
@@ -465,10 +469,10 @@ try {
     if ($alive) {
         # Without a supervisor entry, stop-pilot.ps1 sees the pilot as stopped, and the next start (or
         # stop-pilot.ps1) stops this worker if it is still the same process.
-        @{ 'todo-backup' = $alive } | ConvertTo-Json | Set-Content -Path $stateFile
-        Remove-Item -Path $stopFile -ErrorAction SilentlyContinue
+        @{ 'todo-backup' = $alive } | ConvertTo-Json | Set-Content -LiteralPath $stateFile
+        Remove-Item -LiteralPath $stopFile -ErrorAction SilentlyContinue
     } else {
-        Remove-Item -Path $stateFile, $stopFile -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stateFile, $stopFile -ErrorAction SilentlyContinue
     }
     Write-PilotLog 'supervisor stopped'
     $mutex.ReleaseMutex()

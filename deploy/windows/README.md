@@ -17,7 +17,10 @@ window appears.
 ## Layout
 
 The data directory defaults to `%LOCALAPPDATA%\todo`. Restrict its ACL to your own user, because it holds
-secrets.
+secrets. Its path must not contain `[` or `]`: `Start-Process` can't redirect the logs into such a
+directory, so `install-pilot.ps1` and `run-pilot.ps1` refuse it. On a port other than 47320, pass
+`-HealthUrl http://127.0.0.1:<port>/health` to `install-pilot.ps1`: the supervisor starts the tunnel only once
+that URL answers, and the logon task keeps it.
 
 | Path | Contents |
 |---|---|

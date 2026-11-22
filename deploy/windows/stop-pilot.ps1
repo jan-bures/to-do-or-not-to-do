@@ -31,8 +31,8 @@ function Get-JsonValue($Object, [string]$Name) {
 
 # The state file, $null if there is none, or 'unreadable' (for example while it is being rewritten).
 function Read-PilotState {
-    if (-not (Test-Path $stateFile)) { return $null }
-    try { return Get-Content -Raw -Path $stateFile | ConvertFrom-Json } catch { return 'unreadable' }
+    if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
+    try { return Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json } catch { return 'unreadable' }
 }
 
 # The supervisor is running while the state file names it. On shutdown it removes the file, or leaves one
@@ -63,13 +63,13 @@ function Find-RecordedBackup($Record) {
     return $p
 }
 
-if (-not (Test-Path $stateFile)) {
+if (-not (Test-Path -LiteralPath $stateFile)) {
     Write-Host 'The pilot is not running.'
     exit 0
 }
 
 if (Test-SupervisorRecorded) {
-    Set-Content -Path $stopFile -Value 'stop'
+    Set-Content -LiteralPath $stopFile -Value 'stop'
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Test-SupervisorRecorded) -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
@@ -103,11 +103,11 @@ if ($state -is [string]) {
     if ($backup -and -not $backup.WaitForExit(10000)) {
         # Keep only its record, so the next supervisor start stops it.
         Write-Warning "The backup worker (pid $($backup.Id)) is still running; the next start stops it."
-        @{ 'todo-backup' = $record } | ConvertTo-Json | Set-Content -Path $stateFile
+        @{ 'todo-backup' = $record } | ConvertTo-Json | Set-Content -LiteralPath $stateFile
     } else {
-        Remove-Item -Path $stateFile -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stateFile -ErrorAction SilentlyContinue
     }
 }
-Remove-Item -Path $stopFile -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $stopFile -ErrorAction SilentlyContinue
 
 Write-Host 'The pilot is stopped.'
