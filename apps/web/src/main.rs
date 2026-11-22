@@ -34,7 +34,9 @@ async fn start() {
     {
         // The screenshot gallery: invented data, a fixed clock, nothing sent anywhere.
         let query = platform::query();
-        let state = if query.contains("fixture=finished-no-tomorrow") {
+        let state = if query.contains("fixture=blank") {
+            todo_core::State::new()
+        } else if query.contains("fixture=finished-no-tomorrow") {
             fixtures::finished_without_tomorrow()
         } else if query.contains("fixture=finished") {
             fixtures::finished_state()

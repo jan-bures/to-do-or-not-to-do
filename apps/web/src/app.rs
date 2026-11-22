@@ -1141,30 +1141,26 @@ fn QuickAdd() -> impl IntoView {
     };
     let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
     view! {
-        {move || {
-            add_placeholder.get().map(|placeholder| {
-                    view! {
-                        <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
-                            <span class="qa-plus">{icon(Icon::Plus)}</span>
-                            <input
-                                node_ref=c.quick_add
-                                class="qa-input"
-                                type="text"
-                                disabled=move || c.read_only()
-                                autocomplete="off"
-                                enterkeyhint="done"
-                                aria-label="Add a task"
-                                placeholder=placeholder
-                                prop:value=move || value.get()
-                                on:input=move |ev| value.set(event_target_value(&ev))
-                            />
-                            <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
-                                <span class="keycap">"N"</span>
-                            </span>
-                        </form>
-                    }
-                })
-        }}
+        <Show when=move || add_placeholder.with(Option::is_some)>
+            <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
+                <span class="qa-plus">{icon(Icon::Plus)}</span>
+                <input
+                    node_ref=c.quick_add
+                    class="qa-input"
+                    type="text"
+                    disabled=move || c.read_only()
+                    autocomplete="off"
+                    enterkeyhint="done"
+                    aria-label="Add a task"
+                    placeholder=move || add_placeholder.get().unwrap_or_default()
+                    prop:value=move || value.get()
+                    on:input=move |ev| value.set(event_target_value(&ev))
+                />
+                <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
+                    <span class="keycap">"N"</span>
+                </span>
+            </form>
+        </Show>
     }
 }
 

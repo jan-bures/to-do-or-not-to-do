@@ -376,7 +376,7 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
 - **Editing more fields.** Due dates, reminders, repeat rules and tags are shown but not editable yet; there is
-  no moving between lists, reordering, search, or creating lists and collections.
+  no moving tasks between lists, reordering, or creating collections.
 - **Attachments** are download links (fetched with the session, saved as a blob); there is no upload.
 - **The wasm size.** About 4.5 MB (0.7 MB gzipped). `wasm-opt` and Leptos's `erase_components` haven't been
   tried in the release build yet.
