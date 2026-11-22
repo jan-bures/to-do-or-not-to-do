@@ -584,6 +584,70 @@ proptest! {
         }
     }
 
+    /// Every move of a list to another collection (or out of one) records the list's position, and
+    /// undoing one, after any later history, either conflicts (and changes nothing) or puts the list back
+    /// in its collection exactly where it was: at its old key, or (when a sibling has taken that key
+    /// since) just before that sibling.
+    #[test]
+    fn undoing_a_list_move_to_another_collection_puts_it_back_exactly_or_conflicts(
+        ops in ops(),
+        pick_idx in any::<usize>(),
+    ) {
+        let mut w = run_history(&ops);
+        let moves: Vec<(Event, Option<todo_core::ids::CollectionId>, PosKey)> = w
+            .log
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Updated { changes, .. } => {
+                    let collection = changes.iter().find_map(|c| match c {
+                        FieldChange::ListCollection(c) => Some(c.old),
+                        _ => None,
+                    })?;
+                    let key = changes.iter().find_map(|c| match c {
+                        FieldChange::Position(c) => Some(c.old.clone()),
+                        _ => None,
+                    });
+                    Some((e.clone(), collection, key))
+                }
+                _ => None,
+            })
+            .map(|(e, collection, key)| {
+                // Recorded with every move, even one that keeps its key.
+                let key = key.expect("a move to another collection records the position");
+                (e, collection, key)
+            })
+            .collect();
+        prop_assume!(!moves.is_empty());
+        let (event, collection, key) = &moves[pick_idx % moves.len()];
+        let EntityId::List(list) = event.payload.target() else {
+            panic!("a collection change on {:?}", event.payload.target());
+        };
+        let before = w.state.clone();
+        match w.undo(event) {
+            Ok(comp) => {
+                let l = &w.state.lists[&list];
+                prop_assert_eq!(l.collection, *collection);
+                if comp.len() == 1 {
+                    prop_assert_eq!(&l.position, key);
+                } else {
+                    // Rekeyed: just before the sibling that took the key.
+                    let taker = before
+                        .lists
+                        .values()
+                        .find(|s| s.collection == *collection && &s.position == key && s.id != list && before.is_live(s.id.into()))
+                        .map(|s| s.id);
+                    if let Some(taker) = taker {
+                        prop_assert!(l.position < w.state.lists[&taker].position);
+                    }
+                }
+            }
+            Err(UndoError::Conflict(_) | UndoError::BrokenReference(_) | UndoError::HasDependents(_) | UndoError::AlreadyUndone(_) | UndoError::Invariant { .. }) => {
+                prop_assert_eq!(&w.state, &before);
+            }
+            Err(e) => prop_assert!(false, "unexpected undo error: {:?}", e),
+        }
+    }
+
     /// A forced undo always applies and the owner can always redo it.
     #[test]
     fn forced_undo_applies(ops in ops(), pick_idx in any::<usize>()) {

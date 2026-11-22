@@ -166,6 +166,8 @@ pub enum MenuEntry {
     /// the action, then Cancel.
     Confirm {
         message: SharedString,
+        /// Why it's asked again: what it's about changed while it was open ([`on_confirm`]).
+        note: Option<SharedString>,
         buttons: [MenuItem; 2],
     },
     /// A quiet section label: a collection's name in the list picker.
@@ -393,10 +395,92 @@ fn confirm(message: String, action: MenuEntry, cancel_key: &'static str) -> Menu
     match (action, cancel) {
         (MenuEntry::Item(action), MenuEntry::Item(cancel)) => MenuEntry::Confirm {
             message: message.into(),
+            note: None,
             buttons: [action, cancel],
         },
         (other, _) => other,
     }
+}
+
+/// A delete confirmation as the owner was asked it: the question (with the names and counts in it) as
+/// it was drawn, and whether it was asked again because they changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub question: SharedString,
+    pub changed: bool,
+}
+
+impl Asked {
+    /// The question `entries` (a confirmation) ask now, asked for the first time.
+    pub fn of(entries: &[MenuEntry]) -> Option<Self> {
+        question(entries).map(|question| Self {
+            question: question.clone(),
+            changed: false,
+        })
+    }
+}
+
+/// The question a confirmation asks, in full.
+pub fn question(entries: &[MenuEntry]) -> Option<&SharedString> {
+    entries.iter().find_map(|e| match e {
+        MenuEntry::Confirm { message, .. } => Some(message),
+        _ => None,
+    })
+}
+
+/// What confirming a delete does, given the question as it was asked and the confirmation the state asks
+/// for now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirmed {
+    /// Nothing changed since it was asked: delete.
+    Proceed,
+    /// The names or counts changed (a sync, another device, an agent): delete nothing and ask this.
+    AskAgain(SharedString),
+    /// What it was about is gone.
+    Gone,
+}
+
+/// Whether to go ahead with a confirmed delete. The confirmation always shows the question as it was
+/// asked (`as_asked`), never one redrawn from data that changed under it; if what it would say now
+/// differs, nothing is deleted and the new question is asked instead.
+pub fn on_confirm(asked: Option<&Asked>, now: &[MenuEntry]) -> Confirmed {
+    match (asked, question(now)) {
+        (_, None) => Confirmed::Gone,
+        (Some(asked), Some(q)) if &asked.question != q => Confirmed::AskAgain(q.clone()),
+        _ => Confirmed::Proceed,
+    }
+}
+
+/// `entries` (a confirmation) as the owner was asked: the question as it was drawn, with a note when it
+/// was asked again because it changed. Its buttons are today's.
+pub fn as_asked(entries: Vec<MenuEntry>, asked: &Asked) -> Vec<MenuEntry> {
+    entries
+        .into_iter()
+        .map(|e| match e {
+            MenuEntry::Confirm { buttons, .. } => {
+                let what = if buttons
+                    .iter()
+                    .any(|b| matches!(b.action, MenuAction::DeleteCollection(_)))
+                {
+                    "collection"
+                } else {
+                    "list"
+                };
+                MenuEntry::Confirm {
+                    message: asked.question.clone(),
+                    note: asked.changed.then(|| {
+                        format!(
+                            "The {what} changed while the question was open. Check it, then \
+                             confirm again."
+                        )
+                        .into()
+                    }),
+                    buttons,
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// The confirmation that replaces a list's menu once Delete was chosen: it says, in full, which list and
@@ -1078,9 +1162,9 @@ fn live_links(state: &State, task: TaskId) -> Vec<&todo_core::model::Link> {
 }
 
 /// What a link is called: its title, else its address (or an email's subject).
-pub fn link_name(link: &todo_core::model::Link) -> String {
+pub fn link_name(kind: &todo_core::model::LinkKind) -> String {
     use todo_core::model::LinkKind;
-    match &link.kind {
+    match kind {
         LinkKind::Web { url, title } => title
             .as_deref()
             .filter(|t| !t.trim().is_empty())
@@ -1114,7 +1198,7 @@ pub fn links_menu(state: &State, task: TaskId) -> Vec<MenuEntry> {
         danger(
             format!("link-remove-{}", l.id),
             Icon::TrashTwo,
-            labels::one_line(&link_name(l)),
+            labels::one_line(&link_name(&l.kind)),
             MenuAction::RemoveLink(l.id),
         )
     }));
@@ -1343,7 +1427,12 @@ mod tests {
             [MenuAction::DeleteList(office), MenuAction::Cancel]
         );
         assert!(is_confirmation(&confirm));
-        let [MenuEntry::Confirm { message, buttons }] = confirm.as_slice() else {
+        let [
+            MenuEntry::Confirm {
+                message, buttons, ..
+            },
+        ] = confirm.as_slice()
+        else {
             panic!("{confirm:?}");
         };
         assert!(
@@ -1534,7 +1623,12 @@ second line"
         );
         assert!(matches!(menu[menu.len() - 2], MenuEntry::Separator));
         let confirm = collection_menu(&f.state, work, false, Page::Confirm);
-        let [MenuEntry::Confirm { message, buttons }] = confirm.as_slice() else {
+        let [
+            MenuEntry::Confirm {
+                message, buttons, ..
+            },
+        ] = confirm.as_slice()
+        else {
             panic!("{confirm:?}");
         };
         let contents = commands::collection_contents(&f.state, work);
@@ -1593,6 +1687,93 @@ second line"
         assert_eq!(
             say(&state),
             "Delete the collection “Work”? Undo brings it back."
+        );
+    }
+
+    #[test]
+    fn a_delete_confirmed_after_a_sync_changed_it_asks_again_and_deletes_nothing() {
+        use crate::store::Store;
+        use todo_core::Command;
+        use todo_core::command::NewTask;
+        let f = fixtures::my_day();
+        let store = Store::fixture(&f);
+        let state = store.view();
+        let work = commands::collections(&state)[0];
+        let office = list_named(&state, "Office");
+        // Drawn: the question as asked.
+        let asked = Asked::of(&collection_menu(&state, work, false, Page::Confirm)).expect("asked");
+        assert!(!asked.changed);
+        // A sync between drawing it and pressing Delete: a task lands in one of its lists.
+        let task = todo_core::ids::TaskId::from_uuid(store.new_uuid());
+        store
+            .submit(Command::CreateTask(Box::new(NewTask::new(
+                task, office, "Synced",
+            ))))
+            .expect("synced");
+        let now = collection_menu(&store.view(), work, false, Page::Confirm);
+        // Until confirmed, it still shows what was asked, not a question redrawn under the pointer.
+        let shown = as_asked(now.clone(), &asked);
+        assert_eq!(question(&shown), Some(&asked.question));
+        assert!(matches!(&shown[0], MenuEntry::Confirm { note: None, .. }));
+        // Confirming deletes nothing: the new question is asked, saying why.
+        let Confirmed::AskAgain(again) = on_confirm(Some(&asked), &now) else {
+            panic!("expected to ask again");
+        };
+        assert_ne!(again, asked.question);
+        assert_eq!(Some(&again), question(&now));
+        let asked_again = Asked {
+            question: again,
+            changed: true,
+        };
+        let shown = as_asked(now.clone(), &asked_again);
+        let [
+            MenuEntry::Confirm {
+                note: Some(note),
+                buttons,
+                ..
+            },
+        ] = shown.as_slice()
+        else {
+            panic!("{shown:?}");
+        };
+        assert_eq!(
+            note.as_ref(),
+            "The collection changed while the question was open. Check it, then confirm again."
+        );
+        assert_eq!(buttons[0].action, MenuAction::DeleteCollection(work));
+        assert_eq!(first_highlight(&shown), Some(1), "on Cancel again");
+        // Confirmed again with nothing new, it goes ahead.
+        assert_eq!(on_confirm(Some(&asked_again), &now), Confirmed::Proceed);
+        // A list's question works the same way, with its own words; a rename counts too.
+        let list_asked =
+            Asked::of(&list_menu(&store.view(), office, Page::Confirm)).expect("asked");
+        store
+            .submit(commands::rename_list(&store.view(), office, "Desk").expect("rename"))
+            .expect("renamed elsewhere");
+        let list_now = list_menu(&store.view(), office, Page::Confirm);
+        let Confirmed::AskAgain(q) = on_confirm(Some(&list_asked), &list_now) else {
+            panic!("expected to ask again");
+        };
+        let shown = as_asked(
+            list_now,
+            &Asked {
+                question: q,
+                changed: true,
+            },
+        );
+        assert!(
+            matches!(&shown[0], MenuEntry::Confirm { note: Some(n), .. } if n.starts_with("The list changed"))
+        );
+        // Gone meanwhile: nothing to confirm.
+        store
+            .submit(commands::delete_collection(&store.view(), work).expect("delete"))
+            .expect("deleted elsewhere");
+        assert_eq!(
+            on_confirm(
+                Some(&asked_again),
+                &collection_menu(&store.view(), work, false, Page::Confirm)
+            ),
+            Confirmed::Gone
         );
     }
 
@@ -1873,7 +2054,12 @@ second line"
         // Confirming, the menu is only the question and its two buttons.
         let confirm = account_menu(Some("https://todo.example.com"), true);
         assert_eq!(actions(&confirm), [MenuAction::SignOut, MenuAction::Cancel]);
-        let [MenuEntry::Confirm { message, buttons }] = confirm.as_slice() else {
+        let [
+            MenuEntry::Confirm {
+                message, buttons, ..
+            },
+        ] = confirm.as_slice()
+        else {
             panic!("{confirm:?}");
         };
         assert!(message.contains("remove this computer's copy"), "{message}");

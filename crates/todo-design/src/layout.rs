@@ -262,6 +262,8 @@ pub mod desktop {
     pub const STEP_ROW: f32 = 30.0;
     /// Property rows (due, reminder, repeat, tags).
     pub const PROP_ROW: f32 = 34.0;
+    /// The gap between a property row's icon, label, value and keycap (and between a step row's parts).
+    pub const PROP_GAP: f32 = 10.0;
     /// Popover menu width (a context menu, the room's and the account's menus, the priority picker).
     pub const MENU: f32 = 240.0;
     /// A menu's confirmation step: what will happen, wrapped in full, above its buttons.
@@ -270,7 +272,7 @@ pub mod desktop {
     pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 51] = [
+    pub const ALL: [(&str, f32); 52] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -319,6 +321,7 @@ pub mod desktop {
         ("detail-pad-x", DETAIL_PAD_X),
         ("step-row", STEP_ROW),
         ("prop-row", PROP_ROW),
+        ("prop-gap", PROP_GAP),
         ("menu", MENU),
         ("confirm", CONFIRM),
         ("sunrise-mark", SUNRISE_MARK),

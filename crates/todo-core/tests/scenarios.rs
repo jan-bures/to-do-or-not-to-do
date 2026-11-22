@@ -2103,3 +2103,86 @@ fn a_move_stored_without_its_position_still_applies_and_undoes() {
     w.undo(&old).unwrap();
     assert_eq!(tasks_in(&w.state, a), [first.into(), second.into()]);
 }
+
+/// The lists of `collection` (or the top level) in order.
+fn lists_in(state: &State, collection: Option<todo_core::ids::CollectionId>) -> Vec<EntityId> {
+    state
+        .siblings(todo_core::state::Scope::Lists(collection))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect()
+}
+
+/// Like a task's, a list's move to another collection records its position even when the key stays the
+/// same (moving the first of two lists into an empty collection keeps it). A later reorder there, from
+/// another device, makes undoing the move a conflict instead of putting the list back above or below
+/// the wrong sibling.
+#[test]
+fn undoing_a_list_move_after_a_reorder_in_the_new_collection_conflicts() {
+    let mut w = World::new();
+    let work = w.collection("Work");
+    let home = w.collection("Home");
+    let first = w.list(Some(work), "first");
+    let second = w.list(Some(work), "second");
+    let key = w.state.lists[&first].position.clone();
+    let moved = w.run(Command::MoveList {
+        id: first,
+        collection: Some(home),
+        placement: Placement::Last,
+    });
+    assert_eq!(w.state.lists[&first].position, key, "kept its key");
+    let EventPayload::Updated { changes, .. } = &moved[0].payload else {
+        panic!("{:?}", moved[0].payload);
+    };
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Position(p) if p.old == p.new))
+    );
+    // Another device adds a list to Home and reorders the moved one below it.
+    let other = w.list(Some(home), "other");
+    w.run(Command::Reorder {
+        id: first.into(),
+        placement: Placement::After(other.into()),
+    });
+    let before = w.state.clone();
+    let r = w.undo(&moved[0]);
+    let Err(UndoError::Conflict(c)) = r else {
+        panic!("expected a conflict, got {r:?}");
+    };
+    assert!(c.conflicts.iter().any(|f| f.field == FieldKey::Position));
+    assert_eq!(w.state, before, "nothing changed");
+    assert_eq!(lists_in(&w.state, Some(work)), [second.into()]);
+
+    // Without the reorder, undoing puts it back exactly: first in Work again.
+    let mut w = World::new();
+    let work = w.collection("Work");
+    let home = w.collection("Home");
+    let first = w.list(Some(work), "first");
+    let second = w.list(Some(work), "second");
+    let moved = w.run(Command::MoveList {
+        id: first,
+        collection: Some(home),
+        placement: Placement::Last,
+    });
+    w.list(Some(home), "other");
+    w.undo(&moved[0]).unwrap();
+    assert_eq!(
+        lists_in(&w.state, Some(work)),
+        [first.into(), second.into()]
+    );
+    // A reorder within one collection is not a cross-collection move: no collection change.
+    let nudged = w.run(Command::MoveList {
+        id: second,
+        collection: Some(work),
+        placement: Placement::First,
+    });
+    let EventPayload::Updated { changes, .. } = &nudged[0].payload else {
+        panic!("{:?}", nudged[0].payload);
+    };
+    assert!(
+        !changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::ListCollection(_)))
+    );
+}

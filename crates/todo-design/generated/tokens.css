@@ -258,6 +258,7 @@
   --desktop-detail-pad-x: 24px;
   --desktop-step-row: 30px;
   --desktop-prop-row: 34px;
+  --desktop-prop-gap: 10px;
   --desktop-menu: 240px;
   --desktop-confirm: 288px;
   --desktop-sunrise-mark: 52px;

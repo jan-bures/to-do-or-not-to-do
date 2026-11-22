@@ -120,6 +120,8 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // menus at their sidebar rows; deleting the Work collection from its room's menu; a list's
         // room menu turned into the collection picker and the colour swatches.
         "new-collection" => Some(new_collection()),
+        // Tab onto New collection in a sidebar longer than the window: it scrolls into view.
+        "tab-new-collection" => Some(long_sidebar()),
         "collection-menu" | "list-context-menu" => Some(my_day()),
         "delete-collection-confirm" => {
             let mut f = work();

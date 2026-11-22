@@ -838,13 +838,19 @@ impl<'a> Decider<'a> {
                     placement,
                 )?;
                 let mut ch = Vec::new();
-                if l.collection != *collection {
+                let other_collection = l.collection != *collection;
+                if other_collection {
                     ch.push(FieldChange::ListCollection(Change::new(
                         l.collection,
                         *collection,
                     )));
                 }
-                if l.position != pos {
+                // As with a task moved to another list: a move to another collection (or out of one)
+                // always records the position, even a key that stays the same, so a later reorder
+                // there makes undoing the move a conflict instead of taking the list back with the key
+                // it got there, in the wrong place among its old siblings. Moves recorded before this
+                // (the collection only) still apply and undo as they did.
+                if other_collection || l.position != pos {
                     ch.push(FieldChange::Position(Change::new(l.position.clone(), pos)));
                 }
                 self.update((*id).into(), ch);

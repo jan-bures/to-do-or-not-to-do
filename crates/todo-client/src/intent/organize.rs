@@ -7,6 +7,7 @@
 
 use todo_core::State;
 use todo_core::command::{Command, Placement};
+use todo_core::decide::MAX_NAME;
 use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
 use todo_core::model::{LinkKind, Tag};
 use todo_core::query::fold;
@@ -142,54 +143,59 @@ pub enum LinkError {
     TaskGone,
 }
 
-/// The web address a typed link stands for: as typed when it starts with `http://` or `https://`
-/// (any case), or with `https://` put in front of a bare address (`example.com/page`). Checked by the
-/// core's own rules (`todo_core::decide::validate_link`), so what this accepts the domain accepts.
+/// The web address a typed link stands for. What's typed is trimmed; `https://` goes in front only when
+/// it doesn't start with a scheme of its own (`example.com/page`, `docs.example.com:8080/x`), and a scheme
+/// is written in lower case. The result must parse as a URL (`url`, WHATWG) with an `http` or `https`
+/// scheme and a host, and an address typed without a scheme must name a dotted host (`example.com`, not
+/// `notes`). Then the core's own check (`todo_core::decide::validate_link`) must pass too, so what this
+/// accepts the domain accepts. The address is kept as typed, not as the parser rewrites it.
 pub fn web_address(text: &str) -> Result<String, LinkError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(LinkError::Empty);
     }
-    let lower = text.to_ascii_lowercase();
-    let url = if let Some(rest) = ["http://", "https://"]
-        .iter()
-        .find_map(|p| lower.starts_with(p).then(|| &text[p.len()..]))
-    {
-        // The scheme in lower case, the rest as typed.
-        let scheme = if lower.starts_with("https://") {
-            "https://"
-        } else {
-            "http://"
-        };
-        format!("{scheme}{rest}")
-    } else if text.contains("://") || !looks_like_a_host(text) {
-        return Err(LinkError::NotWeb);
-    } else {
-        format!("https://{text}")
+    let address = match scheme_of(text) {
+        Some(scheme) => {
+            let lower = scheme.to_ascii_lowercase();
+            // `//` and then the host, as written: the parser would read `https:example.com` or
+            // `https:///path` as some other address than the one kept.
+            let rest = &text[scheme.len() + 1..];
+            let authority = rest.strip_prefix("//").unwrap_or("/");
+            if !matches!(lower.as_str(), "http" | "https") || authority.starts_with('/') {
+                return Err(LinkError::NotWeb);
+            }
+            format!("{lower}{}", &text[scheme.len()..])
+        }
+        None => format!("https://{text}"),
     };
+    let parsed = url::Url::parse(&address).map_err(|_| LinkError::NotWeb)?;
+    let host = parsed.host_str().unwrap_or_default();
+    let web = matches!(parsed.scheme(), "http" | "https") && !host.is_empty();
+    let dotted = || {
+        let name = host.trim_start_matches('[');
+        name.contains('.') && !name.starts_with('.') && !name.ends_with('.')
+    };
+    if !web || (scheme_of(text).is_none() && !dotted()) {
+        return Err(LinkError::NotWeb);
+    }
     let kind = LinkKind::Web {
-        url: url.clone(),
+        url: address.clone(),
         title: None,
     };
     todo_core::decide::validate_link(&kind).map_err(|_| LinkError::NotWeb)?;
-    Ok(url)
+    Ok(address)
 }
 
-/// A bare address such as `example.com/page`: a dotted host name (and maybe a port) before any path,
-/// with no spaces, and not a scheme like `mailto:` or `javascript:`.
-fn looks_like_a_host(text: &str) -> bool {
-    let host = text.split(['/', '?', '#']).next().unwrap_or_default();
-    let (name, port) = host.split_once(':').unwrap_or((host, "0"));
-    !text.contains(char::is_whitespace)
-        && !host.contains('@')
-        && !port.is_empty()
-        && port.chars().all(|c| c.is_ascii_digit())
-        && name.contains('.')
-        && !name.starts_with('.')
-        && !name.ends_with('.')
-        && name
+/// The scheme `text` starts with (`https` in `https://…`, `mailto` in `mailto:…`), if it starts with
+/// one: letters, digits, `+`, `-` and `.` before the first `:`, beginning with a letter. A host followed
+/// by a port (`example.com:8080`) isn't a scheme: a port starts with a digit.
+fn scheme_of(text: &str) -> Option<&str> {
+    let (scheme, rest) = text.split_once(':')?;
+    let valid = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
             .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    (valid && !rest.starts_with(|c: char| c.is_ascii_digit())).then_some(scheme)
 }
 
 /// Adds a web link to a live task, from what was typed (see [`web_address`]).
@@ -220,8 +226,25 @@ pub fn delete_link(state: &State, id: LinkId) -> Option<Command> {
 pub enum TagError {
     #[error("a tag needs a name")]
     Empty,
+    #[error("a tag's name can be at most {} characters", MAX_NAME)]
+    TooLong,
     #[error("there is already a tag named “{0}”")]
     Taken(String),
+    #[error("the task is gone")]
+    TaskGone,
+}
+
+/// A tag's name as the domain stores it (trimmed), or why it can't be one: empty, or longer than the
+/// domain's limit (`todo_core::decide::MAX_NAME` characters).
+fn tag_name(name: &str) -> Result<&str, TagError> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(TagError::Empty)
+    } else if name.chars().count() > MAX_NAME {
+        Err(TagError::TooLong)
+    } else {
+        Ok(name)
+    }
 }
 
 /// Every live tag, by name (ignoring case and accents).
@@ -245,13 +268,11 @@ pub fn tag_named(state: &State, name: &str) -> Option<TagId> {
         .map(|t| t.id)
 }
 
-/// A new tag, with a swatch picked from its ID. Refused when the name is empty or another live tag has
-/// it (ignoring case).
+/// A new tag, with a swatch picked from its ID. Refused when the name is empty, longer than the domain
+/// allows, or another live tag has it (ignoring case, as the domain does: `str::to_lowercase`, not the
+/// search fold, so `é` written as one character or as `e` and an accent are two names).
 pub fn create_tag(state: &State, id: TagId, name: &str) -> Result<Command, TagError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(TagError::Empty);
-    }
+    let name = tag_name(name)?;
     if let Some(other) = tag_named(state, name).and_then(|t| state.tags.get(&t)) {
         return Err(TagError::Taken(other.name.clone()));
     }
@@ -263,16 +284,13 @@ pub fn create_tag(state: &State, id: TagId, name: &str) -> Result<Command, TagEr
     })
 }
 
-/// Renames a live tag. `Ok(None)` when the name is unchanged or the tag is gone; refused when it is empty
-/// or another live tag has it.
+/// Renames a live tag. `Ok(None)` when the name is unchanged or the tag is gone; refused when it is empty,
+/// too long, or another live tag has it.
 pub fn rename_tag(state: &State, id: TagId, name: &str) -> Result<Option<Command>, TagError> {
-    let name = name.trim();
     let Some(tag) = state.tags.get(&id).filter(|_| state.is_live(id.into())) else {
         return Ok(None);
     };
-    if name.is_empty() {
-        return Err(TagError::Empty);
-    }
+    let name = tag_name(name)?;
     if name == tag.name {
         return Ok(None);
     }
@@ -306,12 +324,16 @@ pub fn toggle_tag(state: &State, task: TaskId, tag: TagId) -> Option<Command> {
 
 /// Tags a live task by name: with the live tag of that name, or with a new one created first. The new
 /// tag's ID, if one is created, comes back with the commands; empty when the task already has the tag.
+/// Refused, creating nothing, when the task is gone, so no tag is made that nothing carries.
 pub fn tag_task_named(
     state: &State,
     task: TaskId,
     name: &str,
     new_id: impl FnOnce() -> Uuid,
 ) -> Result<(TagId, Vec<Command>), TagError> {
+    if !state.is_live(task.into()) {
+        return Err(TagError::TaskGone);
+    }
     if let Some(tag) = tag_named(state, name) {
         let on = state
             .tasks
@@ -326,11 +348,7 @@ pub fn tag_task_named(
     }
     let tag = TagId::from_uuid(new_id());
     let create = create_tag(state, tag, name)?;
-    let mut cmds = vec![create];
-    if state.is_live(task.into()) {
-        cmds.push(Command::AddTag { task, tag });
-    }
-    Ok((tag, cmds))
+    Ok((tag, vec![create, Command::AddTag { task, tag }]))
 }
 
 #[cfg(test)]
@@ -517,6 +535,19 @@ mod tests {
             web_address("docs.example.com:8080/x").as_deref(),
             Ok("https://docs.example.com:8080/x")
         );
+        // A scheme anywhere but at the start is part of the address.
+        assert_eq!(
+            web_address("example.com/?next=https://example.com").as_deref(),
+            Ok("https://example.com/?next=https://example.com")
+        );
+        assert_eq!(
+            web_address("HTTPS://Example.com/Path").as_deref(),
+            Ok("https://Example.com/Path")
+        );
+        assert_eq!(
+            web_address("https://localhost:8080/x").as_deref(),
+            Ok("https://localhost:8080/x")
+        );
         assert_eq!(web_address("   "), Err(LinkError::Empty));
         for bad in [
             "javascript:alert(1)",
@@ -526,8 +557,15 @@ mod tests {
             "just words",
             "https://exa mple.com",
             "localhost",
+            "notes",
             ".com",
             "example.",
+            // A scheme with nothing after it would save a card that opens nothing.
+            "https://",
+            "http://",
+            "https:///path",
+            "https:example.com",
+            "HTTPS://",
         ] {
             assert_eq!(web_address(bad), Err(LinkError::NotWeb), "{bad}");
         }
@@ -573,6 +611,10 @@ mod tests {
         let task = w.task(list, "Taxes");
         let fresh = TagId::from_uuid(w.id());
         assert_eq!(create_tag(&w.state, fresh, " "), Err(TagError::Empty));
+        // The domain's limit on names, counted in characters.
+        let long = "ř".repeat(MAX_NAME + 1);
+        assert_eq!(create_tag(&w.state, fresh, &long), Err(TagError::TooLong));
+        assert!(create_tag(&w.state, fresh, &"ř".repeat(MAX_NAME)).is_ok());
         // By name: created first, then put on the task.
         let state = w.state.clone();
         let (docs, cmds) = tag_task_named(&state, task, " docs ", || w.id()).expect("tag");
@@ -633,8 +675,17 @@ mod tests {
         // Its name is free again.
         let fresh = TagId::from_uuid(w.id());
         assert!(create_tag(&w.state, fresh, "receipts").is_ok());
-        // A gone task is never tagged.
+        assert_eq!(
+            rename_tag(&w.state, docs, &"x".repeat(MAX_NAME + 1)),
+            Err(TagError::TooLong)
+        );
+        // A gone task is never tagged, and no tag is created for it.
         w.run(delete(task));
         assert!(toggle_tag(&w.state, task, docs).is_none());
+        assert_eq!(
+            tag_task_named(&w.state, task, "orphan", Uuid::nil),
+            Err(TagError::TaskGone)
+        );
+        assert_eq!(tag_named(&w.state, "orphan"), None);
     }
 }

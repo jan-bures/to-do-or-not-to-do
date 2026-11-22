@@ -314,8 +314,62 @@ impl KeyResize {
     }
 }
 
+/// The scroll offset that brings a row (`target`, its top and bottom) into a scrolled pane's `viewport`,
+/// `margin` clear of its edges, or `None` when it's in view already. Positions are in the same space
+/// (the window's); `offset` is the pane's (0 at the top, more negative further down) and `max` how far
+/// it can scroll. The keyboard never lands on something the owner can't see.
+pub fn reveal_offset(
+    viewport: (f32, f32),
+    target: (f32, f32),
+    offset: f32,
+    max: f32,
+    margin: f32,
+) -> Option<f32> {
+    let (top, bottom) = viewport;
+    let shift = if target.0 - margin < top {
+        top - (target.0 - margin)
+    } else if target.1 + margin > bottom {
+        bottom - (target.1 + margin)
+    } else {
+        return None;
+    };
+    let next = (offset + shift).clamp(-max.max(0.), 0.);
+    (next != offset).then_some(next)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn focus_scrolls_what_it_lands_on_into_view() {
+        use super::reveal_offset;
+        // A pane from 100 to 500, scrolled to the top, 1000 px further to go.
+        // Below it: scrolled up just enough to show it, with the margin.
+        assert_eq!(
+            reveal_offset((100., 500.), (700., 730.), 0., 1000., 8.),
+            Some(-238.)
+        );
+        // Above it (the pane scrolled down): back down to it.
+        assert_eq!(
+            reveal_offset((100., 500.), (40., 70.), -300., 1000., 8.),
+            Some(-232.)
+        );
+        // In view: nothing to do.
+        assert_eq!(
+            reveal_offset((100., 500.), (200., 230.), -50., 1000., 8.),
+            None
+        );
+        // Never past either end.
+        assert_eq!(
+            reveal_offset((100., 500.), (2000., 2030.), -900., 1000., 8.),
+            Some(-1000.)
+        );
+        assert_eq!(
+            reveal_offset((100., 500.), (40., 70.), -20., 1000., 8.),
+            Some(0.)
+        );
+        assert_eq!(reveal_offset((100., 500.), (40., 70.), 0., 0., 8.), None);
+    }
+
     use super::*;
 
     /// The narrowest window (`app::MIN_WINDOW`, which only builds on Windows).

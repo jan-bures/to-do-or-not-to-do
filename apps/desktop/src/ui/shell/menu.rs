@@ -17,7 +17,7 @@ use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellEvent, ShellView};
-use crate::model::menus::{self, MenuAction, MenuEntry, MenuItem, Page, TagPage};
+use crate::model::menus::{self, Asked, Confirmed, MenuAction, MenuEntry, MenuItem, Page, TagPage};
 use crate::model::motion::Overlay;
 use crate::model::{commands, hints::Stop, labels};
 use crate::theme::{
@@ -47,6 +47,9 @@ pub(super) struct Menu {
     /// The refused changes the "couldn't sync" list shows: those there when it opened (one refused
     /// since shows the next time it opens). Dismiss all takes exactly these.
     pub failures: Vec<todo_client::CommandId>,
+    /// A delete confirmation's question as it was drawn when it opened (or was asked again). It stays as
+    /// asked while data changes under it, and confirming compares it with what it would say now.
+    pub asked: Option<Asked>,
 }
 
 /// What a task's context menu shows: its items, or in their place the priority picker, the list
@@ -139,8 +142,19 @@ impl MenuKind {
 }
 
 impl ShellView {
-    /// What the menu offers now.
+    /// What the menu offers now: a delete confirmation as it was asked (`menus::as_asked`).
     pub(super) fn menu_entries(&self, kind: MenuKind) -> Vec<MenuEntry> {
+        let entries = self.live_menu_entries(kind);
+        match self.menu.as_ref().filter(|m| m.kind == kind) {
+            Some(Menu {
+                asked: Some(asked), ..
+            }) if !entries.is_empty() => menus::as_asked(entries, asked),
+            _ => entries,
+        }
+    }
+
+    /// What the menu would offer from the data now.
+    fn live_menu_entries(&self, kind: MenuKind) -> Vec<MenuEntry> {
         let state = self.store.view();
         match kind {
             MenuKind::Account { confirm } => {
@@ -260,6 +274,7 @@ impl ShellView {
                 },
                 trigger,
                 filter: String::new(),
+                asked: None,
                 failures: if kind == MenuKind::SyncFailures {
                     (self.store.failed().iter())
                         .map(|f| f.entry.command_id)
@@ -271,7 +286,9 @@ impl ShellView {
         };
         // A keyboard user stays on the keyboard: a confirmation starts on Cancel.
         let keyboard = menu.highlight.is_some();
-        self.menu = Some(menu);
+        // A confirmation keeps its question as asked now.
+        let asked = Asked::of(&self.live_menu_entries(kind));
+        self.menu = Some(Menu { asked, ..menu });
         // A new menu, or a new page of it, starts scrolled to its top.
         self.menu_scroll = ScrollHandle::new();
         if keyboard {
@@ -607,6 +624,28 @@ impl ShellView {
             }
             _ => {}
         }
+        // A delete is confirmed only for what the question said: if the names or counts changed while
+        // it was open, nothing is deleted and the new question is asked, the keyboard on Cancel.
+        if matches!(
+            action,
+            MenuAction::DeleteList(_) | MenuAction::DeleteCollection(_)
+        ) && let Confirmed::AskAgain(question) =
+            menus::on_confirm(menu.asked.as_ref(), &self.live_menu_entries(menu.kind))
+        {
+            let (now, pace) = (self.now(), self.pace());
+            if let Some(m) = self.menu.as_mut() {
+                m.asked = Some(Asked {
+                    question,
+                    changed: true,
+                });
+                if self.animate {
+                    m.overlay.swap_content(now, pace);
+                }
+            }
+            self.highlight_first();
+            cx.notify();
+            return;
+        }
         self.close_menu(keyboard && !action.moves_focus(), window, cx);
         match action {
             MenuAction::RenameList(id) => self.rename_list(id, window, cx),
@@ -822,7 +861,11 @@ impl ShellView {
                 MenuEntry::Item(item) => self
                     .menu_item(&p, item, on(item), live, cx)
                     .into_any_element(),
-                MenuEntry::Confirm { message, buttons } => {
+                MenuEntry::Confirm {
+                    message,
+                    note,
+                    buttons,
+                } => {
                     let buttons = buttons
                         .iter()
                         .map(|item| self.confirm_button(&p, item, on(item), live, cx));
@@ -839,6 +882,12 @@ impl ShellView {
                                 .style(ty::BODY)
                                 .text_color(p.ink)
                                 .child(message.clone()),
+                        )
+                        // Asked again: it changed while it was open.
+                        .children(
+                            note.clone().map(|note| {
+                                div().style(ty::META).text_color(p.danger_ink).child(note)
+                            }),
                         )
                         .child(
                             div()
@@ -1508,6 +1557,7 @@ mod tests {
             trigger: None,
             filter: filter.into(),
             failures: Vec::new(),
+            asked: None,
         };
         let key = |text: &'static str| KeyDownEvent {
             keystroke: Keystroke::parse(text).expect("keystroke"),
@@ -1648,6 +1698,7 @@ mod tests {
             trigger: None,
             filter: "rec".into(),
             failures: Vec::new(),
+            asked: None,
         };
         let key = gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse("e->e").expect("keystroke"),

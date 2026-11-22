@@ -29,6 +29,17 @@ pub(super) enum InlineTarget {
     Tag(TagId),
 }
 
+impl InlineTarget {
+    /// The tag being renamed, if it's a tag. Any tag can be: its editor shows in the detail pane's Tags
+    /// row whether or not the open task has it.
+    pub(super) fn tag(self) -> Option<TagId> {
+        match self {
+            Self::Tag(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 /// An inline rename in progress.
 pub(super) struct Inline {
     pub target: InlineTarget,
@@ -515,6 +526,7 @@ impl ShellView {
             let focused = self.stop_handle(stop).is_focused(window);
             let row = div()
                 .id(id)
+                .relative()
                 .h(px(desktop::NAV_SUB_ROW))
                 .flex()
                 .items_center()
@@ -527,6 +539,7 @@ impl ShellView {
                 .hover(|s| s.bg(p.hover))
                 .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
                 .child(label)
+                .child(self.probe(id))
                 .on_click(cx.listener(move |this, _, window, cx| add(this, window, cx)))
                 .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                     this.control_key(e, window, cx);
@@ -756,6 +769,23 @@ mod tests {
         }
         // Nothing was written: the stored names are as they were.
         assert_eq!(f.state.lists[&list].name, "Plan\nning");
+    }
+
+    #[test]
+    fn any_tag_can_be_renamed_not_only_the_open_tasks() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        // "docs" isn't on the open task, and its rename still opens (in the Tags row).
+        let docs = commands::tag_named(&f.state, "docs").expect("docs");
+        assert!(!f.state.tasks[&task].tags.contains(&docs));
+        assert_eq!(InlineTarget::Tag(docs).tag(), Some(docs));
+        let actions: Vec<_> =
+            crate::model::menus::items(&crate::model::menus::tag_edit_menu(&f.state, task, docs))
+                .map(|i| i.action)
+                .collect();
+        assert!(actions.contains(&crate::model::menus::MenuAction::RenameTag(docs)));
+        let list = *f.state.lists.keys().next().expect("list");
+        assert_eq!(InlineTarget::List(list).tag(), None);
     }
 
     #[test]

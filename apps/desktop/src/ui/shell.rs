@@ -217,6 +217,9 @@ pub struct ShellView {
     /// Where each list and collection row in the sidebar was last painted: a screenshot fixture opens
     /// its context menu there, as a right-click would.
     nav_bounds: Rc<RefCell<HashMap<RoomKey, Bounds<Pixels>>>>,
+    /// Where the controls the keyboard can land on inside a scrolled pane were last painted (New list,
+    /// New collection, the link field), so landing there scrolls them into view (`scroll_into_view`).
+    probes: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     /// The sidebar's New list and New collection, which Tab reaches.
     new_list_focus: FocusHandle,
     new_collection_focus: FocusHandle,
@@ -351,6 +354,7 @@ impl ShellView {
             menu_dropped: false,
             row_bounds: Rc::default(),
             nav_bounds: Rc::default(),
+            probes: Rc::default(),
             new_list_focus: cx.focus_handle(),
             new_collection_focus: cx.focus_handle(),
             preview_focus: None,
@@ -947,6 +951,20 @@ impl ShellView {
                 }
                 return;
             }
+            // Tab onto New collection, below the fold of a long sidebar: scrolled into view, with its ring.
+            "tab-new-collection" => {
+                self.preview_focus = Some(self.new_collection_focus.clone());
+                let view = cx.entity().downgrade();
+                window.on_next_frame(move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.scroll_into_view(&this.sidebar_scroll, "new-collection") {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                });
+                return;
+            }
             "tag-rename" => {
                 if let Some(chip) = self.shell.detail.as_ref().and_then(|d| d.tags.first()) {
                     let (id, name) = (chip.id, chip.name.clone());
@@ -959,8 +977,16 @@ impl ShellView {
                     i.set_text("docs.example.com/q4/brief".to_string(), cx);
                 });
                 self.preview_focus = Some(self.edit.link.read(cx).focus_handle.clone());
-                let scroll = self.detail_scroll.clone();
-                window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
+                // As L leaves it: the field scrolled into view once the pane is laid out.
+                let view = cx.entity().downgrade();
+                window.on_next_frame(move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.scroll_into_view(&this.detail_scroll, "link-field") {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                });
                 return;
             }
             _ => {}
@@ -2329,6 +2355,40 @@ impl ShellView {
         .inset_0()
     }
 
+    /// Records where a control was painted, for `scroll_into_view`.
+    fn probe(&self, key: &'static str) -> impl IntoElement {
+        let probes = self.probes.clone();
+        gpui::canvas(
+            move |b, _, _| {
+                probes.borrow_mut().insert(key, b);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    /// Scrolls the pane of `handle` so the control `key` (a `probe`) is in view, a small margin clear of
+    /// its edges (`layout::reveal_offset`). Nothing when it's in view, or hasn't been painted yet.
+    fn scroll_into_view(&self, handle: &ScrollHandle, key: &'static str) -> bool {
+        let Some(target) = self.probes.borrow().get(key).copied() else {
+            return false;
+        };
+        let view = handle.bounds();
+        let offset = handle.offset();
+        let next = model::layout::reveal_offset(
+            (f32::from(view.top()), f32::from(view.bottom())),
+            (f32::from(target.top()), f32::from(target.bottom())),
+            f32::from(offset.y),
+            f32::from(handle.max_offset().y),
+            space::S2,
+        );
+        if let Some(y) = next {
+            handle.set_offset(gpui::point(offset.x, px(y)));
+        }
+        next.is_some()
+    }
+
     /// A task's title in any of its layouts (a list row, a line of the hand-over, the hand-over's first
     /// task), as its look `l` paints it (`RowLook::rest` when nothing plays): the ink dims to `ink-3`
     /// and the strike-through draws from the left in step with the tick. At rest, and once drawn, it's
@@ -3198,6 +3258,15 @@ impl ShellView {
     fn focus_stop(&mut self, stop: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.stop_handle(stop).clone();
         window.focus(&handle, cx);
+        // In a long sidebar they can be below its fold: scrolled into view.
+        let key = match stop {
+            hints::Stop::NewList => Some("new-list"),
+            hints::Stop::NewCollection => Some("new-collection"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            self.scroll_into_view(&self.sidebar_scroll, key);
+        }
         cx.notify();
     }
 

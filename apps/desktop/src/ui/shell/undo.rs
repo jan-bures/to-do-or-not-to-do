@@ -15,14 +15,15 @@ use crate::model::labels::one_line;
 use crate::store::UndoTarget;
 use crate::theme::TextStyled;
 
-/// What an undoable change did: a task change, deleting a step, a link, a list or a whole collection,
-/// or moving a list to another collection.
+/// What an undoable change did: a task change, adding or deleting a link, deleting a step, a list or a
+/// whole collection, or moving a list to another collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
     Complete,
     Delete,
     Move,
     DeleteStep,
+    AddLink,
     DeleteLink,
     DeleteList,
     MoveList,
@@ -44,6 +45,8 @@ impl EditKind {
             },
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
             Command::MoveList { id, .. } => (id.into(), Self::MoveList),
+            // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
+            Command::AddLink { id, .. } => (id.into(), Self::AddLink),
             Command::Reorder {
                 id: id @ EntityId::Task(_),
                 ..
@@ -62,6 +65,7 @@ impl EditKind {
             Self::Delete => "Deleted",
             Self::Move | Self::MoveList => "Moved",
             Self::DeleteStep => "Deleted step",
+            Self::AddLink => "Added link",
             Self::DeleteLink => "Removed link",
             Self::DeleteList => "Deleted list",
             Self::DeleteCollection => "Deleted collection",
@@ -75,6 +79,7 @@ impl EditKind {
                 Self::Delete => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
+                Self::AddLink => "Removed link",
                 Self::DeleteLink => "Restored link",
                 Self::DeleteList => "Restored list",
                 Self::DeleteCollection => "Restored collection",
@@ -111,6 +116,8 @@ impl EditKind {
                     old.collection != new.collection || old.position != new.position
                 }),
             (Self::Move | Self::MoveList, _) => false,
+            // Undoing an addition withdraws the link.
+            (Self::AddLink, _) => before.is_live(entity) && !after.is_live(entity),
             _ => !self.is_restored(entity, before) && self.is_restored(entity, after),
         }
     }
@@ -184,6 +191,10 @@ pub(super) fn toast_label(
             Some(list) => moved(&format!("to {}", one_line(&list.name))),
             None => kind.label(&title),
         },
+        // The link isn't in the state before it's added: the command names it.
+        (Command::AddLink { kind: link, .. }, EditKind::AddLink) => {
+            kind.label(&crate::model::menus::link_name(link))
+        }
         (Command::MoveList { id, collection, .. }, EditKind::MoveList) => {
             let name = |c: &CollectionId| state.collections.get(c).map(|c| one_line(&c.name));
             match (collection, state.lists.get(id).and_then(|l| l.collection)) {
@@ -208,7 +219,9 @@ pub(super) fn subject_title(state: &State, entity: EntityId) -> String {
     match entity {
         EntityId::Task(id) => state.tasks.get(&id).map(|t| t.title.clone()),
         EntityId::Step(id) => state.steps.get(&id).map(|s| s.title.clone()),
-        EntityId::Link(id) => state.links.get(&id).map(crate::model::menus::link_name),
+        EntityId::Link(id) => {
+            (state.links.get(&id)).map(|l| crate::model::menus::link_name(&l.kind))
+        }
         EntityId::List(id) => state.lists.get(&id).map(|l| l.name.clone()),
         EntityId::Collection(id) => state.collections.get(&id).map(|c| c.name.clone()),
         _ => None,
@@ -319,6 +332,8 @@ impl ShellView {
         let toast_active = self.toast.look(now).is_some_and(|t| t.active);
         let before = (!toast_active).then(|| self.store.view());
         let Action { entity, kind, .. } = action;
+        // Named as it is now: undoing an addition takes the link away with its name.
+        let title = subject_title(&self.store.view(), entity);
         let queued = match self.store.undo(&action.target) {
             Err(error) => {
                 // In particular a cache write failure must leave the action retryable.
@@ -361,7 +376,7 @@ impl ShellView {
         self.notice = hidden.map(Notice::info).or_else(|| {
             before.map(|before| {
                 if kind.undo_changed_view(entity, &before, &state) {
-                    Notice::info(kind.undone_label(&subject_title(&state, entity)))
+                    Notice::info(kind.undone_label(&title))
                 } else if queued.is_some() {
                     Notice::info("Undo queued.")
                 } else {
@@ -902,6 +917,42 @@ mod tests {
             crate::model::commands::set_color(&back, personal.into(), "teal").expect("colour");
         assert!(!touches(&recolour, entity, &back));
         assert!(touches(&recolour, personal.into(), &back));
+    }
+
+    #[test]
+    fn undoing_an_added_link_takes_it_away_and_is_the_latest_undo() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected task");
+        let store = Store::fixture(&f);
+        let add =
+            crate::model::commands::add_link(&f.state, task, "docs.example.com/brief", || {
+                store.new_uuid()
+            })
+            .expect("a link");
+        let (entity, kind) = EditKind::of(&add).expect("undoable");
+        assert_eq!(kind, EditKind::AddLink);
+        assert!(!kind.needs_row_restore() && !kind.leaves_room());
+        // Named from the command: the link isn't in the state before it's added.
+        assert_eq!(
+            toast_label(&f.state, &add, entity, kind).as_ref(),
+            "Added link “https://docs.example.com/brief”"
+        );
+        // Adding it is an edit of its task, so an older target for the task goes stale and Ctrl+Z
+        // undoes the addition, not something before it.
+        assert!(touches(&add, task.into(), &f.state));
+        let target = store.submit_undoable(add).expect("added");
+        let added = store.view();
+        assert!(added.is_live(entity));
+        assert_eq!(
+            kind.undone_label(&subject_title(&added, entity)).as_ref(),
+            "Removed link “https://docs.example.com/brief”"
+        );
+        store.undo(&target).expect("undone");
+        let after = store.view();
+        assert!(!after.is_live(entity));
+        assert!(kind.undo_changed_view(entity, &added, &after));
+        assert!(!kind.undo_changed_view(entity, &after, &after));
     }
 
     #[test]

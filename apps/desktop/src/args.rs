@@ -20,8 +20,8 @@ Options:
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, room-menu, account-menu, priority-menu,
                     task-context-menu, move-to-picker, sync-failures, delete-list-confirm,
-                    new-collection, collection-menu, list-context-menu, delete-collection-confirm,
-                    move-list-picker, list-colour, tag-picker, tag-create, tag-edit, tag-colour,
+                    new-collection, tab-new-collection, collection-menu, list-context-menu,
+                    delete-collection-confirm, move-list-picker, list-colour, tag-picker, tag-create, tag-edit, tag-colour,
                     tag-rename, task-links, add-link, collapsed-collection, long-sidebar, long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
@@ -49,6 +49,7 @@ pub const FIXTURES: &[&str] = &[
     "sync-failures",
     "delete-list-confirm",
     "new-collection",
+    "tab-new-collection",
     "collection-menu",
     "list-context-menu",
     "delete-collection-confirm",

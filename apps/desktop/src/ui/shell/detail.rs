@@ -31,6 +31,10 @@ use crate::ui::kit;
 use crate::ui::text_area::TextArea;
 use todo_core::model::Priority;
 
+/// The width of a property row's label column (Due, Priority, Tags): the row draws it and the Tags row's
+/// chips are fitted beside it, so both read it from here.
+const FIELD_LABEL: f32 = space::S10 * 2.;
+
 /// The pane's editors and what they hold.
 pub(super) struct Editors {
     pub title: Entity<TextArea>,
@@ -260,8 +264,16 @@ impl ShellView {
         }
         let handle = self.edit.link.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
-        let scroll = self.detail_scroll.clone();
-        window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
+        // Once the pane is laid out for this task: the field scrolled into view, wherever it is.
+        let view = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            view.update(cx, |this, cx| {
+                if this.scroll_into_view(&this.detail_scroll, "link-field") {
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
         cx.notify();
     }
 
@@ -709,6 +721,7 @@ impl ShellView {
         let link_focused = live && self.edit.link.read(cx).focus_handle.is_focused(window);
         // Below the links: the field that adds one (L), like Add step.
         let add_link = div()
+            .relative()
             .mx(px(desktop::DETAIL_PAD_X))
             .h(px(desktop::STEP_ROW))
             .flex()
@@ -732,7 +745,8 @@ impl ShellView {
                     .when(live, |el| el.child(self.edit.link.clone()))
                     .when(!live, |el| el.child("Add a link")),
             )
-            .child(kit::kbd(&p, if link_focused { "Enter" } else { "L" }));
+            .child(kit::kbd(&p, if link_focused { "Enter" } else { "L" }))
+            .when(live, |d| d.child(self.probe("link-field")));
         let steps: Vec<AnyElement> = d
             .steps
             .iter()
@@ -751,7 +765,7 @@ impl ShellView {
                     .h(px(desktop::PROP_ROW))
                     .flex()
                     .items_center()
-                    .gap(px(space::S2 + 2.))
+                    .gap(px(desktop::PROP_GAP))
                     .border_b_1()
                     .border_color(p.line)
                     .hover(|s| s.bg(p.hover))
@@ -803,15 +817,11 @@ impl ShellView {
                 let due = f.edit == Some(FieldEdit::Due);
                 let priority = f.edit == Some(FieldEdit::Priority);
                 let tags = f.edit == Some(FieldEdit::Tags);
-                // A tag of this task being renamed: its editor takes the row's value.
-                let renaming = tags
-                    .then(|| {
-                        d.tags
-                            .iter()
-                            .find_map(|t| self.inline_for(InlineTarget::Tag(t.id)))
-                    })
-                    .flatten()
-                    .filter(|_| live);
+                // A tag being renamed (from the tag picker, whether or not this task has it): its
+                // editor takes the row's value, where the picker hangs from.
+                let renaming = (self.inline.as_ref())
+                    .filter(|i| tags && live && i.target.tag().is_some())
+                    .map(|i| i.input.clone());
                 let value = match (&self.edit.due, due) {
                     (Some((input, _)), true) => div()
                         .flex_1()
@@ -844,13 +854,13 @@ impl ShellView {
                     .h(px(desktop::PROP_ROW))
                     .flex()
                     .items_center()
-                    .gap(px(space::S2 + 2.))
+                    .gap(px(desktop::PROP_GAP))
                     .border_b_1()
                     .border_color(p.line)
                     .child(kit::icon(f.icon, component::ICON_SMALL, p.ink_3))
                     .child(
                         div()
-                            .w(px(space::S10 * 2.))
+                            .w(px(FIELD_LABEL))
                             .flex_none()
                             .style(ty::NAV_COLLECTION.with_weight(400))
                             .text_color(p.ink_3)
@@ -1195,9 +1205,9 @@ impl ShellView {
         let room = self.columns(window).width(super::Pane::Detail)
             - 2. * desktop::DETAIL_PAD_X
             - component::ICON_SMALL
-            - space::S10 * 2.
+            - FIELD_LABEL
             - kit::kbd_width(window, "T")
-            - 3. * (space::S2 + 2.);
+            - 3. * desktop::PROP_GAP;
         let widths: Vec<f32> = tags
             .iter()
             .map(|t| {
