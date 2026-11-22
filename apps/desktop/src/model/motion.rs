@@ -153,6 +153,9 @@ enum Phase {
     Settle { done: bool },
     /// Entering a list at its new place, after a release.
     Enter { done: bool },
+    /// Leaving the list at once, from wherever it is: the task was deleted or moved to a list the room
+    /// doesn't show. It's released without entering anywhere.
+    Leave,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -197,6 +200,7 @@ impl RowMotion {
         match self.phase {
             Phase::Complete => self.landed() + millis(m::COMPLETE_HOLD),
             Phase::Reopen => self.clear().max(self.restore_end()),
+            Phase::Leave => Duration::ZERO,
             Phase::Settle { .. } | Phase::Enter { .. } => Duration::MAX,
         }
     }
@@ -210,7 +214,7 @@ impl RowMotion {
     fn length(&self) -> Duration {
         let p = self.pace;
         match self.phase {
-            Phase::Complete | Phase::Reopen => self.exit_at() + self.exit_span(),
+            Phase::Complete | Phase::Reopen | Phase::Leave => self.exit_at() + self.exit_span(),
             Phase::Settle { done: true } => self.landed(),
             Phase::Settle { done: false } => self
                 .clear()
@@ -289,6 +293,21 @@ impl RowMotion {
                 opacity: m::ENTER.ease(stretch(e, zero, p.fade(m::ROW_ENTER))),
                 ..RowLook::rest(done)
             },
+            // The completion's exit, from the row as it is: it fades and closes its slot (with reduced
+            // motion it only fades, and leaves the layout when it's released).
+            Phase::Leave => {
+                let gone_h = if p.reduced {
+                    0.
+                } else {
+                    m::EXIT.ease(stretch(e, zero, p.movement(m::ROW_COLLAPSE)))
+                };
+                let gone_o = m::EXIT.ease(stretch(e, zero, p.fade(m::ROW_COLLAPSE)));
+                RowLook {
+                    height: f.height * (1. - gone_h),
+                    opacity: f.opacity * (1. - gone_o),
+                    ..f
+                }
+            }
         }
     }
 
@@ -353,6 +372,8 @@ pub enum Release {
     Completed(TaskId),
     /// A reopened task left its completed place (and enters the open rows).
     Reopened(TaskId),
+    /// A deleted or moved-away task left the list.
+    Left(TaskId),
 }
 
 /// Where a toggled task stays while its choreography plays.
@@ -531,10 +552,21 @@ impl Motion {
         }
     }
 
+    /// Task `id` was deleted or moved to a list this room doesn't show: its row fades and collapses
+    /// from where it is (`ROW_COLLAPSE`, `EXIT`), kept in its place (`UiState::leaving`) until it's
+    /// released (`Release::Left`). Nothing on it can be clicked or reached from the keyboard meanwhile.
+    /// `done`: how the row is drawn at rest (a task in the Completed section is).
+    pub fn leave(&mut self, id: TaskId, done: bool, now: Duration, pace: Pace) {
+        self.start(id, Phase::Leave, now, pace, done);
+    }
+
     /// A task restored by Undo either reverses the held completion (in `reconcile`) or enters its
-    /// list directly. Unlike manually reopening a task, Undo doesn't linger in Completed.
+    /// list directly. Unlike manually reopening a task, Undo doesn't linger in Completed. A row still
+    /// leaving comes back from where it is, without a jump.
     pub fn restore(&mut self, id: TaskId, done: bool, now: Duration, pace: Pace) {
-        if self.phase(id) != Some(Phase::Complete) {
+        if self.phase(id) == Some(Phase::Leave) {
+            self.start(id, Phase::Settle { done }, now, pace, done);
+        } else if self.phase(id) != Some(Phase::Complete) {
             self.rows.insert(
                 id,
                 RowMotion {
@@ -569,6 +601,15 @@ impl Motion {
         self.ids(Phase::Reopen)
     }
 
+    /// Tasks deleted or moved away whose rows are still leaving (`UiState::leaving`).
+    pub fn leaving(&self) -> impl Iterator<Item = TaskId> + '_ {
+        self.ids(Phase::Leave)
+    }
+
+    pub fn is_leaving(&self, id: TaskId) -> bool {
+        self.phase(id) == Some(Phase::Leave)
+    }
+
     fn ids(&self, phase: Phase) -> impl Iterator<Item = TaskId> + '_ {
         self.rows
             .iter()
@@ -582,6 +623,8 @@ impl Motion {
     /// rest or entering that no longer matches its task's state stops at once.
     pub fn reconcile(&mut self, now: Duration, pace: Pace, done: impl Fn(TaskId) -> Option<bool>) {
         self.rows.retain(|&id, r| match (done(id), r.phase) {
+            // A leaving row plays on whatever happens to its task: it's already gone from here.
+            (_, Phase::Leave) => true,
             (None, _) => false,
             (Some(false), Phase::Complete) | (Some(true), Phase::Reopen) => {
                 let done = r.phase == Phase::Reopen;
@@ -609,6 +652,10 @@ impl Motion {
             let (release, done) = match r.phase {
                 Phase::Complete => (Release::Completed(id), true),
                 Phase::Reopen => (Release::Reopened(id), false),
+                Phase::Leave => {
+                    released.push(Release::Left(id));
+                    return false;
+                }
                 Phase::Settle { .. } | Phase::Enter { .. } => return false,
             };
             released.push(release);
@@ -639,7 +686,7 @@ impl Motion {
                 return true;
             }
             match r.phase {
-                Phase::Complete => {
+                Phase::Complete | Phase::Leave => {
                     let_go = true;
                     false
                 }
@@ -674,9 +721,11 @@ impl Motion {
         self.rows.clear();
     }
 
-    /// Whether the incoming list and the given row have appeared in the sampled frame.
+    /// Whether the incoming list and the given row have appeared in the sampled frame. A leaving row
+    /// never counts: it's only paint.
     pub fn row_is_visible(&self, id: TaskId, frame: Duration) -> bool {
         self.navigation.list(frame).incoming > 0.
+            && !self.is_leaving(id)
             && self
                 .row(id, frame)
                 .is_none_or(|look| look.height > 0. && look.opacity > 0.)

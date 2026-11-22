@@ -64,7 +64,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Sync status line | client `status()` | shown `D/model/derive.rs:628` (sidebar footer) | shown `W/app.rs:791` | shown `A/ui/Drawer.kt:165`, chip `A/ui/RoomPane.kt:215` |
 | Sync now | client `nudge()` | wired: the account menu (`D/ui/shell/menu.rs:452`) | missing (runs automatically on wake, `W/app.rs:424`) | wired `A/ui/Drawer.kt:196`; the chip, `A/ui/RoomPane.kt:231` |
 | Offline outbox, replay on reconnect | `todo-client` | wired (SQLite) | wired (IndexedDB, `MirrorStorage`) | wired (SQLite) |
-| "Couldn't sync" list: see and dismiss | client `failed()` and `dismiss()` | shown as a count only (`D/model/derive.rs:636`); missing list and dismiss | shown as a count only (`W/app.rs:672`); missing list and dismiss | wired banner and dismiss `A/ui/RoomPane.kt:145`, `F/engine.rs:649` |
+| "Couldn't sync" list: see and dismiss | client `failed()`, `dismiss()` and `dismiss_all()`; plain words in `T/failure.rs` | wired: "N couldn't sync" in the sidebar footer opens the refused changes, each with what it was about and why (never the server's text), with Dismiss and Dismiss all (`D/ui/shell/sidebar.rs:259`, `D/model/menus.rs:671`, `D/ui/shell/menu.rs:513`) | shown as a count only (`W/app.rs:672`); missing list and dismiss | wired banner and dismiss `A/ui/RoomPane.kt:145`, `F/engine.rs:649` |
 | Recover a damaged cache, start fresh | client `salvage_all` | wired `D/ui/failed.rs:105` | wired `W/main.rs:111` (Reset local data) | wired `F/recovery.rs`, `A/ui/PairingScreen.kt:106` |
 | Settings: server, admin pages link | admin pages at `/admin` | wired: the account menu shows the server and opens `<server>/admin`, built from the paired address (`D/model/menus.rs:379`, `:463`, `D/ui/shell/menu.rs:407`) | missing | partial: the drawer menu shows the server (`A/ui/Drawer.kt:186`); missing the admin link |
 
@@ -79,6 +79,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Filter by query or words (Ctrl+K, `/`) | `C/query` | wired `D/ui/shell.rs:271`, clear `:1150` | wired `W/app.rs:899`, `:907` | wired `A/ui/RoomPane.kt:136`, `:182` |
 | Keyboard: J/K, arrows, Space, E, Esc | n/a | wired `D/ui/shell.rs:66`–`78`, `:2089` | wired `W/app.rs:492` | n/a |
 | Keyboard: D (due), P (priority), Shift+P (priority picker), Alt+Up/Down (reorder) | n/a | wired `D/ui/shell.rs:2251`–`2264` | wired `W/app.rs` (`on_key`) | n/a |
+| Keyboard: Delete (delete), M (move to another list), Shift+F10 (the task's menu) | n/a | wired `D/ui/shell.rs` (`list_key`, `MoveTaskTo`, `TaskMenu`) | missing | n/a |
 | Keyboard: Ctrl+N or N focuses quick add | n/a | wired `D/ui/shell.rs:2604` | wired `W/app.rs:583` | n/a |
 
 ### Lists and collections
@@ -111,10 +112,10 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
 | Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | wired: the detail pane's Priority field, Shift+P and P (`W/app.rs`) | missing (the star only) |
 | Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list (`W/app.rs`, `W/model.rs`) | missing |
-| Move a task to another list | `MoveTask` `C/command.rs:206` | missing (undo already handles it: `D/ui/shell/undo.rs:31`) | missing | missing |
-| Delete a task | `Delete` | missing (undo already handles it: `D/ui/shell/undo.rs:28`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
+| Move a task to another list | `MoveTask` `C/command.rs:206` | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | missing | missing |
+| Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
 | Trash and restore | `Restore` `C/command.rs:370` | missing | missing | missing |
-| Task context menu (right-click or long-press) | n/a | missing | missing | missing |
+| Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:533`) | missing | missing |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
 | Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | missing | missing |
@@ -160,7 +161,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | missing | n/a |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a list or a step can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | missing |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | missing |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list only; missing the agent summary |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
@@ -182,8 +183,9 @@ The owner manages these on the server's own pages (`S/web/mod.rs`) or through th
 Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), and mostly over MCP too
 (`S/mcp/tools.rs`). No client offers it.
 
-- **Tasks.** Delete and restore, `Delete` and `Restore`. Move to another list, `MoveTask` (MCP
-  `move_task`). Merge, `MergeTasks` (MCP `merge_tasks`).
+- **Tasks.** Restore from the trash, `Restore` (only the desktop's Undo restores a task it just
+  deleted). Merge, `MergeTasks` (MCP `merge_tasks`). Deleting and moving a task to another list are on
+  the desktop only.
 - **Collections.** Create (`CreateCollection`), delete and recolour.
 - **Lists.** Move into another collection (`MoveList`) and recolour.
 - **Tags.** Create, rename and recolour (`CreateTag`, `UpdateTag`; MCP `create_tag`). Attach and detach
@@ -211,7 +213,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 1.2 | **Hidden in D1** until the date picker (D2). The quick-add field's calendar and flag icons do nothing. Make them pick a due date and a priority for the task being typed (a small popover, or insert the syntax). | `D/ui/shell.rs:1474`, `:1475` | M |
 | 1.3 | **Tooltip in D1**; editing is D3 and D6. Reminder, Repeat and Tags rows look like the editable Due row but are inert, and they appear only when set, so nothing can be added. Make each always present and editable. | `D/model/derive.rs:681`–`737`, `D/ui/shell/detail.rs:669` | M each (tags L, with tag creation) |
 | 1.4 | **Done in D1.** The hand-over rows' checkboxes are drawn but only select the task. Make them complete it, as on Android. | `D/ui/shell.rs:2315` | S |
-| 1.5 | "N couldn't sync" in the sidebar has no way to see or dismiss what failed. Android has a banner. | `D/model/derive.rs:636` | S–M |
+| 1.5 | **Done.** "N couldn't sync" in the sidebar has no way to see or dismiss what failed. Android has a banner. | `D/model/derive.rs:636` | S–M |
 | 1.6 | The sidebar's agent rows look like rows but are inert. Make them open the activity feed filtered to that agent (see 2.3). | `D/ui/shell/sidebar.rs:474` | S, after 2.3 |
 | 1.7 | **Done in D1** (the Priority row). You can set the priority only by clicking the `!` mark, and the mark is absent when the priority is none. Add a priority control to the detail pane, or keep the column clickable. | `D/ui/shell.rs:1813` | S |
 | 1.8 | **Done in D1.** Deleting a step (no confirmation) and deleting a list (confirmation) can't be undone. | `D/ui/shell/detail.rs:473`, `D/ui/shell/sidebar.rs:695` | S |
@@ -220,7 +222,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 
 | # | Gap | Size |
 |---|---|---|
-| 2.1 | Delete a task, and move it to another list. The undo kinds exist already (`D/ui/shell/undo.rs:28`, `:31`). Add a task context menu, the Delete key and "Move to…". | M |
+| 2.1 | **Done.** Delete a task, and move it to another list. The undo kinds exist already (`D/ui/shell/undo.rs:28`, `:31`). Add a task context menu, the Delete key and "Move to…". | M |
 | 2.2 | Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
 | 2.3 | Activity feed with per-event undo, grouped by agent. Needs a `todo-client` call for `GET /activity`. | L |
 | 2.4 | Reminders: edit them, and fire Windows toasts while the app runs in the tray. | L |
@@ -245,7 +247,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.6 | **Done.** Reorder tasks in a list with Alt+Up/Down. | S |
 | 3.7 | Exact undo through `SyncClient::undo_tracked`, including undo for a recurring task and for reorders. | M |
 | 3.8 | **Done.** Hand-over rows select the task and can complete it from the checkbox. | S |
-| 3.9 | "Not synced" list with dismiss. | S |
+| 3.9 | "Not synced" list with dismiss. `todo_client::failure` words each refused change, as the desktop shows it. | S |
 | 3.10 | Remember folded collections across reloads (in `localStorage`, say). | S |
 | 3.11 | Upload attachments. The server must also accept the session (cookie and CSRF) on the upload route, which is bearer-only today. | M |
 | 3.12 | Everything in section 2 that isn't desktop-only (2.1–2.7, 2.12), once the desktop has it. | — |
@@ -264,7 +266,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
 | 4.9 | Agent summary in the drawer. | S |
 | 4.10 | Reminder notifications (local alarms from synced reminders). | L |
-| 4.11 | Task delete and move, tags, reminders, repeat, once the shared command helpers exist. | — |
+| 4.11 | Task delete and move (the shared builders exist: `intent::delete_task`, `move_to_list`, `list_groups`), tags, reminders, repeat, once the shared command helpers exist. | — |
 
 ## Shared gesture-to-command code
 
@@ -275,4 +277,6 @@ maps its own room key to the shared task intent. This resolves the creation drif
 - Every new list gets a stable swatch from its ID.
 - All three clients can create lists inside collections.
 - New tasks are placed first in their list's manual order. A smart list may display its own sort order.
+- A task moved to another list is placed first there too (`move_to_list`), and the list picker groups the
+  lists as the sidebar does (`list_groups`).
 - Web and Android parse the same trailing date and priority as desktop. Desktop and Android preview the parsed date while typing.

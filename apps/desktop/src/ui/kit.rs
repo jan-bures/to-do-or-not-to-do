@@ -264,11 +264,18 @@ pub fn overdue_badge(p: &Palette, label: SharedString) -> Div {
         .child(label)
 }
 
+/// How wide a keycap (`kbd`) is: its label, its padding and its side borders.
+pub fn kbd_width(window: &Window, label: &str) -> f32 {
+    text_width(window, ty::KEYCAP, label) + 2. * (KBD_PAD + elevation::HAIRLINE)
+}
+
+const KBD_PAD: f32 = space::S1 + 1.;
+
 /// A keycap.
 pub fn kbd(p: &Palette, label: &'static str) -> Div {
     div()
         .flex_none()
-        .px(px(space::S1 + 1.))
+        .px(px(KBD_PAD))
         .h(px(ty::KEYCAP.line_height + 2.))
         .flex()
         .items_center()

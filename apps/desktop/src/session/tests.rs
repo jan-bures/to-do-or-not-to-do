@@ -651,6 +651,221 @@ fn undoing_an_acknowledged_step_delete_restores_it_and_keeps_an_edit_made_meanwh
     d.finish(store);
 }
 
+/// What must come back exactly when a task is restored or moved back: its list, title, My Day, and
+/// its steps in order with whether each is done.
+fn task_settings(d: &Deletes, state: &State) -> (ListId, String, bool, Vec<(String, bool)>) {
+    let task = &state.tasks[&d.task];
+    (
+        task.list,
+        task.title.clone(),
+        task.my_day.is_some(),
+        d.step_settings(state),
+    )
+}
+
+#[test]
+fn undoing_an_unsent_task_delete_or_move_cancels_it_and_the_task_is_back_as_it_was() {
+    use todo_client::TrackedUndo;
+
+    let d = Deletes::new();
+    let store = d.store(false);
+    let before = store.view();
+    let settings = task_settings(&d, &before);
+    let garden = d.lists[1];
+    let changes = [
+        commands::delete_task(&before, d.task).expect("delete"),
+        commands::move_to_list(&before, d.task, d.lists[0]).expect("move"),
+    ];
+    for change in changes {
+        let target = store.submit_undoable(change.clone()).expect("change");
+        let changed = store.view();
+        assert!(
+            !changed.is_live(d.task.into()) || changed.tasks[&d.task].list != garden,
+            "{change:?}"
+        );
+        assert!(order(&changed, garden).is_empty(), "gone from its list");
+        assert_eq!(store.undo(&target).expect("undo"), TrackedUndo::Cancelled);
+        let after = store.view();
+        assert!(after.data_eq(&before), "nothing else changed: {change:?}");
+        assert_eq!(task_settings(&d, &after), settings);
+        assert_eq!(order(&after, garden), [d.task]);
+        assert!(my_day_rows(&store).contains(&d.task));
+    }
+    let session = store.session().expect("session");
+    assert!(session.client().pending().is_empty(), "nothing to send");
+    d.finish(store);
+}
+
+#[test]
+fn undoing_an_acknowledged_task_delete_restores_it_and_keeps_an_edit_made_meanwhile() {
+    use todo_client::TrackedUndo;
+
+    let d = Deletes::new();
+    let store = d.store(true);
+    let settings = task_settings(&d, &store.view());
+    let delete = commands::delete_task(&store.view(), d.task).expect("delete");
+    let target = store.submit_undoable(delete).expect("delete");
+    let session = store.session().expect("session");
+    eventually("the delete is acknowledged", || {
+        session.client().pending().is_empty()
+    });
+    assert!(!d.server.state().is_live(d.task.into()));
+    assert!(!my_day_rows(&store).contains(&d.task));
+    // Meanwhile B renames the task's list.
+    submit(
+        &d.b,
+        vec![todo_core::Command::UpdateList {
+            id: d.lists[1],
+            name: Some("Garden beds".into()),
+            color: None,
+        }],
+    );
+    eventually("A sees B's rename", || {
+        store.view().lists[&d.lists[1]].name == "Garden beds"
+    });
+    let TrackedUndo::Queued(_) = store.undo(&target).expect("undo") else {
+        panic!("an acknowledged delete is undone through the server");
+    };
+    assert!(store.view().is_live(d.task.into()), "at once");
+    eventually("the undo is confirmed", || {
+        session.client().pending().is_empty()
+    });
+    assert!(session.client().failed().is_empty());
+    for (who, state) in [("server", d.server.state()), ("A", store.view())] {
+        assert!(state.is_live(d.task.into()), "{who}");
+        assert_eq!(task_settings(&d, &state), settings, "{who}: as it was");
+        assert_eq!(state.lists[&d.lists[1]].name, "Garden beds", "{who}");
+    }
+    assert!(my_day_rows(&store).contains(&d.task), "back in My Day");
+    eventually("B sees it back", || {
+        d.b.client().view().is_live(d.task.into())
+    });
+    d.finish(store);
+}
+
+#[test]
+fn undoing_an_acknowledged_move_puts_the_task_back_and_keeps_an_edit_made_meanwhile() {
+    use todo_client::TrackedUndo;
+    use todo_core::command::TaskPatch;
+
+    let d = Deletes::new();
+    let store = d.store(true);
+    let (garden, errands) = (d.lists[1], d.lists[0]);
+    let moved = commands::move_to_list(&store.view(), d.task, errands).expect("move");
+    let target = store.submit_undoable(moved).expect("move");
+    let session = store.session().expect("session");
+    eventually("the move is acknowledged", || {
+        session.client().pending().is_empty()
+    });
+    assert_eq!(d.server.state().tasks[&d.task].list, errands);
+    // Meanwhile B renames the task where it went.
+    submit(
+        &d.b,
+        vec![todo_core::Command::UpdateTask {
+            id: d.task,
+            patch: TaskPatch {
+                title: Some("Plant the tulip bulbs".into()),
+                ..TaskPatch::default()
+            },
+        }],
+    );
+    eventually("A sees B's rename", || {
+        store.view().tasks[&d.task].title == "Plant the tulip bulbs"
+    });
+    let TrackedUndo::Queued(_) = store.undo(&target).expect("undo") else {
+        panic!("an acknowledged move is undone through the server");
+    };
+    assert_eq!(store.view().tasks[&d.task].list, garden, "at once");
+    eventually("the undo is confirmed", || {
+        session.client().pending().is_empty()
+    });
+    assert!(session.client().failed().is_empty());
+    for (who, state) in [("server", d.server.state()), ("A", store.view())] {
+        assert_eq!(order(&state, garden), [d.task], "{who}: back in its list");
+        assert!(order(&state, errands).is_empty(), "{who}");
+        let task = &state.tasks[&d.task];
+        assert_eq!(
+            task.title, "Plant the tulip bulbs",
+            "{who}: B's edit survives"
+        );
+        assert_eq!(d.step_settings(&state).len(), 3, "{who}: with its steps");
+    }
+    d.finish(store);
+}
+
+#[test]
+fn refused_changes_are_listed_in_plain_words_and_dismissed_for_good() {
+    use crate::model::menus::{self, MenuAction, MenuEntry};
+    use crate::store::{LiveStore, Store};
+    use todo_client::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
+
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let store = Store::Live(LiveStore::new(
+        Session::open(net.clone(), &paths, &pairing).expect("open"),
+    ));
+    let client = store.session().expect("session").client();
+    let now = store.now().at;
+    let refused = |command, code: &str| FailedEntry {
+        entry: OutboxEntry {
+            command_id: store.new_uuid(),
+            op: Operation::Command { command },
+            submitted_at: now,
+            attempts: 1,
+            acked: None,
+            acked_epoch: None,
+        },
+        failed_at: now,
+        rejection: Rejection {
+            status: 409,
+            code: code.into(),
+            message: "Raw server message".into(),
+        },
+    };
+    let task = TaskId::from_uuid(store.new_uuid());
+    let list = ListId::from_uuid(store.new_uuid());
+    let failed = vec![
+        refused(todo_core::Command::Delete { id: task.into() }, "not_found"),
+        refused(
+            commands::create_list(list, None, "Garden"),
+            "duplicate_name",
+        ),
+        refused(todo_core::Command::CompleteTask { id: task }, "teapot"),
+    ];
+    let ids: Vec<_> = failed.iter().map(|f| f.entry.command_id).collect();
+    client.adopt_failed(failed).expect("record refusals");
+    assert_eq!(store.sync().failed, 3);
+    let menu = menus::failures_menu(&store.view(), &store.failed());
+    let mut rows: Vec<String> = menu
+        .iter()
+        .filter_map(|e| match e {
+            MenuEntry::Failure { what, why, .. } => Some(format!("{what}: {why}")),
+            _ => None,
+        })
+        .collect();
+    // Listed by when they were refused; these were refused at the same moment.
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            "Add a list \u{201c}Garden\u{201d}: That name is already taken.",
+            "Complete a task: The server refused it.",
+            "Delete a task: It no longer exists.",
+        ]
+    );
+    assert!(menus::items(&menu).any(|i| i.action == MenuAction::DismissAllFailures));
+    assert_eq!(store.dismiss_failed(ids[1]), Ok(true));
+    assert_eq!(store.sync().failed, 2);
+    assert_eq!(store.dismiss_all_failed(), Ok(2));
+    assert_eq!(store.sync().failed, 0);
+    drop(store);
+    let reopened = Session::open(net, &paths, &pairing).expect("reopen");
+    assert!(reopened.client().failed().is_empty(), "dismissed for good");
+}
+
 #[test]
 fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let server = TestServer::start();

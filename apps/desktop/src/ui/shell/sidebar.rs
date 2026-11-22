@@ -254,6 +254,41 @@ impl ShellView {
         )
     }
 
+    /// The sync line in the sidebar's footer. While something couldn't sync, it's a button: it opens the
+    /// list of refused changes, upwards, to see and dismiss them. Tab reaches it (`Stop::SyncFailures`).
+    fn sync_line(&self, dot: gpui::Hsla, window: &Window, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let line = div()
+            .flex()
+            .items_center()
+            .gap(px(space::S2))
+            .style(ty::COUNT)
+            .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(dot))
+            .child(self.shell.sidebar.sync.clone());
+        if self.store.sync().failed == 0 {
+            return line;
+        }
+        let button = line
+            .id("sync-failures")
+            .relative()
+            .h(px(component::ICON_BUTTON))
+            .px(px(space::S2))
+            .ml(px(-space::S2))
+            .rounded(px(radius::MD))
+            .cursor_pointer()
+            .track_focus(&self.sync_focus)
+            .hover(|s| s.bg(p.hover))
+            .child(kit::icon(Icon::ChevronUp, component::ICON_SMALL, p.ink_3))
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                this.toggle_menu(MenuKind::SyncFailures, Stop::SyncFailures, e, window, cx);
+            }))
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                this.control_key(e, window, cx);
+            }))
+            .children(self.menu_anchor(|k| matches!(k, MenuKind::SyncFailures), cx));
+        ring(&p, self.sync_focus.is_focused(window), radius::MD, button)
+    }
+
     pub(super) fn sidebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let t = self.theme;
@@ -573,15 +608,7 @@ impl ShellView {
                     .border_t_1()
                     .border_color(p.line)
                     .text_color(p.ink_3)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S2))
-                            .style(ty::COUNT)
-                            .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(dot))
-                            .child(sb.sync.clone()),
-                    )
+                    .child(self.sync_line(dot, window, cx))
                     .child(account),
             )
     }

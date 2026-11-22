@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use todo_client::outbox::Rejection;
+use todo_client::outbox::{FailedEntry, Rejection};
 use todo_client::{CommandId, Connection, ErrorKind, TrackedCommand, TrackedUndo};
 use todo_core::event::Event;
 use todo_core::time::Timestamp;
@@ -23,6 +23,8 @@ pub struct LocalStore {
     state: RefCell<Arc<State>>,
     now: Now,
     sync: SyncInfo,
+    /// The fixture's "couldn't sync" list, which Dismiss empties.
+    failed: RefCell<Vec<FailedEntry>>,
     next: Cell<u64>,
     /// Tests: refuse every submit, as a cache that can't be written would.
     #[cfg(test)]
@@ -80,6 +82,7 @@ impl Store {
             state: RefCell::new(Arc::new(f.state.clone())),
             now: f.now.clone(),
             sync: f.sync.clone(),
+            failed: RefCell::new(f.failed.clone()),
             next: Cell::new(0),
             #[cfg(test)]
             refuse: Cell::new(false),
@@ -165,6 +168,35 @@ impl Store {
         )
     }
 
+    /// The changes the server refused ("couldn't sync"), oldest first.
+    pub fn failed(&self) -> Vec<FailedEntry> {
+        match self {
+            Self::Local(s) => s.failed.borrow().clone(),
+            Self::Live(s) => s.session.client().failed(),
+        }
+    }
+
+    /// Takes a refused change off the "couldn't sync" list. Returns whether it was there.
+    pub fn dismiss_failed(&self, id: CommandId) -> Result<bool, String> {
+        match self {
+            Self::Local(s) => {
+                let mut failed = s.failed.borrow_mut();
+                let before = failed.len();
+                failed.retain(|f| f.entry.command_id != id);
+                Ok(failed.len() != before)
+            }
+            Self::Live(s) => s.session.client().dismiss(id).map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Empties the "couldn't sync" list. Returns how many it held.
+    pub fn dismiss_all_failed(&self) -> Result<usize, String> {
+        match self {
+            Self::Local(s) => Ok(std::mem::take(&mut *s.failed.borrow_mut()).len()),
+            Self::Live(s) => s.session.client().dismiss_all().map_err(|e| e.to_string()),
+        }
+    }
+
     /// The shell has reported this refusal; it isn't an ordinary change to retry.
     pub fn dismiss_undo_failure(&self, id: CommandId) -> bool {
         self.session().is_none_or(|s| match s.client().dismiss(id) {
@@ -202,7 +234,10 @@ impl Store {
     /// The sync status for the footer.
     pub fn sync(&self) -> SyncInfo {
         match self {
-            Self::Local(s) => s.sync.clone(),
+            Self::Local(s) => SyncInfo {
+                failed: s.failed.borrow().len(),
+                ..s.sync.clone()
+            },
             Self::Live(s) => {
                 let status = s.session.client().status();
                 if status.connection == Connection::Online {
@@ -282,7 +317,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_fixtures_refused_changes_are_listed_counted_and_dismissed() {
+        let mut f = crate::fixtures::my_day();
+        f.failed = crate::fixtures::failed_changes(&f.state);
+        let store = Store::fixture(&f);
+        assert_eq!(store.failed().len(), 3);
+        assert_eq!(
+            store.sync().failed,
+            3,
+            "the sidebar's count follows the list"
+        );
+        let first = store.failed()[0].entry.command_id;
+        assert_eq!(store.dismiss_failed(first), Ok(true));
+        assert_eq!(store.dismiss_failed(first), Ok(false));
+        assert_eq!(store.sync().failed, 2);
+        assert!(store.failed().iter().all(|e| e.entry.command_id != first));
+        assert_eq!(store.dismiss_all_failed(), Ok(2));
+        assert_eq!(store.sync().failed, 0);
+        assert_eq!(store.dismiss_all_failed(), Ok(0));
+    }
+
     proptest! {
+        /// Deleting any task, or moving it to any other list, and undoing it puts back exactly what was
+        /// there: the task, its list and its place in it, and everything else as it was.
+        #[test]
+        fn local_undo_of_a_task_delete_or_move_restores_it_exactly(
+            index in any::<usize>(),
+            to in any::<usize>(),
+            delete in any::<bool>(),
+        ) {
+            use crate::model::commands;
+            let store = Store::fixture(&crate::fixtures::work());
+            let before = store.view();
+            let tasks: Vec<_> = before.tasks.values().filter(|t| before.is_live(t.id.into())).collect();
+            let task = tasks[index % tasks.len()];
+            let lists: Vec<_> = before.lists.values()
+                .filter(|l| before.is_live(l.id.into()) && l.id != task.list)
+                .map(|l| l.id)
+                .collect();
+            let cmd = if delete {
+                commands::delete_task(&before, task.id)
+            } else {
+                commands::move_to_list(&before, task.id, lists[to % lists.len()])
+            };
+            let undo = store.submit_undoable(cmd.expect("a change")).expect("valid");
+            prop_assert_ne!(store.view().entity(task.id.into()), before.entity(task.id.into()));
+            store.undo(&undo).expect("valid inverse");
+            let after = store.view();
+            prop_assert!(after.data_eq(&before));
+            prop_assert_eq!(after.entity(task.id.into()), before.entity(task.id.into()));
+            let scope = Scope::Tasks(task.list);
+            prop_assert_eq!(after.siblings(scope), before.siblings(scope));
+        }
+
         #[test]
         fn local_undo_restores_the_exact_order(index in any::<usize>()) {
             let store = Store::fixture(&crate::fixtures::my_day());

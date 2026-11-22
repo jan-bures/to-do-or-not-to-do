@@ -144,6 +144,29 @@ fn task_label(verb: &str, title: &str) -> SharedString {
     format!("{verb} \u{201c}{}\u{201d}", one_line(title)).into()
 }
 
+/// What the toast says a change did: Deleted “Buy stamps”, or for a move to another list, where it
+/// went: Moved “Buy stamps” to Errands. `state` is the state before the change.
+pub(super) fn toast_label(
+    state: &State,
+    command: &Command,
+    entity: EntityId,
+    kind: EditKind,
+) -> SharedString {
+    let title = subject_title(state, entity);
+    match (command, kind) {
+        (Command::MoveTask { list, .. }, EditKind::Move) => match state.lists.get(list) {
+            Some(list) => format!(
+                "Moved \u{201c}{}\u{201d} to {}",
+                one_line(title),
+                one_line(&list.name)
+            )
+            .into(),
+            None => kind.label(title),
+        },
+        _ => kind.label(title),
+    }
+}
+
 /// What the toast names: a task's or a step's title, or a list's name.
 pub(super) fn subject_title(state: &State, entity: EntityId) -> &str {
     match entity {
@@ -236,10 +259,10 @@ pub(super) struct Pending {
 }
 
 impl ShellView {
-    pub(super) fn remember_undo(&mut self, action: Action, title: &str) {
+    pub(super) fn remember_undo(&mut self, action: Action, label: SharedString) {
         let (now, pace) = (self.now(), self.pace());
         self.toast.advance(now, pace);
-        self.toast.show(action.kind.label(title), now, pace);
+        self.toast.show(label, now, pace);
         self.last_undo = Some(action);
     }
 
@@ -275,6 +298,17 @@ impl ShellView {
             Ok(TrackedUndo::Queued(undo_id)) => Some(undo_id),
         };
         let state = self.store.view();
+        // A task moved back while its row still leaves comes back from where it is; one moved back
+        // into this room from another list enters it.
+        if kind == EditKind::Move
+            && self.animate
+            && let EntityId::Task(id) = entity
+            && (self.motion.is_leaving(id) || !self.shell.rows().any(|r| r.id == id))
+            && let Some(task) = state.tasks.get(&id)
+        {
+            self.motion
+                .restore(id, task.is_done(), self.now(), self.pace());
+        }
         let animated = !kind.needs_row_restore() || self.animate_restored(kind, entity, &state);
         if let Some(undo_id) = queued {
             self.pending_undo.push(Pending {
@@ -688,6 +722,45 @@ mod tests {
         assert_eq!(
             hidden_by_parent(EditKind::Complete, task.into(), &store.view()),
             None
+        );
+    }
+
+    #[test]
+    fn the_toast_says_a_task_was_deleted_or_where_it_was_moved() {
+        let f = fixtures::my_day();
+        let id = f.ui.task.expect("selected task");
+        let title = f.state.tasks[&id].title.clone();
+        let errands = f
+            .state
+            .lists
+            .values()
+            .find(|l| l.name == "Errands")
+            .expect("Errands")
+            .id;
+        let delete = Command::Delete { id: id.into() };
+        let (entity, kind) = EditKind::of(&delete).expect("undoable");
+        assert_eq!(kind, EditKind::Delete);
+        assert_eq!(
+            toast_label(&f.state, &delete, entity, kind).as_ref(),
+            format!("Deleted \u{201c}{title}\u{201d}")
+        );
+        let moved = crate::model::commands::move_to_list(&f.state, id, errands).expect("move");
+        let (entity, kind) = EditKind::of(&moved).expect("undoable");
+        assert_eq!(kind, EditKind::Move);
+        assert_eq!(
+            toast_label(&f.state, &moved, entity, kind).as_ref(),
+            format!("Moved \u{201c}{title}\u{201d} to Errands")
+        );
+        // Moving within its list says only that it moved.
+        let nudge = crate::model::commands::nudge(&f.state, id.into(), 1).expect("reorder");
+        let (entity, kind) = EditKind::of(&nudge).expect("undoable");
+        assert_eq!(
+            toast_label(&f.state, &nudge, entity, kind).as_ref(),
+            format!("Moved \u{201c}{title}\u{201d}")
+        );
+        assert_eq!(
+            EditKind::Delete.undone_label(&title).as_ref(),
+            format!("Restored \u{201c}{title}\u{201d}")
         );
     }
 

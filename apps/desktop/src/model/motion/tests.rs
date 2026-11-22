@@ -620,6 +620,10 @@ enum Op {
     /// Task `n` is deleted. The replica keeps its tombstone, which still says whether it was done; the
     /// list no longer shows it.
     Delete(u8),
+    /// The owner deletes task `n` (or moves it away) here: its row leaves, kept in place until released.
+    Leave(u8),
+    /// Undo brings task `n` back while its row still leaves.
+    UndoLeave(u8),
     /// The owner switches rooms.
     SwitchRoom,
 }
@@ -631,7 +635,9 @@ fn op() -> impl Strategy<Value = (u32, Op)> {
         prop_oneof![
             6 => n.clone().prop_map(Op::Toggle),
             2 => n.clone().prop_map(Op::Elsewhere),
-            1 => n.prop_map(Op::Delete),
+            1 => n.clone().prop_map(Op::Delete),
+            2 => n.clone().prop_map(Op::Leave),
+            1 => n.prop_map(Op::UndoLeave),
             1 => Just(Op::SwitchRoom),
         ],
     )
@@ -662,8 +668,9 @@ fn seen(look: RowLook) -> RowLook {
 }
 
 proptest! {
-    /// Any sequence of toggles, changes from elsewhere, deletions and room switches, at any speed: every
-    /// row stays in range and toggles never jump; a task is held or reopening only while its state says it
+    /// Any sequence of toggles, changes from elsewhere, deletions (here, with the row leaving, and
+    /// undone part way, or elsewhere) and room switches, at any speed: every row stays in range and
+    /// toggles, leaving and undoing never jump; a task is held or reopening only while its state says it
     /// was just completed or reopened; releases always agree with the state; and once things go quiet,
     /// everything converges to rest with no frames or timers left.
     #[test]
@@ -678,14 +685,21 @@ proptest! {
         let mut done: BTreeMap<TaskId, bool> = (0..3).map(|n| (task(n), false)).collect();
         let mut placed = done.clone();
         let mut deleted = BTreeSet::new();
-        let check = |mo: &Motion, now: Duration, done: &BTreeMap<TaskId, bool>, placed: &BTreeMap<TaskId, bool>, deleted: &BTreeSet<TaskId>| -> Result<(), TestCaseError> {
+        // Deleted here, their rows still leaving.
+        let mut leaving: BTreeSet<TaskId> = BTreeSet::new();
+        let check = |mo: &Motion, now: Duration, done: &BTreeMap<TaskId, bool>, placed: &BTreeMap<TaskId, bool>, deleted: &BTreeSet<TaskId>, leaving: &BTreeSet<TaskId>| -> Result<(), TestCaseError> {
             let holding: BTreeSet<TaskId> = mo.holding().collect();
             let reopening: BTreeSet<TaskId> = mo.reopening().collect();
+            prop_assert_eq!(&mo.leaving().collect::<BTreeSet<_>>(), leaving);
             for (&id, &d) in done.iter() {
                 if let Some(look) = mo.row(id, now) {
                     prop_assert!(in_range(look), "{look:?}");
                 }
-                if deleted.contains(&id) {
+                if leaving.contains(&id) {
+                    // Only paint, nothing holds it, and it never comes back on its own.
+                    prop_assert!(!mo.row_is_visible(id, now));
+                    prop_assert!(!holding.contains(&id) && !reopening.contains(&id));
+                } else if deleted.contains(&id) {
                     // Gone from the list: nothing moves for it, nothing keeps it.
                     prop_assert_eq!(mo.row(id, now), None);
                     prop_assert!(!holding.contains(&id) && !reopening.contains(&id));
@@ -711,13 +725,17 @@ proptest! {
                         prop_assert!(done.get(&id) == Some(&false) && placed[&id]);
                         placed.insert(id, false);
                     }
+                    Release::Left(id) => {
+                        prop_assert!(leaving.remove(&id));
+                        deleted.insert(id);
+                    }
                 }
             }
-            check(&mo, now, &done, &placed, &deleted)?;
+            check(&mo, now, &done, &placed, &deleted, &leaving)?;
             match op {
                 Op::Toggle(n) => {
                     let id = task(n);
-                    if deleted.contains(&id) {
+                    if deleted.contains(&id) || leaving.contains(&id) {
                         continue;
                     }
                     let d = done[&id];
@@ -741,9 +759,36 @@ proptest! {
                     }
                 }
                 Op::Delete(n) => {
-                    deleted.insert(task(n));
+                    if !leaving.contains(&task(n)) {
+                        deleted.insert(task(n));
+                    }
                 }
-                Op::SwitchRoom => mo.settle_all(),
+                Op::Leave(n) => {
+                    let id = task(n);
+                    if deleted.contains(&id) || leaving.contains(&id) {
+                        continue;
+                    }
+                    let before = mo.row(id, now).unwrap_or_else(|| RowLook::rest(placed[&id]));
+                    mo.leave(id, placed[&id], now, pace);
+                    leaving.insert(id);
+                    prop_assert_eq!(mo.row(id, now), Some(before), "leaving jumped");
+                }
+                Op::UndoLeave(n) => {
+                    let id = task(n);
+                    if !leaving.remove(&id) {
+                        continue;
+                    }
+                    let before = mo.row(id, now).expect("leaving");
+                    mo.restore(id, done[&id], now, pace);
+                    let after = mo.row(id, now).expect("coming back");
+                    prop_assert!((after.height - before.height).abs() < 1e-4, "undo jumped");
+                    prop_assert!((after.opacity - before.opacity).abs() < 1e-4, "undo jumped");
+                }
+                Op::SwitchRoom => {
+                    mo.settle_all();
+                    // The view lets go of rows it no longer plays: they're simply gone.
+                    deleted.extend(std::mem::take(&mut leaving));
+                }
             }
             // As the view does: the tombstone still answers, and the derived list doesn't show it.
             mo.reconcile(now, pace, |id| done.get(&id).copied());
@@ -757,7 +802,7 @@ proptest! {
                     placed.insert(*id, *d);
                 }
             }
-            check(&mo, now, &done, &placed, &deleted)?;
+            check(&mo, now, &done, &placed, &deleted, &leaving)?;
         }
         // Quiet: everything is released and at rest, with no frames and no timers.
         now += ms(10_000);
@@ -765,8 +810,13 @@ proptest! {
             match r {
                 Release::Completed(id) => { placed.insert(id, true); }
                 Release::Reopened(id) => { placed.insert(id, false); }
+                Release::Left(id) => {
+                    prop_assert!(leaving.remove(&id));
+                    deleted.insert(id);
+                }
             }
         }
+        prop_assert!(leaving.is_empty());
         prop_assert_eq!(mo.wake(now), Wake::Idle);
         prop_assert_eq!(mo.holding().count() + mo.reopening().count(), 0);
         for (id, d) in &done {
@@ -799,4 +849,70 @@ proptest! {
         prop_assert_eq!(mo.sun(now), Some(last));
         prop_assert_eq!(mo.wake(now), Wake::Idle);
     }
+}
+
+#[test]
+fn a_deleted_or_moved_row_leaves_at_once_and_is_released_without_entering() {
+    let id = task(7);
+    let mut mo = Motion::default();
+    mo.leave(id, false, ms(0), Pace::FULL);
+    assert_eq!(mo.leaving().collect::<Vec<_>>(), [id]);
+    // It starts in place, then fades and closes its slot with the completion's exit.
+    assert_eq!(mo.row(id, ms(0)), Some(RowLook::rest(false)));
+    let mid = mo.row(id, ms(m::ROW_COLLAPSE / 2)).expect("leaving");
+    assert!(mid.height > 0. && mid.height < 1., "{mid:?}");
+    assert!(mid.opacity > 0. && mid.opacity < 1., "{mid:?}");
+    assert_eq!(mo.wake(ms(m::ROW_COLLAPSE / 2)), Wake::Frame);
+    // Only paint: J, K, clicks and Space never reach it.
+    assert!(!mo.row_is_visible(id, ms(1)));
+    // Whatever its task does meanwhile (gone for good, or changed), it plays on.
+    mo.reconcile(ms(10), Pace::FULL, |_| None);
+    assert!(mo.is_leaving(id));
+    assert!(mo.advance(ms(m::ROW_COLLAPSE - 1)).is_empty());
+    assert_eq!(mo.advance(ms(m::ROW_COLLAPSE)), [Release::Left(id)]);
+    // Gone: nothing enters anywhere, and the window is at rest.
+    assert_eq!(mo.row(id, ms(m::ROW_COLLAPSE)), None);
+    assert_eq!(mo.leaving().count(), 0);
+    assert_eq!(mo.wake(ms(m::ROW_COLLAPSE)), Wake::Idle);
+}
+
+#[test]
+fn a_completed_row_leaves_drawn_done_and_reduced_motion_only_fades() {
+    let id = task(8);
+    let mut mo = Motion::default();
+    mo.leave(id, true, ms(0), Pace::REDUCED);
+    let mid = mo.row(id, ms(m::REDUCED_FADE / 2)).expect("leaving");
+    assert_eq!((mid.fill, mid.strike, mid.height), (1., 1., 1.), "{mid:?}");
+    assert!(mid.opacity > 0. && mid.opacity < 1.);
+    assert_eq!(mo.advance(ms(m::REDUCED_FADE)), [Release::Left(id)]);
+}
+
+#[test]
+fn undo_brings_a_leaving_row_back_from_where_it_is() {
+    let id = task(9);
+    let mut mo = Motion::default();
+    mo.leave(id, false, ms(0), Pace::FULL);
+    let at = ms(m::ROW_COLLAPSE / 2);
+    let gone = mo.row(id, at).expect("leaving");
+    mo.restore(id, false, at, Pace::FULL);
+    assert!(!mo.is_leaving(id));
+    // No jump: it grows and fades back in from the look it had, and comes to rest in place.
+    let back = mo.row(id, at).expect("settling");
+    assert!(close(back.height, gone.height) && close(back.opacity, gone.opacity));
+    let end = at + ms(1000);
+    assert!(mo.advance(end).is_empty(), "nothing is released");
+    assert_eq!(mo.row(id, end), None);
+}
+
+#[test]
+fn a_held_completion_that_is_deleted_leaves_from_its_hold() {
+    let id = task(10);
+    let mut mo = Motion::default();
+    mo.complete(id, ms(0), Pace::FULL);
+    let hold = ms(m::CHECK_TICK_DELAY + m::CHECK_TICK + 10);
+    mo.leave(id, false, hold, Pace::FULL);
+    // No longer held open, still drawn done as it was, and released as gone.
+    assert_eq!(mo.holding().count(), 0);
+    assert_eq!(mo.row(id, hold), Some(RowLook::rest(true)));
+    assert_eq!(mo.advance(hold + ms(m::ROW_COLLAPSE)), [Release::Left(id)]);
 }

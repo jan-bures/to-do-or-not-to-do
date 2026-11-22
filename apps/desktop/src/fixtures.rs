@@ -29,6 +29,8 @@ pub struct Fixture {
     pub quick_add_text: Option<&'static str>,
     /// A moment part way through a transition, which the screenshot freezes (`ShellView::freeze`).
     pub moment: Option<Moment>,
+    /// Changes the server refused ("couldn't sync").
+    pub failed: Vec<todo_client::FailedEntry>,
 }
 
 /// A moment part way through a transition, for the gallery's frozen frames. Times are milliseconds into
@@ -102,6 +104,15 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
         "account-menu" | "priority-menu" => Some(my_day()),
+        // A task's context menu, opened on a row other than the selected one; the list picker that
+        // moves the selected task (its menu's Move to…, or M), grouped by collection.
+        "task-context-menu" | "move-to-picker" => Some(my_day()),
+        // The sidebar's "3 couldn't sync", opened: each refused change in plain words, with Dismiss.
+        "sync-failures" => {
+            let mut f = my_day();
+            f.failed = failed_changes(&f.state);
+            Some(f)
+        }
         // Deleting a list with a long name, confirmed from its room's menu: the whole name and the
         // count wrap above the buttons.
         "delete-list-confirm" => Some(long_list_room()),
@@ -780,7 +791,71 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
         now: Now::fixed(now),
         quick_add_text: None,
         moment: None,
+        failed: Vec::new(),
     }
+}
+
+/// Three changes the server refused, about tasks in the sample data: an edit to a task deleted
+/// elsewhere, a move this device wasn't allowed to make, and a new task the server didn't accept. Each
+/// carries a raw server message, which the app must never show.
+pub fn failed_changes(state: &State) -> Vec<todo_client::FailedEntry> {
+    use todo_client::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
+    let at = ts("2026-11-21T10:20:00Z");
+    let errands = state
+        .lists
+        .values()
+        .find(|l| l.name == "Errands")
+        .map(|l| l.id)
+        .unwrap_or_else(|| ListId::from_uuid(uuid::Uuid::nil()));
+    let new = TaskId::from_uuid(uuid_v7(1_795_000_000_000, [0xf1; 10]));
+    let refused = [
+        (
+            Command::UpdateTask {
+                id: titled(state, "Archive the old design files"),
+                patch: TaskPatch {
+                    title: Some("Archive the 2025 design files".into()),
+                    ..TaskPatch::default()
+                },
+            },
+            "deleted",
+        ),
+        (
+            Command::MoveTask {
+                id: titled(state, "Order printer toner"),
+                list: errands,
+                placement: Placement::First,
+            },
+            "forbidden",
+        ),
+        (
+            Command::CreateTask(Box::new(NewTask::new(
+                new,
+                errands,
+                "Pick up the framed poster",
+            ))),
+            "invalid",
+        ),
+    ];
+    refused
+        .into_iter()
+        .zip(0u8..)
+        .map(|((command, code), n)| FailedEntry {
+            entry: OutboxEntry {
+                command_id: uuid_v7(1_795_000_000_000, [0xe0 + n; 10]),
+                op: Operation::Command { command },
+                submitted_at: at,
+                attempts: 1,
+                acked: None,
+                acked_epoch: None,
+            },
+            failed_at: at,
+            rejection: Rejection {
+                status: 409,
+                code: code.into(),
+                message: format!("raw server text {n}: entity 0192 rejected at seq 41"),
+            },
+        })
+        .collect()
 }
 
 /// The task whose title starts with `prefix`.
@@ -1265,6 +1340,7 @@ pub fn pairing() -> Fixture {
         now: Now::fixed(MORNING),
         quick_add_text: None,
         moment: None,
+        failed: Vec::new(),
     }
 }
 

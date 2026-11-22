@@ -8,18 +8,19 @@ mod panes;
 mod sidebar;
 mod undo;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, AsyncApp, Context, DispatchPhase, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollHandle, SharedString, Stateful,
-    StrikethroughStyle, UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions,
-    div, prelude::*, px, uniform_list,
+    AnyElement, App, AsyncApp, Bounds, Context, DispatchPhase, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollHandle, SharedString, Stateful, StrikethroughStyle, UniformListScrollHandle, WeakEntity,
+    Window, WindowControlArea, actions, div, prelude::*, px, uniform_list,
 };
 use todo_client::Connection;
-use todo_core::ids::{CollectionId, TaskId};
+use todo_core::ids::{CollectionId, ListId, TaskId};
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
@@ -40,7 +41,7 @@ use crate::theme::{
     self, Hue, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
 };
 use detail::Editors;
-use menu::{Menu, MenuKind};
+use menu::{Menu, MenuKind, TaskPage};
 use sidebar::Inline;
 
 actions!(
@@ -56,6 +57,9 @@ actions!(
         PickPriority,
         MoveTaskUp,
         MoveTaskDown,
+        DeleteTask,
+        MoveTaskTo,
+        TaskMenu,
         UndoTask,
         Escape
     ]
@@ -76,6 +80,9 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-p", PickPriority, list),
         KeyBinding::new("alt-up", MoveTaskUp, list),
         KeyBinding::new("alt-down", MoveTaskDown, list),
+        KeyBinding::new("delete", DeleteTask, list),
+        KeyBinding::new("m", MoveTaskTo, list),
+        KeyBinding::new("shift-f10", TaskMenu, list),
         KeyBinding::new("j", NextTask, list),
         KeyBinding::new("down", NextTask, list),
         KeyBinding::new("k", PreviousTask, list),
@@ -197,6 +204,13 @@ pub struct ShellView {
     menu_press: menu::PressGuard,
     /// The open menu's, while it has the keyboard.
     menu_focus: FocusHandle,
+    /// A long menu's scroll (the list picker).
+    menu_scroll: ScrollHandle,
+    /// Where each task row in the room was last painted: a task's menu opened from the keyboard hangs
+    /// under its row.
+    row_bounds: Rc<RefCell<HashMap<TaskId, Bounds<Pixels>>>>,
+    /// The sidebar footer's "N couldn't sync", a button while something couldn't sync.
+    sync_focus: FocusHandle,
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
     account_focus: FocusHandle,
@@ -320,6 +334,9 @@ impl ShellView {
             menu: None,
             menu_press: menu::PressGuard::default(),
             menu_focus: cx.focus_handle(),
+            menu_scroll: ScrollHandle::new(),
+            row_bounds: Rc::default(),
+            sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
             inline: None,
@@ -412,9 +429,10 @@ impl ShellView {
         if room_changed {
             self.motion.settle_all();
             self.row_lifts.clear();
+            self.row_bounds.borrow_mut().clear();
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
-            MenuKind::Room { .. } => room_changed,
+            MenuKind::Room { .. } | MenuKind::Task { .. } => room_changed,
             MenuKind::Priority { task } => self.ui.task != Some(task),
             _ => false,
         });
@@ -511,6 +529,8 @@ impl ShellView {
         self.ui.holding = self.motion.holding().collect();
         let reopening: Vec<TaskId> = self.motion.reopening().collect();
         self.ui.reopening.retain(|id, _| reopening.contains(id));
+        let leaving: Vec<TaskId> = self.motion.leaving().collect();
+        self.ui.leaving.retain(|id, _| leaving.contains(id));
     }
 
     /// After deriving: the sun heads for the new count, and rows the
@@ -794,16 +814,53 @@ impl ShellView {
             .is_some_and(|m| m.overlay.look(self.frame).open);
         if (self.menu_focus.is_focused(window) && !menu_open)
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
+            || (self.sync_focus.is_focused(window) && self.store.sync().failed == 0)
         {
             window.focus(&self.list_focus, cx);
         }
     }
 
-    /// Opens a menu for a screenshot fixture, at rest, from its button.
+    /// Opens a menu for a screenshot fixture, at rest, from its button. A task's context menu opens
+    /// once its row has been laid out, under the row as from the keyboard (`task-context-menu` on the
+    /// row after the selected one, `move-to-picker` on the selected one, both from the keyboard).
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let task_page = match fixture {
+            "task-context-menu" => Some(TaskPage::Main),
+            "move-to-picker" => Some(TaskPage::Move),
+            _ => None,
+        };
+        if let Some(page) = task_page {
+            let rows: Vec<TaskId> = self.shell.rows().map(|r| r.id).collect();
+            let at = self.shell.selected_task.unwrap_or(0);
+            let id = match page {
+                TaskPage::Main => rows.get(at + 1).or(rows.first()),
+                _ => self.ui.task.as_ref(),
+            };
+            let Some(&id) = id else {
+                return;
+            };
+            let view = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                view.update(cx, |this, cx| {
+                    let at = this.row_anchor(id, window);
+                    let kind = MenuKind::Task { id, page };
+                    if page == TaskPage::Main {
+                        // As a right-click leaves it: at the row, nothing highlighted.
+                        this.open_menu(kind, Some(at), None, window, cx);
+                    } else {
+                        // As M leaves it: the keyboard on the task's own list.
+                        this.open_menu(kind, Some(at), Some(hints::Stop::List), window, cx);
+                        this.highlight_first();
+                    }
+                })
+                .ok();
+            });
+            return;
+        }
         let kind = match fixture {
             "room-menu" => MenuKind::Room { confirm: false },
             "account-menu" => MenuKind::Account { confirm: false },
+            "sync-failures" => MenuKind::SyncFailures,
             "priority-menu" => match self.ui.task {
                 Some(task) => MenuKind::Priority { task },
                 None => return,
@@ -945,7 +1002,7 @@ impl ShellView {
         for cmd in cmds {
             let result = if let Some((entity, kind)) = undo::EditKind::of(&cmd) {
                 let state = self.store.view();
-                let title = undo::subject_title(&state, entity);
+                let label = undo::toast_label(&state, &cmd, entity, kind);
                 let room = self.shell.room.key;
                 self.store.submit_undoable(cmd).map(|target| {
                     // Deleting the list the room shows takes the window to My Day: the undo goes along.
@@ -961,7 +1018,7 @@ impl ShellView {
                             target,
                             room,
                         },
-                        title,
+                        label,
                     );
                 })
             } else {
@@ -1132,6 +1189,114 @@ impl ShellView {
             self.submit(vec![cmd]);
         }
         self.refresh(cx);
+    }
+
+    /// Deletes a task, without asking: the toast's Undo (or Ctrl+Z) brings it back. Its row leaves with
+    /// the completion's exit, and the selection goes to the row that takes its place.
+    fn delete_task(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        let cmd = commands::delete_task(&self.store.view(), id);
+        self.change_task(id, cmd, cx);
+    }
+
+    /// Moves a task to another list, first in its manual order. A row that leaves the room (another
+    /// list's room) leaves with the completion's exit; in a smart list it stays where it is.
+    fn move_task_to(&mut self, id: TaskId, list: ListId, cx: &mut Context<Self>) {
+        let cmd = commands::move_to_list(&self.store.view(), id, list);
+        self.change_task(id, cmd, cx);
+    }
+
+    /// Submits a delete or a move of task `id` (nothing when `cmd` is `None`). If that takes its row out
+    /// of the room, the row keeps its place while it leaves (`Motion::leave`, `UiState::leaving`), and
+    /// a selected task hands the selection to its neighbour.
+    fn change_task(&mut self, id: TaskId, cmd: Option<todo_core::Command>, cx: &mut Context<Self>) {
+        let Some(cmd) = cmd else {
+            return self.refresh(cx);
+        };
+        // A draft of this task's title or notes is saved first, so Undo brings it back as it was typed.
+        if !self.commit_edits(cx) {
+            return self.keep_unsaved(cx);
+        }
+        let state = self.store.view();
+        let shown = self.shell.rows().any(|r| r.id == id);
+        let snapshot = state.tasks.get(&id).cloned().map(|mut task| {
+            // As the list places it now: still open while its completion holds, still done while
+            // its reopening plays.
+            if self.motion.completing(id) {
+                task.completed_at = None;
+            }
+            if let Some(at) = self.ui.reopening.get(&id) {
+                task.completed_at = Some(*at);
+            }
+            task
+        });
+        let neighbour = self.neighbour(id);
+        if !self.submit(vec![cmd]) {
+            return self.refresh(cx);
+        }
+        let after = model::derive(
+            &self.store.view(),
+            &self.ui,
+            &self.store.sync(),
+            &self.store.now(),
+        );
+        let gone = !after.rows().any(|r| r.id == id);
+        if gone
+            && shown
+            && self.animate
+            && let Some(task) = snapshot
+        {
+            let (now, pace) = (self.now(), self.pace());
+            let done = self
+                .shell
+                .rows()
+                .find(|r| r.id == id)
+                .is_some_and(|r| r.done);
+            self.motion.leave(id, done, now, pace);
+            self.ui.leaving.insert(id, task);
+        }
+        if gone && self.ui.task == Some(id) {
+            self.ui.task = neighbour;
+        }
+        self.refresh(cx);
+        if let Some(i) = self.shell.selected_task.filter(|_| gone) {
+            self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
+        }
+    }
+
+    /// The task J or K reaches from `id` (the next one, else the one before): where the selection goes
+    /// when `id` leaves.
+    fn neighbour(&self, id: TaskId) -> Option<TaskId> {
+        let tasks = self.nav_tasks();
+        let at = tasks.iter().position(|&t| t == id)?;
+        tasks
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|i| tasks.get(i)))
+            .copied()
+    }
+
+    /// Where a task's menu opened from the keyboard hangs: under its row's title, where the row was last
+    /// painted. A task without a row (open in the detail pane only) gets it at the list's top.
+    fn row_anchor(&self, id: TaskId, window: &Window) -> Point<Pixels> {
+        let indent = desktop::LIST_PAD_X + desktop::COL_CHECK + desktop::ROW_GAP;
+        match self.row_bounds.borrow().get(&id) {
+            Some(b) => gpui::point(b.origin.x + px(indent), b.origin.y + b.size.height),
+            None => {
+                let left = self.columns(window).width(Pane::Sidebar) + indent;
+                gpui::point(px(left), px(desktop::TITLEBAR + desktop::ROW * 3.))
+            }
+        }
+    }
+
+    /// M or Shift+F10: the selected task's list picker or context menu, from the keyboard, under its
+    /// row. The keyboard comes back to the list once something is chosen.
+    fn open_task_menu(&mut self, page: TaskPage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.ui.task.filter(|&id| self.task_is_visible(id)) else {
+            return;
+        };
+        let at = self.row_anchor(id, window);
+        let kind = MenuKind::Task { id, page };
+        self.open_menu(kind, Some(at), Some(hints::Stop::List), window, cx);
+        self.highlight_first();
     }
 
     /// J and K: through the rows, or through the finished day's hand-over to tomorrow.
@@ -1959,7 +2124,30 @@ impl ShellView {
                         this.select_task(Some(id), cx);
                     }
                 }))
+                // Right-click: the task's context menu, at the pointer. The row isn't selected.
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        if this.row_can_act(room, id) {
+                            cx.stop_propagation();
+                            let kind = MenuKind::Task {
+                                id,
+                                page: TaskPage::Main,
+                            };
+                            this.open_menu(kind, Some(e.position), None, window, cx);
+                        }
+                    }),
+                )
+                // Where it is, so a menu opened from the keyboard can hang under it.
+                .child(self.row_bounds_probe(id))
             });
+        // The row a context menu is open on keeps the hover look while the menu is up.
+        let menu_target = self
+            .menu
+            .as_ref()
+            .filter(|m| m.overlay.look(self.frame).open)
+            .and_then(|m| m.kind.task())
+            == Some(id);
         if selected {
             row.bg(p.wash).child(
                 div()
@@ -1973,7 +2161,21 @@ impl ShellView {
         } else {
             let hover = p.hover;
             row.when(room.is_some(), |el| el.hover(move |s| s.bg(hover)))
+                .when(menu_target && room.is_some(), |el| el.bg(hover))
         }
+    }
+
+    /// Records where task `id`'s row is painted (`row_bounds`), without drawing anything.
+    fn row_bounds_probe(&self, id: TaskId) -> impl IntoElement {
+        let bounds = self.row_bounds.clone();
+        gpui::canvas(
+            move |b, _, _| {
+                bounds.borrow_mut().insert(id, b);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
     }
 
     /// A task's title in any of its layouts (a list row, a line of the hand-over, the hand-over's first
@@ -2247,6 +2449,17 @@ impl ShellView {
                     }))
                     .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
                     .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
+                    .on_action(cx.listener(|this, _: &DeleteTask, _, cx| {
+                        if let Some(id) = this.ui.task.filter(|&id| this.task_is_visible(id)) {
+                            this.delete_task(id, cx);
+                        }
+                    }))
+                    .on_action(cx.listener(|this, _: &MoveTaskTo, window, cx| {
+                        this.open_task_menu(TaskPage::Move, window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &TaskMenu, window, cx| {
+                        this.open_task_menu(TaskPage::Main, window, cx);
+                    }))
                     .children(self.outgoing_list(swap.outgoing, window, cx))
                     .child(
                         div()
@@ -2623,7 +2836,7 @@ impl ShellView {
             Focus::Rename
         } else if on(&self.menu_focus) {
             Focus::Menu
-        } else if on(&self.room_menu_focus) || on(&self.account_focus) {
+        } else if on(&self.room_menu_focus) || on(&self.account_focus) || on(&self.sync_focus) {
             Focus::Control
         } else {
             Focus::Elsewhere
@@ -2667,6 +2880,30 @@ impl ShellView {
             .as_ref()
             .map(|n| n.text.clone())
             .unwrap_or_else(|| "Ctrl N adds a task".into());
+        // The hints take what the counts and the notice leave, and give way when there isn't enough.
+        let figures = ty::COUNT.with_weight(500);
+        let left = kit::text_width(window, figures, &open.to_string())
+            + kit::text_width(window, figures, &done.to_string())
+            + kit::text_width(window, ty::COUNT, "open")
+            + kit::text_width(window, ty::COUNT, "done today")
+            + 2. * component::CHIP_GAP
+            + space::S4;
+        let notice = kit::text_width(window, ty::COUNT, &right)
+            + if folder.is_some() {
+                space::S2 + kit::text_width(window, ty::COUNT, "Open folder")
+            } else {
+                0.
+            };
+        let room = f32::from(window.viewport_size().width)
+            - 2. * space::S4
+            - left
+            - notice
+            - 2. * space::S6;
+        let keys = hints::fit(keys, room, space::S4 + 2., |(key, what)| {
+            kit::kbd_width(window, key)
+                + component::CHIP_GAP
+                + kit::text_width(window, ty::META, what)
+        });
         div()
             .h(px(desktop::STATUSBAR))
             .flex_none()
@@ -2760,6 +2997,7 @@ impl ShellView {
             Stop::Undo => &self.undo_focus,
             Stop::RoomMenu => &self.room_menu_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
+            Stop::SyncFailures => &self.sync_focus,
             Stop::Account => &self.account_focus,
         }
     }
@@ -2775,6 +3013,7 @@ impl ShellView {
             }
             Stop::RoomMenu => self.has_room_menu(),
             Stop::DetailSplitter => self.show_detail_splitter(),
+            Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter | Stop::List | Stop::Account => true,
         }
     }
@@ -2928,7 +3167,12 @@ impl Render for ShellView {
             .children(self.confirmation_scrim())
             // Context menus open at the pointer; the others hang from their buttons.
             .children(self.popover(
-                |k| matches!(k, MenuKind::List { .. } | MenuKind::Collection { .. }),
+                |k| {
+                    matches!(
+                        k,
+                        MenuKind::List { .. } | MenuKind::Collection { .. } | MenuKind::Task { .. }
+                    )
+                },
                 cx,
             ))
     }

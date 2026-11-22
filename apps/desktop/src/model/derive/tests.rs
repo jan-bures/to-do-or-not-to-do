@@ -747,3 +747,63 @@ fn the_detail_offers_due_and_priority_to_edit_and_only_shows_the_rest() {
         assert_eq!(d.fields[1].value.as_ref(), value);
     }
 }
+
+#[test]
+fn a_deleted_task_keeps_its_place_until_its_row_has_left() {
+    let mut f = fixtures::my_day();
+    let before = f.shell();
+    let row = before.room.tasks[2].clone();
+    let snapshot = f.state.tasks[&row.id].clone();
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::Delete { id: row.id.into() },
+    );
+    // Without its snapshot, it's gone at once.
+    let gone = f.shell();
+    assert!(gone.rows().all(|r| r.id != row.id));
+    // Leaving, it keeps its place and looks as it did; the counts change once it has left.
+    f.ui.leaving.insert(row.id, snapshot);
+    let leaving = f.shell();
+    assert_eq!(leaving.room.tasks[2], row);
+    assert_eq!(leaving.room.summary(), before.room.summary());
+    assert_eq!(
+        leaving.sidebar.smart[0].count,
+        before.sidebar.smart[0].count
+    );
+    // The detail shows the truth: a deleted task has none.
+    f.ui.task = Some(row.id);
+    assert!(f.shell().detail.is_none());
+}
+
+#[test]
+fn a_task_moved_out_of_a_list_keeps_its_place_until_its_row_has_left() {
+    let mut f = fixtures::my_day();
+    let office = list_named(&f.state, "Office");
+    let errands = list_named(&f.state, "Errands");
+    f.ui = UiState {
+        room: RoomKey::List(office),
+        ..UiState::default()
+    };
+    let before = f.shell();
+    let row = before.room.tasks[0].clone();
+    let snapshot = f.state.tasks[&row.id].clone();
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::MoveTask {
+            id: row.id,
+            list: errands,
+            placement: todo_core::command::Placement::First,
+        },
+    );
+    assert!(f.shell().rows().all(|r| r.id != row.id));
+    f.ui.leaving.insert(row.id, snapshot);
+    f.ui.task = Some(row.id);
+    let leaving = f.shell();
+    assert_eq!(leaving.room.tasks[0], row);
+    assert_eq!(leaving.room.summary(), before.room.summary());
+    // The detail already says where it went.
+    let detail = leaving.detail.expect("still open");
+    assert_eq!(detail.list.name.as_ref(), "Errands");
+}

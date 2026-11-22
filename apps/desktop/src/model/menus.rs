@@ -1,15 +1,20 @@
-//! What each popover menu offers, as data: the room's menu (the header's "more" button), a list's or a
-//! collection's context menu, the account menu and the detail pane's priority picker. The view draws the
-//! entries and runs an item's [`MenuAction`]; the keyboard walks the same items, so every menu behaves
-//! alike. Pure, so what a menu offers in each room is unit-tested.
+//! What each popover menu offers, as data: the room's menu (the header's "more" button), a list's, a
+//! collection's or a task's context menu, the account menu, the priority picker, the list picker that
+//! moves a task, and the "couldn't sync" list. The view draws the entries and runs an item's
+//! [`MenuAction`]; the keyboard walks the same items, so every menu behaves alike. Pure, so what a menu
+//! offers in each room is unit-tested.
 
 use gpui::SharedString;
+use todo_client::CommandId;
+use todo_client::outbox::FailedEntry;
 use todo_core::State;
 use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 use todo_core::model::Priority;
+use todo_core::query::fold;
+use todo_core::time::Date;
 
-use super::{RoomKey, labels};
-use crate::theme::Icon;
+use super::{RoomKey, commands, labels, lists};
+use crate::theme::{Glyph, Hue, Icon};
 
 /// What choosing a menu item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +43,21 @@ pub enum MenuAction {
     AskSignOut,
     SignOut,
     SetPriority(TaskId, Priority),
+    /// A task's context menu: complete or reopen it.
+    ToggleDone(TaskId),
+    ToggleMyDay(TaskId),
+    ToggleImportant(TaskId),
+    /// Turns the task's menu into the priority picker, in place.
+    AskPriority(TaskId),
+    /// Turns the task's menu into the list picker, in place.
+    AskMove(TaskId),
+    /// Moves the task to the list (nothing when it's there already).
+    MoveTask(TaskId, ListId),
+    /// Deletes the task, without asking: Undo brings it back.
+    DeleteTask(TaskId),
+    /// Takes one refused change off the "couldn't sync" list.
+    DismissFailure(CommandId),
+    DismissAllFailures,
 }
 
 impl MenuAction {
@@ -60,8 +80,10 @@ impl MenuAction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     /// The element ID, unique within its menu.
-    pub key: &'static str,
+    pub key: SharedString,
     pub icon: Icon,
+    /// A list's own glyph and hue, drawn instead of the icon (the list picker).
+    pub glyph: Option<(Glyph, Hue)>,
     pub label: SharedString,
     /// Destructive: drawn in the danger colour.
     pub danger: bool,
@@ -87,6 +109,18 @@ pub enum MenuEntry {
         message: SharedString,
         buttons: [MenuItem; 2],
     },
+    /// A quiet section label: a collection's name in the list picker.
+    Heading(SharedString),
+    /// What has been typed to narrow the list picker (empty: a hint that typing filters).
+    Filter(SharedString),
+    /// A quiet line that wraps, such as "No list matches".
+    Note(SharedString),
+    /// A change the server refused: what it was and why, beside its Dismiss button.
+    Failure {
+        what: SharedString,
+        why: SharedString,
+        dismiss: MenuItem,
+    },
 }
 
 impl MenuEntry {
@@ -94,21 +128,27 @@ impl MenuEntry {
     pub fn items(&self) -> &[MenuItem] {
         match self {
             Self::Item(item) => std::slice::from_ref(item),
+            Self::Failure { dismiss, .. } => std::slice::from_ref(dismiss),
             Self::Confirm { buttons, .. } => buttons,
-            Self::Separator | Self::Caption { .. } => &[],
+            Self::Separator
+            | Self::Caption { .. }
+            | Self::Heading(_)
+            | Self::Filter(_)
+            | Self::Note(_) => &[],
         }
     }
 }
 
 fn item(
-    key: &'static str,
+    key: impl Into<SharedString>,
     icon: Icon,
     label: impl Into<SharedString>,
     action: MenuAction,
 ) -> MenuEntry {
     MenuEntry::Item(MenuItem {
-        key,
+        key: key.into(),
         icon,
+        glyph: None,
         label: label.into(),
         danger: false,
         checked: false,
@@ -118,7 +158,7 @@ fn item(
 }
 
 fn danger(
-    key: &'static str,
+    key: impl Into<SharedString>,
     icon: Icon,
     label: impl Into<SharedString>,
     action: MenuAction,
@@ -134,11 +174,39 @@ pub fn items(entries: &[MenuEntry]) -> impl Iterator<Item = &MenuItem> {
     entries.iter().flat_map(MenuEntry::items)
 }
 
+/// The entries that scroll in a long menu: all but the list picker's filter line, which stays put above
+/// them.
+pub fn scrolling(entries: &[MenuEntry]) -> impl Iterator<Item = &MenuEntry> {
+    entries
+        .iter()
+        .filter(|e| !matches!(e, MenuEntry::Filter(_)))
+}
+
+/// Which of the [`scrolling`] entries holds item `item` (as the keyboard counts them): the one to
+/// scroll into view when the keyboard moves there.
+pub fn child_of_item(entries: &[MenuEntry], item: usize) -> Option<usize> {
+    let mut seen = 0;
+    scrolling(entries).position(|e| {
+        let n = e.items().len();
+        let here = item >= seen && item < seen + n;
+        seen += n;
+        here
+    })
+}
+
 /// Whether the menu is a confirmation (drawn wider, its buttons side by side).
 pub fn is_confirmation(entries: &[MenuEntry]) -> bool {
     entries
         .iter()
         .any(|e| matches!(e, MenuEntry::Confirm { .. }))
+}
+
+/// Whether the menu is drawn at the confirmation's width: a confirmation, or the "couldn't sync" list,
+/// whose reasons wrap beside their buttons.
+pub fn is_wide(entries: &[MenuEntry]) -> bool {
+    entries
+        .iter()
+        .any(|e| matches!(e, MenuEntry::Confirm { .. } | MenuEntry::Failure { .. }))
 }
 
 /// Where the keyboard starts in a menu opened from the keyboard: on the current choice (the priority
@@ -446,8 +514,9 @@ pub fn priority_menu(task: TaskId, current: Priority) -> Vec<MenuEntry> {
     .map(|(key, level)| {
         let (label, marks) = priority_label(level);
         MenuEntry::Item(MenuItem {
-            key,
+            key: key.into(),
             icon: Icon::Flag,
+            glyph: None,
             label: label.into(),
             danger: false,
             checked: level == current,
@@ -456,6 +525,191 @@ pub fn priority_menu(task: TaskId, current: Priority) -> Vec<MenuEntry> {
         })
     })
     .collect()
+}
+
+/// A task's context menu (right-click a row): what its row and the list's keys already do (complete or
+/// reopen, My Day, Important, the priority picker), then Move to… and Delete. Deleting doesn't ask:
+/// Undo brings the task back. Empty once the task is gone.
+pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
+    let Some(t) = state
+        .tasks
+        .get(&task)
+        .filter(|_| state.is_live(task.into()))
+    else {
+        return Vec::new();
+    };
+    let done = if t.is_done() { "Reopen" } else { "Complete" };
+    let my_day = if t.my_day == Some(today) {
+        "Remove from My Day"
+    } else {
+        "Add to My Day"
+    };
+    let important = if t.priority == Priority::High {
+        "Remove importance"
+    } else {
+        "Mark as important"
+    };
+    let marks = priority_label(t.priority).1;
+    let priority = match item(
+        "task-priority",
+        Icon::Flag,
+        "Priority…",
+        MenuAction::AskPriority(task),
+    ) {
+        MenuEntry::Item(i) => MenuEntry::Item(MenuItem {
+            hint: (!marks.is_empty()).then(|| marks.into()),
+            ..i
+        }),
+        other => other,
+    };
+    vec![
+        item(
+            "task-done",
+            Icon::CircleCheck,
+            done,
+            MenuAction::ToggleDone(task),
+        ),
+        item(
+            "task-my-day",
+            Icon::Sun,
+            my_day,
+            MenuAction::ToggleMyDay(task),
+        ),
+        item(
+            "task-important",
+            Icon::Star,
+            important,
+            MenuAction::ToggleImportant(task),
+        ),
+        priority,
+        item(
+            "task-move",
+            Icon::List,
+            "Move to…",
+            MenuAction::AskMove(task),
+        ),
+        MenuEntry::Separator,
+        danger(
+            "task-delete",
+            Icon::TrashTwo,
+            "Delete task",
+            MenuAction::DeleteTask(task),
+        ),
+    ]
+}
+
+/// Whether `filter` (typed into the list picker) finds a list by its name or its collection's: every
+/// word of it, ignoring case and accents.
+fn matches_filter(filter: &str, list: &str, collection: Option<&str>) -> bool {
+    let haystack = fold(&format!("{list} {}", collection.unwrap_or_default()));
+    fold(filter)
+        .split_whitespace()
+        .all(|w| haystack.contains(w))
+}
+
+/// The list picker that moves a task (Move to…): the lists grouped as the sidebar shows them, each
+/// collection's under its name, the task's own list ticked. What's typed (`filter`) narrows them by
+/// name or collection. Empty once the task is gone.
+pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
+    let Some(t) = state
+        .tasks
+        .get(&task)
+        .filter(|_| state.is_live(task.into()))
+    else {
+        return Vec::new();
+    };
+    let groups = commands::list_groups(state);
+    let with_collections = groups.iter().any(|(c, _)| c.is_some());
+    let mut entries = vec![MenuEntry::Filter(filter.to_string().into())];
+    let mut found = false;
+    for (collection, ids) in groups {
+        let collection = collection.and_then(|c| state.collections.get(&c));
+        let heading = match collection {
+            Some(c) => Some(labels::one_line(&c.name)),
+            None if with_collections => Some("Other lists".to_string()),
+            None => None,
+        };
+        let items: Vec<MenuEntry> = ids
+            .iter()
+            .filter_map(|id| state.lists.get(id))
+            .filter(|l| matches_filter(filter, &l.name, collection.map(|c| c.name.as_str())))
+            .map(|l| {
+                MenuEntry::Item(MenuItem {
+                    key: format!("move-{}", l.id).into(),
+                    icon: Icon::List,
+                    glyph: Some((
+                        lists::list_glyph(&l.name),
+                        lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes()),
+                    )),
+                    label: labels::one_line(&l.name).into(),
+                    danger: false,
+                    checked: l.id == t.list,
+                    hint: None,
+                    action: MenuAction::MoveTask(task, l.id),
+                })
+            })
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        found = true;
+        entries.extend(heading.map(|h| MenuEntry::Heading(h.into())));
+        entries.extend(items);
+    }
+    if !found {
+        let typed = labels::one_line(filter.trim());
+        entries.push(MenuEntry::Note(
+            format!("No list matches \u{201c}{typed}\u{201d}.").into(),
+        ));
+    }
+    entries
+}
+
+/// The "couldn't sync" list (the sidebar's sync line, when something was refused): each refused change
+/// in plain words, what it was about and why (never the server's own text), beside its Dismiss
+/// button, then Dismiss all.
+pub fn failures_menu(state: &State, failed: &[FailedEntry]) -> Vec<MenuEntry> {
+    use todo_client::failure;
+    if failed.is_empty() {
+        return Vec::new();
+    }
+    let heading = match failed.len() {
+        1 => "1 change couldn't sync".to_string(),
+        n => format!("{n} changes couldn't sync"),
+    };
+    let mut entries = vec![MenuEntry::Heading(heading.into())];
+    for f in failed {
+        let what = failure::what(&f.entry);
+        let what = match failure::name(&f.entry, state) {
+            Some(name) => format!("{what} \u{201c}{}\u{201d}", labels::one_line(name)),
+            None => what.to_string(),
+        };
+        let id = f.entry.command_id;
+        entries.push(MenuEntry::Failure {
+            what: what.into(),
+            why: failure::why(f).into(),
+            dismiss: MenuItem {
+                key: format!("dismiss-{id}").into(),
+                icon: Icon::X,
+                glyph: None,
+                label: "Dismiss".into(),
+                danger: false,
+                checked: false,
+                hint: None,
+                action: MenuAction::DismissFailure(id),
+            },
+        });
+    }
+    if failed.len() > 1 {
+        entries.push(MenuEntry::Separator);
+        entries.push(item(
+            "dismiss-all",
+            Icon::X,
+            "Dismiss all",
+            MenuAction::DismissAllFailures,
+        ));
+    }
+    entries
 }
 
 /// The server's admin pages, `<server>/admin`, built from the address the app was paired with (checked
@@ -587,6 +841,15 @@ second line"
             MenuAction::SetPriority(task, Priority::High),
             MenuAction::AskDeleteList(list),
             MenuAction::AskSignOut,
+            MenuAction::ToggleDone(task),
+            MenuAction::ToggleMyDay(task),
+            MenuAction::ToggleImportant(task),
+            MenuAction::AskPriority(task),
+            MenuAction::AskMove(task),
+            MenuAction::MoveTask(task, list),
+            MenuAction::DeleteTask(task),
+            MenuAction::DismissFailure(uuid::Uuid::nil()),
+            MenuAction::DismissAllFailures,
         ] {
             assert!(!action.moves_focus(), "{action:?}");
         }
@@ -740,11 +1003,184 @@ second line"
             list_menu(&f.state, list, true),
             room_menu(&f.state, RoomKey::List(list), false, true),
             priority_menu(task, Priority::None),
+            task_menu(&f.state, task, f.now.today()),
+            move_menu(&f.state, task, ""),
+            failures_menu(&f.state, &failed(&f.state, 3)),
         ];
         for menu in menus {
-            let keys: Vec<&str> = items(&menu).map(|i| i.key).collect();
+            let keys: Vec<&str> = items(&menu).map(|i| i.key.as_ref()).collect();
             let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
             assert_eq!(keys.len(), unique.len(), "{keys:?}");
         }
+    }
+
+    /// `n` refused changes for the "couldn't sync" list (`fixtures::failed_changes`).
+    fn failed(state: &State, n: usize) -> Vec<FailedEntry> {
+        crate::fixtures::failed_changes(state)
+            .into_iter()
+            .take(n)
+            .collect()
+    }
+
+    #[test]
+    fn a_tasks_menu_offers_what_its_row_does_then_move_and_delete() {
+        let f = fixtures::my_day();
+        let today = f.now.today();
+        let open = f
+            .state
+            .tasks
+            .values()
+            .find(|t| !t.is_done() && f.state.is_live(t.id.into()) && t.my_day == Some(today))
+            .expect("an open task in My Day");
+        let id = open.id;
+        let menu = task_menu(&f.state, id, today);
+        assert_eq!(
+            actions(&menu),
+            [
+                MenuAction::ToggleDone(id),
+                MenuAction::ToggleMyDay(id),
+                MenuAction::ToggleImportant(id),
+                MenuAction::AskPriority(id),
+                MenuAction::AskMove(id),
+                MenuAction::DeleteTask(id),
+            ]
+        );
+        let labels: Vec<&str> = items(&menu).map(|i| i.label.as_ref()).collect();
+        assert_eq!(labels[..2], ["Complete", "Remove from My Day"]);
+        // Delete is last, apart, in the danger colour, and doesn't ask: Undo covers it.
+        assert!(matches!(menu[menu.len() - 2], MenuEntry::Separator));
+        assert!(items(&menu).last().is_some_and(|i| i.danger));
+        assert!(!is_confirmation(&menu));
+        // A done task reopens.
+        let done = f
+            .state
+            .tasks
+            .values()
+            .find(|t| t.is_done() && f.state.is_live(t.id.into()))
+            .expect("a done task");
+        let labels: Vec<SharedString> = items(&task_menu(&f.state, done.id, today))
+            .map(|i| i.label.clone())
+            .collect();
+        assert_eq!(labels[0], "Reopen");
+        // Gone, it offers nothing.
+        let mut gone = f.state.clone();
+        gone.tasks.get_mut(&id).expect("task").deleted = Some(todo_core::model::Tombstone {
+            at: f.now.at,
+            by: todo_core::Actor::System,
+        });
+        assert!(task_menu(&gone, id, today).is_empty());
+        assert!(move_menu(&gone, id, "").is_empty());
+    }
+
+    #[test]
+    fn the_list_picker_groups_lists_by_collection_ticks_the_tasks_own_and_filters() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected task");
+        let own = f.state.tasks[&task].list;
+        let menu = move_menu(&f.state, task, "");
+        // The filter line first, then each collection's name above its lists, as in the sidebar.
+        assert!(matches!(&menu[0], MenuEntry::Filter(t) if t.is_empty()));
+        let headings: Vec<&str> = menu
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Heading(h) => Some(h.as_ref()),
+                _ => None,
+            })
+            .collect();
+        let shell = f.shell();
+        let mut expected: Vec<&str> = shell
+            .sidebar
+            .collections
+            .iter()
+            .map(|c| c.name.as_ref())
+            .collect();
+        if !shell.sidebar.lists.is_empty() {
+            expected.push("Other lists");
+        }
+        assert_eq!(headings, expected);
+        let live = f
+            .state
+            .lists
+            .values()
+            .filter(|l| f.state.is_live(l.id.into()))
+            .count();
+        assert_eq!(items(&menu).count(), live, "every live list, once");
+        let ticked: Vec<MenuAction> = items(&menu)
+            .filter(|i| i.checked)
+            .map(|i| i.action)
+            .collect();
+        assert_eq!(ticked, [MenuAction::MoveTask(task, own)]);
+        // From the keyboard it starts on the task's own list.
+        let at = first_highlight(&menu).expect("highlight");
+        assert_eq!(
+            items(&menu).nth(at).map(|i| i.action),
+            Some(MenuAction::MoveTask(task, own))
+        );
+        assert!(items(&menu).all(|i| i.glyph.is_some()));
+        // The keyboard scrolls the lists, under the filter line that stays put: the first list is the
+        // second entry that scrolls (after its collection's name), the last one the last.
+        assert_eq!(child_of_item(&menu, 0), Some(1));
+        assert_eq!(
+            child_of_item(&menu, live - 1),
+            Some(scrolling(&menu).count() - 1)
+        );
+        assert_eq!(child_of_item(&menu, live), None);
+
+        // Typing narrows it, by list or collection name, ignoring case, and drops empty collections.
+        let errands = list_named(&f.state, "Errands");
+        let narrowed = move_menu(&f.state, task, "ERRAND");
+        assert_eq!(actions(&narrowed), [MenuAction::MoveTask(task, errands)]);
+        assert!(matches!(&narrowed[0], MenuEntry::Filter(t) if t == "ERRAND"));
+        let work = shell
+            .sidebar
+            .collections
+            .iter()
+            .find(|c| c.lists.len() > 1)
+            .expect("a collection with lists");
+        let by_collection = move_menu(&f.state, task, &work.name.to_lowercase());
+        assert!(items(&by_collection).count() >= work.lists.len());
+        let nothing = move_menu(&f.state, task, "zzz");
+        assert_eq!(items(&nothing).count(), 0);
+        assert!(matches!(nothing.last(), Some(MenuEntry::Note(n)) if n.contains("zzz")));
+    }
+
+    #[test]
+    fn the_couldnt_sync_list_names_each_change_and_says_why_in_plain_words() {
+        let f = fixtures::my_day();
+        let failed = failed(&f.state, 3);
+        let menu = failures_menu(&f.state, &failed);
+        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "3 changes couldn't sync"));
+        let rows: Vec<(&str, &str)> = menu
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Failure { what, why, .. } => Some((what.as_ref(), why.as_ref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 3);
+        for (what, why) in &rows {
+            // The fixture's server messages say "raw"; they never show.
+            assert!(
+                !what.contains("raw") && !why.contains("raw"),
+                "{what} {why}"
+            );
+        }
+        assert!(
+            rows.iter().all(|(what, _)| what.contains('\u{201c}')),
+            "{rows:?}"
+        );
+        // Each has its own Dismiss, then Dismiss all.
+        let mut expected: Vec<MenuAction> = failed
+            .iter()
+            .map(|e| MenuAction::DismissFailure(e.entry.command_id))
+            .collect();
+        expected.push(MenuAction::DismissAllFailures);
+        assert_eq!(actions(&menu), expected);
+        assert!(is_wide(&menu) && !is_confirmation(&menu));
+        // One refused change needs no Dismiss all; none, no list.
+        let one = failures_menu(&f.state, &failed[..1]);
+        assert!(matches!(&one[0], MenuEntry::Heading(h) if h == "1 change couldn't sync"));
+        assert_eq!(items(&one).count(), 1);
+        assert!(failures_menu(&f.state, &[]).is_empty());
     }
 }

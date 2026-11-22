@@ -246,6 +246,10 @@ pub struct UiState {
     /// Tasks just reopened that keep their completed place (with when they were completed) while they
     /// leave it. They count as done until they're released.
     pub reopening: BTreeMap<TaskId, Timestamp>,
+    /// Tasks just deleted or moved to a list the room doesn't show, as they were before: their rows
+    /// keep their places while they leave (`motion::Motion::leave`), and the counts change only once
+    /// they're released.
+    pub leaving: BTreeMap<TaskId, todo_core::model::Task>,
     /// Collection IDs whose child lists are hidden in the sidebar.
     pub collapsed_collections: BTreeSet<CollectionId>,
     /// Device-local preferred widths of the main window's side panes.

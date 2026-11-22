@@ -19,7 +19,7 @@ Options:
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, room-menu, account-menu, priority-menu,
-                    delete-list-confirm, collapsed-collection, long-sidebar, long-names,
+                    task-context-menu, move-to-picker, sync-failures, delete-list-confirm, collapsed-collection, long-sidebar, long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
                     caption-close-hover, empty, finished, finished-short (700 px
@@ -41,6 +41,9 @@ pub const FIXTURES: &[&str] = &[
     "room-menu",
     "account-menu",
     "priority-menu",
+    "task-context-menu",
+    "move-to-picker",
+    "sync-failures",
     "delete-list-confirm",
     "collapsed-collection",
     "long-sidebar",
