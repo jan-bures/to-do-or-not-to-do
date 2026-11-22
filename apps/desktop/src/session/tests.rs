@@ -1959,7 +1959,7 @@ fn connecting_to_an_unavailable_server_uses_the_shared_offline_wording() {
     let id = AttachmentId::from_uuid(session.client().new_uuid());
     let error = net
         .block_on(session.download_to_open(id, "report.pdf"))
-        .unwrap_err();
+        .expect_err("the download fails");
     assert_eq!(error.to_string(), todo_client::failure::ATTACHMENT_OFFLINE);
     drop(session);
     drop(server);
