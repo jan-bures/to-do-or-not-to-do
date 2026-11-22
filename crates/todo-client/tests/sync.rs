@@ -466,6 +466,11 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
         b.undo_result(again),
         Some(Err("Couldn't undo: the change was already undone."))
     );
+    // Only the outbox and the "couldn't sync" list are consulted: once dismissed, or for a command
+    // this client never queued, the answer is no longer a refusal. It isn't proof of acceptance.
+    assert!(b.dismiss(again).unwrap());
+    assert_eq!(b.undo_result(again), Some(Ok(())));
+    assert_eq!(b.undo_result(todo_client::CommandId::nil()), Some(Ok(())));
     stop(&a, ha).await;
     stop(&b, hb).await;
     server.stop().await;

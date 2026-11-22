@@ -252,6 +252,8 @@ pub mod desktop {
     pub const NAV_ROW: f32 = 32.0;
     /// List rows inside a collection, and collection headers.
     pub const NAV_SUB_ROW: f32 = 28.0;
+    /// Gap between a sidebar row's icon, label and count, and the row's inset from its right edge.
+    pub const NAV_GAP: f32 = 10.0;
     /// Sidebar footer (sync state).
     pub const SIDEBAR_FOOTER: f32 = 44.0;
     /// Detail pane top bar (breadcrumb and actions).
@@ -272,7 +274,7 @@ pub mod desktop {
     pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 52] = [
+    pub const ALL: [(&str, f32); 53] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -316,6 +318,7 @@ pub mod desktop {
         ("toast-countdown", TOAST_COUNTDOWN),
         ("nav-row", NAV_ROW),
         ("nav-sub-row", NAV_SUB_ROW),
+        ("nav-gap", NAV_GAP),
         ("sidebar-footer", SIDEBAR_FOOTER),
         ("detail-top", DETAIL_TOP),
         ("detail-pad-x", DETAIL_PAD_X),

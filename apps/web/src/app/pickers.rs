@@ -152,9 +152,10 @@ impl DetailPicker {
     }
 
     pub(super) fn focus_page(self, first: &'static str) {
+        let before = focused();
         request_animation_frame(move || {
             self.position();
-            if self.open.try_get_untracked() == Some(true) {
+            if self.open.try_get_untracked() == Some(true) && focus_unmoved(before.as_ref()) {
                 platform::focus(first);
             }
         });
@@ -222,7 +223,11 @@ impl DetailPicker {
 
 /// Start a new choice page on its current value, or its first enabled option.
 pub(super) fn focus_choice(id: &'static str, fallback: &'static str) {
+    let before = focused();
     request_animation_frame(move || {
+        if !focus_unmoved(before.as_ref()) {
+            return;
+        }
         let Some(panel) = document()
             .get_element_by_id(id)
             .filter(|el| el.matches(":popover-open").unwrap_or(false))
@@ -244,6 +249,17 @@ pub(super) fn focus_choice(id: &'static str, fallback: &'static str) {
             platform::focus(fallback);
         }
     });
+}
+
+pub(super) fn focused() -> Option<web_sys::Element> {
+    document().active_element()
+}
+
+/// Focus put off to a later frame (a page's first choice, or back to an opener) goes ahead only if
+/// nothing moved the keyboard meanwhile: it never pulls back focus from a control reached in the
+/// meantime. A removed element leaves focus on the body, which still counts as unmoved.
+pub(super) fn focus_unmoved(before: Option<&web_sys::Element>) -> bool {
+    focused().is_none_or(|now| before == Some(&now) || now.tag_name() == "BODY")
 }
 
 pub(super) fn position_detail_pickers() {

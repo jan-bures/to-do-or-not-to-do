@@ -324,6 +324,30 @@ test("picker opens above and aligns to the end, then closes when its anchor is c
   await w.check();
 });
 
+test("a picker's first focus never pulls back focus that moved before the next frame", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 800 });
+  await open(page);
+  await task(page).click();
+  const picker = dialog(page, "Repeat");
+  // Open the picker and move to another option before the frame that places its first focus (on
+  // the current choice): the picker renders within microtasks, and the frame comes after them.
+  const frames = await page.evaluate(async () => {
+    let frame = 0;
+    requestAnimationFrame(() => { frame += 1; });
+    document.getElementById("edit-task-repeat").click();
+    const daily = () => [...document.querySelectorAll("#repeat-picker [role=option]")]
+      .find((option) => option.textContent.includes("Daily"));
+    for (let i = 0; i < 100 && !daily(); i += 1) await Promise.resolve();
+    daily().focus();
+    return frame;
+  });
+  expect(frames).toBe(0);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  await expect(picker.getByRole("option", { name: "Daily" })).toBeFocused();
+  await w.check();
+});
+
 test("phone picker contains Tab, returns focus and leaves detail open after dismissing it", async ({ page }) => {
   const w = watch(page);
   await page.setViewportSize({ width: 412, height: 800 });

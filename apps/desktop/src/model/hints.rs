@@ -110,6 +110,37 @@ pub const TAB_ORDER: [Stop; 13] = [
     Stop::Account,
 ];
 
+/// A scrolled pane a Tab stop can sit in, below its fold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollPane {
+    Sidebar,
+    Detail,
+    /// The Activity room's feed.
+    Feed,
+}
+
+/// Where a stop that can be scrolled out of view sits, and the probe that records where it was
+/// painted: landing on it with Tab scrolls it into view (`layout::reveal_offset`). The others are
+/// always in view.
+pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
+    match stop {
+        Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
+        Stop::NewList => Some((ScrollPane::Sidebar, "new-list")),
+        Stop::NewCollection => Some((ScrollPane::Sidebar, "new-collection")),
+        // Load older activity (or Try again) ends the feed, below the last change read.
+        Stop::ActivityMore => Some((ScrollPane::Feed, "activity-more")),
+        Stop::SidebarSplitter
+        | Stop::List
+        | Stop::Undo
+        | Stop::RoomMenu
+        | Stop::ActivityFilter
+        | Stop::ActivityRefresh
+        | Stop::DetailSplitter
+        | Stop::SyncFailures
+        | Stop::Account => None,
+    }
+}
+
 /// Where Tab (`forward`) or Shift+Tab goes from `from`: the next stop round [`TAB_ORDER`] that is
 /// `present`. The list is always there; from a stop that has just gone, it goes on from that stop's
 /// place in the order.
@@ -712,6 +743,29 @@ mod tests {
         // The list is always there, even if asked otherwise.
         assert_eq!(tab_stop(Account, true, |_| false), List);
         assert_eq!(tab_stop(Account, false, |_| false), List);
+    }
+
+    #[test]
+    fn stops_below_a_fold_are_scrolled_into_view_in_their_own_pane() {
+        assert_eq!(
+            reveal(Stop::ActivityMore),
+            Some((ScrollPane::Feed, "activity-more"))
+        );
+        assert_eq!(
+            reveal(Stop::NewList),
+            Some((ScrollPane::Sidebar, "new-list"))
+        );
+        assert_eq!(
+            reveal(Stop::NewCollection),
+            Some((ScrollPane::Sidebar, "new-collection"))
+        );
+        assert_eq!(
+            reveal(Stop::Repeat),
+            Some((ScrollPane::Detail, "repeat-row"))
+        );
+        // The toolbar's buttons sit above the feed and never scroll away.
+        assert_eq!(reveal(Stop::ActivityRefresh), None);
+        assert_eq!(reveal(Stop::ActivityFilter), None);
     }
 
     #[test]

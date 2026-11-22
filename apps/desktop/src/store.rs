@@ -6,7 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use todo_client::activity::{
-    ActivityError, ActivityItem, ActivityPage, ActivityQuery, Entry, UndoOutcome,
+    self, ActivityError, ActivityItem, ActivityPage, ActivityQuery, Entry, UndoAction, UndoOutcome,
+    Undos,
 };
 use todo_client::failure::undo_message;
 use todo_client::outbox::FailedEntry;
@@ -32,6 +33,7 @@ pub struct LocalStore {
     failed: RefCell<Vec<FailedEntry>>,
     /// The fixture's activity feed, newest first, which Undo marks undone.
     activity: RefCell<Vec<ActivityItem>>,
+    undos: RefCell<Undos>,
     next: Cell<u64>,
     /// Tests: refuse every submit, as a cache that can't be written would.
     #[cfg(test)]
@@ -66,6 +68,7 @@ impl LocalStore {
 pub struct LiveStore {
     pub session: Session,
     synced_at: Cell<Option<Timestamp>>,
+    undos: RefCell<Undos>,
 }
 
 impl LiveStore {
@@ -73,6 +76,7 @@ impl LiveStore {
         Self {
             session,
             synced_at: Cell::new(None),
+            undos: RefCell::default(),
         }
     }
 }
@@ -91,6 +95,7 @@ impl Store {
             sync: f.sync.clone(),
             failed: RefCell::new(f.failed.clone()),
             activity: RefCell::new(f.activity.clone()),
+            undos: RefCell::default(),
             next: Cell::new(0),
             #[cfg(test)]
             refuse: Cell::new(false),
@@ -204,9 +209,51 @@ impl Store {
         }))
     }
 
+    /// The undos asked for from the Activity room. They belong to the pairing, not to a room: leaving
+    /// Activity or changing its filter never forgets an undo still on its way, so no other change of
+    /// the same command can queue a second one meanwhile.
+    pub fn activity_undos(&self) -> std::cell::Ref<'_, Undos> {
+        self.undos().borrow()
+    }
+
+    fn undos(&self) -> &RefCell<Undos> {
+        match self {
+            Self::Local(s) => &s.undos,
+            Self::Live(s) => &s.undos,
+        }
+    }
+
+    /// What a change's Undo offers now: the page's flags, the replica's and the undos asked for.
+    pub fn activity_action(&self, entry: &Entry) -> UndoAction {
+        let (confirmed, pending) = self.activity_flags(entry);
+        let group = self.undos().borrow().group_outcome(entry.group);
+        activity::undo_action(entry, confirmed, pending, group)
+    }
+
+    /// Undoes a change from the feed, unless it can't be undone now (already undone, not the head of
+    /// its chain, or an undo of its command already asked for). Returns what came of it and what to
+    /// tell the owner.
+    pub fn undo_change(&self, entry: &Entry) -> Option<(UndoOutcome, &'static str)> {
+        if self.activity_action(entry) != UndoAction::Undo {
+            return None;
+        }
+        let outcome = self.queue_activity_undo(entry.target);
+        let said = (self.undos().borrow_mut()).record(entry.target.id, entry.group, outcome);
+        Some((outcome, said))
+    }
+
+    /// Takes in what became of the pending undos (see `Undos::settle`): what to tell the owner.
+    pub fn settle_activity_undos(&self) -> Option<&'static str> {
+        let mut undos = self.undos().borrow_mut();
+        if !undos.any_pending() {
+            return None;
+        }
+        undos.settle(|command| self.undo_settled(command))
+    }
+
     /// Asks to undo a change from the feed: queued for the server (live), or at once (a fixture's,
     /// where two of the sample changes stay pending and refused, for the gallery).
-    pub fn undo_activity(&self, event: EventRef) -> UndoOutcome {
+    fn queue_activity_undo(&self, event: EventRef) -> UndoOutcome {
         match self {
             Self::Live(s) => match s.session.client().undo_activity(event) {
                 Ok(command) => UndoOutcome::Pending(command),
@@ -255,8 +302,7 @@ impl Store {
 
     /// The confirmed position (not the optimistic view): when it moves on, the feed has news.
     pub fn activity_revision(&self) -> Option<(Option<Epoch>, u64)> {
-        let client = self.session()?.client();
-        Some((client.epoch(), client.cursor()))
+        Some(self.session()?.client().activity_revision())
     }
 
     /// The changes the server refused ("couldn't sync"), oldest first.
@@ -432,24 +478,96 @@ mod tests {
                 .expect("the sample change")
         };
         let plain = first.items[0].event_ref().expect("an event");
-        assert_eq!(store.undo_activity(plain), UndoOutcome::Done);
+        assert_eq!(store.queue_activity_undo(plain), UndoOutcome::Done);
         assert_eq!(
-            store.undo_activity(plain),
+            store.queue_activity_undo(plain),
             UndoOutcome::Refused(undo_message("already_undone"))
         );
         assert!(page(None, None).items[0].undone);
         assert_eq!(
-            store.undo_activity(event(crate::fixtures::REFUSED_ACTIVITY_SEQ)),
+            store.queue_activity_undo(event(crate::fixtures::REFUSED_ACTIVITY_SEQ)),
             UndoOutcome::Refused(undo_message("undo_conflict"))
         );
         assert!(matches!(
-            store.undo_activity(event(crate::fixtures::PENDING_ACTIVITY_SEQ)),
+            store.queue_activity_undo(event(crate::fixtures::PENDING_ACTIVITY_SEQ)),
             UndoOutcome::Pending(_)
         ));
         let entry = Entry::from_item(first.items[1].clone()).expect("an entry");
         assert_eq!(store.activity_flags(&entry), (None, false));
         assert_eq!(store.activity_revision(), None);
         assert_eq!(store.undo_settled(uuid::Uuid::nil()), None);
+    }
+
+    #[test]
+    fn a_pending_undo_covers_its_whole_command_across_filters() {
+        use todo_core::actor::AgentId;
+        let mut f = crate::fixtures::activity(None);
+        let seq = |s| move |i: &&mut ActivityItem| i.event.event.seq == Some(s);
+        // Two events of one command: the change whose undo stays pending, and a sibling from Claude.
+        let (group, command) = f
+            .activity
+            .iter_mut()
+            .find(seq(crate::fixtures::PENDING_ACTIVITY_SEQ))
+            .map(|i| (i.event.event.group, i.event.command_id))
+            .expect("the pending change");
+        let sibling = f.activity.iter_mut().find(seq(115)).expect("a sibling");
+        sibling.event.event.group = group;
+        sibling.event.command_id = command;
+        let store = Store::fixture(&f);
+        let read = |agent: Option<&str>| {
+            store
+                .local_activity(&ActivityQuery {
+                    before: None,
+                    limit: Some(50),
+                    agent: agent.and_then(|a| AgentId::new(a).ok()),
+                })
+                .expect("a fixture reads at once")
+                .expect("a page")
+                .items
+                .into_iter()
+                .filter_map(Entry::from_item)
+                .collect::<Vec<_>>()
+        };
+        let all = read(None);
+        let pending = all
+            .iter()
+            .find(|e| e.target.seq == crate::fixtures::PENDING_ACTIVITY_SEQ)
+            .expect("in the feed");
+        let (outcome, said) = store.undo_change(pending).expect("queued");
+        assert!(matches!(outcome, UndoOutcome::Pending(_)));
+        assert_eq!(said, activity::UNDOING);
+        assert_eq!(store.undo_change(pending), None, "never queued twice");
+        // The room switches to Claude's changes: a new feed, the same undos.
+        let claude = read(Some("claude"));
+        let sibling = claude
+            .iter()
+            .find(|e| e.target.seq == 115)
+            .expect("in Claude's feed");
+        assert_eq!(store.activity_action(sibling), UndoAction::Undoing);
+        assert_eq!(
+            store.undo_change(sibling),
+            None,
+            "its command's undo is pending"
+        );
+        assert!(
+            !read(None).iter().any(|e| e.target.seq == 115 && e.undone),
+            "nothing was queued for the sibling"
+        );
+        // A change of another command can still be undone.
+        let other = claude
+            .iter()
+            .find(|e| e.target.seq == 110)
+            .expect("another change");
+        assert_eq!(store.activity_action(other), UndoAction::Undo);
+        assert_eq!(
+            store.undo_change(other).map(|(o, _)| o),
+            Some(UndoOutcome::Done)
+        );
+        assert_eq!(
+            store.settle_activity_undos(),
+            None,
+            "a fixture's never settles"
+        );
     }
 
     #[test]

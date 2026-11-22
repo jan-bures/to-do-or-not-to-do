@@ -4,6 +4,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::outbox::CommandId;
 use crate::platform::{Request, Response};
@@ -273,6 +274,9 @@ pub enum Loaded {
 /// A client asks [`Feed::begin`] before it reads a page and hands the reply to [`Feed::finish`]; the
 /// feed keeps the cursor moving (even past a page with nothing the caller may see), drops replies to
 /// requests it has since replaced, and queues a refresh asked for while an older page is read.
+///
+/// Request numbers are unique across every feed in the process, so a late reply to a feed that has
+/// been reset or replaced (another agent filter, a replaced log) is never taken for the new one's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Feed {
     entries: BTreeMap<Reverse<u64>, Entry>,
@@ -281,16 +285,16 @@ pub struct Feed {
     refresh_queued: bool,
     error: Option<(Option<u64>, ActivityError)>,
     loaded: bool,
-    request: u64,
+    request: Option<u64>,
 }
+
+/// The next request number, for every feed: it only ever goes up.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 impl Feed {
     /// Forgets every page (a replaced log, another filter). A reply still in flight is ignored.
     pub fn reset(&mut self) {
-        *self = Self {
-            request: self.request.wrapping_add(1),
-            ..Self::default()
-        };
+        *self = Self::default();
     }
 
     /// Starts reading the page before `before` (the newest page for `None`): the request's number,
@@ -310,8 +314,9 @@ impl Feed {
         }
         self.pending = Some(kind);
         self.error = None;
-        self.request = self.request.wrapping_add(1);
-        Some(self.request)
+        let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        self.request = Some(request);
+        Some(request)
     }
 
     /// Takes in the reply to request `request`, which read the page before `before`.
@@ -321,7 +326,7 @@ impl Feed {
         before: Option<u64>,
         result: Result<ActivityPage, ActivityError>,
     ) -> Loaded {
-        if self.request != request || self.pending.is_none() {
+        if self.request != Some(request) || self.pending.is_none() {
             return Loaded::Ignore;
         }
         self.pending = None;
@@ -749,6 +754,50 @@ mod tests {
         let r = feed.begin(None).unwrap();
         feed.finish(r, None, Ok(page(Vec::new(), None)));
         assert!(feed.is_empty_feed());
+    }
+
+    #[test]
+    fn a_late_reply_never_lands_in_a_feed_for_another_filter_or_log() {
+        let unfiltered = page(vec![item(9, "2026-11-21T10:00:00Z", false)], None);
+        // Switching to an agent replaces the feed while the unfiltered read is still out.
+        let mut all = Feed::default();
+        let late = all.begin(None).unwrap();
+        let mut agent = Feed::default();
+        let mine = agent.begin(None).unwrap();
+        assert_ne!(late, mine, "a new feed never reuses a request number");
+        assert_eq!(
+            agent.finish(late, None, Ok(unfiltered.clone())),
+            Loaded::Ignore
+        );
+        assert!(agent.is_empty() && !agent.loaded());
+        assert_eq!(
+            agent.pending(),
+            Some(Load::Latest),
+            "its own read is still out"
+        );
+        let own = page(vec![item(8, "2026-11-21T09:00:00Z", false)], None);
+        assert_eq!(agent.finish(mine, None, Ok(own)), Loaded::Applied);
+        assert_eq!(seqs(&agent), [8]);
+        // A replaced log resets the feed in place: the read from before the reset is dropped too.
+        let mut feed = Feed::default();
+        let before_reset = feed.begin(None).unwrap();
+        feed.reset();
+        let after_reset = feed.begin(None).unwrap();
+        assert_eq!(
+            feed.finish(before_reset, None, Ok(unfiltered)),
+            Loaded::Ignore
+        );
+        assert!(feed.is_empty());
+        let fresh = page(vec![item(1, "2026-11-21T08:00:00Z", false)], None);
+        assert_eq!(feed.finish(after_reset, None, Ok(fresh)), Loaded::Applied);
+        assert_eq!(seqs(&feed), [1]);
+        // A reset feed with nothing in flight takes no reply at all.
+        let mut idle = Feed::default();
+        idle.reset();
+        assert_eq!(
+            idle.finish(after_reset, None, Ok(page(Vec::new(), None))),
+            Loaded::Ignore
+        );
     }
 
     #[test]

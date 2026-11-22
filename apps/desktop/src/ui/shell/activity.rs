@@ -18,7 +18,9 @@ use todo_client::activity::{
 };
 
 use super::{Notice, ShellView};
-use crate::model::activity::{self, ActivityDay, ActivityRow, ActivityState, AgentKey, Mark};
+use crate::model::activity::{
+    self, ActivityDay, ActivityRow, ActivityState, AgentKey, FeedCommand, FeedInput, Mark,
+};
 use crate::model::hints::{self, Stop};
 use crate::model::{RoomKey, layout};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
@@ -122,27 +124,28 @@ impl ShellView {
         cx.notify();
     }
 
-    /// After the data changed: the undos asked for here that have gone through or been refused say
-    /// so, and a replaced log starts the feed again.
+    /// After the data changed: the undos asked for from Activity that have gone through or been
+    /// refused say so (in any room: they outlive it), and in Activity a replaced log starts the feed
+    /// again.
     pub(super) fn follow_activity(&mut self, cx: &mut Context<Self>) {
-        let Some(agent) = self.activity_room() else {
-            return;
-        };
         let store = self.store.clone();
         let refused: HashSet<u64> = self.refused_changes();
-        if let Some(said) = self.activity.undos.settle(|c| store.undo_settled(c)) {
+        if let Some(said) = store.settle_activity_undos() {
             self.notice = Some(if said == feed::UNDONE {
                 Notice::info(said)
             } else {
                 Notice::error(said)
             });
-            if self.animate {
+            if self.animate && self.in_activity() {
                 let (now, pace) = (self.now(), self.pace());
                 for seq in self.refused_changes().difference(&refused) {
                     self.activity.motion.note(*seq, now, pace);
                 }
             }
         }
+        let Some(agent) = self.activity_room() else {
+            return;
+        };
         let epoch = store.activity_revision().and_then(|(epoch, _)| epoch);
         if self.activity.epoch.is_some_and(|old| Some(old) != epoch) {
             self.open_activity(agent, cx);
@@ -152,8 +155,9 @@ impl ShellView {
     }
 
     fn refused_changes(&self) -> HashSet<u64> {
+        let undos = self.store.activity_undos();
         (self.activity.feed.entries())
-            .filter(|e| self.activity.undos.refusal(e.target.id).is_some())
+            .filter(|e| undos.refusal(e.target.id).is_some())
             .map(|e| e.target.seq)
             .collect()
     }
@@ -168,7 +172,8 @@ impl ShellView {
     /// The rows to draw now.
     pub(super) fn activity_days(&self) -> Vec<ActivityDay> {
         let store = &self.store;
-        activity::days(&self.activity, &self.store.now(), |entry| {
+        let undos = store.activity_undos();
+        activity::days(&self.activity, &undos, &store.now(), |entry| {
             store.activity_flags(entry)
         })
     }
@@ -178,16 +183,9 @@ impl ShellView {
         let Some(entry) = self.activity.feed.entry(seq).cloned() else {
             return;
         };
-        let (confirmed, pending) = self.store.activity_flags(&entry);
-        let group = self.activity.undos.group_outcome(entry.group);
-        if feed::undo_action(&entry, confirmed, pending, group) != UndoAction::Undo {
+        let Some((outcome, said)) = self.store.undo_change(&entry) else {
             return;
-        }
-        let outcome = self.store.undo_activity(entry.target);
-        let said = self
-            .activity
-            .undos
-            .record(entry.target.id, entry.group, outcome);
+        };
         if matches!(outcome, UndoOutcome::Refused(_)) {
             self.notice = Some(Notice::error(said));
             if self.animate {
@@ -230,16 +228,29 @@ impl ShellView {
         cx.notify();
     }
 
-    /// Enter on the list: undoes the selected change.
-    pub(super) fn activity_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let key = &e.keystroke;
-        if key.modifiers.modified() || !matches!(key.key.as_str(), "enter" | "u") {
+    /// The list's keys in the room (`activity::feed_command`): only while the list itself has the
+    /// keyboard, never for a key that bubbled up from a control inside the feed. A held key's
+    /// repeats never undo. Returns whether the list took the key.
+    pub(super) fn feed_input(
+        &mut self,
+        input: FeedInput<'_>,
+        held: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let focused = self.list_focus.is_focused(window);
+        let Some(command) = activity::feed_command(focused, input) else {
             return false;
-        }
-        if !e.is_held
-            && let Some(seq) = self.activity.selected
-        {
-            self.undo_change(seq, cx);
+        };
+        match command {
+            FeedCommand::Step(by) => self.activity_step(by, cx),
+            FeedCommand::Undo => {
+                if !held && let Some(seq) = self.activity.selected {
+                    self.undo_change(seq, cx);
+                }
+            }
+            FeedCommand::Clear => self.select_change(None, cx),
+            FeedCommand::Refresh => self.refresh_activity(cx),
         }
         true
     }
@@ -314,11 +325,8 @@ impl ShellView {
             hints::ActivityHints {
                 rows: !self.activity.feed.is_empty(),
                 selected: selected.is_some(),
-                undo: selected.is_some_and(|entry| {
-                    let (confirmed, pending) = self.store.activity_flags(entry);
-                    let group = self.activity.undos.group_outcome(entry.group);
-                    feed::undo_action(entry, confirmed, pending, group) == UndoAction::Undo
-                }),
+                undo: selected
+                    .is_some_and(|entry| self.store.activity_action(entry) == UndoAction::Undo),
             }
         })
     }
@@ -359,6 +367,8 @@ impl ShellView {
             .when(!busy, |b| b.cursor_pointer().hover(|s| s.bg(p.hover)))
             .child(kit::icon(icon, component::ICON_SMALL, ink))
             .child(label)
+            // Where it is, so Tab landing on it below the feed's fold scrolls it into view.
+            .children(hints::reveal(stop).map(|(_, key)| self.probe(key)))
             .when(dot, |b| {
                 b.child(
                     div()
@@ -606,7 +616,7 @@ impl ShellView {
                 .pt(px(desktop::ROW_LINE_GAP))
                 .flex()
                 .items_center()
-                .gap(px(space::S1 + space::S1 / 2.))
+                .gap(px(component::CHIP_GAP))
                 .opacity(look.note)
                 .style(ty::META)
                 .text_color(p.danger_ink)
@@ -629,7 +639,7 @@ impl ShellView {
             .flex_none()
             .items_start()
             .gap(px(desktop::ROW_GAP))
-            .pt(px(desktop::ROW_PAD_TOP + space::S1 / 2.))
+            .pt(px(desktop::ROW_PAD_TOP))
             .pb(px(desktop::ROW_PAD_TOP))
             .px(px(desktop::LIST_PAD_X))
             .border_b_1()
@@ -638,7 +648,8 @@ impl ShellView {
             .child(
                 div()
                     .w(px(desktop::COL_CHECK))
-                    .pt(px(space::S1 / 2.))
+                    // The mark is centred on the title's first line.
+                    .pt(px((ty::TASK_TITLE.line_height - component::AGENT_MARK) / 2.))
                     .flex_none()
                     .child(self.change_mark(row.mark)),
             )
@@ -723,7 +734,7 @@ impl ShellView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(space::S1 + space::S1 / 2.))
+            .gap(px(component::CHIP_GAP))
             .rounded(px(radius::BUTTON))
             .border(px(elevation::HAIRLINE))
             .border_color(if ready { p.line_strong } else { p.line })

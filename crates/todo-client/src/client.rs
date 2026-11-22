@@ -593,9 +593,15 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| (s.replica.epoch(), s.replica.cursor()))
     }
 
-    /// What became of a queued undo (or any command): `None` while it is still in the outbox,
-    /// otherwise whether the server took it, a refusal in plain words ([`crate::failure::undo_message`],
-    /// never the server's own text). A refusal also stays in the "couldn't sync" list.
+    /// What this client knows of a queued undo (or any command), from the outbox and the
+    /// "couldn't sync" list alone:
+    ///
+    /// - `None` while the command is still in the outbox;
+    /// - `Some(Err(_))` while it is in the "couldn't sync" list, with the refusal in plain words
+    ///   ([`crate::failure::undo_message`], never the server's own text);
+    /// - `Some(Ok(()))` otherwise. That includes a command the server took, but also one this client
+    ///   never queued and a refusal that has since been dismissed: it is not proof that the server
+    ///   accepted the command.
     #[must_use]
     pub fn undo_result(&self, command: CommandId) -> Option<Result<(), &'static str>> {
         self.with(|s| {

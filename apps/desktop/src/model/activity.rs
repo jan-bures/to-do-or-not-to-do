@@ -26,9 +26,26 @@ pub const PAGE_SIZE: usize = 20;
 const LOAD_AHEAD: usize = 3;
 
 /// An agent's ID as a small `Copy` handle, so a room's key (and a menu item that opens one) stays
-/// `Copy` and small. IDs are interned for the life of the process: there are only ever a few agents.
+/// `Copy` and small. IDs are interned for the life of the process in a table of at most
+/// [`MAX_AGENTS`] (each at most 64 bytes, so it never holds more than 16 KiB): an owner has a few
+/// agents. An agent past the limit gets no key, so its sidebar row isn't shown.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentKey(u32);
+
+/// How many distinct agent IDs the process keeps keys for.
+pub const MAX_AGENTS: usize = 256;
+
+/// The place of `id` in `ids`, adding it while there are fewer than `max`.
+fn intern(ids: &mut Vec<&'static str>, id: &str, max: usize) -> Option<usize> {
+    if let Some(at) = ids.iter().position(|known| *known == id) {
+        return Some(at);
+    }
+    if ids.len() >= max {
+        return None;
+    }
+    ids.push(Box::leak(id.to_owned().into_boxed_str()));
+    Some(ids.len() - 1)
+}
 
 fn agent_ids() -> std::sync::MutexGuard<'static, Vec<&'static str>> {
     static IDS: std::sync::OnceLock<std::sync::Mutex<Vec<&'static str>>> =
@@ -41,14 +58,7 @@ fn agent_ids() -> std::sync::MutexGuard<'static, Vec<&'static str>> {
 impl AgentKey {
     /// The key for an agent's ID.
     pub fn of(id: &AgentId) -> Option<Self> {
-        let mut ids = agent_ids();
-        let at = match ids.iter().position(|known| *known == id.as_str()) {
-            Some(at) => at,
-            None => {
-                ids.push(Box::leak(id.as_str().to_owned().into_boxed_str()));
-                ids.len() - 1
-            }
-        };
+        let at = intern(&mut agent_ids(), id.as_str(), MAX_AGENTS)?;
         u32::try_from(at).ok().map(Self)
     }
 
@@ -90,7 +100,6 @@ pub struct ActivityState {
     /// The filter the pages were read with.
     pub agent: Option<AgentKey>,
     pub feed: Feed,
-    pub undos: Undos,
     /// The selected change (by sequence number), which Up and Down move and Enter undoes.
     pub selected: Option<u64>,
     /// The replica's position when the newest page was read: once it moves on, Refresh has news.
@@ -155,6 +164,53 @@ impl ActivityState {
     }
 }
 
+/// What reached the list in the Activity room: a raw key, or one of the list's bound actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedInput<'a> {
+    Key {
+        key: &'a str,
+        modified: bool,
+    },
+    /// Down or J.
+    Next,
+    /// Up or K.
+    Previous,
+    Escape,
+    /// R.
+    Refresh,
+}
+
+/// What the list does with it in the Activity room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedCommand {
+    Step(isize),
+    /// Undo the selected change.
+    Undo,
+    /// Clear the selection.
+    Clear,
+    Refresh,
+}
+
+/// The list's keys in the Activity room, which act only while the list itself has the keyboard. A
+/// key pressed on a control inside the feed (Load older activity, Try again) bubbles up to the list,
+/// and must never move the selection, refresh or undo the selected change: there it is the control's.
+pub fn feed_command(list_focused: bool, input: FeedInput<'_>) -> Option<FeedCommand> {
+    if !list_focused {
+        return None;
+    }
+    Some(match input {
+        FeedInput::Key {
+            key: "enter" | "u",
+            modified: false,
+        } => FeedCommand::Undo,
+        FeedInput::Key { .. } => return None,
+        FeedInput::Next => FeedCommand::Step(1),
+        FeedInput::Previous => FeedCommand::Step(-1),
+        FeedInput::Escape => FeedCommand::Clear,
+        FeedInput::Refresh => FeedCommand::Refresh,
+    })
+}
+
 /// Who made a change, as its mark shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
@@ -204,11 +260,12 @@ pub struct ActivityDay {
     pub rows: Vec<ActivityRow>,
 }
 
-/// The rows to draw, by local day, newest first. `flags` is the replica's view of an entry: its
-/// confirmed journal flags and whether the outbox holds an undo of it (see
-/// `activity::undo_action`).
+/// The rows to draw, by local day, newest first. `undos` are the undos asked for (the store keeps
+/// them, across rooms and filters); `flags` is the replica's view of an entry: its confirmed journal
+/// flags and whether the outbox holds an undo of it (see `activity::undo_action`).
 pub fn days(
     state: &ActivityState,
+    undos: &Undos,
     now: &Now,
     flags: impl Fn(&Entry) -> (Option<(bool, bool)>, bool),
 ) -> Vec<ActivityDay> {
@@ -224,7 +281,7 @@ pub fn days(
                 .filter_map(|seq| state.feed.entry(seq))
                 .map(|entry| {
                     let (confirmed, pending) = flags(entry);
-                    let group = state.undos.group_outcome(entry.group);
+                    let group = undos.group_outcome(entry.group);
                     ActivityRow {
                         seq: entry.target.seq,
                         event: entry.target.id,
@@ -234,7 +291,7 @@ pub fn days(
                         when: activity::relative_time(entry.at, now.at).into(),
                         clock: super::labels::clock(entry.at, &now.tz).into(),
                         action: activity::undo_action(entry, confirmed, pending, group),
-                        refusal: state.undos.refusal(entry.target.id),
+                        refusal: undos.refusal(entry.target.id),
                         selected: state.selected == Some(entry.target.seq),
                     }
                 })
@@ -422,6 +479,74 @@ mod tests {
     }
 
     #[test]
+    fn the_lists_keys_act_only_while_the_list_has_the_keyboard() {
+        let key = |key| FeedInput::Key {
+            key,
+            modified: false,
+        };
+        for input in [
+            key("enter"),
+            key("u"),
+            FeedInput::Next,
+            FeedInput::Previous,
+            FeedInput::Escape,
+            FeedInput::Refresh,
+        ] {
+            // Enter on Load older activity or Try again bubbles up from the button: nothing here.
+            assert_eq!(feed_command(false, input), None, "{input:?}");
+            assert!(feed_command(true, input).is_some(), "{input:?}");
+        }
+        assert_eq!(feed_command(true, key("enter")), Some(FeedCommand::Undo));
+        assert_eq!(feed_command(true, key("u")), Some(FeedCommand::Undo));
+        assert_eq!(
+            feed_command(
+                true,
+                FeedInput::Key {
+                    key: "enter",
+                    modified: true
+                }
+            ),
+            None
+        );
+        assert_eq!(feed_command(true, key("space")), None);
+        assert_eq!(
+            feed_command(true, FeedInput::Next),
+            Some(FeedCommand::Step(1))
+        );
+        assert_eq!(
+            feed_command(true, FeedInput::Previous),
+            Some(FeedCommand::Step(-1))
+        );
+        assert_eq!(
+            feed_command(true, FeedInput::Escape),
+            Some(FeedCommand::Clear)
+        );
+        assert_eq!(
+            feed_command(true, FeedInput::Refresh),
+            Some(FeedCommand::Refresh)
+        );
+    }
+
+    #[test]
+    fn the_agent_table_is_bounded() {
+        let mut ids = Vec::new();
+        assert_eq!(intern(&mut ids, "codex", 2), Some(0));
+        assert_eq!(intern(&mut ids, "pi", 2), Some(1));
+        assert_eq!(
+            intern(&mut ids, "codex", 2),
+            Some(0),
+            "a known agent keeps its key"
+        );
+        assert_eq!(
+            intern(&mut ids, "claude", 2),
+            None,
+            "full: no key, nothing added"
+        );
+        assert_eq!(ids, ["codex", "pi"]);
+        assert_eq!(intern(&mut ids, "pi", 2), Some(1));
+    }
+
+    #[test]
     fn agent_keys_round_trip_and_stay_copy() {
         let id = AgentId::new("claude-code_2").expect("an ID");
         let key = AgentKey::of(&id).expect("a key");
@@ -458,7 +583,7 @@ mod tests {
             Some(6),
         );
         state.selected = Some(8);
-        let days = days(&state, &now, |_| (None, false));
+        let days = days(&state, &Undos::default(), &now, |_| (None, false));
         let labels: Vec<_> = days.iter().map(|d| d.label.to_string()).collect();
         assert_eq!(labels, ["Today", "Yesterday", "Thu 19 Nov"]);
         let first = &days[0].rows[0];
@@ -480,7 +605,7 @@ mod tests {
     #[test]
     fn pending_and_refused_undos_show_on_their_rows() {
         let now = Now::fixed("2026-11-21T10:35:00Z");
-        let mut state = loaded(
+        let state = loaded(
             vec![
                 item(9, agent("codex"), "2026-11-21T10:30:00Z", false),
                 item(8, agent("claude"), "2026-11-21T10:00:00Z", false),
@@ -491,16 +616,15 @@ mod tests {
             state.feed.entry(9).expect("9").clone(),
             state.feed.entry(8).expect("8").clone(),
         );
-        state.undos.record(
+        let mut undos = Undos::default();
+        undos.record(
             nine.target.id,
             nine.group,
             UndoOutcome::Pending(uuid::Uuid::from_u128(5)),
         );
         let why = todo_client::failure::undo_message("undo_conflict");
-        state
-            .undos
-            .record(eight.target.id, eight.group, UndoOutcome::Refused(why));
-        let rows: Vec<_> = days(&state, &now, |_| (None, false))
+        undos.record(eight.target.id, eight.group, UndoOutcome::Refused(why));
+        let rows: Vec<_> = days(&state, &undos, &now, |_| (None, false))
             .into_iter()
             .flat_map(|d| d.rows)
             .collect();
@@ -516,7 +640,7 @@ mod tests {
             Some("Couldn't undo: the item was changed again.")
         );
         // The outbox's own record counts too, before this window asked.
-        let rows: Vec<_> = days(&state, &now, |e| (None, e.target.seq == 8))
+        let rows: Vec<_> = days(&state, &undos, &now, |e| (None, e.target.seq == 8))
             .into_iter()
             .flat_map(|d| d.rows)
             .collect();

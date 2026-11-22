@@ -27,6 +27,7 @@ use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
+use crate::model::activity::FeedInput;
 use crate::model::layout::{DetailPane, Pane, Width};
 use crate::model::menus::{Page, TagPage};
 use crate::model::motion::{
@@ -550,8 +551,7 @@ impl ShellView {
         }
         match self.activity_room() {
             Some(agent) if room_changed => self.open_activity(agent, cx),
-            Some(_) => self.follow_activity(cx),
-            None => {}
+            _ => self.follow_activity(cx),
         }
         if self.follow_shell() {
             // A held task the list no longer shows was let go: derive again without it. That pass lets
@@ -2717,26 +2717,30 @@ impl ShellView {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .on_action(cx.listener(|this, _: &NextTask, _, cx| {
+                    .on_action(cx.listener(|this, _: &NextTask, window, cx| {
                         if this.in_activity() {
-                            this.activity_step(1, cx);
+                            this.feed_input(FeedInput::Next, false, window, cx);
                         } else {
                             this.move_selection(1, cx);
                         }
                     }))
-                    .on_action(cx.listener(|this, _: &PreviousTask, _, cx| {
+                    .on_action(cx.listener(|this, _: &PreviousTask, window, cx| {
                         if this.in_activity() {
-                            this.activity_step(-1, cx);
+                            this.feed_input(FeedInput::Previous, false, window, cx);
                         } else {
                             this.move_selection(-1, cx);
                         }
                     }))
                     // Space completes or reopens the selected task, and Delete deletes it (`list_key`):
                     // a held key's repeats are consumed without acting.
-                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                    .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                         // In Activity, Enter (or U) undoes the selected change.
                         if this.in_activity() {
-                            if this.activity_key(e, cx) {
+                            let key = FeedInput::Key {
+                                key: e.keystroke.key.as_str(),
+                                modified: e.keystroke.modifiers.modified(),
+                            };
+                            if this.feed_input(key, e.is_held, window, cx) {
                                 cx.stop_propagation();
                             }
                             return;
@@ -2754,9 +2758,9 @@ impl ShellView {
                             ListKey::Delete => this.delete_task(id, cx),
                         }
                     }))
-                    .on_action(cx.listener(|this, _: &Escape, _, cx| {
+                    .on_action(cx.listener(|this, _: &Escape, window, cx| {
                         if this.in_activity() {
-                            this.select_change(None, cx);
+                            this.feed_input(FeedInput::Escape, false, window, cx);
                         } else {
                             this.select_task(None, cx);
                         }
@@ -2790,7 +2794,7 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &PickRepeat, window, cx| {
                         // In Activity, R reads the newest changes again.
                         if this.in_activity() {
-                            this.refresh_activity(cx);
+                            this.feed_input(FeedInput::Refresh, false, window, cx);
                         } else if let Some(task) = this.repeat_target() {
                             this.scroll_into_view(&this.detail_scroll, "repeat-row");
                             this.open_menu(
@@ -3421,17 +3425,14 @@ impl ShellView {
     fn focus_stop(&mut self, stop: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.stop_handle(stop).clone();
         window.focus(&handle, cx);
-        if stop == hints::Stop::Repeat {
-            self.scroll_into_view(&self.detail_scroll, "repeat-row");
-        }
-        // In a long sidebar they can be below its fold: scrolled into view.
-        let key = match stop {
-            hints::Stop::NewList => Some("new-list"),
-            hints::Stop::NewCollection => Some("new-collection"),
-            _ => None,
-        };
-        if let Some(key) = key {
-            self.scroll_into_view(&self.sidebar_scroll, key);
+        // A stop below its pane's fold (a long sidebar, the end of the feed) is scrolled into view.
+        if let Some((pane, key)) = hints::reveal(stop) {
+            let handle = match pane {
+                hints::ScrollPane::Sidebar => &self.sidebar_scroll,
+                hints::ScrollPane::Detail => &self.detail_scroll,
+                hints::ScrollPane::Feed => &self.activity_scroll,
+            };
+            self.scroll_into_view(handle, key);
         }
         cx.notify();
     }

@@ -100,14 +100,11 @@ impl Origin {
     }
 
     fn restore_focus(self, controls: Controls) {
-        let previous = document().active_element();
+        let previous = pickers::focused();
         request_animation_frame(move || {
             // Wait for a reordered sidebar to render, but don't steal focus from a control
             // reached in the meantime. A removed opener can leave focus on the body.
-            let still_restoring = document().active_element().is_none_or(|active| {
-                previous.as_ref() == Some(&active) || active.tag_name() == "BODY"
-            });
-            if still_restoring
+            if pickers::focus_unmoved(previous.as_ref())
                 && !controls.dialog_open()
                 && controls.menu.with_untracked(Option::is_none)
                 && !platform::focus(&self.dom_id())
