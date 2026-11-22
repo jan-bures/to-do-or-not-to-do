@@ -100,11 +100,17 @@ pub fn contain_tab(id: &str, ev: &web_sys::KeyboardEvent) {
         return;
     };
     let Ok(nodes) = panel.query_selector_all(
-        "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), textarea:not(:disabled)",
+        ":is(a[href], button, input, textarea, select, summary, [tabindex]:not([tabindex=\"-1\"]), \
+             [contenteditable]:not([contenteditable=false])):not(:disabled, [type=hidden], [inert], [inert] *)",
     ) else { return };
     let mut controls = (0..nodes.length())
         .filter_map(|i| nodes.item(i)?.dyn_into::<web_sys::HtmlElement>().ok())
-        .filter(|el| el.get_bounding_client_rect().width() > 0.0);
+        .filter(|el| {
+            el.get_bounding_client_rect().width() > 0.0
+                && el
+                    .get_attribute("tabindex")
+                    .is_none_or(|_| el.tab_index() >= 0)
+        });
     let Some(first) = controls.next() else { return };
     let last = controls.next_back().unwrap_or_else(|| first.clone());
     let active = doc.active_element();

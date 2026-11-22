@@ -672,7 +672,8 @@ test("once a newer version takes the database over, the tab takes no edits and s
   await expect(row(app, "Jen ke čtení").locator(".check")).toHaveAttribute("aria-checked", "false");
   await expect(app.locator(".title-input")).toHaveCount(0);
   await expect(row(app, "Nemá se objevit")).toHaveCount(0);
-  await expect(app.locator(".toast[role=status]")).toHaveCount(0);
+  await expect(app.locator(".toast:not(.toast-error)")).toHaveCount(0);
+  await expect(app.locator(".toast-announcement")).toBeEmpty();
   await expect(alert).toBeVisible();
   expect(await stored(newer, "Nemá se objevit")).toBe(0);
   expect(await occurrences(app, "Nemá se objevit")).toBe(0);

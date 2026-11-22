@@ -1249,7 +1249,9 @@ fn ListFoot() -> impl IntoView {
                     <span class="count">{move || count.get()}</span>
                 </button>
             </Show>
-            <ToastView/>
+            <Show when=move || !c.detail_modal.get()>
+                <ToastView/>
+            </Show>
         </div>
     }
 }
@@ -1362,7 +1364,23 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
 #[component]
 fn ToastView() -> impl IntoView {
     let c = ctx();
+    let toast = Memo::new(move |_| {
+        let has_alert = c
+            .sync
+            .with(|s| s.holding_upgrade || s.read_only || s.local_error.is_some());
+        if has_alert { None } else { c.toast.get() }
+    });
+    let dismiss = move || {
+        if c.detail_modal.get_untracked() {
+            platform::focus("task-detail");
+        }
+        c.toast.set(None);
+    };
     view! {
+        // Keep the live region mounted before the toast arrives. Alerts announce themselves.
+        <span class="toast-announcement" role="status" aria-live="polite" aria-atomic="true">
+            {move || toast.with(|t| t.as_ref().map(|t| t.text.clone()))}
+        </span>
         {move || {
             // Another tab waits to upgrade until this one's changes are stored.
             if c.sync.with(|s| s.holding_upgrade) {
@@ -1406,12 +1424,10 @@ fn ToastView() -> impl IntoView {
                     .into_any(),
                 );
             }
-            c.toast
-                .get()
-                .map(|t| {
+            toast.get().map(|t| {
                     let undo = t.undo;
                     view! {
-                        <div class="toast" role="status">
+                        <div class="toast">
                             <span class="toast-text">{t.text}</span>
                             {undo
                                 .map(|id| {
@@ -1419,7 +1435,7 @@ fn ToastView() -> impl IntoView {
                                         <button
                                             class="toast-undo"
                                             on:click=move |_| {
-                                                c.toast.set(None);
+                                                dismiss();
                                                 c.uncomplete(id);
                                             }
                                         >
@@ -1429,7 +1445,7 @@ fn ToastView() -> impl IntoView {
                                         </button>
                                     }
                                 })}
-                            <button class="toast-close" aria-label="Dismiss" on:click=move |_| c.toast.set(None)>
+                            <button class="toast-close" aria-label="Dismiss" on:click=move |_| dismiss()>
                                 {icon(Icon::X)}
                             </button>
                             <i class="toast-timer" aria-hidden="true"></i>
@@ -1460,6 +1476,11 @@ fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
                 </div>
                 <div class="title-row">
                     <RoomTitle/>
+                    <p class="summary">
+                        {move || c.view_room.with(|r| format!("{} of {} done", r.done, r.total))}
+                        <span class="dot-sep">"·"</span>
+                        <span class="finished-clear fig">"all clear"</span>
+                    </p>
                 </div>
             </div>
             <div
@@ -1512,7 +1533,7 @@ fn Handover() -> impl IntoView {
                                 </div>
                             }.into_any()
                         } else {
-                            view! { <p class="next-text no-tomorrow">"Nothing planned for tomorrow."</p> }.into_any()
+                            view! { <p class="next-text no-tomorrow">{format!("Nothing is due on {weekday} yet.")}</p> }.into_any()
                         }}
                         <a class="button primary" href=RoomId::Smart("planned").path() on:click=link_room(c, RoomId::Smart("planned"))>
                             {format!("Plan {weekday}")}
@@ -1574,7 +1595,13 @@ fn DetailPane() -> impl IntoView {
             role=move || c.detail_modal.get().then_some("dialog")
             aria-modal=move || c.detail_modal.get().then_some("true")
             inert=move || c.detail.with(Option::is_none)>
-            {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered/> })}
+            <div class="detail-scroll">
+                {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered/> })}
+            </div>
+            // Modal feedback belongs inside the dialog, outside the inert room.
+            <Show when=move || c.detail_modal.get()>
+                <div class="detail-toast"><ToastView/></div>
+            </Show>
         </section>
     }
 }

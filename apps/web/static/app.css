@@ -164,11 +164,17 @@ a {
   min-width: 0;
   background: var(--color-pane);
   border-left: var(--hairline) solid var(--color-line);
-  overflow-y: auto;
+  flex-direction: column;
 }
 
 .has-detail .detail {
-  display: block;
+  display: flex;
+}
+
+.detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .statusbar {
@@ -656,6 +662,10 @@ a {
   color: var(--color-ink);
 }
 
+.finished .summary .finished-clear {
+  color: var(--color-toast-accent);
+}
+
 @keyframes dusk-in {
   from {
     opacity: 0;
@@ -1096,6 +1106,28 @@ a {
 
 .completed-toggle.open .icon {
   transform: rotate(90deg);
+}
+
+.detail-toast {
+  display: flex;
+  flex: none;
+  position: relative;
+  align-items: center;
+}
+
+.detail-toast:has(.toast) {
+  min-height: var(--desktop-toast-inset);
+  padding: 0 var(--space-3);
+  border-top: var(--hairline) solid var(--color-line);
+}
+
+.toast-announcement {
+  position: absolute;
+  width: var(--hairline);
+  height: var(--hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .toast {
@@ -1735,6 +1767,7 @@ a.source:hover {
   }
 
   .detail {
+    display: flex;
     top: 0;
     right: 0;
     bottom: var(--desktop-statusbar);
@@ -1997,9 +2030,14 @@ a.source:hover {
     }
   }
 
-  .list-foot {
+  .list-foot,
+  .detail-toast:has(.toast) {
     min-height: var(--phone-toast-strip);
     padding: 0 var(--space-3) 0 var(--space-2);
+  }
+
+  .detail-toast:has(.toast) {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .completed-toggle {

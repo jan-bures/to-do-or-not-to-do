@@ -109,6 +109,10 @@ for (const scheme of ["light", "dark"]) {
       await page.locator(".detail .d-title").waitFor();
       await expect(page.locator(".scrim")).toHaveCSS("opacity", "1");
       await shot(page, `medium-${scheme}`);
+      const detail = page.getByRole("dialog", { name: "Task detail" });
+      await detail.getByRole("checkbox", { name: "Complete", exact: true }).click();
+      await expect(detail.getByRole("button", { name: /Undo/ })).toBeVisible();
+      await shot(page, `medium-undo-${scheme}`);
       await w.check();
     });
 

@@ -297,9 +297,11 @@ edited follow the update. Due, Reminder, Repeat and Tags are labelled read-only.
 the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
 scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
+While the detail is modal, Undo and other toast feedback appear in its own bottom strip, above the scrim.
 
-Finished My Day keeps quick-add and a **Completed n** disclosure, and links to Planned via **Plan <weekday>**
-even when tomorrow has no tasks. The list scrolls separately from its toast strip and phone composer.
+Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
+**Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.
+The list scrolls separately from its toast strip and phone composer.
 
 **The app icon** is Daybreak, from `assets/brand` (see its README); the build copies it into `dist/brand/`.
 The favicon is the 16 px drawing (`small-16.svg`, since a tab shows it at 16 CSS px and the master must never be

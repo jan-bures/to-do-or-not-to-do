@@ -175,6 +175,41 @@ test("the medium detail dims and disables the room, traps focus, and restores th
   await w.check();
 });
 
+test("the completed-task toast stays announced and usable in medium detail", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page);
+  const task = row(page, "Rotate the backup encryption keys");
+  const detail = page.getByRole("dialog", { name: "Task detail" });
+  const toast = detail.locator(".toast");
+  const undo = toast.getByRole("button", { name: /Undo/ });
+  const openDetail = () => row(page, "Review the API latency report").locator(".row-title").click();
+  const complete = () => task.getByRole("checkbox").click();
+
+  await complete();
+  await openDetail();
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  await expect(detail.getByRole("status")).toHaveAttribute("aria-live", "polite");
+  await expect(detail.getByRole("status")).toContainText("Completed “Rotate the backup encryption keys”");
+  await expect(detail).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(toast.getByRole("button", { name: "Dismiss" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(undo).toBeFocused();
+  await undo.click();
+  await expect(task.locator(".check")).toHaveAttribute("aria-checked", "false");
+  await expect(toast).toHaveCount(0);
+  await expect(detail).toBeFocused();
+
+  // Completing a task from inside the modal uses the already-mounted live region.
+  await detail.getByRole("checkbox", { name: "Complete", exact: true }).click();
+  await expect(detail.getByRole("status")).toContainText("Completed “Review the API latency report”");
+  await undo.click();
+  await expect(detail.getByRole("checkbox", { name: "Complete", exact: true })).toBeVisible();
+  await w.check();
+});
+
 test("filter: slash and Ctrl+K focus it, with core queries and Czech text in the current room", async ({ page }) => {
   const w = watch(page);
   await open(page);
@@ -237,6 +272,7 @@ test("finished My Day keeps quick-add and makes today's completed tasks availabl
   const w = watch(page);
   await open(page, "/app?fixture=finished");
   await expect(page.locator(".room-head.finished")).toBeVisible();
+  await expect(page.locator(".finished .summary")).toHaveText(/12 of 12 done\s*·\s*all clear/);
   await expect(page.getByRole("link", { name: "Plan Sunday" })).toBeVisible();
   const completed = page.getByRole("button", { name: "Completed 12" });
   await expect(completed).toHaveAttribute("aria-expanded", "false");
@@ -258,7 +294,8 @@ test("finished My Day still opens Planned when tomorrow has no tasks", async ({ 
   const w = watch(page);
   await page.setViewportSize({ width: 412, height: 920 });
   await open(page, "/app?fixture=finished-no-tomorrow");
-  await expect(page.getByText("Nothing planned for tomorrow.")).toBeVisible();
+  await expect(page.getByText("Nothing is due on Sunday yet.")).toBeVisible();
+  await expect(page.locator(".finished .summary")).toHaveText(/12 of 12 done\s*·\s*all clear/);
   await expect(page.getByRole("textbox", { name: "Add a task" })).toBeVisible();
   await page.getByRole("link", { name: "Plan Sunday" }).click();
   await expect(page).toHaveURL(/\/app\/planned\?/);

@@ -747,10 +747,12 @@ impl Room {
             return "Nothing matches the filter.";
         }
         match self.id {
-            RoomId::Smart("planned") => "Nothing planned yet.",
-            RoomId::Smart("important") => "Nothing marked important yet.",
-            RoomId::Smart("completed") => "Nothing done yet.",
-            RoomId::Smart("agent_activity") => "No agent activity yet.",
+            RoomId::Smart("my_day") => "Nothing planned yet.",
+            RoomId::Smart("important") => "Nothing pressing.",
+            RoomId::Smart("planned") => "Nothing on the calendar.",
+            RoomId::Smart("all") => "Nothing open.",
+            RoomId::Smart("completed") => "Nothing finished yet.",
+            RoomId::Smart("agent_activity") => "No agent changes this week.",
             _ => "Nothing on the shelf yet.",
         }
     }
@@ -1512,15 +1514,28 @@ mod tests {
         let no_match = filter("tag:unknown");
         assert!(no_match.rows.is_empty() && no_match.completed.is_empty());
         assert_eq!(no_match.empty_line(), "Nothing matches the filter.");
-        assert_eq!(
-            room(&s, &now(), &RoomId::Smart("planned"), "").empty_line(),
-            "Nothing planned yet."
-        );
         assert!(!filter("  ").filtered);
         assert!(
             filter("standing desk").rows.is_empty(),
             "other rooms are not searched"
         );
+    }
+
+    #[test]
+    fn empty_smart_lists_use_the_desktop_copy() {
+        let s = State::new();
+        for (id, copy) in [
+            ("my_day", "Nothing planned yet."),
+            ("important", "Nothing pressing."),
+            ("planned", "Nothing on the calendar."),
+            ("all", "Nothing open."),
+            ("completed", "Nothing finished yet."),
+            ("agent_activity", "No agent changes this week."),
+        ] {
+            let empty = room(&s, &now(), &RoomId::Smart(id), "");
+            assert!(empty.rows.is_empty());
+            assert_eq!(empty.empty_line(), copy, "{id}");
+        }
     }
 
     #[test]
