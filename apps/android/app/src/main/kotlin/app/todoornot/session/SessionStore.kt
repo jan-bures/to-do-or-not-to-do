@@ -37,6 +37,7 @@ class SessionStore(private val store: KeyValues, private val cipher: SecretCiphe
     private val _revocationPending = MutableStateFlow<String?>(null)
     internal val revocationPending = _revocationPending.asStateFlow()
 
+    @Synchronized
     fun load(): Session? {
         val server = store.get(SERVER) ?: return null
         val device = store.get(DEVICE) ?: return null
@@ -54,12 +55,20 @@ class SessionStore(private val store: KeyValues, private val cipher: SecretCiphe
         } catch (e: Exception) {
             throw SessionPersistenceException.Encryption(e)
         }
-        val saved = try {
-            store.put(mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId, REVOKED to null))
+        val values = mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId, REVOKED to null)
+        val previous = try {
+            values.keys.associateWith(store::get)
         } catch (e: Exception) {
             throw SessionPersistenceException.Write(e)
         }
-        if (!saved) throw SessionPersistenceException.Write()
+        try {
+            if (!store.put(values)) throw SessionPersistenceException.Write()
+        } catch (e: Exception) {
+            // SharedPreferences can update its in-memory snapshot even if commit failed. Restore
+            // it so a discarded pairing can't be loaded from those uncommitted values later.
+            runCatching { store.put(previous) }
+            throw if (e is SessionPersistenceException.Write) e else SessionPersistenceException.Write(e)
+        }
         _revocationPending.value = null
     }
 

@@ -12,15 +12,28 @@ browser, and register a passkey. No existing passkey is needed on that browser.
 live invite. **Cancel invite** makes the code and link unusable unless redemption has already won.
 On Android, the invite code and QR are hidden from screenshots and the recent-apps thumbnail. If
 Android receives a credential but can't save it, **Try saving again** retries the local save without
-using another invite. Keep the app open: the unsaved credential is only in memory.
+using another invite. Keep the app open: the unsaved credential is only in memory. **Discard and
+start over** drops it. Check **Devices** on another signed-in device before pairing again: the phone
+may already be listed there even though it could not save its sign-in.
 
 The owner can see native devices and browser passkeys under **Devices** in the server's admin
 pages, including the issuing device or session. Share an invite only with a device you're setting
 up: anyone with the code or link can sign in as the owner while it is valid. Revoking a device signs
 out the other devices and browsers it added, including sign-ins added through them. **Devices** shows
-how many other sign-ins this affects. Revoking a passkey ends its sessions. Verify with a passkey
-registered before the one you want to remove; newer passkeys cannot remove older ones, and the last
-passkey cannot be revoked.
+how many other sign-ins this affects. Revoking a passkey also ends its sessions and revokes sign-ins
+it issued, directly or indirectly. A newer passkey cannot revoke an older one, even by revoking a
+paired device. To revoke a passkey, verify with one registered before it. The oldest passkey can
+never be revoked through the UI: there is no earlier passkey to verify with.
+
+If a device cascade is blocked and you cannot verify with the required passkey, revoke the issuing
+device from the server host with the [local admin token](admin-api.md#examples). That path is not
+subject to passkey ordering. Neither the admin token nor `todo-server` can directly revoke the first
+setup passkey. Keep a recoverable copy of that passkey. If it is compromised, the host-side recovery
+option is [restoring a trusted backup](hosting-linux.md#putting-a-backup-into-service) that does not
+contain it, if one is available. A restore rolls back data as well as credentials.
+
+Agent tokens and share links created from a derived session are not removed by the cascade. Review
+and revoke them separately under **Agents** and **Shares**, or through the local admin API.
 
 If the new app is already showing a pairing request instead, choose **Approve a device** on an
 existing signed-in app. Enter its code (or scan its QR on Android), then check the device name,
@@ -46,10 +59,12 @@ requests camera permission only when the Scan button is used. Typing works witho
   the invite expired unused. Wrong-code lookups share a per-session budget with the old browser page;
   paired native devices have a per-device budget with a five-minute cooldown.
 - Approved pairings retain the approving device or session. The server rechecks it when the new
-  device polls, before issuing a token. Revoking a device updates its native descendants, removes
-  descendant browser passkeys and their sessions, and records the revocation in one transaction.
-  Browser-issued descendants preserve their device ancestry after the issuing session ends. Signing
-  out of a browser invalidates its outstanding invites and approvals without revoking past joins.
+  device polls, before issuing a token. Revoking a device or passkey updates its native descendants,
+  removes descendant browser passkeys and their sessions, and records the descendant device IDs and
+  removed passkey and session counts in one transaction. Browser-issued descendants preserve their
+  device and passkey ancestry after the issuing session ends. Upgrading does not infer passkey
+  ancestry for credentials that were already issued. Signing out of a browser invalidates its
+  outstanding invites and approvals without revoking past joins.
 - The server's logs use route templates, not raw URLs or request bodies. The browser strips the
   fragment from its history entry before starting registration. Audit records include invite creation
   and cancellation and identify the issuer (device or session row), not the invite, passkey or token.

@@ -282,6 +282,13 @@ UPDATE devices SET issued_via_device = (
     WHERE devices.issued_by = 'Browser session ' || s.id_hash
 ) WHERE issued_by LIKE 'Browser session %';
 ",
+    // Keep the issuing passkey even after its browser session ends. Existing ancestry is unknown.
+    r"
+ALTER TABLE passkeys ADD COLUMN issued_via_passkey INTEGER;
+ALTER TABLE devices ADD COLUMN issued_via_passkey INTEGER;
+CREATE INDEX passkeys_issued_via_passkey ON passkeys (issued_via_passkey);
+CREATE INDEX devices_issued_via_passkey ON devices (issued_via_passkey);
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

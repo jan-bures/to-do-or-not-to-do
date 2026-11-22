@@ -394,6 +394,9 @@ class GalleryTest {
                 dark = true,
             )
         }
+        shot("pairing_save_failed_light", COVER) {
+            PairingScreen(PairingState.SaveFailed, PairingActions.None, dark = false)
+        }
         val waiting = PairingState.Waiting("https://todo.example.com", "WXYZ-2345", "https://todo.example.com/pair?code=WXYZ-2345", 0)
         shot("pairing_code_light", COVER) { PairingScreen(waiting, PairingActions.None, dark = false, fixedRemainingSeconds = 285) }
         shot("pairing_code_dark", COVER) { PairingScreen(waiting, PairingActions.None, dark = true, fixedRemainingSeconds = 285) }

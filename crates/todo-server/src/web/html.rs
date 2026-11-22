@@ -134,10 +134,14 @@ impl From<crate::db::StoreError> for PageError {
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
         let e = self.err;
-        let extra = if e.code == "step_up_required" {
-            r#"<p><button type="button" data-action="step-up" data-after="back">Verify with passkey, then go back</button></p>"#
-        } else {
-            ""
+        let extra = match e.code {
+            "step_up_required" => {
+                r#"<p><button type="button" data-action="step-up" data-after="back">Verify with passkey, then go back</button></p>"#
+            }
+            "older_passkey_required" => {
+                r#"<p><a href="/auth/verify?next=/admin/devices">Verify with an older passkey</a></p>"#
+            }
+            _ => "",
         };
         let body = format!(
             r#"<p class="error">{}</p>{extra}<p><a href="/admin">Back to the overview</a></p>"#,

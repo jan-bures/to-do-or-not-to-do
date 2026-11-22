@@ -12,6 +12,7 @@ import app.todoornot.session.KeyValues
 import app.todoornot.session.PrefsKeyValues
 import app.todoornot.session.SecretCipher
 import app.todoornot.session.Session
+import app.todoornot.session.SessionPersistenceException
 import app.todoornot.session.SessionStore
 import java.lang.reflect.Proxy
 import java.security.GeneralSecurityException
@@ -174,19 +175,25 @@ class PairingModelTest {
     fun a_false_preferences_commit_keeps_the_credential_for_save_only_retry() = runTest {
         var canCommit = false
         var writes = 0
+        val visible = mutableMapOf<String, String?>()
         val durable = mutableMapOf<String, String?>()
         val pending = mutableMapOf<String, String?>()
         val editor = proxy<SharedPreferences.Editor> { receiver, name, args ->
             when (name) {
                 "putString" -> receiver.also { pending[args[0] as String] = args[1] as String? }
                 "remove" -> receiver.also { pending[args[0] as String] = null }
-                "commit" -> canCommit.also { if (it) durable.putAll(pending); writes++ }
+                "commit" -> canCommit.also {
+                    visible.putAll(pending)
+                    if (it) durable.putAll(pending)
+                    pending.clear()
+                    writes++
+                }
                 else -> error("Unexpected editor method $name")
             }
         }
         val prefs = proxy<SharedPreferences> { _, name, args ->
             when (name) {
-                "getString" -> durable[args[0]] ?: args[1]
+                "getString" -> visible[args[0]] ?: args[1]
                 "edit" -> editor
                 else -> error("Unexpected preferences method $name")
             }
@@ -196,10 +203,44 @@ class PairingModelTest {
             override fun decrypt(sealed: ByteArray) = sealed
         }
         checkSaveRetry(SessionStore(PrefsKeyValues(prefs), cipher)) {
-            assertEquals(1, writes)
+            assertEquals(2, writes) // Attempt, then rollback of SharedPreferences' memory state.
+            assertTrue(durable.isEmpty())
             canCommit = true
         }
-        assertEquals(2, writes)
+        assertEquals(3, writes)
+        assertEquals("phone", durable["device_id"])
+    }
+
+    @Test
+    fun discarding_a_failed_save_reopens_pairing_without_retrying_the_old_credential() = runTest {
+        val server = "https://todo.example.com"
+        val credential = Session(server, "phone", "unused")
+        var redemptions = 0
+        var canSave = false
+        val saves = mutableListOf<Session>()
+        val api = object : PairingApi by FakeApi(ArrayDeque()) {
+            override suspend fun redeem(server: String, invite: String, deviceName: String): Session {
+                redemptions++
+                return credential.copy(deviceId = invite)
+            }
+        }
+        val m = PairingModel(api, this, StandardTestDispatcher(testScheduler), "Phone", {
+            if (!canSave) throw SessionPersistenceException.Write()
+            saves.add(it)
+        })
+        m.redeem(server, "old-device")
+        testScheduler.runCurrent()
+        assertEquals(PairingState.SaveFailed, m.state.value)
+        m.discardSave()
+        assertEquals(PairingState.Entering(server, PairingModel.DISCARDED), m.state.value)
+        assertTrue(PairingModel.DISCARDED.contains("Check Devices"))
+        canSave = true
+        m.retrySave()
+        assertTrue(saves.isEmpty())
+        m.redeem(server, "new-device")
+        advanceUntilIdle()
+        assertEquals(listOf(credential.copy(deviceId = "new-device")), saves)
+        assertEquals(2, redemptions)
     }
 
     private fun TestScope.checkSaveRetry(store: SessionStore, repair: () -> Unit) {

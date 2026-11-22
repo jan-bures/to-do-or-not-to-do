@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::web::{Body, Env, SITE, form_encode};
+use common::web::{Body, Browser, Env, SITE, form_encode};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -14,6 +14,42 @@ const REVIEW: &str = "/api/v1/pair/review";
 
 fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap()
+}
+
+async fn join_browser(env: &Env, invite: &Value, name: &str) -> Browser {
+    let secret = string(invite, "link").split_once('#').unwrap().1;
+    let mut browser = env.browser();
+    let start = browser
+        .post_json(
+            "/auth/invite/start",
+            json!({ "secret": secret, "device_name": name }),
+        )
+        .await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    let start = start.json();
+    let credential = browser.register(&start["options"]);
+    let finish = browser
+        .post_json(
+            "/auth/invite/finish",
+            json!({
+                "ceremony": start["ceremony"], "credential": credential
+            }),
+        )
+        .await;
+    assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+    browser.adopt(&finish).await;
+    browser
+}
+
+fn audit_details(env: &Env, kind: &str) -> Vec<Value> {
+    todo_server::auth::store::AuthStore::open(&env.t.db_path())
+        .unwrap()
+        .audit_page(200)
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.kind == kind)
+        .map(|row| serde_json::from_str(&row.detail).unwrap())
+        .collect()
 }
 
 #[tokio::test]
@@ -285,25 +321,12 @@ async fn expiring_an_invite_also_expires_its_browser_ceremony_and_requires_step_
 async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites() {
     let env = Env::start().await;
     let mut owner = env.owner().await;
-    owner.step_up().await;
     assert_eq!(
         owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
         StatusCode::CONFLICT
     );
-    let mut invited = env.browser();
     let invite = owner.post_json(INVITES, json!({})).await.json();
-    let start = invited.post_json("/auth/invite/start", json!({
-        "secret": string(&invite, "link").split_once('#').unwrap().1, "device_name": "Invited browser"
-    })).await.json();
-    let credential = invited.register(&start["options"]);
-    let reply = invited
-        .post_json(
-            "/auth/invite/finish",
-            json!({ "ceremony": start["ceremony"], "credential": credential }),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::OK);
-    invited.adopt(&reply).await;
+    let mut invited = join_browser(&env, &invite, "Invited browser").await;
     let revoke = "/auth/passkeys/2/revoke";
     let list = owner.get("/admin/devices").await.body;
     assert!(list.contains(revoke) && list.contains("Browser session "));
@@ -350,7 +373,10 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     );
     let newer_view = invited.get("/admin/devices").await.body;
     assert!(!newer_view.contains("/auth/passkeys/1/revoke"));
-    assert!(newer_view.contains("A newer passkey cannot remove an older one."));
+    assert!(
+        newer_view
+            .contains("A newer passkey cannot remove an older one, even by revoking a device.")
+    );
     let joined = invited.post_json(INVITES, json!({})).await.json();
     let redeem_body =
         |invite: &Value| json!({ "secret": string(invite, "code"), "device_name": "Phone" });
@@ -359,13 +385,44 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
         .post_json(REDEEM, redeem_body(&joined))
         .await
         .json();
+    let native_invite = env
+        .api(Method::POST, INVITES, string(&device, "token"), None)
+        .await;
+    assert_eq!(native_invite.status, StatusCode::OK);
+    let grandchild = join_browser(&env, &native_invite.json, "Derived browser").await;
+    let browser_invite = invited.post_json(INVITES, json!({})).await.json();
+    let child = join_browser(&env, &browser_invite, "Second browser").await;
+
+    let anon = env.browser();
+    let pending = anon
+        .post_json(
+            "/api/v1/pair/start",
+            json!({ "device_name": "Approved phone" }),
+        )
+        .await
+        .json();
+    let approval = invited
+        .post_form("/pair/approve", &[("code", string(&pending, "user_code"))])
+        .await;
+    assert_eq!(approval.status, StatusCode::OK, "{}", approval.body);
+    let approved = anon
+        .post_json(
+            "/api/v1/pair/poll",
+            json!({"poll_token": pending["poll_token"]}),
+        )
+        .await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let approved = approved.json();
+
     let live = invited.post_json(INVITES, json!({})).await.json();
     let mut original_session = env.browser();
     original_session.cookie.clone_from(&invited.cookie);
     assert_eq!(invited.login().await.status, StatusCode::OK);
     let login_session = invited.post_json(INVITES, json!({})).await.json();
+    assert_eq!(owner.login().await.status, StatusCode::OK);
+    // A fresh sign-in with the oldest key can revoke immediately, without a second step-up.
     assert!(owner.post_form(revoke, &[]).await.status.is_redirection());
-    for browser in [&invited, &original_session] {
+    for browser in [&invited, &original_session, &child, &grandchild] {
         assert!(browser.get("/admin/devices").await.status.is_redirection());
     }
     for invite in [&live, &login_session] {
@@ -377,22 +434,87 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
             StatusCode::NOT_FOUND
         );
     }
+    for device in [&device, &approved] {
+        assert_eq!(
+            env.api(Method::GET, "/api/v1/lists", string(device, "token"), None)
+                .await
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let mut descendants = [string(&device, "device_id"), string(&approved, "device_id")];
+    descendants.sort_unstable();
+    assert_eq!(
+        audit_details(&env, "passkey_revoked"),
+        vec![json!({
+            "passkey_id": 2, "descendant_devices": descendants, "passkeys_removed": 3, "sessions_removed": 4,
+        })]
+    );
+    let devices = owner.get("/admin/devices").await.body;
+    assert!(!devices.contains("Invited browser"));
+    assert!(!devices.contains("Derived browser"));
+    assert_eq!(
+        owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn device_revocation_protects_older_passkeys_but_the_admin_token_is_exempt() {
+    let env = Env::start_with(common::admin_on).await;
+    let owner = env.owner().await;
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let device = env
+        .browser()
+        .post_json(
+            REDEEM,
+            json!({"secret": invite["code"], "device_name": "Issuer"}),
+        )
+        .await
+        .json();
+    let invite = env
+        .api(Method::POST, INVITES, string(&device, "token"), None)
+        .await
+        .json;
+    let older = join_browser(&env, &invite, "Older browser").await;
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let mut newer = join_browser(&env, &invite, "Newer browser").await;
+    newer.step_up().await;
+    let id = string(&device, "device_id");
+    let refused = newer
+        .post_form(&format!("/admin/devices/{id}/revoke"), &[])
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert!(refused.body.contains("Verify with an older passkey"));
+    let verify = newer.get("/auth/verify?next=/admin/devices").await;
+    assert_eq!(verify.status, StatusCode::OK);
+    assert!(verify.body.contains("Verify to revoke"));
+    assert_eq!(older.get("/admin/devices").await.status, StatusCode::OK);
     assert_eq!(
         env.api(Method::GET, "/api/v1/lists", string(&device, "token"), None)
             .await
             .status,
         StatusCode::OK
     );
-    assert!(
-        !owner
-            .get("/admin/devices")
-            .await
-            .body
-            .contains("Invited browser")
-    );
+    assert!(audit_details(&env, "device_revoked").is_empty());
+
+    let admin = env.t.server.admin_url().unwrap();
+    let result = env
+        .t
+        .client
+        .post(format!("{admin}/api/v1/admin/devices/{id}/revoke"))
+        .bearer_auth(common::ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(result.status(), StatusCode::NO_CONTENT);
+    assert!(older.get("/admin/devices").await.status.is_redirection());
+    assert_eq!(newer.get("/admin/devices").await.status, StatusCode::OK);
     assert_eq!(
-        owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
-        StatusCode::CONFLICT
+        audit_details(&env, "device_revoked"),
+        vec![json!({
+            "device": id, "actor": "admin API", "descendant_devices": [], "passkeys_removed": 1, "sessions_removed": 1,
+        })]
     );
 }
 
@@ -530,6 +652,17 @@ async fn revocation_covers_descendants_and_prevents_finishing_approved_pairings(
             .await
             .status
             .is_redirection()
+    );
+    let mut descendants = devices[1..]
+        .iter()
+        .map(|d| string(d, "device_id"))
+        .collect::<Vec<_>>();
+    descendants.sort_unstable();
+    assert_eq!(
+        audit_details(&env, "device_revoked"),
+        vec![json!({
+            "device": root, "descendant_devices": descendants, "passkeys_removed": 1, "sessions_removed": 1,
+        })]
     );
     for device in devices {
         assert_eq!(

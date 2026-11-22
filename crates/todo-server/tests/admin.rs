@@ -1006,7 +1006,7 @@ async fn devices_and_share_links_are_listed_and_revoked() {
     assert_eq!(kinds, ["device_revoked", "share_revoked"]);
     assert_eq!(
         entries[0].1,
-        json!({ "device": device.as_str(), "actor": "admin API" })
+        json!({ "device": device.as_str(), "actor": "admin API", "descendant_devices": [], "passkeys_removed": 0, "sessions_removed": 0 })
     );
     assert_eq!(
         entries[1].1,

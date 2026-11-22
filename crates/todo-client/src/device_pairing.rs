@@ -17,8 +17,9 @@ const REDEEM: &str = "/api/v1/pair/redeem";
 
 /// Delay between status checks (not the countdown refresh interval).
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(5);
-/// How long to retry an inconclusive result after hiding the credential.
-pub const STATUS_GRACE: Duration = Duration::from_secs(60);
+/// How long to retry an inconclusive result after hiding the credential. Stop before the
+/// server's 60-second retention ends to allow for request latency and local deadline skew.
+pub const STATUS_GRACE: Duration = Duration::from_secs(55);
 /// Shown once the credentials are hidden but a definitive result is not yet available.
 pub const CHECKING_STATUS: &str = "Checking whether the device joined…";
 /// Shown if the server could not confirm the result within the grace period.
@@ -102,18 +103,24 @@ pub fn status_result_message(
 #[test]
 fn a_missing_result_after_suspend_is_not_known_expiry() {
     assert_eq!(
-        status_message(None, true, -59_999).as_deref(),
+        status_message(None, true, -54_999).as_deref(),
         Some("Invite expired. Make a new one if needed.")
     );
-    assert_eq!(
-        status_message(None, true, -60_000).as_deref(),
-        Some(UNKNOWN_STATUS)
-    );
+    for ms in [-55_000, -59_999, -60_000] {
+        assert_eq!(
+            status_message(None, true, ms).as_deref(),
+            Some(UNKNOWN_STATUS)
+        );
+    }
     assert_eq!(
         status_message(None, false, -90_000).as_deref(),
         Some(UNKNOWN_STATUS)
     );
-    assert_eq!(status_message(None, false, -59_999), None);
+    assert_eq!(status_message(None, false, -54_999), None);
+    assert_eq!(
+        status_message(None, false, -55_000).as_deref(),
+        Some(UNKNOWN_STATUS)
+    );
 }
 
 /// The credentials received when redeeming a native invite.

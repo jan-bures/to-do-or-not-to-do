@@ -9,7 +9,10 @@
 use super::limits::{BurstCounter, FailureTracker, KeyedLimiter, WriteQuotas};
 use super::pairing::Pairings;
 use super::secret::{self, AGENT_TOKEN_PREFIX, DEVICE_TOKEN_PREFIX, RandomError};
-use super::store::{AgentRow, AuthStore, NewAudit, SessionRow, ShareRow, ShareTarget};
+use super::store::{
+    AgentRow, AuthStore, CredentialOrigin, CredentialRoot, NewAudit, RevokeCredentials, SessionRow,
+    ShareRow, ShareTarget,
+};
 use super::{Access, AuthError, Authenticated, Authenticator, OwnerTokens, Principal, bearer};
 use crate::api::error::ApiError;
 use crate::config::{AuthConfig, Config, PublicOrigin};
@@ -67,7 +70,7 @@ pub mod audit {
     pub const STEP_UP_FAILED: &str = "step_up_failed";
     /// Another passkey was registered.
     pub const PASSKEY_ADDED: &str = "passkey_added";
-    /// An owner passkey and its sessions were revoked.
+    /// An owner passkey and its derived credentials and sessions were revoked.
     pub const PASSKEY_REVOKED: &str = "passkey_revoked";
     /// An issuer created a pairing invite.
     pub const INVITE_CREATED: &str = "invite_created";
@@ -950,7 +953,7 @@ impl AuthService {
         let now = self.now();
         let id = self
             .store
-            .add_passkey("First passkey", &passkey, now, None)?
+            .add_passkey("First passkey", &passkey, now, &CredentialOrigin::default())?
             .ok_or_else(ApiError::internal)?;
         self.store.set_meta(META_OWNER_READY, "1")?;
         self.remove_setup_file();
@@ -1131,10 +1134,13 @@ impl AuthService {
         if !self.session_live(&session.id_hash) {
             return Err(ApiError::unauthorized());
         }
-        let origin = self.store.session_device_origin(&session.id_hash)?;
+        let origin = self
+            .store
+            .session_origin(&session.id_hash)?
+            .ok_or_else(ApiError::unauthorized)?;
         if self
             .store
-            .add_passkey(&name, &passkey, self.now(), origin.as_deref())?
+            .add_passkey(&name, &passkey, self.now(), &origin)?
             .is_none()
         {
             return Err(ApiError::new(
@@ -1154,44 +1160,9 @@ impl AuthService {
         id: i64,
         ip: Option<IpAddr>,
     ) -> Result<(), ApiError> {
-        let guard = self.begin_mutation();
-        if !self.session_live(&session.id_hash) {
-            return Err(ApiError::unauthorized());
+        if !self.revoke_credentials(CredentialRoot::Passkey(id), Some(session), ip.into())? {
+            return Err(ApiError::not_found("no such passkey"));
         }
-        let row = self
-            .store
-            .session(&session.id_hash)?
-            .ok_or_else(ApiError::unauthorized)?;
-        self.require_step_up(&row)?;
-        let entry = self.audit_entry(
-            audit::PASSKEY_REVOKED,
-            ip.into(),
-            json!({ "passkey_id": id }),
-        );
-        let verified_by = self
-            .store
-            .step_up_passkey(&row.id_hash)?
-            .ok_or_else(step_up_required)?;
-        if !self.store.revoke_passkey(id, verified_by, &entry)? {
-            let passkeys = self.store.passkeys()?;
-            if !passkeys.iter().any(|p| p.id == id) {
-                return Err(ApiError::not_found("no such passkey"));
-            }
-            if passkeys.len() == 1 {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "last_passkey",
-                    "the last passkey cannot be revoked",
-                ));
-            }
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "older_passkey_required",
-                "verify with a passkey registered before the one you want to revoke",
-            ));
-        }
-        drop(guard);
-        self.revoked();
         Ok(())
     }
 
@@ -1204,13 +1175,17 @@ impl AuthService {
         })
     }
 
-    fn issuer_device_origin(
+    fn issuer_origin(
         &self,
-        issuer: &super::invite::Issuer,
-    ) -> Result<Option<String>, StoreError> {
+        issuer: Option<&super::invite::Issuer>,
+        gone: fn() -> ApiError,
+    ) -> Result<CredentialOrigin, ApiError> {
         match issuer {
-            super::invite::Issuer::Device(_) => Ok(None), // The direct device is already in `issued_by`.
-            super::invite::Issuer::Session(session) => self.store.session_device_origin(session),
+            Some(super::invite::Issuer::Session(session)) => {
+                self.store.session_origin(session)?.ok_or_else(gone)
+            }
+            // The direct device, if any, is already in `issued_by`.
+            _ => Ok(CredentialOrigin::default()),
         }
     }
 
@@ -1276,7 +1251,7 @@ impl AuthService {
                 &passkey,
                 &session.row,
                 &claim.issuer.label(),
-                self.issuer_device_origin(&claim.issuer)?.as_deref(),
+                &self.issuer_origin(Some(&claim.issuer), crate::api::invite::invite_gone)?,
             )? {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
@@ -1505,17 +1480,14 @@ impl AuthService {
         if issuer.is_some_and(|issuer| !self.invite_issuer_live(issuer)) {
             return Err(gone());
         }
-        let origin = issuer
-            .map(|issuer| self.issuer_device_origin(issuer))
-            .transpose()?
-            .flatten();
+        let origin = self.issuer_origin(issuer, gone)?;
         self.store.add_device(
             &id,
             name,
             &secret::digest_hex(&token),
             self.now(),
             issuer.map(super::invite::Issuer::label).as_deref(),
-            origin.as_deref(),
+            &origin,
         )?;
         self.publish(&guard)?;
         drop(guard);
@@ -1531,18 +1503,71 @@ impl AuthService {
         Ok((id, token))
     }
 
-    /// Revokes a device: its token stops working at once and its event streams close. Blocking.
+    /// Admin-token revocation is not restricted by passkey ordering. Blocking.
     pub fn revoke_device(&self, id: &str, by: impl Into<Who>) -> Result<bool, ApiError> {
-        let by = by.into();
-        let entry = self.audit_entry(audit::DEVICE_REVOKED, by, json!({ "device": id }));
+        self.revoke_credentials(CredentialRoot::Device(id), None, by.into())
+    }
+
+    pub(crate) fn revoke_device_from_session(
+        &self,
+        session: &SessionRow,
+        id: &str,
+        ip: Option<IpAddr>,
+    ) -> Result<bool, ApiError> {
+        self.revoke_credentials(CredentialRoot::Device(id), Some(session), ip.into())
+    }
+
+    fn revoke_credentials(
+        &self,
+        root: CredentialRoot<'_>,
+        session: Option<&SessionRow>,
+        by: Who,
+    ) -> Result<bool, ApiError> {
         let guard = self.begin_mutation();
-        if !self.store.revoke_device(id, self.now(), &entry)? {
-            return Ok(false);
+        let verified_by = if let Some(session) = session {
+            if !self.session_live(&session.id_hash) {
+                return Err(ApiError::unauthorized());
+            }
+            let row = self
+                .store
+                .session(&session.id_hash)?
+                .ok_or_else(ApiError::unauthorized)?;
+            self.require_step_up(&row)?;
+            Some(
+                self.store
+                    .step_up_passkey(&row.id_hash)?
+                    .ok_or_else(step_up_required)?,
+            )
+        } else {
+            None
+        };
+        let entry = match root {
+            CredentialRoot::Device(id) => {
+                self.audit_entry(audit::DEVICE_REVOKED, by, json!({ "device": id }))
+            }
+            CredentialRoot::Passkey(id) => {
+                self.audit_entry(audit::PASSKEY_REVOKED, by, json!({ "passkey_id": id }))
+            }
+        };
+        match self.store.revoke_credentials(root, verified_by, &entry)? {
+            RevokeCredentials::Revoked => {
+                self.publish(&guard)?;
+                drop(guard);
+                self.revoked();
+                Ok(true)
+            }
+            RevokeCredentials::NotFound => Ok(false),
+            RevokeCredentials::LastPasskey => Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "last_passkey",
+                "the last passkey cannot be revoked",
+            )),
+            RevokeCredentials::OlderPasskeyRequired => Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "older_passkey_required",
+                "This revocation would remove a passkey protected by its registration order. Verify with a passkey registered before the ones this will remove.",
+            )),
         }
-        self.publish(&guard)?;
-        drop(guard);
-        self.revoked();
-        Ok(true)
     }
 
     // ---- agents -----------------------------------------------------------------------------------

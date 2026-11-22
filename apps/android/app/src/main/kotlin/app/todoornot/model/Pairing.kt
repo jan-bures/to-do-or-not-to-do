@@ -190,6 +190,13 @@ class PairingModel(
         save(session)
     }
 
+    fun discardSave() {
+        if (_state.value != PairingState.SaveFailed) return
+        val server = unsavedSession?.server.orEmpty()
+        unsavedSession = null
+        _state.value = PairingState.Entering(server, DISCARDED)
+    }
+
     private suspend fun follow(address: String, server: String, started: PairStarted, expiresAt: Long) {
         var interval = started.intervalSecs.toLong().coerceAtLeast(1) * 1000
         while (true) {
@@ -253,6 +260,7 @@ class PairingModel(
     companion object {
         const val EXPIRED = "The code expired. Start again for a new one."
         const val DENIED = "The pairing was denied."
+        const val DISCARDED = "Check Devices on another signed-in device. This phone may already appear there."
         private const val TOO_MANY = 429
 
         fun describe(e: FfiException): String = when (e) {

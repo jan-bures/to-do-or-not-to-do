@@ -141,19 +141,30 @@ pub async fn login(
     ok_page("Sign in", &chrome, &body)
 }
 
-/// `GET /auth/verify`: verify a signed-in session before handing out credentials.
+/// `GET /auth/verify`: verify a signed-in session before issuing or revoking credentials.
 pub async fn verify(
     State(app): State<AppState>,
     s: OwnerSession,
     Query(q): Query<NextQuery>,
 ) -> PageResult {
     let next = safe_next(q.next.as_deref());
+    let (title, message) = if next == "/admin/devices" {
+        (
+            "Verify to revoke",
+            "Verify with a passkey registered before the passkeys this revocation would remove.",
+        )
+    } else {
+        (
+            "Verify to pair",
+            "Verify with your passkey before pairing or approving a new device.",
+        )
+    };
     let body = format!(
-        r#"<p>Verify with your passkey before pairing or approving a new device.</p>
+        r#"<p>{message}</p>
 <p><button type="button" data-action="step-up" data-next="{}">Verify with passkey</button></p>"#,
         esc(&next)
     );
-    ok_page("Verify to pair", &owner_chrome(&app.authsvc, &s), &body)
+    ok_page(title, &owner_chrome(&app.authsvc, &s), &body)
 }
 
 /// `GET /setup`: exists until the first passkey is registered, then 404 for good.
@@ -454,12 +465,8 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
             esc(p.issued_by.as_deref().unwrap_or("—"))
         );
     }
-    body.push_str("</table><p>Revoking a device signs out the devices and browsers it added, including those added through them. Revoking a passkey ends its browser sessions. Revoking a device or ending a session invalidates any outstanding invites it issued.</p>");
-    if passkeys.len() > 1 {
-        body.push_str(r#"<p>To revoke a passkey, <a href="/auth/verify?next=/admin/devices">verify with a passkey</a> registered before it. A newer passkey cannot remove an older one.</p>"#);
-    } else {
-        body.push_str("<p>The last passkey cannot be revoked.</p>");
-    }
+    body.push_str(r#"</table><p>Revoking a device or passkey also signs out the devices and browsers it added, including those added through them. It invalidates any outstanding invites from those sign-ins.</p>
+<p>A newer passkey cannot remove an older one, even by revoking a device. If a revocation is blocked, <a href="/auth/verify?next=/admin/devices">verify with an older passkey</a>. You cannot revoke the oldest passkey here.</p>"#);
     ok_page("Devices", &owner_chrome(&app.authsvc, &s), &body)
 }
 
@@ -471,8 +478,11 @@ pub async fn device_revoke(
     Form(f): Form<CsrfForm>,
 ) -> PageResult {
     guard(&app, &s, &f.csrf, true)?;
-    let ip = s.ip;
-    if !blocking(&app.authsvc, move |svc| svc.revoke_device(&id, ip)).await?? {
+    if !blocking(&app.authsvc, move |svc| {
+        svc.revoke_device_from_session(&s.row, &id, s.ip)
+    })
+    .await??
+    {
         return Err(not_found());
     }
     Ok(Redirect::to("/admin/devices").into_response())

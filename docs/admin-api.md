@@ -113,7 +113,7 @@ All under `/api/v1/admin`. Bodies are JSON, times are Unix milliseconds, and err
 | `PUT /agents/{id}/access` | Replaces an active agent's grants and write quota together (below). |
 | `POST /agents/{id}/revoke` | Revokes an agent token at once. 204, or 404. |
 | `GET /devices` | Paired devices: ID, name and times. |
-| `POST /devices/{id}/revoke` | Revokes a device. Its token stops working and its event streams close. |
+| `POST /devices/{id}/revoke` | Revokes a device and its derived device and browser sign-ins. Their credentials stop working and their event streams close. |
 | `GET /shares` | Share links: what each shows (kind, ID, name) and its times. Never the link itself. |
 | `POST /shares/{id}/revoke` | Revokes a share link. |
 | `GET /audit?limit=100&before=<id>` | The audit log, newest first, at most 500 per page. Pass `next_before` from a page as `before` to get the next one. |
@@ -177,8 +177,9 @@ small and visible, and the owner has to be able to recover without it.
   paired owner device token or a freshly verified owner web session; other credential creation on the
   admin pages requires the owner's passkey. The API can only take access away, and narrow or widen what an existing
   agent may do within the levels the owner's pages offer.
-- **Nothing about passkeys or sessions.** Signing in, step-up and passkeys exist to keep the owner in
-  control; a token can't stand in for them.
+- **No direct access to passkeys or sessions.** Signing in and step-up keep the owner in control; a
+  token can't stand in for them. Device revocation still removes the passkeys and sessions that
+  descend from the device. The admin token is not subject to the browser's passkey ordering check.
 - **No remote access.** A public admin endpoint would make the token a remote root credential. Local
   only, with SSH for remote use, means an attacker needs both the token and a shell on the server.
 - **No minting or revoking admin tokens through the API.** There is one token, its hash is in the

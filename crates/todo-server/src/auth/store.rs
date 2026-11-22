@@ -212,27 +212,52 @@ impl std::fmt::Debug for AuthStore {
     }
 }
 
-const DESCENDANTS: &str = "WITH RECURSIVE descendants(id) AS (
-    SELECT ?1
+/// Durable ancestry from the passkey that signed in the issuing browser session.
+#[derive(Default)]
+pub(crate) struct CredentialOrigin {
+    pub(crate) device: Option<String>,
+    pub(crate) passkey: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CredentialRoot<'a> {
+    Device(&'a str),
+    Passkey(i64),
+}
+
+pub(crate) enum RevokeCredentials {
+    Revoked,
+    NotFound,
+    OlderPasskeyRequired,
+    LastPasskey,
+}
+
+// Exactly one column identifies each credential. UNION (not UNION ALL) visits every node only
+// once, even when there are several paths to it or the stored ancestry contains a cycle.
+const DESCENDANTS: &str = "WITH RECURSIVE descendants(device, passkey) AS (
+    SELECT ?1, ?2
     UNION
-    SELECT d.id FROM devices d JOIN descendants a
-        ON d.issued_by = 'Device ' || a.id OR d.issued_via_device = a.id
-)";
-const ISSUED_PASSKEY: &str = "issued_via_device IN descendants OR EXISTS (
-    SELECT 1 FROM descendants a WHERE passkeys.issued_by = 'Device ' || a.id
+    SELECT d.id, NULL FROM descendants a JOIN devices d
+        ON d.issued_via_passkey = a.passkey
+        OR d.issued_by = 'Device ' || a.device OR d.issued_via_device = a.device
+    UNION
+    SELECT NULL, p.id FROM descendants a JOIN passkeys p
+        ON p.issued_via_passkey = a.passkey
+        OR p.issued_by = 'Device ' || a.device OR p.issued_via_device = a.device
 )";
 
 fn insert_session(conn: &Connection, row: &SessionRow, passkey_id: i64) -> Result<()> {
     conn.execute(
-        "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id, step_up_passkey_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             row.id_hash,
             row.csrf,
             row.created_at,
             row.last_seen_at,
             row.verified_at,
-            passkey_id
+            passkey_id,
+            (row.verified_at != UNVERIFIED_AT).then_some(passkey_id),
         ],
     )?;
     Ok(())
@@ -398,43 +423,29 @@ impl AuthStore {
     }
 
     /// Stores a new passkey. Returns its ID unless it was already registered.
-    pub fn add_passkey(
+    pub(crate) fn add_passkey(
         &self,
         name: &str,
         passkey: &Passkey,
         now: i64,
-        issued_via_device: Option<&str>,
+        origin: &CredentialOrigin,
     ) -> Result<Option<i64>> {
         Ok(self
             .conn()
             .query_row(
-                "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_via_device, issued_via_passkey) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (cred_id) DO NOTHING RETURNING id",
                 params![
                     hex::encode(passkey.cred_id()),
                     name,
                     serde_json::to_string(passkey)?,
                     now,
-                    issued_via_device,
+                    origin.device,
+                    origin.passkey,
                 ],
                 |r| r.get(0),
             )
             .optional()?)
-    }
-
-    /// Deletes a passkey and its sessions atomically, only after an older credential asserted.
-    /// Passkey IDs are monotonically assigned, even for registrations on the same clock tick.
-    pub(crate) fn revoke_passkey(
-        &self,
-        id: i64,
-        verified_by: i64,
-        audit: &NewAudit,
-    ) -> Result<bool> {
-        self.update_audited(
-            "DELETE FROM passkeys WHERE id = ?1 AND ?2 < id AND EXISTS (SELECT 1 FROM passkeys WHERE id = ?2)",
-            params![id, verified_by],
-            audit,
-        )
     }
 
     /// Saves a passkey and its initial session together, so neither can be left half-created.
@@ -444,12 +455,12 @@ impl AuthStore {
         passkey: &Passkey,
         session: &SessionRow,
         issued_by: &str,
-        issued_via_device: Option<&str>,
+        origin: &CredentialOrigin,
     ) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let id: Option<i64> = tx.query_row(
-            "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_by, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_by, issued_via_device, issued_via_passkey) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT (cred_id) DO NOTHING RETURNING id",
             params![
                 hex::encode(passkey.cred_id()),
@@ -457,7 +468,8 @@ impl AuthStore {
                 serde_json::to_string(passkey)?,
                 session.created_at,
                 issued_by,
-                issued_via_device,
+                origin.device,
+                origin.passkey,
             ],
             |r| r.get(0),
         ).optional()?;
@@ -546,7 +558,7 @@ impl AuthStore {
             .optional()?)
     }
 
-    /// The credential asserted at the session's last explicit step-up, if any.
+    /// The credential asserted at sign-in or at the most recent step-up.
     pub(crate) fn step_up_passkey(&self, id_hash: &str) -> Result<Option<i64>> {
         Ok(self
             .conn()
@@ -559,14 +571,14 @@ impl AuthStore {
             .flatten())
     }
 
-    /// The nearest device ancestor of the credential through which the session exists.
-    pub(crate) fn session_device_origin(&self, id_hash: &str) -> Result<Option<String>> {
+    /// The sign-in passkey (which owns the session) and its nearest device ancestor.
+    pub(crate) fn session_origin(&self, id_hash: &str) -> Result<Option<CredentialOrigin>> {
         Ok(self.conn().query_row(
-            "SELECT COALESCE(p.issued_via_device, CASE WHEN p.issued_by LIKE 'Device %' THEN substr(p.issued_by, 8) END)
+            "SELECT p.id, COALESCE(p.issued_via_device, CASE WHEN p.issued_by LIKE 'Device %' THEN substr(p.issued_by, 8) END)
              FROM sessions s JOIN passkeys p ON p.id = s.passkey_id WHERE s.id_hash = ?1",
             [id_hash],
-            |row| row.get::<_, Option<String>>(0),
-        ).optional()?.flatten())
+            |row| Ok(CredentialOrigin { passkey: Some(row.get(0)?), device: row.get(1)? }),
+        ).optional()?)
     }
 
     /// Records activity on a session.
@@ -606,18 +618,18 @@ impl AuthStore {
     // ---- devices ----------------------------------------------------------------------------------
 
     /// Stores a newly paired device.
-    pub fn add_device(
+    pub(crate) fn add_device(
         &self,
         id: &DeviceId,
         name: &str,
         token_hash: &str,
         now: i64,
         issued_by: Option<&str>,
-        issued_via_device: Option<&str>,
+        origin: &CredentialOrigin,
     ) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO devices (id, name, token_hash, created_at, issued_by, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id.as_str(), name, token_hash, now, issued_by, issued_via_device],
+            "INSERT INTO devices (id, name, token_hash, created_at, issued_by, issued_via_device, issued_via_passkey) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id.as_str(), name, token_hash, now, issued_by, origin.device, origin.passkey],
         )?;
         Ok(())
     }
@@ -653,38 +665,107 @@ impl AuthStore {
     pub(crate) fn issued_credential_count(&self, id: &str) -> Result<i64> {
         Ok(self.conn().query_row(
             &format!("{DESCENDANTS}
-                SELECT (SELECT count(*) FROM devices WHERE id IN descendants AND id <> ?1 AND revoked_at IS NULL)
-                     + (SELECT count(*) FROM passkeys WHERE {ISSUED_PASSKEY})"),
-            [id],
+                SELECT (SELECT count(*) FROM devices WHERE id IN (SELECT device FROM descendants) AND id <> ?1 AND revoked_at IS NULL)
+                     + (SELECT count(*) FROM passkeys WHERE id IN (SELECT passkey FROM descendants))"),
+            params![id, None::<i64>],
             |row| row.get(0),
         )?)
     }
 
-    /// Revokes a device, all its descendants and their sessions, with one audit entry and transaction.
-    /// Returns false if there is no such active device.
-    pub fn revoke_device(&self, id: &str, now: i64, audit: &NewAudit) -> Result<bool> {
+    /// Revokes a credential, its descendants and their sessions in one audited transaction.
+    /// Passkey IDs are monotonically assigned, even for registrations on the same clock tick.
+    pub(crate) fn revoke_credentials(
+        &self,
+        root: CredentialRoot<'_>,
+        verified_by: Option<i64>,
+        audit: &NewAudit,
+    ) -> Result<RevokeCredentials> {
+        let (device, passkey) = match root {
+            CredentialRoot::Device(id) => (Some(id), None),
+            CredentialRoot::Passkey(id) => (None, Some(id)),
+        };
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let active: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND revoked_at IS NULL)",
-            [id],
-            |row| row.get(0),
+            "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND revoked_at IS NULL)
+                 OR EXISTS (SELECT 1 FROM passkeys WHERE id = ?2)",
+            params![device, passkey],
+            |r| r.get(0),
         )?;
         if !active {
-            return Ok(false);
+            return Ok(RevokeCredentials::NotFound);
         }
-        tx.execute(
-            &format!("{DESCENDANTS} UPDATE devices SET revoked_at = ?2 WHERE id IN descendants AND revoked_at IS NULL"),
-            params![id, now],
+        if passkey.is_some()
+            && tx.query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))? == 1
+        {
+            return Ok(RevokeCredentials::LastPasskey);
+        }
+        if let Some(verified_by) = verified_by {
+            let forbidden: bool = tx.query_row(
+                &format!(
+                    "{DESCENDANTS} SELECT EXISTS (SELECT 1 FROM descendants WHERE passkey < ?3)
+                     OR (?2 IS NOT NULL AND ?2 <= ?3)
+                     OR NOT EXISTS (SELECT 1 FROM passkeys WHERE id = ?3)"
+                ),
+                params![device, passkey, verified_by],
+                |r| r.get(0),
+            )?;
+            if forbidden {
+                return Ok(RevokeCredentials::OlderPasskeyRequired);
+            }
+        }
+        let mut revoked_devices = {
+            let mut stmt = tx.prepare(&format!(
+                "{DESCENDANTS}
+                UPDATE devices SET revoked_at = ?3 WHERE revoked_at IS NULL
+                    AND id IN (SELECT device FROM descendants) RETURNING id"
+            ))?;
+            stmt.query_map(params![device, passkey, audit.at], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        revoked_devices.retain(|id| Some(id.as_str()) != device);
+        revoked_devices.sort_unstable();
+        // Both foreign keys delete sessions; count each affected row only once before deleting.
+        let sessions_removed: i64 = tx.query_row(
+            &format!(
+                "{DESCENDANTS} SELECT count(*) FROM sessions
+                WHERE passkey_id IN (SELECT passkey FROM descendants)
+                   OR step_up_passkey_id IN (SELECT passkey FROM descendants)"
+            ),
+            params![device, passkey],
+            |r| r.get(0),
         )?;
-        // Both the sign-in and step-up foreign keys delete sessions of these passkeys.
-        tx.execute(
-            &format!("{DESCENDANTS} DELETE FROM passkeys WHERE {ISSUED_PASSKEY}"),
-            [id],
+        let passkeys_removed = tx.execute(
+            &format!(
+                "{DESCENDANTS} DELETE FROM passkeys WHERE id IN (SELECT passkey FROM descendants)"
+            ),
+            params![device, passkey],
         )?;
-        audit.insert(&tx)?;
+        let mut detail: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&audit.detail)?;
+        detail.insert(
+            "descendant_devices".into(),
+            serde_json::json!(revoked_devices),
+        );
+        detail.insert(
+            "passkeys_removed".into(),
+            serde_json::json!(passkeys_removed),
+        );
+        detail.insert(
+            "sessions_removed".into(),
+            serde_json::json!(sessions_removed),
+        );
+        insert_audit(
+            &tx,
+            audit.at,
+            audit.kind,
+            audit.ip.as_deref(),
+            &serde_json::to_string(&detail)?,
+        )?;
         tx.commit()?;
-        Ok(true)
+        Ok(RevokeCredentials::Revoked)
     }
 
     /// Records use of a device token.
@@ -958,6 +1039,49 @@ mod tests {
             s.take_ceremony("d", "login", Some("s1"), 1).unwrap(),
             None,
             "other kind"
+        );
+    }
+
+    #[test]
+    fn cascade_visits_cycles_once_and_checks_the_oldest_descendant() {
+        let (_d, s) = store();
+        s.conn().execute_batch("INSERT INTO passkeys (id, cred_id, name, passkey, created_at, issued_via_passkey, issued_by) VALUES
+            (1, '1', 'Independent', '{}', 0, NULL, NULL),
+            (2, '2', 'Older descendant', '{}', 0, 4, NULL),
+            (3, '3', 'Verifier', '{}', 0, NULL, NULL),
+            (4, '4', 'Root', '{}', 0, NULL, 'Device cycle');
+            INSERT INTO devices (id, name, token_hash, created_at, issued_via_passkey) VALUES ('cycle', 'Cycle', 'unused', 0, 2);
+            INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id, step_up_passkey_id) VALUES
+            ('both', 'unused', 0, 0, 0, 2, 4), ('step-up-only', 'unused', 0, 0, 0, 3, 4);").unwrap();
+        let audit = NewAudit {
+            at: 1,
+            kind: "passkey_revoked",
+            ip: None,
+            detail: r#"{"passkey_id":4}"#.into(),
+        };
+        let root = CredentialRoot::Passkey(4);
+        assert!(matches!(
+            s.revoke_credentials(root, Some(3), &audit).unwrap(),
+            RevokeCredentials::OlderPasskeyRequired
+        ));
+        assert!(s.session("both").unwrap().is_some());
+        assert!(s.devices().unwrap()[0].revoked_at.is_none());
+        assert!(s.audit_page(10).unwrap().is_empty());
+
+        assert!(matches!(
+            s.revoke_credentials(root, Some(1), &audit).unwrap(),
+            RevokeCredentials::Revoked
+        ));
+        assert!(s.session("both").unwrap().is_none());
+        assert!(s.session("step-up-only").unwrap().is_none());
+        assert_eq!(s.devices().unwrap()[0].revoked_at, Some(1));
+        let rows = s.audit_page(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[0].detail).unwrap(),
+            serde_json::json!({
+                "passkey_id": 4, "descendant_devices": ["cycle"], "passkeys_removed": 2, "sessions_removed": 2,
+            })
         );
     }
 
