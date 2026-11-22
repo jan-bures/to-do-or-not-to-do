@@ -25,12 +25,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +51,6 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.Actions
-import app.todoornot.model.SavedStep
 
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
@@ -224,16 +221,16 @@ private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) 
 @Composable
 private fun AddStep(task: String, actions: Actions) {
     val r = LocalDesign.current.room
-    // The draft is the model's, so a submission still on its way survives a rotation. Its task and
-    // text are also saved here, for after process death, when the model is new; another task's saved
-    // text is left alone, and never restored into this one.
+    // The draft is the model's only (nothing is saved with the Activity), so it and a submission still
+    // on its way survive a rotation. The pane holds it while shown and lets go when it leaves.
     val draft = remember(task, actions) { actions.stepDraft(task) }
-    var saved by rememberSaveable(stateSaver = SavedStep.Saver) { mutableStateOf(SavedStep.NONE) }
-    remember(draft) { draft.restore(saved); Unit }
-    LaunchedEffect(draft, draft.text) {
-        if (draft.text.isNotEmpty() || saved.task == task) saved = SavedStep(task, draft.text)
+    DisposableEffect(draft) {
+        draft.hold()
+        onDispose {
+            draft.letGo()
+            actions.releaseStepDraft(task)
+        }
     }
-    DisposableEffect(draft) { onDispose { actions.releaseStepDraft(task) } }
     fun submit() = draft.submit { title, done -> actions.addStep(task, title, done) }
     Column(Modifier.fillMaxWidth().hairline(r.line)) {
         Row(

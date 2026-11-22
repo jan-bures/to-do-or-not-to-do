@@ -18,7 +18,9 @@ What the first version does:
   room, even the same one, clears the filter and closes its field.
 - **Tasks.** Add, complete (with the check animation and undo), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps. A step the core refuses
-  (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane.
+  (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
+  draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
+  added once), but not the process being killed, when a half-typed step is gone.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** The core keeps a local SQLite cache and an outbox, so everything works offline and syncs

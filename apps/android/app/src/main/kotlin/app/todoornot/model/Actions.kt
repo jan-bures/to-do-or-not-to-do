@@ -20,7 +20,7 @@ interface Actions {
     /** The task's "+ Add step" draft, kept where it outlives the Activity. */
     fun stepDraft(task: String): StepDraft
 
-    /** The task's pane closed: an empty draft with nothing on its way is dropped. */
+    /** A pane let go of the task's draft: dropped if no pane shows it, it is empty and nothing is on its way. */
     fun releaseStepDraft(task: String)
     fun setStepDone(id: String, done: Boolean)
     fun createList(name: String)

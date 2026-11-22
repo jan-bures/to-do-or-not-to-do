@@ -333,16 +333,16 @@ class TodoModel(
     override fun stepDraft(task: String): StepDraft = stepDrafts.getOrPut(task) { StepDraft(task) }
 
     override fun releaseStepDraft(task: String) {
-        stepDrafts.computeIfPresent(task) { _, d -> d.takeIf { it.text.isNotEmpty() || it.sending } }
+        stepDrafts.computeIfPresent(task) { _, d -> d.takeIf { it.holders > 0 || it.text.isNotEmpty() || it.sending } }
     }
 
     /**
      * Drops the drafts of tasks that are done or gone, except one on its way (its answer is still to
-     * land; the refresh after it drops it) and the open task's, which its pane is still showing.
+     * land; the refresh after it drops it) and one a pane is still showing.
      */
     private fun pruneDrafts(n: LocalNow) {
         for ((id, d) in stepDrafts) {
-            if (d.sending || id == selected) continue
+            if (d.sending || d.holders > 0) continue
             val t = engine.task(id, n)
             if (t == null || t.done) stepDrafts.remove(id, d)
         }
