@@ -13,7 +13,7 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 
 | Script | Runs on | What it does |
 |---|---|---|
-| `deploy/linux/provision.sh` | the VM, as root | Users, directories, swap, unattended upgrades, journald limits, `cloudflared`, the systemd units. Idempotent. |
+| `deploy/linux/provision.sh` | the VM, as root | Users, directories, swap, UDP buffer limits, unattended upgrades, journald limits, `cloudflared`, the systemd units. Idempotent. |
 | `deploy/deploy-linux.ps1` | the Windows PC | Builds the Linux binaries in WSL, copies them over, installs them on the VM, checks health, and stops a release that fails it. |
 | `deploy/linux/install-release.sh` | the VM, as root | The VM half of a deploy. `deploy-linux.ps1` uploads and runs it. |
 | `deploy/linux/build-release.sh` | WSL or any Linux | Builds `todo-server` and `todo-backup` for `x86_64-unknown-linux-gnu`. |
@@ -33,7 +33,7 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 | `/usr/local/lib/todo/` | root, 0755 | `deploy-guard`, which the units run before they start, and `install-release`, a copy of the deploy script for `--recover`. |
 | `/etc/todo/` | root:todo, 0750 | Config and secrets (see [Secrets](#secrets)). |
 | `/var/lib/todo/` | todo:todo, 0700 | `todo.sqlite3` with its WAL, `attachments.sqlite3`, `attachments.key`, `blobs/` (local store only), `backup-state/`. |
-| `/var/lib/todo-deploy/` | root, 0700 | Database copies taken before each deploy (`pre-<time>/`), and the files a rollback replaced (`failed-<time>/`), the newest three of each. They are plaintext: keep the mode. |
+| `/var/lib/todo-deploy/` | root, 0700 | Database copies taken before each deploy (`pre-<time>/`), and the files a rollback replaced (`failed-<time>/`), the newest three of each. They are plaintext: keep the mode. A deploy with no database yet leaves a `pre-<time>/` with only an empty `MANIFEST`: that records, for a rollback, that there was nothing to copy. |
 | `/etc/cloudflared/` | root:cloudflared, 0750 | `todo-tunnel.token`. |
 | `/swapfile` | root, 0600 | 1 GB of swap. |
 
@@ -76,6 +76,11 @@ $instance = '<instance>'  # the VM's name
 $gcloud = "$env:LOCALAPPDATA\google-cloud-sdk\bin\gcloud.cmd"
 $g = @('--project', $projectId, '--zone', $zone, '--tunnel-through-iap')
 ```
+
+**Run the VM's shell blocks in an interactive session,** `& $gcloud compute ssh $instance @g`, or copy a
+script over and run that. Use `--command` only for one line without pipes. `gcloud.cmd` passes the command
+through `cmd.exe`, which splits a multi-line command into several (a stray redirection can even leave a file
+named `NUL` in your home on the VM), and a `\|`, for example in a `grep` pattern, breaks it too.
 
 The VM gets a network of its own. Leave the project's `default` network alone: don't attach the VM to it and
 don't delete it, since other things in the project may rely on it. A new custom-mode network has no firewall
@@ -134,6 +139,12 @@ Then it installs `cloudflared` and sets up:
 - **Users.** `todo` and `cloudflared`, both system accounts without a login shell.
 - **Directories.** `/var/lib/todo` and `/etc/todo`.
 - **Memory.** 1 GB of swap (`--swap-size`) and `vm.swappiness=10`.
+- **UDP buffers.** `/etc/sysctl.d/91-todo-quic.conf` raises `net.core.rmem_max` and `net.core.wmem_max` to
+  7500000, as quic-go advises, and is applied before the tunnel starts. Without it `cloudflared` logs
+  `failed to sufficiently increase receive buffer size` and runs its QUIC connections with small buffers.
+  A connector that already runs keeps its old buffers: if the script warns that the limits changed,
+  restart `todo-tunnel` when a short outage suits you (about 30 s: `cloudflared` waits out a grace period
+  before it exits).
 - **Upgrades.** Unattended upgrades for Debian security updates and for `cloudflared`. When an update needs
   one, the VM reboots at 04:30 UTC; `--no-auto-reboot` turns that off. Services come back by themselves.
 - **The journal.** At most 200 MB, kept for a month.
@@ -216,7 +227,8 @@ From the Windows PC:
       config the new server refuses stops the deploy, and so does a unit that sets the server's settings
       through its environment (see [Configure](#configure)).
    3. If a release is installed already but there is no database at that path, it stops: there would be
-      nothing to roll back to. After a deliberate wipe, pass `-AllowEmptyDatabase`.
+      nothing to roll back to. After a deliberate wipe, or on a VM that isn't cut over yet, pass
+      `-AllowEmptyDatabase`.
    4. **prepared.** It writes the deploy marker, `/opt/todo/deploy-in-progress`, synced to disk. Then it
       stops the backup timers, any backup run and the server, checks each `systemctl stop`, and waits until
       every one of them is inactive and nothing answers `/health`. It takes the backup lock, copies the
@@ -260,7 +272,7 @@ including a new release that didn't become healthy (see the next section); 4 dep
 |---|---|
 | `-SkipBuild` | Deploys what is already in `-ArtifactDir`. |
 | `-NoStart` | Installs the release and leaves the server stopped. The marker records it, so a recovery keeps it stopped too. |
-| `-AllowEmptyDatabase` | Deploys although a release is installed and no database exists, after a deliberate wipe. |
+| `-AllowEmptyDatabase` | Deploys although a release is installed and no database exists: after a deliberate wipe, and for every deploy after the first to a VM that isn't cut over yet. |
 | `-PublicHealthUrl https://todo.example.com/health` | Also checks the server from outside after the deploy. |
 | `-GcloudPath` | Another gcloud. By default the script uses the portable install in `%LOCALAPPDATA%\google-cloud-sdk`, then `PATH`. |
 | `-Transport ssh -SshTarget user@host` | Uses plain OpenSSH `ssh` and `scp` instead of gcloud, for any other VM. `-SshOption 'IdentityFile=...'` adds `-o` options. |
@@ -370,15 +382,38 @@ These remain by design:
 ## Moving from the Windows pilot
 
 The pilot's database, its attachment key and its secrets move to the VM. The tunnel stays the same: the VM
-runs a connector with the same token, and the PC's goes away. Clients notice a few minutes of downtime and
-nothing else. Passkeys, sessions, device and agent tokens, and share links all keep working, because the
-public origin doesn't change. Forwarded emails wait in the Email Worker's retry queue meanwhile.
+runs a connector with the same token, and the PC's goes away. Clients notice about a minute of downtime
+(a few minutes if you restore the final backup instead of copying the files) and nothing else. Passkeys,
+sessions, device and agent tokens, and share links all keep working, because the public origin doesn't
+change. Forwarded emails wait in the Email Worker's retry queue meanwhile.
 
 Plan for 30 minutes. Besides the variables from [Google Cloud: create the VM](#google-cloud-create-the-vm),
-the blocks below use the pilot's data directory:
+the blocks below use two of the pilot's directories:
 
 ```powershell
-$data = "$env:LOCALAPPDATA\todo"
+$data = "$env:LOCALAPPDATA\todo"   # the pilot's directory: server.toml, backup.toml, secrets, bin\, backup-state\
+$db = $data                        # the pilot's data_dir: the databases and attachments.key
+```
+
+`$db` must be the `data_dir` from `$data\server.toml`, as an absolute path. It needn't be `$data` itself: a
+pilot whose `data_dir` is a `data` subdirectory keeps its databases and `attachments.key` in `$data\data`,
+and `$data` then holds no database at all. Check before the day.
+
+The copies below are taken with SQLite's `VACUUM INTO`, which writes one complete, self-contained file, WAL
+included. **Never copy the raw `*.sqlite3*` files:** a pilot stopped from outside may leave changes in its
+`-wal` file, and the `-shm` file must not travel at all. The PC needs Python 3 (`python` on `PATH`) for these
+two helpers; paste them into the session:
+
+```powershell
+# Writes a consistent copy of an SQLite database with VACUUM INTO. The source is opened read-only, so it
+# stays exactly as it was. Prints the copy's integrity check, which must be 'ok'.
+function Copy-Database([string]$From, [string]$To) {
+    python -c "import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro', uri=True); c.execute('VACUUM INTO ?', (sys.argv[2],)); c.close(); print(sqlite3.connect(sys.argv[2]).execute('pragma integrity_check').fetchone()[0])" $From $To
+}
+# Prints the event count and max(seq) of a task database.
+function Get-EventCount([string]$Path) {
+    python -c "import sqlite3,sys,pathlib; print(sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro', uri=True).execute('select count(*), max(seq) from events').fetchone())" $Path
+}
 ```
 
 ### Before the day
@@ -394,50 +429,83 @@ $data = "$env:LOCALAPPDATA\todo"
 
    The tunnel isn't running on the VM, so nobody could reach the rehearsal server. The backup timers are
    disabled, so no rehearsal data was backed up.
-3. **Deploy without starting.** Run `./deploy/deploy-linux.ps1 ... -NoStart`, adding `-AllowEmptyDatabase` if
-   you rehearsed: a release is installed and the database is gone, on purpose.
+3. **Deploy without starting.** Run `./deploy/deploy-linux.ps1 ... -NoStart`. The first deploy to the VM
+   finds no database to copy: it says so and leaves a `pre-<time>/` with an empty `MANIFEST`, which is
+   expected. **Every later deploy before the cutover needs `-AllowEmptyDatabase` too,** whether you rehearsed
+   or are bringing a newer release along: a release is installed and there is no database yet, on purpose.
 4. **Port.** If the pilot's `server.toml` uses another port than 47320, use that port on the VM too, so the
    tunnel's public hostname still matches.
+5. **Optional: stage what doesn't change.** The secrets, `backup.toml` and the tunnel token can go to the VM
+   before the day, as in steps 4 to 6 below: the token to `/root/todo-tunnel.token` (root, 0600) and nowhere
+   else, so the connector stays off. The cutover then moves only the databases, the attachment key and the
+   budget file, which keeps the downtime to about a minute. Do it after any rehearsal: the wipe above would
+   delete what is in `/var/lib/todo`.
 
 ### Cut over
 
-1. **Stop the pilot for good.** On the PC:
+1. **Stop the pilot, but keep it installed.** On the PC:
 
    ```powershell
-   ./deploy/windows/uninstall-pilot.ps1
+   Disable-ScheduledTask -TaskPath '\todo\' -TaskName pilot | Out-Null
+   ./deploy/windows/stop-pilot.ps1
+   try { $null = Invoke-WebRequest http://127.0.0.1:47320/health -UseBasicParsing -TimeoutSec 3; 'STILL RUNNING' } catch { 'stopped' }
    ```
 
-   This stops the tunnel and then the server, and removes the logon task. Without that last step, the next
-   logon would start a second server writing to the old database. Data, logs and secrets stay.
-2. **Take the final snapshot.** The server is stopped, so this is the complete log:
+   It must print `stopped`. The disabled logon task can't start a second server on the old database at the
+   next logon, and it stays in place for a [rollback](#roll-back). Neither command needs admin rights. Remove
+   the task with `uninstall-pilot.ps1` once the VM has run for a while (see [Verify](#verify)).
+
+   **Downtime starts.** Until the VM's connector registers in step 8, the hostname answers with a Cloudflare
+   tunnel error. Expect 502 rather than 530 at first: stopping the processes doesn't unregister the pilot's
+   connector, and the edge keeps trying it for a while. That is the old connector, not a second one.
+2. **Take the final backup.** The server is stopped, so this is the complete log:
 
    ```powershell
    $env:TODO_BACKUP_CONFIG = "$data\backup.toml"
    & "$data\bin\todo-backup.exe" run --kind daily --force
    ```
 
-   Note the uploaded key it prints (`daily/<time>-<seq>.sqlite3.zst.age`).
-3. **Restore it on the PC.** Paste the backup identity from the password manager into a temporary file inside
-   `$data`; that directory's ACL is yours only. Then:
+   Note the uploaded key it prints (`daily/<time>-<seq>.sqlite3.zst.age`). The upload needs no identity: it
+   is the off-site copy of the final state, whichever way step 3 goes.
+3. **Copy the databases.** The pilot is stopped, so a `VACUUM INTO` copy of each file is complete:
+
+   ```powershell
+   New-Item -ItemType Directory "$data\move" | Out-Null
+   Copy-Database "$db\attachments.sqlite3" "$data\move\attachments.sqlite3"
+   Copy-Database "$db\todo.sqlite3" "$data\move\todo.sqlite3"
+   Get-EventCount "$data\move\todo.sqlite3"
+   ```
+
+   Both copies must print `ok`. Keep the event count and `max(seq)` for step 7.
+
+   **Or restore the final backup** in place of the `todo.sqlite3` copy. It proves that the last backup
+   restores, but it needs the backup identity and adds a couple of minutes of downtime. Paste the identity from
+   the password manager into a temporary file inside `$data` (that directory's ACL is yours only), then:
 
    ```powershell
    $objectKey = '<key>'   # the key from step 2
-   New-Item -ItemType Directory "$data\move" | Out-Null
    & "$data\bin\todo-backup.exe" restore --object $objectKey --identity "$data\identity.tmp" --out "$data\move\todo.sqlite3"
    Remove-Item "$data\identity.tmp"
    ```
 
-   The restore checks integrity and prints `max(seq)` and the event count. Keep them for step 7. This also
-   proves that the last backup restores. Without R2 you can copy `todo.sqlite3` and its `-wal` file instead,
-   both together: the server is stopped, so they are consistent.
+   The restore checks integrity and prints `max(seq)` and the event count. The attachment registry isn't
+   backed up, so `attachments.sqlite3` is always the copy. If you copied, run the
+   [restore drill](#restore-drill) on the VM later instead.
 4. **Collect the rest in `$data\move`:**
-   - `attachments.key`, and `attachments.sqlite3` with its `-wal` if there is one. Without the key no
-     attachment can be decrypted.
-   - `blobs\`, if the pilot uses the local attachment store.
-   - The secret files that the pilot's `server.toml` and `backup.toml` point to: the R2 credentials for
-     attachments and for backups, and the ingest HMAC secret.
-   - `cloudflared-token`.
+   - `$db\attachments.key`. Without it no attachment can be decrypted.
+   - `$db\blobs\`, if the pilot uses the local attachment store.
+   - Unless you staged them: the secret files that the pilot's `server.toml` and `backup.toml` point to (the R2
+     credentials for attachments and for backups, and the ingest HMAC secret), and `cloudflared-token`.
    - Optionally `backup-state\budget.json`, which carries this month's operation count over.
+
+   For example, with the secrets staged:
+
+   ```powershell
+   Copy-Item "$db\attachments.key", "$data\backup-state\budget.json" "$data\move\"
+   ```
+
+   Leave `attachments-spool\`: it holds only leftovers of interrupted uploads, which the server deletes when
+   it starts.
 5. **Copy and remove.** From inside `$data\move`, with relative names:
 
    ```powershell
@@ -448,21 +516,23 @@ $data = "$env:LOCALAPPDATA\todo"
    Remove-Item -Recurse "$data\move"
    ```
 
-6. **Put everything in place.** On the VM. First check that nothing on the VM runs or would start by itself:
+6. **Put everything in place.** On the VM, in an interactive session. First check that nothing on the VM runs
+   or would start by itself:
 
    ```sh
-   systemctl is-enabled todo-server todo-backup-frequent.timer todo-backup-daily.timer
-   systemctl is-active todo-server todo-backup-frequent.timer todo-backup-daily.timer \
+   systemctl is-enabled todo-server todo-tunnel todo-backup-frequent.timer todo-backup-daily.timer
+   systemctl is-active todo-server todo-tunnel todo-backup-frequent.timer todo-backup-daily.timer \
        todo-backup@frequent todo-backup@daily
    ```
 
    Every line of the first must say `disabled`, and of the second `inactive` (or `failed`). If one doesn't,
    `sudo systemctl disable --now` it and check again: a server or a backup running now would write to or read a
-   half-copied database. Then, adjusting the secret names to the ones `server.toml` uses:
+   half-copied database. Then, adjusting the secret names to the ones `server.toml` uses, and leaving out the
+   secrets you staged:
 
    ```sh
    cd ~/move
-   sudo install -m 0600 -o todo -g todo todo.sqlite3 attachments.key attachments.sqlite3* /var/lib/todo/
+   sudo install -m 0600 -o todo -g todo todo.sqlite3 attachments.sqlite3 attachments.key /var/lib/todo/
    # Local attachment store only:
    sudo cp -r blobs /var/lib/todo/ && sudo chown -R todo:todo /var/lib/todo/blobs && sudo chmod -R go= /var/lib/todo/blobs
    sudo install -m 0640 -o root -g todo r2-attachments.json r2-backups.json /etc/todo/
@@ -474,7 +544,7 @@ $data = "$env:LOCALAPPDATA\todo"
    cd && shred -u move/* 2> /dev/null; rm -rf move
    ```
 
-   Write `/etc/todo/backup.toml` from `backup.toml.example`, with the pilot's `recipient`.
+   Unless you staged it, write `/etc/todo/backup.toml` from `backup.toml.example`, with the pilot's `recipient`.
 7. **Start the server, but not the tunnel yet.**
 
    ```sh
@@ -493,8 +563,11 @@ $data = "$env:LOCALAPPDATA\todo"
    sudo shred -u /root/todo-tunnel.token
    ```
 
-   In the Cloudflare dashboard, the tunnel now lists one connector, the VM's. The PC's went away in step 1;
-   if it is still listed, stop `cloudflared` on the PC.
+   It installs the token, raises the UDP buffer limits if they aren't yet, and enables and starts
+   `todo-tunnel`; it must end with `tunnel: active`. **Downtime ends** as soon as the public `/health` answers
+   200, usually within seconds. In the Cloudflare dashboard, the tunnel now lists one connector, the VM's. The
+   PC's went away in step 1; if it is still listed after a minute, check that no `cloudflared` for this tunnel
+   still runs on the PC.
 9. **Enable the server and the backups,** once the checks in [Verify](#verify) up to the manual backup have
    passed:
 
@@ -504,8 +577,8 @@ $data = "$env:LOCALAPPDATA\todo"
    systemctl list-timers 'todo-backup-*'
    ```
 
-   From now on the server comes back after a reboot, and backups run on their own. Deploys keep the timers
-   running.
+   `todo-tunnel` isn't in the list because step 8 already enabled it. From now on the server comes back after a
+   reboot, and backups run on their own. Deploys keep the timers running.
 
 ### Verify
 
@@ -514,7 +587,8 @@ $data = "$env:LOCALAPPDATA\todo"
   another.
 - An agent's MCP call works.
 - A forwarded email becomes a task within a minute.
-- Back up once by hand:
+- Back up once by hand. The first run on the VM uploads even if nothing changed, because the VM has no upload
+  record yet:
 
   ```sh
   sudo systemctl start todo-backup@daily
@@ -523,7 +597,8 @@ $data = "$env:LOCALAPPDATA\todo"
   ```
 
 - After a day: `systemctl list-timers 'todo-backup-*'` shows recent runs, and `systemctl --failed` is empty.
-- After a week of quiet, delete the pilot's data directory. Keep the final backup.
+- After a week of quiet, retire the pilot: `./deploy/windows/uninstall-pilot.ps1` removes its logon task, and
+  then you can delete its data directory. Keep the final backup.
 
 ### Roll back
 
@@ -532,13 +607,17 @@ $data = "$env:LOCALAPPDATA\todo"
 ```sh
 sudo systemctl disable --now todo-tunnel
 sudo systemctl stop todo-server
+sudo shred -u /etc/cloudflared/todo-tunnel.token
 ```
 
 ```powershell
 ./deploy/windows/install-pilot.ps1 -Start
 ```
 
-The pilot's database is exactly as it was when you stopped it.
+`install-pilot.ps1` registers the logon task again, enabled, and starts the pilot. The pilot's database is
+exactly as it was when you stopped it. The token comes off the VM because `provision.sh` enables and starts
+the tunnel whenever `/etc/cloudflared/todo-tunnel.token` exists: a later run would otherwise put the VM's
+connector next to the pilot's. For the next attempt, stage the token at `/root/todo-tunnel.token` again.
 
 **After the VM took writes,** bring its data back so they aren't lost. That is both databases (tasks and the
 attachment registry), and the attachment key with them. With the R2 attachment store (`store = "r2"`), the
@@ -551,6 +630,7 @@ VM's `blobs/` comes along too.
    sudo systemctl disable --now todo-tunnel todo-backup-frequent.timer todo-backup-daily.timer
    sudo systemctl stop 'todo-backup@*' todo-server
    sudo systemctl disable todo-server
+   sudo shred -u /etc/cloudflared/todo-tunnel.token
    systemctl is-active todo-tunnel todo-server todo-backup-frequent.timer todo-backup-daily.timer \
        todo-backup@frequent todo-backup@daily
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:47320/health
@@ -599,20 +679,21 @@ VM's `blobs/` comes along too.
        $hash, $name = $_ -split '\s+\*?', 2
        if ((Get-FileHash "rollback\$name" -Algorithm SHA256).Hash -ne $hash) { throw "$name differs" }
    }
-   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash "$data\attachments.key").Hash
+   (Get-FileHash rollback\attachments.key).Hash -eq (Get-FileHash "$db\attachments.key").Hash
    ```
 
    The last line must print `True`: the VM ran with the pilot's attachment key. If it prints `False`, the VM
    made a key of its own, and attachments uploaded on the VM need the VM's key. Stop here and sort that out
    before anything replaces the pilot's key.
-5. **Swap them in.** Move the pilot's databases aside, then put the copies in their place:
+5. **Swap them in.** Move the pilot's databases aside, then put the copies in their place, in the pilot's
+   `data_dir`:
 
    ```powershell
    $aside = New-Item -ItemType Directory "$data\before-rollback-$(Get-Date -Format yyyyMMddTHHmmss)"
-   Move-Item "$data\todo.sqlite3*", "$data\attachments.sqlite3*" $aside
-   Copy-Item rollback\todo.sqlite3, rollback\attachments.sqlite3 $data
+   Move-Item "$db\todo.sqlite3*", "$db\attachments.sqlite3*" $aside
+   Copy-Item rollback\todo.sqlite3, rollback\attachments.sqlite3 $db
    # Local attachment store only:
-   Copy-Item -Recurse -Force rollback\blobs\* "$data\blobs\"
+   Copy-Item -Recurse -Force rollback\blobs\* "$db\blobs\"
    ```
 
 6. **Verify without the tunnel.** Start only the server, check it, then stop it:
@@ -623,11 +704,11 @@ VM's `blobs/` comes along too.
    ./deploy/windows/stop-pilot.ps1
    ```
 
-   Check its log in `$data\logs\` for a clean start. If the PC has `sqlite3`, compare the event count and
-   `max(seq)` of `$data\todo.sqlite3` with step 2, with the server stopped.
-7. **Reconnect the pilot.** `./deploy/windows/install-pilot.ps1 -Start` registers the logon task again and
-   starts the server with the tunnel. `./deploy/probe.ps1 -BaseUrl https://todo.example.com` must pass, and
-   the Cloudflare dashboard must list only the PC's connector.
+   `-NoRegister` leaves the logon task disabled meanwhile. Check the log in `$data\logs\` for a clean start.
+   With the server stopped, `Get-EventCount "$db\todo.sqlite3"` must match step 2.
+7. **Reconnect the pilot.** `./deploy/windows/install-pilot.ps1 -Start` registers the logon task again,
+   enabled, and starts the server with the tunnel. `./deploy/probe.ps1 -BaseUrl https://todo.example.com` must
+   pass, and the Cloudflare dashboard must list only the PC's connector.
 8. **Clean up.** Remove `rollback\` once the pilot has run for a while. It holds plaintext data and the
    attachment key.
 
@@ -766,8 +847,16 @@ The always-free tier covers:
 
 Things that can cost money, so check them:
 
-- **An in-use external IPv4 address.** Google has charged for these; whether the free tier covers the one on a
-  free e2-micro is worth checking on the VPC pricing page for your account.
+- **The external IPv4 address.** It is billed by the hour, and at the time of writing the first 720 hours a
+  month per billing account are free. A 30-day month has exactly 720 hours, so it costs nothing; a 31-day
+  month costs the remaining 24 hours, a small amount but enough to trip a budget alert at 1% (see below).
+  Check the current terms on the VPC pricing page.
+- **IPv6 instead of IPv4.** External IPv6 addresses aren't charged, but a VM gets one only on the **Premium
+  tier**, whose free internet egress is 1 GB a month instead of the Standard tier's 200 GB. Backups and
+  attachment downloads can pass 1 GB in a busy month. Even trying it costs: with a dual-stack interface, Linux
+  prefers IPv6 wherever the other end has it (apt, R2 and Cloudflare's edge all do), so egress moves to the
+  Premium tier as soon as the address is added. Keep the VM on IPv4 and the Standard tier, and accept the
+  small charge in 31-day months.
 - **Snapshots, a second disk, Cloud NAT or a static IP.** None of them is needed here.
 
 All client traffic leaves the VM as egress to Cloudflare. A month of normal use stays far below the free
@@ -789,4 +878,4 @@ $billingAccount = '<billing-account-id>'
 ```
 
 Or use Billing → Budgets & alerts in the console. The alert emails the billing admins. It doesn't stop
-anything.
+anything. Expect the 1% alert in every 31-day month, for the IPv4 address's extra hours.

@@ -63,7 +63,9 @@
 
 .PARAMETER AllowEmptyDatabase
     Deploy although a release is installed and there is no database to copy first. Without it, such a
-    deploy stops before it changes anything, because the database was expected to be there.
+    deploy stops before it changes anything, because the database was expected to be there. A VM that
+    has a release but hasn't been cut over yet has no database, so every deploy to it after the first
+    needs this switch.
 
 .PARAMETER PublicHealthUrl
     Also check this URL from the PC after the deploy, for example https://todo.example.com/health.

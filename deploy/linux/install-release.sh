@@ -401,7 +401,12 @@ take_snapshot() {
     fsync "$snapshot/MANIFEST.tmp" || return 1
     mv -f -- "$snapshot/MANIFEST.tmp" "$snapshot/MANIFEST" || return 1
     fsync "$snapshot" "$DEPLOY_DIR" || return 1
-    log "copied the databases to $snapshot: $(awk '{ printf "%s ", $2 }' "$snapshot/MANIFEST")"
+    if [ -s "$snapshot/MANIFEST" ]; then
+        log "copied the databases to $snapshot: $(awk '{ printf "%s ", $2 }' "$snapshot/MANIFEST")"
+    else
+        # The empty MANIFEST is the record a rollback needs: there was nothing to restore.
+        log "no database yet, so nothing to copy ($snapshot records that with an empty MANIFEST)"
+    fi
 }
 
 # Puts the data directory back exactly as the MANIFEST lists it, without following anything the service
@@ -676,7 +681,7 @@ case "$db_path" in /*) ;; *) fail "the server printed an unexpected database pat
 data_dir="$(dirname "$db_path")"
 prev_id="$(current_id)"
 if [ -n "$prev_id" ] && [ ! -f "$db_path" ] && [ "$allow_empty" -eq 0 ]; then
-    fail "release $prev_id is installed but there is no database at $db_path to copy before the deploy. Nothing changed. If that is expected (a fresh or wiped install), pass --allow-empty-database (-AllowEmptyDatabase)."
+    fail "release $prev_id is installed but there is no database at $db_path to copy before the deploy. Nothing changed. If that is expected (a fresh or wiped install, or a VM that has not been cut over yet), pass --allow-empty-database (-AllowEmptyDatabase)."
 fi
 log "database: $db_path"
 

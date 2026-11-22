@@ -8,6 +8,7 @@
 #   - the `todo` system user, /var/lib/todo (0700) and /etc/todo (0750, root:todo), and the
 #     `cloudflared` system user for the connector;
 #   - a swap file (1G by default; --swap-size 0 skips it) and a low swappiness;
+#   - UDP buffer limits large enough for cloudflared's QUIC connections;
 #   - unattended-upgrades (security updates, cloudflared, and a reboot at 04:30 UTC when one is needed);
 #   - journald size limits;
 #   - cloudflared from Cloudflare's apt repository, and the todo-tunnel service once a token is given
@@ -51,7 +52,7 @@ swap_size=1G
 auto_reboot=1
 
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 log() { printf '==> %s\n' "$*"; }
@@ -215,16 +216,27 @@ if [ "$changed" -eq 1 ] && [ "$have_systemd" -eq 1 ]; then
     systemctl restart systemd-journald
 fi
 
-# ---- swap -----------------------------------------------------------------------------------------
+# ---- sysctl and swap ------------------------------------------------------------------------------
 
 put_file /etc/sysctl.d/90-todo.conf 0644 root:root <<'EOF'
 # Written by deploy/linux/provision.sh: swap only under real memory pressure.
 vm.swappiness=10
 EOF
+# cloudflared's QUIC library asks for 7 MiB socket buffers and logs "failed to sufficiently increase
+# receive buffer size" when the kernel caps it lower (Debian's default is about 200 KiB). These are the
+# limits quic-go recommends. They are applied here, before the tunnel starts below: a running connector
+# keeps the buffers it got until it restarts.
+put_file /etc/sysctl.d/91-todo-quic.conf 0644 root:root <<'EOF'
+# Written by deploy/linux/provision.sh: UDP buffers large enough for cloudflared's QUIC connections.
+net.core.rmem_max=7500000
+net.core.wmem_max=7500000
+EOF
+quic_sysctl_changed="$changed"
 if [ "$in_container" -eq 1 ]; then
     warn "running in a container: skipping swap and sysctl"
 else
     sysctl -q -p /etc/sysctl.d/90-todo.conf || warn "could not apply vm.swappiness"
+    sysctl -q -p /etc/sysctl.d/91-todo-quic.conf || warn "could not raise the UDP buffer limits"
     if [ "$swap_size" != 0 ]; then
         active_swap="$(swapon --show=NAME --noheadings)"
         if printf '%s\n' "$active_swap" | grep -qx "$SWAP_FILE"; then
@@ -356,6 +368,11 @@ if [ -f "$TOKEN_FILE" ]; then
     if [ "$token_changed" -eq 1 ] || [ "$tunnel_unit_changed" -eq 1 ]; then
         systemctl restart --no-block todo-tunnel.service
     else
+        if [ "$quic_sysctl_changed" -eq 1 ] && systemctl is-active --quiet todo-tunnel.service; then
+            # Not restarted here: that takes the hostname offline for about 30 s.
+            warn "the UDP buffer limits changed; todo-tunnel uses them after its next restart"
+            warn "(sudo systemctl restart todo-tunnel; the hostname is offline for about 30 s)"
+        fi
         systemctl start --no-block todo-tunnel.service
     fi
     for _ in $(seq 30); do
