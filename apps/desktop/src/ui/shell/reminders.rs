@@ -6,6 +6,7 @@
 //! reminder as its toast showed it, and Snooze and Complete only once (`Reminders::claim`).
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::pin::pin;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -22,7 +23,9 @@ use todo_core::time::Timestamp;
 
 use super::ShellView;
 use crate::config::DataDir;
-use crate::model::reminders::{Activation, Claim, Outcome, RETRY_MS, Reminders, still_as_shown};
+use crate::model::reminders::{
+    Activation, Claim, Occurrence, Outcome, RETRY_MS, Reminders, still_as_shown,
+};
 use crate::model::{Now, RoomKey};
 use crate::platform::toast::{self, ToastEvent};
 use crate::platform::win;
@@ -34,7 +37,7 @@ const WAKE_CHUNK: Duration = Duration::from_secs(60);
 const MIN_WAKE: Duration = Duration::from_millis(250);
 
 /// When the wake loop should look next: the next reminder (wall clock: alarms are instants), or a
-/// monotonic deadline (a save to try again), whichever comes first. Never longer
+/// monotonic deadline (a save to try again or a queued click whose time is up), whichever comes first. Never longer
 /// than [`WAKE_CHUNK`], never shorter than [`MIN_WAKE`]: a deadline the clock has already passed (it
 /// jumped forward) can't make it spin.
 pub(super) fn wake_in(
@@ -69,6 +72,44 @@ impl Deadlines {
     }
 }
 
+/// A mutating toast click waits briefly for catch-up, then expires rather than acting much later.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Default)]
+struct ToastActions(VecDeque<(Activation, Instant)>);
+
+impl ToastActions {
+    fn push(&mut self, action: Activation, now: Instant) {
+        self.expire(now);
+        // The first mutating click on a token wins. Repeated clicks do not prolong its lifetime.
+        if !self
+            .0
+            .iter()
+            .any(|(queued, _)| queued.token() == action.token())
+        {
+            self.0.push_back((action, now + ACTION_TIMEOUT));
+        }
+    }
+
+    fn expire(&mut self, now: Instant) {
+        while self.deadline().is_some_and(|deadline| deadline <= now) {
+            self.0.pop_front();
+        }
+    }
+
+    fn take_ready(&mut self, readiness: Readiness, now: Instant) -> Option<Activation> {
+        self.expire(now);
+        if readiness != Readiness::CaughtUp {
+            return None;
+        }
+        self.0.pop_front().map(|(action, _)| action)
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.0.front().map(|(_, deadline)| *deadline)
+    }
+}
+
 /// The live session's reminders: what was shown, the toasts, and the wake loop.
 #[allow(missing_debug_implementations)] // Holds the sink and GPUI tasks.
 pub(super) struct Alerts {
@@ -79,6 +120,7 @@ pub(super) struct Alerts {
     dirty: bool,
     save_retry: Option<Instant>,
     save_failures: usize,
+    actions: ToastActions,
     deadlines: Rc<Cell<Deadlines>>,
     rewake: UnboundedSender<()>,
     _wake: Task<()>,
@@ -122,6 +164,7 @@ impl ShellView {
             dirty: false,
             save_retry: None,
             save_failures: 0,
+            actions: ToastActions::default(),
             deadlines,
             rewake,
             _wake: wake,
@@ -177,7 +220,12 @@ impl ShellView {
         }
         let next = Deadlines {
             wall: outcome.next,
-            mono: alerts.save_retry.filter(|_| alerts.dirty),
+            mono: alerts
+                .save_retry
+                .filter(|_| alerts.dirty)
+                .into_iter()
+                .chain(alerts.actions.deadline())
+                .min(),
         };
         if alerts.deadlines.get() != next {
             alerts.deadlines.set(next);
@@ -198,30 +246,46 @@ impl ShellView {
 
     /// A toast's button, or the toast itself, was clicked.
     fn on_toast(&mut self, arguments: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let activation = Activation::parse(arguments);
+        if let Some(action @ (Activation::Snooze(_) | Activation::Complete(_))) = activation {
+            if let Some(alerts) = self.alerts.as_mut() {
+                alerts.actions.push(action, Instant::now());
+                self.refresh(cx);
+            }
+            return;
+        }
+        // Open always raises the window, but cannot select a task from a partial replica.
+        win::show_and_focus(win::hwnd_of(window));
         let (state, readiness) = self.store.view_and_readiness();
-        let Some(activation) = Activation::parse(arguments) else {
-            return win::show_and_focus(win::hwnd_of(window));
-        };
-        let claim = match self.alerts.as_mut() {
-            Some(alerts) if readiness == Readiness::CaughtUp => {
-                alerts.reminders.claim(activation, &state, &Now::system())
+        if let Some(action @ Activation::Open(_)) = activation
+            && readiness == Readiness::CaughtUp
+            && let Some(alerts) = self.alerts.as_mut()
+            && let Some(Claim::Open(task)) = alerts.reminders.claim(action, &state, &Now::system())
+        {
+            self.reveal_task(task, window, cx);
+        }
+    }
+
+    /// Apply queued clicks before deriving the shell, validating each against a fresh view. While
+    /// catching up the wake loop enforces expiry and the sync change triggers another refresh.
+    pub(super) fn drain_reminder_actions(&mut self) {
+        let tick = Instant::now();
+        while let Some(alerts) = self.alerts.as_mut() {
+            if alerts.actions.deadline().is_none() {
+                break;
             }
-            _ => None,
-        };
-        match (activation, claim) {
-            (_, Some(Claim::Open(task))) => {
-                win::show_and_focus(win::hwnd_of(window));
-                self.reveal_task(task, window, cx);
+            let (state, readiness) = self.store.view_and_readiness();
+            let Some(action) = alerts.actions.take_ready(readiness, tick) else {
+                break;
+            };
+            let now = Now::system();
+            match alerts.reminders.claim(action, &state, &now) {
+                Some(Claim::Snoozed(outcome)) => alerts.dirty |= outcome.changed,
+                Some(Claim::Complete { alarm, occurrence }) => {
+                    self.complete_from_toast(alarm, occurrence, &now);
+                }
+                _ => {} // A stale click has no effect.
             }
-            (_, Some(Claim::Snoozed(outcome))) => self.after_reminders(outcome, cx),
-            (_, Some(Claim::Complete(alarm))) => self.complete_from_toast(alarm, cx),
-            // Open from a toast no longer up (or the summary): the window, as it is, nothing selected.
-            (Activation::Open(_) | Activation::Missed(_), None) => {
-                win::show_and_focus(win::hwnd_of(window));
-            }
-            // A stale Snooze or Complete (its reminder moved, removed or done, or already used) does
-            // nothing.
-            (Activation::Snooze(_) | Activation::Complete(_), None) => {}
         }
     }
 
@@ -229,20 +293,21 @@ impl ShellView {
     /// if the reminder is still as the toast showed it, checked under the sync client's lock as it is
     /// queued: a sync that moved or removed the reminder, or completed the task, wins. The row plays
     /// the completion only when this queued it. Undo (the toast, Ctrl+Z) brings it back.
-    fn complete_from_toast(&mut self, alarm: Alarm, cx: &mut Context<Self>) {
+    fn complete_from_toast(&mut self, alarm: Alarm, occurrence: Occurrence, now: &Now) {
         let task = alarm.task;
         let visible = self.task_is_visible(task);
         let queued = self.submit_if(Command::CompleteTask { id: task }, |state| {
             still_as_shown(state, alarm)
         });
         if let Some(alerts) = self.alerts.as_mut() {
-            alerts.reminders.dismiss(alarm.reminder);
+            alerts.dirty |= alerts
+                .reminders
+                .finish_complete(occurrence, queued.is_err(), now);
         }
         if queued == Ok(true) && visible && self.animate {
             let (now, pace) = (self.now(), self.pace());
             let _ = self.motion.complete(task, now, pace);
         }
-        self.refresh(cx);
     }
 
     /// Shows a task in the window: in the room the window shows, if it's there, else in its list
@@ -299,7 +364,7 @@ async fn wake_loop(
             continue;
         }
         deadlines.set(Deadlines::default());
-        let alive = this.update(cx, |this, cx| this.reconcile_reminders(cx));
+        let alive = this.update(cx, |this, cx| this.refresh(cx));
         if alive.is_err() {
             return;
         }
@@ -315,6 +380,53 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().expect("timestamp")
+    }
+
+    #[test]
+    fn mutating_toast_clicks_wait_for_catchup_only_until_their_original_deadline() {
+        let occurrence = Occurrence {
+            id: todo_core::ids::ReminderId::from_uuid(uuid::Uuid::nil()),
+            at: 0,
+            token: 1,
+        };
+        let now = Instant::now();
+        let snooze = Activation::Snooze(occurrence);
+        let complete = Activation::Complete(Occurrence {
+            token: 2,
+            ..occurrence
+        });
+        let mut queue = ToastActions::default();
+        queue.push(snooze, now);
+        assert_eq!(queue.take_ready(Readiness::Starting, now), None);
+        assert_eq!(queue.take_ready(Readiness::Failed, now), None);
+        assert_eq!(queue.deadline(), Some(now + ACTION_TIMEOUT));
+        assert_eq!(
+            queue.take_ready(Readiness::CaughtUp, now + Duration::from_secs(1)),
+            Some(snooze)
+        );
+        assert_eq!(
+            queue.take_ready(Readiness::CaughtUp, now + Duration::from_secs(1)),
+            None
+        );
+
+        queue.push(complete, now);
+        queue.push(
+            Activation::Snooze(Occurrence {
+                token: 2,
+                ..occurrence
+            }),
+            now + Duration::from_secs(2),
+        );
+        assert_eq!(
+            queue.take_ready(Readiness::Starting, now + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(queue.deadline(), Some(now + ACTION_TIMEOUT));
+        assert_eq!(
+            queue.take_ready(Readiness::CaughtUp, now + ACTION_TIMEOUT),
+            None
+        );
+        assert_eq!(queue.deadline(), None);
     }
 
     #[test]

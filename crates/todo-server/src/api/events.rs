@@ -1127,11 +1127,14 @@ mod tests {
         drop(tx);
         let before = r.svc.standing(&r.principal);
 
-        // The reduction is published slowly; look while it is in progress.
-        r.svc.pause_next_publish(Duration::from_millis(400));
+        // Wait for the engine update, but keep the auth snapshot paused until we read it.
+        let (paused, resume) = r.svc.pause_next_publish();
         let (svc, token) = (r.svc.clone(), r.token_id);
         let reduce = std::thread::spawn(move || svc.set_grants(token, &private(hidden), None));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(10), paused)
+            .await
+            .unwrap()
+            .unwrap();
         let agent = todo_core::AgentId::new("bot").unwrap();
         assert_eq!(
             r.engine.state().grants.get(&agent),
@@ -1145,6 +1148,7 @@ mod tests {
         );
         // A stream that starts now records the old standing.
         let during = r.caller();
+        drop(resume);
         assert!(reduce.join().unwrap().unwrap());
 
         // Whether the stream started during the publish or after it, the queued frames about the

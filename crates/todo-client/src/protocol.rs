@@ -116,7 +116,8 @@ pub struct EventPage {
 pub struct Hello {
     /// The log epoch the stream's sequence numbers belong to.
     pub epoch: Epoch,
-    /// The newest sequence number when the stream opened. Servers leave it out for agent tokens.
+    /// The newest sequence number when the stream opened. Absent for agent tokens, not zero:
+    /// wait for [`BACKLOG_END_FRAME`] or a completed catch-up before treating the view as current.
     #[serde(default)]
     pub head_seq: Option<u64>,
 }

@@ -478,6 +478,7 @@ impl ShellView {
     }
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
+        self.drain_reminder_actions();
         let state = self.undo_state();
         // Capture the painted rows before releasing the old room's holds and deriving new counts.
         let room = self.ui.room.resolved(&state);

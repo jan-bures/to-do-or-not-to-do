@@ -443,8 +443,11 @@ pub enum Claim {
     Open(TaskId),
     /// Snooze was done.
     Snoozed(Outcome),
-    /// Complete this task, if [`still_as_shown`] when it is queued; then [`Reminders::dismiss`].
-    Complete(Alarm),
+    /// Complete this task, if [`still_as_shown`] when queued, then call [`Reminders::finish_complete`].
+    Complete {
+        alarm: Alarm,
+        occurrence: Occurrence,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -478,6 +481,7 @@ struct Delivery {
 struct LiveToast {
     occurrence: Occurrence,
     delivery: Delivery,
+    completing: bool,
 }
 
 #[derive(Debug)]
@@ -615,6 +619,7 @@ impl Reminders {
                         LiveToast {
                             occurrence,
                             delivery,
+                            completing: false,
                         },
                     );
                     return;
@@ -724,7 +729,7 @@ impl Reminders {
         let individual = |o: Occurrence| {
             self.live
                 .get(&o.id)
-                .filter(|live| live.occurrence == o)
+                .filter(|live| live.occurrence == o && !live.completing)
                 .map(|live| live.delivery.alarm)
         };
         match activation {
@@ -741,22 +746,26 @@ impl Reminders {
             Activation::Missed(_) => None,
             Activation::Snooze(o) | Activation::Complete(o) => {
                 let alarm = individual(o).filter(|a| still_as_shown(state, *a))?;
-                // Once: its buttons may do nothing more.
-                self.live.remove(&o.id);
-                if matches!(activation, Activation::Complete(_)) {
-                    return Some(Claim::Complete(alarm));
-                }
-                self.sink.hide(&o.id.to_string());
-                let record = self
+                let record = *self
                     .schedule
                     .records
                     .get(&o.id)
                     .filter(|r| r.task == alarm.task && r.at == o.at)?;
+                // Claim only after every check. Complete takes the toast away only after enqueue
+                // decides; on an error we still need its delivery record to re-show it.
+                if matches!(activation, Activation::Complete(_)) {
+                    self.live.get_mut(&o.id)?.completing = true;
+                    return Some(Claim::Complete {
+                        alarm,
+                        occurrence: o,
+                    });
+                }
+                self.hide(o.id);
                 self.schedule.records.insert(
                     o.id,
                     Record {
                         snooze: Some(ms(now.at) + SNOOZE_MS),
-                        ..*record
+                        ..record
                     },
                 );
                 let outcome = self.reconcile(state, now, true);
@@ -768,9 +777,27 @@ impl Reminders {
         }
     }
 
-    /// Takes a reminder's toast away (its task was completed from it).
-    pub fn dismiss(&mut self, id: ReminderId) {
-        self.hide(id);
+    /// Finishes a claimed Complete. Dismiss on success or a stale guard; on a save error, make
+    /// the occurrence pending and re-show it (Windows may already have closed the clicked toast).
+    /// Returns whether the durable schedule changed.
+    pub fn finish_complete(
+        &mut self,
+        occurrence: Occurrence,
+        save_failed: bool,
+        now: &Now,
+    ) -> bool {
+        if !self
+            .live
+            .get(&occurrence.id)
+            .is_some_and(|live| live.occurrence == occurrence && live.completing)
+        {
+            return false;
+        }
+        if save_failed {
+            return self.failed(Activation::Open(occurrence), now);
+        }
+        self.hide(occurrence.id);
+        false
     }
 
     /// Takes every reminder toast away (quitting, signing out).

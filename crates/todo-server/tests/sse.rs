@@ -225,6 +225,69 @@ async fn last_event_id_wins_over_since_on_reconnect() {
     assert!(s.next_event(Duration::from_millis(200)).await.is_none());
 }
 
+#[tokio::test]
+async fn agent_resume_marks_the_end_of_the_replayed_backlog() {
+    let t = TestServer::start().await;
+    let list = t.create_list("L").await;
+    t.create_task(&list, "One", json!({})).await;
+    t.create_task(&list, "Two", json!({})).await;
+    let (_, token) = t
+        .server
+        .authsvc
+        .create_agent(
+            &todo_core::AgentId::new("reader").unwrap(),
+            todo_core::AccessLevel::Read,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let wait = Duration::from_secs(2);
+    for (query, last) in [("?since=1", None), ("?since=0", Some("1"))] {
+        let res = open_sse(&t, &token, query, last).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut stream = common::SseReader::new(res);
+        for seq in [2, 3] {
+            let event = stream.next_frame(wait).await.unwrap();
+            assert_eq!(event.event.as_deref(), Some("event"));
+            assert_eq!(event.seq(), seq);
+        }
+        let end = stream.next_frame(wait).await.unwrap();
+        assert_eq!(end.event.as_deref(), Some("backlog_end"));
+        assert_eq!(end.id, None);
+        assert_eq!(end.json(), json!({}));
+        assert!(stream.hello.unwrap().json().get("head_seq").is_none());
+    }
+}
+
+#[tokio::test]
+async fn only_an_agent_needs_a_marker_for_an_empty_backlog() {
+    let t = TestServer::start_with(|c| c.limits.sse_heartbeat_ms = 100).await;
+    t.create_list("L").await;
+    let head = t.server.engine.head_seq();
+    let (_, token) = t
+        .server
+        .authsvc
+        .create_agent(
+            &todo_core::AgentId::new("reader").unwrap(),
+            todo_core::AccessLevel::Read,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let wait = Duration::from_secs(2);
+    let mut agent = t.sse(&token, Some(head)).await;
+    let end = agent.next_frame(wait).await.unwrap();
+    assert_eq!(end.event.as_deref(), Some("backlog_end"));
+    assert_eq!(end.id, None);
+    let mut owner = t.sse(TOKEN_A, Some(head)).await;
+    let heartbeat = owner.next_frame(wait).await.unwrap();
+    assert_eq!(heartbeat.comments, ["heartbeat"]);
+    assert_eq!(heartbeat.event, None);
+    assert_eq!(owner.hello.unwrap().json()["head_seq"], head);
+}
+
 /// Pages `GET /events?since=` until `head`, returning where it got to.
 async fn page_up_to(t: &TestServer, mut since: u64, head: u64) -> u64 {
     while since < head {

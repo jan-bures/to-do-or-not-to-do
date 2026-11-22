@@ -195,6 +195,12 @@ struct Shared {
 }
 
 impl Shared {
+    /// Marks the current view non-authoritative before waking the event loop to reset it.
+    fn request_resync(&mut self) {
+        self.resync_requested = true;
+        self.readiness = Readiness::Starting;
+    }
+
     fn enqueue(
         &mut self,
         op: Operation,
@@ -691,8 +697,12 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// The replica has caught up with the server's head as it was reached.
     fn reached_head(&self) {
-        let changed = self.with(|s| std::mem::replace(&mut s.readiness, Readiness::CaughtUp))
-            != Readiness::CaughtUp;
+        let changed = self.with(|s| {
+            // A frame or page from the old stream may still be in flight when the sender asks for
+            // a reset. It must not mark that replica ready again.
+            !s.resync_requested
+                && std::mem::replace(&mut s.readiness, Readiness::CaughtUp) != Readiness::CaughtUp
+        });
         if changed {
             self.changed();
         }
@@ -885,7 +895,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// Asks the event loop to resync and waits until it did.
     async fn await_resync(&self) {
         let seen = self.inner.resynced.generation();
-        self.with(|s| s.resync_requested = true);
+        self.with(Shared::request_resync);
         self.inner.resync.notify();
         self.changed();
         let _ = self.unless_stopped(self.inner.resynced.changed(seen)).await;
@@ -983,8 +993,15 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     let now = self.inner.clock.now();
                     let stored = self.with(|s| {
                         s.send = SendState::Ok;
+                        if replaced {
+                            // The view is stale even if storing the refusal fails.
+                            s.request_resync();
+                        }
                         s.replica.reject(entry.command_id, rejection, now)
                     });
+                    if replaced {
+                        self.inner.resync.notify();
+                    }
                     match stored {
                         Ok(()) => {
                             failures = 0;
@@ -995,11 +1012,6 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                             self.back_off(&mut failures, None).await;
                             continue;
                         }
-                    }
-                    if replaced {
-                        // This replica follows a log the server no longer has.
-                        self.with(|s| s.resync_requested = true);
-                        self.inner.resync.notify();
                     }
                 }
                 SendResult::Retry {
@@ -1496,4 +1508,35 @@ fn explain(entry: &OutboxEntry, mut rejection: Rejection) -> Rejection {
         );
     }
     rejection
+}
+
+#[cfg(all(test, feature = "native"))]
+mod tests {
+    use super::*;
+    use crate::native::{HttpTransport, OsEntropy, TokioClock};
+    use crate::storage::MemoryStorage;
+
+    #[tokio::test]
+    async fn a_resync_request_invalidates_the_view_before_the_reset_runs() {
+        // Only drive the requester: the event loop that resets the view has not run yet.
+        let client = SyncClient::new(
+            HttpTransport::new("https://todo.example.com", "unused-test-token").expect("transport"),
+            TokioClock,
+            OsEntropy,
+            MemoryStorage::new(),
+            ClientConfig::new(Actor::owner("test").expect("actor")),
+        )
+        .expect("client");
+        client.reached_head();
+        let (view, readiness) = client.view_and_readiness();
+        assert_eq!(readiness, Readiness::CaughtUp);
+        let mut resync = pin!(client.await_resync());
+        assert!(futures_util::poll!(&mut resync).is_pending());
+        let (pending_view, readiness) = client.view_and_readiness();
+        assert!(Arc::ptr_eq(&view, &pending_view));
+        assert_eq!(readiness, Readiness::Starting);
+        // A frame from the previous stream may still be in flight.
+        client.reached_head();
+        assert_eq!(client.readiness(), Readiness::Starting);
+    }
 }

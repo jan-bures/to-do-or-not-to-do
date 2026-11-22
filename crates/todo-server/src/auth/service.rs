@@ -184,6 +184,12 @@ pub struct NewSession {
     pub row: SessionRow,
 }
 
+#[cfg(test)]
+struct PublishPause {
+    paused: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
 /// The authentication service. See the module docs.
 pub struct AuthService {
     store: AuthStore,
@@ -197,8 +203,8 @@ pub struct AuthService {
     /// Held by every change to devices, agent tokens or grants, from the database write until the new
     /// snapshot is published, so a slower reload can never publish rows older than a newer change.
     mutations: Mutex<()>,
-    /// Test hook: the next publish waits this long between reading the store and publishing.
-    pause_next_publish: Mutex<Option<Duration>>,
+    #[cfg(test)]
+    pause_next_publish: Mutex<Option<PublishPause>>,
     setup: Mutex<Option<SetupCode>>,
     /// Where a pending setup code is written.
     setup_file: std::path::PathBuf,
@@ -379,6 +385,7 @@ impl AuthService {
             owner_tokens,
             snapshot: RwLock::new(Arc::new(Snapshot::default())),
             mutations: Mutex::new(()),
+            #[cfg(test)]
             pause_next_publish: Mutex::new(None),
             setup: Mutex::new(None),
             setup_file: config.data_dir.join(SETUP_CODE_FILE),
@@ -518,10 +525,18 @@ impl AuthService {
         lock(&self.mutations)
     }
 
-    /// Test hook: makes the next publish pause for `d` after reading the store.
-    #[doc(hidden)]
-    pub fn pause_next_publish(&self, d: Duration) {
-        *lock(&self.pause_next_publish) = Some(d);
+    /// The next publish signals after updating the engine, then waits for the resume sender to drop.
+    #[cfg(test)]
+    pub(crate) fn pause_next_publish(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (paused, reached) = tokio::sync::oneshot::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        *lock(&self.pause_next_publish) = Some(PublishPause { paused, resume });
+        (reached, release)
     }
 
     /// Reloads device and agent tokens from the store and publishes them with the grants.
@@ -576,9 +591,13 @@ impl AuthService {
             }
         }
         self.engine.set_grants(grants.clone());
-        let pause = lock(&self.pause_next_publish).take();
-        if let Some(d) = pause {
-            std::thread::sleep(d);
+        #[cfg(test)]
+        {
+            let pause = lock(&self.pause_next_publish).take();
+            if let Some(pause) = pause {
+                let _ = pause.paused.send(());
+                let _ = pause.resume.recv();
+            }
         }
         *self
             .snapshot
@@ -1574,19 +1593,27 @@ mod tests {
     }
 
     /// A reload that read the store before a revocation must not publish after it.
-    #[test]
-    fn a_slow_reload_cannot_bring_back_a_revoked_token() {
+    #[tokio::test]
+    async fn a_slow_reload_cannot_bring_back_a_revoked_token() {
         let (_dir, svc) = service();
         let (a, token_a) = svc.create_device("A", None).unwrap();
         assert!(svc.authenticate(&bearer_headers(&token_a)).is_ok());
 
-        // Pairing B reads the store (A still active), then stalls before publishing.
-        svc.pause_next_publish(Duration::from_millis(400));
+        // Pairing B reads the store (A still active), then stalls before publishing. The
+        // revocation cannot grab the mutation lock until B publishes.
+        let (paused, resume) = svc.pause_next_publish();
         let slow = svc.clone();
         let pairing = std::thread::spawn(move || slow.create_device("B", None).unwrap());
-        std::thread::sleep(Duration::from_millis(100));
-        // Meanwhile A is revoked.
-        assert!(svc.revoke_device(a.as_str(), None).unwrap());
+        tokio::time::timeout(Duration::from_secs(10), paused)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(svc.mutations.try_lock().is_err());
+        let revoke = svc.clone();
+        let revocation =
+            std::thread::spawn(move || revoke.revoke_device(a.as_str(), None).unwrap());
+        drop(resume);
+        assert!(revocation.join().unwrap());
         assert!(
             svc.authenticate(&bearer_headers(&token_a)).is_err(),
             "revoked as soon as revoke_device returns"
@@ -1601,8 +1628,8 @@ mod tests {
 
     /// Grants and token validity change together, and a grant change is never undone by a reload
     /// that read older rows.
-    #[test]
-    fn grants_and_tokens_are_published_together() {
+    #[tokio::test]
+    async fn grants_and_tokens_are_published_together() {
         let (_dir, svc) = service();
         let agent = AgentId::new("bot").unwrap();
         let (id, token) = svc
@@ -1612,14 +1639,22 @@ mod tests {
             svc.engine.state().grants.get(&agent).map(|g| g.default),
             Some(AccessLevel::Read)
         );
-        svc.pause_next_publish(Duration::from_millis(400));
+        let (paused, resume) = svc.pause_next_publish();
         let slow = svc.clone();
         let pairing = std::thread::spawn(move || slow.create_device("B", None).unwrap());
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            svc.set_grants(id, &Grants::with_default(AccessLevel::None), None)
+        tokio::time::timeout(Duration::from_secs(10), paused)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(svc.mutations.try_lock().is_err());
+        let change = svc.clone();
+        let grants = std::thread::spawn(move || {
+            change
+                .set_grants(id, &Grants::with_default(AccessLevel::None), None)
                 .unwrap()
-        );
+        });
+        drop(resume);
+        assert!(grants.join().unwrap());
         pairing.join().unwrap();
         assert_eq!(
             svc.engine.state().grants.get(&agent).map(|g| g.default),

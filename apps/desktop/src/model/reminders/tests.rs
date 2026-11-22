@@ -417,7 +417,7 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
     assert_eq!(r.claim(complete, &done.state, &at), None);
     // As shown: Complete is claimed once; the toast goes once the completion is queued.
     fake.take();
-    let Some(Claim::Complete(alarm)) = r.claim(complete, &w.state, &at) else {
+    let Some(Claim::Complete { alarm, occurrence }) = r.claim(complete, &w.state, &at) else {
         panic!("claimed");
     };
     assert_eq!(alarm.task, task);
@@ -437,7 +437,8 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
     assert!(!still_as_shown(&later.state, alarm));
     assert!(!still_as_shown(&removed.state, alarm));
     assert!(!still_as_shown(&done.state, alarm));
-    r.dismiss(call);
+    assert_eq!(r.claim(complete, &w.state, &at), None, "claimed once");
+    assert!(!r.finish_complete(occurrence, false, &at));
     assert_eq!(fake.take(), [format!("hide {call}")]);
     assert_eq!(r.claim(complete, &w.state, &at), None);
     // A made-up token never acts.
@@ -449,6 +450,54 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
         other => other,
     };
     assert_eq!(r.claim(forged, &w.state, &at), None);
+}
+
+#[test]
+fn a_completion_save_error_makes_the_toast_pending_instead_of_dismissing_it() {
+    let mut w = World::new();
+    let (_, id) = w.task("Read the gas meter", NOW);
+    let (mut r, fake) = driver();
+    let at = now(NOW);
+    r.reconcile(&w.state, &at, true);
+    let complete = fake.button(&id.to_string(), "Complete");
+    fake.take();
+    let Some(Claim::Complete { occurrence, .. }) = r.claim(complete, &w.state, &at) else {
+        panic!("claimed");
+    };
+    assert!(r.finish_complete(occurrence, true, &at));
+    assert!(
+        fake.take().is_empty(),
+        "the failed submit must not dismiss the toast"
+    );
+    let persisted = Schedule::from_json(&r.schedule().to_json().expect("schedule"));
+    assert!(persisted.shown.is_empty());
+    let retry = r.reconcile(&w.state, &at, true).next.expect("to retry");
+    assert_eq!(retry, ts("2026-11-21T10:00:30Z"));
+    r.reconcile(&w.state, &now("2026-11-21T10:00:30Z"), true);
+    assert!(fake.take()[0].starts_with(&format!("show {id}")));
+    assert_ne!(fake.button(&id.to_string(), "Complete"), complete);
+}
+
+#[test]
+fn a_missing_record_refuses_the_click_without_consuming_the_live_token() {
+    let mut w = World::new();
+    let (_, id) = w.task("Read the gas meter", NOW);
+    let (mut r, fake) = driver();
+    let at = now(NOW);
+    r.reconcile(&w.state, &at, true);
+    let snooze = fake.button(&id.to_string(), "Snooze 10 min");
+    let complete = fake.button(&id.to_string(), "Complete");
+    fake.take();
+    let record = r.schedule.records.remove(&id).expect("record");
+    for action in [snooze, complete] {
+        assert_eq!(r.claim(action, &w.state, &at), None);
+    }
+    assert!(fake.take().is_empty());
+    r.schedule.records.insert(id, record);
+    assert!(matches!(
+        r.claim(snooze, &w.state, &at),
+        Some(Claim::Snoozed(_))
+    ));
 }
 
 #[test]

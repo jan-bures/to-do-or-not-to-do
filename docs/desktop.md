@@ -358,7 +358,7 @@ Ctrl+Z work), and the row plays it only when this click queued it.
   the half-minute tick), when the clock is changed and when the computer wakes up (`WM_TIMECHANGE` and
   the resume `WM_POWERBROADCAST`s, received by a hidden window, `platform::clock`). One wake loop
   waits for the next reminder or toast retry (wall-clock instants), or for a schedule save retry
-  (monotonic), in timers of at most a minute and at least a quarter of a second, so a timer
+  or queued click expiry (monotonic), in timers of at most a minute and at least a quarter of a second, so a timer
   replaced by a new deadline never lingers, a sleep never makes one more than a minute late, and a
   clock that jumped past a deadline can't make it spin. A reminder removed, rescheduled or moved to
   another task loses its toast, as does one whose task was completed or deleted.
@@ -368,6 +368,8 @@ Ctrl+Z work), and the row plays it only when this click queued it.
   Snooze and Complete only once. So a click queued behind a sync that moved, removed or completed the reminder
   does nothing, and Open from a toast no longer up brings the window forward without selecting
   anything.
+  During catch-up, Snooze and Complete wait up to ten seconds, then expire. A Complete that can't
+  be saved leaves the reminder pending so Windows can show it again.
 - **Missed.** A reminder found due at most five minutes late (`GRACE_MS`) shows as itself. Staler ones
   (the app was closed, the computer asleep, a reminder synced in late) never fire one by one: they
   collapse into one summary toast ("3 missed reminders", with the first titles; a single one opens its
