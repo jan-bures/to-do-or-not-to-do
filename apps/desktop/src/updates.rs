@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
+use todo_client::Revocation;
 use todo_client::native::{Cleartext, server_origin_with};
 use ureq::tls::{RootCerts, TlsConfig};
 use velopack::bundle::Manifest;
@@ -40,10 +41,11 @@ struct Feed {
     authorization: String,
     agent: ureq::Agent,
     stopped: Arc<AtomicBool>,
+    revocation: Revocation,
 }
 
 impl Feed {
-    fn new(url: String, token: &str, stopped: Arc<AtomicBool>) -> Self {
+    fn new(url: String, token: &str, stopped: Arc<AtomicBool>, revocation: Revocation) -> Self {
         let agent = ureq::Agent::config_builder()
             .max_redirects(0)
             .tls_config(
@@ -63,6 +65,7 @@ impl Feed {
             authorization: format!("Bearer {token}"),
             agent,
             stopped,
+            revocation,
         }
     }
 
@@ -82,7 +85,12 @@ impl Feed {
             .config()
             .timeout_recv_body(Some(body_timeout))
             .build()
-            .call()?;
+            .call()
+            .inspect_err(|e| {
+                if let ureq::Error::StatusCode(status) = e {
+                    self.revocation.observe_status(*status);
+                }
+            })?;
         if response.status() != 200 {
             return Err(Error::Other("expected a complete 200 response".into()));
         }
@@ -180,10 +188,10 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(server: &str, token: &str) -> Option<Self> {
+    pub fn start(server: &str, token: &str, revocation: Revocation) -> Option<Self> {
         let url = feed_url(server)?;
         let stopped = Arc::new(AtomicBool::new(false));
-        let feed = Feed::new(url, token, stopped.clone());
+        let feed = Feed::new(url, token, stopped.clone(), revocation);
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("todo-update".into())
@@ -385,6 +393,7 @@ mod tests {
             "https://todo.example.com/releases".into(),
             "token",
             Arc::default(),
+            Revocation::default(),
         );
         let config = feed.agent.config();
         assert_eq!(config.timeouts().global, None);
@@ -470,7 +479,12 @@ mod tests {
             let _ = wait.recv_timeout(Duration::from_secs(2));
             let _ = stream.write_all(b"x");
         });
-        let feed = Feed::new(format!("http://{addr}/releases"), "token", Arc::default());
+        let feed = Feed::new(
+            format!("http://{addr}/releases"),
+            "token",
+            Arc::default(),
+            Revocation::default(),
+        );
         let mut body = feed
             .get("package.nupkg", Duration::from_millis(100))
             .expect("response head");
@@ -499,7 +513,12 @@ mod tests {
             "http://{}/releases",
             listener.local_addr().expect("address")
         );
-        let feed = Feed::new(url, "test-device-token", Arc::default());
+        let feed = Feed::new(
+            url,
+            "test-device-token",
+            Arc::default(),
+            Revocation::default(),
+        );
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("connect");
             let path = format!(

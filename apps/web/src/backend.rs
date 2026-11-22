@@ -398,6 +398,13 @@ fn live() -> Option<Client> {
     })
 }
 
+/// Records an authenticated refusal on the current page's client, not in IndexedDB.
+pub fn observe_http_status(status: u16) {
+    if let Some(c) = live() {
+        c.revocation().observe_status(status);
+    }
+}
+
 /// Runs the sync engine until it stops (live backend only).
 pub async fn run() {
     if let Some(c) = live() {
@@ -593,7 +600,10 @@ pub async fn upload_attachment(
                 // isn't readable, use that ID rather than suggesting the upload failed.
                 Ok(serde_json::from_slice::<Receipt>(&result.body).map_or(id, |r| r.attachment.id))
             }
-            401 => Err(UploadError::SignedOut),
+            401 => {
+                observe_http_status(401);
+                Err(UploadError::SignedOut)
+            }
             status => {
                 let max = (status == 413)
                     .then(|| protocol::error_detail(&result))

@@ -16,7 +16,7 @@ use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::StorageOp;
-use todo_client::{ClientConfig, Storage as _, StorageError, SyncClient};
+use todo_client::{ClientConfig, Revocation, Storage as _, StorageError, SyncClient};
 use todo_core::Actor;
 use todo_core::ids::AttachmentId;
 
@@ -222,19 +222,24 @@ impl Session {
         let data = paths.data(&pairing.config.pairing);
         let transport = HttpTransport::new(&pairing.config.server, &pairing.token)
             .map_err(|e| OpenError::Config(e.to_string()))?;
-        data.check_ancestors()
+        data.check()
             .map_err(unavailable("checking the data directory"))?;
         std::fs::create_dir_all(data.path()).map_err(unavailable("creating the data directory"))?;
-        let storage = SqliteStorage::open(&data.cache())?;
+        let cache = data.cache();
+        let revocation =
+            Revocation::for_cache(&cache).map_err(unavailable("reading pairing revocation"))?;
+        let transport = transport.with_revocation(revocation.clone());
+        let storage = SqliteStorage::open(&cache)?;
         let actor = Actor::Owner {
             device: pairing.config.device.clone(),
         };
-        let client = SyncClient::new(
+        let client = SyncClient::with_revocation(
             transport.clone(),
             TokioClock,
             OsEntropy,
             storage,
             ClientConfig::new(actor),
+            revocation,
         )
         .map_err(|todo_client::replica::OpenError::Storage(e)| OpenError::from(e))?;
         Ok(Self {
@@ -265,7 +270,7 @@ impl Session {
         pairing: &Pairing,
     ) -> Result<(Self, Option<Recovered>), OpenError> {
         let data = paths.data(&pairing.config.pairing);
-        data.check_ancestors()
+        data.check()
             .map_err(unavailable("checking the data directory"))?;
         if std::fs::symlink_metadata(data.path().join(START_FRESH_FILE)).is_ok() {
             // Files are half moved aside: nothing opens or salvages them until starting fresh is done.
@@ -311,7 +316,11 @@ impl Session {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(token) = updates.token.take() {
-                updates.worker = crate::updates::Worker::start(self.server(), &token);
+                updates.worker = crate::updates::Worker::start(
+                    self.server(),
+                    &token,
+                    self.client.revocation().clone(),
+                );
             }
         }
     }
@@ -348,7 +357,7 @@ impl Session {
     }
 
     /// Reads a page of activity on the network runtime, with the same token and transport as sync.
-    /// It writes nothing, so signing out needn't wait for it.
+    /// It never changes the replica. A 401 can only mark this pairing's existing directory.
     pub fn activity(
         &self,
         query: ActivityQuery,

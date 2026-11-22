@@ -1269,6 +1269,34 @@ test("a tab whose session changed under it still sends its queued edit, once", a
   await b.close();
 });
 
+test("an Activity-only 401 asks for the passkey again without persisting sign-out", async ({ browser }) => {
+  const isolated = await browser.newContext({ baseURL });
+  try {
+    const page = await isolated.newPage();
+    await authenticator(page, isolated);
+    const signIn = page.getByRole("button", { name: "Sign in with passkey" });
+    await page.goto("/login?next=/app");
+    await signIn.click();
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+
+    // A reconnect can fail offline, but it can't receive the 401 before Activity does.
+    await page.route("**/api/v1/events**", (r) => r.abort("internetdisconnected"));
+    await isolated.clearCookies();
+    const refusal = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/v1/activity");
+    await page.getByRole("link", { name: "Activity", exact: true }).click();
+    expect((await refusal).status()).toBe(401);
+    await expect(signIn).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("next")).toBe("/app/activity");
+
+    await page.unroute("**/api/v1/events**");
+    await signIn.click();
+    await expect(page).toHaveURL(/\/app\/activity$/);
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  } finally {
+    await isolated.close();
+  }
+});
+
 test("a note being typed survives a rename from elsewhere, and then saves", async () => {
   const a = await openApp();
   const problems = watch(a);

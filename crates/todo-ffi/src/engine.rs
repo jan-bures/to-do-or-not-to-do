@@ -25,8 +25,8 @@ use todo_client::outbox::OutboxEntry;
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
 use todo_client::{
-    ClientConfig, CommandId, Connection, ErrorKind, MemoryStorage, SyncClient, TrackedCommand,
-    TrackedUndo,
+    ClientConfig, CommandId, Connection, ErrorKind, MemoryStorage, Revocation, SyncClient,
+    TrackedCommand, TrackedUndo,
 };
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
 use todo_core::model::Entity;
@@ -49,7 +49,7 @@ pub struct EngineConfig {
     pub token: String,
     /// The device ID the server issued with the token.
     pub device_id: String,
-    /// The SQLite cache file (the app's private storage).
+    /// The SQLite cache file (in the app's private storage, with a separate path for each pairing).
     pub database_path: String,
     /// Allow plain `http` to a loopback server. Only a debug build of the app sets it (the emulator
     /// workflow); otherwise the transport refuses anything but `https`.
@@ -557,11 +557,15 @@ impl TodoEngine {
         } else {
             Cleartext::Refuse
         };
+        let files = recovery::Files::new(Path::new(&config.database_path));
         let transport = HttpTransport::with_cleartext(&server, Some(&config.token), cleartext)
             .map_err(|e| FfiError::BadAddress {
                 reason: e.to_string(),
             })?;
-        let files = recovery::Files::new(Path::new(&config.database_path));
+        let revocation = Revocation::for_cache(&files.cache).map_err(|e| FfiError::Storage {
+            detail: format!("reading pairing revocation: {e}"),
+        })?;
+        let transport = transport.with_revocation(revocation.clone());
         let storage_error = |e: recovery::RecoveryError| FfiError::Storage {
             detail: e.to_string(),
         };
@@ -570,12 +574,13 @@ impl TodoEngine {
         let mut recovered = recovery::resume(&files).map_err(storage_error)?;
         let open = || -> Result<Client, StorageError> {
             let storage = SqliteStorage::open(&files.cache)?;
-            SyncClient::new(
+            SyncClient::with_revocation(
                 AppTransport::Http(transport.clone()),
                 TokioClock,
                 OsEntropy,
                 storage,
                 ClientConfig::new(actor.clone()),
+                revocation.clone(),
             )
             .map_err(|todo_client::replica::OpenError::Storage(e)| e)
         };

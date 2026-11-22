@@ -131,6 +131,61 @@ fn order(state: &State, list: ListId) -> Vec<TaskId> {
 }
 
 #[test]
+fn activity_revocation_survives_reopening_the_same_pairing_offline() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    assert!(!session.client().status().revoked);
+    let (task, cmds) = commands::add_task(
+        &session.client().view(),
+        RoomKey::Smart(Smart::MyDay),
+        &Parsed {
+            title: "Keep this unsent edit".into(),
+            due: None,
+            priority: None,
+        },
+        today(),
+        || session.client().new_uuid(),
+    );
+    assert!(task.is_some());
+    submit(&session, cmds);
+    let pending = session.client().status().pending;
+    assert!(pending > 0);
+    let replacement = server.pair(&net, &paths);
+    let mut changes = session.client().changes();
+    assert!(
+        server
+            .running()
+            .authsvc
+            .revoke_device(pairing.config.device.as_str(), None)
+            .expect("revoke")
+    );
+    // The sync loops never run; only Activity receives a 401.
+    assert_eq!(
+        net.block_on(session.activity(ActivityQuery::default())),
+        Err(ActivityError::Unauthorized)
+    );
+    net.block_on(async {
+        tokio::time::timeout(WAIT, changes.next())
+            .await
+            .expect("status notification")
+    });
+    drop(session);
+    drop(server);
+
+    let reopened = Session::open(net.clone(), &paths, &pairing).expect("reopen offline");
+    let status = reopened.client().status();
+    assert_eq!(status.connection, Connection::Offline);
+    assert!(status.revoked);
+    assert_eq!(status.pending, pending);
+    let replacement = Session::open(net, &paths, &replacement).expect("new pairing");
+    assert!(!replacement.client().status().revoked);
+}
+
+#[test]
 fn space_twice_after_a_held_completion_queues_undo_then_recompletion_offline() {
     use crate::store::{LiveStore, Store};
     use todo_client::TrackedUndo;

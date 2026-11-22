@@ -287,16 +287,23 @@ async fn read(res: &web_sys::Response) -> Result<Response, TransportError> {
         .flatten()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs);
-    let buf = JsFuture::from(
-        res.array_buffer()
-            .map_err(|e| TransportError::Network(js_err(&e)))?,
-    )
-    .await
-    .map_err(|e| TransportError::Network(js_err(&e)))?;
+    let status = res.status();
+    let body = if status == 401 {
+        // A dead session needs no error body. Do not lose the status if reading it fails.
+        Vec::new()
+    } else {
+        let buf = JsFuture::from(
+            res.array_buffer()
+                .map_err(|e| TransportError::Network(js_err(&e)))?,
+        )
+        .await
+        .map_err(|e| TransportError::Network(js_err(&e)))?;
+        Uint8Array::new(&buf).to_vec()
+    };
     Ok(Response {
-        status: res.status(),
+        status,
         retry_after,
-        body: Uint8Array::new(&buf).to_vec(),
+        body,
     })
 }
 

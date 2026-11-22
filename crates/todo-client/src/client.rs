@@ -49,6 +49,7 @@ use crate::protocol::{
 use crate::replica::{
     Ack, ConfirmError, OpenError, Replica, SubmitError, TrackedCommand, TrackedUndo,
 };
+use crate::revocation::Revocation;
 use crate::storage::{Storage, StorageError};
 use futures_util::future::{Either, join, select};
 use std::fmt;
@@ -197,14 +198,9 @@ struct Shared {
     resync_requested: bool,
     readiness: Readiness,
     caught_up: bool,
-    revoked: bool,
 }
 
 impl Shared {
-    fn record_error(&mut self, error: SyncError) {
-        self.revoked |= error.kind == ErrorKind::Unauthorized;
-        self.last_error = Some(error);
-    }
     /// Marks the current view non-authoritative before waking the event loop to reset it.
     fn request_resync(&mut self) {
         self.resync_requested = true;
@@ -257,14 +253,14 @@ impl Shared {
         }
     }
 
-    fn status(&self) -> Status {
+    fn status(&self, revoked: bool) -> Status {
         Status {
             connection: self.connection(),
             pending: self.replica.outbox().len(),
             failed: self.replica.failed().len(),
             cursor: self.replica.cursor(),
             caught_up: self.caught_up,
-            revoked: self.revoked,
+            revoked,
             last_error: self.last_error.clone(),
         }
     }
@@ -297,8 +293,8 @@ struct Inner<T, C> {
     /// Bumped after every resync (the confirmed state was forgotten).
     resynced: Notify,
     stopped: AtomicBool,
-    /// Bumped whenever the view or the status may have changed.
-    changes: Notify,
+    /// Bumped whenever the view or the status (including revocation) may have changed.
+    revocation: Revocation,
 }
 
 /// The sync engine. Cheap to clone; clones share everything.
@@ -380,6 +376,25 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         storage: impl Storage + 'static,
         config: ClientConfig,
     ) -> Result<Self, OpenError> {
+        Self::with_revocation(
+            transport,
+            clock,
+            entropy,
+            storage,
+            config,
+            Revocation::default(),
+        )
+    }
+
+    /// Loads the replica and shares the pairing's revocation latch with direct requests.
+    pub fn with_revocation(
+        transport: T,
+        clock: C,
+        entropy: impl Entropy,
+        storage: impl Storage + 'static,
+        config: ClientConfig,
+        revocation: Revocation,
+    ) -> Result<Self, OpenError> {
         let saved = storage.saved();
         let mut replica = Replica::open(config.actor.clone(), Box::new(storage))?;
         replica.set_snapshot_every(config.snapshot_every);
@@ -404,7 +419,6 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     resync_requested: false,
                     readiness: Readiness::Starting,
                     caught_up: false,
-                    revoked: false,
                 }),
                 outbox_changed: Notify::default(),
                 saved,
@@ -414,7 +428,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 resync: Notify::default(),
                 resynced: Notify::default(),
                 stopped: AtomicBool::new(false),
-                changes: Notify::default(),
+                revocation,
             }),
         })
     }
@@ -426,7 +440,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     fn changed(&self) {
         self.with(Shared::settle);
-        self.inner.changes.notify();
+        self.inner.revocation.changes.notify();
     }
 
     fn random_u64(&self) -> u64 {
@@ -577,13 +591,28 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         )
     }
 
+    /// This client's latch, for direct authenticated requests outside the sync transport.
+    #[must_use]
+    pub fn revocation(&self) -> &Revocation {
+        &self.inner.revocation
+    }
+
+    async fn send_request(
+        &self,
+        request: crate::platform::Request,
+    ) -> Result<Response, TransportError> {
+        let response = self.inner.transport.send(request).await?;
+        self.revocation().observe_status(response.status);
+        Ok(response)
+    }
+
     /// Reads a page of confirmed history through the same transport as sync. The caller supplies
     /// the next cursor (and the same agent filter) to read older activity.
     pub async fn activity(&self, query: &ActivityQuery) -> Result<ActivityPage, ActivityError> {
         let response = timeout(
             &self.inner.clock,
             self.inner.config.request_timeout,
-            self.inner.transport.send(query.request()),
+            self.send_request(query.request()),
         )
         .await
         .and_then(Result::ok)
@@ -750,7 +779,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// The current status.
     #[must_use]
     pub fn status(&self) -> Status {
-        self.with(|s| s.status())
+        self.with(|s| s.status(self.inner.revocation.is_revoked()))
     }
 
     /// The outbox, oldest first.
@@ -787,9 +816,10 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// A handle that waits for changes of the view or the status.
     #[must_use]
     pub fn changes(&self) -> Changes {
+        let notify = &self.inner.revocation.changes;
         Changes {
-            notify: self.inner.changes.clone(),
-            seen: self.inner.changes.generation(),
+            notify: notify.clone(),
+            seen: notify.generation(),
         }
     }
 
@@ -919,7 +949,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     fn storage_failed(&self, what: &str, err: &StorageError) {
         tracing::warn!(error = %err, "cannot {what}");
         let error = self.error(ErrorKind::Storage, format!("cannot {what}: {err}"));
-        self.with(|s| s.record_error(error));
+        self.with(|s| s.last_error = Some(error));
         self.changed();
     }
 
@@ -1053,7 +1083,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     tracing::debug!(command_id = %entry.command_id, attempt = entry.attempts, reason = %error.message, "command not confirmed; retrying");
                     self.with(|s| {
                         s.send = SendState::Failing { offline };
-                        s.record_error(error);
+                        s.last_error = Some(error);
                     });
                     self.changed();
                     self.back_off(&mut failures, after).await;
@@ -1076,7 +1106,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         let response = timeout(
             &self.inner.clock,
             self.inner.config.request_timeout,
-            self.inner.transport.send(request),
+            self.send_request(request),
         )
         .await;
         match response {
@@ -1184,7 +1214,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     self.with(|s| {
                         s.stream = StreamState::Down { offline };
                         s.caught_up = false;
-                        s.record_error(error);
+                        s.last_error = Some(error);
                         if s.readiness == Readiness::Starting {
                             s.readiness = Readiness::Failed;
                         }
@@ -1248,6 +1278,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// Handles a stream request the server refused.
     async fn refused(&self, res: &Response) -> Step {
+        self.revocation().observe_status(res.status);
         let detail = error_detail(res);
         let code = detail.as_ref().map_or("", |d| d.code.as_str());
         if (res.status, code) == (409, "catch_up_required") {
@@ -1350,7 +1381,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 .unless_stopped(timeout(
                     &self.inner.clock,
                     self.inner.config.request_timeout,
-                    self.inner.transport.send(request),
+                    self.send_request(request),
                 ))
                 .await;
             let res = match response {

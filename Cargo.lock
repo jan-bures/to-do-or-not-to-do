@@ -4217,6 +4217,7 @@ dependencies = [
  "thiserror 2.0.21",
  "todo-core",
  "todo-design",
+ "todo-fs",
  "todo-server",
  "tokio",
  "tracing",

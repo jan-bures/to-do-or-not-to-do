@@ -212,6 +212,7 @@ into the app**: it is learnt here and saved in the user's config.
 | `config.json` | `%APPDATA%\to-do-or-not-to-do\` | the server URL, the device ID and a random pairing ID |
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
+| `pairings\<pairing ID>\cache.sqlite.revoked` | same | empty marker: the server replied 401 to an authenticated request |
 | `pairings\<pairing ID>\ui.json` | same | collapsed collections and preferred pane widths (never synced) |
 | `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
@@ -247,7 +248,9 @@ SQLite storage on a small tokio runtime of its own (two worker threads). Initial
 event stream, the offline outbox and reconnecting with backoff are the client's; the UI thread only calls
 its synchronous `view`, `submit` and `status` and awaits its change signal, coalesced to one frame. A
 command applies to the view at once and is queued for the server; one the domain refuses shows a message in
-the status bar. Attachments download on the runtime too.
+the status bar. Attachments download on the runtime too. A 401 from sync, Activity, a download or
+an update check marks the pairing as signed out. It stays signed out when reopened offline; the
+marker is separate from the database, so recovery doesn't clear it or discard any unsent edits.
 
 **Startup.** A loader thread reads the config, unseals the token and opens the cache while GPUI sets up
 Direct3D and DirectWrite, so a warm start draws real data in its first frame. Opening never deletes anything:

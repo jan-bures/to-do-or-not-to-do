@@ -516,6 +516,7 @@ pub async fn download(id: todo_core::ids::AttachmentId, file_name: String) {
         return;
     };
     if !resp.ok() {
+        crate::backend::observe_http_status(resp.status());
         tracing::warn!("attachment download failed: {}", resp.status());
         return;
     }

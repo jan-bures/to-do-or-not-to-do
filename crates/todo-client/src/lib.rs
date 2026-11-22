@@ -51,6 +51,7 @@ pub mod pairing;
 pub mod platform;
 pub mod protocol;
 pub mod replica;
+pub mod revocation;
 pub mod room_header;
 pub mod session;
 pub mod sse;
@@ -68,6 +69,7 @@ pub use notify::Backoff;
 pub use outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 pub use platform::{Clock, Entropy, EventStream, Transport};
 pub use replica::{Replica, SubmitError, TrackedCommand, TrackedUndo};
+pub use revocation::Revocation;
 pub use storage::{MemoryStorage, Storage, StorageError};
 pub use todo_core::PROTOCOL_VERSION;
 

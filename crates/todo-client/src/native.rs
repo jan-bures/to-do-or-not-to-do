@@ -3,6 +3,7 @@
 
 pub mod attachments;
 
+use crate::Revocation;
 use crate::platform::{
     Clock, Entropy, EventStream, Method, Request, Response, SseFrame, StreamOpen, Transport,
     TransportError,
@@ -104,6 +105,7 @@ pub struct HttpTransport {
     base: String,
     /// `None` for an anonymous transport (pairing).
     auth: Option<HeaderValue>,
+    revocation: Option<Revocation>,
     max_frame_bytes: usize,
     request_timeout: Duration,
 }
@@ -181,9 +183,25 @@ impl HttpTransport {
             client,
             base,
             auth,
+            revocation: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Shares a pairing's revocation latch, including for transfers outside the sync loops.
+    #[must_use]
+    pub fn with_revocation(mut self, revocation: Revocation) -> Self {
+        self.revocation = Some(revocation);
+        self
+    }
+
+    fn observe_response(&self, res: &reqwest::Response) {
+        if self.auth.is_some()
+            && let Some(revocation) = &self.revocation
+        {
+            revocation.observe_status(res.status().as_u16());
+        }
     }
 
     /// Limits each finite request to `timeout`, from sending it to its last body byte (default
@@ -315,7 +333,12 @@ async fn read(res: reqwest::Response) -> Result<Response, TransportError> {
     refuse_redirect(&res)?;
     let status = res.status().as_u16();
     let retry_after = retry_after(&res);
-    let body = res.bytes().await.map_err(network)?.to_vec();
+    let body = if status == 401 {
+        // Authentication refusal is conclusive at the headers, even if the body stalls or breaks.
+        Vec::new()
+    } else {
+        res.bytes().await.map_err(network)?.to_vec()
+    };
     Ok(Response {
         status,
         retry_after,
@@ -367,6 +390,7 @@ impl Transport for HttpTransport {
             .send()
             .await
             .map_err(network)?;
+        self.observe_response(&res);
         read(res).await
     }
 
@@ -385,6 +409,7 @@ impl Transport for HttpTransport {
         .await
         .map_err(|_| TransportError::Timeout)?
         .map_err(network)?;
+        self.observe_response(&res);
         refuse_redirect(&res)?;
         if res.status().as_u16() != 200 {
             return Ok(StreamOpen::Refused(read(res).await?));

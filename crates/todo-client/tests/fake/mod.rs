@@ -223,9 +223,10 @@ pub struct Script {
     pub outcome_unknown: usize,
     /// Fail this many requests (of any kind) with a network error before they reach the server.
     pub offline: usize,
-    /// Refuse the next command or stream with a 401, respectively.
+    /// Refuse the next request of the given kind with a 401.
     pub revoke_command: bool,
     pub revoke_stream: bool,
+    pub revoke_activity: bool,
     /// Close the current stream before its next frame.
     pub disconnect_stream: bool,
     /// Match an agent stream, with no head in hello but an end-of-backlog frame.
@@ -380,6 +381,11 @@ impl Transport for MockTransport {
         }
         if request.path == "/api/v1/commands"
             && std::mem::take(&mut self.script.lock().unwrap().revoke_command)
+        {
+            return Ok(error(401, "unauthorized", Value::Null));
+        }
+        if request.path == "/api/v1/activity"
+            && std::mem::take(&mut self.script.lock().unwrap().revoke_activity)
         {
             return Ok(error(401, "unauthorized", Value::Null));
         }

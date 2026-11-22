@@ -81,11 +81,13 @@ impl FileError {
 async fn refused(mut res: reqwest::Response) -> FileError {
     let status = res.status().as_u16();
     let mut body = Vec::new();
-    while let Ok(Some(chunk)) = res.chunk().await {
-        if body.len() + chunk.len() > 8192 {
-            break;
+    if status != 401 {
+        while let Ok(Some(chunk)) = res.chunk().await {
+            if body.len() + chunk.len() > 8192 {
+                break;
+            }
+            body.extend_from_slice(&chunk);
         }
-        body.extend_from_slice(&chunk);
     }
     let error = serde_json::from_slice::<crate::protocol::ErrorBody>(&body)
         .ok()
@@ -127,6 +129,7 @@ impl HttpTransport {
             .send()
             .await
             .map_err(transfer_error)?;
+        self.observe_response(&res);
         if res.status().as_u16() != 200 {
             return Err(refused(res).await);
         }
@@ -196,6 +199,7 @@ impl FileTransport for HttpTransport {
             .send()
             .await
             .map_err(transfer_error)?;
+        self.observe_response(&res);
         let status = res.status().as_u16();
         if matches!(status, 200 | 201) {
             return Ok(());

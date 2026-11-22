@@ -169,6 +169,86 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
     server.abort();
 }
 
+#[test]
+fn an_attachment_refusal_alone_notifies_and_survives_offline_reopen() {
+    let state = fixtures::build(
+        Fixture::World,
+        &Now::new(LocalNow {
+            epoch_ms: 1_800_000_000_000,
+            utc_offset_secs: 0,
+            local_day: None,
+            zone_id: "UTC".into(),
+        }),
+    );
+    let file = state.attachments.values().next().unwrap();
+    let rt = runtime().unwrap();
+    for upload in [false, true] {
+        let refuse = |headers: HeaderMap| async move {
+            assert_eq!(headers["Authorization"], "Bearer fixture-only");
+            StatusCode::UNAUTHORIZED
+        };
+        let app = if upload {
+            Router::new().route("/api/v1/tasks/{id}/attachments", post(refuse))
+        } else {
+            Router::new().route("/api/v1/attachments/{id}", get(refuse))
+        };
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = rt.spawn(async { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache.sqlite");
+        let mut storage = todo_client::sqlite::SqliteStorage::open(&cache).unwrap();
+        storage
+            .write(&[StorageOp::Snapshot {
+                state: &state,
+                cursor: 0,
+            }])
+            .unwrap();
+        drop(storage);
+        let config = crate::EngineConfig {
+            server_url: url,
+            token: "fixture-only".into(),
+            device_id: "fixture-phone".into(),
+            database_path: cache.to_string_lossy().into_owned(),
+            allow_loopback_http: true,
+        };
+        let engine = TodoEngine::open(config.clone()).unwrap();
+        assert!(!engine.status().revoked);
+        let mut changes = engine.client.changes();
+        let path = dir.path().join("transfer.bin");
+        std::fs::write(&path, b"data").unwrap();
+        let path = path.to_string_lossy().into_owned();
+        // Don't start sync: the transfer is the only request that can report revocation.
+        let error = if upload {
+            engine
+                .upload_attachment(
+                    file.task.to_string(),
+                    "sample.bin".into(),
+                    "application/octet-stream".into(),
+                    path,
+                    0,
+                )
+                .unwrap_err()
+        } else {
+            engine
+                .download_attachment(file.id.to_string(), path, 0)
+                .unwrap_err()
+        };
+        assert!(error.to_string().contains("signed out"));
+        rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())
+                .await
+                .unwrap();
+        });
+        assert!(engine.status().revoked);
+        drop(engine);
+        server.abort();
+        assert!(TodoEngine::open(config).unwrap().status().revoked);
+    }
+}
+
 #[tokio::test]
 async fn early_upload_refusals_keep_the_http_status_if_readable() {
     use std::time::Duration;

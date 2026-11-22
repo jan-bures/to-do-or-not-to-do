@@ -145,9 +145,10 @@ Long-press an empty spot on the home screen, open **Widgets**, and add **To-do l
 own selection. Tap the name or chevron to pick again; on wider widgets **Widget settings** does the same.
 A deleted list or collection offers to pick another. A signed-out widget says **Open the app to sign in**.
 If the server signs the phone out, widgets hide task and list names and refuse task edits, even after an
-offline restart. Sync latches a 401 independently of transient errors; Android records it for that
-pairing and keeps it blocked while retrying a failed disk write. The app keeps the pairing and the
-outbox until the owner confirms **Pair again**.
+offline restart. A 401 from sync, Activity, an upload or a download latches immediately. The native
+engine writes an empty `todo.sqlite.revoked` marker beside that pairing's cache; the app also honors
+its existing preference marker, and keeps the pairing blocked while retrying a failed write to
+preferences. The outbox stays intact until the owner confirms **Pair again**.
 
 The widget shows open tasks in the app's order. Collection rows name their source list. Resize to show
 more rows; **+N more** counts those that don't fit. Tap the title to open its task, the round checkbox to

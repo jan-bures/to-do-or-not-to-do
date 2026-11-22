@@ -120,6 +120,35 @@ fn either_loop_latches_revocation_even_after_a_network_error_and_recovery() {
 }
 
 #[test]
+fn activity_alone_latches_revocation_and_notifies_without_sync() {
+    use futures_util::FutureExt as _;
+    use todo_client::activity::{ActivityError, ActivityQuery};
+
+    let transport = MockTransport::new(seeded_server(), owner());
+    let client = client(&transport, &MemoryStorage::new(), 1);
+    let query = ActivityQuery::default();
+    let mut changes = client.changes();
+    assert!(block_on(client.activity(&query)).is_err()); // An ordinary refusal is not revocation.
+    assert!(!client.status().revoked);
+    assert!(changes.next().now_or_never().is_none());
+
+    transport.script.lock().unwrap().revoke_activity = true;
+    assert_eq!(
+        block_on(client.activity(&query)),
+        Err(ActivityError::Unauthorized)
+    );
+    assert!(changes.next().now_or_never().is_some());
+    assert!(client.status().revoked);
+
+    transport.script.lock().unwrap().offline = 1;
+    assert_eq!(
+        block_on(client.activity(&query)),
+        Err(ActivityError::Unavailable)
+    );
+    assert!(client.status().revoked);
+}
+
+#[test]
 fn readiness_says_caught_up_only_once_the_servers_head_is_in() {
     let server = seeded_server();
     let t = MockTransport::new(server.clone(), owner());
