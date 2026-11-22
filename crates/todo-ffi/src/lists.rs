@@ -17,12 +17,6 @@ fn hue_distance(a: f64, b: f64) -> f64 {
     d.min(360.0 - d)
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 /// The OKLCH hue of `#rrggbb`, or `None` for anything else (or a grey, which has no hue).
 fn hex_hue(s: &str) -> Option<f64> {
     let rgb = Rgb::from_hex(s)?;
