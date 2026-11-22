@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::web::{Body, Env, SITE};
+use common::web::{Body, Env, SITE, form_encode};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -100,6 +100,7 @@ async fn paired_only_invites_and_approval_with_csrf_for_sessions() {
         .await;
     assert_eq!(preview.status, StatusCode::OK);
     assert_eq!(preview.json["device_name"], "Desktop");
+    assert_eq!(preview.json["source"], "127.0.0.1");
     let at = preview.json["created_at"].as_i64().unwrap();
     assert_eq!(
         env.api(
@@ -130,6 +131,10 @@ async fn paired_only_invites_and_approval_with_csrf_for_sessions() {
         )
         .await;
     assert_eq!(polled.json()["status"], "approved");
+    let devices = owner.get("/admin/devices").await.body;
+    assert!(devices.contains("Issued by"));
+    assert!(devices.contains("Browser session "));
+    assert!(devices.contains(&format!("Device {}", string(&credential, "device_id"))));
 }
 
 #[tokio::test]
@@ -271,6 +276,259 @@ async fn expiring_an_invite_also_expires_its_browser_ceremony_and_requires_step_
             .status,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    assert_eq!(
+        owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
+        StatusCode::CONFLICT
+    );
+    let mut invited = env.browser();
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let start = invited.post_json("/auth/invite/start", json!({
+        "secret": string(&invite, "link").split_once('#').unwrap().1, "device_name": "Invited browser"
+    })).await.json();
+    let credential = invited.register(&start["options"]);
+    let reply = invited
+        .post_json(
+            "/auth/invite/finish",
+            json!({ "ceremony": start["ceremony"], "credential": credential }),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    invited.adopt(&reply).await;
+    let revoke = "/auth/passkeys/2/revoke";
+    let list = owner.get("/admin/devices").await.body;
+    assert!(list.contains(revoke) && list.contains("Browser session "));
+    assert_eq!(
+        invited.post_json(INVITES, json!({})).await.json()["error"]["code"],
+        "step_up_required"
+    );
+    assert_eq!(
+        invited.post_form(revoke, &[]).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        owner
+            .send(
+                Method::POST,
+                revoke,
+                Some(SITE),
+                Body::Form("csrf=wrong".into())
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        owner
+            .send(
+                Method::POST,
+                revoke,
+                Some("https://other.example.com"),
+                Body::Form(form_encode(&[("csrf", owner.csrf.as_deref().unwrap())]))
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+
+    invited.step_up().await;
+    let joined = invited.post_json(INVITES, json!({})).await.json();
+    let redeem_body =
+        |invite: &Value| json!({ "secret": string(invite, "code"), "device_name": "Phone" });
+    let device = env
+        .browser()
+        .post_json(REDEEM, redeem_body(&joined))
+        .await
+        .json();
+    let live = invited.post_json(INVITES, json!({})).await.json();
+    let mut original_session = env.browser();
+    original_session.cookie.clone_from(&invited.cookie);
+    assert_eq!(invited.login().await.status, StatusCode::OK);
+    let login_session = invited.post_json(INVITES, json!({})).await.json();
+    assert!(owner.post_form(revoke, &[]).await.status.is_redirection());
+    for browser in [&invited, &original_session] {
+        assert!(browser.get("/admin/devices").await.status.is_redirection());
+    }
+    for invite in [&live, &login_session] {
+        assert_eq!(
+            env.browser()
+                .post_json(REDEEM, redeem_body(invite))
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        env.api(Method::GET, "/api/v1/lists", string(&device, "token"), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(
+        !owner
+            .get("/admin/devices")
+            .await
+            .body
+            .contains("Invited browser")
+    );
+    assert_eq!(
+        owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn revoked_device_cannot_authorize_redemption() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let issuer_invite = owner.post_json(INVITES, json!({})).await.json();
+    let device = env
+        .browser()
+        .post_json(
+            REDEEM,
+            json!({ "secret": string(&issuer_invite, "code"), "device_name": "Issuer" }),
+        )
+        .await
+        .json();
+    let invite = env
+        .api(Method::POST, INVITES, string(&device, "token"), None)
+        .await;
+    assert_eq!(invite.status, StatusCode::OK);
+    assert!(
+        owner
+            .post_form(
+                &format!("/admin/devices/{}/revoke", string(&device, "device_id")),
+                &[]
+            )
+            .await
+            .status
+            .is_redirection()
+    );
+    assert_eq!(
+        env.browser()
+            .post_json(
+                REDEEM,
+                json!({ "secret": string(&invite.json, "code"), "device_name": "New device" })
+            )
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn exactly_one_concurrent_redemption_wins_in_the_last_second_and_status_outlives_expiry() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let path = format!("{INVITES}/{}", string(&invite, "id"));
+    env.advance(Duration::from_millis(299_001));
+    let browser = env.browser();
+    let a = browser.post_json(
+        REDEEM,
+        json!({ "secret": string(&invite, "code"), "device_name": "Phone" }),
+    );
+    let b = browser.post_json(REDEEM, json!({ "secret": string(&invite, "link").split_once('#').unwrap().1, "device_name": "Laptop" }));
+    let (a, b) = tokio::join!(a, b);
+    let expected = match (a.status, b.status) {
+        (StatusCode::OK, StatusCode::NOT_FOUND) => "Phone",
+        (StatusCode::NOT_FOUND, StatusCode::OK) => "Laptop",
+        _ => panic!("expected one winner: {:?}, {:?}", a.status, b.status),
+    };
+    env.advance(Duration::from_millis(999));
+    assert_eq!(
+        owner
+            .send(Method::GET, &path, None, Body::Json(json!({})))
+            .await
+            .json(),
+        json!({ "status": "used", "device_name": expected })
+    );
+    env.advance(Duration::from_secs(60));
+    assert_eq!(
+        owner
+            .send(Method::GET, &path, None, Body::Json(json!({})))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn review_and_pair_page_share_the_same_wrong_code_budget() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    // Use a malformed code that cannot coincidentally match a real pairing.
+    for _ in 0..5 {
+        assert_eq!(
+            owner.get("/pair?code=0000-0000").await.status,
+            StatusCode::OK
+        );
+        assert_eq!(
+            owner
+                .post_json(REVIEW, json!({ "code": "0000-0000" }))
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let pending = env
+        .browser()
+        .post_json("/api/v1/pair/start", json!({ "device_name": "Phone" }))
+        .await
+        .json();
+    let code = string(&pending, "user_code");
+    let locked = owner.post_json(REVIEW, json!({ "code": code })).await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(locked.json()["error"]["code"], "too_many_codes");
+    assert_eq!(
+        owner.get(&format!("/pair?code={code}")).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn native_review_device_code_budget_resets_after_cooldown() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let browser = env.browser();
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let device = browser
+        .post_json(
+            REDEEM,
+            json!({"secret": string(&invite, "code"), "device_name": "Issuer"}),
+        )
+        .await
+        .json();
+    let token = string(&device, "token");
+    for _ in 0..10 {
+        assert_eq!(
+            env.api(
+                Method::POST,
+                REVIEW,
+                token,
+                Some(json!({"code": "0000-0000"}))
+            )
+            .await
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let submit = || {
+        env.api(
+            Method::POST,
+            REVIEW,
+            token,
+            Some(json!({"code": "0000-0000"})),
+        )
+    };
+    assert_eq!(submit().await.json["error"]["code"], "too_many_codes");
+    env.advance(Duration::from_secs(300));
+    assert_eq!(submit().await.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

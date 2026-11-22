@@ -253,6 +253,16 @@ CREATE TABLE list_keys (
 ",
     // SQLite's rowid is the sequence, so this index supports seeking an actor's newest events.
     "CREATE INDEX events_actor ON events (actor);",
+    // Old sessions cannot be attributed to a passkey. Require sign-in again on upgrade.
+    r"
+DELETE FROM sessions;
+ALTER TABLE sessions ADD COLUMN passkey_id INTEGER REFERENCES passkeys(id) ON DELETE CASCADE;
+ALTER TABLE sessions ADD COLUMN step_up_passkey_id INTEGER REFERENCES passkeys(id) ON DELETE CASCADE;
+ALTER TABLE passkeys ADD COLUMN issued_by TEXT;
+ALTER TABLE devices ADD COLUMN issued_by TEXT;
+CREATE INDEX sessions_passkey ON sessions (passkey_id);
+CREATE INDEX sessions_step_up_passkey ON sessions (step_up_passkey_id);
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

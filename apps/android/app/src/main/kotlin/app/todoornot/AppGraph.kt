@@ -45,6 +45,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import app.todoornot.model.CoreDevicePairing
+import app.todoornot.model.DevicePairingModel
+import app.todoornot.model.PairingScan
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -96,6 +99,9 @@ class AppGraph(private val app: Context) {
     private val reminderChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     val pairing = PairingModel(CorePairing(Cleartext.allowLoopbackHttp), scope, Dispatchers.IO, deviceName(), host::paired)
+    internal val pairingScan = PairingScan()
+    internal var devicePairing: DevicePairingModel? = null
+        private set
 
     // Don't expose a model until stale staging and viewer files have been cleared off Main.
     private var transferCleanup = scope.launch(Dispatchers.IO) { AttachmentFiles.clear(app.cacheDir) }
@@ -151,10 +157,12 @@ class AppGraph(private val app: Context) {
         if (_model.value?.engine === ready?.engine) return
         modelScope?.cancel()
         modelScope = null
+        devicePairing = null
         _model.value = ready?.let { paired ->
             val e = paired.engine
             val ms = CoroutineScope(SupervisorJob() + Dispatchers.Main)
             modelScope = ms
+            devicePairing = DevicePairingModel(CoreDevicePairing(paired.session, Cleartext.allowLoopbackHttp), ms)
             // One listener per engine: also let the reminders and home-screen widgets follow.
             val listen = { onChange: () -> Unit ->
                 e.setListener(object : ChangeListener {

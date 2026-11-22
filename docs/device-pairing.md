@@ -2,18 +2,23 @@
 
 In desktop account settings, web Device settings, or Android drawer Settings, choose **Pair a new
 device** and then **Create invite**. On Android, tap **Scan invite QR code** on the signed-out screen
-and point the camera at the invite. On desktop, paste the link into **Invite code or link**. To type
-an invite code instead, also enter the server address. In a new browser, open the link, name the
+and point the camera at the invite. On desktop, paste the link into **Invite code or link**. If the
+address field is blank, check the host and tap **Pair with &lt;host&gt;** before the app contacts it.
+If you've entered an address, a link for a different origin is refused rather than replacing it.
+To type an invite code instead, also enter the server address. In a new browser, open the link, name the
 browser, and register a passkey. No existing passkey is needed on that browser.
 
 Keep the invite card open to see what signed in. **Cancel invite** makes both the code and link
 unusable unless redemption has already won. The owner can see native devices and browser passkeys
-under **Devices** in the server's admin pages. Share an invite only with a device you're setting up:
-anyone with its code or link can sign in as the owner while it is valid.
+under **Devices** in the server's admin pages, including the issuing device or session. Share an
+invite only with a device you're setting up: anyone with its code or link can sign in as the owner
+while it is valid. You can revoke devices or browser passkeys there after verifying with a passkey.
+Revoking a passkey signs out its sessions; the last passkey cannot be revoked. Revoking an issuer
+invalidates its live invites, but does not revoke the devices or passkeys that already joined.
 
 If the new app is already showing a pairing request instead, choose **Approve a device** on an
-existing signed-in app. Enter its code (or scan its QR on Android), check the device name, then
-confirm. The old browser approval link still works. Android uses an on-device ZXing decoder and
+existing signed-in app. Enter its code (or scan its QR on Android), then check the device name,
+grouped code and source address before confirming. The old browser approval link still works. Android uses an on-device ZXing decoder and
 requests camera permission only when the Scan button is used. Typing works without that permission.
 
 ## Protocol and security
@@ -28,14 +33,21 @@ requests camera permission only when the Scan button is used. Typing works witho
   both and compares fixed-size digests. The first successful claim invalidates both. There are at
   most 32 live records; creation and redemption are limited by address, and issuer status uses the
   polling rate limit. The issuer must still be signed in or paired when redemption is committed.
+  Credentials expire on time; a redemption that began before expiry may still report its terminal
+  result to the issuer for up to one minute after the deadline. Clients hide the credentials at the
+  deadline and continue checking the result. Wrong-code lookups share a per-session budget with the
+  old browser page; paired native devices have a per-device budget with a five-minute cooldown.
 - The server's logs use route templates, not raw URLs or request bodies. The browser strips the
   fragment from its history entry before starting registration. Audit records identify the issuer
   (device ID or session row ID) and the new device's name, not the invite, passkey or token.
 - Browser registration uses the same WebAuthn options and verification as adding a passkey. The
   browser's separate one-time ceremony handle is also stored hashed and can't outlive the invite.
   Starting a ceremony does not consume the invite: cancellation or native redemption can still win.
-  The passkey and session are saved together. Browser start and finish require the site's `Origin`;
-  they do not authorize with a cookie. A browser invite does not create a bearer token.
+  The passkey and session are saved together. A session created this way is signed in but not fresh:
+  step-up actions such as issuing another invite require a successful passkey assertion. Browser start
+  and finish require the site's `Origin`; they do not authorize with a cookie. A browser invite does
+  not create a bearer token. Upgrading from a schema that did not link sessions to their passkeys
+  ends those existing sessions; sign in again to continue.
 
 The public OpenAPI document describes the JSON pairing API:
 
@@ -45,7 +57,7 @@ The public OpenAPI document describes the JSON pairing API:
 | `GET /api/v1/pair/invites/{id}` | Issuer-only status: `pending`, `used` with `device_name`, or `cancelled`. |
 | `DELETE /api/v1/pair/invites/{id}` | Cancel an unused invite, from its issuing device or session. |
 | `POST /api/v1/pair/redeem` | Send `secret` (typed code or fragment) and `device_name`; store the returned `device_id` and `token` as for normal pairing. |
-| `POST /api/v1/pair/review` | Send `code` to preview the pending device; send `code` and its returned `created_at` as `approve_at` to confirm. |
+| `POST /api/v1/pair/review` | Send `code` to preview the pending device and its `source` address (or `null`); send `code` and its returned `created_at` as `approve_at` to confirm. |
 
 Browser links open `/pair/invite`; the page submits the fragment secret and device name in the JSON
 body of `POST /auth/invite/start`, then sends the ceremony handle and attestation to

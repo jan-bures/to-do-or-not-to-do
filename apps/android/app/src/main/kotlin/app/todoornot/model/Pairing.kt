@@ -1,16 +1,20 @@
 package app.todoornot.model
 
+import app.todoornot.core.DeviceInviteTarget
 import app.todoornot.core.FfiException
 import app.todoornot.core.PairPoll
 import app.todoornot.core.PairStarted
 import app.todoornot.core.deviceInviteRedeem
+import app.todoornot.core.deviceInviteTarget
 import app.todoornot.core.normalizeServerAddress
 import app.todoornot.core.pairPoll
 import app.todoornot.core.pairStart
 import app.todoornot.session.Session
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,7 +31,9 @@ interface PairingApi {
 
     fun poll(server: String, pollToken: String): PairPoll
 
-    fun redeem(server: String, invite: String, deviceName: String): Session =
+    fun inviteTarget(address: String, invite: String): DeviceInviteTarget = DeviceInviteTarget(normalize(address), null)
+
+    suspend fun redeem(server: String, invite: String, deviceName: String): Session =
         throw FfiException.Invalid("Invites are unavailable.")
 }
 
@@ -40,7 +46,9 @@ class CorePairing(private val allowLoopbackHttp: Boolean) : PairingApi {
 
     override fun poll(server: String, pollToken: String): PairPoll = pairPoll(server, pollToken, allowLoopbackHttp)
 
-    override fun redeem(server: String, invite: String, deviceName: String): Session =
+    override fun inviteTarget(address: String, invite: String): DeviceInviteTarget = deviceInviteTarget(address, invite, allowLoopbackHttp)
+
+    override suspend fun redeem(server: String, invite: String, deviceName: String): Session =
         deviceInviteRedeem(server, invite, deviceName, allowLoopbackHttp).let { Session(it.server, it.deviceId, it.token) }
 }
 
@@ -50,6 +58,12 @@ sealed interface PairingState {
 
     /** Asking the server for a code. */
     data class Starting(val server: String) : PairingState
+
+    /** A link supplied the address; show its host before making any request. */
+    data class ConfirmInvite(val host: String) : PairingState
+
+    /** The one-use invite may already be spent; don't offer Cancel. */
+    data class Finishing(val server: String) : PairingState
 
     /** Showing the code and link until the owner approves on another device. */
     data class Waiting(
@@ -79,8 +93,11 @@ class PairingModel(
     val state: StateFlow<PairingState> = _state.asStateFlow()
 
     private var job: Job? = null
+    private class Invite(val address: String, val server: String, val input: String)
+    private var awaitingConfirmation: Invite? = null
 
     fun submit(address: String) {
+        if (_state.value !is PairingState.Entering) return
         job?.cancel()
         job = scope.launch {
             val server = try {
@@ -104,15 +121,49 @@ class PairingModel(
 
     fun redeem(address: String, invite: String) {
         if (_state.value !is PairingState.Entering) return
+        val target = try {
+            api.inviteTarget(address, invite)
+        } catch (e: FfiException) {
+            _state.value = PairingState.Entering(address, describe(e))
+            return
+        }
+        val plan = Invite(address, target.server, invite)
+        val host = target.confirmHost
+        if (host != null) {
+            awaitingConfirmation = plan
+            _state.value = PairingState.ConfirmInvite(host)
+        } else {
+            finishInvite(plan)
+        }
+    }
+
+    fun confirmInvite() {
+        val plan = awaitingConfirmation ?: return
+        awaitingConfirmation = null
+        finishInvite(plan)
+    }
+
+    fun cameraDenied(address: String) {
+        if (_state.value is PairingState.Entering) {
+            _state.value = PairingState.Entering(address, "Camera access was not granted. You can type the code instead.")
+        }
+    }
+
+    private fun finishInvite(invite: Invite) {
         job?.cancel()
-        job = scope.launch {
-            _state.value = PairingState.Starting(address)
-            try {
-                onPaired(withContext(io) { api.redeem(address, invite, deviceName) })
-            } catch (e: FfiException.Expired) {
-                _state.value = PairingState.Entering(address, "This invite is invalid, expired or already used.")
-            } catch (e: FfiException) {
-                _state.value = PairingState.Entering(address, describe(e))
+        _state.value = PairingState.Finishing(invite.server)
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // Keep the network call and the durable save in the same non-cancellable region.
+            // Wrapping just the IO call would still allow cancellation to discard its reply.
+            withContext(NonCancellable) {
+                try {
+                    onPaired(withContext(io) { api.redeem(invite.server, invite.input, deviceName) })
+                    _state.value = PairingState.Entering(invite.server)
+                } catch (e: FfiException.Expired) {
+                    _state.value = PairingState.Entering(invite.address, "This invite is invalid, expired or already used.")
+                } catch (e: FfiException) {
+                    _state.value = PairingState.Entering(invite.address, describe(e))
+                }
             }
         }
     }
@@ -165,12 +216,15 @@ class PairingModel(
 
     /** Back to the address field, keeping what was typed. */
     fun cancel() {
-        job?.cancel()
         val address = when (val s = _state.value) {
+            is PairingState.Finishing -> return
+            is PairingState.ConfirmInvite -> awaitingConfirmation?.address.orEmpty()
             is PairingState.Entering -> s.address
             is PairingState.Starting -> s.server
             is PairingState.Waiting -> s.server
         }
+        awaitingConfirmation = null
+        job?.cancel()
         _state.value = PairingState.Entering(address)
     }
 

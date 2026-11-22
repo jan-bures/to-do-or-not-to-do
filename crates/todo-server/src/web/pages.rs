@@ -9,6 +9,7 @@ use super::html::{Chrome, PageError, esc, html, page, time};
 use super::safe_next;
 use crate::api::error::ApiError;
 use crate::app::AppState;
+use crate::auth::invite::Issuer;
 use crate::auth::pairing::format_code;
 use crate::auth::service::AuthService;
 use crate::auth::session::{MaybeSession, OwnerSession, blocking, check_csrf, clear_cookie};
@@ -251,15 +252,9 @@ pub async fn pair(
         let body = r#"<form method="get" action="/pair"><label>Code shown on the device <input name="code" required spellcheck="false" autocapitalize="characters"></label> <button type="submit">Continue</button></form>"#;
         return ok_page("Pair a device", &chrome, body);
     }
-    if !svc.may_look_up_codes(&s.row) {
-        return Err(PageError::from(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_codes",
-            "too many wrong codes; sign out and in again to continue",
-        )));
-    }
-    let Some(p) = svc.pairings.pending(code, svc.now()) else {
-        svc.code_lookup_failed(&s.row);
+    let issuer = Issuer::Session(s.row.id_hash.clone());
+    let Some(p) = svc.look_up_pairing_code(issuer, || svc.pairings.pending(code, svc.now()))?
+    else {
         return ok_page(
             "Pair a device",
             &chrome,
@@ -270,10 +265,14 @@ pub async fn pair(
     let code = format_code(&p.user_code);
     let mut body = format!(
         r#"<p>Device <strong>{name}</strong> asked to connect at {at}, with code <code>{code}</code>.</p>
+<p>Source address: {source}</p>
 <p>Only approve it if you started this on your own device and the code matches.</p>"#,
         name = esc(&p.device_name),
         at = esc(&time(p.created_at)),
         code = esc(&code),
+        source = p
+            .source
+            .map_or_else(|| "Unknown".into(), |ip| ip.to_string()),
     );
     if fresh {
         let _ = write!(
@@ -301,7 +300,16 @@ pub struct PairForm {
 async fn decide(app: AppState, s: OwnerSession, f: PairForm, approve: bool) -> PageResult {
     guard(&app, &s, &f.csrf, approve)?;
     let svc = &app.authsvc;
-    let Some(p) = svc.pairings.decide(&f.code, approve, svc.now()) else {
+    let issuer = Issuer::Session(s.row.id_hash.clone());
+    let Some(p) = svc.look_up_pairing_code(issuer.clone(), || {
+        if approve {
+            svc.pairings
+                .approve_reviewed(&f.code, None, &issuer, svc.now())
+        } else {
+            svc.pairings.decide(&f.code, false, svc.now())
+        }
+    })?
+    else {
         return Err(PageError::from(ApiError::not_found(
             "there is no pending request with this code; it may have expired or been decided already",
         )));
@@ -378,7 +386,7 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
     let rows = blocking(&app.authsvc, |svc| svc.store().devices()).await??;
     let mut body = String::from(
         r#"<p>Devices sign in by pairing: start pairing in the app, then approve the code on <a href="/pair">the pairing page</a>.</p>
-<table><tr><th>Name</th><th>ID</th><th>Paired</th><th>Last used</th><th></th></tr>"#,
+<table><tr><th>Name</th><th>ID</th><th>Paired</th><th>Last used</th><th>Issued by</th><th></th></tr>"#,
     );
     for d in &rows {
         let action = match d.revoked_at {
@@ -391,24 +399,39 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
         };
         let _ = write!(
             body,
-            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{action}</td></tr>",
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{action}</td></tr>",
             esc(&d.name),
             esc(d.id.as_str()),
             esc(&time(d.created_at)),
             esc(&d.last_used_at.map_or_else(|| "never".into(), time)),
+            esc(d.issued_by.as_deref().unwrap_or("—")),
         );
     }
-    body.push_str("</table><h2>Browser passkeys</h2><ul>");
+    body.push_str("</table><h2>Browser passkeys</h2><table><tr><th>Name</th><th>Registered</th><th>Issued by</th><th></th></tr>");
     let passkeys = blocking(&app.authsvc, |svc| svc.store().passkeys()).await??;
+    let fresh = app.authsvc.is_fresh(&s.row);
     for p in &passkeys {
+        let action = if passkeys.len() <= 1 || !fresh {
+            String::new()
+        } else {
+            format!(
+                r#"<form method="post" action="/auth/passkeys/{}/revoke">{}<button type="submit" class="danger">Revoke</button></form>"#,
+                p.id,
+                csrf_field(&s)
+            )
+        };
         let _ = write!(
             body,
-            "<li>{} · {}</li>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{action}</td></tr>",
             esc(&p.name),
-            esc(&time(p.created_at))
+            esc(&time(p.created_at)),
+            esc(p.issued_by.as_deref().unwrap_or("—"))
         );
     }
-    body.push_str("</ul>");
+    body.push_str("</table><p>Revoking a passkey ends its browser sessions. Revoking a device or ending a session invalidates any invites it issued, but does not remove devices or passkeys that already joined.</p>");
+    if passkeys.len() > 1 && !fresh {
+        body.push_str(r#"<p><a href="/auth/verify?next=/admin/devices">Verify with passkey</a> to revoke a passkey.</p>"#);
+    }
     ok_page("Devices", &owner_chrome(&app.authsvc, &s), &body)
 }
 
@@ -424,6 +447,21 @@ pub async fn device_revoke(
     if !blocking(&app.authsvc, move |svc| svc.revoke_device(&id, ip)).await?? {
         return Err(not_found());
     }
+    Ok(Redirect::to("/admin/devices").into_response())
+}
+
+/// `POST /auth/passkeys/{id}/revoke`.
+pub async fn passkey_revoke(
+    State(app): State<AppState>,
+    s: OwnerSession,
+    Path(id): Path<i64>,
+    Form(f): Form<CsrfForm>,
+) -> PageResult {
+    guard(&app, &s, &f.csrf, true)?;
+    blocking(&app.authsvc, move |svc| {
+        svc.revoke_passkey(&s.row, id, s.ip)
+    })
+    .await??;
     Ok(Redirect::to("/admin/devices").into_response())
 }
 

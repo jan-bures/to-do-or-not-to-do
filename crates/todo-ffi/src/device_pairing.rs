@@ -163,7 +163,46 @@ pub struct RedeemedInvite {
     pub token: String,
 }
 
-/// Redeems an entered code (on `server`) or link (on the link's origin). Blocking.
+/// The locally resolved invite destination, without its secret.
+#[derive(Debug, uniffi::Record)]
+pub struct DeviceInviteTarget {
+    /// Canonical origin for the real request.
+    pub server: String,
+    /// Display this host and require confirmation before sending a link-supplied request.
+    pub confirm_host: Option<String>,
+}
+
+fn redeem_target(
+    address: &str,
+    input: &str,
+    allow_http: bool,
+) -> Result<pair::RedeemTarget, FfiError> {
+    pair::redeem_target(address, input, |s| {
+        normalize_server_address(s.to_owned(), allow_http).map_err(|e| match e {
+            FfiError::BadAddress { reason } => reason,
+            _ => "Invalid server address.".into(),
+        })
+    })
+    .map_err(|e| FfiError::Invalid {
+        detail: e.to_string(),
+    })
+}
+
+/// Validates the destination without contacting it.
+#[uniffi::export]
+pub fn device_invite_target(
+    address: String,
+    input: String,
+    allow_http: bool,
+) -> Result<DeviceInviteTarget, FfiError> {
+    let t = redeem_target(&address, &input, allow_http)?;
+    Ok(DeviceInviteTarget {
+        server: t.server,
+        confirm_host: t.confirm_host,
+    })
+}
+
+/// Redeems an entered invite. `server` must be the locally selected or explicitly confirmed origin. Blocking.
 #[uniffi::export]
 pub fn device_invite_redeem(
     server: String,
@@ -171,13 +210,16 @@ pub fn device_invite_redeem(
     device_name: String,
     allow_http: bool,
 ) -> Result<RedeemedInvite, FfiError> {
-    let input = pair::invite_input(&input).map_err(|e| FfiError::Invalid {
-        detail: e.to_string(),
-    })?;
-    let server = normalize_server_address(input.origin.unwrap_or(server), allow_http)?;
+    let target = redeem_target(&server, &input, allow_http)?;
+    if target.confirm_host.is_some() {
+        return Err(FfiError::Invalid {
+            detail: "Confirm the server before using an invite link.".into(),
+        });
+    }
+    let server = target.server;
     let t = transport(&server, None, allow_http)?;
     let r = runtime()?
-        .block_on(pair::redeem(&t, &input.secret, &device_name))
+        .block_on(pair::redeem(&t, &target.secret, &device_name))
         .map_err(refused)?;
     Ok(RedeemedInvite {
         server,
@@ -193,6 +235,10 @@ pub struct DevicePairingReview {
     pub device_name: String,
     /// Send this timestamp back to approve this exact request.
     pub created_at: i64,
+    /// Address of the original request, if known.
+    pub source: Option<String>,
+    /// Normalized and grouped code to display for comparison.
+    pub code: String,
 }
 
 /// Previews or approves a pending pairing. The scanned link cannot change the paired server. Blocking.
@@ -214,5 +260,7 @@ pub fn device_pairing_review(
     Ok(DevicePairingReview {
         device_name: r.device_name,
         created_at: r.created_at,
+        source: r.source,
+        code: pair::grouped_approval_code(&code),
     })
 }

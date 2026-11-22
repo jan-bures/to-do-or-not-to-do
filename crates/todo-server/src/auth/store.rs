@@ -19,6 +19,9 @@ pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 /// Most audit rows kept; older ones are dropped.
 pub const AUDIT_KEEP: i64 = 20_000;
 
+/// Sentinel for a signed-in session that has not yet asserted a passkey.
+pub(crate) const UNVERIFIED_AT: i64 = -1;
+
 /// A stored owner passkey.
 #[derive(Debug, Clone)]
 pub struct PasskeyRow {
@@ -32,6 +35,8 @@ pub struct PasskeyRow {
     pub created_at: i64,
     /// Last successful use.
     pub last_used_at: Option<i64>,
+    /// The device or browser session that issued the invitation.
+    pub issued_by: Option<String>,
 }
 
 /// A browser session.
@@ -45,7 +50,7 @@ pub struct SessionRow {
     pub created_at: i64,
     /// Last request.
     pub last_seen_at: i64,
-    /// Last passkey verification (sign-in or step-up).
+    /// Last passkey assertion (sign-in or step-up), or -1 if not yet asserted.
     pub verified_at: i64,
 }
 
@@ -64,6 +69,8 @@ pub struct DeviceRow {
     pub last_used_at: Option<i64>,
     /// Revocation time.
     pub revoked_at: Option<i64>,
+    /// The device or browser session that authorized the pairing.
+    pub issued_by: Option<String>,
 }
 
 /// An agent token.
@@ -205,11 +212,35 @@ impl std::fmt::Debug for AuthStore {
     }
 }
 
+fn insert_session(conn: &Connection, row: &SessionRow, passkey_id: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            row.id_hash,
+            row.csrf,
+            row.created_at,
+            row.last_seen_at,
+            row.verified_at,
+            passkey_id
+        ],
+    )?;
+    Ok(())
+}
+
 fn corrupt(what: &str) -> impl FnOnce(String) -> StoreError + '_ {
     move |e| StoreError::Corrupt(format!("{what}: {e}"))
 }
 
-type RawDevice = (String, String, String, i64, Option<i64>, Option<i64>);
+type RawDevice = (
+    String,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+);
 
 fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawDevice> {
     Ok((
@@ -219,6 +250,7 @@ fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawDevice> {
         r.get(3)?,
         r.get(4)?,
         r.get(5)?,
+        r.get(6)?,
     ))
 }
 
@@ -281,7 +313,7 @@ impl AuthStore {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Runs one `UPDATE` and, if it changed a row, appends `audit`, in one transaction: the change is
+    /// Runs one statement and, if it changed a row, appends `audit`, in one transaction: the change is
     /// stored only with its audit entry. Returns whether a row changed.
     fn update_audited(
         &self,
@@ -327,7 +359,7 @@ impl AuthStore {
     pub fn passkeys(&self) -> Result<Vec<PasskeyRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, name, passkey, created_at, last_used_at FROM passkeys ORDER BY id",
+            "SELECT id, name, passkey, created_at, last_used_at, issued_by FROM passkeys ORDER BY id",
         )?;
         let raws = stmt
             .query_map([], |r| {
@@ -337,31 +369,49 @@ impl AuthStore {
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         raws.into_iter()
-            .map(|(id, name, pk, created_at, last_used_at)| {
+            .map(|(id, name, pk, created_at, last_used_at, issued_by)| {
                 Ok(PasskeyRow {
                     id,
                     name,
                     passkey: serde_json::from_str(&pk)?,
                     created_at,
                     last_used_at,
+                    issued_by,
                 })
             })
             .collect()
     }
 
-    /// Stores a new passkey. Returns false if the credential ID is already registered.
-    pub fn add_passkey(&self, name: &str, passkey: &Passkey, now: i64) -> Result<bool> {
-        let cred_id = hex::encode(passkey.cred_id());
-        let n = self.conn().execute(
-            "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (cred_id) DO NOTHING",
-            params![cred_id, name, serde_json::to_string(passkey)?, now],
-        )?;
-        Ok(n == 1)
+    /// Stores a new passkey. Returns its ID unless it was already registered.
+    pub fn add_passkey(&self, name: &str, passkey: &Passkey, now: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (cred_id) DO NOTHING RETURNING id",
+                params![
+                    hex::encode(passkey.cred_id()),
+                    name,
+                    serde_json::to_string(passkey)?,
+                    now
+                ],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Deletes a passkey and its sessions atomically, but never deletes the last passkey.
+    pub(crate) fn revoke_passkey(&self, id: i64, audit: &NewAudit) -> Result<bool> {
+        self.update_audited(
+            "DELETE FROM passkeys WHERE id = ?1 AND (SELECT count(*) FROM passkeys) > 1",
+            [id],
+            audit,
+        )
     }
 
     /// Saves a passkey and its initial session together, so neither can be left half-created.
@@ -370,27 +420,24 @@ impl AuthStore {
         name: &str,
         passkey: &Passkey,
         session: &SessionRow,
+        issued_by: &str,
     ) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let n = tx.execute(
-            "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (cred_id) DO NOTHING",
+        let id: Option<i64> = tx.query_row(
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_by) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (cred_id) DO NOTHING RETURNING id",
             params![
                 hex::encode(passkey.cred_id()),
                 name,
                 serde_json::to_string(passkey)?,
-                session.created_at
+                session.created_at,
+                issued_by
             ],
-        )?;
-        if n == 0 {
-            return Ok(false);
-        }
-        tx.execute(
-            "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at)
-             VALUES (?1, ?2, ?3, ?3, ?3)",
-            params![session.id_hash, session.csrf, session.created_at],
-        )?;
+            |r| r.get(0),
+        ).optional()?;
+        let Some(id) = id else { return Ok(false) };
+        insert_session(&tx, session, id)?;
         tx.commit()?;
         Ok(true)
     }
@@ -450,13 +497,8 @@ impl AuthStore {
     // ---- sessions ---------------------------------------------------------------------------------
 
     /// Creates a session.
-    pub fn create_session(&self, id_hash: &str, csrf: &str, now: i64) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at)
-             VALUES (?1, ?2, ?3, ?3, ?3)",
-            params![id_hash, csrf, now],
-        )?;
-        Ok(())
+    pub fn create_session(&self, session: &SessionRow, passkey_id: i64) -> Result<()> {
+        insert_session(&self.conn(), session, passkey_id)
     }
 
     /// A session by its hash.
@@ -489,10 +531,10 @@ impl AuthStore {
     }
 
     /// Records a fresh passkey verification (step-up) on a session.
-    pub fn set_verified(&self, id_hash: &str, now: i64) -> Result<()> {
+    pub fn set_verified(&self, id_hash: &str, now: i64, passkey_id: i64) -> Result<()> {
         self.conn().execute(
-            "UPDATE sessions SET verified_at = ?2, last_seen_at = ?2 WHERE id_hash = ?1",
-            params![id_hash, now],
+            "UPDATE sessions SET verified_at = ?2, last_seen_at = ?2, step_up_passkey_id = ?3 WHERE id_hash = ?1",
+            params![id_hash, now, passkey_id],
         )?;
         Ok(())
     }
@@ -516,10 +558,17 @@ impl AuthStore {
     // ---- devices ----------------------------------------------------------------------------------
 
     /// Stores a newly paired device.
-    pub fn add_device(&self, id: &DeviceId, name: &str, token_hash: &str, now: i64) -> Result<()> {
+    pub fn add_device(
+        &self,
+        id: &DeviceId,
+        name: &str,
+        token_hash: &str,
+        now: i64,
+        issued_by: Option<&str>,
+    ) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![id.as_str(), name, token_hash, now],
+            "INSERT INTO devices (id, name, token_hash, created_at, issued_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id.as_str(), name, token_hash, now, issued_by],
         )?;
         Ok(())
     }
@@ -528,7 +577,7 @@ impl AuthStore {
     pub fn devices(&self) -> Result<Vec<DeviceRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, name, token_hash, created_at, last_used_at, revoked_at FROM devices
+            "SELECT id, name, token_hash, created_at, last_used_at, revoked_at, issued_by FROM devices
              ORDER BY created_at DESC, id",
         )?;
         let raws = stmt
@@ -536,7 +585,7 @@ impl AuthStore {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         raws.into_iter()
             .map(
-                |(id, name, token_hash, created_at, last_used_at, revoked_at)| {
+                |(id, name, token_hash, created_at, last_used_at, revoked_at, issued_by)| {
                     Ok(DeviceRow {
                         id: DeviceId::new(id).map_err(|e| corrupt("device id")(e.to_string()))?,
                         name,
@@ -544,6 +593,7 @@ impl AuthStore {
                         created_at,
                         last_used_at,
                         revoked_at,
+                        issued_by,
                     })
                 },
             )

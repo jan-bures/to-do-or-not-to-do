@@ -13,6 +13,7 @@ pub(super) struct Panel {
     invite_mode: bool,
     net: Option<(Runtime, HttpTransport)>,
     focus: FocusHandle,
+    buttons: [FocusHandle; 7],
     input: Entity<TextInput>,
     invite: Option<(Invitation, Qr, Instant)>,
     pending: Option<(String, PendingDevice)>,
@@ -24,6 +25,26 @@ pub(super) struct Panel {
 #[derive(Clone)]
 pub(super) struct Closed;
 impl EventEmitter<Closed> for Panel {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    Create,
+    Copy,
+    Cancel,
+    Review,
+    Approve,
+    Another,
+    Close,
+}
+
+fn tab_index(current: Option<usize>, forward: bool, len: usize) -> usize {
+    match (current, forward) {
+        (Some(i), true) => (i + 1) % len,
+        (Some(i), false) => (i + len - 1) % len,
+        (None, true) => 0,
+        (None, false) => len - 1,
+    }
+}
 
 impl Panel {
     fn new(
@@ -41,7 +62,7 @@ impl Panel {
             |this, _, event: &InputEvent, _, cx| match event {
                 InputEvent::Submit if this.pending.is_none() => this.review(false, cx),
                 InputEvent::Submit => {}
-                InputEvent::Cancel => cx.emit(Closed),
+                InputEvent::Cancel => this.close(cx),
                 InputEvent::Changed => {}
             },
         )
@@ -55,6 +76,7 @@ impl Panel {
             invite_mode,
             net,
             focus,
+            buttons: std::array::from_fn(|_| cx.focus_handle()),
             input,
             invite: None,
             pending: None,
@@ -75,6 +97,7 @@ impl Panel {
                 PendingDevice {
                     device_name: "New phone".into(),
                     created_at: 0,
+                    source: Some("203.0.113.7".into()),
                 },
             ));
         }
@@ -91,6 +114,9 @@ impl Panel {
             match error {
                 PairError::Expired | PairError::Refused { status: 404, .. } => {
                     "This code is invalid, expired or already used."
+                }
+                PairError::Refused { code, .. } if code == "too_many_codes" => {
+                    "Too many wrong codes. Wait five minutes and try again."
                 }
                 PairError::Refused { status: 429, .. } => {
                     "Too many requests. Wait a moment and try again."
@@ -122,9 +148,10 @@ impl Panel {
                     v.busy = false;
                     let id = match result {
                         Ok(i) => {
-                            let id = i.id.clone();
                             v.show(i);
-                            Some(id)
+                            v.invite
+                                .as_ref()
+                                .map(|(i, _, deadline)| (i.id.clone(), *deadline))
                         }
                         Err(e) => {
                             v.error(e);
@@ -136,39 +163,49 @@ impl Panel {
                 })
                 .ok()
                 .flatten();
-            let Some(id) = id else { return };
-            let mut next_poll = Instant::now() + pair::STATUS_INTERVAL;
+            let Some((id, deadline)) = id else { return };
+            let _ = this.update(cx, |_, cx| {
+                let id = id.clone();
+                cx.spawn(async move |this, cx| {
+                    loop {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        cx.background_executor()
+                            .timer(left.min(Duration::from_millis(u64::from(
+                                theme::motion::PAIRING_TICK,
+                            ))))
+                            .await;
+                        let current = this
+                            .update(cx, |v, cx| {
+                                let current = v.invite.as_ref().is_some_and(|(i, _, _)| i.id == id);
+                                if current {
+                                    cx.notify();
+                                }
+                                current
+                            })
+                            .unwrap_or(false);
+                        if !current || Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            });
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(u64::from(
-                        theme::motion::PAIRING_TICK,
-                    )))
-                    .await;
+                let left = deadline.saturating_duration_since(Instant::now());
+                let wait = if left.is_zero() {
+                    pair::STATUS_INTERVAL
+                } else {
+                    left.min(pair::STATUS_INTERVAL)
+                };
+                cx.background_executor().timer(wait).await;
                 if !this
-                    .update(cx, |v, cx| {
-                        let Some((i, _, expires)) = &v.invite else {
-                            return false;
-                        };
-                        if i.id != id {
-                            return false;
-                        }
-                        if *expires <= Instant::now() {
-                            v.invite = None;
-                            v.message = Some("Invite expired. Make a new one if needed.".into());
-                            cx.notify();
-                            return false;
-                        }
-                        cx.notify();
-                        true
+                    .update(cx, |v, _| {
+                        v.invite.as_ref().is_some_and(|(i, _, _)| i.id == id)
                     })
                     .unwrap_or(false)
                 {
                     break;
                 }
-                if Instant::now() < next_poll {
-                    continue;
-                }
-                next_poll = Instant::now() + pair::STATUS_INTERVAL;
                 let poll = {
                     let t = t.clone();
                     let id = id.clone();
@@ -179,8 +216,16 @@ impl Panel {
                         format!("{device_name} signed in.")
                     }
                     Ok(Ok(InviteStatus::Cancelled)) => "Invite cancelled.".into(),
+                    Ok(Err(PairError::Refused { status: 404, .. }))
+                        if Instant::now() >= deadline =>
+                    {
+                        "Invite expired. Make a new one if needed.".into()
+                    }
                     Ok(Err(PairError::Refused { status: 404, .. })) => {
                         "The invite is no longer available.".into()
+                    }
+                    _ if Instant::now() >= deadline + pair::STATUS_GRACE => {
+                        pair::UNKNOWN_STATUS.into()
                     }
                     _ => continue,
                 };
@@ -197,7 +242,23 @@ impl Panel {
         .detach();
     }
 
-    fn cancel(&mut self, cx: &mut Context<Self>) {
+    fn close(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.net.is_some()
+            && self
+                .invite
+                .as_ref()
+                .is_some_and(|(_, _, deadline)| Instant::now() < *deadline)
+        {
+            self.cancel(true, cx);
+        } else {
+            cx.emit(Closed);
+        }
+    }
+
+    fn cancel(&mut self, close: bool, cx: &mut Context<Self>) {
         let Some((rt, t)) = self.net.clone() else {
             return;
         };
@@ -219,7 +280,11 @@ impl Panel {
                     Ok(()) => {
                         v.invite = None;
                         v.message = Some("Invite cancelled.".into());
+                        if close {
+                            cx.emit(Closed);
+                        }
                     }
+                    Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
                     Err(e) => v.error(e),
                 }
                 cx.notify();
@@ -280,26 +345,132 @@ impl Panel {
         })
         .detach();
     }
+    fn live_invite(&self) -> bool {
+        self.invite
+            .as_ref()
+            .is_some_and(|(_, _, deadline)| Instant::now() < *deadline)
+    }
+
+    fn focus_order(&self, cx: &App) -> Vec<FocusHandle> {
+        let handle = |control: Control| self.buttons[control as usize].clone();
+        let mut order = if self.invite_mode {
+            if self.live_invite() {
+                vec![handle(Control::Copy), handle(Control::Cancel)]
+            } else if self.invite.is_none() {
+                vec![handle(Control::Create)]
+            } else {
+                vec![]
+            }
+        } else if self.pending.is_some() {
+            vec![handle(Control::Approve), handle(Control::Another)]
+        } else {
+            vec![
+                self.input.read(cx).focus_handle.clone(),
+                handle(Control::Review),
+            ]
+        };
+        order.push(handle(Control::Close));
+        order
+    }
+
+    fn activate(&mut self, control: Control, window: &mut Window, cx: &mut Context<Self>) {
+        match control {
+            Control::Create => self.create(cx),
+            Control::Copy if self.live_invite() => {
+                if let Some((i, _, _)) = &self.invite {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(i.link.clone()));
+                }
+            }
+            Control::Copy => {}
+            Control::Cancel => self.cancel(false, cx),
+            Control::Review => self.review(false, cx),
+            Control::Approve => self.review(true, cx),
+            Control::Another if !self.busy => {
+                self.pending = None;
+                self.input.update(cx, |i, cx| i.set_text(String::new(), cx));
+                let handle = self.input.read(cx).focus_handle.clone();
+                window.focus(&handle, cx);
+                cx.notify();
+            }
+            Control::Another => {}
+            Control::Close => self.close(cx),
+        }
+    }
+
+    fn control(
+        &self,
+        control: Control,
+        id: &'static str,
+        label: &'static str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let handle = &self.buttons[control as usize];
+        let button = match control {
+            Control::Create | Control::Approve | Control::Review => kit::button(&self.p, label),
+            _ => kit::button_quiet(&self.p, label),
+        };
+        div()
+            .id(id)
+            .track_focus(handle)
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .rounded(px(radius::BUTTON))
+            .border(px(elevation::HAIRLINE))
+            .border_color(if handle.is_focused(window) {
+                self.p.accent
+            } else {
+                self.p.pane
+            })
+            .child(button)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&this.buttons[control as usize], cx);
+                this.activate(control, window, cx);
+                cx.notify();
+            }))
+            .on_key_down(
+                cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
+                    if !e.keystroke.modifiers.modified()
+                        && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        cx.stop_propagation();
+                        if !e.is_held {
+                            this.activate(control, window, cx);
+                        }
+                    }
+                }),
+            )
+    }
 }
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.pending.is_some() && !self.focus.is_focused(window) {
-            window.focus(&self.focus, cx);
+        let order = self.focus_order(cx);
+        if self.net.is_some() && !order.iter().any(|handle| handle.is_focused(window)) {
+            window.focus(&order[0], cx);
         }
         let p = self.p;
         let mut body =
             kit::overlay(&p)
                 .id("device-pairing-card")
                 .track_focus(&self.focus)
-                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
-                    match e.keystroke.key.as_str() {
-                        "escape" => cx.emit(Closed),
-                        "enter" if !e.is_held && this.invite_mode && this.invite.is_none() => {
-                            this.create(cx)
-                        }
-                        "enter" if !e.is_held && this.pending.is_some() => this.review(true, cx),
-                        _ => return,
+                .role(gpui::Role::Dialog)
+                .aria_label(if self.invite_mode {
+                    "Pair a new device"
+                } else {
+                    "Approve a device"
+                })
+                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                    if super::navigation_tab(e) {
+                        let order = this.focus_order(cx);
+                        let focused = order.iter().position(|handle| handle.is_focused(window));
+                        window.focus(
+                            &order[tab_index(focused, !e.keystroke.modifiers.shift, order.len())],
+                            cx,
+                        );
+                        cx.notify();
+                    } else if e.keystroke.key == "escape" && !e.is_held {
+                        this.close(cx);
                     }
                     cx.stop_propagation();
                 }))
@@ -321,30 +492,31 @@ impl Render for Panel {
                 ));
         if self.invite_mode {
             if let Some((invite, qr, expires)) = &self.invite {
-                let remaining = expires
-                    .saturating_duration_since(Instant::now())
-                    .as_secs()
-                    .saturating_add(1)
-                    .min(u64::from(invite.expires_in));
-                let link = invite.link.clone();
-                body = body
-                    .child("Scan on your new device, type the code in its app, or open the link in its browser.")
-                    .child(pairing_qr::tile(qr.clone()))
-                    .child(div().style(ty::PAIRING_CODE).child(invite.code.clone()))
-                    .child(div().style(ty::META).overflow_hidden().text_ellipsis().whitespace_nowrap().child(invite.link.clone()))
-                    .child(div().style(ty::SUMMARY_FIGURES).child(format!("Expires in {}:{:02}", remaining / 60, remaining % 60)))
-                    .child(div().flex().gap(px(space::S2))
-                        .child(div().id("copy-invite").child(kit::button_quiet(&p, "Copy link")).on_click(move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(link.clone()))))
-                        .child(div().id("cancel-invite").child(kit::button_quiet(&p, "Cancel invite")).on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))));
+                let left = expires.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    body = body.child(pair::CHECKING_STATUS);
+                } else {
+                    let remaining = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+                    body = body
+                        .child("Scan on your new device, type the code in its app, or open the link in its browser.")
+                        .child(pairing_qr::tile(qr.clone()))
+                        .child(div().style(ty::PAIRING_CODE).child(invite.code.clone()))
+                        .child(div().style(ty::META).overflow_hidden().text_ellipsis().whitespace_nowrap().child(invite.link.clone()))
+                        .child(div().style(ty::SUMMARY_FIGURES).child(format!("Expires in {}:{:02}", remaining / 60, remaining % 60)))
+                        .child(div().flex().gap(px(space::S2))
+                            .child(self.control(Control::Copy, "copy-invite", "Copy link", window, cx))
+                            .child(self.control(Control::Cancel, "cancel-invite", "Cancel invite", window, cx)));
+                }
             } else {
-                body = body.child(
-                    div()
-                        .id("create-invite")
-                        .child(kit::button(&p, "Create invite"))
-                        .on_click(cx.listener(|this, _, _, cx| this.create(cx))),
-                );
+                body = body.child(self.control(
+                    Control::Create,
+                    "create-invite",
+                    "Create invite",
+                    window,
+                    cx,
+                ));
             }
-        } else if let Some((_, d)) = &self.pending {
+        } else if let Some((code, d)) = &self.pending {
             body = body
                 .child(format!(
                     "Approve “{}”? Only continue if the code matches your own device.",
@@ -352,29 +524,31 @@ impl Render for Panel {
                 ))
                 .child(
                     div()
+                        .style(ty::PAIRING_CODE)
+                        .child(pair::grouped_approval_code(code)),
+                )
+                .child(format!(
+                    "Source address: {}",
+                    d.source.as_deref().unwrap_or("Unknown")
+                ))
+                .child(
+                    div()
                         .flex()
                         .gap(px(space::S2))
-                        .child(
-                            div()
-                                .id("approve-device")
-                                .child(kit::button(&p, "Approve"))
-                                .on_click(cx.listener(|this, _, _, cx| this.review(true, cx))),
-                        )
-                        .child(
-                            div()
-                                .id("another-pairing-code")
-                                .child(kit::button_quiet(&p, "Use another code"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if !this.busy {
-                                        this.pending = None;
-                                        this.input
-                                            .update(cx, |i, cx| i.set_text(String::new(), cx));
-                                        let handle = this.input.read(cx).focus_handle.clone();
-                                        window.focus(&handle, cx);
-                                        cx.notify();
-                                    }
-                                })),
-                        ),
+                        .child(self.control(
+                            Control::Approve,
+                            "approve-device",
+                            "Approve",
+                            window,
+                            cx,
+                        ))
+                        .child(self.control(
+                            Control::Another,
+                            "another-pairing-code",
+                            "Use another code",
+                            window,
+                            cx,
+                        )),
                 );
         } else {
             body = body
@@ -387,21 +561,11 @@ impl Render for Panel {
                         .p(px(space::S2))
                         .child(self.input.clone()),
                 )
-                .child(
-                    div()
-                        .id("review-device")
-                        .child(kit::button(&p, "Review"))
-                        .on_click(cx.listener(|this, _, _, cx| this.review(false, cx))),
-                );
+                .child(self.control(Control::Review, "review-device", "Review", window, cx));
         }
         body.children(self.message.clone())
             .when(self.busy, |s| s.child("Contacting server…"))
-            .child(
-                div()
-                    .id("close-device-pairing")
-                    .child(kit::button_quiet(&p, "Close"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
-            )
+            .child(self.control(Control::Close, "close-device-pairing", "Close", window, cx))
     }
 }
 
@@ -445,5 +609,20 @@ impl ShellView {
                 .bg(self.palette.scrim)
                 .child(panel.clone()),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_index;
+
+    #[test]
+    fn tab_and_shift_tab_wrap_inside_invite_controls() {
+        // Copy, Cancel, Close.
+        assert_eq!(tab_index(None, true, 3), 0);
+        assert_eq!(tab_index(Some(0), true, 3), 1);
+        assert_eq!(tab_index(Some(2), true, 3), 0);
+        assert_eq!(tab_index(Some(0), false, 3), 2);
+        assert_eq!(tab_index(Some(1), false, 3), 0);
     }
 }

@@ -416,7 +416,7 @@ class GalleryTest {
                     DialogBackdrop {
                         DialogCard("Approve a device") {
                             Label("Approve a device", Tokens.Type.DETAIL_TITLE, LocalDesign.current.room.ink)
-                            DeviceReviewContent("New phone", false, {}, {})
+                            DeviceReviewContent("New phone", "ABCD-EFGH", "203.0.113.7", false, {}, {})
                             Button("Close", primary = false) {}
                         }
                     }

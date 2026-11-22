@@ -10,6 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 
 #[component]
 pub(super) fn DeviceSettings() -> impl IntoView {
+    let open = ctx().device_settings_open;
     let dialog = NodeRef::<html::Dialog>::new();
     let mode = RwSignal::new(None::<bool>); // true: invite; false: approve
     let busy = RwSignal::new(false);
@@ -19,6 +20,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
     let code = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<(String, PendingDevice)>);
     let left = RwSignal::new(0_u32);
+    let checking = Memo::new(move |_| left.get() == 0);
     let notice = RwSignal::new(None::<String>);
     let browser_origin = || {
         web_sys::window()
@@ -30,6 +32,9 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             PairError::Refused { code, .. } if code == "step_up_required" => {
                 verify.set(true);
                 "Verify with your passkey to continue."
+            }
+            PairError::Refused { code, .. } if code == "too_many_codes" => {
+                "Too many wrong codes. Sign out and in again to continue."
             }
             PairError::Refused { status: 429, .. } => {
                 "Too many requests. Wait a moment and try again."
@@ -81,43 +86,72 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             let deadline = js_sys::Date::now() + f64::from(created.expires_in) * 1000.0;
             left.set(created.expires_in);
             invite.set(Some((created.clone(), qr)));
-            let mut next_status = 0.0;
+            let id = created.id;
+            let current = move |id: &str| {
+                invite.with_untracked(|i| i.as_ref().is_some_and(|(i, _)| i.id == id))
+            };
+            let timer_id = id.clone();
+            spawn_local(async move {
+                while current(&timer_id) {
+                    let remaining = deadline - js_sys::Date::now();
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    left.set((remaining.max(0.0) / 1000.0).ceil() as u32);
+                    if remaining <= 0.0 {
+                        break;
+                    }
+                    sleep(Duration::from_secs_f64(
+                        (remaining / 1000.0)
+                            .min(f64::from(todo_design::motion::PAIRING_TICK) / 1000.0),
+                    ))
+                    .await;
+                }
+            });
             loop {
-                sleep(Duration::from_millis(u64::from(
-                    todo_design::motion::PAIRING_TICK,
-                )))
-                .await;
-                if !invite.with_untracked(|i| i.as_ref().is_some_and(|(i, _)| i.id == created.id)) {
+                let result = match &transport {
+                    Some(t) => pair::status(t, &id).await,
+                    None => {
+                        sleep(Duration::from_secs(u64::from(created.expires_in))).await;
+                        Err(PairError::Expired)
+                    }
+                };
+                if !current(&id) {
                     break;
                 }
                 let now = js_sys::Date::now();
-                if now >= deadline {
-                    invite.set(None);
-                    notice.set(Some("Invite expired. Make a new one if needed.".into()));
-                    break;
-                }
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                left.set(((deadline - now) / 1000.0).ceil() as u32);
-                let Some(t) = &transport else { continue };
-                if now < next_status {
-                    continue;
-                }
-                next_status = now + pair::STATUS_INTERVAL.as_secs_f64() * 1000.0;
-                let status = pair::status(t, &created.id).await;
-                if !invite.with_untracked(|i| i.as_ref().is_some_and(|(i, _)| i.id == created.id)) {
-                    break;
-                }
-                match status {
+                let message = match result {
                     Ok(InviteStatus::Used { device_name }) => {
-                        invite.set(None);
-                        notice.set(Some(format!("{device_name} signed in.")));
-                        break;
+                        Some(format!("{device_name} signed in."))
                     }
-                    Ok(InviteStatus::Cancelled) => {
-                        invite.set(None);
-                        break;
+                    Ok(InviteStatus::Cancelled) => Some("Invite cancelled.".into()),
+                    Err(PairError::Expired | PairError::Refused { status: 404, .. })
+                        if now >= deadline =>
+                    {
+                        Some("Invite expired. Make a new one if needed.".into())
                     }
-                    _ => {}
+                    Err(PairError::Expired | PairError::Refused { status: 404, .. }) => {
+                        Some("The invite is no longer available.".into())
+                    }
+                    _ if now >= deadline + pair::STATUS_GRACE.as_secs_f64() * 1000.0 => {
+                        Some(pair::UNKNOWN_STATUS.into())
+                    }
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    invite.set(None);
+                    notice.set(Some(message));
+                    break;
+                }
+                // Wake for a final check at the local deadline, even between regular polls.
+                let wait = if now < deadline {
+                    Duration::from_secs_f64(
+                        ((deadline - now) / 1000.0).min(pair::STATUS_INTERVAL.as_secs_f64()),
+                    )
+                } else {
+                    pair::STATUS_INTERVAL
+                };
+                sleep(wait).await;
+                if !current(&id) {
+                    break;
                 }
             }
         });
@@ -136,11 +170,16 @@ pub(super) fn DeviceSettings() -> impl IntoView {
                 None => Ok(()),
             };
             busy.set(false);
-            if let Err(e) = result {
-                report(e);
-            } else {
-                invite.set(None);
-                notice.set(Some("Invite cancelled.".into()));
+            if !invite.with_untracked(|i| i.as_ref().is_some_and(|(i, _)| i.id == id)) {
+                return;
+            }
+            match result {
+                Ok(()) => {
+                    invite.set(None);
+                    notice.set(Some("Invite cancelled.".into()));
+                }
+                Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
+                Err(e) => report(e),
             }
         });
     };
@@ -170,6 +209,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
                 None => Ok(PendingDevice {
                     device_name: "New phone".into(),
                     created_at: 0,
+                    source: Some("203.0.113.7".into()),
                 }),
             };
             busy.set(false);
@@ -191,10 +231,10 @@ pub(super) fn DeviceSettings() -> impl IntoView {
         <button id="device-settings" type="button" class="icon-button" aria-label="Device settings" title="Device settings"
             on:click=move |_| {
                 mode.set(None);
-                if let Some(d) = dialog.get_untracked() { let _ = d.show_modal(); }
+                if let Some(d) = dialog.get_untracked() { open.set(d.show_modal().is_ok() || d.open()); }
             }>{icon(Icon::Settings)}</button>
         <dialog class="room-dialog pair-dialog" node_ref=dialog aria-labelledby="device-settings-heading"
-            on:close=move |_| { platform::focus("device-settings"); }>
+            on:close=move |_| { open.set(false); platform::focus("device-settings"); }>
             <h2 id="device-settings-heading">{move || match mode.get() { Some(true) => "Pair a new device", Some(false) => "Approve a device", None => "Device settings" }}</h2>
             <Show when=move || mode.get().is_none()>
                 <div class="pair-actions">
@@ -209,6 +249,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             </Show>
             <Show when=move || mode.get() == Some(true)>
                 {move || match invite.get() {
+                    Some(_) if checking.get() => view! { <p role="status">{pair::CHECKING_STATUS}</p> }.into_any(),
                     Some((i, qr)) => {
                         let link = i.link;
                         let view_box = format!("0 0 {0} {0}", qr.width);
@@ -232,8 +273,10 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             </Show>
             <Show when=move || mode.get() == Some(false)>
                 {move || match pending.get() {
-                    Some((_, d)) => view! {
+                    Some((reviewed_code, d)) => view! {
                         <p>{format!("Approve “{}”? Only continue if the code matches your own device.", d.device_name)}</p>
+                        <p class="pair-code">{pair::grouped_approval_code(&reviewed_code)}</p>
+                        <p>{format!("Source address: {}", d.source.as_deref().unwrap_or("Unknown"))}</p>
                         <div class="pair-actions">
                             <button class="button primary" disabled=move || busy.get() on:click=move |_| review(true)>"Approve"</button>
                             <button class="button" disabled=move || busy.get() on:click=move |_| {

@@ -115,6 +115,7 @@ pub struct Ctx {
     activity_feed: RwSignal<activity::FeedState>,
     activity_revision: RwSignal<Option<(Option<todo_client::Epoch>, u64)>>,
     room_actions: room_actions::Controls,
+    device_settings_open: RwSignal<bool>,
     task_actions: task_actions::Controls,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
@@ -572,6 +573,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         activity_feed: RwSignal::new(activity::FeedState::default()),
         activity_revision: RwSignal::new(None),
         room_actions: room_actions::Controls::new(),
+        device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
@@ -767,6 +769,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     if ev.is_composing()
         || ev.default_prevented()
         || c.room_actions.dialog_open()
+        || c.device_settings_open.get_untracked()
         || c.task_actions.open()
     {
         return;

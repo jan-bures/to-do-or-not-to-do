@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.window.core.layout.WindowSizeClass
 import app.todoornot.core.RoomKey
+import app.todoornot.model.DevicePairingModel
 import app.todoornot.model.PairingModel
 import app.todoornot.model.TodoModel
 import app.todoornot.reminders.AndroidAlarms
@@ -37,6 +38,7 @@ import app.todoornot.session.Host
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.LocalReminderAccess
 import app.todoornot.ui.LocalPairingOwner
+import app.todoornot.ui.LocalScanPairing
 import app.todoornot.ui.MainScreen
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
@@ -54,6 +56,16 @@ class MainActivity : ComponentActivity() {
     /** Android's own question for notifications; whatever the answer, the alarms follow. */
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         graph.reminderWork({}) { graph.reconcileReminders() }
+    }
+
+    private val pairingScanner = PairingScanner(this) { graph.pairingScan }
+
+    private fun scanApproval(owner: DevicePairingModel) {
+        val graph = graph // callbacks retained by the graph must not capture this Activity
+        pairingScanner.launch(
+            { code -> if (graph.devicePairing === owner) owner.review(code) },
+            { if (graph.devicePairing === owner) owner.cameraDenied() },
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -144,7 +156,10 @@ class MainActivity : ComponentActivity() {
                 m != null -> {
                     val ui by m.ui.collectAsStateWithLifecycle()
                     val focus = composerRoom?.takeIf { it.first === m && it.second == ui.room.key && ui.activity == null }
-                    CompositionLocalProvider(LocalPairingOwner provides ready?.session) {
+                    CompositionLocalProvider(
+                        LocalPairingOwner provides graph.devicePairing?.takeIf { m.engine === ready?.engine },
+                        LocalScanPairing provides ::scanApproval,
+                    ) {
                         MainScreen(
                             ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
                             composerFocus = if (focus != null) ::clearComposerRequest else null,
@@ -168,6 +183,14 @@ class MainActivity : ComponentActivity() {
         override fun submit(address: String) = p.submit(address)
         override fun cancel() = p.cancel()
         override fun redeem(address: String, invite: String) = p.redeem(address, invite)
+        override fun confirmInvite() = p.confirmInvite()
+        override fun scanInvite(address: String) {
+            val graph = graph
+            pairingScanner.launch(
+                { code -> if (graph.host.state.value is Host.SignedOut) p.redeem(address, code) },
+                { if (graph.host.state.value is Host.SignedOut) p.cameraDenied(address) },
+            )
+        }
         override fun openLink(url: String) {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }

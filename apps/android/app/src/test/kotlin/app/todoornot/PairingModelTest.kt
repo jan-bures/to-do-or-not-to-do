@@ -1,5 +1,6 @@
 package app.todoornot
 
+import app.todoornot.core.DeviceInviteTarget
 import app.todoornot.core.FfiException
 import app.todoornot.core.PairPoll
 import app.todoornot.core.PairStarted
@@ -7,7 +8,11 @@ import app.todoornot.model.PairingApi
 import app.todoornot.model.PairingModel
 import app.todoornot.model.PairingState
 import app.todoornot.session.Session
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -102,6 +107,39 @@ class PairingModelTest {
         m.submit("https://todo.example.com")
         advanceUntilIdle()
         assertEquals(PairingModel.EXPIRED, (m.state.value as PairingState.Entering).error)
+    }
+
+    @Test
+    fun a_link_host_needs_confirmation_and_redemption_persists_after_cancellation() = runTest {
+        val server = "https://todo.example.com"
+        val sent = CompletableDeferred<String>()
+        val reply = CompletableDeferred<Session>()
+        val persisted = mutableListOf<Session>()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val owner = CoroutineScope(Job() + dispatcher)
+        val api = object : PairingApi by FakeApi(ArrayDeque()) {
+            override fun inviteTarget(address: String, invite: String) = DeviceInviteTarget(server, "todo.example.com")
+            override suspend fun redeem(server: String, invite: String, deviceName: String): Session {
+                sent.complete(server)
+                return reply.await()
+            }
+        }
+        val m = PairingModel(api, owner, dispatcher, "Phone", { persisted += it })
+        m.redeem("", "link")
+        testScheduler.runCurrent()
+        assertEquals(PairingState.ConfirmInvite("todo.example.com"), m.state.value)
+        assertTrue(!sent.isCompleted)
+        m.confirmInvite()
+        testScheduler.runCurrent()
+        assertEquals(server, sent.await())
+        m.cancel()
+        owner.cancel()
+        assertEquals(PairingState.Finishing(server), m.state.value)
+        assertTrue(persisted.isEmpty())
+        val credential = Session(server, "phone", "device-token")
+        reply.complete(credential)
+        advanceUntilIdle()
+        assertEquals(listOf(credential), persisted)
     }
 
     @Test

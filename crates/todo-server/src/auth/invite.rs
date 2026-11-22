@@ -11,12 +11,22 @@ use todo_core::pairing::{INVITE_CODE_LEN, INVITE_SECRET_LEN};
 use webauthn_rs::prelude::PasskeyRegistration;
 
 const CAPACITY: usize = 32;
+const RESULT_GRACE_MS: i64 = 60_000;
 
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub(crate) enum Issuer {
     Device(DeviceId),
     Session(String),
+}
+
+impl Issuer {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Device(id) => format!("Device {id}"),
+            Self::Session(id) => format!("Browser session {id}"),
+        }
+    }
 }
 
 pub(crate) struct Created {
@@ -62,7 +72,7 @@ pub(crate) struct Invites(Mutex<Vec<Entry>>);
 impl Invites {
     fn entries(&self, now: i64) -> MutexGuard<'_, Vec<Entry>> {
         let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        entries.retain(|e| e.expires > now);
+        entries.retain(|e| e.expires > now || (e.claimed && e.expires + RESULT_GRACE_MS > now));
         entries
     }
 
@@ -109,7 +119,7 @@ impl Invites {
         let mut entries = self.entries(now);
         let Some(entry) = entries
             .iter_mut()
-            .find(|e| e.id == id && &e.issuer == issuer && e.available())
+            .find(|e| e.id == id && &e.issuer == issuer && e.available(now))
         else {
             return false;
         };
@@ -120,12 +130,12 @@ impl Invites {
 
     pub fn redeem(&self, input: &str, now: i64) -> Option<Claim> {
         let mut entries = self.entries(now);
-        let entry = find_secret(&mut entries, input, true)?;
+        let entry = find_secret(&mut entries, input, true, now)?;
         Some(entry.claim())
     }
 
     pub fn browser_issuer(&self, input: &str, now: i64) -> Option<Issuer> {
-        find_secret(&mut self.entries(now), input, false).map(|entry| entry.issuer.clone())
+        find_secret(&mut self.entries(now), input, false, now).map(|entry| entry.issuer.clone())
     }
 
     pub fn start_browser(
@@ -136,7 +146,7 @@ impl Invites {
         now: i64,
     ) -> Result<Option<String>, RandomError> {
         let mut entries = self.entries(now);
-        let Some(e) = find_secret(&mut entries, input, false) else {
+        let Some(e) = find_secret(&mut entries, input, false, now) else {
             return Ok(None);
         };
         let handle = secret::random_token::<32>()?;
@@ -160,7 +170,7 @@ impl Invites {
         let mut entries = self.entries(now);
         let mut found = None;
         for e in entries.iter_mut() {
-            if e.available()
+            if e.available(now)
                 && e.browser
                     .as_ref()
                     .is_some_and(|b| secret::ct_eq(&hash, &b.handle))
@@ -176,7 +186,7 @@ impl Invites {
     pub fn claim_browser(&self, id: &str, now: i64) -> Option<Claim> {
         self.entries(now)
             .iter_mut()
-            .find(|e| e.id == id && e.available())
+            .find(|e| e.id == id && e.available(now))
             .map(Entry::claim)
     }
 
@@ -190,8 +200,8 @@ impl Invites {
 }
 
 impl Entry {
-    fn available(&self) -> bool {
-        !self.claimed && matches!(self.status, Status::Pending)
+    fn available(&self, now: i64) -> bool {
+        now < self.expires && !self.claimed && matches!(self.status, Status::Pending)
     }
 
     fn claim(&mut self) -> Claim {
@@ -204,7 +214,12 @@ impl Entry {
     }
 }
 
-fn find_secret<'a>(entries: &'a mut [Entry], input: &str, typed: bool) -> Option<&'a mut Entry> {
+fn find_secret<'a>(
+    entries: &'a mut [Entry],
+    input: &str,
+    typed: bool,
+    now: i64,
+) -> Option<&'a mut Entry> {
     if input.len() > 64 {
         return None;
     }
@@ -217,7 +232,7 @@ fn find_secret<'a>(entries: &'a mut [Entry], input: &str, typed: bool) -> Option
         let link = secret::ct_eq(&entry.link_hash, &link_hash) & (input.len() == INVITE_SECRET_LEN);
         let code_match =
             secret::ct_eq(&entry.code_hash, &code_hash) & typed & (code.len() == INVITE_CODE_LEN);
-        if (link | code_match) && entry.available() {
+        if (link | code_match) && entry.available(now) {
             found = Some(entry);
         }
     }
@@ -237,16 +252,23 @@ mod tests {
         let invites = Invites::default();
         let invite = invites.create(issuer(), 0).unwrap().unwrap();
         assert_eq!(invite.secret.len(), 43);
-        let claim = invites.redeem(&invite.code.to_lowercase(), 1).unwrap();
-        assert!(invites.redeem(&invite.secret, 2).is_none());
-        assert!(!invites.cancel(&issuer(), &invite.id, 2));
-        invites.finish(&claim, Some("Laptop".into()), 3);
+        let last_second = PAIRING_TTL_MS - 1_000;
+        let claim = invites
+            .redeem(&invite.code.to_lowercase(), last_second)
+            .unwrap();
+        assert!(invites.redeem(&invite.secret, PAIRING_TTL_MS).is_none());
+        assert!(!invites.cancel(&issuer(), &invite.id, PAIRING_TTL_MS));
+        assert!(matches!(
+            invites.status(&issuer(), &invite.id, PAIRING_TTL_MS),
+            Some(Status::Pending)
+        ));
+        invites.finish(&claim, Some("Laptop".into()), PAIRING_TTL_MS + 1);
         assert!(
-            matches!(invites.status(&issuer(), &invite.id, 3), Some(Status::Used { device_name }) if device_name == "Laptop")
+            matches!(invites.status(&issuer(), &invite.id, PAIRING_TTL_MS + 1), Some(Status::Used { device_name }) if device_name == "Laptop")
         );
         assert!(
             invites
-                .status(&issuer(), &invite.id, PAIRING_TTL_MS)
+                .status(&issuer(), &invite.id, PAIRING_TTL_MS + RESULT_GRACE_MS)
                 .is_none()
         );
         let fresh = invites.create(issuer(), 0).unwrap().unwrap();

@@ -172,9 +172,12 @@ pub async fn poll(
         },
         Poll::Denied => PairStatus::Denied,
         Poll::Gone => return Err(gone()),
-        Poll::Approved { device_name } => {
+        Poll::Approved {
+            device_name,
+            issued_by,
+        } => {
             let (device_id, token) = blocking(&app.authsvc, move |svc| {
-                svc.create_device(&device_name, ip.0)
+                svc.create_approved_device(&device_name, ip.0, issued_by.as_deref())
             })
             .await??;
             PairStatus::Approved { device_id, token }

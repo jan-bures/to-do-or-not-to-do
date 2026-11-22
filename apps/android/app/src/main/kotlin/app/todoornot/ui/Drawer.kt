@@ -220,7 +220,8 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
         Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
         Label(line, Tokens.Type.COUNT, r.ink3, Modifier.weight(1f).semantics { contentDescription = "Sync: $line" })
         var menu by remember { mutableStateOf(false) }
-        var pairing by remember { mutableStateOf<Boolean?>(null) }
+        // Only the invite/approval mode is saved. Credentials and scan state stay in the session model.
+        var pairing by rememberSaveable { mutableStateOf<Boolean?>(null) }
         val owner = LocalPairingOwner.current
         if (owner != null) pairing?.let { DevicePairingDialog(owner, it) { pairing = null } }
         Box {

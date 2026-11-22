@@ -262,6 +262,13 @@ fn table() -> Vec<Route> {
         ),
         r(
             Method::POST,
+            "/auth/passkeys/{id}/revoke",
+            Session,
+            true,
+            post(pages::passkey_revoke),
+        ),
+        r(
+            Method::POST,
             "/pair/approve",
             Session,
             true,

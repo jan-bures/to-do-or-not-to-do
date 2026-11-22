@@ -60,6 +60,8 @@ pub struct Review {
 pub struct PendingDevice {
     device_name: String,
     created_at: i64,
+    /// Address seen by the server for the original pairing request, if known.
+    source: Option<String>,
 }
 
 pub(crate) fn invite_gone() -> ApiError {
@@ -215,7 +217,7 @@ pub async fn redeem(
             .redeem(&req.secret, svc.now())
             .ok_or_else(invite_gone)?;
         let result = svc
-            .create_device_with_issuer(&name, ip.0, Some(&claim.issuer))
+            .create_invited_device(&name, ip.0, &claim.issuer)
             .map(|(device_id, token)| DeviceCredential { device_id, token });
         svc.invites
             .finish(&claim, result.as_ref().ok().map(|_| name), svc.now());
@@ -239,14 +241,17 @@ pub async fn review(
 ) -> Result<Json<PendingDevice>, ApiError> {
     let issuer = issuer(&app, caller, &headers, true).await?;
     limited(&app, ip, false)?;
-    let p = if let Some(created_at) = req.approve_at {
-        app.authsvc
-            .pairings
-            .approve_reviewed(&req.code, created_at, app.authsvc.now())
-    } else {
-        app.authsvc.pairings.pending(&req.code, app.authsvc.now())
-    }
-    .ok_or_else(super::pair::gone)?;
+    let svc = &app.authsvc;
+    let p = svc
+        .look_up_pairing_code(issuer.clone(), || {
+            if req.approve_at.is_some() {
+                svc.pairings
+                    .approve_reviewed(&req.code, req.approve_at, &issuer, svc.now())
+            } else {
+                svc.pairings.pending(&req.code, svc.now())
+            }
+        })?
+        .ok_or_else(super::pair::gone)?;
     if req.approve_at.is_some() {
         let name = p.device_name.clone();
         blocking(&app.authsvc, move |svc| {
@@ -261,5 +266,6 @@ pub async fn review(
     Ok(Json(PendingDevice {
         device_name: p.device_name,
         created_at: p.created_at,
+        source: p.source.map(|ip| ip.to_string()),
     }))
 }

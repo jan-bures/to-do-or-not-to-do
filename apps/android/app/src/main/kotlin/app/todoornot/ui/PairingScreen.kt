@@ -57,6 +57,8 @@ interface PairingActions {
     fun submit(address: String)
     fun cancel()
     fun redeem(address: String, invite: String) = Unit
+    fun confirmInvite() = Unit
+    fun scanInvite(address: String) = Unit
     fun openLink(url: String)
     fun copyLink(url: String)
 
@@ -79,9 +81,15 @@ fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, f
         when (state) {
             is PairingState.Entering -> Entering(state, actions)
             is PairingState.Starting -> {
-                Body("Contacting your server…")
+                Body("Contacting ${state.server}…")
                 Button("Cancel", primary = false, onClick = actions::cancel)
             }
+            is PairingState.ConfirmInvite -> {
+                Body("This invite is for ${state.host}. Only continue if you trust this server.")
+                Button("Pair with ${state.host}", primary = true, onClick = actions::confirmInvite)
+                Button("Go back", primary = false, onClick = actions::cancel)
+            }
+            is PairingState.Finishing -> Body("Finishing pairing with ${state.server}…")
             is PairingState.Waiting -> Waiting(state, actions, fixedRemainingSeconds)
         }
     }
@@ -151,9 +159,6 @@ private fun Entering(state: PairingState.Entering, actions: PairingActions) {
     val r = LocalDesign.current.room
     var address by rememberSaveable(state.address) { mutableStateOf(state.address) }
     var invite by remember { mutableStateOf("") }
-    var cameraError by remember { mutableStateOf(false) }
-    val scanner = if (actions === PairingActions.None) ({}) else
-        rememberPairingScanner({ scanned -> actions.redeem(address, scanned) }, { cameraError = true })
     Body("Enter your to-do server’s address. You approve this phone there with your passkey.")
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
     Box(
@@ -189,8 +194,7 @@ private fun Entering(state: PairingState.Entering, actions: PairingActions) {
         singleLine = true, modifier = Modifier.fillMaxWidth(),
     )
     Button("Use invite", primary = false, enabled = invite.isNotBlank()) { actions.redeem(address, invite); invite = "" }
-    Button("Scan invite QR code", primary = false, onClick = scanner)
-    if (cameraError) Label("Camera access was not granted. You can type the code instead.", Tokens.Type.META_PHONE, r.dangerInk)
+    Button("Scan invite QR code", primary = false) { actions.scanInvite(address) }
 }
 
 @Composable

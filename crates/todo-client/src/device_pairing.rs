@@ -17,6 +17,12 @@ const REDEEM: &str = "/api/v1/pair/redeem";
 
 /// Delay between status checks (not the countdown refresh interval).
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(5);
+/// How long to retry an inconclusive result after hiding the credential.
+pub const STATUS_GRACE: Duration = Duration::from_secs(60);
+/// Shown once the credentials are hidden but a definitive result is not yet available.
+pub const CHECKING_STATUS: &str = "Checking whether the device joined…";
+/// Shown if the server could not confirm the result within the grace period.
+pub const UNKNOWN_STATUS: &str = "Couldn’t confirm whether the device joined. Check Devices.";
 
 /// An invitation displayed on the issuer only. Its link and code grant access; do not log them.
 #[derive(Clone, Deserialize)]
@@ -78,6 +84,17 @@ pub struct PendingDevice {
     pub device_name: String,
     /// Binds approval to the request the owner saw.
     pub created_at: i64,
+    /// Address seen by the server when the pairing started.
+    pub source: Option<String>,
+}
+
+/// Display a normalized approval code in the same groups as the requesting client.
+#[must_use]
+pub fn grouped_approval_code(code: &str) -> String {
+    typed_code(code, APPROVAL_CODE_LEN).map_or_else(String::new, |code| {
+        let (first, second) = code.split_at(APPROVAL_CODE_LEN / 2);
+        format!("{first}-{second}")
+    })
 }
 
 /// An invite as entered by the owner. A link can supply a server; a code needs a separate address.
@@ -136,6 +153,70 @@ pub fn invite_input(input: &str) -> Result<InviteInput, InvalidCode> {
     Ok(InviteInput {
         origin: Some(url.origin().ascii_serialization()),
         secret: secret.to_owned(),
+    })
+}
+
+/// A checked target. A client must ask for confirmation if the address came from the link.
+pub struct RedeemTarget {
+    /// The locally normalized origin.
+    pub server: String,
+    /// Host (and non-default port) to show when the link supplied the origin.
+    pub confirm_host: Option<String>,
+    /// Credential to send only to that origin.
+    pub secret: String,
+}
+
+impl fmt::Debug for RedeemTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedeemTarget")
+            .field("server", &self.server)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why an invite target could not be selected.
+#[derive(Debug, thiserror::Error)]
+pub enum TargetError {
+    /// Missing or malformed invite.
+    #[error(transparent)]
+    Code(#[from] InvalidCode),
+    /// The local address policy rejected the address.
+    #[error("{0}")]
+    Address(String),
+    /// The explicit address is never silently changed by a link.
+    #[error("The invite link is for a different server than the address you entered.")]
+    Mismatch,
+}
+
+/// Resolve before any request. `normalize` validates the platform's address and HTTPS policy.
+pub fn redeem_target(
+    address: &str,
+    input: &str,
+    normalize: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<RedeemTarget, TargetError> {
+    let input = invite_input(input)?;
+    let from_link = address.trim().is_empty() && input.origin.is_some();
+    let server = normalize(if from_link {
+        input.origin.as_deref().unwrap_or_default()
+    } else {
+        address
+    })
+    .map_err(TargetError::Address)?;
+    let url = safe_url(&server)?;
+    if let Some(origin) = input.origin
+        && safe_url(&origin)?.origin() != url.origin()
+    {
+        return Err(TargetError::Mismatch);
+    }
+    let confirm_host = from_link.then(|| {
+        let host = url.host_str().unwrap_or_default();
+        url.port()
+            .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"))
+    });
+    Ok(RedeemTarget {
+        server,
+        confirm_host,
+        secret: input.secret,
     })
 }
 
@@ -325,6 +406,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn invite_origin_is_only_used_for_a_blank_address_and_requires_confirmation() {
+        let link = format!("https://todo.example.com/pair/invite#{}", "a".repeat(43));
+        let normalize = |s: &str| {
+            safe_url(s)
+                .map(|u| u.origin().ascii_serialization())
+                .map_err(|e| e.to_string())
+        };
+        let target = redeem_target("  ", &link, normalize).unwrap();
+        assert_eq!(target.server, "https://todo.example.com");
+        assert_eq!(target.confirm_host.as_deref(), Some("todo.example.com"));
+        assert!(
+            redeem_target("https://TODO.example.com:443/", &link, normalize)
+                .unwrap()
+                .confirm_host
+                .is_none()
+        );
+        for address in [
+            "https://todo.example.com:8443",
+            "http://todo.example.com",
+            "https://other.example.com",
+        ] {
+            assert!(matches!(
+                redeem_target(address, &link, normalize),
+                Err(TargetError::Mismatch)
+            ));
+        }
+        assert!(redeem_target("", "ABCDEF-GHJKMN", normalize).is_err());
+        assert_eq!(grouped_approval_code("abcd efgh"), "ABCD-EFGH");
     }
 
     #[test]

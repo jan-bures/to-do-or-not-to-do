@@ -67,6 +67,8 @@ pub mod audit {
     pub const STEP_UP_FAILED: &str = "step_up_failed";
     /// Another passkey was registered.
     pub const PASSKEY_ADDED: &str = "passkey_added";
+    /// An owner passkey and its sessions were revoked.
+    pub const PASSKEY_REVOKED: &str = "passkey_revoked";
     /// A client IP was locked out after failed sign-ins.
     pub const LOCKOUT: &str = "lockout";
     /// Many authentication failures in a short time.
@@ -208,7 +210,7 @@ pub struct AuthService {
     setup: Mutex<Option<SetupCode>>,
     /// Where a pending setup code is written.
     setup_file: std::path::PathBuf,
-    code_lookups: Mutex<HashMap<String, u32>>,
+    code_lookups: Mutex<HashMap<super::invite::Issuer, (u32, i64)>>,
     /// Pending device pairings.
     pub pairings: Pairings,
     pub(crate) invites: super::invite::Invites,
@@ -942,12 +944,15 @@ impl AuthService {
             }
         }
         let now = self.now();
-        self.store.add_passkey("First passkey", &passkey, now)?;
+        let id = self
+            .store
+            .add_passkey("First passkey", &passkey, now)?
+            .ok_or_else(ApiError::internal)?;
         self.store.set_meta(META_OWNER_READY, "1")?;
         self.remove_setup_file();
         self.audit(audit::SETUP_COMPLETED, ip, json!({}));
         tracing::info!("owner passkey registered; /setup is now closed");
-        self.new_session()
+        self.new_session(id)
     }
 
     // ---- sign-in, step-up, more passkeys ----------------------------------------------------------
@@ -973,12 +978,12 @@ impl AuthService {
             .map_err(internal("cannot start passkey authentication"))
     }
 
-    /// Verifies an assertion and saves the passkey's new counter. Returns false on any failure.
+    /// Verifies an assertion, saves the new counter, and identifies the verifying passkey.
     fn verify_assertion(
         &self,
         state: &PasskeyAuthentication,
         credential: &PublicKeyCredential,
-    ) -> Result<bool, ApiError> {
+    ) -> Result<Option<i64>, ApiError> {
         let result = match self
             .webauthn()?
             .finish_passkey_authentication(credential, state)
@@ -986,11 +991,11 @@ impl AuthService {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(error = %e, "passkey assertion rejected");
-                return Ok(false);
+                return Ok(None);
             }
         };
         if !result.user_verified() {
-            return Ok(false);
+            return Ok(None);
         }
         let now = self.now();
         for mut row in self.store.passkeys()? {
@@ -998,10 +1003,10 @@ impl AuthService {
                 // Counter and backup flags (webauthn-rs already rejected a counter that went back).
                 row.passkey.update_credential(&result);
                 self.store.update_passkey(row.id, &row.passkey, now)?;
-                return Ok(true);
+                return Ok(Some(row.id));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Starts a sign-in. Blocking.
@@ -1033,15 +1038,18 @@ impl AuthService {
             );
             return Err(ceremony_expired());
         };
-        if !self.verify_assertion(&state, credential)? {
+        let guard = self.begin_mutation();
+        let Some(id) = self.verify_assertion(&state, credential)? else {
             self.record_failure(audit::SIGN_IN_FAILED, ip, json!({ "reason": "assertion" }));
             return Err(ceremony_failed());
-        }
+        };
+        let session = self.new_session(id)?;
+        drop(guard);
         if let Some(ip) = ip {
             self.failures.succeed(&ip);
         }
         self.audit(audit::SIGN_IN, ip, json!({}));
-        self.new_session()
+        Ok(session)
     }
 
     /// Starts a step-up for a session. Blocking.
@@ -1067,11 +1075,16 @@ impl AuthService {
         else {
             return Err(ceremony_expired());
         };
-        if !self.verify_assertion(&state, credential)? {
+        let guard = self.begin_mutation();
+        if !self.session_live(&session.id_hash) {
+            return Err(ApiError::unauthorized());
+        }
+        let Some(id) = self.verify_assertion(&state, credential)? else {
             self.record_failure(audit::STEP_UP_FAILED, ip, json!({}));
             return Err(ceremony_failed());
-        }
-        self.store.set_verified(&session.id_hash, self.now())?;
+        };
+        self.store.set_verified(&session.id_hash, self.now(), id)?;
+        drop(guard);
         self.audit(audit::STEP_UP, ip, json!({}));
         Ok(())
     }
@@ -1110,14 +1123,58 @@ impl AuthService {
                 ceremony_failed()
             })?;
         let name = clean_label(name, "Passkey");
-        if !self.store.add_passkey(&name, &passkey, self.now())? {
+        let guard = self.begin_mutation();
+        if !self.session_live(&session.id_hash) {
+            return Err(ApiError::unauthorized());
+        }
+        if self
+            .store
+            .add_passkey(&name, &passkey, self.now())?
+            .is_none()
+        {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "already_registered",
                 "this passkey is already registered",
             ));
         }
+        drop(guard);
         self.audit(audit::PASSKEY_ADDED, ip, json!({ "name": name }));
+        Ok(())
+    }
+
+    pub(crate) fn revoke_passkey(
+        &self,
+        session: &SessionRow,
+        id: i64,
+        ip: Option<IpAddr>,
+    ) -> Result<(), ApiError> {
+        let guard = self.begin_mutation();
+        if !self.session_live(&session.id_hash) {
+            return Err(ApiError::unauthorized());
+        }
+        let row = self
+            .store
+            .session(&session.id_hash)?
+            .ok_or_else(ApiError::unauthorized)?;
+        self.require_step_up(&row)?;
+        let entry = self.audit_entry(
+            audit::PASSKEY_REVOKED,
+            ip.into(),
+            json!({ "passkey_id": id }),
+        );
+        if !self.store.revoke_passkey(id, &entry)? {
+            if self.store.passkeys()?.iter().any(|p| p.id == id) {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "last_passkey",
+                    "the last passkey cannot be revoked",
+                ));
+            }
+            return Err(ApiError::not_found("no such passkey"));
+        }
+        drop(guard);
+        self.revoked();
         Ok(())
     }
 
@@ -1184,11 +1241,15 @@ impl AuthService {
             if !self.invite_issuer_live(&claim.issuer) {
                 return Err(crate::api::invite::invite_gone());
             }
-            let session = self.new_session_values()?;
-            if !self
-                .store
-                .add_passkey_with_session(&name, &passkey, &session.row)?
-            {
+            let mut session = self.new_session_values()?;
+            // Registration is not an assertion. This browser must verify again before step-up actions.
+            session.row.verified_at = super::store::UNVERIFIED_AT;
+            if !self.store.add_passkey_with_session(
+                &name,
+                &passkey,
+                &session.row,
+                &claim.issuer.label(),
+            )? {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "already_registered",
@@ -1210,11 +1271,9 @@ impl AuthService {
 
     // ---- sessions ---------------------------------------------------------------------------------
 
-    fn new_session(&self) -> Result<NewSession, ApiError> {
+    fn new_session(&self, passkey_id: i64) -> Result<NewSession, ApiError> {
         let session = self.new_session_values()?;
-        let row = &session.row;
-        self.store
-            .create_session(&row.id_hash, &row.csrf, row.created_at)?;
+        self.store.create_session(&session.row, passkey_id)?;
         Ok(session)
     }
 
@@ -1322,7 +1381,8 @@ impl AuthService {
     /// True if the session verified a passkey within [`STEP_UP_MS`].
     #[must_use]
     pub fn is_fresh(&self, session: &SessionRow) -> bool {
-        self.now() - session.verified_at < STEP_UP_MS
+        session.verified_at != super::store::UNVERIFIED_AT
+            && self.now() - session.verified_at < STEP_UP_MS
     }
 
     /// Fails with 403 `step_up_required` unless the session is fresh.
@@ -1334,20 +1394,44 @@ impl AuthService {
         }
     }
 
-    /// Counts a failed pairing-code lookup by a session. False once it has used up its attempts.
-    pub fn code_lookup_failed(&self, session: &SessionRow) -> bool {
-        let mut m = lock(&self.code_lookups);
-        let n = m.entry(session.id_hash.clone()).or_insert(0);
-        *n += 1;
-        *n <= MAX_CODE_LOOKUPS
-    }
-
-    /// True if the session may still look up pairing codes.
-    #[must_use]
-    pub fn may_look_up_codes(&self, session: &SessionRow) -> bool {
-        lock(&self.code_lookups)
-            .get(&session.id_hash)
-            .is_none_or(|n| *n < MAX_CODE_LOOKUPS)
+    /// Shares the wrong-code budget across both browser routes, and across addresses for each
+    /// device. Sessions reset by signing in again; devices cool down after one pairing lifetime.
+    pub(crate) fn look_up_pairing_code<T>(
+        &self,
+        issuer: super::invite::Issuer,
+        lookup: impl FnOnce() -> Option<T>,
+    ) -> Result<Option<T>, ApiError> {
+        let mut attempts = lock(&self.code_lookups);
+        let now = self.now();
+        attempts.retain(|_, (_, expires)| *expires > now);
+        if attempts
+            .get(&issuer)
+            .is_some_and(|(count, _)| *count >= MAX_CODE_LOOKUPS)
+        {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_codes",
+                match issuer {
+                    super::invite::Issuer::Session(_) => {
+                        "too many wrong codes; sign out and in again to continue"
+                    }
+                    super::invite::Issuer::Device(_) => {
+                        "too many wrong codes; wait five minutes to continue"
+                    }
+                },
+            ));
+        }
+        let result = lookup();
+        if result.is_none() {
+            let expires = match issuer {
+                super::invite::Issuer::Session(_) => now.saturating_add(self.absolute_ms()),
+                super::invite::Issuer::Device(_) => now + super::pairing::PAIRING_TTL_MS,
+            };
+            let attempt = attempts.entry(issuer).or_insert((0, expires));
+            attempt.0 += 1;
+            attempt.1 = expires;
+        }
+        Ok(result)
     }
 
     // ---- devices ----------------------------------------------------------------------------------
@@ -1359,13 +1443,32 @@ impl AuthService {
         name: &str,
         ip: Option<IpAddr>,
     ) -> Result<(DeviceId, String), ApiError> {
-        self.create_device_with_issuer(name, ip, None)
+        self.create_device_inner(name, ip, None, None)
     }
 
-    pub(crate) fn create_device_with_issuer(
+    pub(crate) fn create_approved_device(
         &self,
         name: &str,
         ip: Option<IpAddr>,
+        issued_by: Option<&str>,
+    ) -> Result<(DeviceId, String), ApiError> {
+        self.create_device_inner(name, ip, issued_by, None)
+    }
+
+    pub(crate) fn create_invited_device(
+        &self,
+        name: &str,
+        ip: Option<IpAddr>,
+        issuer: &super::invite::Issuer,
+    ) -> Result<(DeviceId, String), ApiError> {
+        self.create_device_inner(name, ip, Some(&issuer.label()), Some(issuer))
+    }
+
+    fn create_device_inner(
+        &self,
+        name: &str,
+        ip: Option<IpAddr>,
+        issued_by: Option<&str>,
         issuer: Option<&super::invite::Issuer>,
     ) -> Result<(DeviceId, String), ApiError> {
         let id = device_id_for(name)?;
@@ -1374,8 +1477,13 @@ impl AuthService {
         if issuer.is_some_and(|issuer| !self.invite_issuer_live(issuer)) {
             return Err(crate::api::invite::invite_gone());
         }
-        self.store
-            .add_device(&id, name, &secret::digest_hex(&token), self.now())?;
+        self.store.add_device(
+            &id,
+            name,
+            &secret::digest_hex(&token),
+            self.now(),
+            issued_by,
+        )?;
         self.publish(&guard)?;
         drop(guard);
         self.audit(

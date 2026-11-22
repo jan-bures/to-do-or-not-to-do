@@ -48,8 +48,10 @@ pub enum PairingEvent {
 enum Step {
     /// Waiting for an address. `error` says why the last attempt failed.
     Enter { error: Option<SharedString> },
-    /// Asking the server for a code.
-    Starting { server: String },
+    /// Confirm the host taken from a link before making any request.
+    ConfirmInvite { host: String },
+    /// Contacting the selected origin.
+    Starting { server: String, redeeming: bool },
     /// The code is shown; waiting for the owner to approve it.
     Waiting {
         server: String,
@@ -164,6 +166,8 @@ pub struct PairingView {
     landscape: LandscapeCache,
     input: Entity<TextInput>,
     invite: Entity<TextInput>,
+    invite_target: Option<device_pairing::RedeemTarget>,
+    confirm_focus: FocusHandle,
     step: Step,
     /// The name the owner sees when approving.
     device_name: SharedString,
@@ -258,6 +262,8 @@ impl PairingView {
             landscape: LandscapeCache::default(),
             input,
             invite,
+            invite_target: None,
+            confirm_focus: cx.focus_handle(),
             step: Step::Enter { error: None },
             device_name,
             attempt: 0,
@@ -268,33 +274,50 @@ impl PairingView {
         if !matches!(self.step, Step::Enter { .. }) {
             return;
         }
-        let Some(wiring) = self.wiring.clone() else {
-            return;
-        };
         let input = self.invite.read(cx).content.to_string();
-        let parsed = device_pairing::invite_input(&input).map_err(|e| e.to_string());
-        let result = parsed.and_then(|input| {
-            let typed = self.input.read(cx).content.to_string();
-            config::normalize_server(input.origin.as_deref().unwrap_or(&typed))
-                .map(|server| (input.secret, server))
-        });
-        let (secret, server) = match result {
-            Ok(values) => values,
+        let typed = self.input.read(cx).content.to_string();
+        let target = match device_pairing::redeem_target(&typed, &input, config::normalize_server) {
+            Ok(target) => target,
             Err(error) => {
                 self.step = Step::Enter {
-                    error: Some(error.into()),
+                    error: Some(error.to_string().into()),
                 };
                 cx.notify();
                 return;
             }
         };
+        if let Some(host) = target.confirm_host.clone() {
+            self.invite_target = Some(target);
+            self.step = Step::ConfirmInvite { host };
+            cx.notify();
+        } else {
+            self.send_invite(target, cx);
+        }
+    }
+
+    fn confirm_invite(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.invite_target.take() {
+            self.send_invite(target, cx);
+        }
+    }
+
+    fn send_invite(&mut self, target: device_pairing::RedeemTarget, cx: &mut Context<Self>) {
+        let Some(wiring) = self.wiring.clone() else {
+            return;
+        };
+        let device_pairing::RedeemTarget { server, secret, .. } = target;
         let Ok(transport) = HttpTransport::anonymous(&server) else {
+            self.step = Step::Enter {
+                error: Some("That server address can't be used.".into()),
+            };
+            cx.notify();
             return;
         };
         self.attempt += 1;
         let attempt = self.attempt;
         self.step = Step::Starting {
             server: server.clone(),
+            redeeming: true,
         };
         let name = self.device_name.to_string();
         self.invite
@@ -351,6 +374,7 @@ impl PairingView {
         let attempt = self.attempt;
         self.step = Step::Starting {
             server: server.clone(),
+            redeeming: false,
         };
         cx.notify();
         let name = self.device_name.to_string();
@@ -508,6 +532,7 @@ impl PairingView {
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.invite_target = None;
         self.attempt += 1;
         self.step = Step::Enter { error: None };
         let focus = self.input.read(cx).focus_handle.clone();
@@ -686,7 +711,56 @@ impl Render for PairingView {
         let p = self.palette;
         let (title, body) = match self.step.clone() {
             Step::Enter { error } => ("Connect", self.enter(error.as_ref(), false, cx)),
-            Step::Starting { .. } => ("Connect", self.enter(None, true, cx)),
+            Step::ConfirmInvite { host } => {
+                if !self.confirm_focus.is_focused(window) {
+                    window.focus(&self.confirm_focus, cx);
+                }
+                (
+                    "Confirm server",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S3))
+                        .child(format!(
+                            "This invite is for {host}. Only continue if you trust this server."
+                        ))
+                        .child(
+                            div()
+                                .id("confirm-invite")
+                                .track_focus(&self.confirm_focus)
+                                .on_key_down(cx.listener(
+                                    |this, e: &gpui::KeyDownEvent, window, cx| {
+                                        match e.keystroke.key.as_str() {
+                                            "enter" | "space" if !e.is_held => {
+                                                this.confirm_invite(cx)
+                                            }
+                                            "escape" => this.cancel(window, cx),
+                                            _ => return,
+                                        }
+                                        cx.stop_propagation();
+                                    },
+                                ))
+                                .child(kit::button(&p, format!("Pair with {host}")))
+                                .on_click(cx.listener(|this, _, _, cx| this.confirm_invite(cx))),
+                        )
+                        .child(
+                            div()
+                                .id("cancel-invite-confirmation")
+                                .child(kit::button_quiet(&p, "Go back"))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.cancel(window, cx)),
+                                ),
+                        ),
+                )
+            }
+            Step::Starting { server, redeeming } => (
+                "Connect",
+                div().child(if redeeming {
+                    format!("Finishing pairing with {server}…")
+                } else {
+                    format!("Connecting to {server}…")
+                }),
+            ),
             Step::Waiting {
                 server,
                 code,

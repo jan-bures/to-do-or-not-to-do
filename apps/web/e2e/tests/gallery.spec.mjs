@@ -103,9 +103,11 @@ for (const scheme of ["light", "dark"]) {
       await expect(page.getByText("Invite cancelled.")).toBeVisible();
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.getByRole("button", { name: "Approve a device" }).click();
-      await page.getByRole("textbox", { name: "Code shown on the device" }).fill("ABCD-EFGH");
+      await page.getByRole("textbox", { name: "Code shown on the device" }).fill("abcd efgh");
       await page.getByRole("dialog", { name: "Approve a device" }).getByRole("button", { name: "Review", exact: true }).click();
       await expect(page.getByText(/Approve “New phone”/)).toBeVisible();
+      await expect(page.getByText("ABCD-EFGH", { exact: true })).toBeVisible();
+      await expect(page.getByText("Source address: 203.0.113.7")).toBeVisible();
       await shot(page, `device-approve-${scheme}`);
       await page.getByRole("button", { name: "Use another code" }).click();
       await expect(page.getByRole("textbox", { name: "Code shown on the device" })).toBeFocused();

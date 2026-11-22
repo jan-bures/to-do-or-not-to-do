@@ -52,6 +52,8 @@ pub struct Pairing {
     pub status: Status,
     /// The client address that started it.
     pub source: Option<IpAddr>,
+    /// The issuer that approved it, if any.
+    pub issued_by: Option<String>,
 }
 
 /// A newly started pairing, as returned to the client.
@@ -74,6 +76,8 @@ pub enum Poll {
     Approved {
         /// The device name.
         device_name: String,
+        /// The device or session that approved the pairing.
+        issued_by: Option<String>,
     },
     /// Denied. The request is gone.
     Denied,
@@ -211,6 +215,7 @@ impl Pairings {
                 expires_at,
                 status: Status::Pending,
                 source,
+                issued_by: None,
             },
         );
         Ok(Started {
@@ -237,17 +242,18 @@ impl Pairings {
     /// Approves or denies a pending request. Returns it, or `None` if there is no such pending request.
     /// A user code can be decided once.
     pub fn decide(&self, user_code: &str, approve: bool, now: i64) -> Option<Pairing> {
-        self.decide_inner(user_code, approve, None, now)
+        self.decide_inner(user_code, approve, None, None, now)
     }
 
     /// Approves the request matching the code and creation time reviewed by the owner.
     pub(crate) fn approve_reviewed(
         &self,
         code: &str,
-        created_at: i64,
+        created_at: Option<i64>,
+        issuer: &super::invite::Issuer,
         now: i64,
     ) -> Option<Pairing> {
-        self.decide_inner(code, true, Some(created_at), now)
+        self.decide_inner(code, true, created_at, Some(issuer), now)
     }
 
     fn decide_inner(
@@ -255,6 +261,7 @@ impl Pairings {
         user_code: &str,
         approve: bool,
         created_at: Option<i64>,
+        issuer: Option<&super::invite::Issuer>,
         now: i64,
     ) -> Option<Pairing> {
         let code = secret::normalize_code(user_code);
@@ -265,6 +272,7 @@ impl Pairings {
         if p.status != Status::Pending || created_at.is_some_and(|at| p.created_at != at) {
             return None;
         }
+        p.issued_by = issuer.map(super::invite::Issuer::label);
         p.status = if approve {
             Status::Approved
         } else {
@@ -297,6 +305,7 @@ impl Pairings {
                 if p.status == Status::Approved {
                     Poll::Approved {
                         device_name: p.device_name,
+                        issued_by: p.issued_by,
                     }
                 } else {
                     Poll::Denied
@@ -351,7 +360,8 @@ mod tests {
         assert_eq!(
             p.poll(&s.poll_token, 3),
             Poll::Approved {
-                device_name: "Laptop".into()
+                device_name: "Laptop".into(),
+                issued_by: None,
             }
         );
         assert_eq!(p.poll(&s.poll_token, 4), Poll::Gone, "delivered once");

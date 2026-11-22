@@ -424,6 +424,41 @@ test("a signed-in tab invites a new browser without sharing its existing passkey
   }
 });
 
+test("an invite hides its credential while a status response is held past expiry", async () => {
+  const page = await openApp();
+  const id = "A".repeat(22);
+  let release;
+  let polled;
+  const held = new Promise((resolve) => { release = resolve; });
+  const pollStarted = new Promise((resolve) => { polled = resolve; });
+  await page.route("**/api/v1/pair/invites", (route) => route.fulfill({ json: {
+    id, code: "ABCDEF-GHJKMN", expires_in: 2,
+    link: `${baseURL}/pair/invite#${"A".repeat(43)}`,
+  } }));
+  await page.route(`**/api/v1/pair/invites/${id}`, async (route) => {
+    polled();
+    await held;
+    await route.fulfill({ json: { status: "used", device_name: "Last-second phone" } });
+  });
+  try {
+    await page.getByRole("button", { name: "Device settings" }).click();
+    await page.getByRole("button", { name: "Pair a new device" }).click();
+    await page.getByRole("button", { name: "Create invite" }).click();
+    const qr = page.getByRole("img", { name: "Invite QR code" });
+    await expect(qr).toBeVisible();
+    await pollStarted;
+    await expect(page.getByText("Checking whether the device joined…")).toBeVisible();
+    await expect(qr).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Invite link" })).toHaveCount(0);
+    await expect(page.getByText("ABCDEF-GHJKMN", { exact: true })).toHaveCount(0);
+    release();
+    await expect(page.getByText("Last-second phone signed in.")).toBeVisible();
+  } finally {
+    release();
+    await page.close();
+  }
+});
+
 test("Activity reads confirmed changes and compensates another tab's past edit", async () => {
   const author = await openApp();
   const reader = await openApp();
