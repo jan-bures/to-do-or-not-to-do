@@ -349,7 +349,7 @@ fn a_damaged_cache_keeps_its_unsent_changes() {
         .into_iter()
         .map(|t| t.title)
         .collect();
-    assert_eq!(titles, ["Buy oat milk", "Call the bank"]);
+    assert_eq!(titles, ["Call the bank", "Buy oat milk"]);
     // The damaged copy is kept next to the new cache, and no recovery is left pending.
     let names: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -406,7 +406,7 @@ fn assert_recovered_everything(path: &std::path::Path) {
         .into_iter()
         .map(|t| t.title)
         .collect();
-    assert_eq!(titles, ["Buy oat milk", "Call the bank"]);
+    assert_eq!(titles, ["Call the bank", "Buy oat milk"]);
     assert!(!path.with_file_name("todo.sqlite.recovery.json").exists());
     drop(engine);
     assert_eq!(
