@@ -153,6 +153,13 @@ pub const SUN_TRAVEL: u32 = 700;
 pub const SYNC_HIGHLIGHT: u32 = 900;
 /// Sky to dusk, header expansion to 164 px and the sun setting when My Day is finished ([`SUN`]).
 pub const DUSK: u32 = 1200;
+/// Dusk cue, as a share of [`DUSK`]: the header text switches to the dark theme's ink, and the moon and stars
+/// begin to fade in.
+pub const DUSK_NIGHT_AT: f32 = 0.4;
+/// Dusk cue, as a share of [`DUSK`]: tomorrow's hand-over begins to enter ([`ROW_ENTER`], [`ENTER`]).
+pub const DUSK_HANDOVER_AT: f32 = 0.65;
+/// How far tomorrow's hand-over rises as it enters during dusk, in pixels (none with reduced motion).
+pub const DUSK_HANDOVER_RISE: f32 = 6.0;
 /// Delay step between items in a small entering group (capped at [`STAGGER_MAX_ITEMS`] items).
 pub const STAGGER: u32 = 25;
 /// Maximum number of items that receive incremental [`STAGGER`] delay (125 ms total cap).

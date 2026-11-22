@@ -44,6 +44,8 @@ pub enum Moment {
     },
     /// The sun travelling from `from` (done, total) to the fixture's count.
     SunTravel { from: (u32, u32), at: u32 },
+    /// Dusk falling over the finished day.
+    Dusk { at: u32 },
 }
 
 impl Fixture {
@@ -85,6 +87,10 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         )),
         "sun-travel-50" => Some(sun_travel(m::SUN_TRAVEL / 2)),
         "reopening-collapse-50" => Some(reopening(m::OVERLAY_OUT + m::ROW_COLLAPSE / 2)),
+        // Dusk falling: half way (the ink has switched, the night is coming), and three quarters of the
+        // way (tomorrow's hand-over entering, staggered).
+        "dusk-50" => Some(dusk(m::DUSK / 2)),
+        "dusk-75" => Some(dusk(m::DUSK * 3 / 4)),
         _ => None,
     }
 }
@@ -967,6 +973,13 @@ pub fn finished() -> Fixture {
         "2026-11-21T21:40:00Z",
     );
     f.sync = online("2026-11-21T21:39:00Z");
+    f
+}
+
+/// The finished day with dusk falling, `at` ms in.
+fn dusk(at: u32) -> Fixture {
+    let mut f = finished();
+    f.moment = Some(Moment::Dusk { at });
     f
 }
 

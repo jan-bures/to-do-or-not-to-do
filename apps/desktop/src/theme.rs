@@ -30,7 +30,12 @@ pub fn with_alpha(c: Hsla, alpha: f32) -> Hsla {
 /// `a` blended towards `b` by `t` (0 to 1), in sRGB, for colour fades (a title dimming as it's struck
 /// through). Blending the channels avoids the hue wrapping round that mixing HSL would risk.
 pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
-    let t = t.clamp(0., 1.);
+    // At either end it's exactly that colour, so a transition at rest draws what a still view does.
+    if t <= 0. {
+        return a;
+    } else if t >= 1. {
+        return b;
+    }
     let (a, b) = (a.to_rgb(), b.to_rgb());
     let ch = |x: f32, y: f32| x + (y - x) * t;
     gpui::Rgba {

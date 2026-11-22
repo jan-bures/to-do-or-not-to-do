@@ -265,6 +265,74 @@ fn a_placed_sun_glides_back_from_where_it_was_put() {
 }
 
 #[test]
+fn dusk_falls_with_its_cues_and_lifts_briskly() {
+    let mut mo = Motion::default();
+    mo.aim_dusk(MY_DAY, false, ms(0), Pace::FULL);
+    assert_eq!(mo.dusk(ms(0)), DuskLook::rest(false));
+    assert_eq!(mo.wake(ms(0)), Wake::Idle);
+    // The last task has left: dusk falls over DUSK.
+    mo.aim_dusk(MY_DAY, true, ms(0), Pace::FULL);
+    assert_eq!(mo.wake(ms(0)), Wake::Frame);
+    let at = |share: f32| mo.dusk(ms((m::DUSK as f32 * share) as u32));
+    // The ink switches and the night begins at its cue; the hand-over enters after its own, staggered.
+    assert!(!at(m::DUSK_NIGHT_AT - 0.05).night_ink());
+    assert!(at(m::DUSK_NIGHT_AT + 0.01).night_ink());
+    assert_eq!(at(m::DUSK_NIGHT_AT - 0.05).night(), 0.);
+    assert_eq!(
+        at(m::DUSK_HANDOVER_AT - 0.01).handover(0),
+        (0., m::DUSK_HANDOVER_RISE)
+    );
+    let (first, rise) = at(m::DUSK_HANDOVER_AT + 0.1).handover(0);
+    let (second, _) = at(m::DUSK_HANDOVER_AT + 0.1).handover(1);
+    assert!(first > second && second > 0. && rise > 0. && rise < m::DUSK_HANDOVER_RISE);
+    // The SUN curve: half way at half time.
+    let half = at(0.5);
+    assert!(close(half.scene(), 0.5) && close(half.height(), 0.5));
+    let done = mo.dusk(ms(m::DUSK));
+    assert!(done.settled() && done.scene() == 1. && done.night() == 1.);
+    assert_eq!(done.handover(m::STAGGER_MAX_ITEMS + 3), (1., 0.));
+    assert_eq!(mo.wake(ms(m::DUSK)), Wake::Idle);
+    // A task reopens: it turns back from there, over the brisker ROOM_HUE.
+    let back = ms(m::DUSK + 1_000);
+    mo.aim_dusk(MY_DAY, false, back, Pace::FULL);
+    assert_eq!(mo.dusk(back).scene(), 1.);
+    assert!(mo.dusk(back + ms(m::ROOM_HUE)).settled());
+    assert_eq!(mo.dusk(back + ms(m::ROOM_HUE)).scene(), 0.);
+}
+
+#[test]
+fn turning_back_part_way_retargets_from_where_the_dusk_is() {
+    let mut mo = Motion::default();
+    mo.aim_dusk(MY_DAY, false, ms(0), Pace::FULL);
+    mo.aim_dusk(MY_DAY, true, ms(0), Pace::FULL);
+    let at = ms(m::DUSK / 3);
+    let before = mo.dusk(at).scene();
+    mo.aim_dusk(MY_DAY, false, at, Pace::FULL);
+    assert!(close(mo.dusk(at).scene(), before));
+    assert!(mo.dusk(at + ms(m::ROOM_HUE)).settled());
+}
+
+#[test]
+fn reduced_dusk_crossfades_without_growing_or_rising() {
+    let mut mo = Motion::default();
+    mo.aim_dusk(MY_DAY, false, ms(0), Pace::REDUCED);
+    mo.aim_dusk(MY_DAY, true, ms(0), Pace::REDUCED);
+    let mid = mo.dusk(ms(m::REDUCED_FADE / 2));
+    assert_eq!(mid.height(), 1.);
+    assert!(mid.scene() > 0. && mid.scene() < 1.);
+    assert_eq!(mid.handover(3).1, 0.);
+    assert!(mo.dusk(ms(m::REDUCED_FADE)).settled());
+    // Another room starts at rest.
+    mo.aim_dusk(
+        RoomKey::Smart(crate::model::Smart::All),
+        false,
+        ms(10),
+        Pace::FULL,
+    );
+    assert_eq!(mo.dusk(ms(10)), DuskLook::rest(false));
+}
+
+#[test]
 fn rows_below_a_collapsing_row_rise_by_the_share_that_has_gone() {
     assert_eq!(lifts([1., 0.25, 1., 0.5, 1.]), [0., 0., 0.75, 0.75, 1.25]);
     assert!(lifts([]).is_empty());

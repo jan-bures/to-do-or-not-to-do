@@ -20,7 +20,11 @@
 //! middle reverses it from wherever it is, in place. With reduced motion, movement is instant, fades take
 //! at most `REDUCED_FADE`, and the hold keeps its full length (`motion::reduced`).
 //!
-//! Every duration and curve is `todo_design::motion`'s. Nothing here sleeps or touches GPUI.
+//! Finishing My Day turns the header to dusk once its last row has left ([`DuskLook`]: `DUSK`, `SUN`,
+//! with the doc's cues for the ink, the night sky and tomorrow's hand-over); reopening a task turns it
+//! back over `ROOM_HUE`.
+//!
+//! Every duration, curve and cue is `todo_design::motion`'s. Nothing here sleeps or touches GPUI.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -353,11 +357,101 @@ impl Travel {
     }
 }
 
-/// The window's motion: rows in their choreography and the sun.
+/// Where the header is between the day's strip and the finished day's dusk scene
+/// (`docs/design-language.md`, Motion, moment 2). One linear phase drives every part, read off at the
+/// doc's cues: 0 is the strip, 1 the dusk scene.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DuskLook {
+    phase: f32,
+    /// Where it's heading: the finished scene or the strip.
+    finished: bool,
+    reduced: bool,
+}
+
+impl DuskLook {
+    /// At rest: the strip, or the dusk scene.
+    pub fn rest(finished: bool) -> Self {
+        Self {
+            phase: f32::from(finished),
+            finished,
+            reduced: false,
+        }
+    }
+
+    /// How far the dusk scene has faded in over the strip (`SUN`).
+    pub fn scene(self) -> f32 {
+        m::SUN.ease(self.phase)
+    }
+
+    /// How far the header has grown towards the dusk scene's height. With reduced motion it switches at
+    /// once.
+    pub fn height(self) -> f32 {
+        if self.reduced {
+            f32::from(self.finished)
+        } else {
+            m::SUN.ease(self.phase)
+        }
+    }
+
+    /// Whether the header text is in the dark theme's ink, over the night sky.
+    pub fn night_ink(self) -> bool {
+        self.phase >= m::DUSK_NIGHT_AT
+    }
+
+    /// How far the moon and stars have faded in.
+    pub fn night(self) -> f32 {
+        m::SUN.ease((self.phase - m::DUSK_NIGHT_AT) / (1. - m::DUSK_NIGHT_AT))
+    }
+
+    /// How far item `i` of tomorrow's hand-over has entered (`ROW_ENTER`, `ENTER`, `STAGGER` apart for the
+    /// first `STAGGER_MAX_ITEMS`), and how far it still has to rise, in pixels.
+    pub fn handover(self, i: usize) -> (f32, f32) {
+        if self.reduced {
+            return (self.phase, 0.);
+        }
+        let stagger = (i.min(m::STAGGER_MAX_ITEMS) as u32 * m::STAGGER) as f32;
+        let ms = (self.phase - m::DUSK_HANDOVER_AT) * m::DUSK as f32 - stagger;
+        let t = m::ENTER.ease((ms / m::ROW_ENTER as f32).clamp(0., 1.));
+        (t, (1. - t) * m::DUSK_HANDOVER_RISE)
+    }
+
+    /// Whether it's at rest.
+    pub fn settled(self) -> bool {
+        self.phase == f32::from(self.finished)
+    }
+}
+
+/// The dusk on its way: its phase runs linearly from `from` to the finished scene or the strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Dusking {
+    room: RoomKey,
+    from: f32,
+    to: bool,
+    start: Duration,
+    span: Duration,
+    reduced: bool,
+}
+
+impl Dusking {
+    fn at(&self, now: Duration) -> DuskLook {
+        DuskLook {
+            phase: mix(
+                self.from,
+                f32::from(self.to),
+                stretch(now, self.start, self.span),
+            ),
+            finished: self.to,
+            reduced: self.reduced,
+        }
+    }
+}
+
+/// The window's motion: rows in their choreography, the sun and the dusk.
 #[derive(Clone, Debug, Default)]
 pub struct Motion {
     rows: BTreeMap<TaskId, RowMotion>,
     sun: Option<Travel>,
+    dusk: Option<Dusking>,
 }
 
 impl Motion {
@@ -533,9 +627,41 @@ impl Motion {
         self.sun.map(|s| s.at(now))
     }
 
+    /// Turns the header towards the dusk scene (the day just finished) or back to the strip (a task
+    /// reopened or added): over `DUSK` there and the brisker `ROOM_HUE` back, from wherever it is. With
+    /// reduced motion it crossfades in `REDUCED_FADE`. A new room starts at rest.
+    pub fn aim_dusk(&mut self, room: RoomKey, finished: bool, now: Duration, pace: Pace) {
+        let span = if finished { m::DUSK } else { m::ROOM_HUE };
+        self.dusk = Some(match self.dusk {
+            Some(d) if d.room == room && d.to == finished => return,
+            Some(d) if d.room == room => Dusking {
+                room,
+                from: d.at(now).phase,
+                to: finished,
+                start: now,
+                span: pace.fade(span),
+                reduced: pace.reduced,
+            },
+            _ => Dusking {
+                room,
+                from: f32::from(finished),
+                to: finished,
+                start: now,
+                span: Duration::ZERO,
+                reduced: pace.reduced,
+            },
+        });
+    }
+
+    /// Where the header is between the strip and the dusk scene now.
+    pub fn dusk(&self, now: Duration) -> DuskLook {
+        self.dusk.map_or(DuskLook::rest(false), |d| d.at(now))
+    }
+
     /// When the view needs its next frame. At rest it's [`Wake::Idle`]: no frames and no timers.
     pub fn wake(&self, now: Duration) -> Wake {
-        let sun = if self.sun.is_some_and(|s| s.moving(now)) {
+        let dusking = self.dusk.is_some_and(|d| !d.at(now).settled());
+        let sun = if dusking || self.sun.is_some_and(|s| s.moving(now)) {
             Wake::Frame
         } else {
             Wake::Idle

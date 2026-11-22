@@ -58,6 +58,8 @@ pub const FIXTURES: &[&str] = &[
     "completing-collapse-50",
     "sun-travel-50",
     "reopening-collapse-50",
+    "dusk-50",
+    "dusk-75",
 ];
 
 /// What to do.

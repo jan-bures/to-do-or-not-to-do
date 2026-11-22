@@ -19,7 +19,7 @@ use todo_core::ids::{CollectionId, TaskId};
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
-use super::landscape::{LandscapeCache, Sky, landscape, sun_at};
+use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::layout::{self, DetailPane, OverlayMotion, OverlayPhase, Width};
 use crate::model::motion::{Keep, Motion, Pace, RowLook, Wake, lifts};
@@ -124,7 +124,7 @@ pub struct ShellView {
     shell: Shell,
     theme: Theme,
     palette: Palette,
-    landscape: LandscapeCache,
+    landscape: HeaderCache,
     quick_add: Entity<TextInput>,
     list_focus: FocusHandle,
     rows: UniformListScrollHandle,
@@ -240,7 +240,7 @@ impl ShellView {
             shell,
             theme,
             palette,
-            landscape: LandscapeCache::default(),
+            landscape: HeaderCache::default(),
             quick_add,
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
@@ -397,10 +397,12 @@ impl ShellView {
     fn follow_shell(&mut self) {
         let now = self.now();
         let room = &self.shell.room;
+        let pace = self.pace();
+        self.motion
+            .aim_dusk(room.key, room.finished_day(), now, pace);
         if room.finished_day() {
             self.motion.place_sun(room.key, 1., now);
         } else {
-            let pace = self.pace();
             self.motion
                 .aim_sun(room.key, sun_at(room.done, room.total), now, pace);
         }
@@ -486,6 +488,12 @@ impl ShellView {
                 let (done, total) = from;
                 let place = sun_at(done, total).unwrap_or_default();
                 self.motion.place_sun(room, place, Duration::ZERO);
+                at
+            }
+            Moment::Dusk { at } => {
+                let room = self.shell.room.key;
+                self.motion
+                    .aim_dusk(room, false, Duration::ZERO, Pace::FULL);
                 at
             }
         };
@@ -936,7 +944,7 @@ impl ShellView {
     /// (secondary ink, metadata ink, separator) for text on the header. The dusk scene is a night scene in
     /// both themes, so its header uses the dark theme's inks.
     fn header_inks(&self) -> (Hsla, Hsla, Hsla) {
-        let p = if self.shell.room.finished_day() {
+        let p = if self.motion.dusk(self.frame).night_ink() {
             theme::palette(Theme::Dark, self.shell.room.hue)
         } else {
             self.palette
@@ -952,13 +960,19 @@ impl ShellView {
     fn header(&self) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
-        let finished = room.finished_day();
-        let (sky_bg, title_ink, sky) = if finished {
-            let dusk = theme::dusk(room.hue);
-            let ink = theme::palette(Theme::Dark, room.hue).ink;
-            (dusk.top, ink, Sky::Finished(dusk))
+        // The everyday strip, the finished day's dusk scene, or the dusk falling or lifting between them.
+        let look = self.motion.dusk(self.frame);
+        let dusk = theme::dusk(room.hue);
+        let sky_bg = theme::mix(p.sky, dusk.top, look.scene());
+        let title_ink = if look.night_ink() {
+            theme::palette(Theme::Dark, room.hue).ink
         } else {
-            (p.sky, p.ink, Sky::Slim(self.palette))
+            p.ink
+        };
+        let blend = Blend {
+            height: look.height(),
+            scene: look.scene(),
+            night: look.night(),
         };
         let (_, ink_3, _) = self.header_inks();
         // Long titles end in an ellipsis from text layout, with no clipping: the display face's
@@ -1024,10 +1038,12 @@ impl ShellView {
                     }),
             )
             // The finished scene's rings reach past the strip; the header ends at its bottom edge.
-            .child(div().overflow_hidden().child(landscape(
+            .child(div().overflow_hidden().child(header_landscape(
                 &self.landscape,
-                sky,
+                self.palette,
+                dusk,
                 self.motion.sun(self.frame),
+                blend,
             )))
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
     }
@@ -1722,10 +1738,12 @@ impl ShellView {
                     .pb(px(space::S2))
                     .text_color(p.ink_3)
                     .style(ty::CAPS_LABEL)
-                    .child("When the sun comes up".to_uppercase()),
+                    .child("When the sun comes up".to_uppercase())
+                    .map(|d| self.reveal(0, d)),
             )
             .child(
                 div()
+                    .map(|d| self.reveal(1, d))
                     .mx(px(desktop::LIST_PAD_X))
                     .flex()
                     .items_center()
@@ -1741,6 +1759,17 @@ impl ShellView {
                     )
                     .child(self.plan_button(&weekday, cx)),
             )
+    }
+
+    /// Item `i` of tomorrow's hand-over while dusk falls: fading in and rising into place after the
+    /// doc's cue, the first few staggered (`motion::DuskLook::handover`). At rest it's left as it is.
+    fn reveal<E: Styled>(&self, i: usize, el: E) -> E {
+        let (shown, rise) = self.motion.dusk(self.frame).handover(i);
+        if shown >= 1. {
+            el
+        } else {
+            el.opacity(shown).relative().top(px(rise))
+        }
     }
 
     /// The finished day hands over to tomorrow: its first task with a sunrise mark, then the rest of
@@ -1843,6 +1872,11 @@ impl ShellView {
             )
             .child(plan);
         // Its children are in the order `handover_child` counts them; it scrolls when taller than the pane.
+        // While dusk falls they enter in that order too (`reveal`).
+        let section_len = |rows: &[TaskRow]| if rows.is_empty() { 0 } else { 1 + rows.len() };
+        let also = 2;
+        let week = also + section_len(&next.also);
+        let more = week + section_len(&next.week);
         let scroll = div()
             .id("handover")
             .size_full()
@@ -1851,25 +1885,34 @@ impl ShellView {
             .pb(px(space::S6))
             .flex()
             .flex_col()
-            .child(section("When the sun comes up".into()))
-            .child(card)
+            .child(self.reveal(0, section("When the sun comes up".into())))
+            .child(self.reveal(1, card))
             .when(!next.also.is_empty(), |d| {
-                d.child(section(format!("Also on {}", next.weekday).into()))
-                    .children(next.also.iter().map(compact))
+                d.child(self.reveal(also, section(format!("Also on {}", next.weekday).into())))
+                    .children(
+                        (next.also.iter().enumerate())
+                            .map(|(i, t)| self.reveal(also + 1 + i, compact(t))),
+                    )
             })
             .when(!next.week.is_empty(), |d| {
-                d.child(section("Rest of the week".into()))
-                    .children(next.week.iter().map(compact))
+                d.child(self.reveal(week, section("Rest of the week".into())))
+                    .children(
+                        (next.week.iter().enumerate())
+                            .map(|(i, t)| self.reveal(week + 1 + i, compact(t))),
+                    )
             })
             .when(next.more > 0, |d| {
                 d.child(
-                    div()
-                        .flex_none()
-                        .px(px(desktop::LIST_PAD_X))
-                        .pt(px(space::S3))
-                        .style(ty::COUNT)
-                        .text_color(p.ink_3)
-                        .child(format!("{} more", next.more)),
+                    self.reveal(
+                        more,
+                        div()
+                            .flex_none()
+                            .px(px(desktop::LIST_PAD_X))
+                            .pt(px(space::S3))
+                            .style(ty::COUNT)
+                            .text_color(p.ink_3)
+                            .child(format!("{} more", next.more)),
+                    ),
                 )
             });
         div()

@@ -242,6 +242,61 @@ pub fn sun_at(done: u32, total: u32) -> Option<f32> {
     Landscape::shows_sun(total as usize).then(|| Landscape::progress(done as usize, total as usize))
 }
 
+impl LandscapeCache {
+    /// The scene's paths for `key`, built only when it changed since the last frame.
+    fn paths(&self, key: Key) -> Vec<(Path, Ink)> {
+        let mut cached = self.0.borrow_mut();
+        if cached.key != Some(key) {
+            cached.paths = build(key);
+            cached.key = Some(key);
+        }
+        cached.paths.clone()
+    }
+}
+
+/// A rectangle `height` tall at the bottom of `bounds`: where a scene sits while the header grows.
+fn bottom(bounds: Bounds<Pixels>, height: f32) -> Bounds<Pixels> {
+    let height = px(height);
+    Bounds::new(
+        point(
+            bounds.origin.x,
+            bounds.origin.y + bounds.size.height - height,
+        ),
+        gpui::size(bounds.size.width, height),
+    )
+}
+
+/// The everyday strip's sky in `bounds`, with the dark theme's horizon band behind the strip at the bottom.
+fn paint_strip_sky(window: &mut Window, bounds: Bounds<Pixels>, p: &Palette) {
+    window.paint_quad(fill(bounds, p.sky));
+    if p.night() {
+        let strip = bottom(bounds, crate::theme::desktop::LANDSCAPE);
+        let land = Landscape::slim(f32::from(strip.size.width), f32::from(strip.size.height));
+        let top = px(land.horizon_top());
+        let band = Bounds::new(
+            point(strip.origin.x, strip.origin.y + top),
+            gpui::size(strip.size.width, strip.size.height - top),
+        );
+        window.paint_quad(fill(band, p.horizon));
+    }
+}
+
+/// The dusk gradient in `bounds`, at `alpha`.
+fn paint_dusk_sky(window: &mut Window, bounds: Bounds<Pixels>, d: &Dusk, alpha: f32) {
+    window.paint_quad(fill(
+        bounds,
+        linear_gradient(
+            180.,
+            linear_color_stop(faded(d.top, alpha), 0.),
+            linear_color_stop(faded(d.low, alpha), 1.),
+        ),
+    ));
+}
+
+fn faded(c: Hsla, alpha: f32) -> Hsla {
+    with_alpha(c, c.a * alpha)
+}
+
 /// The landscape, with the sun at `sun` on its arc (0 to 1; `None` for a room without tasks, which shows
 /// hills only). It fills its parent's width; its height is the scene's (`desktop::LANDSCAPE` or
 /// `landscape::HEIGHT_FINISHED`). In the finished scene the dusk gradient also runs behind the header text,
@@ -254,47 +309,101 @@ pub fn landscape(cache: &LandscapeCache, sky: Sky, sun: Option<f32>) -> impl Int
     };
     canvas(
         move |bounds, _window, _cx| {
-            let key = Key {
+            cache.paths(Key {
                 bounds,
                 sun,
                 scene,
                 stars,
-            };
-            let mut cached = cache.0.borrow_mut();
-            if cached.key != Some(key) {
-                cached.paths = build(key);
-                cached.key = Some(key);
-            }
-            cached.paths.clone()
+            })
         },
         move |bounds, paths, window: &mut Window, _cx| {
             match sky {
-                Sky::Slim(p) => {
-                    window.paint_quad(fill(bounds, p.sky));
-                    if p.night() {
-                        let land = Landscape::slim(
-                            f32::from(bounds.size.width),
-                            f32::from(bounds.size.height),
-                        );
-                        let top = px(land.horizon_top());
-                        let band = Bounds::new(
-                            point(bounds.origin.x, bounds.origin.y + top),
-                            gpui::size(bounds.size.width, bounds.size.height - top),
-                        );
-                        window.paint_quad(fill(band, p.horizon));
-                    }
-                }
-                Sky::Finished(d) => window.paint_quad(fill(
-                    bounds,
-                    linear_gradient(
-                        180.,
-                        linear_color_stop(d.top, 0.),
-                        linear_color_stop(d.low, 1.),
-                    ),
-                )),
+                Sky::Slim(p) => paint_strip_sky(window, bounds, &p),
+                Sky::Finished(d) => paint_dusk_sky(window, bounds, &d, 1.),
             }
             for (path, ink) in paths {
                 window.paint_path(path, color(&sky, ink));
+            }
+        },
+    )
+    .w_full()
+    .h(px(height))
+}
+
+/// The room header's caches: one per scene, so a dusk that's falling draws both without rebuilding
+/// either at rest.
+#[derive(Clone, Debug, Default)]
+pub struct HeaderCache {
+    strip: LandscapeCache,
+    dusk: LandscapeCache,
+}
+
+/// Where the room header is between its everyday strip and the dusk scene (see
+/// `model::motion::DuskLook`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blend {
+    /// How far the header has grown from `desktop::LANDSCAPE` to `landscape::HEIGHT_FINISHED`.
+    pub height: f32,
+    /// How far the dusk scene has faded in over the strip.
+    pub scene: f32,
+    /// How far the moon and stars have faded in.
+    pub night: f32,
+}
+
+/// The room header's landscape: the everyday strip in `palette`, the finished day's dusk scene, or (while
+/// dusk falls or lifts) the dusk scene fading in over the strip as the header grows. Each scene sits at
+/// the bottom of the growing header, so the hills stay on the ground; the dusk gradient spans the whole
+/// height, matching the colour the parent paints above it (`dusk.top` blended over `sky` by
+/// `blend.scene`). At rest it draws exactly what [`landscape`] does.
+pub fn header_landscape(
+    cache: &HeaderCache,
+    palette: Palette,
+    dusk: Dusk,
+    sun: Option<f32>,
+    blend: Blend,
+) -> impl IntoElement {
+    let cache = cache.clone();
+    let slim = crate::theme::desktop::LANDSCAPE;
+    let height = slim + (geo::HEIGHT_FINISHED - slim) * blend.height;
+    canvas(
+        move |bounds, _window, _cx| {
+            let strip = (blend.scene < 1.).then(|| {
+                cache.strip.paths(Key {
+                    bounds: bottom(bounds, slim),
+                    sun,
+                    scene: Scene::Slim,
+                    stars: palette.night(),
+                })
+            });
+            let night = (blend.scene > 0.).then(|| {
+                cache.dusk.paths(Key {
+                    bounds: bottom(bounds, geo::HEIGHT_FINISHED),
+                    sun: Some(1.),
+                    scene: Scene::Finished,
+                    stars: true,
+                })
+            });
+            (strip, night)
+        },
+        move |bounds, (strip, night), window: &mut Window, _cx| {
+            if let Some(paths) = strip {
+                paint_strip_sky(window, bounds, &palette);
+                let sky = Sky::Slim(palette);
+                for (path, ink) in paths {
+                    window.paint_path(path, color(&sky, ink));
+                }
+            }
+            if let Some(paths) = night {
+                // Drawn over the strip at the scene's opacity; its gradient covers it all at the end.
+                paint_dusk_sky(window, bounds, &dusk, blend.scene);
+                let sky = Sky::Finished(dusk);
+                for (path, ink) in paths {
+                    let alpha = match ink {
+                        Ink::Star | Ink::Moon => blend.scene * blend.night,
+                        _ => blend.scene,
+                    };
+                    window.paint_path(path, faded(color(&sky, ink), alpha));
+                }
             }
         },
     )
