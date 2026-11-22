@@ -11,11 +11,17 @@
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">lencr.org</domain>
-        <domain includeSubdomains="true">pki.goog</domain>
-        <domain includeSubdomains="true">ssl.com</domain>
-        <domain includeSubdomains="true">sectigo.com</domain>
-        <domain includeSubdomains="true">usertrust.com</domain>
-        <domain includeSubdomains="true">digicert.com</domain>
+        <!-- Let's Encrypt CRLs (ye1.c.lencr.org and siblings; it has no OCSP). -->
+        <domain includeSubdomains="true">c.lencr.org</domain>
+        <!-- Google Trust Services. -->
+        <domain includeSubdomains="false">c.pki.goog</domain>
+        <domain includeSubdomains="false">o.pki.goog</domain>
+        <!-- SSL.com (Cloudflare's issuing CAs). -->
+        <domain includeSubdomains="false">c.cf-b.ssl.com</domain>
+        <domain includeSubdomains="false">c.cf-i.ssl.com</domain>
+        <domain includeSubdomains="false">ocsps.ssl.com</domain>
+        <!-- Sectigo (Cloudflare's backup CA). -->
+        <domain includeSubdomains="false">crl.sectigo.com</domain>
+        <domain includeSubdomains="false">ocsp.sectigo.com</domain>
     </domain-config>
 </network-security-config>

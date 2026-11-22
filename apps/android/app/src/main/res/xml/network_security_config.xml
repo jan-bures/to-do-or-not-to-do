@@ -8,17 +8,24 @@
   server certificate, and Android fetches the CA's OCSP response or CRL over plain http (they are
   signed, so http is how CAs publish them). Blocking that fetch fails the check, and the verifier
   reports it as a revoked certificate. These are the revocation hosts of the CAs that issue edge
-  certificates for common hosting (Let's Encrypt, Google Trust Services, SSL.com, Sectigo, DigiCert).
-  Keep the list in step with the debug config (PlatformNetworkConfigTest checks it).
+  certificates for Cloudflare (Let's Encrypt, Google Trust Services, SSL.com, and Sectigo as
+  the backup): only their CRL and OCSP responder hosts, nothing else on those domains.
+  Keep the list in step with the debug config (CleartextTest checks it).
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">lencr.org</domain>
-        <domain includeSubdomains="true">pki.goog</domain>
-        <domain includeSubdomains="true">ssl.com</domain>
-        <domain includeSubdomains="true">sectigo.com</domain>
-        <domain includeSubdomains="true">usertrust.com</domain>
-        <domain includeSubdomains="true">digicert.com</domain>
+        <!-- Let's Encrypt CRLs (ye1.c.lencr.org and siblings; it has no OCSP). -->
+        <domain includeSubdomains="true">c.lencr.org</domain>
+        <!-- Google Trust Services. -->
+        <domain includeSubdomains="false">c.pki.goog</domain>
+        <domain includeSubdomains="false">o.pki.goog</domain>
+        <!-- SSL.com (Cloudflare's issuing CAs). -->
+        <domain includeSubdomains="false">c.cf-b.ssl.com</domain>
+        <domain includeSubdomains="false">c.cf-i.ssl.com</domain>
+        <domain includeSubdomains="false">ocsps.ssl.com</domain>
+        <!-- Sectigo (Cloudflare's backup CA). -->
+        <domain includeSubdomains="false">crl.sectigo.com</domain>
+        <domain includeSubdomains="false">ocsp.sectigo.com</domain>
     </domain-config>
 </network-security-config>

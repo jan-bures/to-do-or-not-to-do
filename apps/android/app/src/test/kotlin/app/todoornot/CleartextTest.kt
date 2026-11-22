@@ -27,20 +27,44 @@ class CleartextTest {
     private fun Element.cleartextDomains(): List<Element> =
         children("domain-config").filter { it.allowsCleartext() }.flatMap { it.children("domain") }
 
+    /** Each allowed domain with whether it includes subdomains. */
+    private fun Element.cleartextPolicy(): Set<Pair<String, Boolean>> =
+        cleartextDomains().map { it.textContent.trim() to (it.getAttribute("includeSubdomains") == "true") }.toSet()
+
+    /** Whether the policy lets plain http reach [host], the way Android matches domain-config entries. */
+    private fun Set<Pair<String, Boolean>>.permits(host: String) =
+        any { (domain, subdomains) -> host == domain || (subdomains && host.endsWith(".$domain")) }
+
     /**
      * Android fetches OCSP responses and CRLs over plain http when the platform verifier checks the server
-     * certificate; blocking them made every certificate look revoked. Only those hosts are allowed.
+     * certificate; blocking them made every certificate look revoked. Only those responder hosts are allowed.
      */
-    private val revocationHosts = setOf("lencr.org", "pki.goog", "ssl.com", "sectigo.com", "usertrust.com", "digicert.com")
+    private val revocationPolicy = setOf(
+        "c.lencr.org" to true,
+        "c.pki.goog" to false,
+        "o.pki.goog" to false,
+        "c.cf-b.ssl.com" to false,
+        "c.cf-i.ssl.com" to false,
+        "ocsps.ssl.com" to false,
+        "crl.sectigo.com" to false,
+        "ocsp.sectigo.com" to false,
+    )
 
-    private fun List<Element>.revocation() = filter { it.textContent.trim() in revocationHosts }
+    private fun assertRevocationOnly(policy: Set<Pair<String, Boolean>>) {
+        // The CRL host of a current Let's Encrypt certificate, which the pairing failure was about.
+        assertTrue(policy.permits("ye1.c.lencr.org"))
+        assertTrue(policy.permits("o.pki.goog"))
+        for (sibling in listOf("lencr.org", "www.lencr.org", "pki.goog", "www.ssl.com", "sectigo.com", "todo.example.com")) {
+            assertFalse("$sibling must stay HTTPS only", policy.permits(sibling))
+        }
+    }
 
     @Test
     fun release_allows_plain_http_only_to_certificate_revocation_hosts() {
         val c = config("main")
         assertFalse(c.children("base-config").single().allowsCleartext())
-        val domains = c.cleartextDomains()
-        assertEquals(revocationHosts, domains.map { it.textContent.trim() }.toSet())
+        assertEquals(revocationPolicy, c.cleartextPolicy())
+        assertRevocationOnly(c.cleartextPolicy())
         val manifest = File("src/main/AndroidManifest.xml").readText()
         assertTrue(manifest.contains("android:networkSecurityConfig=\"@xml/network_security_config\""))
     }
@@ -49,13 +73,8 @@ class CleartextTest {
     fun debug_allows_plain_http_only_to_loopback_and_the_same_revocation_hosts() {
         val c = config("debug")
         assertFalse(c.children("base-config").single().allowsCleartext())
-        val domains = c.cleartextDomains()
-        assertEquals(
-            setOf("localhost", "127.0.0.1") + revocationHosts,
-            domains.map { it.textContent.trim() }.toSet(),
-        )
-        val loopback = domains - domains.revocation().toSet()
-        assertTrue(loopback.none { it.getAttribute("includeSubdomains") == "true" })
+        assertEquals(setOf("localhost" to false, "127.0.0.1" to false) + revocationPolicy, c.cleartextPolicy())
+        assertRevocationOnly(c.cleartextPolicy() - setOf("localhost" to false, "127.0.0.1" to false))
     }
 
     /** The release side is checked by Gradle (`verifyReleaseCleartextPolicy`), as unit tests run against debug. */

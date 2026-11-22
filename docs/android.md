@@ -371,8 +371,8 @@ because the Keystore key goes with it.
    `127.0.0.1`), which is what the emulator setup below uses. The Rust core enforces this (the build
    variant passes the allowance in, because the core is always compiled in release mode), and each
    variant's network security config says the same for the platform's network stack. That config
-   has one exception: the certificate revocation hosts of the common CAs (Let's Encrypt, Google Trust
-   Services, SSL.com, Sectigo, DigiCert). Android fetches OCSP responses and CRLs over plain http when it
+   has one exception: the CRL and OCSP responder hosts of the CAs that issue Cloudflare's edge
+   certificates (Let's Encrypt, Google Trust Services, SSL.com, and Sectigo as the backup). Android fetches OCSP responses and CRLs over plain http when it
    checks the server certificate, and if that fetch is blocked, the verifier reports the certificate as
    revoked.
 2. The app shows a code and a link. Open the link on a device where you can sign in with your passkey (or
