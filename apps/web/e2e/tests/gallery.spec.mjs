@@ -45,12 +45,14 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
-    test(`phone quick-add previews a date (${scheme})`, async ({ page }) => {
+    test(`quick-add previews the shared date label (${scheme})`, async ({ page }) => {
       const w = watch(page);
-      await page.setViewportSize(PHONE);
+      await page.setViewportSize(DESKTOP);
       await open(page);
       await page.getByRole("textbox", { name: "Add a task" }).fill("Water the plants zítra");
-      await expect(page.locator(".qa-date-chip")).toHaveText("Tomorrow");
+      await expect(page.locator(".qa-date-chip")).toHaveText("Sun 22 Nov");
+      await shot(page, `desktop-quick-add-date-${scheme}`);
+      await page.setViewportSize(PHONE);
       await shot(page, `phone-quick-add-date-${scheme}`);
       await w.check();
     });

@@ -581,12 +581,13 @@ pub fn short_date(d: Date, today: Date) -> String {
     }
 }
 
-/// How a due date reads relative to today.
+/// The parsed date displayed in the quick-add chip, using the shared client format.
 #[must_use]
 pub fn date_preview(text: &str, now: &Now) -> Option<String> {
-    quick_add::parse(text, &now.eval())
+    let eval = now.eval();
+    quick_add::parse(text, &eval)
         .due
-        .map(|d| date_label(d, now.today()))
+        .map(|d| quick_add::short_date(d, eval.today))
 }
 
 /// An empty due-date edit clears the date; invalid text is distinct from clearing it.
@@ -1549,7 +1550,15 @@ mod tests {
         let n = now();
         assert_eq!(
             date_preview("Mail it zítra !!", &n).as_deref(),
-            Some("Tomorrow")
+            Some("Sun 22 Nov")
+        );
+        assert_eq!(
+            date_preview("Mail it today", &n).as_deref(),
+            Some("Sat 21 Nov")
+        );
+        assert_eq!(
+            date_preview("Mail it 2027-01-04", &n).as_deref(),
+            Some("Mon 4 Jan 2027")
         );
         for text in ["tomorrow", r"See you \tomorrow", "Read on 2026-11-20"] {
             assert_eq!(date_preview(text, &n), None, "{text}");

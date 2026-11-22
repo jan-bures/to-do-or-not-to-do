@@ -279,7 +279,8 @@ hide a collection's lists without changing rooms. **New list** creates a sibling
 child of the current collection, or a top-level list from a smart room. Each new list gets a swatch.
 
 Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
-and to set that date when you submit. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
+and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
+`Sun 22 Nov`. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
 `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
 `See you tomorrow` as the title. The room supplies defaults: My Day adds today's My Day stamp,
 Important defaults to high priority and Planned defaults to due today. New tasks go first in their
@@ -341,7 +342,7 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, due-date editor, step controls and delete Undo, a collapsed collection, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
-  an empty list, the phone quick-add date chip, the storage-error and read-only alerts
+  an empty list, the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
   `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.

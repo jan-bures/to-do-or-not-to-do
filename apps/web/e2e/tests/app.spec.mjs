@@ -70,10 +70,14 @@ test("quick-add previews only parsed dates and clears the chip after submit", as
   await add.fill("Water the plants by fri !!");
   await expect(preview).toHaveText("Fri 27 Nov");
   await expect(preview).toBeVisible();
+  await add.fill("Water the plants 2027-01-04");
+  await expect(preview).toHaveText("Mon 4 Jan 2027");
+  await add.fill("Water the plants today");
+  await expect(preview).toHaveText("Sat 21 Nov");
   await add.fill(String.raw`Water the plants \tomorrow`);
   await expect(preview).toBeHidden();
   await add.fill("Water the plants zítra !!");
-  await expect(preview).toHaveText("Tomorrow");
+  await expect(preview).toHaveText("Sun 22 Nov");
   await add.press("Enter");
   await expect(preview).toBeHidden();
   await expect(add).toBeFocused();
