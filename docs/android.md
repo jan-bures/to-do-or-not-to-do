@@ -42,7 +42,7 @@ What the first version does:
   of the chosen list. In a manual list, **Move up** and **Move down** move an open task past its visible
   neighbour. **Delete task** doesn't ask first and closes that task's detail. All three changes offer
   **Undo**. If another device reorders the moved task before Undo, the change stays and the failed-change
-  banner explains: “Undo moving a task: It was changed again since.”
+  banner explains: “Undo moving a task: Couldn't undo: the task was changed again.”
 - **Due date and priority.** In the detail pane, the **Due** row opens the date picker: the Material date
   picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
   (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes

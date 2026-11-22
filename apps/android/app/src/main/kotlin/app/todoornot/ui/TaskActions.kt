@@ -23,6 +23,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
@@ -80,7 +82,7 @@ fun TaskActionsAnchor(
                 // and a renamed destination appears under its new name.
                 var groups by remember(id, filter) { mutableStateOf<List<DestinationGroup>?>(null) }
                 LaunchedEffect(state, filter) { groups = actions.moveDestinations(id, filter) }
-                MoveTaskCard(filter, { filter = it }, groups, { list -> overlay.choose { actions.moveTaskTo(id, list) } }, overlay::close)
+                MoveTaskCard(filter, { filter = it }, groups, { list -> overlay.choose { actions.moveTaskTo(id, list) } }, overlay::close, focus = true)
             }
             null -> Unit
         }
@@ -89,7 +91,10 @@ fun TaskActionsAnchor(
 
 /** Filter stays in place above a scrollable list, even with the keyboard open. */
 @Composable
-fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<DestinationGroup>?, onChoose: (String) -> Unit, cancel: () -> Unit) {
+fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<DestinationGroup>?, onChoose: (String) -> Unit, cancel: () -> Unit, focus: Boolean = false) {
+    // Open ready to type, as the desktop's picker does. The gallery leaves it unfocused: no cursor.
+    val field = remember { FocusRequester() }
+    if (focus) LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
     val design = LocalDesign.current
     val r = design.room
     val s = Tokens.Space
@@ -98,7 +103,7 @@ fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<Destin
         BasicTextField(
             value = filter, onValueChange = onFilter, singleLine = true,
             modifier = Modifier.fillMaxWidth().border(Tokens.Elevation.HAIRLINE.dp, r.control, RoundedCornerShape(Tokens.Radius.MD.dp))
-                .semantics { contentDescription = "Filter lists" },
+                .focusRequester(field).semantics { contentDescription = "Filter lists" },
             textStyle = Tokens.Type.BODY.style(r.ink), cursorBrush = SolidColor(r.accent),
             decorationBox = { inner ->
                 Box(Modifier.heightIn(min = Tokens.Metrics.Phone.TOUCH.dp).padding(horizontal = s.S3.dp), contentAlignment = Alignment.CenterStart) {

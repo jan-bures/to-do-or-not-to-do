@@ -1309,7 +1309,10 @@ async fn task_actions_and_move_conflict_on_the_server() {
     e.undo_task_move(moved).unwrap();
     eventually("conflict", || !e.failed().is_empty()).await;
     assert_eq!(e.failed()[0].what, "Undo moving a task");
-    assert_eq!(e.failed()[0].reason, "It was changed again since.");
+    assert_eq!(
+        e.failed()[0].reason,
+        "Couldn't undo: the task was changed again."
+    );
     assert_eq!(remote.state().tasks[&task], latest);
     e.stop();
 }

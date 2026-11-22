@@ -282,7 +282,7 @@ fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
 /// Why the server refused a change, in the app's own words: from the rejection's code, never the
 /// server's message, which can be technical or quote task content.
 fn reason(failed: &todo_client::FailedEntry, undone: Option<Undone>) -> String {
-    if failed.entry.command().is_some() || matches!(undone, None | Some(Undone::TaskMove)) {
+    if failed.entry.command().is_some() {
         todo_client::failure::why(failed).to_owned()
     } else {
         undo_failure_message(&failed.rejection.code, undone)
@@ -1463,6 +1463,8 @@ mod tests {
     fn refused_undos_are_worded_by_what_they_reverse_never_with_server_text() {
         for undone in [
             None,
+            Some(Undone::TaskDelete),
+            Some(Undone::TaskMove),
             Some(Undone::Completion),
             Some(Undone::Step),
             Some(Undone::List),
@@ -1495,6 +1497,19 @@ mod tests {
         assert_eq!(
             undo_failure_message("undo_conflict", None),
             "Couldn't undo: it was changed again."
+        );
+        // Every undo reads like the desktop's, moves and deletions included.
+        assert_eq!(
+            undo_failure_message("undo_conflict", Some(Undone::TaskMove)),
+            "Couldn't undo: the task was changed again."
+        );
+        assert_eq!(
+            undo_failure_message("not_found", Some(Undone::TaskDelete)),
+            "Couldn't undo: the task no longer exists."
+        );
+        assert_eq!(
+            Undone::of(TaskId::from_uuid(Uuid::nil()).into()),
+            Undone::TaskDelete
         );
         assert_eq!(
             Undone::of(StepId::from_uuid(Uuid::nil()).into()),

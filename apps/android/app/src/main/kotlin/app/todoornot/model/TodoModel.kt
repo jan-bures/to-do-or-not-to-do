@@ -800,9 +800,10 @@ class TodoModel(
         act {
             val title = engine.task(id, now())?.title ?: return@act
             engine.reorderTask(list, id, neighbour, by)?.let { target ->
-                val swap = TaskSwap(++serial, room, setOf(id, neighbour))
+                val n = ++serial
+                val swap = TaskSwap(n, room, setOf(id, neighbour))
                 reorder = swap
-                show(Toast(serial, "Moved “${oneLine(title)}”", moved = target, swap = swap))
+                show(Toast(n, "Moved “${oneLine(title)}”", moved = target, swap = swap))
             }
         }
     }
