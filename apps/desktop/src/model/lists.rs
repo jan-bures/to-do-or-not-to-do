@@ -68,12 +68,12 @@ fn hex_hue(s: &str) -> Option<Hue> {
 
 /// A list's glyph: from its name, or a document.
 pub fn list_glyph(name: &str) -> Glyph {
-    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Document)
+    Glyph::for_list(&fold(name))
 }
 
 /// A collection's glyph: from its name, or layers.
 pub fn collection_glyph(name: &str) -> Glyph {
-    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Layers)
+    Glyph::for_collection(&fold(name))
 }
 
 /// The letter mark for an actor, if it is an agent.
@@ -138,17 +138,9 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_come_from_names_in_both_languages() {
-        assert_eq!(collection_glyph("Work"), Glyph::Briefcase);
+    fn glyph_names_are_folded_before_matching() {
         assert_eq!(collection_glyph("Práce"), Glyph::Briefcase);
-        assert_eq!(collection_glyph("Projects"), Glyph::Layers);
-        assert_eq!(collection_glyph("Osobní"), Glyph::House);
         assert_eq!(list_glyph("Nákupy"), Glyph::Basket);
-        assert_eq!(list_glyph("Zdraví"), Glyph::Heart);
-        assert_eq!(list_glyph("Home renovation"), Glyph::Wrench);
-        assert_eq!(list_glyph("Reading list"), Glyph::Book);
-        assert_eq!(list_glyph("Misc"), Glyph::Document);
-        assert_eq!(collection_glyph("Misc"), Glyph::Layers);
     }
 
     #[test]

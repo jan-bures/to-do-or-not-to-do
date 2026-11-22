@@ -197,9 +197,19 @@ svg_set! {
 }
 
 impl Glyph {
-    /// Picks a glyph from a list or collection name already folded to lowercase without accents.
-    /// Callers choose the fallback for an unmatched name: document for a list, layers for a collection.
-    pub fn for_folded_name(name: &str) -> Option<Self> {
+    /// Picks a glyph for a list name already folded to lowercase without accents, or a document.
+    #[must_use]
+    pub fn for_list(folded: &str) -> Self {
+        Self::for_folded_name(folded).unwrap_or(Self::Document)
+    }
+
+    /// Picks a glyph for a collection name already folded to lowercase without accents, or layers.
+    #[must_use]
+    pub fn for_collection(folded: &str) -> Self {
+        Self::for_folded_name(folded).unwrap_or(Self::Layers)
+    }
+
+    fn for_folded_name(name: &str) -> Option<Self> {
         // First match wins, as in "Work projects" or "Plan my trip".
         const WORDS: &[(Glyph, &[&str])] = &[
             (Glyph::Sun, &["my day", "today", "dnes"]),
@@ -265,5 +275,28 @@ impl Glyph {
             .iter()
             .find(|(_, words)| words.iter().any(|word| name.contains(word)))
             .map(|(glyph, _)| *glyph)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Glyph;
+
+    #[test]
+    fn folded_glyph_keywords_match_in_order() {
+        assert_eq!(Glyph::for_collection("work projects"), Glyph::Briefcase);
+        assert_eq!(Glyph::for_collection("prace"), Glyph::Briefcase);
+        assert_eq!(Glyph::for_collection("projects"), Glyph::Layers);
+        assert_eq!(Glyph::for_collection("osobni"), Glyph::House);
+        assert_eq!(Glyph::for_list("nakupy"), Glyph::Basket);
+        assert_eq!(Glyph::for_list("zdravi"), Glyph::Heart);
+        assert_eq!(Glyph::for_list("home renovation"), Glyph::Wrench);
+        assert_eq!(Glyph::for_list("reading list"), Glyph::Book);
+    }
+
+    #[test]
+    fn unmatched_names_have_a_fallback_for_each_kind() {
+        assert_eq!(Glyph::for_list("misc"), Glyph::Document);
+        assert_eq!(Glyph::for_collection("misc"), Glyph::Layers);
     }
 }

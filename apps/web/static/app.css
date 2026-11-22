@@ -287,6 +287,13 @@ a {
   height: var(--component-icon);
 }
 
+.side-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .nav {
   flex: 1;
   overflow-y: auto;
@@ -395,8 +402,8 @@ a {
   .collection-toggle .icon { transition: none; }
 }
 
-.nav-item:hover,
-.nav-entry:hover > .nav-item {
+.nav-item:not(.active, .contains-active):hover,
+.nav-entry:hover > .nav-item:not(.active, .contains-active) {
   background: var(--color-hover);
 }
 
@@ -492,6 +499,20 @@ a {
 
 .new-list .icon-button {
   flex: none;
+}
+
+/* At short heights the open form can outgrow the space left by the brand and sync footer. */
+@media (max-height: 320px) {
+  .side-body {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-4) transparent;
+  }
+
+  .nav {
+    flex: none;
+    overflow: visible;
+  }
 }
 
 .side-foot {

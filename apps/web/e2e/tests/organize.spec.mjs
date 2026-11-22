@@ -230,7 +230,11 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await action(page, "Move to…").click();
   const move = dialog(page, "Move to");
   await expect(menu).toBeHidden();
-  await expect(move.getByRole("option", { name: "Work", exact: true, selected: true })).toBeFocused();
+  const work = move.getByRole("option", { name: "Work", exact: true, selected: true });
+  await expect(work).toBeFocused();
+  await expect(work.locator(".glyph")).toHaveAttribute("data-glyph", "briefcase");
+  await expect(move.getByRole("option", { name: "Osobní", exact: true }).locator(".glyph"))
+    .toHaveAttribute("data-glyph", "house");
   await move.getByRole("button", { name: "Back" }).click();
   await expect(action(page, "Move to…")).toBeFocused();
   await action(page, "Move to…").press("Enter");

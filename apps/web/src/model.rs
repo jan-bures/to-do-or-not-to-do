@@ -238,12 +238,6 @@ pub fn swatch(color: Option<&str>, seed: &[u8; 16]) -> &'static str {
     hues::swatch_for_seed(seed).key
 }
 
-/// The hand-drawn glyph for a list, chosen from words in its name.
-#[must_use]
-pub fn glyph_for(name: &str) -> Glyph {
-    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Document)
-}
-
 // ---- visibility --------------------------------------------------------------------------------------
 
 fn list_live(state: &State, l: &List) -> bool {
@@ -330,9 +324,9 @@ pub struct Sidebar {
     pub agent_updates_today: usize,
 }
 
-/// Builds the sidebar.
+/// Builds the sidebar. `date_of` resolves a stamp with the local offset at its own instant.
 #[must_use]
-pub fn sidebar(state: &State, now: &Now) -> Sidebar {
+pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) -> Sidebar {
     let ctx = now.eval();
     let smart = BUILTIN_LISTS
         .iter()
@@ -350,7 +344,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         if !t.is_done() {
             *open_by_list.entry(t.list).or_default() += 1;
         }
-        if t.updated.by.is_agent() && local(t.updated.at, now.offset_s).date() == ctx.today {
+        if t.updated.by.is_agent() && date_of(t.updated.at) == ctx.today {
             agent_updates_today += 1;
         }
     }
@@ -359,7 +353,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         name: l.name.clone(),
         count: open_by_list.get(&l.id).copied().unwrap_or(0),
         hue: swatch(l.color.as_deref(), l.id.as_uuid().as_bytes()),
-        glyph: Some(glyph_for(&l.name)),
+        glyph: Some(Glyph::for_list(&fold(&l.name))),
     };
     let groups = collections(state)
         .into_iter()
@@ -371,7 +365,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
                     name: c.name.clone(),
                     count: lists.iter().map(|l| l.count).sum(),
                     hue: swatch(c.color.as_deref(), c.id.as_uuid().as_bytes()),
-                    glyph: Some(Glyph::for_folded_name(&fold(&c.name)).unwrap_or(Glyph::Layers)),
+                    glyph: Some(Glyph::for_collection(&fold(&c.name))),
                 },
                 lists,
             }
@@ -382,14 +376,17 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         smart,
         groups,
         loose,
-        agents: agent_summary(state, now),
+        agents: agent_summary(state, ctx.today, date_of),
         agent_updates_today,
     }
 }
 
 /// Summarize the creation and latest edit stamps, like the desktop sidebar.
-fn agent_summary(state: &State, now: &Now) -> Vec<(AgentMark, String)> {
-    let today = now.today();
+fn agent_summary(
+    state: &State,
+    today: Date,
+    date_of: impl Fn(Timestamp) -> Date,
+) -> Vec<(AgentMark, String)> {
     let mut agents = BTreeMap::new();
     for task in state.tasks.values().filter(|t| task_live(state, t)) {
         for (stamp, created) in [(&task.created, true), (&task.updated, false)] {
@@ -397,8 +394,7 @@ fn agent_summary(state: &State, now: &Now) -> Vec<(AgentMark, String)> {
                 continue;
             };
             // The creation stamp is also the latest stamp until an edit occurs.
-            if local(stamp.at, now.offset_s).date() != today || (!created && *stamp == task.created)
-            {
+            if (!created && *stamp == task.created) || date_of(stamp.at) != today {
                 continue;
             }
             let entry = agents.entry(id).or_insert((&stamp.by, 0, 0));
@@ -1665,7 +1661,8 @@ mod tests {
     #[test]
     fn the_sidebar_counts_open_tasks() {
         let s = fixtures::state();
-        let sb = sidebar(&s, &now());
+        let n = now();
+        let sb = sidebar(&s, &n, |at| local(at, n.offset_s).date());
         let my_day = &sb.smart[0];
         assert_eq!((my_day.name.as_str(), my_day.count), ("My Day", 9));
         for g in &sb.groups {
@@ -1679,7 +1676,97 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("claude", "1 edited"), ("codex", "1 edited")]
         );
-        assert!(sidebar(&State::new(), &now()).agents.is_empty());
+    }
+
+    fn set_stamps(task: &mut Task, agent: &str, at: Timestamp) {
+        task.created = todo_core::model::Stamp {
+            at,
+            by: Actor::agent(agent).unwrap(),
+        };
+        task.updated = task.created.clone();
+    }
+
+    #[test]
+    fn agent_summary_counts_added_and_edited_but_not_creation_as_an_edit() {
+        let mut s = fixtures::state();
+        s.tasks
+            .retain(|id, _| *id == fixtures::task(3) || *id == fixtures::task(4));
+        let n = now();
+        for task in s.tasks.values_mut() {
+            set_stamps(task, "claude", n.at);
+        }
+        let date_of = |at| local(at, n.offset_s).date();
+        let summary = agent_summary(&s, n.today(), date_of);
+        assert_eq!(summary.len(), 1);
+        assert_eq!((&*summary[0].0.name, &*summary[0].1), ("claude", "2 added"));
+
+        s.tasks.get_mut(&fixtures::task(4)).unwrap().updated.at =
+            n.at.checked_add(jiff::SignedDuration::from_secs(1))
+                .unwrap();
+        let summary = agent_summary(&s, n.today(), date_of);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].1, "2 added, 1 edited");
+    }
+
+    #[test]
+    fn deleted_tasks_and_tasks_in_deleted_lists_do_not_count_as_agent_activity() {
+        let mut s = fixtures::state();
+        s.tasks
+            .retain(|id, _| *id == fixtures::task(3) || *id == fixtures::task(4));
+        let n = now();
+        for task in s.tasks.values_mut() {
+            set_stamps(task, "claude", n.at);
+        }
+        let deletion = todo_core::model::Tombstone {
+            at: n.at,
+            by: Actor::owner("web").unwrap(),
+        };
+        s.tasks.get_mut(&fixtures::task(3)).unwrap().deleted = Some(deletion.clone());
+        let list = s.tasks[&fixtures::task(4)].list;
+        s.lists.get_mut(&list).unwrap().deleted = Some(deletion);
+        let sb = sidebar(&s, &n, |at| local(at, n.offset_s).date());
+        assert!(sb.agents.is_empty());
+        assert_eq!(sb.agent_updates_today, 0);
+    }
+
+    #[test]
+    fn sidebar_uses_the_offset_at_each_stamp_across_local_midnight() {
+        let n = Now {
+            at: "2026-11-01T12:00:00Z".parse().unwrap(),
+            offset_s: -5 * 3600,
+        };
+        let clock_change: Timestamp = "2026-11-01T06:00:00Z".parse().unwrap();
+        let date_of = |at| {
+            local(
+                at,
+                if at < clock_change {
+                    -4 * 3600
+                } else {
+                    n.offset_s
+                },
+            )
+            .date()
+        };
+        let mut s = fixtures::state();
+        s.tasks
+            .retain(|id, _| *id == fixtures::task(3) || *id == fixtures::task(4));
+        for (id, agent, at) in [
+            (3, "claude", "2026-11-01T03:59:59Z"),
+            (4, "codex", "2026-11-01T04:00:00Z"),
+        ] {
+            set_stamps(
+                s.tasks.get_mut(&fixtures::task(id)).unwrap(),
+                agent,
+                at.parse().unwrap(),
+            );
+        }
+        let sb = sidebar(&s, &n, date_of);
+        assert_eq!(sb.agent_updates_today, 1);
+        assert_eq!(sb.agents.len(), 1);
+        assert_eq!(
+            (&*sb.agents[0].0.name, &*sb.agents[0].1),
+            ("codex", "1 added")
+        );
     }
 
     #[test]
@@ -1759,8 +1846,6 @@ mod tests {
         assert_eq!(swatch(Some("#e05a7a"), seed), "rose");
         assert_eq!(swatch(Some("#3366ff"), seed), "cornflower");
         assert_eq!(swatch(None, seed), hues::swatch_for_seed(seed).key);
-        assert_eq!(glyph_for("Nákupy a pochůzky"), Glyph::Basket);
-        assert_eq!(glyph_for("Reading list"), Glyph::Book);
     }
 
     #[test]

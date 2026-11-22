@@ -86,6 +86,44 @@ test("collection headers have their own glyphs, desktop spacing and a visible ze
   await w.check();
 });
 
+test("hover preserves the selected surface and overflow keeps the count accessible", async ({ page }) => {
+  const w = watch(page);
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const nav = sidebar(page);
+  const planning = nav.getByRole("link", { name: "Planning 2", exact: true });
+  const menu = nav.getByRole("button", { name: "Menu for Planning" });
+  const count = planning.locator(".count");
+  await expect(menu).toHaveCSS("opacity", "0");
+  await expect(count).toHaveCSS("opacity", "1");
+  await planning.hover();
+  await expect(planning).toHaveCSS("background-color", rgb(tokens.colors.light.rooms["my-day"].hover));
+  await expect(menu).toHaveCSS("opacity", "1");
+  await expect(count).toHaveCSS("opacity", "0");
+  await expect(planning).toHaveAccessibleName("Planning 2");
+  await page.locator(".brand").hover();
+  await planning.focus();
+  await expect(menu).toHaveCSS("opacity", "1");
+  await expect(count).toHaveCSS("opacity", "0");
+  await expect(planning).toHaveAccessibleName("Planning 2");
+
+  await planning.click();
+  await expect(planning).toHaveAttribute("aria-current", "page");
+  const hue = await planning.getAttribute("data-list-hue");
+  const raised = rgb(tokens.colors.light.rooms[hue].raised);
+  await planning.hover();
+  await expect(planning).toHaveCSS("background-color", raised);
+
+  const toggle = nav.getByRole("button", { name: "Collapse Work" });
+  await toggle.click();
+  const work = nav.getByRole("link", { name: /^Work / });
+  await expect(work).toHaveClass(/contains-active/);
+  await work.hover();
+  await expect(work).toHaveCSS("background-color", raised);
+  await w.check();
+});
+
 test("Activity sits above today's indented agent filters and omits the group on a quiet day", async ({ page }) => {
   const w = watch(page);
   await open(page);
@@ -121,3 +159,23 @@ test("creation actions stay pinned when the navigation scrolls", async ({ page }
   await expect(footer).toBeInViewport();
   await w.check();
 });
+
+for (const width of [1440, 412]) {
+  test(`sync and sign-out stay inside the short sidebar with its form open (${width}px)`, async ({ page }) => {
+    const w = watch(page);
+    await page.setViewportSize({ width, height: 200 });
+    await open(page);
+    if (width < 760) await page.getByRole("button", { name: "Lists", exact: true }).click();
+    const drawer = page.locator(".sidebar");
+    await drawer.getByRole("button", { name: "New list", exact: true }).click();
+    const input = drawer.getByRole("textbox", { name: "List name", exact: true });
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport({ ratio: 1 });
+    const bounds = await drawer.boundingBox();
+    const footer = await drawer.locator(".side-foot").boundingBox();
+    expect(footer.y).toBeGreaterThanOrEqual(bounds.y);
+    expect(footer.y + footer.height).toBeLessThanOrEqual(bounds.y + bounds.height);
+    await expect(drawer.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 });
+    await w.check();
+  });
+}

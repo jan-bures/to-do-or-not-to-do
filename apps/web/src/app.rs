@@ -509,7 +509,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             .get()
             .and_then(|id| state.with(|s| model::detail(s, &now.get(), id)))
     });
-    let sidebar = Memo::new(move |_| state.with(|s| model::sidebar(s, &now.get())));
+    let sidebar = Memo::new(move |_| {
+        let now = now.get();
+        state.with(|s| model::sidebar(s, &now, |at| platform::civil_time(at, now, live).date()))
+    });
     let completed_open = RwSignal::new(false);
     let columns = Memo::new(move |_| {
         let mut cols = shown.with(|rows| Columns::for_rows(rows.iter().map(|s| &s.row)));
@@ -1074,16 +1077,7 @@ fn SidebarPane() -> impl IntoView {
             link.into_any()
         }
     };
-    view! {
-        <aside class="sidebar" id="list-drawer" tabindex="-1" aria-label="Lists"
-            role=move || c.drawer.get().then_some("dialog")
-            aria-modal=move || c.drawer.get().then_some("true")
-            inert=move || c.detail_modal.get()
-        >
-            <div class="brand">
-                <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
-                <span>"To-do"</span>
-            </div>
+    let navigation = view! {
             <nav class="nav" on:scroll=move |_| c.room_actions.position_menu()>
                 {move || {
                     let sb = c.sidebar.get();
@@ -1142,9 +1136,23 @@ fn SidebarPane() -> impl IntoView {
                     }
                 }}
             </nav>
-            <div class="new-list">
-                <NewRoom kind=NewRoomKind::List/>
-                <NewRoom kind=NewRoomKind::Collection/>
+    };
+    view! {
+        <aside class="sidebar" id="list-drawer" tabindex="-1" aria-label="Lists"
+            role=move || c.drawer.get().then_some("dialog")
+            aria-modal=move || c.drawer.get().then_some("true")
+            inert=move || c.detail_modal.get()
+        >
+            <div class="brand">
+                <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
+                <span>"To-do"</span>
+            </div>
+            <div class="side-body" on:scroll=move |_| c.room_actions.position_menu()>
+                {navigation}
+                <div class="new-list">
+                    <NewRoom kind=NewRoomKind::List/>
+                    <NewRoom kind=NewRoomKind::Collection/>
+                </div>
             </div>
             <div class="side-foot">
                 <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>

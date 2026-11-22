@@ -5,6 +5,7 @@ use leptos::html;
 use leptos::prelude::*;
 use todo_client::{CommandId, intent};
 use todo_core::ids::{CollectionId, EntityId, ListId};
+use todo_core::query::fold;
 use todo_core::{Command, State};
 use todo_design::{Glyph, Icon};
 use wasm_bindgen::JsCast;
@@ -713,7 +714,10 @@ fn MoveChoice(
             disabled=move || c.read_only() || c.state.with(|s| to.is_some_and(|id| !s.is_live(id.into())))
             aria-selected=move || c.state.with(|s| s.lists.get(&list).is_some_and(|l| l.collection == to)).to_string()
             on:click=move |_| choose.run(to)>
-            <span data-list-hue=hue class="move-glyph">{glyph(Glyph::Layers)}</span>
+            <span data-list-hue=hue class="move-glyph">{move || {
+                let icon = to.map_or(Glyph::Layers, |_| Glyph::for_collection(&fold(&name())));
+                glyph(icon)
+            }}</span>
             <span class="picker-label">{name}</span>
             <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
         </button>

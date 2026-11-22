@@ -301,7 +301,8 @@ phone drawer. Smart-list and Activity icons keep their own glyph hue regardless 
 headers and lists share the desktop's name-to-glyph rules; a name that doesn't match defaults to layers for
 collections and to a document for lists. Every collection and list shows its open count, even zero.
 **Agent activity** shows a pip for tasks most recently changed by an agent today; it still opens the
-seven-day smart list. The creation controls stay pinned below the scrolling navigation.
+seven-day smart list. The creation controls stay pinned below the scrolling navigation unless the
+viewport is too short. Then they scroll with the navigation, keeping sync status and sign-out visible.
 
 **New list** creates a sibling of the current list, a child of the current collection, or a top-level
 list from a smart room. **New collection** creates a collection at the end of the sidebar. Both get a swatch.
@@ -322,8 +323,9 @@ that arrives while the list is open stays for the next opening. Dismissing doesn
 **Activity** (`/app/activity`) shows confirmed changes from you, agents and email ingest, newest first
 and grouped by local day. Scroll down or choose **Load older activity** for more. Its clock row follows the
 **Agent activity** smart list. Agents seen in today's creation and latest edit stamps appear indented below
-it; choose one to open `/app/activity/agent/<agent-id>`. The same links are in the Lists drawer on a phone.
-Use **Clear filter** to see all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
+it. Each stamp is dated using the browser's UTC offset at that instant. Choose an agent to open
+`/app/activity/agent/<agent-id>`. The same links are in the Lists drawer on a phone. Use **Clear filter** to
+see all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
 new events arrive. If an older page is loading, the refresh waits for that request. If refreshing removes
 the focused row, focus moves to the Activity heading. A dot on the refresh button means the replica has
 advanced since the feed was read. Event summaries may use an item's current name, even for older changes.
