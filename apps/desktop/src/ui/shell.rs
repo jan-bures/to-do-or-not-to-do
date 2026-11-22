@@ -3,6 +3,7 @@
 //! state changes, and turns clicks and keys into commands for the store.
 
 mod detail;
+mod menu;
 mod panes;
 mod sidebar;
 mod undo;
@@ -12,10 +13,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, AsyncApp, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, Hsla, MouseButton, ScrollHandle, SharedString, Stateful, StrikethroughStyle,
-    UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions, div, prelude::*, px,
-    uniform_list,
+    AnyElement, App, AsyncApp, Context, DispatchPhase, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollHandle, SharedString, Stateful,
+    StrikethroughStyle, UniformListScrollHandle, WeakEntity, Window, WindowControlArea, actions,
+    div, prelude::*, px, uniform_list,
 };
 use todo_client::Connection;
 use todo_core::ids::{CollectionId, TaskId};
@@ -39,7 +40,8 @@ use crate::theme::{
     self, Hue, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
 };
 use detail::Editors;
-use sidebar::{Inline, Menu};
+use menu::{Menu, MenuKind};
+use sidebar::Inline;
 
 actions!(
     shell,
@@ -51,6 +53,7 @@ actions!(
         EditTask,
         EditDue,
         CyclePriority,
+        PickPriority,
         MoveTaskUp,
         MoveTaskDown,
         UndoTask,
@@ -70,6 +73,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("e", EditTask, list),
         KeyBinding::new("d", EditDue, list),
         KeyBinding::new("p", CyclePriority, list),
+        KeyBinding::new("shift-p", PickPriority, list),
         KeyBinding::new("alt-up", MoveTaskUp, list),
         KeyBinding::new("alt-down", MoveTaskDown, list),
         KeyBinding::new("j", NextTask, list),
@@ -188,6 +192,14 @@ pub struct ShellView {
     detail_bar: kit::Scrollbar,
     caption_preview: kit::CaptionPreview,
     menu: Option<Menu>,
+    /// The menu the current mouse press closed, if it closed one: the click that press ends on that
+    /// menu's own button leaves it closed (`toggle_menu`). Every press in the window is counted.
+    menu_press: menu::PressGuard,
+    /// The open menu's, while it has the keyboard.
+    menu_focus: FocusHandle,
+    /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
+    room_menu_focus: FocusHandle,
+    account_focus: FocusHandle,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
     filter: Entity<TextInput>,
@@ -306,6 +318,10 @@ impl ShellView {
             detail_bar: kit::Scrollbar::default(),
             caption_preview: kit::CaptionPreview::Live,
             menu: None,
+            menu_press: menu::PressGuard::default(),
+            menu_focus: cx.focus_handle(),
+            room_menu_focus: cx.focus_handle(),
+            account_focus: cx.focus_handle(),
             inline: None,
             filter,
             edit,
@@ -331,6 +347,11 @@ impl ShellView {
             .detach();
         cx.on_blur(&this.undo_focus, window, |_, _, cx| cx.notify())
             .detach();
+        // A menu never stays open once the keyboard has gone elsewhere.
+        cx.on_blur(&this.menu_focus, window, |this, window, cx| {
+            this.menu_lost_focus(window, cx);
+        })
+        .detach();
         this.load_detail(cx);
         this.settle_detail();
         let _ = this.follow_shell();
@@ -391,6 +412,14 @@ impl ShellView {
         if room_changed {
             self.motion.settle_all();
             self.row_lifts.clear();
+        }
+        let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
+            MenuKind::Room { .. } => room_changed,
+            MenuKind::Priority { task } => self.ui.task != Some(task),
+            _ => false,
+        });
+        if stale_menu {
+            self.menu = None;
         }
         self.follow_data(&state);
         let session = self.store.session();
@@ -498,7 +527,7 @@ impl ShellView {
             now,
             pace,
         );
-        let shown: std::collections::HashSet<TaskId> = self.shell.rows().map(|r| r.id).collect();
+        let shown: std::collections::HashSet<TaskId> = self.shell.shown_tasks().collect();
         self.motion.retain_shown(now, |id| shown.contains(&id))
     }
 
@@ -551,7 +580,7 @@ impl ShellView {
                 theme::motion::EXIT
             },
         );
-        let ring = if self.undo_ring.moving(now) {
+        let ring = if self.undo_ring.moving(now) || self.settle_menu() {
             Wake::Frame
         } else {
             Wake::Idle
@@ -748,6 +777,66 @@ impl ShellView {
         self.clock = Clock::Frozen(Duration::from_millis(u64::from(at)));
     }
 
+    /// The keyboard never stays on something that's gone: a menu that closed or has nothing left, or the
+    /// room's "more" button in a room without a menu. It goes back to the list.
+    fn keep_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A menu whose subject went away (a list deleted on another device) has nothing left to offer.
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|m| self.menu_entries(m.kind).is_empty())
+        {
+            self.menu = None;
+        }
+        let menu_open = self
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.overlay.look(self.frame).open);
+        if (self.menu_focus.is_focused(window) && !menu_open)
+            || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
+        {
+            window.focus(&self.list_focus, cx);
+        }
+    }
+
+    /// Opens a menu for a screenshot fixture, at rest, from its button.
+    pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = match fixture {
+            "room-menu" => MenuKind::Room { confirm: false },
+            "account-menu" => MenuKind::Account { confirm: false },
+            "priority-menu" => match self.ui.task {
+                Some(task) => MenuKind::Priority { task },
+                None => return,
+            },
+            "delete-list-confirm" => MenuKind::Room { confirm: true },
+            _ => return,
+        };
+        self.open_menu(kind, None, None, window, cx);
+        // The confirmation as the keyboard reaches it: on Cancel.
+        if fixture == "delete-list-confirm" {
+            self.highlight_first();
+        }
+    }
+
+    /// Shift+P: the priority picker, from the keyboard, on the detail pane's Priority row. The keyboard
+    /// starts on the current level and comes back to the list once one is chosen.
+    fn pick_priority(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.ui.task else {
+            return;
+        };
+        if self.detail_placement() == DetailPane::Hidden || !self.task_is_visible(task) {
+            return;
+        }
+        self.open_menu(
+            MenuKind::Priority { task },
+            None,
+            Some(hints::Stop::List),
+            window,
+            cx,
+        );
+        self.highlight_first();
+    }
+
     fn aim_detail(&mut self) {
         self.motion.detail.aim(
             self.ui.task,
@@ -830,11 +919,13 @@ impl ShellView {
         );
     }
 
-    /// Where a screenshot fixture puts the keyboard: the quick-add when it has typed text, else the list,
-    /// as in the running app.
+    /// Where a screenshot fixture puts the keyboard: an open menu, the quick-add when it has typed text,
+    /// else the list, as in the running app.
     pub fn fixture_focus(&self, cx: &App) -> FocusHandle {
         let quick_add = self.quick_add.read(cx);
-        if quick_add.content.is_empty() {
+        if self.menu.is_some() {
+            self.menu_focus.clone()
+        } else if quick_add.content.is_empty() {
             self.list_focus.clone()
         } else {
             quick_add.focus_handle.clone()
@@ -852,14 +943,20 @@ impl ShellView {
 
     fn submit(&mut self, cmds: Vec<todo_core::Command>) -> bool {
         for cmd in cmds {
-            let result = if let Some((id, kind)) = undo::EditKind::of(&cmd) {
+            let result = if let Some((entity, kind)) = undo::EditKind::of(&cmd) {
                 let state = self.store.view();
-                let title = state.tasks.get(&id).map_or("Task", |t| t.title.as_str());
+                let title = undo::subject_title(&state, entity);
                 let room = self.shell.room.key;
                 self.store.submit_undoable(cmd).map(|target| {
+                    // Deleting the list the room shows takes the window to My Day: the undo goes along.
+                    let room = if kind == undo::EditKind::DeleteList {
+                        self.ui.room.resolved(&self.store.view())
+                    } else {
+                        room
+                    };
                     self.remember_undo(
                         undo::Action {
-                            id,
+                            entity,
                             kind,
                             target,
                             room,
@@ -871,7 +968,7 @@ impl ShellView {
                 let stale = self
                     .last_undo
                     .as_ref()
-                    .is_some_and(|u| undo::touches_task(&cmd, u.id, &self.store.view()));
+                    .is_some_and(|u| undo::touches(&cmd, u.entity, &self.store.view()));
                 self.store.submit(cmd).map(|()| {
                     if stale {
                         self.clear_undo();
@@ -995,7 +1092,7 @@ impl ShellView {
             && self
                 .last_undo
                 .as_ref()
-                .is_some_and(|u| u.id == id && u.kind == undo::EditKind::Complete)
+                .is_some_and(|u| u.entity == id.into() && u.kind == undo::EditKind::Complete)
         {
             self.request_undo(cx);
             return;
@@ -1275,7 +1372,50 @@ impl ShellView {
         theme::palette(Theme::Dark, self.painted_hue).accent_strong
     }
 
-    fn header(&self) -> Div {
+    /// The room header's "more" button, when the room's menu offers something (`model::menus`). There
+    /// are no view options yet, so there is no sliders button.
+    fn room_menu_button(&self, ink: Hsla, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.has_room_menu() {
+            return None;
+        }
+        let p = &self.palette;
+        let open = self.menu.as_ref().is_some_and(|m| {
+            matches!(m.kind, MenuKind::Room { .. }) && m.overlay.look(self.frame).open
+        });
+        let hover = p.hover;
+        let button = div()
+            .id("room-menu")
+            .relative()
+            .size(px(component::ICON_BUTTON))
+            .flex()
+            .items_center()
+            .justify_center()
+            .track_focus(&self.room_menu_focus)
+            .when(open, |d| d.bg(hover))
+            .hover(move |s| s.bg(hover))
+            .child(kit::icon(Icon::Ellipsis, component::ICON, ink))
+            .on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
+                this.toggle_menu(
+                    MenuKind::Room { confirm: false },
+                    hints::Stop::RoomMenu,
+                    e,
+                    window,
+                    cx,
+                );
+            }))
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                this.control_key(e, window, cx);
+            }))
+            .children(self.menu_anchor(|k| matches!(k, MenuKind::Room { .. }), cx));
+        Some(menu::ring(
+            p,
+            self.room_menu_focus.is_focused(window),
+            radius::MD,
+            button,
+        ))
+    }
+
+    fn header(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
         // The everyday strip, the finished day's dusk scene, or the dusk falling or lifting between them.
@@ -1341,14 +1481,7 @@ impl ShellView {
                     .top(px(swap.outgoing_y))
                     .opacity(swap.outgoing)
             }));
-        let action = |icon: Icon| {
-            div()
-                .size(px(component::ICON_BUTTON))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(kit::icon(icon, component::ICON, ink_3))
-        };
+        let more = self.room_menu_button(ink_3, window, cx);
         div()
             .flex_none()
             .flex()
@@ -1366,14 +1499,7 @@ impl ShellView {
                             .items_center()
                             .justify_between()
                             .child(eyebrow)
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(space::S1))
-                                    .mr(px(-space::S2))
-                                    .child(action(Icon::SlidersHorizontal))
-                                    .child(action(Icon::Ellipsis)),
-                            ),
+                            .child(div().flex().mr(px(-space::S2)).children(more)),
                     )
                     .child(if self.width.counts_under_title() {
                         // Narrow: the title keeps the whole line, and the counts go under it.
@@ -1465,10 +1591,8 @@ impl ShellView {
         } else if quiet {
             field.child(kit::kbd(p, "Ctrl N"))
         } else {
-            field
-                .child(kit::icon(Icon::Calendar, component::GLYPH, p.ink_3))
-                .child(kit::icon(Icon::Flag, component::GLYPH, p.ink_3))
-                .child(kit::kbd(p, "Ctrl N"))
+            // A date and a priority are typed (`tomorrow !!`) until the field has pickers for them.
+            field.child(kit::kbd(p, "Ctrl N"))
         };
         // The focus ring is a band of the room tint around the field (a border, not a shadow).
         let ring = if focused || typed {
@@ -1765,7 +1889,11 @@ impl ShellView {
                     }
                 }))
             });
-        let title = self.title(task, look, title_width, window);
+        let title = self.struck_title(
+            ty::TASK_TITLE,
+            &task.title,
+            look.unwrap_or(RowLook::rest(task.done)),
+        );
         let row = div()
             .id(SharedString::from(format!("task-{id}")))
             .relative()
@@ -1848,46 +1976,50 @@ impl ShellView {
         }
     }
 
-    /// A row's title: dimmed and struck through when it's done. While it's being completed or reopened
-    /// the colour fades and the strike-through draws (or withdraws) from the left, in step with the tick;
-    /// at rest it's GPUI's own strike-through, drawn in exactly the same place.
-    fn title(&self, task: &TaskRow, look: Option<RowLook>, width: f32, window: &Window) -> Div {
+    /// A task's title in any of its layouts (a list row, a line of the hand-over, the hand-over's first
+    /// task), as its look `l` paints it (`RowLook::rest` when nothing plays): the ink dims to `ink-3`
+    /// and the strike-through draws from the left in step with the tick. At rest, and once drawn, it's
+    /// GPUI's own strike-through; part way, the same line again, invisible but for its strike-through,
+    /// cut off at `strike` of the line's own width (never the column's), so it lands where the rest
+    /// state draws it.
+    fn struck_title(&self, style: ty::TextStyle, title: &SharedString, l: RowLook) -> Div {
         let p = &self.palette;
-        let text = || {
-            div()
-                .style(ty::TASK_TITLE)
-                .truncate()
-                .child(task.title.clone())
-        };
-        let Some(l) = look else {
-            return if task.done {
-                text().text_color(p.ink_3).line_through()
-            } else {
-                text().text_color(p.ink)
-            };
-        };
         let ink = theme::mix(p.ink, p.ink_3, l.dim);
+        let line = || {
+            div()
+                .min_w_0()
+                .truncate()
+                .style(style)
+                .text_color(ink)
+                .child(title.clone())
+        };
         if l.strike >= 1. {
-            return text().text_color(ink).line_through();
+            return line().line_through();
         }
         if l.strike <= 0. {
-            return text().text_color(ink);
+            return line();
         }
-        // The same line again, invisible but for its strike-through, cut off where the stroke has reached.
-        let reach = kit::text_width(window, ty::TASK_TITLE, &task.title).min(width);
-        let mut strike = text().w(px(width)).text_color(gpui::transparent_black());
+        let mut strike = div()
+            .whitespace_nowrap()
+            .style(style)
+            .text_color(gpui::transparent_black())
+            .child(title.clone());
         strike.text_style().strikethrough = Some(StrikethroughStyle {
             thickness: px(elevation::HAIRLINE),
             color: Some(ink),
         });
-        div().relative().child(text().text_color(ink)).child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .w(px(reach * l.strike))
-                .overflow_hidden()
-                .child(strike),
+        // In a row of its own, the line takes its own width (up to the column's), not the column's.
+        div().min_w_0().flex().child(
+            div().relative().min_w_0().child(line()).child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(gpui::relative(l.strike))
+                    .overflow_hidden()
+                    .child(strike),
+            ),
         )
     }
 
@@ -2110,6 +2242,9 @@ impl ShellView {
                             this.cycle_priority(id, cx);
                         }
                     }))
+                    .on_action(cx.listener(|this, _: &PickPriority, window, cx| {
+                        this.pick_priority(window, cx);
+                    }))
                     .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
                     .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
                     .children(self.outgoing_list(swap.outgoing, window, cx))
@@ -2153,7 +2288,7 @@ impl ShellView {
     fn sunrise_mark(&self) -> Div {
         let p = &self.palette;
         div()
-            .size(px(desktop::QUICK_ADD + space::S2))
+            .size(px(desktop::SUNRISE_MARK))
             .flex_none()
             .rounded_full()
             .bg(p.wash)
@@ -2278,8 +2413,13 @@ impl ShellView {
                 this.select_task(Some(id), cx);
             })
         };
+        // A hand-over task completed from its box (or with Space) plays the row's choreography in its
+        // place, the same `RowLook` as a list row's: the disc fills, the title dims and the
+        // strike-through draws, then the line fades and closes.
         let compact = |task: &TaskRow| {
             let when = task.due.text().cloned().unwrap_or_default();
+            let look = live.then(|| self.motion.row(task.id, self.frame)).flatten();
+            let height = component::ICON_BUTTON + space::S1;
             div()
                 .id(SharedString::from(format!("next-{}", task.id)))
                 .when(selected == Some(task.id), |d| d.bg(p.wash))
@@ -2288,37 +2428,39 @@ impl ShellView {
                 })
                 .flex_none()
                 .mx(px(desktop::LIST_PAD_X))
-                .h(px(component::ICON_BUTTON + space::S1))
+                .h(px(height * look.map_or(1., |l| l.height)))
+                .when_some(look, |el, l| el.overflow_hidden().opacity(l.opacity))
                 .flex()
                 .items_center()
                 .gap(px(space::S3))
                 .border_t_1()
                 .border_color(p.line)
-                .child(kit::checkbox(
-                    p,
-                    false,
-                    component::CHECKBOX - space::S1 / 2.,
+                .child(self.handover_check(task, look, interactive, cx))
+                .child(self.struck_title(
+                    ty::BODY,
+                    &task.title,
+                    look.unwrap_or(RowLook::rest(task.done)),
                 ))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .style(ty::BODY)
-                        .text_color(p.ink)
-                        .child(task.title.clone()),
-                )
                 .child(kit::chip(t, &task.list, false))
                 .child(div().flex_1())
                 .child(div().style(ty::DUE).text_color(p.ink_2).child(when))
         };
         let first = &next.first;
         let mark = self.sunrise_mark();
+        // Tomorrow's first task plays the same choreography as every other line (Space completes it):
+        // its title dims and is struck through, then the card fades and closes its height, so what
+        // follows rises into its place before the next task takes it.
+        let card_look = live
+            .then(|| self.motion.row(first.id, self.frame))
+            .flatten();
+        let (card_paint, card_height) = card_paint(card_look, first.done);
+        // It closes from below, as a list row does in its slot: the card keeps its height inside a clip.
         let card = div()
             .id("next-first")
             .when(selected == Some(first.id), |d| d.bg(p.wash))
             .when(interactive, |el| el.on_click(pick(first.id)))
             .flex_none()
-            .mx(px(desktop::LIST_PAD_X))
+            .h(px(desktop::SUNRISE_MARK))
             .rounded(px(radius::LG))
             .flex()
             .items_center()
@@ -2331,13 +2473,7 @@ impl ShellView {
                     .flex()
                     .flex_col()
                     .gap(px(space::S1))
-                    .child(
-                        div()
-                            .style(ty::NEXT_TITLE)
-                            .text_color(p.ink)
-                            .truncate()
-                            .child(first.title.clone()),
-                    )
+                    .child(self.struck_title(ty::NEXT_TITLE, &first.title, card_paint))
                     .child(
                         div()
                             .flex()
@@ -2353,6 +2489,13 @@ impl ShellView {
                     ),
             )
             .child(plan);
+        let card = div()
+            .flex_none()
+            .mx(px(desktop::LIST_PAD_X))
+            .h(px(card_height))
+            .when(card_paint.height < 1., |el| el.overflow_hidden())
+            .when(card_paint.opacity < 1., |el| el.opacity(card_paint.opacity))
+            .child(card);
         // Its children are in the order `Tomorrow::child` counts them; it scrolls when taller than the pane.
         // While dusk falls they enter in that order too (`reveal`).
         let section_len = |rows: &[TaskRow]| if rows.is_empty() { 0 } else { 1 + rows.len() };
@@ -2414,17 +2557,37 @@ impl ShellView {
             })
     }
 
-    /// Tab belongs only to the shell controls in this list. The order is independent of paint order.
-    fn tab_stops(&self) -> [Option<&FocusHandle>; 4] {
-        let undo = self.toast.look(self.frame).is_some_and(|look| look.active)
-            && (self.last_undo.is_some() || !self.animate);
-        [
-            Some(self.splitters.focus(Pane::Sidebar)),
-            Some(&self.list_focus),
-            undo.then_some(&self.undo_focus),
-            self.show_detail_splitter()
-                .then_some(self.splitters.focus(Pane::Detail)),
-        ]
+    /// A hand-over task's box. It completes the task (as on Android), with the same guards as a row's:
+    /// only in the live room, and only once the task can be reached (it has begun to enter as dusk
+    /// falls). Clicking it again part way reverses the completion.
+    fn handover_check(
+        &self,
+        task: &TaskRow,
+        look: Option<RowLook>,
+        interactive: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let p = &self.palette;
+        let size = component::CHECKBOX - space::S1 / 2.;
+        let mark = match look {
+            Some(l) => kit::checkbox_at(p, false, false, size, (l.fill, l.scale, l.tick)),
+            None if task.done => kit::checked(p, false, size),
+            None => kit::checkbox(p, false, size),
+        };
+        let (id, room) = (task.id, self.shell.room.key);
+        div()
+            .id(SharedString::from(format!("next-check-{id}")))
+            .flex_none()
+            .child(mark)
+            .when(interactive, |el| {
+                el.on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    if this.shell.room.key == room && this.task_is_visible(id) {
+                        window.focus(&this.list_focus, cx);
+                        this.toggle_complete(id, cx);
+                    }
+                }))
+            })
     }
 
     /// Where the keyboard is, for the status bar's hints.
@@ -2458,6 +2621,10 @@ impl ShellView {
             .is_some_and(|i| on(&i.input.read(cx).focus_handle))
         {
             Focus::Rename
+        } else if on(&self.menu_focus) {
+            Focus::Menu
+        } else if on(&self.room_menu_focus) || on(&self.account_focus) {
+            Focus::Control
         } else {
             Focus::Elsewhere
         }
@@ -2561,6 +2728,13 @@ impl ShellView {
     }
 }
 
+/// How the finished day's featured card (tomorrow's first task) paints: the row look a list row would
+/// have (at rest when nothing plays), and its height, the sunrise mark's, closing with the look.
+fn card_paint(look: Option<RowLook>, done: bool) -> (RowLook, f32) {
+    let l = look.unwrap_or(RowLook::rest(done));
+    (l, desktop::SUNRISE_MARK * l.height)
+}
+
 /// The clock the motion runs on: real time, or a fixed moment for a screenshot fixture.
 #[derive(Clone, Copy, Debug)]
 enum Clock {
@@ -2576,11 +2750,90 @@ impl Focusable for ShellView {
     }
 }
 
+impl ShellView {
+    /// The focus handle of a Tab stop.
+    fn stop_handle(&self, stop: hints::Stop) -> &FocusHandle {
+        use hints::Stop;
+        match stop {
+            Stop::SidebarSplitter => self.splitters.focus(Pane::Sidebar),
+            Stop::List => &self.list_focus,
+            Stop::Undo => &self.undo_focus,
+            Stop::RoomMenu => &self.room_menu_focus,
+            Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
+            Stop::Account => &self.account_focus,
+        }
+    }
+
+    /// Whether a Tab stop is there now: Undo while its toast is up, the room's button in a room with a
+    /// menu, the detail divider while the docked detail shows it. The others always are.
+    fn has_stop(&self, stop: hints::Stop) -> bool {
+        use hints::Stop;
+        match stop {
+            Stop::Undo => {
+                self.toast.look(self.frame).is_some_and(|look| look.active)
+                    && (self.last_undo.is_some() || !self.animate)
+            }
+            Stop::RoomMenu => self.has_room_menu(),
+            Stop::DetailSplitter => self.show_detail_splitter(),
+            Stop::SidebarSplitter | Stop::List | Stop::Account => true,
+        }
+    }
+
+    /// The Tab stop the keyboard is on, if it's on one (not a text field or an open menu).
+    fn stop_at(&self, window: &Window) -> Option<hints::Stop> {
+        hints::TAB_ORDER
+            .into_iter()
+            .find(|&stop| self.stop_handle(stop).is_focused(window))
+    }
+
+    /// Moves the keyboard to a Tab stop.
+    fn focus_stop(&mut self, stop: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.stop_handle(stop).clone();
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// The one Tab handler: Tab and Shift+Tab go round the stops in `hints::TAB_ORDER` that are there.
+    /// Held or modified Tab is left alone, and so is Tab off the stops: a text field keeps it, and an
+    /// open menu has already taken it (it closes).
+    fn tab_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !navigation_tab(e) {
+            return;
+        }
+        let forward = !e.keystroke.modifiers.shift;
+        let to = hints::tab_target(self.stop_at(window), forward, |s| self.has_stop(s));
+        if let Some(to) = to {
+            cx.stop_propagation();
+            self.focus_stop(to, window, cx);
+        }
+    }
+
+    /// Counts every mouse press in the window for `menu_press`, from a window-level capture listener:
+    /// unlike an element's, it runs wherever the press lands, even on a pane that occludes the shell,
+    /// and before any menu's outside-press handler (the menus paint later, deferred).
+    fn press_counter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let shell = cx.entity().downgrade();
+        gpui::canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        shell.update(cx, |this, _| this.menu_press.press()).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0()
+    }
+}
+
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.resize(Width::of(f32::from(window.viewport_size().width)));
         self.drive_motion(window, cx);
         self.drive_splitters(window, cx);
+        self.keep_focus(window, cx);
         let p = self.palette;
         let quick_add = self.quick_add_field(window, cx);
         let detail = self.docked().then(|| self.detail_pane(window, cx));
@@ -2589,18 +2842,15 @@ impl Render for ShellView {
         div()
             .id("shell")
             .key_context("Shell")
-            .on_key_down(cx.listener(|this, e, window, cx| {
-                if navigation_tab(e)
-                    && let Some(focused) = window.focused(cx)
-                    && let Some(next) =
-                        next_tab_stop(&this.tab_stops(), &focused, e.keystroke.modifiers.shift)
-                {
-                    window.focus(next, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(cx.listener(|this, e, window, cx| this.tab_key(e, window, cx)))
             .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
-                if this.focus_now(window, cx).allows_task_undo() {
+                let focus = this.focus_now(window, cx);
+                if focus.allows_task_undo() {
+                    // Like any shortcut, it closes an open menu first (the keyboard goes back to its
+                    // button), so a confirmation never stays up over the changed state.
+                    if focus == hints::Focus::Menu {
+                        this.close_menu(true, window, cx);
+                    }
                     this.request_undo(cx);
                 }
             }))
@@ -2656,7 +2906,7 @@ impl Render for ShellView {
                                     .min_h_0()
                                     .flex()
                                     .flex_col()
-                                    .child(self.header())
+                                    .child(self.header(window, cx))
                                     .child(quick_add)
                                     .child(self.list(window, cx))
                                     .children(overlay.into_iter().flatten()),
@@ -2674,7 +2924,13 @@ impl Render for ShellView {
             .when(self.dragging_pane(), |shell| {
                 shell.child(div().absolute().inset_0().occlude().cursor_col_resize())
             })
-            .children(self.menu(cx))
+            .child(self.press_counter(cx))
+            .children(self.confirmation_scrim())
+            // Context menus open at the pointer; the others hang from their buttons.
+            .children(self.popover(
+                |k| matches!(k, MenuKind::List { .. } | MenuKind::Collection { .. }),
+                cx,
+            ))
     }
 }
 
@@ -2689,28 +2945,63 @@ fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
         && !key.modifiers.function
 }
 
-fn next_tab_stop<T: Copy + PartialEq>(
-    stops: &[Option<T>],
-    focused: T,
-    backward: bool,
-) -> Option<T> {
-    let index = stops.iter().position(|&stop| stop == Some(focused))?;
-    let (before, current_and_after) = stops.split_at(index);
-    let after = &current_and_after[1..];
-    if backward {
-        before
-            .iter()
-            .rev()
-            .chain(after.iter().rev())
-            .find_map(|&stop| stop)
-    } else {
-        after.iter().chain(before).find_map(|&stop| stop)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use super::{RowLook, card_paint};
     use crate::fixtures;
+    use crate::model::motion::{Motion, Pace, Release};
+    use crate::theme::{desktop, motion as m};
+
+    fn ms(n: u32) -> Duration {
+        Duration::from_millis(u64::from(n))
+    }
+
+    #[test]
+    fn the_featured_hand_over_card_plays_the_whole_completion_then_gives_way() {
+        let f = fixtures::handover_complete(0);
+        let next = f.shell().room.handover().cloned().expect("hands over");
+        let first = next.first.id;
+        // Held while its completion plays: still the featured card, drawn done.
+        assert!(next.first.done);
+        let mut motion = Motion::default();
+        motion.complete(first, Duration::ZERO, Pace::FULL);
+        let at = |t| card_paint(motion.row(first, ms(t)), true);
+
+        // Part way through the tick: the title is dimming and the strike-through drawing, at full height.
+        let (l, height) = at(m::CHECK_TICK_DELAY + m::CHECK_TICK / 2);
+        assert!(l.dim > 0. && l.dim < 1., "{l:?}");
+        assert!(l.strike > 0. && l.strike < 1., "{l:?}");
+        assert_eq!((height, l.opacity), (desktop::SUNRISE_MARK, 1.));
+        // Half way through the collapse: struck and dimmed, fading and closing its height.
+        let (l, height) =
+            at(m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE / 2);
+        assert_eq!((l.dim, l.strike), (1., 1.));
+        assert!(height > 0. && height < desktop::SUNRISE_MARK, "{height}");
+        assert!(l.opacity > 0. && l.opacity < 1., "{l:?}");
+
+        // Released once it has gone: nothing of it is left, and the next task takes the card.
+        let end = ms(m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE);
+        let (l, height) = card_paint(motion.row(first, end - ms(1)), true);
+        assert!(height < 1. && l.opacity < 0.1, "{height} {l:?}");
+        assert!(motion.advance(end).contains(&Release::Completed(first)));
+        assert_eq!(motion.holding().count(), 0);
+        let mut f = f;
+        f.ui.holding.clear();
+        let after = f.shell();
+        let after = after.room.handover().expect("still hands over");
+        assert_eq!(
+            after.first.id,
+            next.tasks().nth(1).expect("a second task").id
+        );
+        assert!(after.tasks().all(|t| t.id != first));
+        // At rest, a card is the sunrise mark's height and undimmed.
+        assert_eq!(
+            card_paint(None, false),
+            (RowLook::rest(false), desktop::SUNRISE_MARK)
+        );
+    }
 
     #[test]
     fn tab_navigation_does_not_steal_modified_or_repeated_tab() {
@@ -2728,21 +3019,6 @@ mod tests {
             is_held: true,
             ..key("tab")
         }));
-    }
-
-    #[test]
-    fn tab_cycles_only_visible_shell_stops_and_ignores_text_fields() {
-        use super::next_tab_stop;
-        let stops = [Some("sidebar"), Some("list"), None, Some("detail")];
-        assert_eq!(next_tab_stop(&stops, "list", false), Some("detail"));
-        assert_eq!(next_tab_stop(&stops, "detail", false), Some("sidebar"));
-        assert_eq!(next_tab_stop(&stops, "sidebar", true), Some("detail"));
-        assert_eq!(next_tab_stop(&stops, "detail", true), Some("list"));
-        assert_eq!(next_tab_stop(&stops, "title field", false), None);
-        assert_eq!(next_tab_stop(&stops, "title field", true), None);
-        let with_undo = [Some("sidebar"), Some("list"), Some("undo"), None];
-        assert_eq!(next_tab_stop(&with_undo, "list", false), Some("undo"));
-        assert_eq!(next_tab_stop(&with_undo, "undo", false), Some("sidebar"));
     }
 
     #[test]

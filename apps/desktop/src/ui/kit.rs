@@ -414,6 +414,35 @@ pub fn label(p: &Palette, s: &'static str) -> Div {
         .child(s.to_uppercase())
 }
 
+/// A hover tooltip (`.tooltip(kit::tooltip(p, "…"))`): one quiet line on the overlay surface.
+pub fn tooltip(
+    p: Palette,
+    text: &'static str,
+) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    move |_, cx| {
+        cx.new(|_| Tooltip {
+            p,
+            text: text.into(),
+        })
+        .into()
+    }
+}
+
+struct Tooltip {
+    p: Palette,
+    text: SharedString,
+}
+
+impl Render for Tooltip {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        overlay(&self.p)
+            .px(px(space::S2 + 2.))
+            .style(ty::TAG)
+            .text_color(self.p.ink_2)
+            .child(self.text.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::meter_bars;

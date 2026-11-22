@@ -15,6 +15,7 @@ pub mod hints;
 pub mod labels;
 pub mod layout;
 pub mod lists;
+pub mod menus;
 pub mod motion;
 pub use todo_client::intent::{self as commands, quick_add};
 
@@ -565,12 +566,22 @@ pub enum FieldKind {
     Empty,
 }
 
+/// What a detail field edits when clicked. Fields without one are shown, not edited, here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldEdit {
+    /// Typed in place (the D key).
+    Due,
+    /// Picked from the four levels (the P key cycles them).
+    Priority,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Field {
     pub icon: Icon,
     pub label: &'static str,
     pub value: SharedString,
     pub kind: FieldKind,
+    pub edit: Option<FieldEdit>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -602,6 +613,7 @@ pub struct Detail {
     pub done: bool,
     pub my_day: bool,
     pub important: bool,
+    pub priority: todo_core::model::Priority,
     pub steps: Vec<StepRow>,
     pub notes: SharedString,
     pub fields: Vec<Field>,
@@ -652,6 +664,17 @@ impl Shell {
                 .collect(),
             None => self.rows().map(|r| r.id).collect(),
         }
+    }
+
+    /// Every task the room shows now: its rows, or the finished day's hand-over to tomorrow. A
+    /// choreography plays only on these (`Motion::retain_shown`).
+    pub fn shown_tasks(&self) -> impl Iterator<Item = TaskId> + '_ {
+        self.rows().map(|r| r.id).chain(
+            self.room
+                .handover()
+                .into_iter()
+                .flat_map(|next| next.tasks().map(|t| t.id)),
+        )
     }
 
     /// Whether a row action still targets a row in the live room, not a snapshot or stale hitbox.

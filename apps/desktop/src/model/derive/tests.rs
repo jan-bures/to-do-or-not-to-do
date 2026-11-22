@@ -684,3 +684,66 @@ fn planning_names_the_day_after_today() {
     f.now = Now::fixed("2026-11-21T23:59:00Z");
     assert_eq!(f.shell().room.plan_weekday.as_deref(), Some("Sunday"));
 }
+
+#[test]
+fn a_hand_over_task_completed_from_its_box_keeps_its_place_until_released() {
+    let mut f = fixtures::finished();
+    let before = f.shell();
+    let next = before.room.handover().expect("hands over");
+    let task = next.also.first().expect("another task tomorrow").id;
+    let shown: Vec<TaskId> = before.shown_tasks().collect();
+    assert!(shown.contains(&task), "the hand-over's tasks are shown");
+    run(
+        &mut f.state,
+        f.now.at.to_string().as_str(),
+        Command::CompleteTask { id: task },
+    );
+    // Without holding, it leaves the hand-over at once.
+    let gone = f.shell();
+    assert!(
+        gone.room
+            .handover()
+            .is_some_and(|n| n.child(task).is_none())
+    );
+    // Held, it stays in its place, drawn done, while its completion plays.
+    f.ui.holding.insert(task);
+    let held = f.shell();
+    let next = held.room.handover().expect("still hands over");
+    assert_eq!(
+        next.child(task),
+        before.room.handover().and_then(|n| n.child(task))
+    );
+    assert!(next.tasks().any(|t| t.id == task && t.done));
+    assert!(held.shown_tasks().any(|id| id == task));
+    // The finished day stays finished: the task isn't My Day's.
+    assert!(held.room.finished_day());
+}
+
+#[test]
+fn the_detail_offers_due_and_priority_to_edit_and_only_shows_the_rest() {
+    let f = fixtures::my_day();
+    let shell = f.shell();
+    let detail = shell.detail.expect("a task is open");
+    let edits: Vec<(&str, Option<FieldEdit>)> =
+        detail.fields.iter().map(|f| (f.label, f.edit)).collect();
+    assert_eq!(edits[0], ("Due", Some(FieldEdit::Due)));
+    assert_eq!(edits[1], ("Priority", Some(FieldEdit::Priority)));
+    assert!(
+        edits[2..].iter().all(|(_, edit)| edit.is_none()),
+        "{edits:?}"
+    );
+    // The priority reads as its name, or a dash when there's none.
+    let mut f = fixtures::my_day();
+    for (level, value) in [
+        (Priority::High, "High"),
+        (Priority::Normal, "Normal"),
+        (Priority::Low, "Low"),
+        (Priority::None, "–"),
+    ] {
+        let id = f.ui.task.expect("selected");
+        f.state.tasks.get_mut(&id).expect("task").priority = level;
+        let d = f.shell().detail.expect("detail");
+        assert_eq!(d.priority, level);
+        assert_eq!(d.fields[1].value.as_ref(), value);
+    }
+}

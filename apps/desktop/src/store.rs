@@ -223,6 +223,18 @@ impl Store {
         }
     }
 
+    /// The server the app is paired with, as learnt at pairing. A fixture that shows a paired app names
+    /// the placeholder server.
+    pub fn server(&self) -> Option<String> {
+        match self {
+            Self::Local(s) => s
+                .sync
+                .paired
+                .then(|| crate::fixtures::PAIRING_SERVER.to_string()),
+            Self::Live(s) => Some(s.session.server().to_string()),
+        }
+    }
+
     pub fn session(&self) -> Option<&Session> {
         match self {
             Self::Local(_) => None,
@@ -284,6 +296,28 @@ mod tests {
             prop_assert_ne!(store.view().siblings(scope), order.clone());
             store.undo(&undo).expect("valid inverse");
             prop_assert_eq!(store.view().siblings(scope), order);
+        }
+
+        /// Deleting any list or step and undoing it puts back exactly what was there: its place among its
+        /// siblings, its settings and its collection or task. (The live store's unsent and
+        /// acknowledged paths are in `session::tests`.)
+        #[test]
+        fn local_undo_of_a_list_or_step_delete_restores_it_exactly(index in any::<usize>(), step in any::<bool>()) {
+            use todo_core::ids::EntityId;
+            let store = Store::fixture(&crate::fixtures::work());
+            let before = store.view();
+            let ids: Vec<EntityId> = if step {
+                before.steps.values().filter(|s| before.is_live(s.id.into())).map(|s| s.id.into()).collect()
+            } else {
+                before.lists.values().filter(|l| before.is_live(l.id.into())).map(|l| l.id.into()).collect()
+            };
+            let id = ids[index % ids.len()];
+            let undo = store.submit_undoable(Command::Delete { id }).expect("delete");
+            prop_assert!(!store.view().is_live(id));
+            store.undo(&undo).expect("valid inverse");
+            let after = store.view();
+            prop_assert!(after.data_eq(&before));
+            prop_assert_eq!(after.entity(id), before.entity(id));
         }
     }
 }

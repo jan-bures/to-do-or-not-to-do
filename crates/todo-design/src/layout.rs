@@ -262,9 +262,15 @@ pub mod desktop {
     pub const STEP_ROW: f32 = 30.0;
     /// Property rows (due, reminder, repeat, tags).
     pub const PROP_ROW: f32 = 34.0;
+    /// Popover menu width (a context menu, the room's and the account's menus, the priority picker).
+    pub const MENU: f32 = 240.0;
+    /// A menu's confirmation step: what will happen, wrapped in full, above its buttons.
+    pub const CONFIRM: f32 = 288.0;
+    /// The sunrise mark in the finished day's hand-over, and the height of tomorrow's first task beside it.
+    pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 48] = [
+    pub const ALL: [(&str, f32); 51] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -313,6 +319,9 @@ pub mod desktop {
         ("detail-pad-x", DETAIL_PAD_X),
         ("step-row", STEP_ROW),
         ("prop-row", PROP_ROW),
+        ("menu", MENU),
+        ("confirm", CONFIRM),
+        ("sunrise-mark", SUNRISE_MARK),
     ];
 }
 

@@ -98,6 +98,13 @@ pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
         "work" => Some(work()),
+        // The menus, open at rest: the room's "more" menu in a list, the account menu and the detail
+        // pane's priority picker (`ShellView::preview_menu` opens them).
+        "room-menu" => Some(list_room()),
+        "account-menu" | "priority-menu" => Some(my_day()),
+        // Deleting a list with a long name, confirmed from its room's menu: the whole name and the
+        // count wrap above the buttons.
+        "delete-list-confirm" => Some(long_list_room()),
         "collapsed-collection" => Some(collapsed_collection()),
         "collection-collapse-50" => Some(Fixture {
             moment: Some(Moment::CollectionCollapse { at: m::PANEL / 2 }),
@@ -127,6 +134,11 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "empty" => Some(empty()),
         "finished" | "finished-short" => Some(finished()),
         "finished-nothing-tomorrow" => Some(finished_nothing_tomorrow()),
+        // Tomorrow's first task completed from the finished day's hand-over, half way through its
+        // collapse: dimmed, struck through, fading and closing its height.
+        "handover-complete-50" => Some(handover_complete(
+            m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE / 2,
+        )),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
         // The completion choreography, frozen: the disc popping and the tick drawing, the hold, half way
         // through the collapse; the sun half way to the new count; a reopened task half way out of
@@ -902,6 +914,43 @@ pub fn my_day() -> Fixture {
     )
 }
 
+/// A list's room (Planning) with a task open.
+pub fn list_room() -> Fixture {
+    let (b, l) = sample();
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::List(l.planning),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// A list's room (Planning, with a long name) with a task open.
+fn long_list_room() -> Fixture {
+    let (mut b, l) = sample();
+    b.run(
+        &owner(),
+        "2026-01-11T09:00:00Z",
+        Command::UpdateList {
+            id: l.planning,
+            name: Some(LONG_LIST.into()),
+            color: None,
+        },
+    );
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::List(l.planning),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
 /// The Work collection, with quick-add typing (the F2 dark mockup).
 pub fn work() -> Fixture {
     let (b, l) = sample();
@@ -1104,6 +1153,35 @@ pub fn finished() -> Fixture {
         "2026-11-21T21:40:00Z",
     );
     f.sync = online("2026-11-21T21:39:00Z");
+    f
+}
+
+/// The finished day with tomorrow's first task (the hand-over's card) just completed with Space, `at` ms
+/// into its choreography.
+pub fn handover_complete(at: u32) -> Fixture {
+    let mut f = finished();
+    let shell = crate::model::derive(&f.state, &f.ui, &f.sync, &f.now);
+    let Some(task) = shell.room.handover().map(|next| next.first.id) else {
+        return f;
+    };
+    let complete = Command::CompleteTask { id: task };
+    match decide(&f.state, &owner(), &complete, ts("2026-11-21T21:39:30Z")) {
+        Ok(events) => {
+            for e in &events {
+                if let Err(err) = apply(&mut f.state, e) {
+                    tracing::error!("fixture data has errors: {err}");
+                }
+            }
+        }
+        Err(err) => tracing::error!("fixture data has errors: {err}"),
+    }
+    f.ui.task = Some(task);
+    f.ui.holding.insert(task);
+    f.moment = Some(Moment::Completing {
+        task,
+        at,
+        end: false,
+    });
     f
 }
 

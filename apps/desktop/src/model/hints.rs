@@ -21,15 +21,87 @@ pub enum Focus {
     Rename,
     /// A resize divider next to the list.
     Splitter,
+    /// An open menu: the arrows walk its items.
+    Menu,
+    /// A button that opens a menu (the room's "more", the account gear), reached with Tab.
+    Control,
     /// Nothing that takes keys: only the window's Ctrl shortcuts work.
     Elsewhere,
 }
 
 impl Focus {
-    /// Never take the task shortcut from an input that is editing text.
+    /// Ctrl+Z undoes the last task change from anywhere that isn't editing text: the list, a divider, a
+    /// menu, a menu's button, or nowhere in particular. A text field keeps Ctrl+Z for its own text.
     pub fn allows_task_undo(self) -> bool {
-        matches!(self, Self::List | Self::Splitter | Self::Elsewhere)
+        match self {
+            Self::List | Self::Splitter | Self::Menu | Self::Control | Self::Elsewhere => true,
+            Self::QuickAdd
+            | Self::Filter
+            | Self::Title
+            | Self::Notes
+            | Self::Step
+            | Self::Due
+            | Self::Rename => false,
+        }
     }
+}
+
+/// The places Tab moves the keyboard between, outside text fields and open menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// The divider between the sidebar and the list.
+    SidebarSplitter,
+    /// The task list, where the keyboard starts.
+    List,
+    /// The undo toast's Undo, while the toast is up.
+    Undo,
+    /// The room header's "more" button, in rooms that have a menu.
+    RoomMenu,
+    /// The divider between the list and the docked detail pane, while it shows.
+    DetailSplitter,
+    /// The account gear in the sidebar footer.
+    Account,
+}
+
+/// Every Tab stop, in the order Tab goes round them (Shift+Tab goes the other way). A stop that isn't
+/// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
+/// without a docked detail pane) is skipped. A new stop takes its place in this table; nothing else
+/// changes.
+pub const TAB_ORDER: [Stop; 6] = [
+    Stop::SidebarSplitter,
+    Stop::List,
+    Stop::Undo,
+    Stop::RoomMenu,
+    Stop::DetailSplitter,
+    Stop::Account,
+];
+
+/// Where Tab (`forward`) or Shift+Tab goes from `from`: the next stop round [`TAB_ORDER`] that is
+/// `present`. The list is always there; from a stop that has just gone, it goes on from that stop's
+/// place in the order.
+pub fn tab_stop(from: Stop, forward: bool, present: impl Fn(Stop) -> bool) -> Stop {
+    let n = TAB_ORDER.len();
+    let at = TAB_ORDER.iter().position(|&s| s == from).unwrap_or(0);
+    (1..n)
+        .map(|k| {
+            if forward {
+                TAB_ORDER[(at + k) % n]
+            } else {
+                TAB_ORDER[(at + n - k) % n]
+            }
+        })
+        .find(|&s| s == Stop::List || present(s))
+        .unwrap_or(Stop::List)
+}
+
+/// Where navigation Tab goes from where the keyboard is (`focused`, the stop it's on, if any). Off the
+/// stops (a text field, an open menu) Tab isn't the shell's: `None`, and the focused element keeps it.
+pub fn tab_target(
+    focused: Option<Stop>,
+    forward: bool,
+    present: impl Fn(Stop) -> bool,
+) -> Option<Stop> {
+    focused.map(|from| tab_stop(from, forward, present))
 }
 
 /// What the hints depend on besides the focus.
@@ -75,6 +147,7 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
                     ("E", "edit"),
                     ("D", "due"),
                     ("P", "priority"),
+                    ("Shift P", "pick priority"),
                 ]);
                 if s.reorder {
                     hints.push(("Alt ↑↓", "reorder"));
@@ -93,6 +166,12 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
             ("← →", "resize"),
             ("Shift ← →", "larger steps"),
             ("Home / Enter", "reset"),
+            ("Esc", "back to the list"),
+        ]),
+        Focus::Menu => hints.extend([("↑↓", "choose"), ("Enter", "select"), ("Esc", "close")]),
+        Focus::Control => hints.extend([
+            ("Enter", "open"),
+            ("Tab", "next"),
             ("Esc", "back to the list"),
         ]),
         Focus::Elsewhere => {}
@@ -142,7 +221,7 @@ mod tests {
         assert_eq!(keys(list(true, false, true)), ["J K"]);
         assert_eq!(
             keys(list(true, true, false)),
-            ["J K", "Space", "E", "D", "P", "Esc"]
+            ["J K", "Space", "E", "D", "P", "Shift P", "Esc"]
         );
     }
 
@@ -191,6 +270,178 @@ mod tests {
         let mut state = list(false, false, false);
         state.undo = true;
         assert_eq!(keys(state), ["Ctrl Z"]);
+    }
+
+    #[test]
+    fn menus_and_menu_buttons_show_their_own_keys() {
+        let state = |focus| HintState {
+            focus,
+            rows: true,
+            selected: Some(Selected { done: false }),
+            reorder: true,
+            undo: false,
+        };
+        assert_eq!(keys(state(Focus::Menu)), ["↑↓", "Enter", "Esc"]);
+        assert_eq!(keys(state(Focus::Control)), ["Enter", "Tab", "Esc"]);
+    }
+
+    #[test]
+    fn ctrl_z_undoes_a_task_change_from_menus_and_their_buttons_but_never_from_text() {
+        for focus in [
+            Focus::List,
+            Focus::Splitter,
+            Focus::Menu,
+            Focus::Control,
+            Focus::Elsewhere,
+        ] {
+            assert!(focus.allows_task_undo(), "{focus:?}");
+            let k = keys(HintState {
+                focus,
+                rows: true,
+                selected: None,
+                reorder: false,
+                undo: true,
+            });
+            assert_eq!(k.last(), Some(&"Ctrl Z"), "{focus:?}");
+        }
+        for focus in [
+            Focus::QuickAdd,
+            Focus::Filter,
+            Focus::Title,
+            Focus::Notes,
+            Focus::Step,
+            Focus::Due,
+            Focus::Rename,
+        ] {
+            assert!(!focus.allows_task_undo(), "{focus:?}");
+        }
+    }
+
+    /// Every stop Tab reaches from `start`, going round once, and Shift+Tab's from the same place.
+    fn round(start: Stop, forward: bool, present: impl Fn(Stop) -> bool + Copy) -> Vec<Stop> {
+        let mut at = start;
+        let mut seen = Vec::new();
+        loop {
+            at = tab_stop(at, forward, present);
+            seen.push(at);
+            if at == start || seen.len() > TAB_ORDER.len() {
+                return seen;
+            }
+        }
+    }
+
+    #[test]
+    fn tab_and_shift_tab_go_all_the_way_round_every_stop() {
+        use Stop::*;
+        let all = |_: Stop| true;
+        // Forwards from each stop, it comes back to it having passed every other stop once, in order.
+        for start in TAB_ORDER {
+            let at = TAB_ORDER
+                .iter()
+                .position(|&s| s == start)
+                .expect("in the order");
+            let expected: Vec<Stop> = (1..=TAB_ORDER.len())
+                .map(|k| TAB_ORDER[(at + k) % TAB_ORDER.len()])
+                .collect();
+            assert_eq!(round(start, true, all), expected, "from {start:?}");
+            // Shift+Tab is exactly the same journey backwards.
+            let mut back = round(start, false, all);
+            back.pop();
+            back.reverse();
+            back.push(start);
+            assert_eq!(back, expected, "back from {start:?}");
+        }
+        // With every conditional stop present: the whole table, both ways.
+        assert_eq!(
+            round(List, true, all),
+            [
+                Undo,
+                RoomMenu,
+                DetailSplitter,
+                Account,
+                SidebarSplitter,
+                List
+            ]
+        );
+        assert_eq!(
+            round(List, false, all),
+            [
+                SidebarSplitter,
+                Account,
+                DetailSplitter,
+                RoomMenu,
+                Undo,
+                List
+            ]
+        );
+        // Shift+Tab from Undo leaves it for the list, and the list goes on backwards: never stuck
+        // between the two.
+        assert_eq!(tab_stop(Undo, false, all), List);
+        assert_eq!(tab_stop(List, false, all), SidebarSplitter);
+    }
+
+    #[test]
+    fn tab_skips_the_stops_that_are_not_there() {
+        use Stop::*;
+        // Without the toast, a room menu or a docked detail: the dividers' and the fixed stops only.
+        let fixed = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter);
+        assert_eq!(round(List, true, fixed), [Account, SidebarSplitter, List]);
+        assert_eq!(round(List, false, fixed), [SidebarSplitter, Account, List]);
+        // Without the detail divider (narrow window, or no task open), both ways.
+        let no_detail = |s: Stop| s != DetailSplitter;
+        assert_eq!(
+            round(RoomMenu, true, no_detail),
+            [Account, SidebarSplitter, List, Undo, RoomMenu]
+        );
+        assert_eq!(
+            round(RoomMenu, false, no_detail),
+            [Undo, List, SidebarSplitter, Account, RoomMenu]
+        );
+        // A room without a menu skips its button both ways.
+        let no_menu = |s: Stop| s != RoomMenu;
+        assert_eq!(
+            round(Undo, true, no_menu),
+            [DetailSplitter, Account, SidebarSplitter, List, Undo]
+        );
+        assert_eq!(
+            round(Undo, false, no_menu),
+            [List, SidebarSplitter, Account, DetailSplitter, Undo]
+        );
+        // Without the toast, Undo is skipped.
+        let no_undo = |s: Stop| s != Undo;
+        assert_eq!(
+            round(List, true, no_undo),
+            [RoomMenu, DetailSplitter, Account, SidebarSplitter, List]
+        );
+        assert_eq!(
+            round(List, false, no_undo),
+            [SidebarSplitter, Account, DetailSplitter, RoomMenu, List]
+        );
+        // From a stop that has just gone (the toast expired while Undo had the keyboard, the detail
+        // closed under its divider), it goes on from that stop's place.
+        assert_eq!(tab_stop(Undo, true, no_undo), RoomMenu);
+        assert_eq!(tab_stop(Undo, false, no_undo), List);
+        assert_eq!(tab_stop(DetailSplitter, true, no_detail), Account);
+        assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
+        // The list is always there, even if asked otherwise.
+        assert_eq!(tab_stop(Account, true, |_| false), List);
+        assert_eq!(tab_stop(Account, false, |_| false), List);
+    }
+
+    #[test]
+    fn tab_off_the_stops_is_left_to_the_focused_element() {
+        let all = |_: Stop| true;
+        // A text field or an open menu: not a stop, so the shell doesn't take Tab.
+        assert_eq!(tab_target(None, true, all), None);
+        assert_eq!(tab_target(None, false, all), None);
+        assert_eq!(
+            tab_target(Some(Stop::Account), true, all),
+            Some(Stop::SidebarSplitter)
+        );
+        assert_eq!(
+            tab_target(Some(Stop::SidebarSplitter), false, all),
+            Some(Stop::Account)
+        );
     }
 
     #[test]

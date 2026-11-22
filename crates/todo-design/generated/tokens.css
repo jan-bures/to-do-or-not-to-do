@@ -258,6 +258,9 @@
   --desktop-detail-pad-x: 24px;
   --desktop-step-row: 30px;
   --desktop-prop-row: 34px;
+  --desktop-menu: 240px;
+  --desktop-confirm: 288px;
+  --desktop-sunrise-mark: 52px;
   --phone-row: 64px;
   --phone-col-check: 22px;
   --phone-col-agent: 20px;

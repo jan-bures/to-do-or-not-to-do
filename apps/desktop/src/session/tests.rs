@@ -264,6 +264,393 @@ fn a_reported_undo_failure_does_not_stay_in_the_failed_queue() {
     assert!(reopened.client().failed().is_empty());
 }
 
+/// The live lists of a collection, in order.
+fn lists_in(state: &State, collection: todo_core::ids::CollectionId) -> Vec<ListId> {
+    let mut lists: Vec<_> = state
+        .lists
+        .values()
+        .filter(|l| l.collection == Some(collection) && state.is_live(l.id.into()))
+        .collect();
+    lists.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
+    lists.iter().map(|l| l.id).collect()
+}
+
+/// A task's live steps, in order.
+fn steps_of(state: &State, task: TaskId) -> Vec<todo_core::ids::StepId> {
+    let mut steps: Vec<_> = state
+        .steps
+        .values()
+        .filter(|s| s.task == task && state.is_live(s.id.into()))
+        .collect();
+    steps.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
+    steps.iter().map(|s| s.id).collect()
+}
+
+/// The tasks My Day shows (its rows), as the window derives them.
+fn my_day_rows(store: &crate::store::Store) -> Vec<TaskId> {
+    let shell = crate::model::derive(
+        &store.view(),
+        &crate::model::UiState::default(),
+        &store.sync(),
+        &store.now(),
+    );
+    shell.rows().map(|r| r.id).collect()
+}
+
+/// Two paired devices on one server. A has a collection of three lists, the middle one coloured, with a
+/// task in My Day that has three steps, the middle one done; B has seen all of it.
+struct Deletes {
+    server: TestServer,
+    net: Runtime,
+    _homes: (tempfile::TempDir, tempfile::TempDir),
+    paths: Paths,
+    pairing: Pairing,
+    b: Session,
+    collection: todo_core::ids::CollectionId,
+    lists: [ListId; 3],
+    task: TaskId,
+    steps: [todo_core::ids::StepId; 3],
+}
+
+impl Deletes {
+    fn new() -> Self {
+        use todo_core::Command;
+        use todo_core::command::{NewTask, Placement};
+        use todo_core::ids::{CollectionId, StepId};
+
+        let server = TestServer::start();
+        let net = runtime().expect("runtime");
+        let homes = (
+            tempfile::tempdir().expect("a"),
+            tempfile::tempdir().expect("b"),
+        );
+        let paths = Paths::in_dir(homes.0.path().to_owned());
+        let paths_b = Paths::in_dir(homes.1.path().to_owned());
+        let pairing = server.pair(&net, &paths);
+        let pairing_b = server.pair(&net, &paths_b);
+        let a = Session::open(net.clone(), &paths, &pairing).expect("open a");
+        a.start();
+        let id = || a.client().new_uuid();
+        let collection = CollectionId::from_uuid(id());
+        let lists = [
+            ListId::from_uuid(id()),
+            ListId::from_uuid(id()),
+            ListId::from_uuid(id()),
+        ];
+        let task = TaskId::from_uuid(id());
+        let steps = [
+            StepId::from_uuid(id()),
+            StepId::from_uuid(id()),
+            StepId::from_uuid(id()),
+        ];
+        let mut cmds = vec![Command::CreateCollection {
+            id: collection,
+            name: "Home".into(),
+            color: None,
+            placement: Placement::Last,
+        }];
+        for (list, (name, color)) in lists.iter().zip([
+            ("Errands", None),
+            ("Garden", Some("#3a7d44".to_string())),
+            ("Repairs", None),
+        ]) {
+            cmds.push(Command::CreateList {
+                id: *list,
+                collection: Some(collection),
+                name: name.into(),
+                color,
+                placement: Placement::Last,
+            });
+        }
+        let mut new = NewTask::new(task, lists[1], "Plant the bulbs");
+        new.my_day = Some(today());
+        cmds.push(Command::CreateTask(Box::new(new)));
+        for (step, title) in steps.iter().zip(["Buy bulbs", "Dig the bed", "Water"]) {
+            cmds.push(Command::CreateStep {
+                id: *step,
+                task,
+                title: title.into(),
+                placement: Placement::Last,
+            });
+        }
+        cmds.push(Command::CompleteStep { id: steps[1] });
+        submit(&a, cmds);
+        eventually("A's data is confirmed", || a.client().pending().is_empty());
+        net.block_on(a.shutdown());
+        drop(a);
+        let b = Session::open(net.clone(), &paths_b, &pairing_b).expect("open b");
+        b.start();
+        eventually("B has A's data", || {
+            b.client().view().steps.contains_key(&steps[2])
+        });
+        Self {
+            server,
+            net,
+            _homes: homes,
+            paths,
+            pairing,
+            b,
+            collection,
+            lists,
+            task,
+            steps,
+        }
+    }
+
+    /// Device A's store, offline (nothing is sent until it starts) or syncing.
+    fn store(&self, online: bool) -> crate::store::Store {
+        use crate::store::{LiveStore, Store};
+        let session = Session::open(self.net.clone(), &self.paths, &self.pairing).expect("open a");
+        if online {
+            session.start();
+        }
+        Store::Live(LiveStore::new(session))
+    }
+
+    /// What must come back exactly: the lists' order, names, colours and collection.
+    fn list_settings(&self, state: &State) -> Vec<(String, Option<String>, bool)> {
+        lists_in(state, self.collection)
+            .iter()
+            .map(|l| {
+                let list = &state.lists[l];
+                (
+                    list.name.clone(),
+                    list.color.clone(),
+                    list.collection == Some(self.collection),
+                )
+            })
+            .collect()
+    }
+
+    /// The task's steps in order, each with its title and whether it's done.
+    fn step_settings(&self, state: &State) -> Vec<(String, bool)> {
+        steps_of(state, self.task)
+            .iter()
+            .map(|s| {
+                let step = &state.steps[s];
+                (step.title.clone(), step.completed_at.is_some())
+            })
+            .collect()
+    }
+
+    fn finish(self, store: crate::store::Store) {
+        if let Some(session) = store.session() {
+            self.net.block_on(session.shutdown());
+        }
+        drop(store);
+        self.net.block_on(self.b.shutdown());
+        drop(self.b);
+        drop(self.server);
+        if let Ok(rt) = std::sync::Arc::try_unwrap(self.net) {
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
+    }
+}
+
+#[test]
+fn undoing_an_unsent_list_delete_cancels_it_and_the_list_is_back_as_it_was() {
+    use todo_client::TrackedUndo;
+    use todo_core::Command;
+
+    let d = Deletes::new();
+    let store = d.store(false);
+    let before = store.view();
+    let garden = d.lists[1];
+    let settings = d.list_settings(&before);
+    assert_eq!(lists_in(&before, d.collection), d.lists);
+    assert!(my_day_rows(&store).contains(&d.task));
+
+    let target = store
+        .submit_undoable(Command::Delete { id: garden.into() })
+        .expect("delete");
+    let deleted = store.view();
+    assert_eq!(lists_in(&deleted, d.collection), [d.lists[0], d.lists[2]]);
+    // The deleted list's room falls back to My Day, which no longer shows its task.
+    assert_eq!(RoomKey::List(garden).resolved(&deleted), RoomKey::default());
+    assert!(!my_day_rows(&store).contains(&d.task));
+
+    assert_eq!(store.undo(&target).expect("undo"), TrackedUndo::Cancelled);
+    let after = store.view();
+    assert!(after.data_eq(&before), "nothing else changed");
+    assert_eq!(lists_in(&after, d.collection), d.lists);
+    assert_eq!(d.list_settings(&after), settings);
+    assert_eq!(
+        RoomKey::List(garden).resolved(&after),
+        RoomKey::List(garden)
+    );
+    assert!(my_day_rows(&store).contains(&d.task));
+    let session = store.session().expect("session");
+    assert!(
+        session.client().pending().is_empty(),
+        "nothing left to send"
+    );
+    d.finish(store);
+}
+
+#[test]
+fn undoing_an_acknowledged_list_delete_restores_it_and_keeps_an_edit_made_meanwhile() {
+    use todo_client::TrackedUndo;
+    use todo_core::Command;
+    use todo_core::command::Placement;
+
+    let d = Deletes::new();
+    let store = d.store(true);
+    let garden = d.lists[1];
+    let settings = d.list_settings(&store.view());
+    let target = store
+        .submit_undoable(Command::Delete { id: garden.into() })
+        .expect("delete");
+    let session = store.session().expect("session");
+    eventually("the delete is acknowledged", || {
+        session.client().pending().is_empty()
+    });
+    assert!(!d.server.state().is_live(garden.into()));
+    assert_eq!(
+        RoomKey::List(garden).resolved(&store.view()),
+        RoomKey::default()
+    );
+
+    // Meanwhile B renames the list beside it and adds another to the collection.
+    let added = ListId::from_uuid(d.b.client().new_uuid());
+    submit(
+        &d.b,
+        vec![
+            Command::UpdateList {
+                id: d.lists[0],
+                name: Some("Errands and shopping".into()),
+                color: None,
+            },
+            Command::CreateList {
+                id: added,
+                collection: Some(d.collection),
+                name: "Winter".into(),
+                color: None,
+                placement: Placement::Last,
+            },
+        ],
+    );
+    eventually("A sees B's edits", || {
+        store.view().lists.contains_key(&added)
+    });
+
+    let TrackedUndo::Queued(_) = store.undo(&target).expect("undo") else {
+        panic!("an acknowledged delete is undone through the server");
+    };
+    // At once, before the server answers.
+    assert!(store.view().is_live(garden.into()));
+    eventually("the undo is confirmed", || {
+        session.client().pending().is_empty()
+    });
+    assert!(session.client().failed().is_empty());
+    let mut expected = settings;
+    expected[0].0 = "Errands and shopping".into();
+    expected.push(("Winter".into(), None, true));
+    for (who, state) in [("server", d.server.state()), ("A", store.view())] {
+        assert_eq!(
+            lists_in(&state, d.collection),
+            [d.lists[0], garden, d.lists[2], added],
+            "{who}: order and collection"
+        );
+        assert_eq!(
+            d.list_settings(&state),
+            expected,
+            "{who}: B's edits survive"
+        );
+        assert!(state.is_live(d.task.into()), "{who}: its task is back");
+    }
+    assert_eq!(
+        RoomKey::List(garden).resolved(&store.view()),
+        RoomKey::List(garden)
+    );
+    assert!(my_day_rows(&store).contains(&d.task), "back in My Day");
+    eventually("B sees the list back", || {
+        d.b.client().view().is_live(garden.into())
+    });
+    d.finish(store);
+}
+
+#[test]
+fn undoing_an_unsent_step_delete_cancels_it_and_the_step_is_back_as_it_was() {
+    use todo_client::TrackedUndo;
+    use todo_core::Command;
+
+    let d = Deletes::new();
+    let store = d.store(false);
+    let before = store.view();
+    let settings = d.step_settings(&before);
+    assert_eq!(steps_of(&before, d.task), d.steps);
+    let target = store
+        .submit_undoable(Command::Delete {
+            id: d.steps[1].into(),
+        })
+        .expect("delete");
+    assert_eq!(steps_of(&store.view(), d.task), [d.steps[0], d.steps[2]]);
+    assert_eq!(store.undo(&target).expect("undo"), TrackedUndo::Cancelled);
+    let after = store.view();
+    assert!(after.data_eq(&before), "nothing else changed");
+    assert_eq!(steps_of(&after, d.task), d.steps);
+    assert_eq!(d.step_settings(&after), settings, "still done, same title");
+    d.finish(store);
+}
+
+#[test]
+fn undoing_an_acknowledged_step_delete_restores_it_and_keeps_an_edit_made_meanwhile() {
+    use todo_client::TrackedUndo;
+    use todo_core::Command;
+    use todo_core::command::TaskPatch;
+
+    let d = Deletes::new();
+    let store = d.store(true);
+    let target = store
+        .submit_undoable(Command::Delete {
+            id: d.steps[1].into(),
+        })
+        .expect("delete");
+    let session = store.session().expect("session");
+    eventually("the delete is acknowledged", || {
+        session.client().pending().is_empty()
+    });
+    // Meanwhile B renames the task and finishes its last step.
+    submit(
+        &d.b,
+        vec![
+            Command::UpdateTask {
+                id: d.task,
+                patch: TaskPatch {
+                    title: Some("Plant the tulip bulbs".into()),
+                    ..TaskPatch::default()
+                },
+            },
+            Command::CompleteStep { id: d.steps[2] },
+        ],
+    );
+    eventually("A sees B's edits", || {
+        store.view().steps[&d.steps[2]].completed_at.is_some()
+    });
+    let TrackedUndo::Queued(_) = store.undo(&target).expect("undo") else {
+        panic!("an acknowledged delete is undone through the server");
+    };
+    assert_eq!(steps_of(&store.view(), d.task), d.steps, "at once");
+    eventually("the undo is confirmed", || {
+        session.client().pending().is_empty()
+    });
+    assert!(session.client().failed().is_empty());
+    for (who, state) in [("server", d.server.state()), ("A", store.view())] {
+        assert_eq!(steps_of(&state, d.task), d.steps, "{who}: order");
+        assert_eq!(
+            d.step_settings(&state),
+            [
+                ("Buy bulbs".to_string(), false),
+                ("Dig the bed".to_string(), true),
+                ("Water".to_string(), true),
+            ],
+            "{who}: the step is back done, and B's completion survives"
+        );
+        assert_eq!(state.tasks[&d.task].title, "Plant the tulip bulbs", "{who}");
+    }
+    d.finish(store);
+}
+
 #[test]
 fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let server = TestServer::start();

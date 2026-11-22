@@ -18,12 +18,13 @@ Options:
   --screenshot      Render one hidden fixture window, save its PNG and exit.
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
-  --fixture         Fixture to render: my-day, work, collapsed-collection, long-sidebar, long-names,
+  --fixture         Fixture to render: my-day, work, room-menu, account-menu, priority-menu,
+                    delete-list-confirm, collapsed-collection, long-sidebar, long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
                     caption-close-hover, empty, finished, finished-short (700 px
-                    tall), finished-nothing-tomorrow, quick-add, pairing, pairing-code, open-failed
-                    or open-failed-confirm.
+                    tall), finished-nothing-tomorrow, handover-complete-50, quick-add, pairing,
+                    pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -37,6 +38,10 @@ Options:
 pub const FIXTURES: &[&str] = &[
     "my-day",
     "work",
+    "room-menu",
+    "account-menu",
+    "priority-menu",
+    "delete-list-confirm",
     "collapsed-collection",
     "long-sidebar",
     "long-names",
@@ -52,6 +57,7 @@ pub const FIXTURES: &[&str] = &[
     "finished",
     "finished-short",
     "finished-nothing-tomorrow",
+    "handover-complete-50",
     "quick-add",
     "pairing",
     "pairing-code",

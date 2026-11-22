@@ -197,6 +197,20 @@ pub fn set_priority(id: TaskId, priority: Priority) -> Command {
     )
 }
 
+/// Sets the priority (the detail pane's picker); `None` when it already has it.
+pub fn set_priority(state: &State, id: TaskId, priority: Priority) -> Option<Command> {
+    let t = state.tasks.get(&id)?;
+    (t.priority != priority).then(|| {
+        update_task(
+            id,
+            TaskPatch {
+                priority: Some(priority),
+                ..TaskPatch::default()
+            },
+        )
+    })
+}
+
 pub fn update_task(id: TaskId, patch: TaskPatch) -> Command {
     Command::UpdateTask { id, patch }
 }
@@ -542,6 +556,23 @@ mod tests {
         assert_eq!(w.state.tasks[&id].priority, Priority::High);
         w.run(cycle_priority(&w.state, id).expect("cmd"));
         assert_eq!(w.state.tasks[&id].priority, Priority::None);
+        // Each level is set as picked, and picking the level it already has changes nothing. (The fixed
+        // clock gives a repeated command the same event, so this checks the commands.)
+        let mut state = w.state.clone();
+        for level in [
+            Priority::Low,
+            Priority::Normal,
+            Priority::High,
+            Priority::None,
+        ] {
+            let cmd = set_priority(&state, id, level).expect("cmd");
+            assert!(
+                matches!(&cmd, Command::UpdateTask { patch, .. } if patch.priority == Some(level)),
+                "{cmd:?}"
+            );
+            state.tasks.get_mut(&id).expect("task").priority = level;
+            assert!(set_priority(&state, id, level).is_none());
+        }
         assert!(retitle(&w.state, id, " Stamps ").is_none());
         w.run(retitle(&w.state, id, "Stamps and envelopes").expect("cmd"));
         w.run(set_notes(&w.state, id, "Two of each\nfrom the post office\n").expect("cmd"));

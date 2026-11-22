@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gpui::{Context, Div, MouseButton, Role, SharedString, div, prelude::*, px};
 use todo_client::{CommandId, TrackedUndo};
 use todo_core::ids::{EntityId, TaskId};
+use todo_core::model::Entity;
 use todo_core::{Command, State};
 
 use super::{
@@ -14,23 +15,30 @@ use crate::model::labels::one_line;
 use crate::store::UndoTarget;
 use crate::theme::TextStyled;
 
+/// What an undoable change did: a task change, or deleting a step or a whole list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
     Complete,
     Delete,
     Move,
+    DeleteStep,
+    DeleteList,
 }
 
 impl EditKind {
-    pub(super) fn of(command: &Command) -> Option<(TaskId, Self)> {
+    /// The changed entity and the kind of change, for a command the toast can undo.
+    pub(super) fn of(command: &Command) -> Option<(EntityId, Self)> {
         Some(match *command {
-            Command::CompleteTask { id } => (id, Self::Complete),
-            Command::Delete {
-                id: EntityId::Task(id),
-            } => (id, Self::Delete),
-            Command::MoveTask { id, .. }
-            | Command::Reorder {
-                id: EntityId::Task(id),
+            Command::CompleteTask { id } => (id.into(), Self::Complete),
+            Command::Delete { id } => match id {
+                EntityId::Task(_) => (id, Self::Delete),
+                EntityId::Step(_) => (id, Self::DeleteStep),
+                EntityId::List(_) => (id, Self::DeleteList),
+                _ => return None,
+            },
+            Command::MoveTask { id, .. } => (id.into(), Self::Move),
+            Command::Reorder {
+                id: id @ EntityId::Task(_),
                 ..
             } => (id, Self::Move),
             _ => return None,
@@ -46,6 +54,8 @@ impl EditKind {
             Self::Complete => "Completed",
             Self::Delete => "Deleted",
             Self::Move => "Moved",
+            Self::DeleteStep => "Deleted step",
+            Self::DeleteList => "Deleted list",
         }
     }
 
@@ -55,35 +65,114 @@ impl EditKind {
                 Self::Complete => "Reopened",
                 Self::Delete => "Restored",
                 Self::Move => "Moved back",
+                Self::DeleteStep => "Restored step",
+                Self::DeleteList => "Restored list",
             },
             title,
         )
     }
 
+    /// The change took a task's row away, and undoing it brings the row back with an entrance.
     fn needs_row_restore(self) -> bool {
         matches!(self, Self::Complete | Self::Delete)
     }
 
-    fn is_restored(self, id: TaskId, state: &State) -> bool {
-        state.is_live(id.into())
-            && (self != Self::Complete || state.tasks.get(&id).is_some_and(|t| !t.is_done()))
+    fn is_restored(self, entity: EntityId, state: &State) -> bool {
+        let open = || match entity {
+            EntityId::Task(id) => state.tasks.get(&id).is_some_and(|t| !t.is_done()),
+            _ => true,
+        };
+        state.is_live(entity) && (self != Self::Complete || open())
     }
 
-    fn undo_changed_view(self, id: TaskId, before: &State, after: &State) -> bool {
+    fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         if self == Self::Move {
+            let EntityId::Task(id) = entity else {
+                return false;
+            };
             before
                 .tasks
                 .get(&id)
                 .zip(after.tasks.get(&id))
                 .is_some_and(|(old, new)| old.list != new.list || old.position != new.position)
         } else {
-            !self.is_restored(id, before) && self.is_restored(id, after)
+            !self.is_restored(entity, before) && self.is_restored(entity, after)
         }
     }
 }
 
+/// Why an undone delete still shows nothing. Undo is the exact inverse of the delete: it brings back the
+/// task, step or list itself, never what it belongs to. If that (its list, task or collection) was
+/// deleted meanwhile, on another device or by an agent, the restored item stays hidden with it, and the
+/// notice says so rather than leave Undo looking as if it did nothing.
+pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) -> Option<String> {
+    if !matches!(
+        kind,
+        EditKind::Delete | EditKind::DeleteStep | EditKind::DeleteList
+    ) || state.tombstone(entity).is_some()
+        || state.is_live(entity)
+    {
+        return None;
+    }
+    // The nearest deleted ancestor is what hides it.
+    let mut at = state.entity(entity)?.parent();
+    let gone = loop {
+        let parent = state.entity(at?)?;
+        if parent.deleted().is_some() {
+            break parent;
+        }
+        at = parent.parent();
+    };
+    let what = match gone {
+        Entity::Task(_) => "task",
+        Entity::List(_) => "list",
+        Entity::Collection(_) => "collection",
+        _ => return None,
+    };
+    let subject = match kind {
+        EditKind::DeleteStep => "Step",
+        EditKind::DeleteList => "List",
+        _ => "Task",
+    };
+    // No names: the status bar is one short line, and a long title would push the explanation out.
+    Some(format!(
+        "{subject} restored, but its {what} was deleted elsewhere."
+    ))
+}
+
 fn task_label(verb: &str, title: &str) -> SharedString {
     format!("{verb} \u{201c}{}\u{201d}", one_line(title)).into()
+}
+
+/// What the toast names: a task's or a step's title, or a list's name.
+pub(super) fn subject_title(state: &State, entity: EntityId) -> &str {
+    match entity {
+        EntityId::Task(id) => state.tasks.get(&id).map(|t| t.title.as_str()),
+        EntityId::Step(id) => state.steps.get(&id).map(|s| s.title.as_str()),
+        EntityId::List(id) => state.lists.get(&id).map(|l| l.name.as_str()),
+        _ => None,
+    }
+    .unwrap_or("Task")
+}
+
+/// A later local edit makes the old one-step undo target stale: for a task, an edit to it or to its
+/// children; for a step or a list, an edit to that step or list.
+pub(super) fn touches(command: &Command, entity: EntityId, state: &State) -> bool {
+    match entity {
+        EntityId::Task(id) => touches_task(command, id, state),
+        _ => command_target(command) == Some(entity),
+    }
+}
+
+fn command_target(command: &Command) -> Option<EntityId> {
+    Some(match *command {
+        Command::UpdateStep { id, .. }
+        | Command::CompleteStep { id }
+        | Command::UncompleteStep { id } => id.into(),
+        Command::UpdateList { id, .. } | Command::MoveList { id, .. } => id.into(),
+        Command::Reorder { id, .. } | Command::Delete { id } | Command::Restore { id } => id,
+        _ => return None,
+    })
 }
 
 /// A later local edit makes the old one-step undo target stale, including edits to a task's children.
@@ -125,7 +214,7 @@ pub(super) fn touches_task(command: &Command, id: TaskId, state: &State) -> bool
 
 #[derive(Debug)]
 pub(super) struct Action {
-    pub id: TaskId,
+    pub entity: EntityId,
     pub kind: EditKind,
     pub target: UndoTarget,
     pub room: RoomKey,
@@ -139,7 +228,7 @@ impl Action {
 
 #[derive(Debug)]
 pub(super) struct Pending {
-    id: TaskId,
+    entity: EntityId,
     kind: EditKind,
     undo_id: CommandId,
     animated: bool,
@@ -167,7 +256,7 @@ impl ShellView {
         self.toast.advance(now, pace);
         let toast_active = self.toast.look(now).is_some_and(|t| t.active);
         let before = (!toast_active).then(|| self.store.view());
-        let Action { id, kind, .. } = action;
+        let Action { entity, kind, .. } = action;
         let queued = match self.store.undo(&action.target) {
             Err(error) => {
                 // In particular a cache write failure must leave the action retryable.
@@ -186,36 +275,36 @@ impl ShellView {
             Ok(TrackedUndo::Queued(undo_id)) => Some(undo_id),
         };
         let state = self.store.view();
-        let animated = !kind.needs_row_restore() || self.animate_restored(kind, id, &state);
+        let animated = !kind.needs_row_restore() || self.animate_restored(kind, entity, &state);
         if let Some(undo_id) = queued {
             self.pending_undo.push(Pending {
-                id,
+                entity,
                 kind,
                 undo_id,
                 animated,
                 reported: false,
             });
         }
-        self.notice = before.map(|before| {
-            if kind.undo_changed_view(id, &before, &state) {
-                let title = state
-                    .tasks
-                    .get(&id)
-                    .map_or("Task", |task| task.title.as_str());
-                Notice::info(kind.undone_label(title))
-            } else if queued.is_some() {
-                Notice::info("Undo queued.")
-            } else {
-                Notice::info("Change cancelled.")
-            }
+        let hidden = hidden_by_parent(kind, entity, &state);
+        self.notice = hidden.map(Notice::info).or_else(|| {
+            before.map(|before| {
+                if kind.undo_changed_view(entity, &before, &state) {
+                    Notice::info(kind.undone_label(subject_title(&state, entity)))
+                } else if queued.is_some() {
+                    Notice::info("Undo queued.")
+                } else {
+                    Notice::info("Change cancelled.")
+                }
+            })
         });
         self.toast.dismiss(now, pace);
         self.refresh(cx);
     }
 
-    fn animate_restored(&mut self, kind: EditKind, id: TaskId, state: &State) -> bool {
+    fn animate_restored(&mut self, kind: EditKind, entity: EntityId, state: &State) -> bool {
         if self.animate
-            && kind.is_restored(id, state)
+            && let EntityId::Task(id) = entity
+            && kind.is_restored(entity, state)
             && let Some(task) = state.tasks.get(&id)
         {
             self.motion
@@ -241,7 +330,8 @@ impl ShellView {
                 }
                 result => {
                     if !pending.animated {
-                        pending.animated = self.animate_restored(pending.kind, pending.id, &state);
+                        pending.animated =
+                            self.animate_restored(pending.kind, pending.entity, &state);
                     }
                     if result.is_none() {
                         self.pending_undo.push(pending);
@@ -477,7 +567,7 @@ mod tests {
             .submit_undoable(Command::CompleteTask { id })
             .expect("completion");
         let action = Action {
-            id,
+            entity: id.into(),
             kind: EditKind::Complete,
             target,
             room,
@@ -517,6 +607,88 @@ mod tests {
             assert!(touches_task(&command, id, &fixture.state));
             assert!(!touches_task(&command, another, &fixture.state));
         }
+    }
+
+    #[test]
+    fn an_undone_delete_hidden_by_a_parent_deleted_elsewhere_says_so() {
+        use crate::store::Store;
+        // A step, then its task deleted on another device: undoing the step's delete brings back exactly
+        // the step, which stays hidden with its task, and the notice says why.
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected task");
+        let step = f
+            .state
+            .steps
+            .values()
+            .find(|s| s.task == task && s.deleted.is_none())
+            .expect("step")
+            .id;
+        let store = Store::fixture(&f);
+        let target = store
+            .submit_undoable(Command::Delete { id: step.into() })
+            .expect("delete step");
+        store
+            .submit(Command::Delete { id: task.into() })
+            .expect("the task deleted elsewhere");
+        store.undo(&target).expect("exact inverse");
+        let state = store.view();
+        assert!(
+            state.steps[&step].deleted.is_none(),
+            "the step itself is back"
+        );
+        assert!(state.tasks[&task].deleted.is_some(), "its task is not");
+        // A short message on its own, without names, so a long title can't hide the explanation.
+        assert_eq!(
+            hidden_by_parent(EditKind::DeleteStep, step.into(), &state).as_deref(),
+            Some("Step restored, but its task was deleted elsewhere.")
+        );
+
+        // A list, then its collection.
+        let f = fixtures::work();
+        let list = f
+            .state
+            .lists
+            .values()
+            .find(|l| l.collection.is_some() && l.deleted.is_none())
+            .expect("a list in a collection");
+        let (list, collection) = (list.id, list.collection.expect("collection"));
+        let store = Store::fixture(&f);
+        let target = store
+            .submit_undoable(Command::Delete { id: list.into() })
+            .expect("delete list");
+        store
+            .submit(Command::Delete {
+                id: collection.into(),
+            })
+            .expect("the collection deleted elsewhere");
+        store.undo(&target).expect("exact inverse");
+        let state = store.view();
+        assert!(state.lists[&list].deleted.is_none());
+        assert_eq!(
+            hidden_by_parent(EditKind::DeleteList, list.into(), &state).as_deref(),
+            Some("List restored, but its collection was deleted elsewhere.")
+        );
+
+        // Nothing to explain when the restored item shows, or when it's still deleted itself.
+        let f = fixtures::my_day();
+        let store = Store::fixture(&f);
+        let target = store
+            .submit_undoable(Command::Delete { id: step.into() })
+            .expect("delete step");
+        assert_eq!(
+            hidden_by_parent(EditKind::DeleteStep, step.into(), &store.view()),
+            None
+        );
+        store.undo(&target).expect("undo");
+        assert_eq!(
+            hidden_by_parent(EditKind::DeleteStep, step.into(), &store.view()),
+            None
+        );
+        // Other kinds of change never hide anything this way.
+        assert_eq!(
+            hidden_by_parent(EditKind::Complete, task.into(), &store.view()),
+            None
+        );
     }
 
     #[test]

@@ -1,42 +1,21 @@
 //! The sidebar: smart lists, collections and lists with their counts, the agents seen today and the sync
-//! line, plus the popover menus (a list's or collection's context menu, the account menu) and inline
-//! renaming.
+//! line, and inline renaming. Its menus (a list's or collection's context menu, the account menu) are
+//! drawn by `menu.rs`.
 
 use gpui::{
-    ClickEvent, Context, Div, Entity, FontWeight, MouseButton, MouseDownEvent, Pixels, Point,
-    SharedString, Stateful, Subscription, Window, anchored, deferred, div, prelude::*, px,
+    ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
+    SharedString, Stateful, Subscription, Window, div, prelude::*, px,
 };
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId};
 
-use super::{ShellEvent, ShellView, quick_add_colors};
+use super::menu::{MenuKind, ring};
+use super::{ShellView, quick_add_colors};
+use crate::model::hints::Stop;
 use crate::model::layout::Pane;
 use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
-
-/// An open popover menu.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct Menu {
-    pub at: Point<Pixels>,
-    pub kind: MenuKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum MenuKind {
-    /// The sidebar footer's menu: the server and Sign out (`confirm` once asked).
-    Account {
-        confirm: bool,
-    },
-    /// A list's context menu (`confirm` once Delete was chosen).
-    List {
-        id: ListId,
-        confirm: bool,
-    },
-    Collection {
-        id: CollectionId,
-    },
-}
 
 /// What an inline rename edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +101,7 @@ impl ShellView {
             .map(|i| i.input.clone())
     }
 
-    fn new_list(
+    pub(super) fn new_list(
         &mut self,
         collection: Option<CollectionId>,
         window: &mut Window,
@@ -135,16 +114,11 @@ impl ShellView {
         }
     }
 
-    fn nudge(&mut self, id: EntityId, by: i32, cx: &mut Context<Self>) {
+    pub(super) fn nudge(&mut self, id: EntityId, by: i32, cx: &mut Context<Self>) {
         if let Some(cmd) = commands::nudge(&self.store.view(), id, by) {
             self.submit(vec![cmd]);
         }
         self.refresh(cx);
-    }
-
-    fn open_menu(&mut self, at: Point<Pixels>, kind: MenuKind, cx: &mut Context<Self>) {
-        self.menu = Some(Menu { at, kind });
-        cx.notify();
     }
 
     /// Which row has the ring. A collapsed collection can stand in for the active list.
@@ -273,8 +247,9 @@ impl ShellView {
         })
         .on_mouse_down(
             MouseButton::Right,
-            cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                this.open_menu(e.position, MenuKind::List { id, confirm: false }, cx);
+            cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                let kind = MenuKind::List { id, confirm: false };
+                this.open_menu(kind, Some(e.position), None, window, cx);
             }),
         )
     }
@@ -421,8 +396,9 @@ impl ShellView {
                 )
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.open_menu(e.position, MenuKind::Collection { id: cid }, cx);
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        let kind = MenuKind::Collection { id: cid };
+                        this.open_menu(kind, Some(e.position), None, window, cx);
                     }),
                 );
             let lists = self
@@ -513,18 +489,31 @@ impl ShellView {
             Tone::Busy => p.accent,
             Tone::Problem => p.danger,
         };
+        // The account menu opens upwards from the gear. Tab reaches the gear (`hints::tab_stop`).
         let account = div()
             .id("account")
+            .relative()
             .size(px(component::ICON_BUTTON))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(radius::MD))
+            .track_focus(&self.account_focus)
             .hover(|s| s.bg(p.hover))
             .child(kit::icon(Icon::Settings, component::GLYPH, p.ink_3))
-            .on_click(cx.listener(|this, e: &ClickEvent, _, cx| {
-                this.open_menu(e.position(), MenuKind::Account { confirm: false }, cx);
-            }));
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                let kind = MenuKind::Account { confirm: false };
+                this.toggle_menu(kind, Stop::Account, e, window, cx);
+            }))
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                this.control_key(e, window, cx);
+            }))
+            .children(self.menu_anchor(|k| matches!(k, MenuKind::Account { .. }), cx));
+        let account = ring(
+            &p,
+            self.account_focus.is_focused(window),
+            radius::MD,
+            account,
+        );
 
         div()
             .w(px(self.columns(window).width(Pane::Sidebar)))
@@ -595,235 +584,6 @@ impl ShellView {
                     )
                     .child(account),
             )
-    }
-
-    pub(super) fn menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let menu = self.menu.clone()?;
-        let p = self.palette;
-        let at = menu.at;
-        let item = |id: &'static str, icon: Icon, label: SharedString, danger: bool| {
-            let ink = if danger { p.danger_ink } else { p.ink };
-            div()
-                .id(id)
-                .mx(px(space::S1))
-                .h(px(desktop::NAV_ROW))
-                .px(px(space::S2))
-                .flex()
-                .items_center()
-                .gap(px(space::S2 + 2.))
-                .rounded(px(radius::MD))
-                .style(ty::NAV_SUB)
-                .text_color(ink)
-                .hover(|s| s.bg(p.hover))
-                .child(kit::icon(
-                    icon,
-                    component::ICON_SMALL,
-                    if danger { p.danger } else { p.ink_3 },
-                ))
-                .child(label)
-        };
-        let close = |this: &mut Self, cx: &mut Context<Self>| {
-            this.menu = None;
-            cx.notify();
-        };
-        let state = self.store.view();
-        let body = match menu.kind {
-            MenuKind::Account { confirm } => {
-                let server = self
-                    .store
-                    .session()
-                    .map(|s| SharedString::from(s.server().to_string()))
-                    .unwrap_or_else(|| "Sample data (not signed in)".into());
-                kit::overlay(&p)
-                    .w(px(space::S10 * 6.))
-                    .child(
-                        div()
-                            .px(px(space::S3))
-                            .pt(px(space::S2))
-                            .pb(px(space::S1))
-                            .child(kit::label(&p, "Signed in to")),
-                    )
-                    .child(
-                        div()
-                            .px(px(space::S3))
-                            .pb(px(space::S2))
-                            .truncate()
-                            .style(ty::TAG)
-                            .text_color(p.ink_2)
-                            .child(server),
-                    )
-                    .child(
-                        div()
-                            .h(px(elevation::HAIRLINE))
-                            .bg(p.line)
-                            .mb(px(space::S1)),
-                    )
-                    .child(if confirm {
-                        item(
-                            "sign-out-confirm",
-                            Icon::LogOut,
-                            "Sign out and remove local data".into(),
-                            true,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.menu = None;
-                            cx.emit(ShellEvent::SignOut);
-                        }))
-                    } else {
-                        item("sign-out", Icon::LogOut, "Sign out…".into(), false).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.open_menu(at, MenuKind::Account { confirm: true }, cx);
-                            }),
-                        )
-                    })
-            }
-            MenuKind::List { id, confirm } => {
-                let list = state.lists.get(&id)?;
-                let name: SharedString = labels::one_line(&list.name).into();
-                let open = state
-                    .tasks
-                    .values()
-                    .filter(|t| t.list == id && t.deleted.is_none())
-                    .count();
-                let mut body = kit::overlay(&p).w(px(space::S10 * 6.));
-                if confirm {
-                    let what = match open {
-                        0 => format!("Delete “{name}”"),
-                        1 => format!("Delete “{name}” and its task"),
-                        n => format!("Delete “{name}” and its {n} tasks"),
-                    };
-                    body = body.child(
-                        item("list-delete-confirm", Icon::TrashTwo, what.into(), true).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.submit(vec![commands::delete(id)]);
-                                close(this, cx);
-                                this.refresh(cx);
-                            }),
-                        ),
-                    );
-                } else {
-                    body = body
-                        .child(
-                            item("list-rename", Icon::Pencil, "Rename".into(), false).on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    close(this, cx);
-                                    this.start_inline(
-                                        InlineTarget::List(id),
-                                        name.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            ),
-                        )
-                        .child(
-                            item("list-up", Icon::ChevronUp, "Move up".into(), false).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    close(this, cx);
-                                    this.nudge(id.into(), -1, cx);
-                                }),
-                            ),
-                        )
-                        .child(
-                            item("list-down", Icon::ChevronDown, "Move down".into(), false)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    close(this, cx);
-                                    this.nudge(id.into(), 1, cx);
-                                })),
-                        )
-                        .child(
-                            div()
-                                .h(px(elevation::HAIRLINE))
-                                .bg(p.line)
-                                .my(px(space::S1)),
-                        )
-                        .child(
-                            item("list-delete", Icon::TrashTwo, "Delete list…".into(), true)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_menu(at, MenuKind::List { id, confirm: true }, cx);
-                                })),
-                        );
-                }
-                body
-            }
-            MenuKind::Collection { id } => {
-                let c = state.collections.get(&id)?;
-                let name: SharedString = labels::one_line(&c.name).into();
-                let (icon, label) = if self.ui.collapsed_collections.contains(&id) {
-                    (Icon::ChevronDown, "Expand")
-                } else {
-                    (Icon::ChevronRight, "Collapse")
-                };
-                kit::overlay(&p)
-                    .w(px(space::S10 * 6.))
-                    .child(
-                        item("collection-toggle", icon, label.into(), false).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                close(this, cx);
-                                this.toggle_collection(id, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        item(
-                            "collection-new-list",
-                            Icon::ListPlus,
-                            "New list here".into(),
-                            false,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                close(this, cx);
-                                this.new_list(Some(id), window, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        item("collection-rename", Icon::Pencil, "Rename".into(), false).on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                close(this, cx);
-                                this.start_inline(
-                                    InlineTarget::Collection(id),
-                                    name.clone(),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ),
-                    )
-                    .child(
-                        item("collection-up", Icon::ChevronUp, "Move up".into(), false).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                close(this, cx);
-                                this.nudge(id.into(), -1, cx);
-                            }),
-                        ),
-                    )
-                    .child(
-                        item(
-                            "collection-down",
-                            Icon::ChevronDown,
-                            "Move down".into(),
-                            false,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            close(this, cx);
-                            this.nudge(id.into(), 1, cx);
-                        })),
-                    )
-            }
-        };
-        Some(deferred(
-            anchored()
-                .position(menu.at)
-                .snap_to_window_with_margin(px(space::S2))
-                .child(body.id("menu").occlude().on_mouse_down_out(cx.listener(
-                    |this, _, _, cx| {
-                        this.menu = None;
-                        cx.notify();
-                    },
-                ))),
-        ))
     }
 }
 

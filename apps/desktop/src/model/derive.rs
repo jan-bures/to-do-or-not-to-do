@@ -363,7 +363,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let finishes_day = key == RoomKey::Smart(Smart::MyDay);
     let finished = finishes_day && progress_total > 0 && progress_done >= progress_total;
     let tomorrow = (finished && !filtered)
-        .then(|| tomorrow(state, ix, now))
+        .then(|| tomorrow(state, ix, now, &ui.holding))
         .flatten();
     // Planning the next day is offered whenever the day is finished, even with nothing due then.
     let plan_weekday = (finished && !filtered)
@@ -415,14 +415,15 @@ fn empty_hint(key: RoomKey, filtered: bool) -> &'static str {
     }
 }
 
-/// Tomorrow's open tasks and the rest of the week's, for the finished day.
-fn tomorrow(state: &State, ix: &Index, now: &Now) -> Option<Tomorrow> {
+/// Tomorrow's open tasks and the rest of the week's, for the finished day. A task completed from the
+/// hand-over keeps its place (drawn done) while its completion plays (`holding`), as a row does.
+fn tomorrow(state: &State, ix: &Index, now: &Now, holding: &BTreeSet<TaskId>) -> Option<Tomorrow> {
     let today = now.today();
     let tomorrow = add_days(today, 1)?;
     let mut soon: Vec<&Task> = state
         .tasks
         .values()
-        .filter(|t| !t.is_done() && task_live(state, t))
+        .filter(|t| (!t.is_done() || holding.contains(&t.id)) && task_live(state, t))
         .filter(|t| {
             t.due
                 .is_some_and(|d| (1..=7).contains(&days_between(today, d)))
@@ -678,20 +679,35 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         .collect();
     steps.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
 
-    let mut fields = vec![match task.due {
-        Some(d) => Field {
+    let (due_value, due_kind) = match task.due {
+        Some(d) => (labels::short_date(d, today).into(), FieldKind::Date),
+        None => ("–".into(), FieldKind::Empty),
+    };
+    let (priority_name, _) = super::menus::priority_label(task.priority);
+    let mut fields = vec![
+        Field {
             icon: Icon::Calendar,
             label: "Due",
-            value: labels::short_date(d, today).into(),
-            kind: FieldKind::Date,
+            value: due_value,
+            kind: due_kind,
+            edit: Some(FieldEdit::Due),
         },
-        None => Field {
-            icon: Icon::Calendar,
-            label: "Due",
-            value: "–".into(),
-            kind: FieldKind::Empty,
+        Field {
+            icon: Icon::Flag,
+            label: "Priority",
+            value: if task.priority == Priority::None {
+                "–".into()
+            } else {
+                priority_name.into()
+            },
+            kind: if task.priority == Priority::None {
+                FieldKind::Empty
+            } else {
+                FieldKind::Words
+            },
+            edit: Some(FieldEdit::Priority),
         },
-    }];
+    ];
     let mut reminders: Vec<&todo_core::model::Reminder> = state
         .reminders
         .values()
@@ -708,6 +724,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             label: "Reminder",
             value: labels::when(r.at, now).into(),
             kind: FieldKind::Date,
+            edit: None,
         });
     }
     if let Some(r) = &task.recurrence {
@@ -716,6 +733,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             label: "Repeat",
             value: labels::recurrence(r).into(),
             kind: FieldKind::Words,
+            edit: None,
         });
     }
     let tags: Vec<String> = task
@@ -731,6 +749,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             label: "Tags",
             value: tags.join(" ").into(),
             kind: FieldKind::Tags,
+            edit: None,
         });
     }
 
@@ -797,6 +816,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         done: task.is_done(),
         my_day: task.my_day == Some(today),
         important: task.priority == Priority::High,
+        priority: task.priority,
         steps: steps
             .iter()
             .map(|s| StepRow {

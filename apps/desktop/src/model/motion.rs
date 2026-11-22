@@ -35,9 +35,11 @@ use super::RoomKey;
 use crate::theme::motion as m;
 
 mod chrome;
+mod overlay;
 mod panes;
 mod toast;
 pub use chrome::ScrollbarMotion;
+pub use overlay::Overlay;
 pub use panes::{DetailMotion, Navigation, Track};
 pub use toast::Toast;
 

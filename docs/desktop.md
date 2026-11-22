@@ -220,7 +220,12 @@ token from other accounts and from a copy taken off the machine, not from progra
 and with a roaming profile they travel with it. Each pairing's data lives under its own pairing ID, so a new
 pairing never picks up an old cache and cleaning up an old one can't touch the current one.
 
-**Sign out** (the gear in the sidebar footer) runs in order: syncing stops and downloads in flight are
+**The account menu** (the gear in the sidebar footer) names the server the app is paired with, opens its
+admin pages (`<server>/admin`, built from the paired address with the transport's own check, never a
+built-in host), and has **Sync now**, which retries at once instead of waiting out the backoff
+(`SyncClient::nudge`).
+
+**Sign out** (the account menu) runs in order: syncing stops and downloads in flight are
 cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory and
 flushed to disk (if it can't be, nothing is removed: the app says so and stays signed in, syncing again, and
 signing out can be tried again); the token and the config are removed (if that fails, the record is
@@ -278,8 +283,8 @@ pure and unit-tested; the running app and the screenshot fixtures go through the
 | Sidebar | Smart lists (My Day, Important, Planned, All, Completed, Agent activity) with counts from the query language's built-in lists, collections and lists in server order with open counts. A collection's chevron or context menu hides or shows its lists without changing the room. A collapsed header shows the selected look when it hides the current list; navigating to that list reveals it. List colours snap to the design's swatches; glyphs come from the list's name (English and Czech keywords). Double-click or right-click renames; the context menu moves a list up or down or deletes it (after asking); "New list" adds one and starts renaming it. Agents seen in the last week, and the sync state. |
 | Task list | Open tasks in server order (by list, then position, in a collection), virtualized; Completed below, newest first, behind a toggle. Checkbox completes or reopens; completing plays the choreography (see *Motion*). The priority mark cycles on click. **J/K** or arrows move, **Space** completes (a held key's repeats are ignored, so holding it never flips a task back and forth), **E** edits the title, **D** the due date, **Alt+Up/Down** moves a task in a list. The keyboard starts on the list, and a click that no field takes leaves it there. The title-bar field filters (**Ctrl+K**): a query (`tag:docs`, `due:today`) or plain words. A row's metadata line shows the list chip (at most `desktop::CHIP_MAX` wide, ending in an ellipsis), steps, the mail mark and then the tags. Each item is measured against the title column (widths rounded up per element, as GPUI lays them out), and tags that don't fit whole are counted as `+N`, never cut. In a narrower column the mail mark, the step meter and the step count give way in turn, and the chip narrows last, down to its dot and an ellipsis; the line is never wider than its column. Names from the data (lists, collections, tags, titles, steps, links, attachments) are drawn on one line: `labels::one_line` turns line breaks and other control characters into spaces. The data keeps them: a rename editor starts with the one-line name and saves only a real change, and Save and Open use an attachment's stored file name (the save dialog offers it made safe for Windows). Single-line inputs keep whatever is set, typed or pasted on one line too. |
 | Quick add | In the room (**Ctrl+N**) and global (**Ctrl+Alt+Space**, into My Day). The room field shows a chip for a date recognized by the [quick-add syntax](#quick-add-syntax) while typing. The shared `todo_client::intent` parser and builders apply My Day, Important and Planned defaults and put the new task first in its list's manual order. On the finished My Day the field stays, quietly drawn, so the hand-over to tomorrow leads. |
-| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted, My Day and Important toggles, the due date typed in. Reminders, repeats and tags are shown but not edited yet. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
-| Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). In a narrow window the counts go on a line of their own under the title, which keeps its full size. My Day all done turns the sky to dusk (once the last row has left) and hands over to tomorrow. Its tasks open in the detail pane, by click or with **J/K**, and the hand-over scrolls when it's taller than the pane; with none selected, the pane is left out rather than shown empty. With nothing due tomorrow there is no hand-over, but planning is still offered: "Nothing is due on Sunday yet." and **Plan Sunday**, which opens Planned (as on Android). While a filter narrows the finished day, neither shows, and the room says nothing matches. |
+| Detail | Title and notes edited in place (notes are multi-line plain text), steps added, completed, renamed, moved and deleted (Undo brings a deleted step back), My Day and Important toggles, the due date typed in, and the priority picked from its four levels on the Priority row (click it, or **Shift+P** from the list; **P** cycles them). Reminders, repeats and tags are shown but not edited yet: they have no edit affordance, and a tooltip says so. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
+| Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). The "more" button opens the room's menu with only what applies there (`model::menus`): in a list, Rename list (in place in the sidebar), Show or Hide completed and Delete list (after asking, with Undo); in a collection, Rename collection and the Completed toggle; in My Day, Important, Planned and All, the Completed toggle. Completed and Agent activity have no menu, so no button. There is no view options button until there are sort or view options. In a narrow window the counts go on a line of their own under the title, which keeps its full size. My Day all done turns the sky to dusk (once the last row has left) and hands over to tomorrow. Its tasks open in the detail pane, by click or with **J/K**, and their boxes (or Space) complete them with the row's choreography, in place (the first one's card too: it dims, is struck through, fades and closes), and the hand-over scrolls when it's taller than the pane; with none selected, the pane is left out rather than shown empty. With nothing due tomorrow there is no hand-over, but planning is still offered: "Nothing is due on Sunday yet." and **Plan Sunday**, which opens Planned (as on Android). While a filter narrows the finished day, neither shows, and the room says nothing matches. |
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. |
 
@@ -354,20 +359,50 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   `SCROLLBAR_HOLD` without requesting frames, then fades out. A room or detail scroll reset doesn't
   reveal the thumb. Windows’ *Always show scrollbars* keeps
   overflowing thumbs visible. At rest, gallery fixtures show them regardless of OS preference.
-- **Undo.** Completing a task or moving it up/down in a list shows one toast in the reserved footer,
+- **Menus.** The context menus, the room's menu, the account menu and the priority picker are data
+  (`model::menus`), drawn by `ui/shell/menu.rs`. A menu enters over `OVERLAY_IN` (`ENTER`) while it moves
+  its last 4 px away from its button, and fades out in place over `OVERLAY_OUT` (`EXIT`), paint-only:
+  a fading menu neither blocks nor takes clicks. With reduced motion it only fades
+  (`model::motion::Overlay`). The press that closes a menu is remembered, so the click it ends on the
+  menu's own button leaves it closed; a later click opens it, even while it still fades. Presses are
+  counted by a window-level capture listener (`menu::PressGuard`), so a dismissal on a pane that
+  occludes the shell (the narrow detail overlay) never swallows the next click. It takes the
+  keyboard: **Up** and **Down** (**Left** and **Right** between a confirmation's buttons) walk the
+  items, **Enter** or **Space** choose, **Escape** or **Tab** close it and give the keyboard back to its
+  button. An item chosen from the keyboard does the same unless it opens something of its own (an
+  editor, another room, sign-out; `MenuAction::moves_focus`). Anything else that takes the keyboard
+  (**Ctrl+K**, **Ctrl+N**, a click into a field, another window) closes the menu. Deleting a list and
+  signing out ask first: the menu becomes a confirmation (`desktop::CONFIRM` wide) that says in full what
+  will happen, wrapped, above two short buttons (**Delete list** or **Sign out**, and **Cancel**); from
+  the keyboard it starts on Cancel. A confirmation is modal: a scrim dims everything below the title bar
+  (which keeps the window's own controls) and fades with it. While it's open the scrim takes every click
+  and hover meant for what's under it, so a click outside only dismisses the confirmation and never also
+  completes a task; once it's closing, the scrim is paint-only. **Shift+P** opens the priority picker from the list, on the current
+  level, and the keyboard comes back to the list once one is chosen. **Tab** and **Shift+Tab** go round
+  the stops in `hints::TAB_ORDER` that are there, from one shell-level handler: the sidebar divider, the
+  list, Undo (while the toast is up), the room's "more" button, the detail divider (while the docked
+  detail shows it) and the account gear. Held or modified Tab, Tab in a text field, and Tab in an open
+  menu (which closes it) are left alone. A focused button shows the focus ring, and **Enter** opens its
+  menu.
+- **Undo.** Completing a task, moving it up/down in a list, or deleting a step or a list shows one toast in the reserved footer,
   to the right of Completed and outside the rows' viewport and narrow detail overlay. It enters over
   `TOAST_IN`, swaps its message in place over `CONTENT_SWAP`, and leaves over `TOAST_OUT`. The
   `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. The Undo button
-  is the next **Tab** stop after the task list. **Ctrl+Z** outside text fields can still undo the last
-  change after the toast closes, with feedback in the status bar. Leaving the room or editing that
+  is the next **Tab** stop after the task list. **Ctrl+Z** outside text fields (on the list, Undo, a
+  splitter, a menu or a menu's button) can still undo the last change after the toast closes, with
+  feedback in the status bar; from an open menu it closes the menu first. Leaving the room or editing that
   task clears the old target. Undo cancels the latest unsent command when nothing follows it in the
   outbox; otherwise it queues a non-forced undo tied to that command's exact server event. The
   shared view shows the undo before sync when it knows the original batch, including the next
   occurrence spawned by completing a repeat. Conflicts appear in the status bar; Undo does not
   overwrite another device's changes. Undo during a held completion reverses the row in place;
-  other restored rows enter over `ROW_ENTER`. Undoing a reorder does not replay row entrance.
+  other restored rows enter over `ROW_ENTER`. Undoing a reorder does not replay row entrance. Undo is
+  the exact inverse: it brings back the deleted task, step or list, never what it belongs to. When that
+  was deleted meanwhile (on another device), the status bar says so in one short line without names,
+  such as "Step restored, but its task was deleted elsewhere."
   Narrow detail content can scroll its last row clear of the toast strip.
-  Task deletion and cross-list moving have no desktop controls yet.
+  Deleting a list takes the window to My Day, and its undo goes along. Task deletion and cross-list
+  moving have no desktop controls yet.
 - **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`).
   The sun travels from where it is over `SUN_TRAVEL` in both scenes. The scene fades in over the strip,
   the text switches to the dark theme's ink and the moon and stars fade in at `DUSK_NIGHT_AT`, and
@@ -426,14 +461,17 @@ window is the real shell on a local store (`src/store.rs`). `pairing` and `pairi
 screen before and after asking for a code. `open-failed` and `open-failed-confirm` show the "couldn't be
 opened" screen after a recovery that can't finish, before and while confirming **Start fresh**.
 `long-sidebar` and `long-task-list` show the scrollbar thumbs (the latter also overflows the detail pane).
-`caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
+`room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
+menu and the detail pane's priority picker. `delete-list-confirm` is a list with a long name being deleted
+from its room's menu, its confirmation wrapped in full with the keyboard on Cancel. `caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
 `sidebar-wide` and `detail-narrow` show the resize extremes, and `resize-handle-hover` shows the sidebar
 separator at the end of its hover fade.
 `long-names-narrow` and `narrow-detail` are 960 px wide (the narrowest window): the first with nothing open,
 the second with the detail pane over the list. `finished-nothing-tomorrow` is the finished day with nothing due
 tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `completing-fill`, `completing-hold`,
 `completing-collapse-50`, `sun-travel-50`, `reopening-collapse-50`, `long-list-collapse-80`,
-`long-list-end-collapse-50`, `dusk-50`, `dusk-75`, `dusk-one-task-50`, `room-switch-50`, `room-hue-50`,
+`long-list-end-collapse-50`, `handover-complete-50` (tomorrow's first task completed from the finished day's
+hand-over, half way through its collapse), `dusk-50`, `dusk-75`, `dusk-one-task-50`, `room-switch-50`, `room-hue-50`,
 `detail-open-50`, `detail-dusk-50`, `collection-collapse-50`, `scrollbar-fade-50`, `undo-toast`,
 `narrow-undo-toast` and `toast-in-50`.
 These states are set by the fixture, not by moving the pointer or maximizing the capture window.

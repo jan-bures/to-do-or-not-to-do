@@ -13,17 +13,20 @@ use gpui::{
 };
 use todo_core::ids::{AttachmentId, TaskId};
 
+use super::menu::MenuKind;
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellView, quick_add_colors};
 use crate::model::draft::Draft;
 use crate::model::files;
-use crate::model::{self, Detail, FieldKind, commands, quick_add};
+use crate::model::hints::Stop;
+use crate::model::{self, Detail, FieldEdit, FieldKind, commands, quick_add};
 use crate::theme::{
     self, Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty,
 };
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
 use crate::ui::text_area::TextArea;
+use todo_core::model::Priority;
 
 /// The pane's editors and what they hold.
 pub(super) struct Editors {
@@ -671,7 +674,8 @@ impl ShellView {
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                let due = f.label == "Due";
+                let due = f.edit == Some(FieldEdit::Due);
+                let priority = f.edit == Some(FieldEdit::Priority);
                 let value = match (&self.edit.due, due) {
                     (Some((input, _)), true) => div()
                         .flex_1()
@@ -679,10 +683,18 @@ impl ShellView {
                         .text_color(p.ink)
                         .child(input.clone())
                         .into_any_element(),
+                    _ if priority && d.priority != Priority::None => div()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S2))
+                        .child(kit::priority(&p, priority_level(d.priority)))
+                        .child(field_value(&p, f.kind, f.value.clone()))
+                        .into_any_element(),
                     _ => field_value(&p, f.kind, f.value.clone()).into_any_element(),
                 };
                 div()
                     .id(("field", i))
+                    .relative()
                     .h(px(desktop::PROP_ROW))
                     .flex()
                     .items_center()
@@ -704,6 +716,28 @@ impl ShellView {
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "D"))
                             .on_click(cx.listener(|this, _, window, cx| this.start_due(window, cx)))
+                    })
+                    // The four levels to pick from (Shift+P from the list); P cycles them.
+                    .when(priority && live, |el| {
+                        el.hover(|s| s.bg(p.hover))
+                            .child(div().flex_1())
+                            .child(kit::kbd(&p, "Shift P"))
+                            .on_click(cx.listener(move |this, e, window, cx| {
+                                this.toggle_menu(
+                                    MenuKind::Priority { task },
+                                    Stop::List,
+                                    e,
+                                    window,
+                                    cx,
+                                );
+                            }))
+                            .children(
+                                self.menu_anchor(|k| matches!(k, MenuKind::Priority { .. }), cx),
+                            )
+                    })
+                    // Shown, not edited here yet: say so rather than look like the rows that are.
+                    .when(f.edit.is_none(), |el| {
+                        el.tooltip(kit::tooltip(p, "Shown here; not editable in this app yet"))
                     })
             })
             .collect();
@@ -999,6 +1033,16 @@ fn field_value(p: &Palette, kind: FieldKind, value: SharedString) -> Div {
         FieldKind::Date => v.style(ty::DUE.with_weight(600)).text_color(p.ink),
         FieldKind::Words => v.style(ty::NAV_COLLECTION).text_color(p.ink),
         FieldKind::Empty => v.style(ty::DUE).text_color(p.ink_4),
+    }
+}
+
+/// The marks a priority shows on a row (`kit::priority`).
+fn priority_level(p: Priority) -> u8 {
+    match p {
+        Priority::None => 0,
+        Priority::Low => 1,
+        Priority::Normal => 2,
+        Priority::High => 3,
     }
 }
 
