@@ -1475,10 +1475,37 @@ async fn organize_and_page_activity_with_exact_event_undo() {
         Some(todo_client::failure::undo_message("undo_conflict"))
     );
     assert_eq!(refused.undo_label.as_deref(), Some("Undo"));
-    e.stop();
+    // Undo the later title edits first, so a checked retry can succeed.
+    let owner = Actor::owner("other").unwrap();
+    for later in latest
+        .days
+        .iter()
+        .flat_map(|d| &d.rows)
+        .filter(|r| r.seq > row.seq)
+    {
+        remote.undo(&owner, later.seq, false, None).unwrap();
+    }
+    eventually("conflicting edits undone", || {
+        e.task(id.clone(), now()).unwrap().title == "Water herbs 52"
+    })
+    .await;
     e.undo_activity_event(&agent, row.seq, row.id.clone())
         .unwrap();
-    assert_eq!(e.status().pending, 1, "a refusal is retryable");
+    eventually("retry applied", || {
+        e.status().pending == 0 && e.task(id.clone(), now()).unwrap().title == "Water herbs 51"
+    })
+    .await;
+    assert_eq!(
+        e.failed().len(),
+        1,
+        "the first refusal is still in the failure list"
+    );
+    for _ in 0..2 {
+        let settled = e.activity_view(&agent, now());
+        assert_eq!(settled.days[0].rows[0].note.as_deref(), Some("Undone"));
+        assert!(settled.days[0].rows[0].undo_label.is_none());
+    }
+    e.stop();
 }
 
 /// A too-large change and a page with no visible items both return an exclusive server cursor.

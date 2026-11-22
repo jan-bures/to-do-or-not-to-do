@@ -26,7 +26,8 @@ pub struct ActivityDay {
 pub struct ActivityView {
     pub agent: Option<String>,
     pub days: Vec<ActivityDay>,
-    pub epoch: Option<String>,
+    /// Changes only when the pager discards its pages (not when it first learns its epoch).
+    pub reset_count: u64,
     pub refresh_label: String,
     pub refreshing: bool,
     pub footer: ActivityFooter,
@@ -84,15 +85,17 @@ pub struct ActivityRequest {
 struct Pages {
     feed: Feed,
     epoch: Option<Epoch>,
+    reset_count: u64,
     read_at: Option<u64>,
 }
 impl Pages {
     fn observe(&mut self, epoch: Option<Epoch>) {
-        if self.epoch != epoch {
+        if self.epoch.is_some() && self.epoch != epoch {
             self.feed.reset();
-            self.epoch = epoch;
+            self.reset_count += 1;
             self.read_at = None;
         }
+        self.epoch = epoch;
     }
     fn begin(&mut self, load: ActivityLoad, cursor: u64) -> Option<ActivityRequest> {
         let before = match load {
@@ -165,22 +168,15 @@ impl TodoEngine {
         )
     }
 
-    /// Recover the batch of a durable pending undo when its page is first seen (also after restart).
+    /// After a restart the outbox knows the target but not its batch. A sibling alone cannot
+    /// recover batch protection: the feed must have seen the target row in this session.
     fn observe_undos(&self, feed: &Feed, undos: &mut Undos) {
         undos.settle(|id| self.client.undo_result(id));
-        let durable = self.client.activity_undos();
+        // A failed outbox entry can outlive a successful retry. Only settle the command tracked
+        // for this attempt; never import old refusals from the durable failure list.
         for e in feed.entries() {
-            let id = e.target.id;
-            match durable.get(&id) {
-                Some(None) => {
-                    if let Some(command) = self.client.pending_undo(id) {
-                        undos.record(id, e.group, UndoOutcome::Pending(command));
-                    }
-                }
-                Some(Some(why)) if undos.outcome(id).is_none() => {
-                    undos.record(id, e.group, UndoOutcome::Refused(why));
-                }
-                _ => (),
+            if let Some(command) = self.client.pending_undo(e.target.id) {
+                undos.record(e.target.id, e.group, UndoOutcome::Pending(command));
             }
         }
     }
@@ -242,11 +238,11 @@ impl TodoEngine {
                     .filter_map(|seq| feed.entry(seq))
                     .map(|e| {
                         let action = self.row_action(e, &undos);
-                        let note = undos.refusal(e.target.id).or(match action {
-                            UndoAction::Undo => None,
+                        let note = match action {
+                            UndoAction::Undo => undos.refusal(e.target.id),
                             UndoAction::Undoing => Some(activity::UNDOING),
                             _ => Some(action.label()),
-                        });
+                        };
                         ActivityRow {
                             id: e.target.id.to_string(),
                             seq: e.target.seq,
@@ -263,7 +259,7 @@ impl TodoEngine {
         ActivityView {
             agent: pager.agent.as_deref().map(activity::agent_name),
             days,
-            epoch: pages.epoch.map(|e| e.to_string()),
+            reset_count: pages.reset_count,
             refresh_label: if pages.read_at.is_some_and(|at| at != cursor) {
                 format!("{} •", activity::REFRESH)
             } else {
@@ -319,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_pager_drops_a_late_reply_and_keeps_the_batch_blocked() {
+    fn replacing_a_filter_isolates_a_late_reply_and_keeps_the_batch_blocked() {
         let now = LocalNow {
             epoch_ms: "2025-11-22T01:00:00Z"
                 .parse::<Timestamp>()
@@ -340,15 +336,24 @@ mod tests {
         e.undo_activity_event(&all, target.seq, target.id.clone())
             .unwrap();
         let late = e.begin_activity(&all, ActivityLoad::Older).unwrap();
-        drop(all);
 
         let filtered = ActivityPager::new(Some("gardener".into()));
         let current = e.begin_activity(&filtered, ActivityLoad::Initial).unwrap();
-        let mut pages = locked(&filtered.pages);
-        assert_eq!(pages.finish(late, Ok(page(1))), Loaded::Ignore);
+        // The loop keeps its own pager. Its late reply can't finish the replacement's request.
+        assert_ne!(current.number, late.number);
+        assert_eq!(
+            locked(&all.pages).finish(late, Ok(page(1))),
+            Loaded::Applied
+        );
+        assert!(matches!(
+            e.activity_view(&filtered, now).footer,
+            ActivityFooter::Loading { .. }
+        ));
         // Only the sibling is on the replacement page. Looking up its own pending undo would miss.
-        assert_eq!(pages.finish(current, Ok(page(6))), Loaded::Applied);
-        drop(pages);
+        assert_eq!(
+            locked(&filtered.pages).finish(current, Ok(page(6))),
+            Loaded::Applied
+        );
         let view = e.activity_view(&filtered, now);
         assert_eq!(view.days[0].rows.len(), 1);
         let sibling = &view.days[0].rows[0];
@@ -361,14 +366,47 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_refusal_never_hides_a_later_row_state() {
+        let now = LocalNow {
+            epoch_ms: 0,
+            utc_offset_secs: 0,
+        };
+        let engine = TodoEngine::fixture("blank".into(), now).unwrap();
+        let pager = ActivityPager::new(None);
+        for (undone, expected) in [(true, UndoAction::Undone), (false, UndoAction::Unavailable)] {
+            let mut page = page(7);
+            let item = &mut page.items[0];
+            item.undone = undone;
+            item.can_undo = false;
+            let event = &item.event.event;
+            locked(&engine.activity_undos).record(
+                event.id,
+                event.group,
+                UndoOutcome::Refused("Earlier refusal"),
+            );
+            let request = engine
+                .begin_activity(&pager, ActivityLoad::Refresh)
+                .unwrap();
+            locked(&pager.pages).finish(request, Ok(page));
+            let view = engine.activity_view(&pager, now);
+            assert_eq!(view.days[0].rows[0].note.as_deref(), Some(expected.label()));
+        }
+    }
+
+    #[test]
     fn epoch_change_drops_pages_and_invalidates_an_in_flight_read() {
         let mut pages = Pages::default();
-        pages.observe(Some(uuid::Uuid::nil()));
         let first = pages.begin(ActivityLoad::Initial, 7).unwrap();
-        pages.finish(first, Ok(page(7)));
+        pages.observe(Some(uuid::Uuid::nil()));
+        assert_eq!(
+            pages.reset_count, 0,
+            "learning the epoch preserves the read and scroll"
+        );
+        assert_eq!(pages.finish(first, Ok(page(7))), Loaded::Applied);
         let older = pages.begin(ActivityLoad::Older, 8).unwrap();
         pages.observe(Some(uuid::Uuid::from_u128(42)));
         assert_eq!(pages.finish(older, Ok(page(1))), Loaded::Ignore);
+        assert_eq!(pages.reset_count, 1);
         assert!(!pages.feed.loaded());
         assert!(pages.read_at.is_none());
     }

@@ -106,6 +106,8 @@ data class UiState(
     val reorder: TaskSwap? = null,
     /** null for a task room, empty for all activity, otherwise the agent's wire ID. */
     val activity: String? = null,
+    /** The generation in which this pager was created, unchanged if the underlying task room moves. */
+    val pagerId: Long = 0L,
     val feed: ActivityView? = null,
 ) {
     val selected: String? get() = detail?.id
@@ -229,7 +231,7 @@ class TodoModel(
     @Volatile private var filter = ""
 
     @Volatile private var searching = false
-    private class ActivityRoom(val filter: String) {
+    private class ActivityRoom(val filter: String, val id: Long) {
         val pager = ActivityPager(filter.ifEmpty { null })
     }
     @Volatile private var activity: ActivityRoom? = null
@@ -411,6 +413,7 @@ class TodoModel(
             generation = gen,
             today = isoDay(n),
             activity = readingActivity?.filter,
+            pagerId = readingActivity?.id ?: 0L,
             feed = readingActivity?.let { engine.activityView(it.pager, n) },
             reorder = reorder?.takeIf { it.room == k },
         )
@@ -635,7 +638,7 @@ class TodoModel(
                 reorder = null
                 key = room
                 if (fresh) {
-                    activity = feed?.let(::ActivityRoom)
+                    activity = feed?.let { ActivityRoom(it, generation) }
                     selectTask(null)
                     filter = ""
                     searching = false
@@ -1044,25 +1047,28 @@ class TodoModel(
         }
     }
 
-    private fun pagerFor(room: Long) = synchronized(publishing) { activity?.pager?.takeIf { room == generation } }
+    private fun pagerFor(id: Long) = activity?.takeIf { it.id == id }?.pager
 
-    override fun loadActivity(room: Long, load: ActivityLoad) {
-        val pager = pagerFor(room) ?: return
+    override fun loadActivity(pagerId: Long, load: ActivityLoad) {
+        val pager = pagerFor(pagerId) ?: return
         // Belongs to the model, not the composable: rotation doesn't strand a pending read.
         scope.launch {
             val started = withContext(io) { engine.beginActivity(pager, load) }
             refresh() // A refresh queued behind an older read changes the view without starting I/O.
             var request = started ?: return@launch
             while (true) {
-                val next = withContext(io) { engine.readActivity(pager, request) }
+                val next = withContext(io) {
+                    if (activity?.pager === pager) engine.readActivity(pager, request) else null
+                }
+                if (activity?.pager !== pager) return@launch
                 refresh()
                 request = next ?: break
             }
         }
     }
 
-    override fun undoEvent(room: Long, event: ActivityRow) {
-        val pager = pagerFor(room) ?: return
+    override fun undoEvent(pagerId: Long, event: ActivityRow) {
+        val pager = pagerFor(pagerId) ?: return
         act { engine.undoActivityEvent(pager, event.seq, event.id) }
     }
 

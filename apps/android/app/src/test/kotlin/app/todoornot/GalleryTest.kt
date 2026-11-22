@@ -696,7 +696,7 @@ class GalleryTest {
                     ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", "1 min ago", "Undoing…", null))),
                 ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo"))),
             )
-            val feed = ActivityView(null, days, null, "Refresh activity •", false, ActivityFooter.None)
+            val feed = ActivityView(null, days, 0u, "Refresh activity •", false, ActivityFooter.None)
             shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityRoom(s.copy(feed = feed), Actions.None, {}) } }
         }
     }

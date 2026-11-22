@@ -19,8 +19,8 @@ import app.todoornot.model.UiState
 internal fun ActivityRoom(state: UiState, actions: Actions, drawer: () -> Unit) {
     val feed = state.feed ?: return
     // A cursor advance leaves the list and scroll position alone. Only a different room or log replaces it.
-    key(state.generation, feed.epoch) {
-        val load = { kind: ActivityLoad -> actions.loadActivity(state.generation, kind) }
+    key(state.pagerId, feed.resetCount) {
+        val load = { kind: ActivityLoad -> actions.loadActivity(state.pagerId, kind) }
         LaunchedEffect(Unit) { load(ActivityLoad.INITIAL) }
         val r = LocalDesign.current.room
         val s = Tokens.Space
@@ -43,7 +43,7 @@ internal fun ActivityRoom(state: UiState, actions: Actions, drawer: () -> Unit) 
                                 Label("${row.actor} · ${row.relative}", Tokens.Type.META_PHONE, r.ink3)
                                 row.note?.let { Label(it, Tokens.Type.META_PHONE, r.ink2, maxLines = Int.MAX_VALUE) }
                             }
-                            row.undoLabel?.let { IconButton("undo-2", it) { actions.undoEvent(state.generation, row) } }
+                            row.undoLabel?.let { IconButton("undo-2", it) { actions.undoEvent(state.pagerId, row) } }
                         }
                     }
                 }

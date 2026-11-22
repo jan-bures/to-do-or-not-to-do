@@ -562,7 +562,7 @@ class TodoModelTest {
         assertEquals(agent.id, m.ui.value.activity)
         assertNull(m.ui.value.detail)
         assertEquals("", m.ui.value.filter)
-        val first = m.ui.value.generation
+        val first = m.ui.value.pagerId
         m.loadActivity(first, ActivityLoad.INITIAL)
         s.drain()
         val offline = ActivityFooter.Error("Couldn’t load activity. Try again.", "Try again")
@@ -580,19 +580,44 @@ class TodoModelTest {
         assertNotNull(fresh)
         assertEquals(ActivityFooter.None, fresh?.footer)
         late.run()
+        s.runMain()
+        assertFalse("the replaced pager schedules no more work", s.io.next())
         m.loadActivity(first, ActivityLoad.REFRESH) // A stale gesture from the old room.
         s.drain()
         assertEquals(fresh, m.ui.value.feed)
 
         m.openActivity("not an agent!")
         s.drain()
-        m.loadActivity(m.ui.value.generation, ActivityLoad.INITIAL)
+        m.loadActivity(m.ui.value.pagerId, ActivityLoad.INITIAL)
         s.drain()
         assertEquals(offline, m.ui.value.feed?.footer)
         m.select(id) // A notification can open a task from Activity.
         s.drain()
         assertNull(m.ui.value.activity)
         assertEquals(id, m.ui.value.selected)
+        s.scope.cancel()
+    }
+
+    @Test
+    fun activity_pager_and_its_actions_survive_a_task_room_fallback() {
+        val e = fixtureEngine()
+        val s = Stepped(e) { time }
+        val m = s.model
+        val list = e.list("Errands") as RoomKey.List
+        m.open(list)
+        s.drain()
+        m.openActivity(null)
+        s.drain()
+        val shown = m.ui.value
+        e.deleteList(list.id, e.deleteListQuestion(list.id)!!)
+        s.changed()
+        s.drain()
+        assertNotEquals(shown.generation, m.ui.value.generation)
+        assertEquals(shown.pagerId, m.ui.value.pagerId)
+        assertEquals(shown.feed, m.ui.value.feed)
+        m.loadActivity(shown.pagerId, ActivityLoad.INITIAL)
+        s.drain()
+        assertTrue(m.ui.value.feed?.footer is ActivityFooter.Error)
         s.scope.cancel()
     }
 

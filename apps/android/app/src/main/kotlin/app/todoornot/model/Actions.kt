@@ -61,8 +61,8 @@ interface Actions {
     fun previewRepeat(id: String, draft: app.todoornot.core.CustomRepeat): app.todoornot.core.RepeatPreview =
         app.todoornot.core.RepeatPreview("No such task.", null, false)
     fun openActivity(agent: String?) = Unit
-    fun loadActivity(room: Long, load: app.todoornot.core.ActivityLoad) = Unit
-    fun undoEvent(room: Long, event: app.todoornot.core.ActivityRow) = Unit
+    fun loadActivity(pagerId: Long, load: app.todoornot.core.ActivityLoad) = Unit
+    fun undoEvent(pagerId: Long, event: app.todoornot.core.ActivityRow) = Unit
 
     /** Renames a list or a collection. */
     fun renameRoom(room: RoomKey, name: String)
