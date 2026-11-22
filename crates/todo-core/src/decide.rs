@@ -382,10 +382,15 @@ impl<'a> Decider<'a> {
             .state
             .resolve_placement(Scope::Tasks(list), Some(id.into()), pl)?;
         let mut ch = Vec::new();
-        if list != t.list {
+        let other_list = list != t.list;
+        if other_list {
             ch.push(FieldChange::TaskList(Change::new(t.list, list)));
         }
-        if pos != t.position {
+        // A move to another list always records the position, even a key that stays the same: then a
+        // later reorder in the new list makes undoing the move a conflict, instead of taking the task
+        // back with the key it got there (in the wrong place among its old siblings). Moves recorded
+        // before this (the list only) still apply and undo as they did.
+        if other_list || pos != t.position {
             ch.push(FieldChange::Position(Change::new(t.position.clone(), pos)));
         }
         self.update_task(t, ch);

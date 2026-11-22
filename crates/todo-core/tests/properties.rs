@@ -517,6 +517,69 @@ proptest! {
         }
     }
 
+    /// Every move to another list records the task's position, and undoing one, after any later history,
+    /// either conflicts (and changes nothing) or puts the task back in its list exactly where it was: at
+    /// its old key, or (when a sibling has taken that key since) just before that sibling.
+    #[test]
+    fn undoing_a_move_to_another_list_puts_the_task_back_exactly_or_conflicts(
+        ops in ops(),
+        pick_idx in any::<usize>(),
+    ) {
+        let mut w = run_history(&ops);
+        let moves: Vec<(Event, todo_core::ids::ListId, PosKey)> = w
+            .log
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::Updated { changes, .. } => {
+                    let list = changes.iter().find_map(|c| match c {
+                        FieldChange::TaskList(c) => Some(c.old),
+                        _ => None,
+                    })?;
+                    let key = changes.iter().find_map(|c| match c {
+                        FieldChange::Position(c) => Some(c.old.clone()),
+                        _ => None,
+                    });
+                    Some((e.clone(), list, key))
+                }
+                _ => None,
+            })
+            .map(|(e, list, key)| {
+                // Recorded with every move, even one that keeps its key.
+                let key = key.expect("a move to another list records the position");
+                (e, list, key)
+            })
+            .collect();
+        prop_assume!(!moves.is_empty());
+        let (event, list, key) = &moves[pick_idx % moves.len()];
+        let EntityId::Task(task) = event.payload.target() else {
+            panic!("a task list change on {:?}", event.payload.target());
+        };
+        let before = w.state.clone();
+        match w.undo(event) {
+            Ok(comp) => {
+                let t = &w.state.tasks[&task];
+                prop_assert_eq!(t.list, *list);
+                if comp.len() == 1 {
+                    prop_assert_eq!(&t.position, key);
+                } else {
+                    // Rekeyed: just before the sibling that took the key.
+                    let taker = before
+                        .tasks
+                        .values()
+                        .find(|s| s.list == *list && &s.position == key && s.id != task && before.is_live(s.id.into()))
+                        .map(|s| s.id);
+                    if let Some(taker) = taker {
+                        prop_assert!(t.position < w.state.tasks[&taker].position);
+                    }
+                }
+            }
+            Err(UndoError::Conflict(_) | UndoError::BrokenReference(_) | UndoError::HasDependents(_) | UndoError::AlreadyUndone(_) | UndoError::Invariant { .. }) => {
+                prop_assert_eq!(&w.state, &before);
+            }
+            Err(e) => prop_assert!(false, "unexpected undo error: {:?}", e),
+        }
+    }
+
     /// A forced undo always applies and the owner can always redo it.
     #[test]
     fn forced_undo_applies(ops in ops(), pick_idx in any::<usize>()) {

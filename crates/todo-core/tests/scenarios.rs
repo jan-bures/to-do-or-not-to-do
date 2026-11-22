@@ -1996,3 +1996,110 @@ fn creating_a_tag_needs_effective_plan_on_a_live_list() {
     assert!(free.is_ok(), "{free:?}");
     let _ = elsewhere;
 }
+
+/// The siblings of `list` in order.
+fn tasks_in(state: &State, list: todo_core::ids::ListId) -> Vec<EntityId> {
+    state
+        .siblings(todo_core::state::Scope::Tasks(list))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect()
+}
+
+/// A move to another list records the position even when its key stays the same, so a later reorder
+/// there makes undoing the move a conflict instead of taking the task back to the wrong place.
+#[test]
+fn undoing_a_move_after_a_reorder_in_the_new_list_conflicts() {
+    let mut w = World::new();
+    let a = w.list(None, "A");
+    let b = w.list(None, "B");
+    let first = w.task(a, "first");
+    let second = w.task(a, "second");
+    let key = w.state.tasks[&first].position.clone();
+    let moved = w.run(Command::MoveTask {
+        id: first,
+        list: b,
+        placement: Placement::First,
+    });
+    // Into an empty list, it keeps its key; the event still says so.
+    assert_eq!(w.state.tasks[&first].position, key);
+    let EventPayload::Updated { changes, .. } = &moved[0].payload else {
+        panic!("{:?}", moved[0].payload);
+    };
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Position(p) if p.old == p.new))
+    );
+    // Another device adds a task to B and reorders the moved one below it.
+    let other = w.task(b, "other");
+    w.run(Command::Reorder {
+        id: first.into(),
+        placement: Placement::After(other.into()),
+    });
+    let before = w.state.clone();
+    let r = w.undo(&moved[0]);
+    let Err(UndoError::Conflict(c)) = r else {
+        panic!("expected a conflict, got {r:?}");
+    };
+    assert!(c.conflicts.iter().any(|f| f.field == FieldKey::Position));
+    assert_eq!(w.state, before, "nothing changed");
+    assert_eq!(tasks_in(&w.state, a), [second.into()]);
+    // Without the reorder, undoing puts it back exactly: first in A again.
+    let mut w = World::new();
+    let a = w.list(None, "A");
+    let b = w.list(None, "B");
+    let first = w.task(a, "first");
+    let second = w.task(a, "second");
+    let moved = w.run(Command::MoveTask {
+        id: first,
+        list: b,
+        placement: Placement::First,
+    });
+    w.task(b, "other");
+    w.undo(&moved[0]).unwrap();
+    assert_eq!(tasks_in(&w.state, a), [first.into(), second.into()]);
+}
+
+/// A move stored before moves recorded their position (the list only) still replays and undoes, back
+/// to its list, as it always did.
+#[test]
+fn a_move_stored_without_its_position_still_applies_and_undoes() {
+    let mut w = World::new();
+    let a = w.list(None, "A");
+    let b = w.list(None, "B");
+    let first = w.task(a, "first");
+    let second = w.task(a, "second");
+    let now = w.now();
+    let mut events = decide(
+        &w.state,
+        &w.owner.clone(),
+        &Command::MoveTask {
+            id: first,
+            list: b,
+            placement: Placement::First,
+        },
+        now,
+    )
+    .unwrap();
+    // As an older server wrote it: the list change and the stamp, no position.
+    let EventPayload::Updated { changes, .. } = &mut events[0].payload else {
+        panic!("{:?}", events[0].payload);
+    };
+    changes.retain(|c| !matches!(c, FieldChange::Position(_)));
+    let old = events[0].clone();
+    // Old events round-trip through JSON, apply and replay.
+    let old: todo_core::Event =
+        serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+    apply(&mut w.state, &old).unwrap();
+    w.log.push(old.clone());
+    assert_eq!(w.state.tasks[&first].list, b);
+    let mut replayed = State::new();
+    replayed.grants = w.state.grants.clone();
+    for e in &w.log {
+        apply(&mut replayed, e).unwrap();
+    }
+    assert_eq!(replayed, w.state);
+    w.undo(&old).unwrap();
+    assert_eq!(tasks_in(&w.state, a), [first.into(), second.into()]);
+}
