@@ -23,6 +23,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
         epoch_ms: 1_800_000_000_000,
         utc_offset_secs: 0,
         local_day: None,
+        zone_id: "UTC".into(),
     };
     let state = fixtures::build(Fixture::World, &Now::new(now));
     let file = state
@@ -254,6 +255,7 @@ fn open_uses_a_safe_leaf_and_never_dispatches_a_supplied_mime_type() {
             epoch_ms: 1_800_000_000_000,
             utc_offset_secs: 0,
             local_day: None,
+            zone_id: "UTC".into(),
         }),
     );
     let mut file = state.attachments.values().next().unwrap().clone();
