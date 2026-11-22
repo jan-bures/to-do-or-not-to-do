@@ -9,6 +9,7 @@ import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA, PORT } from "../live-env.mjs";
+import { openDeviceSettings } from "../tests/helpers.mjs";
 
 test.describe.configure({ mode: "serial" });
 
@@ -411,7 +412,7 @@ test("a signed-in tab invites a new browser without sharing its existing passkey
     const fresh = await freshBrowser.newPage();
     const { cdp, authenticatorId } = await authenticator(fresh, freshBrowser, false);
     const problems = watch(fresh);
-    await issuer.getByRole("button", { name: "Device settings" }).click();
+    await openDeviceSettings(issuer);
     await issuer.getByRole("button", { name: "Pair a new device" }).click();
     await issuer.getByRole("button", { name: "Create invite" }).click();
     const link = issuer.getByRole("textbox", { name: "Invite link" });
@@ -423,7 +424,7 @@ test("a signed-in tab invites a new browser without sharing its existing passkey
     await fresh.getByRole("textbox", { name: "Device name" }).fill("Invited browser");
     await fresh.getByRole("button", { name: "Register passkey" }).click();
     await expect(fresh).toHaveURL(/\/app$/);
-    await expect(fresh.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(fresh.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
     expect((await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials).toHaveLength(1);
     await expect(issuer.getByText("Invited browser signed in.")).toBeVisible({ timeout: 10_000 });
     await fresh.goto("/admin/devices");
@@ -452,7 +453,7 @@ test("an invite hides its credential while a status response is held past expiry
     await route.fulfill({ json: { status: "used", device_name: "Last-second phone" } });
   });
   try {
-    await page.getByRole("button", { name: "Device settings" }).click();
+    await openDeviceSettings(page);
     await page.getByRole("button", { name: "Pair a new device" }).click();
     await page.getByRole("button", { name: "Create invite" }).click();
     const qr = page.getByRole("img", { name: "Invite QR code" });
@@ -493,7 +494,7 @@ test("a stalled invite status cannot block a replacement after the grace period"
   });
   await page.route(`**/api/v1/pair/invites/${second}`, (route) => route.fulfill({ json: { status: "pending" } }));
   const settings = async () => {
-    await page.getByRole("button", { name: "Device settings" }).click();
+    await openDeviceSettings(page);
     await page.getByRole("button", { name: "Pair a new device" }).click();
   };
   const create = page.getByRole("button", { name: "Create invite" });
@@ -1447,7 +1448,7 @@ test("a revoked tab goes to sign-in only after storing its pending edit", async 
     const page = await isolated.newPage();
     await page.addInitScript(injectStorageFailure);
     await page.goto("/app");
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
     await page.evaluate(() => { window.__failIdb = true; });
     const title = "Queued before sign-out";
     await add(page, title);

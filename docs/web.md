@@ -127,7 +127,7 @@ server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...)
 ## Signing in and the API
 
 The app uses the owner's existing passkey session. Nothing new is stored in the browser: no token, no
-password, no key. Under **Device settings**, the owner can [invite a new browser or
+password, no key. Under **Settings → Devices…**, the owner can [invite a new browser or
 native app, or approve a pending pairing](device-pairing.md). A stale session asks for passkey
 verification first. On a new browser, the invite link opens a passkey-registration form and signs the
 browser in, without requiring an existing passkey there.
@@ -312,7 +312,7 @@ headers and lists share the desktop's name-to-glyph rules; a name that doesn't m
 collections and to a document for lists. Every collection and list shows its open count, even zero.
 **Agent activity** shows a pip for tasks most recently changed by an agent today; it still opens the
 seven-day smart list. The pinned sidebar footer follows the shared design; its settings gear offers
-**Sign out**.
+**Devices…** and **Sign out**.
 
 **+ New → List** creates a sibling of the current list, a child of the current collection, or a top-level
 list from a smart room. **+ New → Collection** creates a collection at the end of the sidebar. Both get a swatch.

@@ -1,7 +1,7 @@
 # Pairing devices from a signed-in app
 
-In desktop account settings, web Device settings, or Android drawer Settings, choose **Pair a new
-device** and then **Create invite**. On Android, tap **Scan invite QR code** on the signed-out screen
+In the sidebar or Android drawer footer, open **Settings → Devices…**. Choose **Pair a new device**
+and then **Create invite**. On Android, tap **Scan invite QR code** on the signed-out screen
 and point the camera at the invite. On desktop, paste the link into **Invite code or link**. If the
 address field is blank, check the host and tap **Pair with &lt;host&gt;** before the app contacts it.
 If you've entered an address, a link for a different origin is refused rather than replacing it.

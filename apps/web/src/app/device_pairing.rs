@@ -226,14 +226,18 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             }
         });
     };
+    Effect::new(move |_| {
+        if open.get()
+            && let Some(d) = dialog.get()
+            && !d.open()
+            && d.show_modal().is_err()
+        {
+            open.set(false);
+        }
+    });
     view! {
-        <button id="device-settings" type="button" class="icon-button" aria-label="Device settings" title="Device settings"
-            on:click=move |_| {
-                mode.set(None);
-                if let Some(d) = dialog.get_untracked() { open.set(d.show_modal().is_ok() || d.open()); }
-            }>{icon(Icon::Settings)}</button>
         <dialog class="room-dialog pair-dialog" node_ref=dialog aria-labelledby="device-settings-heading"
-            on:close=move |_| { open.set(false); platform::focus("device-settings"); }>
+            on:close=move |_| { open.set(false); mode.set(None); platform::focus("open-settings"); }>
             <h2 id="device-settings-heading">{move || match mode.get() { Some(true) => "Pair a new device", Some(false) => "Approve a device", None => "Device settings" }}</h2>
             <Show when=move || mode.get().is_none()>
                 <div class="pair-actions">

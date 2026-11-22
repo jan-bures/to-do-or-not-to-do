@@ -202,7 +202,9 @@ dependencies {
     implementation("${libs.jna.get().module}:${libs.versions.jna.get()}@aar")
     implementation(libs.rustls.platform.verifier)
     debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
 
+    testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.jna)

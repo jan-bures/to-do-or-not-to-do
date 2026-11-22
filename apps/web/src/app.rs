@@ -1468,34 +1468,42 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
 
 #[component]
 fn SettingsMenu() -> impl IntoView {
-    let menu = FooterMenu::new("open-settings", &["sign-out"]);
+    let c = ctx();
     let csrf = backend::csrf();
+    let menu = FooterMenu::new(
+        "open-settings",
+        if csrf.is_some() {
+            &["device-settings", "sign-out"]
+        } else {
+            &["device-settings"]
+        },
+    );
     let field = NodeRef::<html::Input>::new();
-    csrf.map(|token| {
-        view! {
-            <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
-                <button type="button" id=menu.trigger class="icon-button" title="Settings" aria-label="Settings"
-                    aria-haspopup="menu" aria-controls="settings-menu" aria-expanded=move || menu.open.get().to_string()
-                    on:click=move |_| menu.toggle()>{icon(Icon::Settings)}</button>
-                <Show when=move || menu.open.get()>
-            <form
-                class="footer-popup settings-menu" id="settings-menu" role="menu" aria-labelledby=menu.trigger
-                method="post"
-                action="/auth/logout"
-                on:submit=move |_| {
-                    // The token may have changed since the page loaded (see `backend::csrf`).
-                    if let (Some(i), Some(t)) = (field.get(), backend::csrf()) {
-                        i.set_value(&t);
-                    }
-                }
-            >
-                <input type="hidden" name="csrf" value=token.clone() node_ref=field/>
-                <button type="submit" id=menu.items[0] role="menuitem" tabindex="-1">{icon(Icon::LogOut)}"Sign out"</button>
-            </form>
-                </Show>
-            </div>
-        }
-    })
+    view! {
+        <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
+            <button type="button" id=menu.trigger class="icon-button" title="Settings" aria-label="Settings"
+                aria-haspopup="menu" aria-controls="settings-menu" aria-expanded=move || menu.open.get().to_string()
+                on:click=move |_| menu.toggle()>{icon(Icon::Settings)}</button>
+            <Show when=move || menu.open.get()>
+                <div class="footer-popup settings-menu" id="settings-menu" role="menu" aria-labelledby=menu.trigger>
+                    <button type="button" id="device-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
+                        on:click=move |_| { menu.close(); c.device_settings_open.set(true); }
+                    >{icon(Icon::Link)}"Devices…"</button>
+                    {csrf.clone().map(|token| view! {
+                        <form method="post" action="/auth/logout" role="none" on:submit=move |_| {
+                            // The token may have changed since the page loaded (see `backend::csrf`).
+                            if let (Some(i), Some(t)) = (field.get(), backend::csrf()) {
+                                i.set_value(&t);
+                            }
+                        }>
+                            <input type="hidden" name="csrf" value=token node_ref=field/>
+                            <button type="submit" id="sign-out" role="menuitem" tabindex="-1">{icon(Icon::LogOut)}"Sign out"</button>
+                        </form>
+                    })}
+                </div>
+            </Show>
+        </div>
+    }
 }
 
 // ---- phone app bar and room pills ------------------------------------------------------------------------

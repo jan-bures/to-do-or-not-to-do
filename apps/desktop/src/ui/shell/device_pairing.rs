@@ -10,10 +10,10 @@ use todo_client::pairing::PairError;
 
 #[allow(missing_debug_implementations)]
 pub(super) struct Panel {
-    invite_mode: bool,
+    mode: Mode,
     net: Option<(Runtime, HttpTransport)>,
     focus: FocusHandle,
-    buttons: [FocusHandle; 7],
+    buttons: [FocusHandle; 9],
     input: Entity<TextInput>,
     // The server's lifetime keeps running while Windows is suspended.
     invite: Option<(Invitation, Qr, SystemTime)>,
@@ -23,9 +23,30 @@ pub(super) struct Panel {
     p: Palette,
 }
 
-#[derive(Clone)]
-pub(super) struct Closed;
-impl EventEmitter<Closed> for Panel {}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    Settings,
+    Invite,
+    Approve,
+}
+
+impl Mode {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Settings => "Device settings",
+            Self::Invite => "Pair a new device",
+            Self::Approve => "Approve a device",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PanelEvent {
+    Choose(Mode),
+    Close,
+}
+
+impl EventEmitter<PanelEvent> for Panel {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
@@ -35,6 +56,8 @@ enum Control {
     Review,
     Approve,
     Another,
+    Invite,
+    Approval,
     Close,
 }
 
@@ -58,7 +81,7 @@ fn until_expiry_ms(deadline: SystemTime) -> i64 {
 
 impl Panel {
     fn new(
-        invite_mode: bool,
+        mode: Mode,
         net: Option<(Runtime, HttpTransport)>,
         p: Palette,
         window: &mut Window,
@@ -78,12 +101,12 @@ impl Panel {
         )
         .detach();
         let focus = cx.focus_handle();
-        if !invite_mode {
+        if mode == Mode::Approve {
             let handle = input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
         }
         let mut panel = Self {
-            invite_mode,
+            mode,
             net,
             focus,
             buttons: std::array::from_fn(|_| cx.focus_handle()),
@@ -94,14 +117,14 @@ impl Panel {
             message: None,
             p,
         };
-        if panel.net.is_none() && invite_mode {
+        if panel.net.is_none() && mode == Mode::Invite {
             panel.show(Invitation {
                 id: String::new(),
                 code: "ABCDEF-GHJKMN".into(),
                 link: format!("https://todo.example.com/pair/invite#{}", "A".repeat(43)),
                 expires_in: 300,
             });
-        } else if panel.net.is_none() {
+        } else if panel.net.is_none() && mode == Mode::Approve {
             panel.pending = Some((
                 "ABCDEFGH".into(),
                 PendingDevice {
@@ -257,7 +280,7 @@ impl Panel {
     }
 
     fn close(&self, cx: &mut Context<Self>) {
-        cx.emit(Closed);
+        cx.emit(PanelEvent::Close);
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -359,7 +382,9 @@ impl Panel {
 
     fn focus_order(&self, cx: &App) -> Vec<FocusHandle> {
         let handle = |control: Control| self.buttons[control as usize].clone();
-        let mut order = if self.invite_mode {
+        let mut order = if self.mode == Mode::Settings {
+            vec![handle(Control::Invite), handle(Control::Approval)]
+        } else if self.mode == Mode::Invite {
             if self.live_invite() {
                 vec![handle(Control::Copy), handle(Control::Cancel)]
             } else if self.invite.is_none() {
@@ -399,6 +424,8 @@ impl Panel {
                 cx.notify();
             }
             Control::Another => {}
+            Control::Invite => cx.emit(PanelEvent::Choose(Mode::Invite)),
+            Control::Approval => cx.emit(PanelEvent::Choose(Mode::Approve)),
             Control::Close => self.close(cx),
         }
     }
@@ -452,53 +479,69 @@ impl Panel {
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let order = self.focus_order(cx);
-        if self.net.is_some() && !order.iter().any(|handle| handle.is_focused(window)) {
+        if (self.net.is_some() || self.mode == Mode::Settings)
+            && !order.iter().any(|handle| handle.is_focused(window))
+        {
             window.focus(&order[0], cx);
         }
         let p = self.p;
-        let mut body =
-            kit::overlay(&p)
-                .id("device-pairing-card")
-                .track_focus(&self.focus)
-                .role(gpui::Role::Dialog)
-                .aria_label(if self.invite_mode {
-                    "Pair a new device"
-                } else {
-                    "Approve a device"
-                })
-                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                    if super::navigation_tab(e) {
-                        let order = this.focus_order(cx);
-                        let focused = order.iter().position(|handle| handle.is_focused(window));
-                        window.focus(
-                            &order[tab_index(focused, !e.keystroke.modifiers.shift, order.len())],
-                            cx,
-                        );
-                        cx.notify();
-                        cx.stop_propagation();
-                    } else if e.keystroke.key == "escape" && !e.is_held {
-                        this.close(cx);
-                        cx.stop_propagation();
-                    }
-                    // Windows needs unhandled printable KeyDown events to produce WM_CHAR.
-                }))
-                .w(px(desktop::DETAIL + space::S10))
-                .max_w_full()
-                .max_h_full()
-                .overflow_y_scroll()
-                .occlude()
-                .p(px(space::S6))
-                .flex()
-                .flex_col()
-                .gap(px(space::S3))
-                .child(div().style(ty::DETAIL_TITLE).text_color(p.ink).child(
-                    if self.invite_mode {
-                        "Pair a new device"
-                    } else {
-                        "Approve a device"
-                    },
-                ));
-        if self.invite_mode {
+        let mut body = kit::overlay(&p)
+            .id("device-pairing-card")
+            .track_focus(&self.focus)
+            .role(gpui::Role::Dialog)
+            .aria_label(self.mode.title())
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if super::navigation_tab(e) {
+                    let order = this.focus_order(cx);
+                    let focused = order.iter().position(|handle| handle.is_focused(window));
+                    window.focus(
+                        &order[tab_index(focused, !e.keystroke.modifiers.shift, order.len())],
+                        cx,
+                    );
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if e.keystroke.key == "escape" && !e.is_held {
+                    this.close(cx);
+                    cx.stop_propagation();
+                }
+                // Windows needs unhandled printable KeyDown events to produce WM_CHAR.
+            }))
+            .w(px(desktop::DETAIL + space::S10))
+            .max_w_full()
+            .max_h_full()
+            .overflow_y_scroll()
+            .occlude()
+            .p(px(space::S6))
+            .flex()
+            .flex_col()
+            .gap(px(space::S3))
+            .child(
+                div()
+                    .style(ty::DETAIL_TITLE)
+                    .text_color(p.ink)
+                    .child(self.mode.title()),
+            );
+        if self.mode == Mode::Settings {
+            body = body.child(
+                div()
+                    .flex()
+                    .gap(px(space::S2))
+                    .child(self.control(
+                        Control::Invite,
+                        "pair-device",
+                        Mode::Invite.title(),
+                        window,
+                        cx,
+                    ))
+                    .child(self.control(
+                        Control::Approval,
+                        "approve-pairing",
+                        Mode::Approve.title(),
+                        window,
+                        cx,
+                    )),
+            );
+        } else if self.mode == Mode::Invite {
             if let Some((invite, qr, expires)) = &self.invite {
                 let left = expires
                     .duration_since(SystemTime::now())
@@ -582,11 +625,11 @@ impl Render for Panel {
 impl ShellView {
     pub(super) fn open_pairing_panel(
         &mut self,
-        invite: bool,
+        mode: Mode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let saved = if invite {
+        let saved = if mode == Mode::Invite {
             self.invite_panel.clone()
         } else {
             None
@@ -596,16 +639,26 @@ impl ShellView {
                 .store
                 .session()
                 .map(crate::session::Session::pairing_transport);
-            let panel = cx.new(|cx| Panel::new(invite, net, self.palette, window, cx));
-            cx.subscribe_in(&panel, window, |this, source, _: &Closed, window, cx| {
-                if this.pairing_panel.as_ref() == Some(source) {
-                    this.pairing_panel = None;
-                    window.focus(&this.account_focus, cx);
-                    cx.notify();
-                }
-            })
+            let panel = cx.new(|cx| Panel::new(mode, net, self.palette, window, cx));
+            cx.subscribe_in(
+                &panel,
+                window,
+                |this, source, event: &PanelEvent, window, cx| {
+                    if this.pairing_panel.as_ref() != Some(source) {
+                        return;
+                    }
+                    match event {
+                        PanelEvent::Choose(mode) => this.open_pairing_panel(*mode, window, cx),
+                        PanelEvent::Close => {
+                            this.pairing_panel = None;
+                            window.focus(&this.account_focus, cx);
+                            cx.notify();
+                        }
+                    }
+                },
+            )
             .detach();
-            if invite {
+            if mode == Mode::Invite {
                 self.invite_panel = Some(panel.clone());
             }
             panel
@@ -614,7 +667,7 @@ impl ShellView {
             p.p = self.palette;
             cx.notify();
         });
-        if invite {
+        if mode != Mode::Approve {
             let handle = panel.read(cx).focus.clone();
             window.focus(&handle, cx);
         }
@@ -665,6 +718,53 @@ mod tests {
         })
     }
 
+    fn press(window: &mut TestAppWindow<ShellView>, key: &'static str) {
+        window.draw();
+        window.simulate_keystroke(key);
+        window.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).expect("key"),
+        });
+    }
+
+    fn open_from_settings(window: &mut TestAppWindow<ShellView>, mode: Mode) {
+        window.update(|shell, window, cx| window.focus(&shell.account_focus, cx));
+        press(window, "enter");
+        // Open admin pages, Sync now, Devices…, Sign out…
+        press(window, "down");
+        press(window, "down");
+        press(window, "space");
+        window.draw();
+        window.update(|shell, window, cx| {
+            let panel = shell
+                .pairing_panel
+                .as_ref()
+                .expect("device settings")
+                .read(cx);
+            assert!(panel.mode == Mode::Settings);
+            assert!(panel.buttons[Control::Invite as usize].is_focused(window));
+        });
+        if mode == Mode::Approve {
+            press(window, "tab");
+        }
+        press(window, "enter");
+        window.read(|shell, cx| {
+            assert!(shell.pairing_panel.as_ref().expect("panel").read(cx).mode == mode);
+        });
+    }
+
+    #[test]
+    fn escape_closes_settings_and_returns_focus_to_its_trigger() {
+        let mut app = TestApp::new();
+        let mut window = shell(&mut app);
+        window.update(|shell, window, cx| window.focus(&shell.account_focus, cx));
+        press(&mut window, "space");
+        press(&mut window, "escape");
+        window.update(|shell, window, _| {
+            assert!(shell.menu.is_none());
+            assert!(shell.account_focus.is_focused(window));
+        });
+    }
+
     fn offline_transport() -> (Runtime, HttpTransport) {
         let rt = session::runtime().expect("runtime");
         // This server never handles an HTTP request; its listener only reserves the test address.
@@ -679,8 +779,8 @@ mod tests {
     fn typed_characters_reach_the_approval_input_and_enter_submits() {
         let mut app = TestApp::new();
         let mut window = shell(&mut app);
-        let panel = window.update(|shell, window, cx| {
-            shell.open_pairing_panel(false, window, cx);
+        open_from_settings(&mut window, Mode::Approve);
+        let panel = window.update(|shell, _, cx| {
             let panel = shell.pairing_panel.clone().expect("panel");
             panel.update(cx, |p, cx| {
                 p.pending = None;
@@ -706,13 +806,13 @@ mod tests {
     fn pairing_modal_blocks_shell_shortcuts_without_moving_focus() {
         let mut app = TestApp::new();
         let mut window = shell(&mut app);
-        let task = window.update(|shell, window, cx| {
+        let task = window.update(|shell, _, cx| {
             let id = shell.ui.task.expect("selected task");
             shell.toggle_complete(id, cx);
             assert!(shell.last_undo.is_some());
-            shell.open_pairing_panel(true, window, cx);
             id
         });
+        open_from_settings(&mut window, Mode::Invite);
         window.draw();
         let before = window.update(|shell, window, cx| {
             (
@@ -734,8 +834,8 @@ mod tests {
     fn close_and_escape_keep_a_live_invite_even_when_offline() {
         let mut app = TestApp::new();
         let mut window = shell(&mut app);
-        let panel = window.update(|shell, window, cx| {
-            shell.open_pairing_panel(true, window, cx);
+        open_from_settings(&mut window, Mode::Invite);
+        let panel = window.update(|shell, _, cx| {
             let panel = shell.pairing_panel.clone().expect("panel");
             panel.update(cx, |p, cx| {
                 p.net = Some(offline_transport());
@@ -745,12 +845,12 @@ mod tests {
         });
         window.draw();
         window.simulate_keystroke("escape");
-        window.update(|shell, window, cx| {
+        window.update(|shell, window, _| {
             assert!(shell.pairing_panel.is_none());
             assert!(shell.account_focus.is_focused(window));
-            shell.open_pairing_panel(true, window, cx);
-            assert_eq!(shell.pairing_panel.as_ref(), Some(&panel));
         });
+        open_from_settings(&mut window, Mode::Invite);
+        window.read(|shell, _| assert_eq!(shell.pairing_panel.as_ref(), Some(&panel)));
         window.draw();
         window.update(|_, window, cx| {
             window.focus(&panel.read(cx).buttons[Control::Close as usize].clone(), cx)

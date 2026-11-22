@@ -2,7 +2,7 @@
 // from invented fixture data with a fixed clock (Saturday 21 November 2026, 10:35). The PNGs land in
 // e2e/gallery/ (CI uploads them); compare them with the approved mockups.
 import { expect, test } from "@playwright/test";
-import { chooseNew, open, watch } from "./helpers.mjs";
+import { chooseNew, open, openDeviceSettings, watch } from "./helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
 const MEDIUM = { width: 1024, height: 768 };
@@ -97,7 +97,7 @@ for (const scheme of ["light", "dark"]) {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);
       await open(page);
-      await page.getByRole("button", { name: "Device settings" }).click();
+      await openDeviceSettings(page);
       await page.getByRole("button", { name: "Pair a new device" }).click();
       await page.getByRole("button", { name: "Create invite" }).click();
       await expect(page.getByRole("img", { name: "Invite QR code" })).toBeVisible();

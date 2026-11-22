@@ -18,11 +18,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -94,12 +102,22 @@ internal fun protectInviteWindow(window: Window): () -> Unit {
     return { if (!alreadySecure) window.clearFlags(FLAG_SECURE) }
 }
 
+internal enum class DevicePairingPage(val title: String) {
+    SETTINGS("Device settings"),
+    INVITE("Pair a new device"),
+    APPROVE("Approve a device"),
+}
+
 @Composable
-internal fun DevicePairingDialog(model: DevicePairingModel, inviting: Boolean, onClose: () -> Unit) {
+internal fun DevicePairingDialog(
+    model: DevicePairingModel,
+    page: DevicePairingPage,
+    onPage: (DevicePairingPage) -> Unit,
+    onClose: () -> Unit,
+) {
     val r = LocalDesign.current.room
-    val title = if (inviting) "Pair a new device" else "Approve a device"
     val scan = LocalScanPairing.current
-    val current = if (inviting) model.invite else null
+    val current = if (page == DevicePairingPage.INVITE) model.invite else null
     val activityWindow = LocalActivity.current?.window
     if (current != null && activityWindow != null) {
         DisposableEffect(activityWindow) {
@@ -108,10 +126,23 @@ internal fun DevicePairingDialog(model: DevicePairingModel, inviting: Boolean, o
         }
     }
     OverlayDialog(onClose, if (current != null) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit) { overlay ->
-        DialogCard(title, Modifier.fillMaxWidth()) {
+        val first = remember { FocusRequester() }
+        val close = remember { FocusRequester() }
+        LaunchedEffect(page) { (if (page == DevicePairingPage.SETTINGS) first else close).requestFocus() }
+        DialogCard(page.title, Modifier.fillMaxWidth().onPreviewKeyEvent { event ->
+            if (event.key != Key.Escape) false else {
+                if (event.type == KeyEventType.KeyUp) overlay.close()
+                true
+            }
+        }) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.S3.dp)) {
-                Label(title, Tokens.Type.DETAIL_TITLE, r.ink)
-                if (inviting) {
+                Label(page.title, Tokens.Type.DETAIL_TITLE, r.ink)
+                if (page == DevicePairingPage.SETTINGS) {
+                    Button(DevicePairingPage.INVITE.title, primary = false, modifier = Modifier.focusRequester(first)) {
+                        onPage(DevicePairingPage.INVITE)
+                    }
+                    Button(DevicePairingPage.APPROVE.title, primary = false) { onPage(DevicePairingPage.APPROVE) }
+                } else if (page == DevicePairingPage.INVITE) {
                     when {
                         current != null -> DeviceInviteContent(current, model.left, model.busy, model::cancelInvite)
                         model.checking -> Label("Checking whether the device joined…", Tokens.Type.BODY, r.ink)
@@ -127,9 +158,11 @@ internal fun DevicePairingDialog(model: DevicePairingModel, inviting: Boolean, o
                         DeviceReviewContent(pending.deviceName, pending.code, pending.source, model.busy, approve = model::approve, back = model::anotherCode)
                     }
                 }
-                model.error?.let { Label(it, Tokens.Type.META_PHONE, r.dangerInk) }
-                model.status?.let { Label(it, Tokens.Type.BODY, r.ink) }
-                Button("Close", primary = false, onClick = overlay::close)
+                if (page != DevicePairingPage.SETTINGS) {
+                    model.error?.let { Label(it, Tokens.Type.META_PHONE, r.dangerInk) }
+                    model.status?.let { Label(it, Tokens.Type.BODY, r.ink) }
+                }
+                Button("Close", primary = false, modifier = Modifier.focusRequester(close), onClick = overlay::close)
             }
         }
     }

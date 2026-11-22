@@ -141,7 +141,7 @@ test("held Tab stays in the phone drawer, and a move returns focus to its origin
   await page.keyboard.up("Tab");
   await expect(first).toBeFocused();
   await last.press("Enter");
-  await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await expect(drawer.getByRole("menuitem", { name: "Devices…" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(first).toBeFocused();
 

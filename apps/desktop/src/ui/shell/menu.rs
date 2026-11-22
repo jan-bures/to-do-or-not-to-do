@@ -413,7 +413,7 @@ impl ShellView {
     }
 
     /// Puts the keyboard on item `at` of the open menu, scrolling it into view in a long menu.
-    fn highlight(&mut self, at: Option<usize>) {
+    pub(super) fn highlight(&mut self, at: Option<usize>) {
         let Some(kind) = self.menu.as_ref().map(|m| m.kind) else {
             return;
         };
@@ -825,8 +825,9 @@ impl ShellView {
             MenuAction::NewCollection => self.new_collection(window, cx),
             MenuAction::NewListIn(id) => self.new_list(Some(id), window, cx),
             MenuAction::OpenAdmin => self.open_admin(cx),
-            MenuAction::PairDevice => self.open_pairing_panel(true, window, cx),
-            MenuAction::ApproveDevice => self.open_pairing_panel(false, window, cx),
+            MenuAction::DeviceSettings => {
+                self.open_pairing_panel(super::device_pairing::Mode::Settings, window, cx);
+            }
             MenuAction::SyncNow => self.sync_now(cx),
             MenuAction::SignOut => cx.emit(ShellEvent::SignOut),
             MenuAction::SetPriority(task, level) => {

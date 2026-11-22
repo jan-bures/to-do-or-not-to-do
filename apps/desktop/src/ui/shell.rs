@@ -978,8 +978,14 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(fixture, "device-invite" | "device-approve") {
-            self.open_pairing_panel(fixture == "device-invite", window, cx);
+        let pairing = match fixture {
+            "device-settings" => Some(device_pairing::Mode::Settings),
+            "device-invite" => Some(device_pairing::Mode::Invite),
+            "device-approve" => Some(device_pairing::Mode::Approve),
+            _ => None,
+        };
+        if let Some(mode) = pairing {
+            self.open_pairing_panel(mode, window, cx);
             return;
         }
         if fixture.starts_with("attachments-")
@@ -1166,7 +1172,7 @@ impl ShellView {
         let kind = match fixture {
             "room-menu" | "activity-menu" => Some(MenuKind::Room { page: Page::Main }),
             "account-menu" => Some(MenuKind::Account { confirm: false }),
-            "sidebar-new-menu" => Some(MenuKind::New),
+            "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
             "repeat-menu" => task.map(|task| MenuKind::Repeat { task, draft: None }),
@@ -1218,8 +1224,11 @@ impl ShellView {
         {
             menu.filter = "receipts".into();
         }
-        // A confirmation as the keyboard reaches it (on Cancel); a picker or page on its first choice.
-        if !matches!(
+        // Show Collection inside New rather than as its old separate Tab stop. Confirmations start on
+        // Cancel; other pickers or pages start on their first choice.
+        if fixture == "tab-new-collection" {
+            self.highlight(Some(1));
+        } else if !matches!(
             fixture,
             "room-menu" | "account-menu" | "sync-failures" | "priority-menu" | "reminder-custom"
         ) {

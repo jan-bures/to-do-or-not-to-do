@@ -478,6 +478,7 @@ class ParityTest {
         check(s(SyncState.ONLINE, failed = 2u), "2 not synced", "2 couldn't sync", SyncTone.PROBLEM)
         check(s(SyncState.SYNCING, failed = 2u), "2 not synced", "2 couldn't sync", SyncTone.PROBLEM)
         check(s(SyncState.OFFLINE, failed = 2u, problem = ProblemKind.UNAUTHORIZED), "Signed out", "Signed out by the server", SyncTone.PROBLEM)
+        check(s(SyncState.OFFLINE, pending = 1u).copy(revoked = true), "Signed out", "Signed out by the server", SyncTone.PROBLEM)
         check(s(SyncState.PAUSED, 1u), "Not syncing · 1", "Not syncing, 1 waiting", SyncTone.IDLE)
         assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600, "+01:00")))
         assertEquals("23:59", clock(LocalNow(-60_000L, 0, "UTC")))

@@ -5,6 +5,11 @@ export async function chooseNew(sidebar, choice) {
   await sidebar.getByRole("menuitem", { name: choice, exact: true }).click();
 }
 
+export async function openDeviceSettings(page) {
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Devices…", exact: true }).click();
+}
+
 /** Fails the test on any console error, page error or CSP violation. */
 export function watch(page) {
   const problems = [];

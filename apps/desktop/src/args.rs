@@ -18,12 +18,13 @@ Options:
   --screenshot      Render one hidden fixture window, save its PNG and exit.
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
-  --fixture         Fixture to render: my-day, work, room-menu, account-menu, device-invite,
-                    device-approve, priority-menu,
+  --fixture         Fixture to render: my-day, work, room-menu, account-menu, device-settings,
+                    device-invite, device-approve, priority-menu,
                     reminder-menu, reminder-custom, reminder-focus, reminder-none,
                     repeat-menu, repeat-custom, repeat-focus, repeat-none, repeat-weekly, repeat-monthly, delete-tag-confirm,
                     task-context-menu, move-to-picker, sync-failures, delete-list-confirm,
-                    new-collection, tab-new, sidebar-footer, sidebar-footer-min, sidebar-new-menu,
+                    new-collection, tab-new, tab-new-collection, sidebar-footer, sidebar-footer-min,
+                    sidebar-new-menu,
                     collection-menu, list-context-menu,
                     delete-collection-confirm, move-list-picker, list-colour, tag-picker, tag-create, tag-edit, tag-colour,
                     tag-rename, task-links, add-link, attachments-empty, attachments-uploading,
@@ -52,6 +53,7 @@ pub const FIXTURES: &[&str] = &[
     "work",
     "room-menu",
     "account-menu",
+    "device-settings",
     "device-invite",
     "device-approve",
     "priority-menu",
@@ -78,6 +80,7 @@ pub const FIXTURES: &[&str] = &[
     "delete-list-confirm",
     "new-collection",
     "tab-new",
+    "tab-new-collection",
     "sidebar-footer",
     "sidebar-footer-min",
     "sidebar-new-menu",

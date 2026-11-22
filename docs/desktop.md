@@ -228,8 +228,9 @@ pairing never picks up an old cache and cleaning up an old one can't touch the c
 
 **The account menu** (the gear in the sidebar footer) names the server the app is paired with, opens its
 admin pages (`<server>/admin`, built from the paired address with the transport's own check, never a
-built-in host), offers **Pair a new device** and **Approve a device**, and has **Sync now**, which retries at once instead of waiting out the backoff
-(`SyncClient::nudge`).
+built-in host), and has **Sync now**, which retries at once instead of waiting out the backoff
+(`SyncClient::nudge`). **Devices…** opens the pairing dialog with **Pair a new device** and
+**Approve a device**.
 
 **Sign out** (the account menu) runs in order: syncing stops and attachment transfers in flight are
 cancelled and waited for; the record `pairings\<pairing ID>.signed-out` is written beside the directory and

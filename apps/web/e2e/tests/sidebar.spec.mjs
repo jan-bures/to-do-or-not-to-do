@@ -217,7 +217,7 @@ test("open footer menus do not run the selected task's shortcuts", async ({ page
   const priority = page.getByRole("combobox", { name: "Priority" });
   await expect(priority).toHaveValue("None");
   const nav = sidebar(page);
-  for (const [name, choice] of [["New", "List"], ["Settings", "Sign out"]]) {
+  for (const [name, choice] of [["New", "List"], ["Settings", "Devices…"]]) {
     const trigger = nav.getByRole("button", { name, exact: true });
     const item = nav.getByRole("menuitem", { name: choice, exact: true });
     await trigger.press("Enter");
@@ -241,6 +241,8 @@ test("Tab closes Settings and wraps within the phone drawer", async ({ page }) =
   const drawer = page.getByRole("dialog", { name: "Lists" });
   const settings = drawer.getByRole("button", { name: "Settings", exact: true });
   await settings.press("Enter");
+  await expect(drawer.getByRole("menuitem", { name: "Devices…" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(settings).toHaveAttribute("aria-expanded", "false");
@@ -261,7 +263,7 @@ test("the drawer's deferred focus does not close Settings after Space opens it",
   await settings.press("Space");
   await expect(settings).toHaveAttribute("aria-expanded", "true");
   await page.clock.runFor(32);
-  await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await expect(drawer.getByRole("menuitem", { name: "Devices…" })).toBeFocused();
   await w.check();
 });
 
@@ -286,6 +288,8 @@ test("the compact footer fits in one row at the sidebar minimum", async ({ page 
   expect(newButton.x + newButton.width).toBeLessThanOrEqual(status.x);
   expect(status.x + status.width).toBeLessThanOrEqual(gear.x);
   await settings.press("Enter");
+  await expect(footer.getByRole("menuitem", { name: "Devices…" })).toBeFocused();
+  await page.keyboard.press("ArrowUp");
   await expect(footer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(settings).toBeFocused();

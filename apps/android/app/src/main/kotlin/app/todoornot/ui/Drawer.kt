@@ -302,46 +302,90 @@ private fun Footer(
             Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
             Label(line.short, Tokens.Type.COUNT, r.ink3)
         }
-        var menu by remember { mutableStateOf(false) }
-        // Only the invite/approval mode is saved. Credentials and scan state stay in the session model.
-        var pairing by rememberSaveable { mutableStateOf<Boolean?>(null) }
-        val owner = LocalPairingOwner.current
-        if (owner != null) pairing?.let { DevicePairingDialog(owner, it) { pairing = null } }
-        Box {
-            IconButton("settings", "Settings") { menu = true }
-            DropdownMenu(menu, { menu = false }, containerColor = r.raised) {
+        DrawerSettings(server, actions)
+    }
+}
+
+@Composable
+internal fun DrawerSettings(server: String?, actions: Actions) {
+    val r = LocalDesign.current.room
+    val trigger = remember { FocusRequester() }
+    var menu by remember { mutableStateOf(false) }
+    var fromLast by remember { mutableStateOf(false) }
+    // Only the dialog page is saved. Credentials and scan state stay in the session model.
+    var pairing by rememberSaveable { mutableStateOf<DevicePairingPage?>(null) }
+    val owner = LocalPairingOwner.current
+    val sync = remember { FocusRequester() }
+    val devices = remember { FocusRequester() }
+    val unpair = remember { FocusRequester() }
+    fun dismiss(restoreFocus: Boolean = true) {
+        menu = false
+        if (restoreFocus) trigger.requestFocus()
+    }
+    if (owner != null) pairing?.let { page ->
+        DevicePairingDialog(owner, page, onPage = { pairing = it }, onClose = {
+            pairing = null
+            trigger.requestFocus()
+        })
+    }
+    Box {
+        IconButton("settings", "Settings", expanded = menu, modifier = Modifier.focusRequester(trigger)
+            .onPreviewKeyEvent { ev ->
+                val key = ev.keyboardKey
+                if (key !in listOf(Key.Enter, Key.Spacebar, Key.DirectionUp, Key.DirectionDown)) false else {
+                    if (ev.type == KeyEventType.KeyUp) {
+                        fromLast = key == Key.DirectionUp
+                        menu = true
+                    }
+                    true
+                }
+            }) { fromLast = false; menu = true }
+        DropdownMenu(menu, { dismiss() }, containerColor = r.raised) {
+            if (menu) LaunchedEffect(Unit) { (if (fromLast) unpair else sync).requestFocus() }
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
+                        Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
+                    }
+                },
+                onClick = {},
+                enabled = false,
+            )
+            @Composable
+            fun Item(
+                label: String, icon: String, focus: FocusRequester, up: FocusRequester, down: FocusRequester,
+                danger: Boolean = false, choose: () -> Unit,
+            ) {
                 DropdownMenuItem(
-                    text = {
-                        Column {
-                            Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
-                            Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
+                    text = { Label(label, Tokens.Type.BODY, if (danger) r.danger else r.ink) },
+                    leadingIcon = { Icon(icon, if (danger) r.danger else r.ink2) },
+                    modifier = Modifier.focusRequester(focus).onPreviewKeyEvent { ev ->
+                        val key = ev.keyboardKey
+                        if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) false else {
+                            if (ev.type == KeyEventType.KeyUp) when (key) {
+                                Key.DirectionUp -> up.requestFocus()
+                                Key.DirectionDown -> down.requestFocus()
+                                Key.Escape -> dismiss()
+                                else -> choose()
+                            }
+                            true
                         }
                     },
-                    onClick = {},
-                    enabled = false,
+                    onClick = choose,
                 )
-                if (owner != null) {
-                    DropdownMenuItem(
-                        text = { Label("Pair a new device", Tokens.Type.BODY, r.ink) },
-                        leadingIcon = { Icon("plus", r.ink2) },
-                        onClick = { menu = false; pairing = true },
-                    )
-                    DropdownMenuItem(
-                        text = { Label("Approve a device", Tokens.Type.BODY, r.ink) },
-                        leadingIcon = { Icon("circle-check", r.ink2) },
-                        onClick = { menu = false; pairing = false },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Label("Sync now", Tokens.Type.BODY, r.ink) },
-                    leadingIcon = { Icon("refresh-cw", r.ink2) },
-                    onClick = { menu = false; actions.nudge() },
-                )
-                DropdownMenuItem(
-                    text = { Label("Unpair this phone", Tokens.Type.BODY, r.danger) },
-                    leadingIcon = { Icon("log-out", r.danger) },
-                    onClick = { menu = false; actions.unpair() },
-                )
+            }
+            Item("Sync now", "refresh-cw", sync, unpair, if (owner != null) devices else unpair) {
+                dismiss()
+                actions.nudge()
+            }
+            if (owner != null) Item("Devices…", "link", devices, sync, unpair) {
+                dismiss(restoreFocus = false)
+                pairing = DevicePairingPage.SETTINGS
+            }
+            Item("Unpair this phone", "log-out", unpair, if (owner != null) devices else sync, sync, danger = true) {
+                dismiss()
+                actions.unpair()
             }
         }
     }
