@@ -887,8 +887,8 @@ mod tests {
         assert_eq!(tab(Stop::Repeat, true), Some(add));
         assert_eq!(tab(add, true), Some(first));
         assert_eq!(tab(first, false), Some(add));
-        assert_eq!(tab(last, true), Some(Stop::NewList));
-        assert_eq!(tab(Stop::NewList, false), Some(last));
+        assert_eq!(tab(last, true), Some(Stop::New));
+        assert_eq!(tab(Stop::New, false), Some(last));
     }
 
     #[test]
