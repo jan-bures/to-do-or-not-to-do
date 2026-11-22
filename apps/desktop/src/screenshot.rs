@@ -34,14 +34,14 @@ use crate::{fixtures, fonts, ui};
 const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAIL, 900.);
 
 /// The logical window size a fixture renders at: the reference window, except the quick-add window, the
-/// narrowest main window (`long-names-narrow`) and a short one (`finished-short`).
+/// narrowest main window (`long-names-narrow`, `narrow-detail`) and a short one (`finished-short`).
 pub fn window_size(fixture: &str) -> (f32, f32) {
     match fixture {
         "quick-add" => (
             f32::from(quick_add::SIZE.width),
             f32::from(quick_add::SIZE.height),
         ),
-        "long-names-narrow" => (crate::app::MIN_WINDOW.0, MAIN_SIZE.1),
+        "long-names-narrow" | "narrow-detail" => (crate::app::MIN_WINDOW.0, MAIN_SIZE.1),
         "finished-short" => (MAIN_SIZE.0, 700.),
         _ => MAIN_SIZE,
     }
@@ -238,6 +238,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                         cx,
                     );
                     shell.preview_caption(caption);
+                    shell.still();
                     shell
                 });
                 // GPUI's own focus, inside the window: nothing is activated or shown.
@@ -324,6 +325,7 @@ mod tests {
         assert_eq!(window_size("my-day"), (1440., 900.));
         assert_eq!(window_size("quick-add"), (640., 196.));
         assert_eq!(window_size("long-names-narrow"), (960., 900.));
+        assert_eq!(window_size("narrow-detail"), (960., 900.));
         assert_eq!(window_size("finished-short"), (1440., 700.));
     }
 

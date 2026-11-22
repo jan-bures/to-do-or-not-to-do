@@ -29,7 +29,7 @@
 //!
 //! | Module | Contents |
 //! |---|---|
-//! | [`chrome`] | Windows caption and desktop scrollbar colours |
+//! | [`chrome`] | Windows caption, desktop scrollbar and scrim colours |
 //! | [`color`] | [`Rgb`], [`Oklch`], WCAG contrast |
 //! | [`palette`] | [`Theme`], [`Palette`], [`ListColors`], [`AgentColors`], [`Dusk`] and their derivation |
 //! | [`hues`] | smart-list hues, the list swatches, agent hues |

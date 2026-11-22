@@ -271,7 +271,7 @@ tokens:
 | < 760 px | phone: app bar, room pills, 64 px rows with the due slot, a bottom composer, a drawer for the sidebar, a full-screen detail |
 
 760 is about the sidebar plus the phone's inner-screen list (`--phone-inner-list`) plus padding; 1200 leaves
-the list at least 560 px next to both side panes.
+the list at least 560 px next to both side panes (`--desktop-three-pane-min`, which the desktop app uses too).
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses

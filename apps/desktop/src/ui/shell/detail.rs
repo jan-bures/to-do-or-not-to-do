@@ -870,7 +870,13 @@ impl ShellView {
             .child(div().h(px(space::S6)))
     }
 
-    pub(super) fn detail_pane(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The pane, showing `detail`, or the placeholder without one.
+    pub(super) fn detail_pane(
+        &self,
+        detail: Option<Detail>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let p = &self.palette;
         let pane = div()
             .id("detail")
@@ -882,7 +888,7 @@ impl ShellView {
             .bg(p.pane)
             .border_l_1()
             .border_color(p.line);
-        match self.shell.detail.clone() {
+        match detail {
             Some(d) => pane
                 .child(
                     div()

@@ -15,7 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
-    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
+    [string[]]$Fixtures = @('my-day', 'work', 'collapsed-collection', 'long-sidebar', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'caption-hover', 'caption-close-hover', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'quick-add', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
 )
@@ -39,7 +39,7 @@ if (-not (Test-Path $exe)) { throw "missing $exe; build first" }
 function Get-ExpectedSize([string]$fixture, [double]$scale) {
     $logical = switch ($fixture) {
         'quick-add' { @(640, 196) }
-        'long-names-narrow' { @(960, 900) }
+        { $_ -in 'long-names-narrow', 'narrow-detail' } { @(960, 900) }
         'finished-short' { @(1440, 700) }
         default { @(1440, 900) }
     }

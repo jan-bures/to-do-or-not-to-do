@@ -363,6 +363,11 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let tomorrow = (finished && !filtered)
         .then(|| tomorrow(state, ix, now))
         .flatten();
+    // Planning the next day is offered whenever the day is finished, even with nothing due then.
+    let plan_weekday = (finished && !filtered)
+        .then(|| add_days(now.today(), 1))
+        .flatten()
+        .map(|d| SharedString::from(labels::weekday(d)));
 
     Room {
         key,
@@ -391,6 +396,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         quick_add_placeholder: placeholder,
         finishes_day,
         tomorrow,
+        plan_weekday,
         filtered,
     }
 }

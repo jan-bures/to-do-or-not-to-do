@@ -212,6 +212,7 @@
   --desktop-sidebar: 248px;
   --desktop-list: 800px;
   --desktop-detail: 392px;
+  --desktop-three-pane-min: 1200px;
   --desktop-titlebar: 36px;
   --desktop-caption-width: 46px;
   --desktop-caption-glyph: 10px;
@@ -293,12 +294,15 @@
   --caption-close: #c42b1c;
   --caption-close-pressed: #a92317;
   --caption-white: #ffffff;
+  --scrim-dark-base: #000000;
   --caption-hover-light: 0.06;
   --caption-pressed-light: 0.04;
   --caption-hover-dark: 0.08;
   --caption-pressed-dark: 0.06;
   --scrollbar-alpha: 0.26;
   --scrollbar-hover-alpha: 0.52;
+  --scrim-light: 0.16;
+  --scrim-dark: 0.4;
 }
 
 [data-theme="light"] {

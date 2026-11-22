@@ -11,8 +11,8 @@ use windows_sys::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetProcessTimes, SetPriorityClass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IsIconic, IsWindowVisible, PostMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow,
-    ShowWindow, WM_PAINT,
+    IsIconic, IsWindowVisible, PostMessageW, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_RESTORE,
+    SW_SHOW, SetForegroundWindow, ShowWindow, SystemParametersInfoW, WM_PAINT,
 };
 
 /// The native handle of a GPUI window, as an integer (0 if unavailable).
@@ -76,6 +76,18 @@ pub fn hide(hwnd: isize) {
 pub fn is_shown(hwnd: isize) -> bool {
     // SAFETY: see `show_and_focus`.
     hwnd != 0 && unsafe { IsWindowVisible(hwnd as HWND) != 0 && IsIconic(hwnd as HWND) == 0 }
+}
+
+/// Whether the owner asked for reduced motion: Settings > Accessibility > Visual effects > Animation
+/// effects turned off (`SPI_GETCLIENTAREAANIMATION`). Cheap, so it's read each time an animation starts,
+/// which also picks up a change made while the app runs.
+pub fn reduced_motion() -> bool {
+    let mut animate: i32 = 1;
+    // SAFETY: the out-pointer references a live BOOL, as SPI_GETCLIENTAREAANIMATION expects.
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut animate).cast(), 0)
+    };
+    ok != 0 && animate == 0
 }
 
 /// App builds are GUI-subsystem executables. When started from a terminal, write `--help`, errors

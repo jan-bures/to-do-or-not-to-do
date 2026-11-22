@@ -341,21 +341,6 @@ pub fn meter(p: &Palette, done: u32, total: u32) -> Div {
 /// A transient overlay (menus, popovers): raised, with the design's one shadow, and a 1 px border in
 /// dark mode where shadows barely read.
 pub fn overlay(p: &Palette) -> Div {
-    let layers = if p.night() {
-        elevation::OVERLAY_DARK
-    } else {
-        elevation::OVERLAY_LIGHT
-    };
-    let shadows = layers
-        .iter()
-        .map(|s| gpui::BoxShadow {
-            color: theme::with_alpha(theme::color(s.color.rgb), s.color.alpha),
-            offset: gpui::point(px(0.), px(s.y)),
-            blur_radius: px(s.blur),
-            spread_radius: px(s.spread),
-            inset: false,
-        })
-        .collect();
     div()
         .flex()
         .flex_col()
@@ -364,7 +349,26 @@ pub fn overlay(p: &Palette) -> Div {
         .bg(p.raised)
         .border(px(elevation::HAIRLINE))
         .border_color(if p.night() { p.line_strong } else { p.line })
-        .shadow(shadows)
+        .shadow(overlay_shadow(p))
+}
+
+/// The design's one shadow, for transient overlays: menus, popovers and the narrow window's detail.
+pub fn overlay_shadow(p: &Palette) -> Vec<gpui::BoxShadow> {
+    let layers = if p.night() {
+        elevation::OVERLAY_DARK
+    } else {
+        elevation::OVERLAY_LIGHT
+    };
+    layers
+        .iter()
+        .map(|s| gpui::BoxShadow {
+            color: theme::with_alpha(theme::color(s.color.rgb), s.color.alpha),
+            offset: gpui::point(px(0.), px(s.y)),
+            blur_radius: px(s.blur),
+            spread_radius: px(s.spread),
+            inset: false,
+        })
+        .collect()
 }
 
 /// A primary button: accent fill, label in `on_accent`.

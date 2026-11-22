@@ -21,14 +21,16 @@ use todo_core::ids::{CollectionId, TaskId};
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape};
+use crate::model::layout::{self, DetailPane, OverlayMotion, Width};
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
     quick_add,
 };
+use crate::platform::win;
 use crate::store::Store;
 use crate::theme::{
-    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, motion, radius, space,
-    ty,
+    self, Icon, Palette, TextStyled, Theme, chrome, component, desktop, elevation, motion, radius,
+    space, ty,
 };
 use detail::Editors;
 use sidebar::{Inline, Menu};
@@ -145,6 +147,16 @@ pub struct ShellView {
     leaving: BTreeSet<TaskId>,
     /// A message for the status bar (a command the domain refused, a failed download).
     notice: Option<Notice>,
+    /// The window's width class, as of the last frame.
+    width: Width,
+    /// How the narrow window's detail overlay moves, read when it last opened or closed.
+    overlay_motion: OverlayMotion,
+    /// The detail overlay that was just closed, drawn while it fades out.
+    closing: Option<model::Detail>,
+    /// Counts overlay closings, so a fade's timer only clears its own.
+    closings: u64,
+    /// Whether panes animate. The screenshot fixtures draw them at rest.
+    animate: bool,
 }
 
 impl EventEmitter<ShellEvent> for ShellView {}
@@ -235,6 +247,11 @@ impl ShellView {
             edit,
             leaving: BTreeSet::new(),
             notice: None,
+            width: Width::of(f32::from(window.viewport_size().width)),
+            overlay_motion: OverlayMotion::new(false),
+            closing: None,
+            closings: 0,
+            animate: true,
         };
         this.load_detail(cx);
         this.watch(cx);
@@ -319,9 +336,44 @@ impl ShellView {
                 cx.notify();
             });
         }
+        self.overlay_transition(&shell, cx);
         self.shell = shell;
         self.load_detail(cx);
         cx.notify();
+    }
+
+    /// In a narrow window, the detail overlay slides in when a task opens and fades out when it closes
+    /// (Esc, the scrim, the close button, or the task going away). The closed pane is kept, drawn, until
+    /// its fade ends; opening a task meanwhile drops it at once.
+    fn overlay_transition(&mut self, next: &Shell, cx: &mut Context<Self>) {
+        let was_open = self.shell.detail.is_some();
+        let opens = next.detail.is_some();
+        if opens {
+            self.closing = None;
+        }
+        if was_open == opens || !self.animate || self.width != Width::Narrow {
+            return;
+        }
+        self.overlay_motion = OverlayMotion::new(win::reduced_motion());
+        if opens {
+            return;
+        }
+        self.closing = self.shell.detail.clone();
+        self.closings += 1;
+        let closing = self.closings;
+        let ms = u64::from(self.overlay_motion.close_ms);
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(Duration::from_millis(ms))
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                if v.closings == closing {
+                    v.closing = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Where a screenshot fixture puts the keyboard: the quick-add when it has typed text, else the list,
@@ -526,6 +578,11 @@ impl ShellView {
 
     pub fn preview_caption(&mut self, preview: kit::CaptionPreview) {
         self.caption_preview = preview;
+    }
+
+    /// Draws every pane at rest, without transitions: for the screenshot fixtures.
+    pub fn still(&mut self) {
+        self.animate = false;
     }
 
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -741,6 +798,16 @@ impl ShellView {
             (p.sky, p.ink, Sky::Slim(self.palette))
         };
         let (_, ink_3, _) = self.header_inks();
+        // Long titles end in an ellipsis from text layout, with no clipping: the display face's
+        // descenders (the y in "My Day") hang below its tight line box, and GPUI clips both axes even
+        // for `overflow_x_hidden`.
+        let title = div()
+            .min_w_0()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .style(ty::ROOM_TITLE)
+            .text_color(title_ink)
+            .child(room.title.clone());
         let action = |icon: Icon| {
             div()
                 .size(px(component::ICON_BUTTON))
@@ -775,26 +842,23 @@ impl ShellView {
                                     .child(action(Icon::Ellipsis)),
                             ),
                     )
-                    .child(
+                    .child(if self.width.counts_under_title() {
+                        // Narrow: the title keeps the whole line, and the counts go under it.
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(space::S2))
+                            .child(title)
+                            .child(self.summary())
+                    } else {
                         div()
                             .flex()
                             .items_end()
                             .justify_between()
                             .gap(px(space::S6))
-                            .child(
-                                // Long titles end in an ellipsis from text layout, with no clipping:
-                                // the display face's descenders (the y in "My Day") hang below its
-                                // tight line box, and GPUI clips both axes even for `overflow_x_hidden`.
-                                div()
-                                    .min_w_0()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .style(ty::ROOM_TITLE)
-                                    .text_color(title_ink)
-                                    .child(room.title.clone()),
-                            )
-                            .child(div().flex_none().child(self.summary())),
-                    ),
+                            .child(title)
+                            .child(div().flex_none().child(self.summary()))
+                    }),
             )
             // The finished scene's rings reach past the strip; the header ends at its bottom edge.
             .child(div().overflow_hidden().child(landscape(
@@ -927,21 +991,104 @@ impl ShellView {
         }
     }
 
-    /// Whether the detail pane shows. On the finished day, with nothing selected, it would only be an empty
-    /// placeholder beside the dusk scene, so the room takes its width instead.
-    fn detail_visible(&self) -> bool {
-        self.shell.detail.is_some() || !self.shell.room.finished_day()
+    /// Where the detail pane goes: docked beside the room, over it (a narrow window), or nowhere (see
+    /// `DetailPane::at`).
+    fn detail_placement(&self) -> DetailPane {
+        DetailPane::at(
+            self.width,
+            self.shell.detail.is_some(),
+            self.shell.room.finished_day(),
+        )
     }
 
-    /// The room pane's width (and so a row's): the window less the sidebar and, when it shows, the detail
-    /// pane, each with its hairline border.
+    /// The room pane's width (and so a row's): the window less the sidebar and a docked detail pane.
     fn room_width(&self, window: &Window) -> f32 {
-        let mut width =
-            f32::from(window.viewport_size().width) - desktop::SIDEBAR - elevation::HAIRLINE;
-        if self.detail_visible() {
-            width -= desktop::DETAIL + elevation::HAIRLINE;
+        layout::room_width(
+            f32::from(window.viewport_size().width),
+            self.detail_placement(),
+        )
+    }
+
+    /// The narrow window's detail: over the right part of the room, with a scrim over the rest of it.
+    /// It slides in from the right and fades in (`OVERLAY_IN`), and fades out when closed
+    /// (`OVERLAY_OUT`); with reduced motion it only fades, briefly. Clicking the scrim closes it and
+    /// leaves the keyboard on the list.
+    fn detail_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
+        let p = self.palette;
+        let open = self.detail_placement() == DetailPane::Overlay;
+        let detail = if open {
+            self.shell.detail.clone()
+        } else if self.width == Width::Narrow {
+            self.closing.clone()
+        } else {
+            None
+        }?;
+        let scrim_color = if p.night() {
+            theme::with_alpha(theme::color(chrome::SCRIM_DARK_BASE), chrome::SCRIM_DARK)
+        } else {
+            theme::with_alpha(p.ink, chrome::SCRIM_LIGHT)
+        };
+        let scrim = div()
+            .id(if open { "scrim" } else { "scrim-closing" })
+            .absolute()
+            .inset_0()
+            .bg(scrim_color)
+            .occlude()
+            .when(open, |s| {
+                s.on_click(cx.listener(|this, _, window, cx| {
+                    window.focus(&this.list_focus, cx);
+                    this.select_task(None, cx);
+                }))
+            });
+        let pane = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            // Rows under the pane take no clicks or hovers. Blocking them also blocks the shell's own
+            // mouse-down, so the pane leaves the keyboard on the list itself, as the shell does.
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !window.default_prevented() {
+                        window.focus(&this.list_focus, cx);
+                    }
+                }),
+            )
+            .shadow(kit::overlay_shadow(&p))
+            .child(
+                self.detail_pane(Some(detail), window, cx)
+                    .when(p.night(), |d| d.border_color(p.line_strong)),
+            );
+        if !self.animate {
+            return Some(vec![scrim.into_any_element(), pane.into_any_element()]);
         }
-        width
+        let m = self.overlay_motion;
+        let ms = |n: u32| Duration::from_millis(u64::from(n));
+        Some(if open {
+            let enter = || Animation::new(ms(m.open_ms)).with_easing(|t| motion::ENTER.ease(t));
+            vec![
+                scrim
+                    .with_animation("scrim-in", enter(), |el, t| el.opacity(t))
+                    .into_any_element(),
+                pane.with_animation("detail-in", enter(), move |el, t| {
+                    el.opacity(t).right(px(-m.slide * (1. - t)))
+                })
+                .into_any_element(),
+            ]
+        } else {
+            let exit = || Animation::new(ms(m.close_ms)).with_easing(|t| motion::EXIT.ease(t));
+            vec![
+                scrim
+                    .with_animation("scrim-out", exit(), |el, t| el.opacity(1. - t))
+                    .into_any_element(),
+                pane.with_animation("detail-out", exit(), move |el, t| {
+                    el.opacity(1. - t).right(px(-m.slide * t))
+                })
+                .into_any_element(),
+            ]
+        })
     }
 
     /// A row's metadata line: the list chip, steps, the mail mark, then tags. Every item is measured and
@@ -1166,17 +1313,8 @@ impl ShellView {
         // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
         let body: AnyElement = if let Some(next) = room.handover() {
             self.tomorrow(next, cx).into_any_element()
-        } else if room.finished_day() && room.completed.is_empty() {
-            div()
-                .px(px(desktop::LIST_PAD_X))
-                .pt(px(space::S6 + space::S1))
-                .child(
-                    div()
-                        .style(ty::EMPTY_LINE)
-                        .text_color(p.ink)
-                        .child("Nothing waiting for tomorrow."),
-                )
-                .into_any_element()
+        } else if let Some(weekday) = room.plan_only() {
+            self.plan_only(weekday.clone(), cx).into_any_element()
         } else if self.shell.row_count() == 0 {
             div()
                 .px(px(desktop::LIST_PAD_X))
@@ -1299,11 +1437,77 @@ impl ShellView {
             .children(completed)
     }
 
+    /// The plan button: planning the next day happens in Planned, where tomorrow's tasks are.
+    fn plan_button(&self, weekday: &SharedString, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("plan-next")
+            .flex_none()
+            .child(kit::button(&self.palette, format!("Plan {weekday}")))
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
+            }))
+    }
+
+    /// The sunrise mark: tomorrow, in the hand-over.
+    fn sunrise_mark(&self) -> Div {
+        let p = &self.palette;
+        div()
+            .size(px(desktop::QUICK_ADD + space::S2))
+            .flex_none()
+            .rounded_full()
+            .bg(p.wash)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(kit::icon(
+                Icon::Sunrise,
+                component::ICON + space::S1,
+                p.accent_strong,
+            ))
+    }
+
+    /// The finished day with nothing due tomorrow: no hand-over, but planning the next day is still
+    /// offered, in the hand-over's place.
+    fn plan_only(&self, weekday: SharedString, cx: &mut Context<Self>) -> Div {
+        let p = &self.palette;
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(desktop::LIST_PAD_X))
+                    .pt(px(space::S6))
+                    .pb(px(space::S2))
+                    .text_color(p.ink_3)
+                    .style(ty::CAPS_LABEL)
+                    .child("When the sun comes up".to_uppercase()),
+            )
+            .child(
+                div()
+                    .mx(px(desktop::LIST_PAD_X))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S4))
+                    .child(self.sunrise_mark())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .style(ty::NOTES)
+                            .text_color(p.ink_2)
+                            .child(format!("Nothing is due on {weekday} yet.")),
+                    )
+                    .child(self.plan_button(&weekday, cx)),
+            )
+    }
+
     /// The finished day hands over to tomorrow: its first task with a sunrise mark, then the rest of
     /// tomorrow and the rest of the week. No congratulations; the scene is the reward.
     fn tomorrow(&self, next: &Tomorrow, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = &self.palette;
         let t = self.theme;
+        let plan = self.plan_button(&next.weekday, cx);
         // Every child keeps its height (`flex_none`): the hand-over scrolls rather than squeezing them.
         let section = |label: SharedString| {
             div()
@@ -1356,19 +1560,7 @@ impl ShellView {
                 .child(div().style(ty::DUE).text_color(p.ink_2).child(when))
         };
         let first = &next.first;
-        let mark = div()
-            .size(px(desktop::QUICK_ADD + space::S2))
-            .flex_none()
-            .rounded_full()
-            .bg(p.wash)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(kit::icon(
-                Icon::Sunrise,
-                component::ICON + space::S1,
-                p.accent_strong,
-            ));
+        let mark = self.sunrise_mark();
         let card = div()
             .id("next-first")
             .when(selected == Some(first.id), |d| d.bg(p.wash))
@@ -1408,16 +1600,7 @@ impl ShellView {
                             .child(kit::chip(t, &first.list, true)),
                     ),
             )
-            .child(
-                // Planning the next day happens in Planned, where tomorrow's tasks are.
-                div()
-                    .id("plan-next")
-                    .child(kit::button(p, format!("Plan {}", next.weekday)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.select_room(RoomKey::Smart(model::Smart::Planned), cx);
-                    })),
-            );
+            .child(plan);
         // Its children are in the order `handover_child` counts them; it scrolls when taller than the pane.
         let scroll = div()
             .id("handover")
@@ -1616,10 +1799,13 @@ impl Focusable for ShellView {
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
+        self.width = Width::of(f32::from(window.viewport_size().width));
         let quick_add = self.quick_add_field(window, cx);
-        let detail = self
-            .detail_visible()
-            .then(|| self.detail_pane(window, cx).into_any_element());
+        let detail = (self.detail_placement() == DetailPane::Docked).then(|| {
+            self.detail_pane(self.shell.detail.clone(), window, cx)
+                .into_any_element()
+        });
+        let overlay = self.detail_overlay(window, cx);
         div()
             .id("shell")
             .key_context("Shell")
@@ -1660,6 +1846,7 @@ impl Render for ShellView {
                     .child(self.sidebar(cx))
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .h_full()
@@ -1668,7 +1855,8 @@ impl Render for ShellView {
                             .bg(p.pane)
                             .child(self.header())
                             .child(quick_add)
-                            .child(self.list(cx)),
+                            .child(self.list(cx))
+                            .children(overlay.into_iter().flatten()),
                     )
                     .children(detail),
             )

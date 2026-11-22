@@ -485,3 +485,55 @@ fn attachments_keep_their_stored_name_and_draw_a_one_line_label() {
         "Q4_agenda.pdf"
     );
 }
+
+#[test]
+fn a_finished_day_always_offers_planning_the_next_day() {
+    // An unfinished day offers no planning.
+    let shell = fixtures::my_day().shell();
+    assert!(!shell.room.finished_day());
+    assert_eq!(shell.room.plan_weekday, None);
+    assert_eq!(shell.room.plan_only(), None);
+
+    // Finished, with tasks due tomorrow: the hand-over carries the button.
+    let mut f = fixtures::finished();
+    let shell = f.shell();
+    assert_eq!(shell.room.plan_weekday.as_deref(), Some("Sunday"));
+    assert!(shell.room.handover().is_some());
+    assert_eq!(shell.room.plan_only(), None);
+
+    // Finished, with nothing due tomorrow: planning is still offered, without a hand-over.
+    let mut empty = fixtures::finished_nothing_tomorrow();
+    let shell = empty.shell();
+    assert!(shell.room.handover().is_none());
+    assert_eq!(shell.room.plan_only().map(|s| s.as_ref()), Some("Sunday"));
+
+    // With the Completed section open, its rows show instead.
+    empty.ui.show_completed = true;
+    let shell = empty.shell();
+    assert_eq!(shell.room.plan_only(), None);
+    assert!(shell.row_count() > 0);
+
+    // Filtering is no reason to plan: neither the hand-over nor the button shows, and the room says
+    // nothing matches.
+    for f in [&mut f, &mut empty] {
+        f.ui.show_completed = false;
+        f.ui.filter = "zzz".into();
+        let shell = f.shell();
+        assert!(shell.room.finished_day());
+        assert_eq!(shell.room.plan_weekday, None);
+        assert!(shell.room.handover().is_none());
+        assert_eq!(shell.room.plan_only(), None);
+        assert_eq!(
+            shell.room.empty_line.as_ref(),
+            "Nothing matches the filter."
+        );
+    }
+}
+
+#[test]
+fn planning_names_the_day_after_today() {
+    let mut f = fixtures::finished_nothing_tomorrow();
+    // Saturday night at 21:40 UTC; just before midnight it is still Saturday.
+    f.now = Now::fixed("2026-11-21T23:59:00Z");
+    assert_eq!(f.shell().room.plan_weekday.as_deref(), Some("Sunday"));
+}

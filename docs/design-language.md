@@ -132,6 +132,12 @@ are 4, 8, 12, 16, 20, 24, 32 and 40.
 - a quiet 6 px scrollbar thumb in the edge gutter of each overflowing pane. It widens and gains contrast
   on hover or drag, without covering row content.
 
+**A narrow desktop window** (below `desktop::THREE_PANE_MIN`, **1200**, as on the web) keeps the list at its full
+width. The detail pane opens over the right part of the list, with the overlay shadow and a scrim over the rest
+of it (the room's `ink` at `chrome::SCRIM_LIGHT` in light mode, black at `chrome::SCRIM_DARK` in dark mode).
+Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
+move to a line of their own under it, so the title never gives way to them.
+
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.
 
@@ -419,10 +425,12 @@ Completing a task is the one choreographed moment in the app.
   - **Open (`PANEL` 200 ms, `ENTER`):**
     - *Desktop wide (fixed 392 px column):* The empty placeholder fades out (`CONTENT_SWAP` 120 ms, `EXIT`) and
       the detail content enters (`PANEL` 200 ms, `ENTER`, `opacity: 0 → 1`, `translateX: 8 px → 0`).
-    - *Desktop narrow / web drawer / phone:* Slides in from the right edge (`translateX: 100 % → 0` on phone,
-      `24 px → 0` overlay on narrow desktop/web) with `opacity: 0 → 1` (`PANEL` 200 ms, `ENTER`).
+    - *Web drawer / phone:* Slides in from the right edge (`translateX: 100 % → 0` on phone, `24 px → 0`
+      overlay on the web) with `opacity: 0 → 1` (`PANEL` 200 ms, `ENTER`).
+    - *Desktop narrow:* The overlay pane enters like the other desktop overlays (`OVERLAY_IN` 150 ms, `ENTER`,
+      `translateX: 24 px → 0`, `opacity: 0 → 1`), while its scrim fades in over the same time.
   - **Close (`PANEL` 200 ms, `EXIT`):** Reverse of open (`opacity: 1 → 0`, `translateX: 0 → 8 px` or slide out
-    right).
+    right). The narrow desktop overlay and its scrim leave over `OVERLAY_OUT` (120 ms, `EXIT`).
   - **Switching tasks while open (`CONTENT_SWAP` 120 ms, `STANDARD`):** In-place opacity crossfade of the detail
     body (`opacity: 0.25 → 1.0`) with zero horizontal slide, keeping the top action bar anchored. **Key-repeat
     rule:** if another task is selected within `CONTENT_SWAP` (holding `J`/`K` or arrow keys), cancel the fade

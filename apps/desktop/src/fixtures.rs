@@ -47,10 +47,12 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "work" => Some(work()),
         "collapsed-collection" => Some(collapsed_collection()),
         "long-sidebar" => Some(long_sidebar()),
-        "long-names" | "long-names-narrow" => Some(long_names()),
+        "long-names" | "narrow-detail" => Some(long_names()),
+        "long-names-narrow" => Some(long_names_narrow()),
         "long-task-list" => Some(long_task_list()),
         "empty" => Some(empty()),
         "finished" | "finished-short" => Some(finished()),
+        "finished-nothing-tomorrow" => Some(finished_nothing_tomorrow()),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
         _ => None,
     }
@@ -801,6 +803,15 @@ fn long_task_list() -> Fixture {
     )
 }
 
+/// `long-names` in the narrowest window, with nothing selected: the room keeps the window's width and its
+/// title keeps its size, with the counts under it. (`narrow-detail` is `long-names` itself in that window:
+/// the selected task opens over the list.)
+fn long_names_narrow() -> Fixture {
+    let mut f = long_names();
+    f.ui.task = None;
+    f
+}
+
 /// A list with nothing open: scenery only, no sun.
 pub fn empty() -> Fixture {
     let (b, l) = sample();
@@ -847,6 +858,42 @@ pub fn finished() -> Fixture {
         "2026-11-21T21:40:00Z",
     );
     f.sync = online("2026-11-21T21:39:00Z");
+    f
+}
+
+/// The finished day with nothing due tomorrow: no hand-over, but planning the next day is still offered.
+pub fn finished_nothing_tomorrow() -> Fixture {
+    let mut f = finished();
+    let tomorrow = date("2026-11-22");
+    let later = date("2026-11-24");
+    let due_tomorrow: Vec<TaskId> = f
+        .state
+        .tasks
+        .values()
+        .filter(|t| !t.is_done() && t.due == Some(tomorrow))
+        .map(|t| t.id)
+        .collect();
+    let actor = owner();
+    for id in due_tomorrow {
+        let cmd = Command::UpdateTask {
+            id,
+            patch: TaskPatch {
+                due: Some(Some(later)),
+                ..TaskPatch::default()
+            },
+        };
+        let at = ts("2026-11-21T21:30:00Z");
+        match decide(&f.state, &actor, &cmd, at) {
+            Ok(events) => {
+                for e in &events {
+                    if let Err(e) = apply(&mut f.state, e) {
+                        tracing::error!("fixture data has errors: {e:?}");
+                    }
+                }
+            }
+            Err(e) => tracing::error!("fixture data has errors: {e:?}"),
+        }
+    }
     f
 }
 
@@ -987,6 +1034,21 @@ mod tests {
         assert_eq!(next.also.len(), 1);
         assert_eq!(next.week.len(), 3);
         assert_eq!(shell.sidebar.smart[0].count, Some(0));
+    }
+
+    #[test]
+    fn a_finished_day_with_nothing_due_tomorrow_still_offers_planning() {
+        let shell = finished_nothing_tomorrow().shell();
+        assert!(shell.room.finished_day());
+        assert!(shell.room.tomorrow.is_none());
+        assert!(shell.room.handover().is_none());
+        assert_eq!(shell.room.plan_only().map(|s| s.as_ref()), Some("Sunday"));
+        // Nothing to walk: no rows, no hand-over.
+        assert!(shell.nav_tasks().is_empty());
+        // The day with a hand-over offers its planning there instead.
+        let shell = finished().shell();
+        assert_eq!(shell.room.plan_weekday.as_deref(), Some("Sunday"));
+        assert!(shell.room.plan_only().is_none());
     }
 
     #[test]

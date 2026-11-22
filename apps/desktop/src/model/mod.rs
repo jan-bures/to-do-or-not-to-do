@@ -14,6 +14,7 @@ pub mod files;
 pub mod fit;
 pub mod hints;
 pub mod labels;
+pub mod layout;
 pub mod lists;
 pub mod quick_add;
 
@@ -356,6 +357,9 @@ pub struct Room {
     pub finishes_day: bool,
     /// What the finished day hands over to.
     pub tomorrow: Option<Tomorrow>,
+    /// The finished day (not filtered): the next day's name ("Sunday") for *Plan Sunday*, even when
+    /// nothing is due then and there is no hand-over.
+    pub plan_weekday: Option<SharedString>,
     /// A filter is narrowing the rows.
     pub filtered: bool,
 }
@@ -372,6 +376,15 @@ impl Room {
         self.tomorrow
             .as_ref()
             .filter(|_| self.finished_day() && self.completed.is_empty())
+    }
+
+    /// The finished day with nothing due tomorrow: no hand-over, but planning the next day is still
+    /// offered ("Nothing is due on Sunday yet." and *Plan Sunday*). The next day's name, or `None` when
+    /// there's a hand-over, the Completed section is open, or a filter is narrowing the room.
+    pub fn plan_only(&self) -> Option<&SharedString> {
+        self.plan_weekday
+            .as_ref()
+            .filter(|_| self.tomorrow.is_none() && self.finished_day() && self.completed.is_empty())
     }
 
     /// (done, total, open) for the header.

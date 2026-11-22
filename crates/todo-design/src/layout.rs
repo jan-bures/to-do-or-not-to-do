@@ -150,6 +150,11 @@ pub mod desktop {
     pub const LIST: f32 = 800.0;
     /// Detail pane width.
     pub const DETAIL: f32 = 392.0;
+    /// The narrowest window that shows the three panes side by side. Below it the window is narrow: the
+    /// detail pane opens over the list (with a scrim over the rest of it) instead of beside it, and the room
+    /// header puts its counts under the title. 1200 leaves the list at least 560 beside both side panes, as
+    /// on the web.
+    pub const THREE_PANE_MIN: f32 = 1200.0;
     /// Title bar height.
     pub const TITLEBAR: f32 = 36.0;
     /// Width of a Windows caption button.
@@ -218,10 +223,11 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 36] = [
+    pub const ALL: [(&str, f32); 37] = [
         ("sidebar", SIDEBAR),
         ("list", LIST),
         ("detail", DETAIL),
+        ("three-pane-min", THREE_PANE_MIN),
         ("titlebar", TITLEBAR),
         ("caption-width", CAPTION_WIDTH),
         ("caption-glyph", CAPTION_GLYPH),
