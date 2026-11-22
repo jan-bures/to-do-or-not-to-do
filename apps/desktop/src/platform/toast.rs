@@ -22,11 +22,12 @@ use futures::channel::mpsc::UnboundedSender;
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
 use windows::UI::Notifications::{
-    ToastActivatedEventArgs, ToastNotification, ToastNotificationManager, ToastNotifier,
+    NotificationSetting, ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
+    ToastNotifier,
 };
 use windows::core::{HSTRING, IInspectable, Interface as _, h};
 
-use crate::model::reminders::{GROUP, Toast, ToastSink};
+use crate::model::reminders::{GROUP, NotShown, Toast, ToastSink};
 
 /// The app's AUMID: the one Velopack gives an installed copy (`velopack.<packId>`), so an installed
 /// process, its shortcut and a build run from the repo all share it.
@@ -93,23 +94,51 @@ pub struct WinToasts {
 }
 
 impl WinToasts {
+    /// The notifier is made when the first toast is shown, and again after it couldn't be.
     pub fn new(sender: UnboundedSender<String>) -> Self {
-        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
-            .map_err(|e| tracing::warn!("reminder toasts are unavailable: {e}"))
-            .ok();
         Self {
-            notifier,
+            notifier: None,
             shown: HashMap::new(),
             sender,
         }
     }
 
-    fn try_show(&mut self, toast: &Toast) -> windows::core::Result<()> {
-        let Some(notifier) = &self.notifier else {
-            return Ok(());
-        };
+    fn notifier(&mut self) -> Result<ToastNotifier, NotShown> {
+        if let Some(n) = &self.notifier {
+            return Ok(n.clone());
+        }
+        let n = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
+            .map_err(|e| NotShown(format!("no notifier: {e}")))?;
+        self.notifier = Some(n.clone());
+        Ok(n)
+    }
+
+    fn try_show(&mut self, toast: &Toast) -> Result<(), NotShown> {
+        let notifier = self.notifier()?;
+        // Notifications off for the app (or for Windows): nothing would be seen.
+        match notifier.Setting() {
+            Ok(NotificationSetting::Enabled) => {}
+            Ok(other) => return Err(NotShown(format!("notifications are off ({})", other.0))),
+            Err(e) => return Err(NotShown(e.to_string())),
+        }
+        let shown = self.build_and_show(&notifier, toast);
+        if shown.is_err() {
+            // Made afresh next time.
+            self.notifier = None;
+        }
+        shown.map_err(|e| NotShown(e.to_string()))
+    }
+
+    fn build_and_show(
+        &mut self,
+        notifier: &ToastNotifier,
+        toast: &Toast,
+    ) -> windows::core::Result<()> {
         let document = document(toast)?;
         let notification = ToastNotification::CreateToastNotification(&document)?;
+        if toast.quiet {
+            notification.SetSuppressPopup(true)?;
+        }
         notification.SetTag(&HSTRING::from(toast.tag.as_str()))?;
         notification.SetGroup(&HSTRING::from(GROUP))?;
         let sender = self.sender.clone();
@@ -135,15 +164,16 @@ impl WinToasts {
 }
 
 impl ToastSink for WinToasts {
-    fn show(&mut self, toast: &Toast) {
-        if let Err(e) = self.try_show(toast) {
-            tracing::warn!("showing a reminder toast failed: {e}");
-        }
+    fn show(&mut self, toast: &Toast) -> Result<(), NotShown> {
+        self.try_show(toast).inspect_err(|e| tracing::warn!("{e}"))
     }
 
     fn hide(&mut self, tag: &str) {
-        self.shown.remove(tag);
-        // Also a toast left in the action center by an earlier run.
+        // The toast on screen first, then its entry in the action center (also one left there by an
+        // earlier run).
+        if let (Some(toast), Some(notifier)) = (self.shown.remove(tag), &self.notifier) {
+            let _ = notifier.Hide(&toast);
+        }
         if let Ok(history) = ToastNotificationManager::History() {
             let _ = history.RemoveGroupedTagWithId(
                 &HSTRING::from(tag),
@@ -154,7 +184,11 @@ impl ToastSink for WinToasts {
     }
 
     fn clear(&mut self) {
-        self.shown.clear();
+        for (_, toast) in self.shown.drain() {
+            if let Some(notifier) = &self.notifier {
+                let _ = notifier.Hide(&toast);
+            }
+        }
         if let Ok(history) = ToastNotificationManager::History() {
             let _ = history.ClearWithId(&HSTRING::from(AUMID));
         }
@@ -195,23 +229,29 @@ fn document(toast: &Toast) -> windows::core::Result<XmlDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::reminders::Activation;
+    use crate::model::reminders::{Activation, Occurrence};
 
     /// Builds the XML only: nothing is shown.
     #[test]
     fn a_reminder_toast_is_a_reminder_with_its_buttons_and_text_never_markup() {
         let id: todo_core::ids::ReminderId =
             "0190c2a4-0000-7000-8000-000000000001".parse().expect("id");
+        let o = Occurrence {
+            id,
+            at: 1_790_000_000_000,
+            token: 3,
+        };
         let toast = Toast {
             tag: id.to_string(),
             title: "Fix <b>bold</b> & \"quotes\"".into(),
             body: "Today, 17:00 · Errands".into(),
-            launch: Activation::Open(id),
+            launch: Activation::Open(o),
             actions: vec![
-                ("Open", Activation::Open(id)),
-                ("Snooze 10 min", Activation::Snooze(id)),
-                ("Complete", Activation::Complete(id)),
+                ("Open", Activation::Open(o)),
+                ("Snooze 10 min", Activation::Snooze(o)),
+                ("Complete", Activation::Complete(o)),
             ],
+            quiet: false,
         };
         let xml = document(&toast)
             .expect("xml")
@@ -219,11 +259,14 @@ mod tests {
             .expect("text")
             .to_string();
         assert!(xml.contains(r#"scenario="reminder""#), "{xml}");
-        assert!(xml.contains(&format!(r#"launch="open:{id}""#)), "{xml}");
+        assert!(
+            xml.contains(&format!(r#"launch="open:{id}:1790000000000:3""#)),
+            "{xml}"
+        );
         assert!(xml.contains("Fix &lt;b&gt;bold&lt;/b&gt; &amp;"), "{xml}");
         for args in ["open", "snooze", "complete"] {
             assert!(
-                xml.contains(&format!(r#"arguments="{args}:{id}""#)),
+                xml.contains(&format!(r#"arguments="{args}:{id}:1790000000000:3""#)),
                 "{xml}"
             );
         }

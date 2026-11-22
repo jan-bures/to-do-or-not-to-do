@@ -39,6 +39,8 @@ enum ShellEvent {
     Tray(TrayAction),
     /// The hotkey already showed the quick-add window; focus its input.
     QuickAddShown,
+    /// The clock was changed or the computer woke up: reminders are planned again.
+    ClockJumped,
 }
 
 /// Native handles of the two windows.
@@ -184,6 +186,13 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         })
         .map_err(|e| tracing::error!("tray icon failed: {e:#}"))
         .ok();
+        // Reminders are planned again when the clock jumps (a time change, a resume from sleep).
+        let clock_tx = tx.clone();
+        let clock = crate::platform::clock::ClockWatch::new(move || {
+            let _ = clock_tx.unbounded_send(ShellEvent::ClockJumped);
+        })
+        .map_err(|e| tracing::warn!("clock changes won't be noticed at once: {e:#}"))
+        .ok();
         // Without a tray there is no way back to a hidden window and no Quit, so the window shows and
         // Close quits. A standalone copy can't be brought up by a second launch, so it shows too.
         let background = bench_hidden || (opts.background && tray.is_some() && !standalone);
@@ -241,8 +250,9 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
 
         let exe_for_events = exe.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
-            // The tray and the hotkey registration live as long as this loop.
+            // The tray, the hotkey registration and the clock watch live as long as this loop.
             let _hotkey = hotkey;
+            let _clock = clock;
             while let Some(event) = rx.next().await {
                 let quit = cx.update(|cx| {
                     handle_event(
@@ -293,12 +303,15 @@ fn wire_windows(
     cx: &mut App,
 ) {
     let _ = main.update(cx, |_, window, cx| {
+        let root = cx.entity();
         window.on_window_should_close(cx, move |_, cx| match close {
             OnClose::HideToTray => {
                 win::hide(hwnds.main);
                 false
             }
+            // The same as the tray's Quit: the reminder toasts go first.
             OnClose::Quit => {
+                root.update(cx, |root, cx| root.before_quit(cx));
                 cx.quit();
                 true
             }
@@ -356,6 +369,9 @@ fn handle_event(
             focus_quick_add(quick, cx);
         }
         ShellEvent::QuickAddShown => focus_quick_add(quick, cx),
+        ShellEvent::ClockJumped => {
+            let _ = main.update(cx, |root, _, cx| root.clock_changed(cx));
+        }
         ShellEvent::Tray(TrayAction::ToggleAutostart) => {
             let autostart = Autostart::current_user();
             let enable = !autostart.is_enabled(exe);

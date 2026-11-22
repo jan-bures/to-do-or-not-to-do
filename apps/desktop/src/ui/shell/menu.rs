@@ -981,12 +981,18 @@ impl ShellView {
                 }
                 return;
             }
-            reminder::Action::Preset(p) => p.at(&now),
+            // The instant the row showed, never one worked out again now.
+            reminder::Action::Preset(_, at) => {
+                todo_core::time::Timestamp::from_millisecond(at).ok()
+            }
             reminder::Action::Apply => {
                 draft.and_then(|d| reminder::preview(d, &now).ok().map(|p| p.0))
             }
             reminder::Action::Remove => None,
         };
+        // The stale check (`Seen`) compares with this computer's replica: it covers changes already
+        // synced here. One made elsewhere that hasn't arrived yet (this computer offline) isn't seen,
+        // and the server applies the later write, as for every other field edit.
         let cmd = match (a, at) {
             (reminder::Action::Remove, _) => match seen {
                 Some(seen) => commands::reminder::remove_reminder(&state, task, seen).map(Some),

@@ -441,6 +441,13 @@ impl RootView {
         }
     }
 
+    /// The clock was changed or the computer woke up: the shell looks at its reminders again.
+    pub fn clock_changed(&mut self, cx: &mut Context<Self>) {
+        if let Screen::Shell(shell) = &self.screen {
+            shell.update(cx, |s, cx| s.clock_changed(cx));
+        }
+    }
+
     /// The quick-add window to keep in step with My Day.
     pub fn set_quick_add(&mut self, quick: WeakEntity<QuickAddView>, cx: &mut Context<Self>) {
         self.quick = Some(quick);

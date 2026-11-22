@@ -66,8 +66,10 @@ impl Preset {
         }
     }
 
-    /// When it reminds, from `now`: Later today is two hours on, rounded up to the hour (and only while
-    /// that is still today); Tomorrow morning is 09:00 tomorrow; Next week is 09:00 next Monday.
+    /// When it reminds, from `now`: Later today is the first whole hour at least two hours on (and only
+    /// while that is still today; when the clocks go back, the hour that comes twice is taken at its
+    /// first instant that far on, never an hour early); Tomorrow morning is 09:00 tomorrow; Next week
+    /// is 09:00 next Monday.
     pub fn at(self, now: &Now) -> Option<Timestamp> {
         let local = now.at.to_zoned_datetime(now.tz.clone());
         let today = local.date();
@@ -76,8 +78,18 @@ impl Preset {
                 let later = local
                     .checked_add(jiff::Span::new().hours(LATER_HOURS))
                     .ok()?;
+                let threshold = later.timestamp();
                 let whole = whole_hour(later.datetime(), jiff::RoundMode::Ceil)?;
-                (whole.date() == today).then(|| resolve(whole, &now.tz).0)
+                if whole.date() != today {
+                    return None;
+                }
+                let ambiguous = now.tz.to_ambiguous_zoned_datetime(whole);
+                [ambiguous.clone().earlier(), ambiguous.later()]
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .map(|z| z.timestamp())
+                    .filter(|at| *at >= threshold)
+                    .min()
             }
             Self::TomorrowMorning => {
                 let day = add_days(today, 1)?;
@@ -140,7 +152,9 @@ pub struct Draft {
 /// What the picker's items do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    Preset(Preset),
+    /// A preset, at the instant its row showed: that instant is what is saved, even if the picker
+    /// stayed open past a whole hour (in milliseconds since the epoch, which keeps menu items small).
+    Preset(Preset, i64),
     /// Turns the picker into its custom page.
     Custom,
     /// Moves the custom day by this many days.
@@ -337,7 +351,12 @@ pub fn entries(
                 icon: p.icon(),
                 hint: Some(hint.into()),
                 checked: seen == Some(at),
-                ..choice(task, p.key(), p.label(), Action::Preset(p))
+                ..choice(
+                    task,
+                    p.key(),
+                    p.label(),
+                    Action::Preset(p, at.as_millisecond()),
+                )
             }));
         }
         let custom = item(
@@ -443,6 +462,78 @@ mod tests {
         assert_eq!(
             Preset::NextWeek.at(&Now::fixed("2026-11-23T08:00:00Z")),
             Some(ts("2026-11-30T09:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn later_today_is_never_early_when_the_clocks_go_back() {
+        let tz = TimeZone::get("America/New_York").expect("bundled tz");
+        // Midnight EDT on 1 November 2026: two hours on is 01:00 EST, the second 01:00 that night.
+        let n = Now {
+            at: ts("2026-11-01T04:00:00Z"),
+            tz: tz.clone(),
+        };
+        assert_eq!(Preset::LaterToday.at(&n), Some(ts("2026-11-01T06:00:00Z")));
+        // Half an hour later, two hours on is 01:30 EST, and the next whole hour 02:00 EST.
+        let n = Now {
+            at: ts("2026-11-01T04:30:00Z"),
+            tz: tz.clone(),
+        };
+        assert_eq!(Preset::LaterToday.at(&n), Some(ts("2026-11-01T07:00:00Z")));
+        // At least two hours, whatever the clocks do, at every quarter hour of that day.
+        for q in 0..96 {
+            let at = Timestamp::from_second(ts("2026-11-01T04:00:00Z").as_second() + q * 900)
+                .expect("ts");
+            let n = Now { at, tz: tz.clone() };
+            if let Some(later) = Preset::LaterToday.at(&n) {
+                let gap = later.as_second() - at.as_second();
+                assert!((7200..7200 + 3600).contains(&gap), "{at}: {later}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_preset_saves_the_instant_its_row_showed() {
+        let n = now();
+        let menu = entries(task(), None, None, &n);
+        for p in Preset::ALL {
+            let item = items(&menu).find(|i| i.key == p.key()).expect("offered");
+            let MenuAction::Reminder(_, Action::Preset(_, at)) = item.action else {
+                panic!("a preset");
+            };
+            let at = Timestamp::from_millisecond(at).expect("an instant");
+            assert_eq!(Some(at), p.at(&n));
+            assert_eq!(
+                item.hint.as_ref().map(|h| h.to_string()),
+                Some(match p {
+                    Preset::LaterToday => labels::clock(at, &n.tz),
+                    _ => format!(
+                        "{} {}",
+                        &labels::weekday(n.date_of(at))[..3],
+                        labels::clock(at, &n.tz)
+                    ),
+                })
+            );
+        }
+        // Opened at 10:59, chosen at 11:01: still 13:00, as shown, not the 14:00 that is now.
+        let opened = Now::fixed("2026-11-21T10:59:00Z");
+        let menu = entries(task(), None, None, &opened);
+        let item = items(&menu)
+            .find(|i| i.key == "later-today")
+            .expect("offered");
+        assert_eq!(
+            item.action,
+            MenuAction::Reminder(
+                task(),
+                Action::Preset(
+                    Preset::LaterToday,
+                    ts("2026-11-21T13:00:00Z").as_millisecond()
+                )
+            )
+        );
+        assert_eq!(
+            Preset::LaterToday.at(&Now::fixed("2026-11-21T11:01:00Z")),
+            Some(ts("2026-11-21T14:00:00Z"))
         );
     }
 
