@@ -79,6 +79,25 @@ jobs:
           path: apps/desktop/target/gallery/*.png
           if-no-files-found: warn
 
+  desktop-package:
+    name: Windows installer (built, not published)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # The Velopack version includes the first-parent commit count.
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop
+          key: desktop-package
+      - run: ./scripts/test-package-version.ps1
+      - run: ./scripts/package.ps1
+
   shared-crates-targets:
     name: shared crates build for wasm32 and Android
     runs-on: ubuntu-latest
@@ -101,11 +120,12 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            systemd shellcheck > /dev/null
+            systemd shellcheck python3 > /dev/null
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: shellcheck --version
       - run: shellcheck deploy/probe.sh deploy/linux/*.sh deploy/linux/tests/*.sh
       - run: bash deploy/linux/tests/install-release.sh
+      - run: python3 -B deploy/linux/tests/publish-desktop-release.py
       # `systemd-analyze verify` exits 0 on unknown keys, so any output fails the step. It needs the
       # executables the units name, so stand-ins are put there; the template gets its two instances.
       - name: Verify the systemd units

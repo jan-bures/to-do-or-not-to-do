@@ -42,3 +42,7 @@ token_sha256 = "<hex SHA-256 of the admin token>"
 # Serve the web client at /app. Deploys and recovery switch it along with the server.
 [web]
 dir = "/opt/todo/current/web"
+
+# Optional private Windows desktop update feed. See docs/desktop.md before enabling it.
+# [releases]
+# dir = "/opt/todo/desktop-releases"

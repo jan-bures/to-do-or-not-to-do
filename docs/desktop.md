@@ -35,7 +35,108 @@ path, as an in-process server.
 
 The toolchain comes from the root `rust-toolchain.toml` (1.98.1), which is pinned to what GPUI needs.
 
-### Vendored `gpui_windows`
+## Windows installer and updates
+
+### Build an unsigned release
+
+On a Windows x64 build machine, install PowerShell 7, the MSVC x64 build tools, the pinned Rust toolchain
+and the .NET 8 SDK/runtime. From a clean checkout with full history:
+
+```powershell
+pwsh -NoProfile -File apps/desktop/scripts/package.ps1
+```
+
+The script builds the locked desktop workspace and installs the matching `vpk` .NET tool under
+`apps/desktop/target/desktop-tools/` without admin privileges. It packages the app with the Daybreak icon.
+The result in `apps/desktop/target/desktop-release/` contains `todo-desktop-win-Setup.exe`,
+`releases.win.json` and the full `.nupkg`. After the first release, keep that directory (or seed
+`-ReleaseDir` with the previously published feed and packages) so `vpk` can also make a delta `.nupkg`
+against the latest full package. Keep the full package even when a delta exists: installs that cannot
+apply a delta fall back to it. No command here runs Setup.exe. The Windows packaging CI job builds and
+checks the same output without uploading or publishing it.
+
+The Velopack version is **`<desktop Cargo.toml version>-build.<Git first-parent commit count>`**. For
+example, `0.1.0-build.10` follows `0.1.0-build.9`: the final component is numeric, not a string or SemVer
+build metadata. Publish only reviewed commits on `main`, advance it by fast-forward only, and never lower
+the crate's `major.minor.patch`. Every new main commit then has a greater version. Rebuilding the same
+commit is not a new release. Never replace the bytes of a published package; to roll back a client change,
+revert it on `main` and publish that as a new version. Use the filename or `releases.win.json` for the
+packaged version; the executable's `--version` still reports the Cargo version.
+
+### Enable and publish the private feed
+
+Once, deploy a server that supports `/releases`. On the Linux host, create a dedicated directory that the
+server can read but only the publisher can write. In `/etc/todo/server.toml`, add the following, then restart
+`todo-server` and check `/health`:
+
+```sh
+sudo install -d -m 0755 -o root -g root /opt/todo/desktop-releases
+```
+
+```toml
+[releases]
+dir = "/opt/todo/desktop-releases"
+```
+
+If that section is absent, the feed is disabled. Standalone server runs may also configure it via
+`TODO_SERVER_RELEASES_DIR`; use only TOML for the Linux service. The server exposes only the feed, its
+Windows packages and Setup.exe; no directory listing, links, or unrelated files. All require a paired device's
+bearer token (static owner tokens work only when the development fallback is explicitly enabled). Browser
+sessions and agent tokens do not grant access. Keep any proxy or CDN from caching `/releases/*`;
+`todo-server` sends `Cache-Control: no-store, no-transform`. It supports HEAD and single byte ranges for
+operators; the current Velopack client uses complete GETs, not ranged downloads.
+
+To publish, transfer the manifest, Setup.exe, packages and the publisher over the same SSH transport as
+[`deploy/deploy-linux.ps1`](hosting-linux.md#deploying). For Google Cloud, use the `$gcloud`, `$g` and
+`$instance` variables from [Hosting on Linux](hosting-linux.md#google-cloud-create-the-vm), from the
+repository root:
+
+```powershell
+$upload = 'todo-desktop-' + [guid]::NewGuid().ToString('N')
+& $gcloud compute ssh $instance @g --command "mkdir -m 0700 $upload"
+if ($LASTEXITCODE -ne 0) { throw 'Could not create the upload directory.' }
+& $gcloud compute scp @g deploy/linux/publish-desktop-release.py "${instance}:$upload/"
+if ($LASTEXITCODE -ne 0) { throw 'Could not copy the publisher.' }
+Push-Location apps/desktop/target/desktop-release
+try {
+    $files = @('releases.win.json', 'todo-desktop-win-Setup.exe') + @(Get-ChildItem -File *.nupkg -Name)
+    & $gcloud compute scp @g @files "${instance}:$upload/"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not copy the desktop release.' }
+} finally { Pop-Location }
+& $gcloud compute ssh $instance @g --command "sudo python3 $upload/publish-desktop-release.py $upload /opt/todo/desktop-releases"
+if ($LASTEXITCODE -ne 0) { throw 'Desktop publish failed.' }
+& $gcloud compute ssh $instance @g --command "rm -rf $upload"
+```
+
+With plain SSH, use the same `mkdir`, `scp`, `sudo python3` and cleanup steps via the SSH target used for
+server deployment. The publisher uses Python 3 (included when Python is installed on Debian 13). It verifies package
+sizes and SHA-256 hashes, refuses version rollback or overwriting existing package bytes, and publishes the
+manifest last by atomic rename. No server restart is needed for later publishes. Old packages remain available
+for clients that have fetched the old manifest; do not clean them up while either feed references them or a
+client could still be downloading them. Keep write access to the directory and the deployment channel tightly
+controlled: the unsigned feed can deliver executable code to every paired desktop. Transport security and
+feed hashes are not a substitute for code signing.
+
+### First install and day-to-day updates
+
+Copy `todo-desktop-win-Setup.exe` from your trusted build output to each Windows machine; the private
+feed is not a bootstrap download for an unpaired browser. Compare its SHA-256 against the copy you built
+before running it. The installer is unsigned, so Windows may warn or a managed policy may block it. Do not
+bypass policy or run an unverified installer. Quit any older unpackaged copy first. Setup installs per user
+under `%LOCALAPPDATA%` without elevation and adds Start menu and desktop shortcuts. Pair once in the app
+using your server's HTTPS address (for example `https://todo.example.com`). An existing local pairing from
+the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
+to point Windows at the installed copy.
+
+An installed, paired app checks `<paired server>/releases` when its session starts and every six hours
+thereafter, on a Windows background-priority thread. Nothing is compiled in. A missing/disabled feed, HTTP
+(including loopback), an offline server, or an unpaired app doesn't interrupt normal use. Updates download
+quietly and do not stop a running app. To pick up a staged update, choose **Quit** from the tray (closing the
+window usually just hides it), then open the app again. The next primary launch applies the package before
+opening the window; it keeps the local data and pairing. There is no update notification or new UI. Once an
+update is staged it belongs to the installation, not to a particular pairing.
+
+## Vendored `gpui_windows`
 
 `vendor/gpui_windows` is upstream `gpui_windows` at the pinned revision plus a few patches, each marked
 `TO-DO PATCH`. `vendor/gpui_windows/VENDORED.md` lists them and explains how to upgrade:
