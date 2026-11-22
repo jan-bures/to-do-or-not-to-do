@@ -12,9 +12,10 @@
 
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
-use jiff::tz::Offset;
-use std::collections::BTreeMap;
+use jiff::tz::{Offset, TimeZone};
+use std::collections::{BTreeMap, BTreeSet};
 use todo_client::intent::{self, TaskRoom, quick_add};
+use todo_client::room_header::{self, LocalTime, RoomHeader, SmartList};
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
@@ -48,6 +49,13 @@ impl Now {
     #[must_use]
     pub fn eval(&self) -> EvalContext {
         EvalContext::new(self.at, self.today(), self.offset_s)
+    }
+
+    /// The clock as the shared room header takes it: the browser gives only the current UTC offset.
+    #[must_use]
+    pub fn local_time(&self) -> LocalTime {
+        let off = Offset::from_seconds(self.offset_s).unwrap_or(Offset::UTC);
+        LocalTime::new(self.at, TimeZone::fixed(off))
     }
 }
 
@@ -695,15 +703,6 @@ fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
 
 // ---- rooms -------------------------------------------------------------------------------------------------
 
-/// The header eyebrow: an italic lead and mono details.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Eyebrow {
-    /// `Saturday`, `Collection`, or the collection's name.
-    pub lead: String,
-    /// `21 NOV 2026`, `W47`; `4 LISTS`; `0 OPEN`.
-    pub meta: Vec<String>,
-}
-
 /// A room, ready to render.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Room {
@@ -713,16 +712,13 @@ pub struct Room {
     pub title: String,
     /// Hue key for `data-room-hue`.
     pub hue: &'static str,
-    /// Eyebrow.
-    pub eyebrow: Eyebrow,
+    /// The header: eyebrow, the sun's progress, the summary and the status bar's counts, as every client
+    /// derives them (`todo_client::room_header`).
+    pub header: RoomHeader,
     /// Open rows, in order (for Completed: the completed tasks).
     pub rows: Vec<Row>,
     /// Completed rows, most recent first (not for Completed itself).
     pub completed: Vec<Row>,
-    /// Done tasks in the room.
-    pub done: usize,
-    /// All tasks in the room.
-    pub total: usize,
     /// The quick-add placeholder, or `None` if the field is hidden in this room.
     pub add_placeholder: Option<String>,
     /// A query is narrowing the rows, but does not change the room's progress.
@@ -732,193 +728,140 @@ pub struct Room {
 impl Room {
     /// The design-language copy for this empty room or filter.
     pub fn empty_line(&self) -> &'static str {
-        if self.filtered {
-            return "Nothing matches the filter.";
-        }
-        match self.id {
-            RoomId::Smart("my_day") => "Nothing planned yet.",
-            RoomId::Smart("important") => "Nothing pressing.",
-            RoomId::Smart("planned") => "Nothing on the calendar.",
-            RoomId::Smart("all") => "Nothing open.",
-            RoomId::Smart("completed") => "Nothing finished yet.",
-            RoomId::Smart("agent_activity") => "No agent changes this week.",
-            _ => "Nothing on the shelf yet.",
-        }
-    }
-
-    /// Open tasks.
-    #[must_use]
-    pub fn open(&self) -> usize {
-        self.total - self.done
+        self.header.empty_line(self.filtered)
     }
 
     /// My Day with everything done: the dusk scene.
     #[must_use]
     pub fn finished(&self) -> bool {
-        self.id == RoomId::Smart("my_day") && self.total > 0 && self.done == self.total
+        self.header.finished_day()
     }
 
     /// The header summary (`3 of 12 done · 9 open`), as screen readers and tests read it.
     #[must_use]
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn summary(&self) -> String {
-        if self.id == RoomId::Smart("completed") {
-            return format!("{} done", self.total);
+        self.header.summary.text()
+    }
+}
+
+/// The shared room key for a room.
+#[must_use]
+pub fn shared_key(id: &RoomId) -> room_header::RoomKey<'_> {
+    match id {
+        RoomId::Smart(s) => {
+            room_header::RoomKey::Smart(SmartList::from_id(s).unwrap_or(SmartList::MyDay))
         }
-        format!(
-            "{} of {} done · {} open",
-            self.done,
-            self.total,
-            self.open()
-        )
+        RoomId::Collection(c) => room_header::RoomKey::Collection(*c),
+        RoomId::List(l) => room_header::RoomKey::List(*l),
+        RoomId::Activity(agent) => {
+            room_header::RoomKey::Activity(agent.as_ref().map(|a| a.as_str()))
+        }
     }
 }
 
-/// ISO week number.
+/// A room's header. `holding` names the tasks whose completion is still playing: they count as open until
+/// they have left the rows.
 #[must_use]
-pub fn iso_week(d: Date) -> i8 {
-    d.iso_week_date().week()
-}
-
-/// The eyebrow of a dated room: `Saturday`, `21 NOV 2026`, `W47`.
-#[must_use]
-pub fn day_eyebrow(today: Date) -> Eyebrow {
-    Eyebrow {
-        lead: weekday_long(today.weekday()).to_owned(),
-        meta: vec![
-            format!(
-                "{} {} {}",
-                today.day(),
-                month(today).to_uppercase(),
-                today.year()
-            ),
-            format!("W{}", iso_week(today)),
-        ],
-    }
+pub fn header(state: &State, now: &Now, id: &RoomId, holding: &BTreeSet<TaskId>) -> RoomHeader {
+    room_header::room_header(state, shared_key(id), holding, &now.local_time())
 }
 
 fn sort_done(rows: &mut [(&Task, Row)]) {
     rows.sort_by_key(|r| std::cmp::Reverse(r.0.completed_at));
 }
 
-/// Builds a room.
+/// Builds a room. `holding` names the tasks whose completion is still playing (see [`header`]).
 #[must_use]
-pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
+pub fn room(
+    state: &State,
+    now: &Now,
+    id: &RoomId,
+    filter: &str,
+    holding: &BTreeSet<TaskId>,
+) -> Room {
     let today = now.today();
     let ctx = now.eval();
     let live = |t: &&Task| task_live(state, t);
-    let (title, hue, eyebrow, scope, mode, add): (String, &'static str, Eyebrow, Vec<&Task>, _, _) =
-        match id {
-            RoomId::Activity(agent) => (
-                "Activity".to_owned(),
-                "agent-activity",
-                Eyebrow {
-                    lead: "History".to_owned(),
-                    meta: vec![agent.as_ref().map_or_else(
-                        || "All changes".to_owned(),
-                        |agent| format!("Agent: {}", agent_display(agent.as_str())),
-                    )],
-                },
-                Vec::new(),
+    let (title, hue, scope, mode, add): (String, &'static str, Vec<&Task>, _, _) = match id {
+        RoomId::Activity(_) => (
+            "Activity".to_owned(),
+            "agent-activity",
+            Vec::new(),
+            ChipMode::Hidden,
+            None,
+        ),
+        RoomId::Smart(s) => {
+            let in_scope: Box<dyn Fn(&Task) -> bool> = match *s {
+                "my_day" => Box::new(move |t: &Task| t.my_day == Some(today)),
+                "important" => Box::new(|t: &Task| t.priority == Priority::High),
+                "planned" => Box::new(|t: &Task| t.due.is_some()),
+                "completed" => Box::new(Task::is_done),
+                "all" => Box::new(|_: &Task| true),
+                other => {
+                    let q = builtin(other).and_then(|b| b.parse().ok());
+                    Box::new(move |t: &Task| q.as_ref().is_some_and(|q| q.matches(state, t, &ctx)))
+                }
+            };
+            let scope: Vec<&Task> = state
+                .tasks
+                .values()
+                .filter(live)
+                .filter(|t| in_scope(t))
+                .collect();
+            let add = (*s != "completed").then(|| "Add a task…".to_owned());
+            (
+                smart_name(s).to_owned(),
+                smart_hue(s),
+                scope,
+                ChipMode::Full,
+                add,
+            )
+        }
+        RoomId::Collection(c) => {
+            let coll = state.collections.get(c);
+            let lists = lists_in(state, Some(*c));
+            let scope: Vec<&Task> = state
+                .tasks
+                .values()
+                .filter(live)
+                .filter(|t| lists.iter().any(|l| l.id == t.list))
+                .collect();
+            (
+                coll.map_or_else(String::new, |c| c.name.clone()),
+                coll.map_or("teal", |c| {
+                    swatch(c.color.as_deref(), c.id.as_uuid().as_bytes())
+                }),
+                scope,
+                ChipMode::ListOnly,
+                coll.filter(|c| c.deleted.is_none()).map(|_| {
+                    lists.first().map_or_else(
+                        || "Add a task…".to_owned(),
+                        |l| format!("Add to {}…", l.name),
+                    )
+                }),
+            )
+        }
+        RoomId::List(l) => {
+            let list = state.lists.get(l).filter(|l| list_live(state, l));
+            let scope: Vec<&Task> = state
+                .tasks
+                .values()
+                .filter(live)
+                .filter(|t| t.list == *l)
+                .collect();
+            (
+                list.map_or_else(String::new, |l| l.name.clone()),
+                list.map_or("teal", |l| {
+                    swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
+                }),
+                scope,
                 ChipMode::Hidden,
-                None,
-            ),
-            RoomId::Smart(s) => {
-                let in_scope: Box<dyn Fn(&Task) -> bool> = match *s {
-                    "my_day" => Box::new(move |t: &Task| t.my_day == Some(today)),
-                    "important" => Box::new(|t: &Task| t.priority == Priority::High),
-                    "planned" => Box::new(|t: &Task| t.due.is_some()),
-                    "completed" => Box::new(Task::is_done),
-                    "all" => Box::new(|_: &Task| true),
-                    other => {
-                        let q = builtin(other).and_then(|b| b.parse().ok());
-                        Box::new(move |t: &Task| {
-                            q.as_ref().is_some_and(|q| q.matches(state, t, &ctx))
-                        })
-                    }
-                };
-                let scope: Vec<&Task> = state
-                    .tasks
-                    .values()
-                    .filter(live)
-                    .filter(|t| in_scope(t))
-                    .collect();
-                let eyebrow = if *s == "my_day" {
-                    day_eyebrow(today)
-                } else {
-                    Eyebrow {
-                        lead: "Smart list".to_owned(),
-                        meta: vec![format!("{} tasks", scope.len()).to_uppercase()],
-                    }
-                };
-                let add = (*s != "completed").then(|| "Add a task…".to_owned());
-                (
-                    smart_name(s).to_owned(),
-                    smart_hue(s),
-                    eyebrow,
-                    scope,
-                    ChipMode::Full,
-                    add,
-                )
-            }
-            RoomId::Collection(c) => {
-                let coll = state.collections.get(c);
-                let lists = lists_in(state, Some(*c));
-                let scope: Vec<&Task> = state
-                    .tasks
-                    .values()
-                    .filter(live)
-                    .filter(|t| lists.iter().any(|l| l.id == t.list))
-                    .collect();
-                let n = lists.len();
-                (
-                    coll.map_or_else(String::new, |c| c.name.clone()),
-                    coll.map_or("teal", |c| {
-                        swatch(c.color.as_deref(), c.id.as_uuid().as_bytes())
-                    }),
-                    Eyebrow {
-                        lead: "Collection".to_owned(),
-                        meta: vec![format!("{n} {}", if n == 1 { "LIST" } else { "LISTS" })],
-                    },
-                    scope,
-                    ChipMode::ListOnly,
-                    coll.filter(|c| c.deleted.is_none()).map(|_| {
-                        lists.first().map_or_else(
-                            || "Add a task…".to_owned(),
-                            |l| format!("Add to {}…", l.name),
-                        )
-                    }),
-                )
-            }
-            RoomId::List(l) => {
-                let list = state.lists.get(l).filter(|l| list_live(state, l));
-                let scope: Vec<&Task> = state
-                    .tasks
-                    .values()
-                    .filter(live)
-                    .filter(|t| t.list == *l)
-                    .collect();
-                let coll = list
-                    .and_then(|l| l.collection)
-                    .and_then(|c| state.collections.get(&c));
-                let open = scope.iter().filter(|t| !t.is_done()).count();
-                (
-                    list.map_or_else(String::new, |l| l.name.clone()),
-                    list.map_or("teal", |l| {
-                        swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
-                    }),
-                    Eyebrow {
-                        lead: coll.map_or_else(|| "List".to_owned(), |c| c.name.clone()),
-                        meta: vec![format!("{open} OPEN")],
-                    },
-                    scope,
-                    ChipMode::Hidden,
-                    list.map(|_| "Add a task…".to_owned()),
-                )
-            }
-        };
-    let done = scope.iter().filter(|t| t.is_done()).count();
-    let total = scope.len();
+                list.map(|_| "Add a task…".to_owned()),
+            )
+        }
+    };
+    let header = header(state, now, id, holding);
     let filter = filter.trim();
     let filtered = !filter.is_empty();
     let scope = if filtered {
@@ -973,11 +916,9 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
         id: id.clone(),
         title,
         hue,
-        eyebrow,
+        header,
         rows,
         completed,
-        done,
-        total,
         add_placeholder: add,
         filtered,
     }
@@ -1469,7 +1410,11 @@ mod tests {
         let state = State::new();
         let route = RoomId::from_path("/app").0;
         let clock = now();
-        assert!(room(&state, &clock, &route, "").add_placeholder.is_some());
+        assert!(
+            room(&state, &clock, &route, "", &BTreeSet::new())
+                .add_placeholder
+                .is_some()
+        );
         let ids = [0, 1].map(|n| todo_core::ids::uuid_v7(1_790_000_000_000 + n, [0; 10]));
         let build = |target: TaskRoom| {
             let mut ids = ids.into_iter();
@@ -1548,7 +1493,7 @@ mod tests {
             todo_core::apply(&mut s, &event).unwrap();
         }
         assert_eq!(
-            room(&s, &n, &list, "")
+            room(&s, &n, &list, "", &BTreeSet::new())
                 .rows
                 .iter()
                 .take(2)
@@ -1561,12 +1506,15 @@ mod tests {
     #[test]
     fn my_day_counts_match_the_mockup_story() {
         let s = fixtures::state();
-        let r = room(&s, &now(), &RoomId::Smart("my_day"), "");
-        assert_eq!((r.done, r.total), (3, 12));
+        let r = room(&s, &now(), &RoomId::Smart("my_day"), "", &BTreeSet::new());
+        assert_eq!((r.header.progress_done, r.header.progress_total), (3, 12));
         assert_eq!(r.rows.len(), 9);
         assert_eq!(r.summary(), "3 of 12 done · 9 open");
-        assert_eq!(r.eyebrow.lead, "Saturday");
-        assert_eq!(r.eyebrow.meta, vec!["21 NOV 2026", "W47"]);
+        assert_eq!(r.header.eyebrow.text(), "Saturday · 21 Nov 2026 · W47");
+        assert_eq!(
+            r.header.status.map(|s| s.text()).as_deref(),
+            Some("9 open · 3 done today")
+        );
         assert!(!r.finished());
         assert!(r.add_placeholder.is_some());
     }
@@ -1574,14 +1522,17 @@ mod tests {
     #[test]
     fn a_room_filter_uses_queries_and_folded_text_without_changing_progress() {
         let s = fixtures::state();
-        let filter = |text| room(&s, &now(), &RoomId::default(), text);
+        let filter = |text| room(&s, &now(), &RoomId::default(), text, &BTreeSet::new());
         assert_eq!(filter("tag:docs").rows[0].id, fixtures::task(1));
         assert_eq!(filter("KVULI STK").rows[0].id, fixtures::task(4));
         assert_eq!(filter("(kvuli").rows[0].id, fixtures::task(4));
         let done = filter("done ondrej");
         assert_eq!(done.completed[0].id, fixtures::task(11));
         assert!(done.rows.is_empty());
-        assert_eq!((done.done, done.total), (3, 12));
+        assert_eq!(
+            (done.header.progress_done, done.header.progress_total),
+            (3, 12)
+        );
         let no_match = filter("tag:unknown");
         assert!(no_match.rows.is_empty() && no_match.completed.is_empty());
         assert_eq!(no_match.empty_line(), "Nothing matches the filter.");
@@ -1603,7 +1554,7 @@ mod tests {
             ("completed", "Nothing finished yet."),
             ("agent_activity", "No agent changes this week."),
         ] {
-            let empty = room(&s, &now(), &RoomId::Smart(id), "");
+            let empty = room(&s, &now(), &RoomId::Smart(id), "", &BTreeSet::new());
             assert!(empty.rows.is_empty());
             assert_eq!(empty.empty_line(), copy, "{id}");
         }
@@ -1633,7 +1584,7 @@ mod tests {
     fn chips_follow_the_room() {
         let s = fixtures::state();
         let n = now();
-        let my_day = room(&s, &n, &RoomId::Smart("my_day"), "");
+        let my_day = room(&s, &n, &RoomId::Smart("my_day"), "", &BTreeSet::new());
         let vat = my_day
             .rows
             .iter()
@@ -1646,7 +1597,7 @@ mod tests {
             .into_iter()
             .find(|c| c.name == "Work")
             .unwrap();
-        let w = room(&s, &n, &RoomId::Collection(work.id), "");
+        let w = room(&s, &n, &RoomId::Collection(work.id), "", &BTreeSet::new());
         let vat = w
             .rows
             .iter()
@@ -1654,7 +1605,7 @@ mod tests {
             .unwrap();
         assert_eq!(vat.chip.as_ref().unwrap().label, "Finance");
         let list = s.lists.values().find(|l| l.name == "Finance").unwrap();
-        let f = room(&s, &n, &RoomId::List(list.id), "");
+        let f = room(&s, &n, &RoomId::List(list.id), "", &BTreeSet::new());
         assert!(f.rows.iter().all(|r| r.chip.is_none()));
     }
 
@@ -1773,8 +1724,8 @@ mod tests {
     fn a_finished_day_hands_over_to_tomorrow() {
         let s = fixtures::finished_state();
         let n = now();
-        let r = room(&s, &n, &RoomId::Smart("my_day"), "");
-        assert!(r.finished(), "{} of {}", r.done, r.total);
+        let r = room(&s, &n, &RoomId::Smart("my_day"), "", &BTreeSet::new());
+        assert!(r.finished(), "{}", r.summary());
         let t = tomorrow(&s, &n, |_| false);
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_some());

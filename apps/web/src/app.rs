@@ -22,6 +22,7 @@ use leptos::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
+use todo_client::room_header::Summary;
 use todo_client::{CommandId, Connection, SubmitError, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
@@ -456,8 +457,20 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let room = RwSignal::new(room0);
     let lingering = RwSignal::new(Vec::<Linger>::new());
     let filter_text = RwSignal::new(String::new());
+    // Rows still playing their completion: the header counts them open until they have left.
+    let holding = Memo::new(move |_| {
+        let id = room.get();
+        lingering.with(|l| {
+            l.iter()
+                .filter(|x| !x.handover && x.room == id)
+                .map(|x| x.row.id)
+                .collect::<BTreeSet<TaskId>>()
+        })
+    });
     let view_room = Memo::new(move |_| {
-        filter_text.with(|f| state.with(|s| model::room(s, &now.get(), &room.get(), f)))
+        holding.with(|held| {
+            filter_text.with(|f| state.with(|s| model::room(s, &now.get(), &room.get(), f, held)))
+        })
     });
     let shown = Memo::new(move |_| {
         let r = view_room.get();
@@ -1422,55 +1435,63 @@ fn RoomPane() -> impl IntoView {
 #[component]
 fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
-    // The sun and the count wait for completing rows to leave.
-    let leaving = Memo::new(move |_| {
-        let id = c.view_room.with(|r| r.id.clone());
-        c.lingering
-            .with(|l| l.iter().filter(|x| !x.handover && x.room == id).count())
-    });
+    // The sun and the count wait for completing rows to leave (`model::room` holds them).
     let counts = Memo::new(move |_| {
-        let r = c.view_room.get();
-        let done = r.done.saturating_sub(leaving.get());
-        (done, r.total)
+        c.view_room
+            .with(|r| (r.header.progress_done, r.header.progress_total))
     });
     view! {
         <header class="room-head">
             <div class="head-text">
                 <div class="eyebrow">
-                    {move || {
-                        let e = c.view_room.with(|r| r.eyebrow.clone());
-                        view! {
-                            <span class="eyebrow-lead">{e.lead}</span>
-                            {e.meta.into_iter().map(|m| view! { <span class="eyebrow-meta">{m}</span> }).collect_view()}
-                        }
-                    }}
+                    <EyebrowLine/>
                 </div>
                 <div class="title-row">
                     <div class="room-title-group"><RoomTitle/><room_actions::RoomMenuButton/></div>
                     <p class="summary">
-                        {move || {
-                            let (done, total) = counts.get();
-                            if total == 0 {
-                                // An empty room keeps score of nothing.
-                                ().into_any()
-                            } else if c.view_room.with(|r| r.id == RoomId::Smart("completed")) {
-                                view! { <b>{total}</b>" done" }.into_any()
-                            } else {
-                                view! {
-                                    <b>{done}</b>
-                                    {format!(" of {total} done")}
-                                    <span class="dot-sep">"·"</span>
-                                    <span class="fig">{total - done}</span>
-                                    " open"
-                                }
-                                    .into_any()
+                        {move || match c.view_room.with(|r| r.header.summary) {
+                            // Activity keeps no score.
+                            Summary::None => ().into_any(),
+                            empty @ Summary::Empty { .. } => {
+                                view! { <span class="fig">{empty.text()}</span> }.into_any()
                             }
+                            Summary::Done { done } => view! { <b>{done}</b>" done" }.into_any(),
+                            Summary::AllClear { done, total } => view! {
+                                <b>{done}</b>
+                                {format!(" of {total} done")}
+                                <span class="dot-sep">"·"</span>
+                                <span class="finished-clear fig">"all clear"</span>
+                            }
+                                .into_any(),
+                            Summary::Progress { done, total, open } => view! {
+                                <b>{done}</b>
+                                {format!(" of {total} done")}
+                                <span class="dot-sep">"·"</span>
+                                <span class="fig">{open}</span>
+                                " open"
+                            }
+                                .into_any(),
                         }}
                     </p>
                 </div>
             </div>
             <LandscapeStrip counts=counts width=width/>
         </header>
+    }
+}
+
+/// The line above the title: an italic lead, then the details in mono caps.
+#[component]
+fn EyebrowLine() -> impl IntoView {
+    let c = ctx();
+    move || {
+        let e = c.view_room.with(|r| r.header.eyebrow.clone());
+        let lead = e.lead().to_owned();
+        let details: Vec<String> = e.details().into_iter().map(str::to_owned).collect();
+        view! {
+            <span class="eyebrow-lead">{lead}</span>
+            {details.into_iter().map(|m| view! { <span class="eyebrow-meta">{m}</span> }).collect_view()}
+        }
     }
 }
 
@@ -1891,18 +1912,12 @@ fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
         <header class="room-head finished" data-theme="dark" data-room-hue="my-day">
             <div class="head-text">
                 <div class="eyebrow">
-                    {move || {
-                        let e = c.view_room.with(|r| r.eyebrow.clone());
-                        view! {
-                            <span class="eyebrow-lead">{e.lead}</span>
-                            {e.meta.into_iter().map(|m| view! { <span class="eyebrow-meta">{m}</span> }).collect_view()}
-                        }
-                    }}
+                    <EyebrowLine/>
                 </div>
                 <div class="title-row">
                     <RoomTitle/>
                     <p class="summary">
-                        {move || c.view_room.with(|r| format!("{} of {} done", r.done, r.total))}
+                        {move || c.view_room.with(|r| format!("{} of {} done", r.header.progress_done, r.header.progress_total))}
                         <span class="dot-sep">"·"</span>
                         <span class="finished-clear fig">"all clear"</span>
                     </p>
@@ -2674,7 +2689,7 @@ fn StatusBar() -> impl IntoView {
     view! {
         <footer class="statusbar" inert=move || c.detail_modal.get()>
             <span class="sb-counts">
-                {move || c.view_room.with(|r| (!r.id.is_activity()).then(|| format!("{} open   {} done", r.open(), r.done)))}
+                {move || c.view_room.with(|r| r.header.status.map(|s| s.text()))}
             </span>
             <span class="sb-keys" aria-hidden="true">
                 <Show when=move || !c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done)))>

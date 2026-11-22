@@ -86,14 +86,6 @@ impl std::fmt::Debug for AgentKey {
     }
 }
 
-/// The room's eyebrow detail: every change, or one agent's.
-pub fn scope(agent: Option<AgentKey>) -> String {
-    agent.map_or_else(
-        || "All changes".to_owned(),
-        |agent| format!("Agent: {}", agent.name()),
-    )
-}
-
 /// The Activity room's own state, kept by the window while it shows the room.
 #[derive(Clone, Debug, Default)]
 pub struct ActivityState {
@@ -558,11 +550,6 @@ mod tests {
         assert_eq!(AgentKey::of(&long).and_then(|k| k.id()), Some(long));
         assert_eq!(AgentKey::of(&id), Some(key), "the same agent, the same key");
         assert_ne!(AgentKey::of(&AgentId::new("pi").expect("an ID")), Some(key));
-        assert_eq!(scope(None), "All changes");
-        assert_eq!(
-            scope(AgentKey::of(&AgentId::new("codex").expect("an ID"))),
-            "Agent: Codex"
-        );
     }
 
     #[test]

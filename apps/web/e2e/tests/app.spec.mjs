@@ -711,7 +711,7 @@ test("detail actions, schedule fields, sync label and context keyboard hints mat
   const keys = page.locator(".sb-keys");
   await expect(keys).not.toContainText("Space");
   await expect(page.getByText(/^Synced /)).toHaveCount(1);
-  await expect(page.locator(".sb-counts")).toHaveText("9 open 3 done");
+  await expect(page.locator(".sb-counts")).toHaveText("9 open · 3 done today");
   await rows(page).first().locator(".row-title").click();
   const buttons = page.locator(".detail-top button");
   expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Close"]);
@@ -730,7 +730,7 @@ test("detail actions, schedule fields, sync label and context keyboard hints mat
   await expect(keys).toContainText("Esc");
   await expect(keys).toContainText("Space");
   await page.locator(".sidebar").getByRole("link", { name: "Garden" }).click();
-  await expect(page.locator(".empty-line")).toHaveText("Nothing on the shelf yet.");
+  await expect(page.locator(".empty-line")).toHaveText("Nothing here yet.");
   await expect(keys).toHaveText("N add task");
   await w.check();
 });

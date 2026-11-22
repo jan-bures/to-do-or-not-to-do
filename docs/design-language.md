@@ -19,6 +19,31 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   the sky, so it reads as information, not decoration.
 - **The count sits beside the sun.** The header summary reads `3 of 12 done · 9 open · est. 5h 40m`. The sun and
   the numbers say the same thing in the same place. Never put a second, floating label on the sun.
+- **What the sun measures.** Every client derives the header from one place, `todo_client::room_header`, so the
+  same data reads the same everywhere:
+  - **Lists, collections, Important, Planned and All** measure *today's work*: tasks completed since local
+    midnight (in the owner's time zone, daylight saving included), out of those plus the ones still open. A list
+    with 450 old completions starts each day with the sun low, not set.
+  - **My Day** measures its whole plan: done of everything planned for today.
+  - **Agent activity** measures the tasks agents changed this week: done of all of them.
+  - **Completed** only counts: `12 done`, with the sun at the end of its arc.
+  - **Activity** shows changes, not tasks, and keeps no score.
+  - A room with nothing to measure says `2 finished this month`, or `nothing yet`. The finished day says
+    `12 of 12 done · all clear`.
+  - A task still playing its completion counts as open until it has left the rows, so the count and the sun
+    move once, together.
+- **The eyebrow names the room's frame.** One rule per kind of room:
+
+  | Room | Eyebrow |
+  |---|---|
+  | Smart lists | the day: *Saturday* `21 NOV 2026` `W47`, since they measure today's work |
+  | Collections | *Collection* `4 LISTS` |
+  | Lists | the collection's name (or *List*) and what is still open: *Work* `9 OPEN` |
+  | Activity | *History* `ALL CHANGES`, or `AGENT: CLAUDE` while filtered to one agent |
+
+  The lead is italic Fraunces; the details are mono caps, set by the type token, not by the words.
+- **The status bar counts the same room.** `9 open · 3 done today`: what is open now and what was finished since
+  local midnight. Activity counts its feed instead: `20 shown · 4 today`.
 - **There is only one sun.** No sun icon in the title, no clock ticks, no crescent endpoints. The sun's amber is the
   only amber on screen, at a fixed hue whatever the room's hue.
 - **The finished day.** When My Day's last task is done, the scene grows to 164 px.

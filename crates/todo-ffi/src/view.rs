@@ -8,11 +8,12 @@ use crate::labels::{self, DueLabel, Now};
 use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
+use todo_client::room_header;
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{LinkKind, List, Priority, Task};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
-use todo_core::time::{Date, Timestamp, add_days, days_between};
+use todo_core::query::{BuiltinList, EvalContext, Query, fold};
+use todo_core::time::{Timestamp, add_days, days_between};
 
 /// A built-in smart list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, uniffi::Enum)]
@@ -42,24 +43,21 @@ impl SmartList {
         Self::AgentActivity,
     ];
 
-    fn id(self) -> &'static str {
+    /// The shared smart list (`todo_client::room_header`), which knows its query and its wording.
+    pub fn shared(self) -> room_header::SmartList {
         match self {
-            Self::MyDay => "my_day",
-            Self::Important => "important",
-            Self::Planned => "planned",
-            Self::All => "all",
-            Self::Completed => "completed",
-            Self::AgentActivity => "agent_activity",
+            Self::MyDay => room_header::SmartList::MyDay,
+            Self::Important => room_header::SmartList::Important,
+            Self::Planned => room_header::SmartList::Planned,
+            Self::All => room_header::SmartList::All,
+            Self::Completed => room_header::SmartList::Completed,
+            Self::AgentActivity => room_header::SmartList::AgentActivity,
         }
     }
 
     /// Its saved query in `todo_core`.
     pub fn builtin(self) -> BuiltinList {
-        BUILTIN_LISTS
-            .iter()
-            .copied()
-            .find(|b| b.id == self.id())
-            .unwrap_or(BUILTIN_LISTS[0])
+        self.shared().builtin()
     }
 
     fn label(self) -> &'static str {
@@ -90,17 +88,6 @@ impl SmartList {
             Self::All => "list",
             Self::Completed => "circle-check",
             Self::AgentActivity => "sparkles",
-        }
-    }
-
-    fn empty_line(self) -> &'static str {
-        match self {
-            Self::MyDay => "Nothing planned yet.",
-            Self::Important => "Nothing pressing.",
-            Self::Planned => "Nothing on the calendar.",
-            Self::All => "Nothing open.",
-            Self::Completed => "Nothing finished yet.",
-            Self::AgentActivity => "No agent changes this week.",
         }
     }
 }
@@ -195,11 +182,11 @@ pub struct Home {
 /// The small line above a room's title.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Eyebrow {
-    /// Smart lists: "Saturday | 21 Nov | W47".
+    /// Smart lists: "Saturday | 21 Nov 2026 | W47".
     Day {
         /// "Saturday" (Fraunces italic).
         weekday: String,
-        /// "21 Nov".
+        /// "21 Nov 2026".
         date: String,
         /// "W47".
         week: String,
@@ -211,6 +198,80 @@ pub enum Eyebrow {
         /// "3 lists", "9 open" (mono caps).
         detail: String,
     },
+}
+
+impl From<room_header::Eyebrow> for Eyebrow {
+    fn from(e: room_header::Eyebrow) -> Self {
+        match e {
+            room_header::Eyebrow::Day {
+                weekday,
+                date,
+                week,
+            } => Self::Day {
+                weekday,
+                date,
+                week,
+            },
+            room_header::Eyebrow::Kind { kind, detail } => Self::Kind { kind, detail },
+        }
+    }
+}
+
+/// The summary beside the sun, as every client words it (`todo_client::room_header::Summary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum RoomSummary {
+    /// Nothing to measure: "2 finished this month", or "nothing yet".
+    Empty {
+        /// Tasks in the room finished this calendar month.
+        finished_this_month: u32,
+    },
+    /// Completed: "12 done".
+    Done {
+        /// Done tasks.
+        done: u32,
+    },
+    /// "3 of 12 done · 9 open".
+    Progress {
+        /// Done.
+        done: u32,
+        /// Of.
+        total: u32,
+        /// Still open.
+        open: u32,
+    },
+    /// My Day with every task done: "12 of 12 done · all clear".
+    AllClear {
+        /// Done, which is all of them.
+        done: u32,
+        /// Of.
+        total: u32,
+    },
+}
+
+impl From<room_header::Summary> for RoomSummary {
+    fn from(s: room_header::Summary) -> Self {
+        match s {
+            // Android's task rooms don't include Activity; an unscored room reads as empty.
+            room_header::Summary::None => Self::Empty {
+                finished_this_month: 0,
+            },
+            room_header::Summary::Empty {
+                finished_this_month,
+            } => Self::Empty {
+                finished_this_month: count(finished_this_month),
+            },
+            room_header::Summary::Done { done } => Self::Done { done: count(done) },
+            room_header::Summary::Progress { done, total, open } => Self::Progress {
+                done: count(done),
+                total: count(total),
+                open: count(open),
+            },
+            room_header::Summary::AllClear { done, total } => Self::AllClear {
+                done: count(done),
+                total: count(total),
+            },
+        }
+    }
 }
 
 /// Done and total steps.
@@ -287,6 +348,10 @@ pub struct RoomView {
     pub total: u32,
     /// Still open.
     pub open: u32,
+    /// The summary beside the sun.
+    pub summary: RoomSummary,
+    /// The summary as one line ("3 of 12 done · 9 open"), for screen readers.
+    pub summary_text: String,
     /// My Day with everything done: the dusk scene.
     pub finished: bool,
     /// Open rows, in order.
@@ -485,21 +550,7 @@ pub struct TaskDetail {
     pub attachments: Vec<crate::engine::attachments::AttachmentRow>,
 }
 
-pub(crate) fn list_live(state: &State, id: ListId) -> bool {
-    state.lists.get(&id).is_some_and(|l| {
-        l.deleted.is_none()
-            && l.collection.is_none_or(|c| {
-                state
-                    .collections
-                    .get(&c)
-                    .is_some_and(|c| c.deleted.is_none())
-            })
-    })
-}
-
-pub(crate) fn task_live(state: &State, t: &Task) -> bool {
-    t.deleted.is_none() && t.merged_into.is_none() && list_live(state, t.list)
-}
+pub(crate) use todo_client::room_header::{list_live, task_live};
 
 fn priority_marks(p: Priority) -> u8 {
     match p {
@@ -659,54 +710,13 @@ pub(crate) fn ordered_lists(state: &State) -> Vec<&List> {
     out
 }
 
-/// The room's tasks: (open in order, done newest first).
-fn room_tasks<'a>(state: &'a State, key: &RoomKey, now: &Now) -> (Vec<&'a Task>, Vec<&'a Task>) {
-    let ctx = now.eval();
-    match key {
-        RoomKey::Smart { list } => {
-            let Ok(q) = list.builtin().parse() else {
-                return (Vec::new(), Vec::new());
-            };
-            let open = q.run(state, &ctx);
-            // The rows a smart list hides once done, for its progress and Completed section.
-            let done_query = match list {
-                SmartList::MyDay => Some("my_day and done sort:-completed"),
-                SmartList::Important => Some("priority>=high and done sort:-completed"),
-                SmartList::Planned => Some("due:any and done sort:-completed"),
-                SmartList::All => Some("done sort:-completed"),
-                SmartList::Completed | SmartList::AgentActivity => None,
-            };
-            let done = done_query
-                .and_then(|s| Query::parse(s).ok())
-                .map(|q| q.run(state, &ctx))
-                .unwrap_or_default();
-            (open, done)
-        }
-        RoomKey::Collection { .. } | RoomKey::List { .. } => {
-            let in_room = |t: &Task| match key {
-                RoomKey::List { id } => parse_list(id) == Some(t.list),
-                RoomKey::Collection { id } => {
-                    state.lists.get(&t.list).and_then(|l| l.collection) == parse_collection(id)
-                }
-                RoomKey::Smart { .. } => false,
-            };
-            let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| l.position.clone());
-            let (mut open, mut done): (Vec<&Task>, Vec<&Task>) = state
-                .tasks
-                .values()
-                .filter(|t| in_room(t) && task_live(state, t))
-                .partition(|t| !t.is_done());
-            open.sort_by(|a, b| {
-                (list_pos(a), &a.position, a.id).cmp(&(list_pos(b), &b.position, b.id))
-            });
-            done.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then(a.id.cmp(&b.id)));
-            (open, done)
-        }
-    }
-}
-
-fn completed_on(now: &Now, t: &Task, pred: impl Fn(Date) -> bool) -> bool {
-    t.completed_at.is_some_and(|c| pred(now.date_of(c)))
+/// The shared room key for a resolved room; `None` for an ID that doesn't parse.
+fn shared_key(key: &RoomKey) -> Option<room_header::RoomKey<'static>> {
+    Some(match key {
+        RoomKey::Smart { list } => room_header::RoomKey::Smart(list.shared()),
+        RoomKey::Collection { id } => room_header::RoomKey::Collection(parse_collection(id)?),
+        RoomKey::List { id } => room_header::RoomKey::List(parse_list(id)?),
+    })
 }
 
 /// The room, falling back to My Day when its list or collection is gone.
@@ -763,105 +773,55 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
     let key = resolve(state, key);
     let ix = Index::new(state, now);
     let today = now.today();
-    let (open, done) = room_tasks(state, &key, now);
-
-    let (progress_done, progress_total) = match key {
-        RoomKey::Smart {
-            list: SmartList::MyDay,
-        } => (done.len(), open.len() + done.len()),
-        RoomKey::Smart {
-            list: SmartList::AgentActivity | SmartList::Completed,
-        } => (0, open.len()),
-        _ => {
-            let today_done = done
-                .iter()
-                .filter(|t| completed_on(now, t, |d| d == today))
-                .count();
-            (today_done, today_done + open.len())
-        }
-    };
-    let finished_this_month = done
-        .iter()
-        .filter(|t| {
-            completed_on(now, t, |d| {
-                d.year() == today.year() && d.month() == today.month()
-            })
-        })
-        .count();
-
-    let open_all = open.len();
-    let filtered = !filter_text.trim().is_empty();
     let ctx = now.eval();
+    // Held tasks are already open in the placed state (`room_placed`), so nothing more is held here.
+    let holding = BTreeSet::new();
+    let shared =
+        shared_key(&key).unwrap_or(room_header::RoomKey::Smart(room_header::SmartList::MyDay));
+    let tasks = room_header::room_tasks(state, shared, &holding, &ctx);
+    let header = room_header::header_of(state, shared, &tasks, &holding, &now.local_time());
+    let room_header::RoomTasks { open, done } = tasks;
+
+    let filtered = !filter_text.trim().is_empty();
     let open = filter(state, filter_text, &ctx, open);
     let done = filter(state, filter_text, &ctx, done);
 
-    let (title, eyebrow, hue, chips, empty_line, placeholder) = match &key {
+    let (title, hue, chips, placeholder) = match &key {
         RoomKey::Smart { list } => (
             list.builtin().name.to_owned(),
-            Eyebrow::Day {
-                weekday: labels::weekday(today).into(),
-                date: labels::day_month(today, today),
-                week: labels::iso_week(today),
-            },
             list.hue().to_owned(),
             true,
-            list.empty_line().to_owned(),
             "Add a task…".to_owned(),
         ),
         RoomKey::Collection { id } => {
             let col = parse_collection(id).and_then(|c| state.collections.get(&c));
             let name = col.map(|c| c.name.clone()).unwrap_or_default();
-            let n = state
-                .lists
-                .values()
-                .filter(|l| col.is_some_and(|c| l.collection == Some(c.id)) && l.deleted.is_none())
-                .count();
             (
                 name.clone(),
-                Eyebrow::Kind {
-                    kind: "Collection".into(),
-                    detail: format!("{n} {}", if n == 1 { "list" } else { "lists" }),
-                },
                 col.map_or("lagoon", |c| {
                     lists::swatch(c.color.as_deref(), c.id.as_uuid().as_bytes())
                 })
                 .to_owned(),
                 true,
-                "Nothing here yet.".to_owned(),
                 format!("Add to {name}…"),
             )
         }
         RoomKey::List { id } => {
             let list = parse_list(id).and_then(|l| state.lists.get(&l));
             let name = list.map(|l| l.name.clone()).unwrap_or_default();
-            let kind = list
-                .and_then(|l| l.collection)
-                .and_then(|c| state.collections.get(&c))
-                .map_or_else(|| "List".to_owned(), |c| c.name.clone());
             (
                 name.clone(),
-                Eyebrow::Kind {
-                    kind,
-                    detail: format!("{open_all} open"),
-                },
                 list.map_or("lagoon", |l| {
                     lists::swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
                 })
                 .to_owned(),
                 false,
-                "Nothing here yet.".to_owned(),
                 format!("Add to {name}…"),
             )
         }
     };
 
-    let finished = matches!(
-        key,
-        RoomKey::Smart {
-            list: SmartList::MyDay
-        }
-    ) && progress_total > 0
-        && progress_done >= progress_total;
+    let finished = header.finished_day();
     let plan_weekday = (finished && !filtered)
         .then(|| add_days(today, 1))
         .flatten()
@@ -873,11 +833,13 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
     };
     RoomView {
         title,
-        eyebrow,
+        eyebrow: header.eyebrow.clone().into(),
         hue,
-        done: count(progress_done),
-        total: count(progress_total),
-        open: count(open_all),
+        done: count(header.progress_done),
+        total: count(header.progress_total),
+        open: count(header.open()),
+        summary: header.summary.into(),
+        summary_text: header.summary.text(),
         finished,
         tasks: open
             .iter()
@@ -887,12 +849,8 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
             .iter()
             .map(|t| row(state, &ix, t, now, chips))
             .collect(),
-        finished_this_month: count(finished_this_month),
-        empty_line: if filtered {
-            "Nothing matches the filter.".to_owned()
-        } else {
-            empty_line
-        },
+        finished_this_month: count(header.finished_this_month),
+        empty_line: header.empty_line(filtered).to_owned(),
         add_placeholder: placeholder,
         tomorrow,
         filtered,

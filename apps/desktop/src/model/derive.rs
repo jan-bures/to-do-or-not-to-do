@@ -1,13 +1,13 @@
 //! `State` → [`Shell`].
 //!
-//! Progress in the header: in My Day it is the day's tasks, done of all; anywhere else it is today's work,
-//! tasks completed today of those plus the open ones, so a list with years of finished tasks doesn't
-//! show a sun that has long set.
+//! The room's tasks and its header (eyebrow, progress, summary, status-bar counts, empty line) come from
+//! `todo_client::room_header`, which the web and Android clients share: it says what the sun measures.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui::SharedString;
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
+use todo_client::room_header;
 use todo_core::State;
 use todo_core::ids::{ListId, TaskId};
 use todo_core::model::{LinkKind, Priority, Task};
@@ -90,23 +90,7 @@ impl Index {
     }
 }
 
-/// A live list: not deleted, and not in a deleted collection.
-pub(super) fn list_live(state: &State, id: ListId) -> bool {
-    state.lists.get(&id).is_some_and(|l| {
-        l.deleted.is_none()
-            && l.collection.is_none_or(|c| {
-                state
-                    .collections
-                    .get(&c)
-                    .is_some_and(|c| c.deleted.is_none())
-            })
-    })
-}
-
-/// A live task: not deleted or merged, in a live list. `State::is_live` without its clones.
-pub(super) fn task_live(state: &State, t: &Task) -> bool {
-    t.deleted.is_none() && t.merged_into.is_none() && list_live(state, t.list)
-}
+pub(super) use todo_client::room_header::{list_live, task_live};
 
 fn priority_marks(p: Priority) -> u8 {
     match p {
@@ -149,75 +133,31 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
     }
 }
 
-/// The room's tasks: (rows in order, the Completed section in order).
-fn room_tasks<'a>(
-    state: &'a State,
-    key: RoomKey,
-    holding: &BTreeSet<TaskId>,
-    ctx: &EvalContext,
-) -> (Vec<&'a Task>, Vec<&'a Task>) {
-    let held = |t: &Task| holding.contains(&t.id) && t.is_done();
+/// The shared room key for a room.
+fn shared_key(key: RoomKey) -> room_header::RoomKey<'static> {
     match key {
-        RoomKey::Smart(smart) => {
-            let Ok(q) = smart.builtin().parse() else {
-                return (Vec::new(), Vec::new());
-            };
-            let m = q.matcher(state, ctx);
-            let mut open: Vec<&Task> = state
-                .tasks
-                .values()
-                .filter(|t| {
-                    m.matches(t)
-                        || (held(t) && task_live(state, t) && {
-                            // Still in the room as if it were open, until the completion has played.
-                            let mut as_open = (*t).clone();
-                            as_open.completed_at = None;
-                            q.matches(state, &as_open, ctx)
-                        })
-                })
-                .collect();
-            open.sort_by_cached_key(|t| q.order_key(state, t));
-            let done = smart
-                .done_query()
-                .and_then(|s| Query::parse(s).ok())
-                .map(|dq| {
-                    dq.run(state, ctx)
-                        .into_iter()
-                        .filter(|t| !holding.contains(&t.id))
-                        .collect()
-                })
-                .unwrap_or_default();
-            (open, done)
-        }
-        // Activity shows changes, not tasks (`model::activity`).
-        RoomKey::Activity(_) => (Vec::new(), Vec::new()),
-        RoomKey::List(_) | RoomKey::Collection(_) => {
-            let in_room = |t: &Task| match key {
-                RoomKey::List(l) => t.list == l,
-                RoomKey::Collection(c) => {
-                    state.lists.get(&t.list).and_then(|l| l.collection) == Some(c)
-                }
-                RoomKey::Smart(_) | RoomKey::Activity(_) => false,
-            };
-            let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| l.position.clone());
-            let mut open = Vec::new();
-            let mut done = Vec::new();
-            for t in state.tasks.values() {
-                if !in_room(t) || !task_live(state, t) {
-                    continue;
-                }
-                if !t.is_done() || held(t) {
-                    open.push(t);
-                } else {
-                    done.push(t);
-                }
-            }
-            open.sort_by(|a, b| {
-                (list_pos(a), &a.position, a.id).cmp(&(list_pos(b), &b.position, b.id))
-            });
-            done.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then(a.id.cmp(&b.id)));
-            (open, done)
-        }
+        RoomKey::Smart(s) => room_header::RoomKey::Smart(s.shared()),
+        RoomKey::Collection(c) => room_header::RoomKey::Collection(c),
+        RoomKey::List(l) => room_header::RoomKey::List(l),
+        RoomKey::Activity(agent) => room_header::RoomKey::Activity(agent.map(AgentKey::as_str)),
+    }
+}
+
+fn eyebrow(e: room_header::Eyebrow) -> Eyebrow {
+    match e {
+        room_header::Eyebrow::Day {
+            weekday,
+            date,
+            week,
+        } => Eyebrow::Day {
+            weekday: weekday.into(),
+            date: date.into(),
+            week: week.into(),
+        },
+        room_header::Eyebrow::Kind { kind, detail } => Eyebrow::Kind {
+            kind: kind.into(),
+            detail: detail.into(),
+        },
     }
 }
 
@@ -250,56 +190,13 @@ fn filter<'a>(state: &State, text: &str, ctx: &EvalContext, tasks: Vec<&'a Task>
     }
 }
 
-fn completed_on(now: &Now, t: &Task, pred: impl Fn(jiff::civil::Date) -> bool) -> bool {
-    t.completed_at.is_some_and(|c| pred(now.date_of(c)))
-}
-
 fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -> Room {
-    let today = ctx.today;
     let key = ui.room.resolved(state);
-    let (open, done) = room_tasks(state, key, &ui.holding, ctx);
-    // A task still playing its completion counts as open: the counts (and the sun) change when it has
-    // left the rows.
-    let counted_done = |t: &Task| t.is_done() && !ui.holding.contains(&t.id);
-    let finished_on = |t: &Task, pred: &dyn Fn(jiff::civil::Date) -> bool| {
-        counted_done(t) && completed_on(now, t, pred)
-    };
-
-    // Progress, before filtering.
-    let (progress_done, progress_total) = match key {
-        RoomKey::Smart(Smart::MyDay) => {
-            let d = open.iter().filter(|t| counted_done(t)).count() + done.len();
-            (d, open.len() + done.len())
-        }
-        RoomKey::Smart(Smart::AgentActivity) => {
-            (open.iter().filter(|t| counted_done(t)).count(), open.len())
-        }
-        _ => {
-            let today_done = open
-                .iter()
-                .chain(done.iter())
-                .filter(|t| finished_on(t, &|d| d == today))
-                .count();
-            let still_open = open.iter().filter(|t| !counted_done(t)).count();
-            (today_done, today_done + still_open)
-        }
-    };
-    // The status bar's "done today": only what was completed since local midnight, in every room (My Day's
-    // header counts its whole plan, which can hold a task finished on an earlier day).
-    let done_today = open
-        .iter()
-        .chain(done.iter())
-        .filter(|t| finished_on(t, &|d| d == today))
-        .count();
-    let finished_this_month = open
-        .iter()
-        .chain(done.iter())
-        .filter(|t| {
-            finished_on(t, &|d| {
-                d.year() == today.year() && d.month() == today.month()
-            })
-        })
-        .count();
+    let shared = shared_key(key);
+    // The header (progress, summary, eyebrow, counts) comes from the shared derivation, before filtering.
+    let tasks = room_header::room_tasks(state, shared, &ui.holding, ctx);
+    let header = room_header::header_of(state, shared, &tasks, &ui.holding, &now.local());
+    let room_header::RoomTasks { open, done } = tasks;
 
     // The filter narrows tasks; Activity has none to narrow.
     let filtered = !ui.filter.trim().is_empty() && !key.is_activity();
@@ -307,75 +204,40 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let done = filter(state, &ui.filter, ctx, done);
     let completed_count = done.len();
 
-    let (title, eyebrow, hue, chips, empty_line, placeholder): (
-        SharedString,
-        Eyebrow,
-        Hue,
-        Chips,
-        SharedString,
-        SharedString,
-    ) = match key {
+    let (title, hue, chips, placeholder): (SharedString, Hue, Chips, SharedString) = match key {
         RoomKey::Smart(s) => (
             s.builtin().name.into(),
-            Eyebrow::Day {
-                weekday: labels::weekday(today).into(),
-                date: labels::long_date(today).into(),
-                week: labels::iso_week(today).into(),
-            },
             s.hue(),
             Chips::CollectionAndList,
-            s.empty_line().into(),
             "Add a task…".into(),
         ),
         RoomKey::Collection(c) => {
             let col = &state.collections[&c];
-            let n = state
-                .lists
-                .values()
-                .filter(|l| l.collection == Some(c) && l.deleted.is_none())
-                .count();
             (
                 labels::one_line(&col.name).into(),
-                Eyebrow::Kind {
-                    kind: "Collection".into(),
-                    detail: format!("{n} {}", if n == 1 { "list" } else { "lists" }).into(),
-                },
                 lists::hue(col.color.as_deref(), c.as_uuid().as_bytes()),
                 Chips::List,
-                "Nothing on the shelf yet.".into(),
                 format!("Add a task to {}…", labels::one_line(&col.name)).into(),
             )
         }
-        RoomKey::Activity(agent) => (
+        RoomKey::Activity(_) => (
             "Activity".into(),
-            Eyebrow::Kind {
-                kind: "History".into(),
-                detail: activity::scope(agent).into(),
-            },
             hues::AGENT_ACTIVITY,
             Chips::None,
-            todo_client::activity::empty_line(agent.is_some()).into(),
             "".into(),
         ),
         RoomKey::List(l) => {
             let list = ix.list(l);
-            let still_open = progress_total - progress_done;
             (
                 list.name.clone(),
-                Eyebrow::Kind {
-                    kind: list.collection.clone().unwrap_or_else(|| "List".into()),
-                    detail: format!("{still_open} open").into(),
-                },
                 list.hue,
                 Chips::None,
-                "Nothing on the shelf yet.".into(),
                 format!("Add a task to {}…", list.name).into(),
             )
         }
     };
 
-    let finishes_day = key == RoomKey::Smart(Smart::MyDay);
-    let finished = finishes_day && progress_total > 0 && progress_done >= progress_total;
+    let finished = header.finished_day();
     let tomorrow = (finished && !filtered)
         .then(|| tomorrow(state, ix, now, &ui.holding))
         .flatten();
@@ -384,15 +246,18 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         .then(|| add_days(now.today(), 1))
         .flatten()
         .map(|d| SharedString::from(labels::weekday(d)));
+    let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
 
     Room {
         key,
         title,
-        eyebrow,
+        eyebrow: eyebrow(header.eyebrow.clone()),
         hue,
         chips,
-        done: u32::try_from(progress_done).unwrap_or(u32::MAX),
-        total: u32::try_from(progress_total).unwrap_or(u32::MAX),
+        done: as_u32(header.progress_done),
+        total: as_u32(header.progress_total),
+        score: header.summary,
+        status: header.status,
         estimate: None,
         tasks: open.iter().map(|t| row(state, ix, t, now)).collect(),
         completed: if ui.show_completed {
@@ -400,17 +265,13 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         } else {
             Vec::new()
         },
-        completed_count: u32::try_from(completed_count).unwrap_or(u32::MAX),
-        finished_this_month: u32::try_from(finished_this_month).unwrap_or(u32::MAX),
-        done_today: u32::try_from(done_today).unwrap_or(u32::MAX),
-        empty_line: if filtered {
-            "Nothing matches the filter.".into()
-        } else {
-            empty_line
-        },
+        completed_count: as_u32(completed_count),
+        finished_this_month: as_u32(header.finished_this_month),
+        done_today: as_u32(header.done_today),
+        empty_line: header.empty_line(filtered).into(),
         empty_hint: empty_hint(key, filtered).into(),
         quick_add_placeholder: placeholder,
-        finishes_day,
+        finishes_day: header.finishes_day,
         tomorrow,
         plan_weekday,
         filtered,
@@ -852,17 +713,14 @@ fn host(url: &str) -> String {
 
 /// My Day's progress (done, total) for the quick-add window, without deriving a whole shell.
 pub fn my_day_progress(state: &State, now: &Now) -> (u32, u32) {
-    let today = now.today();
-    let (mut done, mut total) = (0u32, 0u32);
-    for t in state.tasks.values() {
-        if t.my_day == Some(today) && task_live(state, t) {
-            total += 1;
-            if t.is_done() {
-                done += 1;
-            }
-        }
-    }
-    (done, total)
+    let h = room_header::room_header(
+        state,
+        room_header::RoomKey::Smart(room_header::SmartList::MyDay),
+        &BTreeSet::new(),
+        &now.local(),
+    );
+    let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    (as_u32(h.progress_done), as_u32(h.progress_total))
 }
 
 /// The state as the list places tasks while their choreography plays (see `UiState::holding`,

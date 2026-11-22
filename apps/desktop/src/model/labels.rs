@@ -44,11 +44,6 @@ pub fn day_month(d: Date, today: Date) -> String {
     }
 }
 
-/// "W47": the ISO 8601 week.
-pub fn iso_week(d: Date) -> String {
-    format!("W{}", d.iso_week_date().week())
-}
-
 /// The local time of `ts`.
 pub fn local(ts: Timestamp, tz: &TimeZone) -> ZonedDateTime {
     ts.to_zoned_datetime(tz.clone())
@@ -177,8 +172,6 @@ mod tests {
         let today = d("2026-11-21");
         assert_eq!(weekday(today), "Saturday");
         assert_eq!(long_date(today), "21 Nov 2026");
-        assert_eq!(iso_week(today), "W47");
-        assert_eq!(iso_week(d("2021-01-01")), "W53");
         assert_eq!(short_date(d("2026-11-23"), today), "Mon 23 Nov");
         assert_eq!(short_date(d("2027-01-04"), today), "Mon 4 Jan 2027");
         assert_eq!(relative_day(d("2026-11-22"), today), "Tomorrow");

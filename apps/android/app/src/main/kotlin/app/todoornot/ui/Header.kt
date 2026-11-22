@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.Eyebrow
+import app.todoornot.core.RoomSummary
 import app.todoornot.core.RoomView
 import app.todoornot.design.Design
 import app.todoornot.design.Landscape
@@ -156,7 +157,11 @@ private fun EyebrowLine(e: Eyebrow) {
     }
 }
 
-/** "3 of 12 done · 9 open", "12 of 12 done · all clear", or "2 finished this month" for an empty list. */
+/**
+ * The summary beside the sun, as every client words it (`todo_client::room_header`): "3 of 12 done · 9 open",
+ * "12 of 12 done · all clear" for the finished day, "12 done" in Completed, and "2 finished this month" or
+ * "nothing yet" for an empty room.
+ */
 @Composable
 private fun Summary(room: RoomView, modifier: Modifier = Modifier) {
     val r = LocalDesign.current.room
@@ -164,23 +169,35 @@ private fun Summary(room: RoomView, modifier: Modifier = Modifier) {
     val words = Tokens.Type.SUMMARY
     val bold = Tokens.Type.BUTTON.weight
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-        if (room.total == 0u) {
-            if (room.finishedThisMonth > 0u) {
-                Label("${room.finishedThisMonth}", figures, r.ink, weight = bold)
-                Label("finished this month", words, r.ink2)
-            }
-            return@Row
+        @Composable
+        fun doneOf(done: UInt, total: UInt) {
+            Label("$done", figures, r.accentStrong, weight = bold)
+            Label("of", words, r.ink2)
+            Label("$total", figures, r.ink, weight = bold)
+            Label("done", words, r.ink2)
+            Box(Modifier.padding(horizontal = S.S1.dp).size(Micro.separator).background(r.ink4, CircleShape))
         }
-        Label("${room.done}", figures, r.accentStrong, weight = bold)
-        Label("of", words, r.ink2)
-        Label("${room.total}", figures, r.ink, weight = bold)
-        Label("done", words, r.ink2)
-        Box(Modifier.padding(horizontal = S.S1.dp).size(Micro.separator).background(r.ink4, CircleShape))
-        if (room.open == 0u) {
-            Label("all clear", words, r.accentStrong, weight = bold)
-        } else {
-            Label("${room.open}", figures, r.ink, weight = bold)
-            Label("open", words, r.ink2)
+        when (val s = room.summary) {
+            is RoomSummary.Empty ->
+                if (s.finishedThisMonth > 0u) {
+                    Label("${s.finishedThisMonth}", figures, r.ink, weight = bold)
+                    Label("finished this month", words, r.ink2)
+                } else {
+                    Label("nothing yet", words, r.ink2)
+                }
+            is RoomSummary.Done -> {
+                Label("${s.done}", figures, r.accentStrong, weight = bold)
+                Label("done", words, r.ink2)
+            }
+            is RoomSummary.AllClear -> {
+                doneOf(s.done, s.total)
+                Label("all clear", words, r.accentStrong, weight = bold)
+            }
+            is RoomSummary.Progress -> {
+                doneOf(s.done, s.total)
+                Label("${s.open}", figures, r.ink, weight = bold)
+                Label("open", words, r.ink2)
+            }
         }
     }
 }

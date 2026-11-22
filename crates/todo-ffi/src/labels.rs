@@ -53,6 +53,11 @@ impl Now {
         ts.to_zoned_datetime(self.tz.clone())
     }
 
+    /// The clock as the shared room header takes it.
+    pub fn local_time(&self) -> todo_client::room_header::LocalTime {
+        todo_client::room_header::LocalTime::new(self.at, self.tz.clone())
+    }
+
     /// The owner's local date.
     pub fn today(&self) -> Date {
         self.date_of(self.at)
@@ -116,11 +121,6 @@ pub fn day_month(d: Date, today: Date) -> String {
 }
 
 pub use todo_client::intent::quick_add::short_date;
-
-/// "W47": the ISO 8601 week.
-pub fn iso_week(d: Date) -> String {
-    format!("W{}", d.iso_week_date().week())
-}
 
 /// "Today", "Tomorrow", "Yesterday" or "Mon 23 Nov".
 pub fn relative_day(d: Date, today: Date) -> String {
@@ -233,7 +233,6 @@ mod tests {
         let n = now("2026-11-21T09:35:00Z");
         assert_eq!(n.today(), date("2026-11-21"));
         assert_eq!(weekday(n.today()), "Saturday");
-        assert_eq!(iso_week(n.today()), "W47");
         assert_eq!(short_date(date("2026-11-23"), n.today()), "Mon 23 Nov");
         assert_eq!(short_date(date("2027-01-04"), n.today()), "Mon 4 Jan 2027");
         assert_eq!(relative_day(date("2026-11-22"), n.today()), "Tomorrow");

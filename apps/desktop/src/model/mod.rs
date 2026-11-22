@@ -26,9 +26,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use gpui::SharedString;
 use jiff::tz::TimeZone;
 use todo_client::Connection;
+use todo_client::room_header::{self, LocalTime, SmartList};
 use todo_core::State;
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TagId, TaskId};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext};
+use todo_core::query::{BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
 pub use activity::AgentKey;
@@ -75,6 +76,11 @@ impl Now {
     pub fn date_of(&self, ts: Timestamp) -> Date {
         ts.to_zoned_datetime(self.tz.clone()).date()
     }
+
+    /// The same clock, as the shared room header takes it.
+    pub fn local(&self) -> LocalTime {
+        LocalTime::new(self.at, self.tz.clone())
+    }
 }
 
 /// The built-in smart lists, in sidebar order.
@@ -98,21 +104,21 @@ impl Smart {
         Self::AgentActivity,
     ];
 
+    /// The shared smart list (`todo_client::room_header`), which knows its query and its wording.
+    pub fn shared(self) -> SmartList {
+        match self {
+            Self::MyDay => SmartList::MyDay,
+            Self::Important => SmartList::Important,
+            Self::Planned => SmartList::Planned,
+            Self::All => SmartList::All,
+            Self::Completed => SmartList::Completed,
+            Self::AgentActivity => SmartList::AgentActivity,
+        }
+    }
+
     /// Its definition in `todo_core` (the saved query).
     pub fn builtin(self) -> BuiltinList {
-        let id = match self {
-            Self::MyDay => "my_day",
-            Self::Important => "important",
-            Self::Planned => "planned",
-            Self::All => "all",
-            Self::Completed => "completed",
-            Self::AgentActivity => "agent_activity",
-        };
-        BUILTIN_LISTS
-            .iter()
-            .copied()
-            .find(|b| b.id == id)
-            .unwrap_or(BUILTIN_LISTS[0])
+        self.shared().builtin()
     }
 
     /// The sidebar label (shorter than the built-in name for agent activity).
@@ -147,24 +153,7 @@ impl Smart {
 
     /// The query for the room's "Completed" section; `None` where the rows already include done tasks.
     pub fn done_query(self) -> Option<&'static str> {
-        match self {
-            Self::MyDay => Some("my_day and done sort:-completed"),
-            Self::Important => Some("priority>=high and done sort:-completed"),
-            Self::Planned => Some("due:any and done sort:-completed"),
-            Self::All => Some("done sort:-completed"),
-            Self::Completed | Self::AgentActivity => None,
-        }
-    }
-
-    pub fn empty_line(self) -> &'static str {
-        match self {
-            Self::MyDay => "Nothing planned yet.",
-            Self::Important => "Nothing pressing.",
-            Self::Planned => "Nothing on the calendar.",
-            Self::All => "Nothing open.",
-            Self::Completed => "Nothing finished yet.",
-            Self::AgentActivity => "No agent changes this week.",
-        }
+        self.shared().done_query()
     }
 }
 
@@ -408,9 +397,13 @@ pub struct Room {
     pub eyebrow: Eyebrow,
     pub hue: Hue,
     pub chips: Chips,
-    /// Header progress: done of total (see `derive` for what counts).
+    /// Header progress: done of total (`todo_client::room_header` says what counts).
     pub done: u32,
     pub total: u32,
+    /// The summary beside the sun, as every client words it.
+    pub score: room_header::Summary,
+    /// The status bar's counts; `None` in Activity, which counts its feed.
+    pub status: Option<room_header::StatusCounts>,
     /// The data has no estimates yet, so this stays `None` outside fixtures that show the layout.
     pub estimate: Option<SharedString>,
     /// Open tasks (plus tasks finishing their completion), in order.
@@ -468,6 +461,7 @@ impl Room {
     }
 
     /// (done, total, open) for the header.
+    #[cfg(test)]
     pub fn summary(&self) -> (u32, u32, u32) {
         (self.done, self.total, self.total.saturating_sub(self.done))
     }

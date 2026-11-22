@@ -16,6 +16,7 @@
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
 //! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
 //! | [`activity`] | paged activity reads and shared feed wording |
+//! | [`room_header`] | a room's tasks and header: eyebrow, sun progress, summary, status-bar counts, empty line |
 //! | [`intent`] | shared quick-add syntax and gesture-to-command builders |
 //! | [`intent::suggest`] | local, incremental title-to-list suggestions; no storage or network access |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
@@ -50,6 +51,7 @@ pub mod pairing;
 pub mod platform;
 pub mod protocol;
 pub mod replica;
+pub mod room_header;
 pub mod session;
 pub mod sse;
 pub mod storage;

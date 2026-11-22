@@ -493,6 +493,7 @@ mod tests {
         let s = build(Fixture::World, &n);
         let r = view::room(&s, &my_day(), &n);
         assert_eq!((r.done, r.total, r.open), (3, 12, 9));
+        assert_eq!(r.summary_text, "3 of 12 done · 9 open");
         assert!(!r.finished);
         let first = &r.tasks[0];
         assert_eq!(first.title, "Pay quarterly VAT filing");
@@ -522,7 +523,7 @@ mod tests {
         {
             assert_eq!(
                 (weekday.as_str(), date.as_str(), week.as_str()),
-                ("Saturday", "21 Nov", "W47")
+                ("Saturday", "21 Nov 2026", "W47")
             );
         } else {
             panic!("a smart list has a day eyebrow");
@@ -536,6 +537,13 @@ mod tests {
         let r = view::room(&s, &my_day(), &n);
         assert!(r.finished);
         assert_eq!((r.done, r.total, r.open), (12, 12, 0));
+        assert_eq!(
+            r.summary,
+            view::RoomSummary::AllClear {
+                done: 12,
+                total: 12
+            }
+        );
         let t = r.tomorrow.unwrap();
         assert_eq!(t.weekday, "Sunday");
         assert!(!t.week.is_empty());

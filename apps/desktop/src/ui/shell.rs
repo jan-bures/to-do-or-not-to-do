@@ -22,6 +22,7 @@ use gpui::{
     Window, WindowControlArea, actions, div, prelude::*, px, uniform_list,
 };
 use todo_client::Connection;
+use todo_client::room_header::{StatusCounts, Summary};
 use todo_core::ids::{CollectionId, ListId, TaskId};
 
 use super::input::{InputColors, InputEvent, TextInput};
@@ -1811,7 +1812,6 @@ impl ShellView {
     fn summary(&self) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
-        let (done, total, open) = room.summary();
         let (ink_2, _, line) = self.header_inks();
         let finished_day = room.finished_day();
         let ink = if finished_day { ink_2 } else { p.ink };
@@ -1829,44 +1829,52 @@ impl ShellView {
             .pb(px(space::S3))
             .style(ty::SUMMARY)
             .text_color(ink_2);
-        if room.key.is_activity() {
+        let figure = |n: usize| {
+            div()
+                .style(ty::SUMMARY_FIGURES.with_weight(600))
+                .text_color(ink)
+                .child(n.to_string())
+        };
+        let done_of = |done: usize, total: usize| {
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(space::S1))
+                .child(figure(done))
+                .child(format!("of {total} done"))
+        };
+        // The shared summary (`todo_client::room_header`) says what to show; this draws it.
+        row = match room.score {
             // Changes aren't scored: the feed itself says what happened.
-            return row;
-        }
-        if total == 0 {
-            let finished = room.finished_this_month;
-            return row.child(div().style(ty::SUMMARY_FIGURES).child(if finished > 0 {
-                format!("{finished} finished this month")
-            } else {
-                "nothing yet".to_string()
-            }));
-        }
-        row = row
-            .child(
+            Summary::None => return row,
+            Summary::Empty { .. } => {
+                return row.child(div().style(ty::SUMMARY_FIGURES).child(room.score.text()));
+            }
+            Summary::Done { done } => row.child(
                 div()
                     .flex()
                     .items_baseline()
                     .gap(px(space::S1))
-                    .child(
-                        div()
-                            .style(ty::SUMMARY_FIGURES.with_weight(600))
-                            .text_color(ink)
-                            .child(done.to_string()),
-                    )
-                    .child(format!("of {total} done")),
-            )
-            .child(sep())
-            .child(if finished_day {
-                // The day is done: the count says so in the accent, without congratulations.
-                div()
-                    .style(ty::SUMMARY_FIGURES.with_weight(600))
-                    .text_color(self.dusk_accent())
-                    .child("all clear")
-            } else {
-                div()
-                    .style(ty::SUMMARY_FIGURES)
-                    .child(format!("{open} open"))
-            });
+                    .child(figure(done))
+                    .child("done"),
+            ),
+            Summary::AllClear { done, total } => {
+                row.child(done_of(done, total)).child(sep()).child(
+                    // The day is done: the count says so in the accent, without congratulations.
+                    div()
+                        .style(ty::SUMMARY_FIGURES.with_weight(600))
+                        .text_color(self.dusk_accent())
+                        .child("all clear"),
+                )
+            }
+            Summary::Progress { done, total, open } => {
+                row.child(done_of(done, total)).child(sep()).child(
+                    div()
+                        .style(ty::SUMMARY_FIGURES)
+                        .child(format!("{open} open")),
+                )
+            }
+        };
         if let Some(est) = &room.estimate {
             row = row.child(sep()).child(
                 div()
@@ -3314,14 +3322,14 @@ impl ShellView {
     fn status_bar(&self, window: &Window, cx: &App) -> Div {
         let p = &self.palette;
         // Activity counts the changes it shows, and today's among them; the rooms their tasks.
-        let ((open, open_label), (done, done_label)) = if self.in_activity() {
-            let (shown, today) = model::activity::counts(&self.activity, &self.store.now());
-            let n = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-            ((n(shown), "shown"), (n(today), "today"))
-        } else {
-            let room = &self.shell.room;
-            ((room.summary().2, "open"), (room.done_today, "done today"))
+        let counts = match self.shell.room.status {
+            Some(counts) if !self.in_activity() => counts,
+            _ => {
+                let (shown, today) = model::activity::counts(&self.activity, &self.store.now());
+                StatusCounts::activity(shown, today)
+            }
         };
+        let ((open, open_label), (done, done_label)) = (counts.first, counts.second);
         let keys = hints::key_hints(hints::HintState {
             focus: self.focus_now(window, cx),
             rows: !self.nav_tasks().is_empty(),

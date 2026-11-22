@@ -538,7 +538,7 @@ fn only_web_links_are_clickable() {
 fn only_my_day_mentions_the_global_quick_add() {
     // Ctrl+Alt+Space always adds to My Day, so an empty list points at its own quick-add instead.
     let empty = fixtures::empty().shell();
-    assert_eq!(empty.room.empty_line.as_ref(), "Nothing on the shelf yet.");
+    assert_eq!(empty.room.empty_line.as_ref(), "Nothing here yet.");
     assert!(!empty.room.empty_hint.contains("Ctrl+Alt+Space"));
     assert!(empty.room.empty_hint.contains("Ctrl+N"));
     let mut f = fixtures::my_day();
@@ -889,4 +889,28 @@ fn a_hand_over_task_deleted_leaves_its_line_and_one_moved_stays() {
     let leaving = f.shell();
     let next = leaving.room.handover().expect("still hands over");
     assert_eq!(next.tasks().nth(1).map(|t| t.id), Some(task.id));
+}
+
+#[test]
+fn smart_lists_score_todays_work_under_the_day_eyebrow() {
+    let mut f = fixtures::my_day();
+    f.ui.room = RoomKey::Smart(Smart::Important);
+    let shell = f.shell();
+    let room = &shell.room;
+    assert!(matches!(room.eyebrow, Eyebrow::Day { .. }));
+    let (done, total, open) = room.summary();
+    // Today's work: what was finished on earlier days is not on the score.
+    assert_eq!(done, room.done_today);
+    assert_eq!(
+        room.status.map(|s| s.text()),
+        Some(format!("{open} open · {done} done today"))
+    );
+    assert_eq!(
+        room.score,
+        todo_client::room_header::Summary::Progress {
+            done: done as usize,
+            total: total as usize,
+            open: open as usize,
+        }
+    );
 }
