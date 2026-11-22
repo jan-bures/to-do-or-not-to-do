@@ -574,6 +574,11 @@ impl Motion {
         self.rows.remove(&id);
     }
 
+    /// Whether any row is in its choreography (at rest, no row needs sampling).
+    pub fn rows_moving(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
     /// Rows entering after a release, which the view checks against the rows it shows.
     pub fn entering(&self) -> impl Iterator<Item = TaskId> + '_ {
         self.rows

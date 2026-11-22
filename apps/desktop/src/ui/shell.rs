@@ -453,6 +453,9 @@ impl ShellView {
     /// Each row's lift this frame (see `motion::lifts`), or none when nothing is collapsing or entering.
     fn measure_lifts(&mut self) {
         self.row_lifts.clear();
+        if !self.motion.rows_moving() {
+            return;
+        }
         let frame = self.frame;
         let heights: Vec<f32> = self
             .shell
