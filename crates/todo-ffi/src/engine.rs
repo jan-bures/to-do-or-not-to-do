@@ -12,6 +12,7 @@ use crate::recovery::{self, CacheRecovery};
 use crate::runtime::runtime;
 use crate::transport::AppTransport;
 use crate::view::{self, Home, RoomKey, RoomView, RowPlacement, SmartList, TaskDetail};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use todo_client::intent::{self, TaskRoom};
@@ -19,8 +20,13 @@ use todo_client::native::{Cleartext, HttpTransport, OsEntropy, TokioClock};
 use todo_client::outbox::OutboxEntry;
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
-use todo_client::{ClientConfig, Connection, ErrorKind, MemoryStorage, SyncClient};
-use todo_core::ids::{EntityId, ListId, StepId, TaskId};
+use todo_client::{
+    ClientConfig, CommandId, Connection, ErrorKind, MemoryStorage, SyncClient, TrackedCommand,
+    TrackedUndo,
+};
+use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
+use todo_core::model::Entity;
+use todo_core::time::Date;
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
@@ -115,7 +121,49 @@ pub struct FailedChange {
 /// An opaque reference to the exact completion (including its generated next occurrence).
 /// Kept by the toast, never rebuilt from a task ID or timestamp.
 #[derive(Debug, uniffi::Object)]
-pub struct Completion(todo_client::TrackedCommand);
+pub struct Completion(TrackedCommand);
+
+/// An opaque reference to an exact deletion (a step, or a list with its tasks), for its Undo. Kept by the
+/// toast, like [`Completion`].
+#[derive(Debug, uniffi::Object)]
+pub struct Deletion {
+    tracked: TrackedCommand,
+    entity: EntityId,
+}
+
+/// What an undo in the outbox reverses, so a refusal can say so in plain words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Undone {
+    Completion,
+    Step,
+    List,
+}
+
+impl Undone {
+    fn of(entity: EntityId) -> Self {
+        match entity {
+            EntityId::Step(_) => Self::Step,
+            EntityId::List(_) => Self::List,
+            _ => Self::Completion,
+        }
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Self::Completion => "Undo a completion",
+            Self::Step => "Undo deleting a step",
+            Self::List => "Undo deleting a list",
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Completion => "task",
+            Self::Step => "step",
+            Self::List => "list",
+        }
+    }
+}
 
 /// The quick-add date label, if the shared submit parser found a trailing date.
 #[uniffi::export]
@@ -134,6 +182,9 @@ pub struct TodoEngine {
     /// Built by [`TodoEngine::fixture`]: only such an engine takes the test hooks
     /// ([`TodoEngine::fixture_delete_task`], [`TodoEngine::fixture_restore_task`]).
     fixture: bool,
+    /// What each undo this engine queued reverses (forgotten on restart: a refusal is then worded
+    /// generally).
+    undos: Mutex<HashMap<CommandId, Undone>>,
     run: Mutex<Option<JoinHandle<()>>>,
     watch: Mutex<Option<JoinHandle<()>>>,
 }
@@ -158,7 +209,21 @@ fn task_id(id: &str) -> Result<TaskId, FfiError> {
     id.parse().map_err(|_| invalid("no such task"))
 }
 
-fn describe(entry: &OutboxEntry) -> &'static str {
+fn step_id(id: &str) -> Result<StepId, FfiError> {
+    id.parse().map_err(|_| invalid("no such step"))
+}
+
+fn list_id(id: &str) -> Result<ListId, FfiError> {
+    id.parse().map_err(|_| invalid("no such list"))
+}
+
+fn collection_id(id: &str) -> Result<CollectionId, FfiError> {
+    id.parse().map_err(|_| invalid("no such collection"))
+}
+
+/// What a queued change does, in the "Not saved" banner's words. An undo names what it reverses when
+/// this engine queued it ([`Undone`]).
+fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
     match entry.command() {
         Some(Command::CreateTask(_)) => "Add a task",
         Some(Command::UpdateTask { .. }) => "Edit a task",
@@ -166,12 +231,80 @@ fn describe(entry: &OutboxEntry) -> &'static str {
         Some(Command::UncompleteTask { .. }) => "Reopen a task",
         Some(Command::SetMyDay { .. }) => "Change My Day",
         Some(Command::CreateList { .. }) => "Add a list",
+        Some(Command::UpdateList { .. }) => "Rename a list",
+        Some(Command::UpdateCollection { .. }) => "Rename a collection",
         Some(Command::CreateStep { .. }) => "Add a step",
+        Some(Command::UpdateStep { .. }) => "Rename a step",
         Some(Command::CompleteStep { .. }) => "Complete a step",
         Some(Command::UncompleteStep { .. }) => "Reopen a step",
+        Some(Command::Reorder { id, .. }) => match id {
+            EntityId::Step(_) => "Move a step",
+            EntityId::List(_) => "Move a list",
+            EntityId::Collection(_) => "Move a collection",
+            _ => "Move an item",
+        },
+        Some(Command::Delete { id }) => match id {
+            EntityId::Step(_) => "Delete a step",
+            EntityId::List(_) => "Delete a list",
+            EntityId::Task(_) => "Delete a task",
+            _ => "Delete an item",
+        },
         Some(_) => "A change",
-        None => "Undo a completion",
+        None => undone.map_or("Undo a change", Undone::what),
     }
+}
+
+/// Why a restored step or list still shows nothing: Undo brings back exactly what was deleted, never
+/// what it belongs to, so if that (its task, list or collection) was deleted meanwhile, elsewhere, the
+/// restored item stays hidden with it. `None` when it shows, or while the view doesn't predict the undo.
+fn hidden_by_parent(state: &State, entity: EntityId) -> Option<String> {
+    if state.tombstone(entity).is_some() || state.is_live(entity) {
+        return None;
+    }
+    let mut at = state.entity(entity)?.parent();
+    let gone = loop {
+        let parent = state.entity(at?)?;
+        if parent.deleted().is_some() {
+            break parent;
+        }
+        at = parent.parent();
+    };
+    let what = match gone {
+        Entity::Task(_) => "task",
+        Entity::List(_) => "list",
+        Entity::Collection(_) => "collection",
+        _ => return None,
+    };
+    let subject = match entity {
+        EntityId::Step(_) => "Step",
+        EntityId::List(_) => "List",
+        _ => "Task",
+    };
+    Some(format!(
+        "{subject} restored, but its {what} was deleted elsewhere."
+    ))
+}
+
+/// The question before deleting a list: which list, and how many tasks go with it, worded as the
+/// desktop's. `None` if the list is gone.
+pub fn delete_list_question(state: &State, id: ListId) -> Option<String> {
+    let list = state
+        .lists
+        .get(&id)
+        .filter(|_| view::list_live(state, id))?;
+    let name = crate::labels::one_line(&list.name);
+    let tasks = state
+        .tasks
+        .values()
+        .filter(|t| t.list == id && t.deleted.is_none() && t.merged_into.is_none())
+        .count();
+    let what = match tasks {
+        0 => format!("Delete the list \u{201c}{name}\u{201d}?"),
+        1 => format!("Delete the list \u{201c}{name}\u{201d} and its task?"),
+        n => format!("Delete the list \u{201c}{name}\u{201d} and its {n} tasks?"),
+    };
+    let back = if tasks == 0 { "it" } else { "them" };
+    Some(format!("{what} Undo brings {back} back."))
 }
 
 impl TodoEngine {
@@ -180,6 +313,7 @@ impl TodoEngine {
             client,
             recovered,
             fixture,
+            undos: Mutex::new(HashMap::new()),
             run: Mutex::new(None),
             watch: Mutex::new(None),
         })
@@ -201,6 +335,73 @@ impl TodoEngine {
 
     fn is_running(&self) -> bool {
         locked(&self.run).as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// Cancels an unsent tracked command or queues its checked inverse, remembering what it reverses.
+    fn undo_tracked(&self, target: &TrackedCommand, undone: Undone) -> Result<(), FfiError> {
+        match self.client.undo_tracked(target) {
+            Ok(TrackedUndo::Cancelled) => Ok(()),
+            Ok(TrackedUndo::Queued(id)) => {
+                locked(&self.undos).insert(id, undone);
+                Ok(())
+            }
+            Ok(TrackedUndo::Unavailable) => Err(invalid(
+                "Couldn't undo: the original change couldn't be found.",
+            )),
+            Err(todo_client::SubmitError::Storage(e)) => Err(e.into()),
+            Err(todo_client::SubmitError::Invalid(_)) => Err(invalid("Couldn't undo that.")),
+        }
+    }
+
+    /// Submits `command` if there is one; `Ok(false)` when there was nothing to do.
+    fn submit_some(&self, command: Option<Command>) -> Result<bool, FfiError> {
+        match command {
+            Some(command) => {
+                self.client.submit(command)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Deletes a live step or list, tracked for its Undo.
+    fn delete_tracked(&self, entity: EntityId) -> Result<Arc<Deletion>, FfiError> {
+        let tracked = self.client.submit_tracked(intent::delete(entity))?;
+        Ok(Arc::new(Deletion { tracked, entity }))
+    }
+
+    /// A live task, or why not.
+    fn live_task(&self, id: &str) -> Result<(TaskId, Arc<State>), FfiError> {
+        let id = task_id(id)?;
+        let state = self.client.view();
+        if !state
+            .tasks
+            .get(&id)
+            .is_some_and(|t| view::task_live(&state, t))
+        {
+            return Err(invalid("No such task."));
+        }
+        Ok((id, state))
+    }
+
+    /// A live step, or why not.
+    fn live_step(&self, id: &str) -> Result<(StepId, Arc<State>), FfiError> {
+        let id = step_id(id)?;
+        let state = self.client.view();
+        if !state.is_live(id.into()) {
+            return Err(invalid("No such step."));
+        }
+        Ok((id, state))
+    }
+
+    /// A live list, or why not.
+    fn live_list(&self, id: &str) -> Result<(ListId, Arc<State>), FfiError> {
+        let id = list_id(id)?;
+        let state = self.client.view();
+        if !view::list_live(&state, id) {
+            return Err(invalid("No such list."));
+        }
+        Ok((id, state))
     }
 }
 
@@ -473,14 +674,107 @@ impl TodoEngine {
     /// Cancels an unsent completion or queues its checked inverse. A later server refusal is
     /// reported by `failed`, like other outbox failures, but never with raw server text.
     pub fn undo_completion(&self, completion: Arc<Completion>) -> Result<(), FfiError> {
-        match self.client.undo_tracked(&completion.0) {
-            Ok(todo_client::TrackedUndo::Cancelled | todo_client::TrackedUndo::Queued(_)) => Ok(()),
-            Ok(todo_client::TrackedUndo::Unavailable) => Err(invalid(
-                "Couldn't undo: the original change couldn't be found.",
-            )),
-            Err(todo_client::SubmitError::Storage(e)) => Err(e.into()),
-            Err(todo_client::SubmitError::Invalid(_)) => Err(invalid("Couldn't undo that.")),
+        self.undo_tracked(&completion.0, Undone::Completion)
+    }
+
+    /// Sets the due date (ISO, `2026-11-22`) or clears it (`None`). Clearing it also clears a repeat
+    /// rule, which needs a due date (`intent::set_due`).
+    pub fn set_due(&self, id: String, due: Option<String>) -> Result<(), FfiError> {
+        let due = due
+            .map(|d| d.trim().parse::<Date>())
+            .transpose()
+            .map_err(|_| invalid("That isn't a date."))?;
+        let (id, state) = self.live_task(&id)?;
+        self.submit_some(intent::set_due(&state, id, due))?;
+        Ok(())
+    }
+
+    /// Sets the priority by its `!` marks: 0 (none), 1 (low), 2 (normal) or 3 (high).
+    pub fn set_priority(&self, id: String, marks: u8) -> Result<(), FfiError> {
+        let priority = view::priority_of(marks).ok_or_else(|| invalid("No such priority."))?;
+        let (id, state) = self.live_task(&id)?;
+        self.submit_some(intent::pick_priority(&state, id, priority))?;
+        Ok(())
+    }
+
+    /// Renames a step.
+    pub fn rename_step(&self, id: String, title: String) -> Result<(), FfiError> {
+        if title.trim().is_empty() {
+            return Err(invalid("A step needs a title."));
         }
+        let (id, state) = self.live_step(&id)?;
+        self.submit_some(intent::retitle_step(&state, id, &title))?;
+        Ok(())
+    }
+
+    /// Moves a step one place up (`by` < 0) or down among its task's steps. `false` at either end.
+    pub fn move_step(&self, id: String, by: i32) -> Result<bool, FfiError> {
+        let (id, state) = self.live_step(&id)?;
+        self.submit_some(intent::nudge(&state, id.into(), by))
+    }
+
+    /// Deletes a step. The returned handle undoes exactly this deletion.
+    pub fn delete_step(&self, id: String) -> Result<Arc<Deletion>, FfiError> {
+        let (id, _) = self.live_step(&id)?;
+        self.delete_tracked(id.into())
+    }
+
+    /// Renames a list.
+    pub fn rename_list(&self, id: String, name: String) -> Result<(), FfiError> {
+        if name.trim().is_empty() {
+            return Err(invalid("A list needs a name."));
+        }
+        let (id, state) = self.live_list(&id)?;
+        self.submit_some(intent::rename_list(&state, id, &name))?;
+        Ok(())
+    }
+
+    /// Renames a collection.
+    pub fn rename_collection(&self, id: String, name: String) -> Result<(), FfiError> {
+        if name.trim().is_empty() {
+            return Err(invalid("A collection needs a name."));
+        }
+        let id = collection_id(&id)?;
+        let state = self.client.view();
+        if !state.is_live(id.into()) {
+            return Err(invalid("No such collection."));
+        }
+        self.submit_some(intent::rename_collection(&state, id, &name))?;
+        Ok(())
+    }
+
+    /// Moves a list (among its collection's lists, or the top-level ones) or a collection one place up
+    /// (`by` < 0) or down. `false` at either end, and for a smart list.
+    pub fn move_room(&self, room: RoomKey, by: i32) -> Result<bool, FfiError> {
+        let entity: EntityId = match room {
+            RoomKey::List { id } => self.live_list(&id)?.0.into(),
+            RoomKey::Collection { id } => collection_id(&id)?.into(),
+            RoomKey::Smart { .. } => return Ok(false),
+        };
+        let state = self.client.view();
+        if !state.is_live(entity) {
+            return Err(invalid("No such collection."));
+        }
+        self.submit_some(intent::nudge(&state, entity, by))
+    }
+
+    /// What deleting a list would take with it, as the confirmation asks it; `None` if it is gone.
+    pub fn delete_list_question(&self, id: String) -> Option<String> {
+        delete_list_question(&self.client.view(), id.parse().ok()?)
+    }
+
+    /// Deletes a list and its tasks. The returned handle undoes exactly this deletion.
+    pub fn delete_list(&self, id: String) -> Result<Arc<Deletion>, FfiError> {
+        let (id, _) = self.live_list(&id)?;
+        self.delete_tracked(id.into())
+    }
+
+    /// Undoes a deletion: cancels it if unsent, else queues its checked inverse (a refusal shows in
+    /// [`failed`](Self::failed), in plain words). Returns a notice when the restored item still can't
+    /// show, because what it belongs to was deleted elsewhere meanwhile.
+    pub fn undo_deletion(&self, deletion: Arc<Deletion>) -> Result<Option<String>, FfiError> {
+        self.undo_tracked(&deletion.tracked, Undone::of(deletion.entity))?;
+        Ok(hidden_by_parent(&self.client.view(), deletion.entity))
     }
 
     /// Edits multi-line plain-text notes; empty text clears them.
@@ -594,17 +888,21 @@ impl TodoEngine {
 
     /// Changes the server refused, oldest first.
     pub fn failed(&self) -> Vec<FailedChange> {
+        let undos = locked(&self.undos).clone();
         self.client
             .failed()
             .into_iter()
-            .map(|f| FailedChange {
-                id: f.entry.command_id.to_string(),
-                what: describe(&f.entry).into(),
-                reason: if f.entry.command().is_none() {
-                    undo_failure_message(&f.rejection.code).into()
-                } else {
-                    f.rejection.message
-                },
+            .map(|f| {
+                let undone = undos.get(&f.entry.command_id).copied();
+                FailedChange {
+                    id: f.entry.command_id.to_string(),
+                    what: describe(&f.entry, undone).into(),
+                    reason: if f.entry.command().is_none() {
+                        undo_failure_message(&f.rejection.code, undone)
+                    } else {
+                        f.rejection.message
+                    },
+                }
             })
             .collect()
     }
@@ -616,13 +914,17 @@ impl TodoEngine {
     }
 }
 
-fn undo_failure_message(code: &str) -> &'static str {
+/// A refused undo in plain words, never the server's text. `undone` names what it reversed, when known.
+fn undo_failure_message(code: &str, undone: Option<Undone>) -> String {
+    let subject = undone.map_or("it".to_owned(), |u| format!("the {}", u.noun()));
     match code {
-        "undo_conflict" => "Couldn't undo: the task was changed again.",
-        "undo_no_event" => "Couldn't undo: the original change couldn't be found.",
-        "epoch_mismatch" | "event_mismatch" => "Couldn't undo: the server's history changed.",
-        "not_found" => "Couldn't undo: the task no longer exists.",
-        _ => "Couldn't undo that.",
+        "undo_conflict" => format!("Couldn't undo: {subject} was changed again."),
+        "undo_no_event" => "Couldn't undo: the original change couldn't be found.".into(),
+        "epoch_mismatch" | "event_mismatch" => {
+            "Couldn't undo: the server's history changed.".into()
+        }
+        "not_found" => format!("Couldn't undo: {subject} no longer exists."),
+        _ => "Couldn't undo that.".into(),
     }
 }
 
@@ -766,6 +1068,179 @@ mod tests {
         assert_eq!(
             engine.state().lists[&sibling.parse().expect("list ID")].collection,
             Some(other)
+        );
+    }
+
+    fn fixture_now() -> LocalNow {
+        let at: Timestamp = "2026-11-21T10:35:00Z".parse().expect("timestamp");
+        LocalNow {
+            epoch_ms: at.as_millisecond(),
+            utc_offset_secs: 0,
+        }
+    }
+
+    /// The commands the engine queued since `from`, oldest first.
+    fn queued(engine: &TodoEngine, from: usize) -> Vec<Command> {
+        engine
+            .client
+            .pending()
+            .iter()
+            .skip(from)
+            .filter_map(OutboxEntry::command)
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn ffi_edits_submit_the_shared_builders() {
+        use todo_core::model::Priority;
+        let now = fixture_now();
+        let engine = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let id = engine
+            .add_task(RoomKey::default(), "Sow seeds".into(), now)
+            .expect("task");
+        let task: TaskId = id.parse().expect("task ID");
+        let step = engine
+            .add_step(id.clone(), "Buy soil".into())
+            .expect("step");
+        let step_id: StepId = step.parse().expect("step ID");
+        engine.add_step(id.clone(), "Dig".into()).expect("step");
+        let at = engine.client.pending().len();
+
+        let state = engine.state();
+        let due: Date = "2026-12-01".parse().expect("date");
+        engine
+            .set_due(id.clone(), Some(due.to_string()))
+            .expect("due");
+        engine.set_priority(id.clone(), 2).expect("priority");
+        engine
+            .rename_step(step.clone(), "Buy compost".into())
+            .expect("rename");
+        let mut expected = vec![
+            intent::set_due(&state, task, Some(due)).expect("due"),
+            intent::pick_priority(&state, task, Priority::Normal).expect("priority"),
+            intent::retitle_step(&state, step_id, "Buy compost").expect("rename"),
+        ];
+        let state = engine.state();
+        engine.move_step(step.clone(), 1).expect("move");
+        expected.push(intent::nudge(&state, step_id.into(), 1).expect("move"));
+        engine.delete_step(step).expect("delete");
+        expected.push(intent::delete(step_id));
+        assert_eq!(queued(&engine, at), expected);
+
+        // Lists and collections, through the same builders.
+        let state = engine.state();
+        let &collection = state.collections.keys().next().expect("collection");
+        let list = *state
+            .lists
+            .values()
+            .find(|l| l.collection == Some(collection))
+            .map(|l| &l.id)
+            .expect("list");
+        let at = engine.client.pending().len();
+        engine
+            .rename_list(list.to_string(), "Seeds".into())
+            .expect("rename");
+        engine
+            .rename_collection(collection.to_string(), "Garden".into())
+            .expect("rename");
+        let mut expected = vec![
+            intent::rename_list(&state, list, "Seeds").expect("rename"),
+            intent::rename_collection(&state, collection, "Garden").expect("rename"),
+        ];
+        let state = engine.state();
+        let by = if intent::nudge(&state, list.into(), 1).is_some() {
+            1
+        } else {
+            -1
+        };
+        assert!(
+            engine
+                .move_room(
+                    RoomKey::List {
+                        id: list.to_string()
+                    },
+                    by
+                )
+                .expect("move")
+        );
+        expected.push(intent::nudge(&state, list.into(), by).expect("move"));
+        engine.delete_list(list.to_string()).expect("delete");
+        expected.push(intent::delete(list));
+        assert_eq!(queued(&engine, at), expected);
+    }
+
+    #[test]
+    fn clearing_the_due_date_also_clears_the_repeat() {
+        use todo_core::command::TaskPatch;
+        use todo_core::recurrence::{Recurrence, Rule};
+        let now = fixture_now();
+        let engine = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let id = engine
+            .add_task(RoomKey::default(), "Water the plants tomorrow".into(), now)
+            .expect("task");
+        let task: TaskId = id.parse().expect("task ID");
+        engine
+            .client
+            .submit(intent::update_task(
+                task,
+                TaskPatch {
+                    recurrence: Some(Some(Recurrence::new(Rule::Daily { interval: 1 }))),
+                    ..TaskPatch::default()
+                },
+            ))
+            .expect("repeat");
+        assert!(engine.task(id.clone(), now).expect("task").repeats);
+        engine.set_due(id.clone(), None).expect("clear");
+        let detail = engine.task(id, now).expect("task");
+        assert_eq!((detail.due, detail.repeats), (None, false));
+        assert_eq!(engine.state().tasks[&task].recurrence, None);
+    }
+
+    #[test]
+    fn refused_undos_are_worded_by_what_they_reverse_never_with_server_text() {
+        for undone in [
+            None,
+            Some(Undone::Completion),
+            Some(Undone::Step),
+            Some(Undone::List),
+        ] {
+            for code in [
+                "undo_conflict",
+                "undo_no_event",
+                "epoch_mismatch",
+                "event_mismatch",
+                "not_found",
+                "something_new",
+            ] {
+                let message = undo_failure_message(code, undone);
+                assert!(message.starts_with("Couldn't undo"), "{message}");
+                assert!(!message.contains(code), "{message}");
+            }
+        }
+        assert_eq!(
+            undo_failure_message("undo_conflict", Some(Undone::Completion)),
+            "Couldn't undo: the task was changed again."
+        );
+        assert_eq!(
+            undo_failure_message("not_found", Some(Undone::Step)),
+            "Couldn't undo: the step no longer exists."
+        );
+        assert_eq!(
+            undo_failure_message("undo_conflict", Some(Undone::List)),
+            "Couldn't undo: the list was changed again."
+        );
+        assert_eq!(
+            undo_failure_message("undo_conflict", None),
+            "Couldn't undo: it was changed again."
+        );
+        assert_eq!(
+            Undone::of(StepId::from_uuid(Uuid::nil()).into()),
+            Undone::Step
+        );
+        assert_eq!(
+            Undone::of(ListId::from_uuid(Uuid::nil()).into()),
+            Undone::List
         );
     }
 }

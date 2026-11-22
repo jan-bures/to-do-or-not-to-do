@@ -12,7 +12,7 @@ use todo_core::{Actor, Command, DeviceId};
 use todo_ffi::engine::{EngineConfig, SyncState};
 use todo_ffi::labels::LocalNow;
 use todo_ffi::pairing::{self, PairPoll};
-use todo_ffi::view::{RoomKey, SmartList};
+use todo_ffi::view::{FieldEdit, RoomKey, SmartList};
 use todo_ffi::{ChangeListener, FfiError, TodoEngine};
 use todo_server::auth::hash_token;
 use todo_server::config::OwnerToken;
@@ -955,4 +955,303 @@ fn only_a_fixture_engine_takes_the_test_hooks() {
         Err(FfiError::Invalid { .. })
     ));
     assert_eq!(engine.task_done(id), Some(false));
+}
+
+/// The due date, the priority's four levels, and the steps' rename, reorder and delete, offline: each
+/// lands in the view at once, and a deleted step comes back with Undo exactly as it was.
+#[test]
+fn due_dates_priorities_and_step_edits() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let id = engine
+        .add_task(my_day(), "Renew the passport".into(), now())
+        .unwrap();
+    let detail = engine.task(id.clone(), now()).unwrap();
+    assert_eq!((detail.due.as_deref(), detail.repeats), (None, false));
+    let edits: Vec<_> = detail
+        .fields
+        .iter()
+        .map(|f| (f.label.as_str(), f.edit))
+        .collect();
+    assert_eq!(
+        &edits[..2],
+        [
+            ("Due", Some(FieldEdit::Due)),
+            ("Priority", Some(FieldEdit::Priority))
+        ]
+    );
+    assert!(detail.fields[1].empty);
+
+    engine
+        .set_due(id.clone(), Some("2026-12-24".into()))
+        .unwrap();
+    let detail = engine.task(id.clone(), now()).unwrap();
+    assert_eq!(detail.due.as_deref(), Some("2026-12-24"));
+    assert!(!detail.fields[0].empty);
+    assert!(matches!(
+        engine.set_due(id.clone(), Some("24. 12.".into())),
+        Err(FfiError::Invalid { .. })
+    ));
+    let pending = engine.status().pending;
+    engine
+        .set_due(id.clone(), Some("2026-12-24".into()))
+        .unwrap();
+    assert_eq!(
+        engine.status().pending,
+        pending,
+        "an unchanged date sends nothing"
+    );
+    engine.set_due(id.clone(), None).unwrap();
+    assert_eq!(engine.task(id.clone(), now()).unwrap().due, None);
+
+    for (marks, name) in [(1, "Low"), (2, "Normal"), (3, "High"), (0, "–")] {
+        engine.set_priority(id.clone(), marks).unwrap();
+        let detail = engine.task(id.clone(), now()).unwrap();
+        assert_eq!(detail.priority, marks);
+        assert_eq!(detail.fields[1].value, name);
+    }
+    assert!(matches!(
+        engine.set_priority(id.clone(), 4),
+        Err(FfiError::Invalid { .. })
+    ));
+
+    let first = engine
+        .add_step(id.clone(), "Find the old one".into())
+        .unwrap();
+    let second = engine.add_step(id.clone(), "Book a photo".into()).unwrap();
+    let titles = |e: &TodoEngine| -> Vec<String> {
+        e.task(id.clone(), now())
+            .unwrap()
+            .steps
+            .into_iter()
+            .map(|s| s.title)
+            .collect()
+    };
+    engine
+        .rename_step(first.clone(), " Find the old passport ".into())
+        .unwrap();
+    assert!(matches!(
+        engine.rename_step(first.clone(), "  ".into()),
+        Err(FfiError::Invalid { .. })
+    ));
+    assert!(engine.move_step(second.clone(), -1).unwrap());
+    assert!(
+        !engine.move_step(second.clone(), -1).unwrap(),
+        "already first"
+    );
+    assert_eq!(titles(&engine), ["Book a photo", "Find the old passport"]);
+    engine.set_step_done(second.clone(), true).unwrap();
+    let deleted = engine.delete_step(second.clone()).unwrap();
+    assert_eq!(titles(&engine), ["Find the old passport"]);
+    assert!(matches!(
+        engine.delete_step(second.clone()),
+        Err(FfiError::Invalid { .. })
+    ));
+    assert_eq!(engine.undo_deletion(deleted).unwrap(), None);
+    let steps = engine.task(id, now()).unwrap().steps;
+    assert_eq!(
+        steps
+            .iter()
+            .map(|s| (s.title.as_str(), s.done))
+            .collect::<Vec<_>>(),
+        [("Book a photo", true), ("Find the old passport", false)]
+    );
+}
+
+fn collection_named(engine: &TodoEngine, name: &str) -> (String, Vec<todo_ffi::view::NavItem>) {
+    let group = engine
+        .home(now())
+        .groups
+        .into_iter()
+        .find(|g| g.collection.as_ref().is_some_and(|c| c.name == name))
+        .unwrap();
+    let RoomKey::Collection { id } = group.collection.unwrap().key else {
+        panic!("a collection")
+    };
+    (id, group.lists)
+}
+
+fn collection_names(engine: &TodoEngine) -> Vec<String> {
+    engine
+        .home(now())
+        .groups
+        .into_iter()
+        .filter_map(|g| g.collection.map(|c| c.name))
+        .collect()
+}
+
+/// Lists and collections: rename, reorder, and a list's delete (asked first, in full) with Undo.
+#[test]
+fn lists_and_collections_rename_reorder_and_delete() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let (personal, lists) = collection_named(&engine, "Personal");
+    let errands = lists.iter().find(|l| l.name == "Errands").unwrap();
+    let RoomKey::List { id: errands } = errands.key.clone() else {
+        panic!("a list")
+    };
+
+    engine
+        .rename_list(errands.clone(), " Shopping ".into())
+        .unwrap();
+    engine
+        .rename_collection(personal.clone(), "Home".into())
+        .unwrap();
+    assert!(matches!(
+        engine.rename_list(errands.clone(), "".into()),
+        Err(FfiError::Invalid { .. })
+    ));
+    assert!(matches!(
+        engine.rename_collection(personal.clone(), " ".into()),
+        Err(FfiError::Invalid { .. })
+    ));
+    let (_, lists) = collection_named(&engine, "Home");
+    assert!(lists.iter().any(|l| l.name == "Shopping"));
+
+    // A collection moves among the collections, a list among its collection's lists, one place at a
+    // time, and nothing moves past either end.
+    let collection = RoomKey::Collection {
+        id: personal.clone(),
+    };
+    while engine.move_room(collection.clone(), -1).unwrap() {}
+    assert_eq!(collection_names(&engine)[0], "Home");
+    assert!(engine.move_room(collection.clone(), 1).unwrap());
+    assert_eq!(collection_names(&engine)[1], "Home");
+    let list = RoomKey::List {
+        id: errands.clone(),
+    };
+    while engine.move_room(list.clone(), 1).unwrap() {}
+    let (_, lists) = collection_named(&engine, "Home");
+    assert_eq!(lists.last().unwrap().name, "Shopping");
+    assert!(engine.move_room(list.clone(), -1).unwrap());
+    let (_, lists) = collection_named(&engine, "Home");
+    assert_eq!(lists[lists.len() - 2].name, "Shopping");
+    assert!(
+        !engine.move_room(my_day(), 1).unwrap(),
+        "a smart list stays put"
+    );
+
+    // Deleting asks in full, then takes the list and its tasks; Undo brings them back.
+    let open = engine.room(list.clone(), now());
+    let tasks = open.tasks.len() + open.completed.len();
+    assert!(tasks > 1);
+    let question = engine.delete_list_question(errands.clone()).unwrap();
+    assert_eq!(
+        question,
+        format!("Delete the list “Shopping” and its {tasks} tasks? Undo brings them back.")
+    );
+    let deleted = engine.delete_list(errands.clone()).unwrap();
+    assert!(engine.delete_list_question(errands.clone()).is_none());
+    let (_, lists) = collection_named(&engine, "Home");
+    assert!(lists.iter().all(|l| l.name != "Shopping"));
+    assert!(matches!(
+        engine.delete_list(errands.clone()),
+        Err(FfiError::Invalid { .. })
+    ));
+    assert_eq!(engine.undo_deletion(deleted).unwrap(), None);
+    let back = engine.room(list, now());
+    assert_eq!(back.tasks.len() + back.completed.len(), tasks);
+
+    // An empty list is asked about without tasks.
+    let RoomKey::List { id: empty } = engine
+        .create_list("Line\nbreak".into(), RoomKey::default())
+        .unwrap()
+    else {
+        panic!("a list")
+    };
+    assert_eq!(
+        engine.delete_list_question(empty).unwrap(),
+        "Delete the list “Line break”? Undo brings it back."
+    );
+}
+
+/// Undoing a deleted step whose task was deleted meanwhile says why it still doesn't show.
+#[test]
+fn a_restored_step_under_a_deleted_task_says_why_it_is_hidden() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let id = engine
+        .add_task(my_day(), "Sort the receipts".into(), now())
+        .unwrap();
+    let step = engine.add_step(id.clone(), "By month".into()).unwrap();
+    let deleted = engine.delete_step(step).unwrap();
+    engine.fixture_delete_task(id).unwrap();
+    assert_eq!(
+        engine.undo_deletion(deleted).unwrap().as_deref(),
+        Some("Step restored, but its task was deleted elsewhere.")
+    );
+}
+
+/// The drawer's agent summary: agents seen this week, worded as the desktop's sidebar.
+#[test]
+fn the_drawer_lists_the_agents_seen_this_week() {
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let agents = engine.home(now()).agents;
+    let names: Vec<_> = agents
+        .iter()
+        .map(|a| (a.mark.name.as_str(), a.mark.letter.as_str()))
+        .collect();
+    assert_eq!(names, [("Claude", "C"), ("Codex", "X"), ("Pi", "π")]);
+    assert!(
+        agents.iter().all(|a| a.today.ends_with(" edited")),
+        "{agents:?}"
+    );
+    let blank = TodoEngine::fixture("blank".into(), now()).unwrap();
+    assert!(blank.home(now()).agents.is_empty());
+}
+
+/// Deleting a step and a list online, then undoing both: the server has them back, exactly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undoing_a_deletion_restores_it_on_the_server() {
+    let server = TestServer::start().await;
+    let db = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(EngineConfig {
+        server_url: server.url(),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let RoomKey::List { id: list } = engine
+        .create_list("Garden".into(), RoomKey::default())
+        .unwrap()
+    else {
+        panic!("a list")
+    };
+    let id = engine
+        .add_task(
+            RoomKey::List { id: list.clone() },
+            "Plant bulbs".into(),
+            now(),
+        )
+        .unwrap();
+    let step = engine.add_step(id.clone(), "Tulips".into()).unwrap();
+    engine.start().unwrap();
+    eventually("created", || engine.status().pending == 0).await;
+    let remote = &server.running.engine;
+    let step_id: todo_core::ids::StepId = step.parse().unwrap();
+    let list_id: todo_core::ids::ListId = list.parse().unwrap();
+
+    let deleted = engine.delete_step(step.clone()).unwrap();
+    eventually("step deleted", || {
+        engine.status().pending == 0 && !remote.state().is_live(step_id.into())
+    })
+    .await;
+    engine.undo_deletion(deleted).unwrap();
+    eventually("step restored", || {
+        engine.status().pending == 0 && remote.state().is_live(step_id.into())
+    })
+    .await;
+
+    let deleted = engine.delete_list(list.clone()).unwrap();
+    eventually("list deleted", || {
+        engine.status().pending == 0 && !remote.state().is_live(list_id.into())
+    })
+    .await;
+    engine.undo_deletion(deleted).unwrap();
+    eventually("list restored", || {
+        engine.status().pending == 0 && remote.state().is_live(list_id.into())
+    })
+    .await;
+    assert!(engine.failed().is_empty());
+    assert_eq!(engine.task(id, now()).unwrap().steps[0].title, "Tulips");
+    engine.stop();
 }

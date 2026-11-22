@@ -167,14 +167,28 @@ pub struct NavGroup {
     pub lists: Vec<NavItem>,
 }
 
-/// The navigation: smart lists, then collections and lists.
+/// An agent seen in the last week, and what it did today (the drawer's Agents panel).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentSummary {
+    /// Its letter mark and name.
+    pub mark: AgentMark,
+    /// "2 added, 1 edited", "3 edited" or "idle".
+    pub today: String,
+}
+
+/// The navigation: smart lists, then collections and lists, then the agents seen this week.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Home {
     /// Smart lists.
     pub smart: Vec<NavItem>,
     /// Top-level lists first, then each collection.
     pub groups: Vec<NavGroup>,
+    /// Agents seen in the last seven days, by ID, at most [`AGENTS_SHOWN`].
+    pub agents: Vec<AgentSummary>,
 }
+
+/// How many agents the drawer lists, as the desktop's sidebar does.
+pub const AGENTS_SHOWN: usize = 4;
 
 /// The small line above a room's title.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -371,9 +385,20 @@ pub struct StepRow {
     pub done: bool,
 }
 
+/// What tapping a property row edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FieldEdit {
+    /// The due date (a date picker).
+    Due,
+    /// The priority (four levels).
+    Priority,
+}
+
 /// A property row in the detail pane.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct DetailField {
+    /// What a tap edits; `None` for a row that is only shown.
+    pub edit: Option<FieldEdit>,
     /// Lucide icon key.
     pub icon: String,
     /// "Due".
@@ -419,6 +444,10 @@ pub struct TaskDetail {
     pub my_day: bool,
     /// `!` marks.
     pub priority: u8,
+    /// The due date, ISO (`2026-11-22`), for the date picker.
+    pub due: Option<String>,
+    /// It has a repeat rule, which clearing the due date also clears.
+    pub repeats: bool,
     /// Collection and list chips ("Personal / Admin").
     pub breadcrumb: Vec<Chip>,
     /// "Created 12 Nov / Edited today 08:50".
@@ -454,6 +483,27 @@ fn priority_marks(p: Priority) -> u8 {
         Priority::Normal => 2,
         Priority::High => 3,
     }
+}
+
+/// A priority's name, as the desktop's picker words it.
+pub fn priority_name(p: Priority) -> &'static str {
+    match p {
+        Priority::High => "High",
+        Priority::Normal => "Normal",
+        Priority::Low => "Low",
+        Priority::None => "None",
+    }
+}
+
+/// The priority for `marks` `!` marks (0 to 3), as the detail pane's picker sends it.
+pub fn priority_of(marks: u8) -> Option<Priority> {
+    Some(match marks {
+        0 => Priority::None,
+        1 => Priority::Low,
+        2 => Priority::Normal,
+        3 => Priority::High,
+        _ => return None,
+    })
 }
 
 fn count(n: usize) -> u32 {
@@ -971,7 +1021,53 @@ pub fn home(state: &State, now: &Now) -> Home {
             lists: lists_in,
         });
     }
-    Home { smart, groups }
+    Home {
+        smart,
+        groups,
+        agents: agents(state, now),
+    }
+}
+
+/// Agents seen in the last week (they created or last changed a task), by ID, with what they did today:
+/// tasks added, and tasks they changed after creating them. Worded as the desktop's sidebar words it.
+pub fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
+    let today = now.today();
+    let week_ago = add_days(today, -7).unwrap_or(today);
+    let mut seen: BTreeMap<&str, (&todo_core::Actor, u32, u32)> = BTreeMap::new();
+    for t in state.tasks.values().filter(|t| t.deleted.is_none()) {
+        for (stamp, created) in [(&t.created, true), (&t.updated, false)] {
+            let Some(id) = stamp.by.agent_id() else {
+                continue;
+            };
+            let day = now.date_of(stamp.at);
+            if day < week_ago {
+                continue;
+            }
+            let e = seen.entry(id.as_str()).or_insert((&stamp.by, 0, 0));
+            if day == today {
+                if created {
+                    e.1 += 1;
+                } else if t.created.at != t.updated.at {
+                    e.2 += 1;
+                }
+            }
+        }
+    }
+    seen.values()
+        .filter_map(|&(actor, added, edited)| {
+            let today = match (added, edited) {
+                (0, 0) => "idle".to_owned(),
+                (a, 0) => format!("{a} added"),
+                (0, e) => format!("{e} edited"),
+                (a, e) => format!("{a} added, {e} edited"),
+            };
+            Some(AgentSummary {
+                mark: lists::agent(actor)?,
+                today,
+            })
+        })
+        .take(AGENTS_SHOWN)
+        .collect()
 }
 
 /// Derives the detail pane, or `None` if the task is gone.
@@ -1003,24 +1099,41 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .collect();
     steps.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
 
-    let mut fields = vec![match task.due {
-        Some(d) => DetailField {
-            icon: "calendar".into(),
-            label: "Due".into(),
-            value: labels::short_date(d, today),
-            mono: true,
-            empty: false,
+    let mut fields = vec![
+        match task.due {
+            Some(d) => DetailField {
+                edit: Some(FieldEdit::Due),
+                icon: "calendar".into(),
+                label: "Due".into(),
+                value: labels::short_date(d, today),
+                mono: true,
+                empty: false,
+            },
+            None => DetailField {
+                edit: Some(FieldEdit::Due),
+                icon: "calendar".into(),
+                label: "Due".into(),
+                value: "–".into(),
+                mono: false,
+                empty: true,
+            },
         },
-        None => DetailField {
-            icon: "calendar".into(),
-            label: "Due".into(),
-            value: "–".into(),
+        DetailField {
+            edit: Some(FieldEdit::Priority),
+            icon: "flag".into(),
+            label: "Priority".into(),
+            value: if task.priority == Priority::None {
+                "–".into()
+            } else {
+                priority_name(task.priority).into()
+            },
             mono: false,
-            empty: true,
+            empty: task.priority == Priority::None,
         },
-    }];
+    ];
     if let Some(at) = ix.reminder.get(&id) {
         fields.push(DetailField {
+            edit: None,
             icon: "bell".into(),
             label: "Reminder".into(),
             value: labels::when(*at, now),
@@ -1029,6 +1142,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         });
     }
     fields.push(DetailField {
+        edit: None,
         icon: "repeat".into(),
         label: "Repeat".into(),
         value: if task.recurrence.is_some() {
@@ -1048,6 +1162,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .collect();
     if !tags.is_empty() {
         fields.push(DetailField {
+            edit: None,
             icon: "hash".into(),
             label: "Tags".into(),
             value: tags.join(" "),
@@ -1103,6 +1218,8 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         done: task.is_done(),
         my_day: task.my_day == Some(today),
         priority: priority_marks(task.priority),
+        due: task.due.map(|d| d.to_string()),
+        repeats: task.recurrence.is_some(),
         breadcrumb,
         subtitle,
         steps: steps
