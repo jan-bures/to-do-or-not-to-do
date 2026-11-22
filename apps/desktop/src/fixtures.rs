@@ -35,7 +35,11 @@ pub struct Fixture {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Moment {
     /// `task` was just completed. With `end`, the list is scrolled to its end first.
-    Completing { task: TaskId, at: u32, end: bool },
+    Completing {
+        task: TaskId,
+        at: u32,
+        end: bool,
+    },
     /// `task`, completed at `completed`, was just reopened.
     Reopening {
         task: TaskId,
@@ -43,9 +47,25 @@ pub enum Moment {
         at: u32,
     },
     /// The sun travelling from `from` (done, total) to the fixture's count.
-    SunTravel { from: (u32, u32), at: u32 },
+    SunTravel {
+        from: (u32, u32),
+        at: u32,
+    },
     /// Dusk falling over the finished day.
-    Dusk { at: u32 },
+    Dusk {
+        at: u32,
+    },
+    RoomSwitch {
+        from: RoomKey,
+        at: u32,
+    },
+    DetailOpen {
+        at: u32,
+    },
+    DetailDusk {
+        task: TaskId,
+        at: u32,
+    },
 }
 
 impl Fixture {
@@ -95,6 +115,26 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // way (tomorrow's hand-over entering, staggered).
         "dusk-50" => Some(dusk(m::DUSK / 2)),
         "dusk-75" => Some(dusk(m::DUSK * 3 / 4)),
+        "room-switch-50" => Some(room_switch(m::CONTENT_SWAP / 2)),
+        "room-hue-50" => Some(room_switch(m::ROOM_HUE / 2)),
+        "detail-open-50" => Some(Fixture {
+            moment: Some(Moment::DetailOpen { at: m::PANEL / 2 }),
+            ..my_day()
+        }),
+        "detail-dusk-50" => {
+            let mut f = finished();
+            let task = f
+                .state
+                .tasks
+                .values()
+                .find(|t| t.my_day == Some(f.now.today()) && t.is_done())?
+                .id;
+            f.moment = Some(Moment::DetailDusk {
+                task,
+                at: m::PANEL / 2,
+            });
+            Some(f)
+        }
         _ => None,
     }
 }
@@ -833,6 +873,17 @@ pub fn work() -> Fixture {
     );
     f.sync = online("2026-11-21T14:09:00Z");
     f.quick_add_text = Some("Draft the changelog for 0.4 tomorrow");
+    f
+}
+
+fn room_switch(at: u32) -> Fixture {
+    let mut f = work();
+    f.quick_add_text = None;
+    f.ui.task = None;
+    f.moment = Some(Moment::RoomSwitch {
+        from: RoomKey::Smart(Smart::MyDay),
+        at,
+    });
     f
 }
 

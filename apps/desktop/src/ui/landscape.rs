@@ -348,6 +348,8 @@ pub struct Blend {
     pub scene: f32,
     /// How far the moon and stars have faded in.
     pub night: f32,
+    /// Opacity of the slim scene's sun and arc when switching to or from an empty room.
+    pub sun_alpha: f32,
 }
 
 /// The room header's landscape: the everyday strip in `palette`, the finished day's dusk scene, or (while
@@ -390,7 +392,13 @@ pub fn header_landscape(
                 paint_strip_sky(window, bounds, &palette);
                 let sky = Sky::Slim(palette);
                 for (path, ink) in paths {
-                    window.paint_path(path, color(&sky, ink));
+                    let alpha = match ink {
+                        Ink::Arc | Ink::Travelled | Ink::SunHalo | Ink::SunRing(_) | Ink::Sun => {
+                            blend.sun_alpha
+                        }
+                        _ => 1.,
+                    };
+                    window.paint_path(path, faded(color(&sky, ink), alpha));
                 }
             }
             if let Some(paths) = night {

@@ -476,7 +476,7 @@ impl ShellView {
             )
     }
 
-    fn detail(&self, d: &Detail, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn detail(&self, d: &Detail, live: bool, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let t = self.theme;
         let task = d.task;
@@ -706,7 +706,8 @@ impl ShellView {
             })
             .collect();
         let has_mail = d.links.iter().any(|l| l.email);
-        let step_focused = self.edit.step.read(cx).focus_handle.is_focused(window);
+        let step_focused = live && self.edit.step.read(cx).focus_handle.is_focused(window);
+        let body = self.motion.detail.look(self.frame).body;
         div()
             .flex_none()
             .flex()
@@ -753,169 +754,231 @@ impl ShellView {
             )
             .child(
                 div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .pt(px(space::S5))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .opacity(body)
                     .child(
                         div()
-                            .flex()
-                            .items_start()
-                            .gap(px(space::S3))
+                            .px(px(desktop::DETAIL_PAD_X))
+                            .pt(px(space::S5))
                             .child(
                                 div()
-                                    .id("detail-check")
-                                    .pt(px(space::S1))
-                                    .child(if d.done {
-                                        kit::checked(&p, false, component::CHECKBOX + 2.)
-                                    } else {
-                                        kit::checkbox(&p, false, component::CHECKBOX + 2.)
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_complete(task, cx);
-                                    })),
+                                    .flex()
+                                    .items_start()
+                                    .gap(px(space::S3))
+                                    .child(
+                                        div()
+                                            .id("detail-check")
+                                            .pt(px(space::S1))
+                                            .child(if d.done {
+                                                kit::checked(&p, false, component::CHECKBOX + 2.)
+                                            } else {
+                                                kit::checkbox(&p, false, component::CHECKBOX + 2.)
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_complete(task, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .style(ty::DETAIL_TITLE)
+                                            .text_color(p.ink)
+                                            .when(live, |el| el.child(self.edit.title.clone()))
+                                            .when(!live, |el| el.child(d.title.clone())),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .style(ty::DETAIL_TITLE)
-                                    .text_color(p.ink)
-                                    .child(self.edit.title.clone()),
+                                    .ml(px(component::CHECKBOX + 2. + space::S3))
+                                    .mt(px(space::S1))
+                                    .style(ty::COUNT)
+                                    .text_color(p.ink_3)
+                                    .child(d.subtitle.clone()),
                             ),
                     )
                     .child(
                         div()
-                            .ml(px(component::CHECKBOX + 2. + space::S3))
-                            .mt(px(space::S1))
-                            .style(ty::COUNT)
-                            .text_color(p.ink_3)
-                            .child(d.subtitle.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .pt(px(space::S5))
-                    .pb(px(space::S1))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(kit::label(&p, "Steps"))
-                    .when(steps_total > 0, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(space::S2))
-                                .child(kit::meter(&p, steps_done, steps_total))
-                                .child(
+                            .px(px(desktop::DETAIL_PAD_X))
+                            .pt(px(space::S5))
+                            .pb(px(space::S1))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(kit::label(&p, "Steps"))
+                            .when(steps_total > 0, |d| {
+                                d.child(
                                     div()
-                                        .style(ty::TAG)
-                                        .text_color(p.ink_2)
-                                        .child(format!("{steps_done}/{steps_total}")),
-                                ),
-                        )
-                    }),
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(space::S2))
+                                        .child(kit::meter(&p, steps_done, steps_total))
+                                        .child(
+                                            div()
+                                                .style(ty::TAG)
+                                                .text_color(p.ink_2)
+                                                .child(format!("{steps_done}/{steps_total}")),
+                                        ),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .h(px(elevation::HAIRLINE))
+                            .mx(px(desktop::DETAIL_PAD_X))
+                            .bg(p.line),
+                    )
+                    .children(steps)
+                    .child(
+                        div()
+                            .h(px(desktop::STEP_ROW))
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S3))
+                            .px(px(desktop::DETAIL_PAD_X))
+                            .style(ty::STEP)
+                            .text_color(p.ink_3)
+                            .child(kit::icon(
+                                Icon::Plus,
+                                component::GLYPH,
+                                if step_focused {
+                                    p.accent_strong
+                                } else {
+                                    p.ink_3
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .when(live, |el| el.child(self.edit.step.clone()))
+                                    .when(!live, |el| el.child("Add a step")),
+                            )
+                            .child(kit::kbd(&p, "Enter")),
+                    )
+                    .child(section("Notes"))
+                    .child(
+                        div()
+                            .px(px(desktop::DETAIL_PAD_X))
+                            .style(ty::NOTES)
+                            .text_color(p.ink_2)
+                            .when(live, |el| el.child(self.edit.notes.clone()))
+                            .when(!live, |el| el.child(d.notes.clone())),
+                    )
+                    .child(
+                        div()
+                            .mt(px(space::S4))
+                            .mx(px(desktop::DETAIL_PAD_X))
+                            .border_t_1()
+                            .border_color(p.line)
+                            .children(fields),
+                    )
+                    .when(!d.links.is_empty(), |el| {
+                        el.child(section(if has_mail { "Source" } else { "Links" }))
+                            .children(links)
+                    })
+                    .when(!d.attachments.is_empty(), |el| {
+                        el.child(section("Attachments")).children(attachments)
+                    })
+                    .child(div().h(px(space::S6))),
             )
-            .child(
-                div()
-                    .h(px(elevation::HAIRLINE))
-                    .mx(px(desktop::DETAIL_PAD_X))
-                    .bg(p.line),
-            )
-            .children(steps)
-            .child(
-                div()
-                    .h(px(desktop::STEP_ROW))
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S3))
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .style(ty::STEP)
-                    .text_color(p.ink_3)
-                    .child(kit::icon(
-                        Icon::Plus,
-                        component::GLYPH,
-                        if step_focused {
-                            p.accent_strong
-                        } else {
-                            p.ink_3
-                        },
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.edit.step.clone()))
-                    .child(kit::kbd(&p, "Enter")),
-            )
-            .child(section("Notes"))
-            .child(
-                div()
-                    .px(px(desktop::DETAIL_PAD_X))
-                    .style(ty::NOTES)
-                    .text_color(p.ink_2)
-                    .child(self.edit.notes.clone()),
-            )
-            .child(
-                div()
-                    .mt(px(space::S4))
-                    .mx(px(desktop::DETAIL_PAD_X))
-                    .border_t_1()
-                    .border_color(p.line)
-                    .children(fields),
-            )
-            .when(!d.links.is_empty(), |el| {
-                el.child(section(if has_mail { "Source" } else { "Links" }))
-                    .children(links)
-            })
-            .when(!d.attachments.is_empty(), |el| {
-                el.child(section("Attachments")).children(attachments)
-            })
-            .child(div().h(px(space::S6)))
     }
 
-    /// The pane, showing `detail`, or the placeholder without one.
+    /// The column stays the same width while content fades in place. A leaving task is
+    /// a snapshot: no input entities or active scrollbar, and a shield for its old controls.
     pub(super) fn detail_pane(
         &self,
-        detail: Option<Detail>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let p = &self.palette;
-        let pane = div()
+        let look = self.motion.detail.look(self.frame);
+        let narrow = self.width == super::Width::Narrow;
+        let live = self.shell.detail.is_some();
+        let placeholder = (look.placeholder > 0.).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .opacity(look.placeholder)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(space::S2 + 2.))
+                        .child(kit::icon(Icon::Text, component::ICON + space::S1, p.ink_4))
+                        .child(
+                            div()
+                                .style(ty::BODY)
+                                .text_color(p.ink_3)
+                                .child("Select a task to see its details"),
+                        ),
+                )
+        });
+        let task = self
+            .shell
+            .detail
+            .as_ref()
+            .or(self.closing.as_ref())
+            .filter(|_| look.task > 0.)
+            .map(|d| {
+                let scroll = div()
+                    .id("detail-scroll")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .when(live, |el| {
+                        el.overflow_y_scroll().track_scroll(&self.detail_scroll)
+                    })
+                    .child(
+                        self.detail(d, live, window, cx)
+                            .when(!live, |el| el.relative().top(self.detail_scroll.offset().y)),
+                    );
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w_full()
+                    .left(px(if narrow { 0. } else { look.task_x }))
+                    .opacity(if narrow { 1. } else { look.task })
+                    .child(scroll)
+                    .when(live, |el| {
+                        el.child(self.detail_bar.overlay(&self.detail_scroll, p))
+                    })
+                    .when(!live, |el| {
+                        el.child(
+                            div()
+                                .id("detail-closing-shield")
+                                .absolute()
+                                .inset_0()
+                                .occlude(),
+                        )
+                    })
+            });
+        div()
             .id("detail")
+            .relative()
             .w(px(desktop::DETAIL))
             .flex_none()
             .h_full()
-            .flex()
-            .flex_col()
+            .overflow_hidden()
             .bg(p.pane)
             .border_l_1()
-            .border_color(p.line);
-        match detail {
-            Some(d) => pane
-                .child(
-                    div()
-                        .id("detail-scroll")
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.detail_scroll)
-                        .child(self.detail(&d, window, cx)),
-                )
-                .child(self.detail_bar.overlay(&self.detail_scroll, p)),
-            None => pane.items_center().justify_center().child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(space::S2 + 2.))
-                    .child(kit::icon(Icon::Text, component::ICON + space::S1, p.ink_4))
-                    .child(
-                        div()
-                            .style(ty::BODY)
-                            .text_color(p.ink_3)
-                            .child("Select a task to see its details"),
-                    ),
-            ),
-        }
+            .border_color(p.line)
+            .opacity(
+                if narrow || self.detail_placement() == super::DetailPane::Docked {
+                    1.
+                } else {
+                    look.task.max(look.placeholder)
+                },
+            )
+            .children(placeholder)
+            .children(task)
     }
 }
 

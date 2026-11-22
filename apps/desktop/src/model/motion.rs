@@ -34,6 +34,9 @@ use todo_core::ids::TaskId;
 use super::RoomKey;
 use crate::theme::motion as m;
 
+mod panes;
+pub use panes::{DetailMotion, Navigation, Track};
+
 /// How long things take: the design's durations, or their reduced-motion variants (Windows' *Animation
 /// effects* turned off), read when a transition starts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -365,6 +368,7 @@ struct Travel {
     to: f32,
     start: Duration,
     span: Duration,
+    presence: Track,
 }
 
 impl Travel {
@@ -473,6 +477,8 @@ pub struct Motion {
     rows: BTreeMap<TaskId, RowMotion>,
     sun: Option<Travel>,
     dusk: Option<Dusking>,
+    pub navigation: Navigation,
+    pub detail: DetailMotion,
 }
 
 impl Motion {
@@ -641,18 +647,24 @@ impl Motion {
     /// room it glides there from wherever it is now; a new room, or a sun that appears or goes, snaps.
     pub fn aim_sun(&mut self, room: RoomKey, target: Option<f32>, now: Duration, pace: Pace) {
         let Some(to) = target else {
-            self.sun = None;
+            if !self
+                .sun
+                .is_some_and(|s| s.room == room && s.presence.target() == 0.)
+            {
+                self.sun = None;
+            }
             return;
         };
         match self.sun {
-            Some(s) if s.room == room && s.to == to => {}
-            Some(s) if s.room == room => {
+            Some(s) if s.room == room && s.presence.target() == 1. && s.to == to => {}
+            Some(s) if s.room == room && s.presence.target() == 1. => {
                 self.sun = Some(Travel {
                     room,
                     from: s.at(now),
                     to,
                     start: now,
                     span: pace.movement(m::SUN_TRAVEL),
+                    presence: s.presence,
                 });
             }
             _ => self.place_sun(room, to, now),
@@ -668,12 +680,43 @@ impl Motion {
             to,
             start: now,
             span: Duration::ZERO,
+            presence: Track::rest(1.),
         });
+    }
+
+    /// On room change, glide between populated rooms. At an empty end, keep the last position for
+    /// the fade so the arc and disc arrive/leave together. Reduced motion snaps the whole sun.
+    pub fn navigate_sun(&mut self, room: RoomKey, target: Option<f32>, now: Duration, pace: Pace) {
+        let Some(place) = target.or_else(|| self.sun.map(|s| s.at(now))) else {
+            return;
+        };
+        let alpha = self.sun_alpha(now);
+        let from = self.sun.filter(|_| alpha > 0.).map_or(place, |s| s.at(now));
+        let shown = target.is_some();
+        let (span, curve) = if shown {
+            (m::ROW_ENTER, m::ENTER)
+        } else {
+            (m::OVERLAY_OUT, m::EXIT)
+        };
+        self.sun = Some(Travel {
+            room,
+            from,
+            to: place,
+            start: now,
+            span: pace.movement(m::SUN_TRAVEL),
+            presence: Track::new(alpha, f32::from(shown), now, pace.movement(span), curve),
+        });
+    }
+
+    pub fn sun_alpha(&self, now: Duration) -> f32 {
+        self.sun.map_or(0., |s| s.presence.at(now))
     }
 
     /// The sun's place on its arc now (0 to 1), or `None` without a sun.
     pub fn sun(&self, now: Duration) -> Option<f32> {
-        self.sun.map(|s| s.at(now))
+        self.sun
+            .filter(|s| s.presence.at(now) > 0.)
+            .map(|s| s.at(now))
     }
 
     /// Turns the header towards the dusk scene (the day just finished) or back to the strip (a task
@@ -702,6 +745,18 @@ impl Motion {
         });
     }
 
+    /// A room switch can leave or enter the dusk landscape too, at the navigation pace.
+    pub fn navigate_dusk(&mut self, room: RoomKey, finished: bool, now: Duration, pace: Pace) {
+        self.dusk = Some(Dusking {
+            room,
+            from: self.dusk(now).phase,
+            to: finished,
+            start: now,
+            span: pace.fade(m::ROOM_HUE),
+            reduced: pace.reduced,
+        });
+    }
+
     /// Where the header is between the strip and the dusk scene now.
     pub fn dusk(&self, now: Duration) -> DuskLook {
         self.dusk.map_or(DuskLook::rest(false), |d| d.at(now))
@@ -710,12 +765,19 @@ impl Motion {
     /// When the view needs its next frame. At rest it's [`Wake::Idle`]: no frames and no timers.
     pub fn wake(&self, now: Duration) -> Wake {
         let dusking = self.dusk.is_some_and(|d| !d.at(now).settled());
-        let sun = if dusking || self.sun.is_some_and(|s| s.moving(now)) {
+        let sun = if dusking
+            || self
+                .sun
+                .is_some_and(|s| s.moving(now) || s.presence.moving(now))
+        {
             Wake::Frame
         } else {
             Wake::Idle
         };
-        self.rows.values().fold(sun, |w, r| w.or(r.wake(now)))
+        let panes = self.navigation.wake(now).or(self.detail.wake(now));
+        self.rows
+            .values()
+            .fold(sun.or(panes), |w, r| w.or(r.wake(now)))
     }
 
     /// Whether a row has reached its end by `now`, so [`Motion::advance`] has something to do.

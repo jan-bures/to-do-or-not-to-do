@@ -120,6 +120,10 @@ pub const EASINGS: [(&str, CubicBezier); 5] = [
 pub const HOVER: u32 = 90;
 /// Fast in-place crossfade (switching tasks in an open detail pane, room title/eyebrow swap, sync status change).
 pub const CONTENT_SWAP: u32 = 120;
+/// How long the incoming room title overlaps the departing title, in milliseconds.
+pub const ROOM_TITLE_OVERLAP: u32 = 40;
+/// Opacity the detail body enters from when switching tasks in an already open pane.
+pub const DETAIL_SWAP_FROM: f32 = 0.25;
 /// Menus, popovers, date pickers and dialogs dismissing.
 pub const OVERLAY_OUT: u32 = 120;
 /// The checkbox disc filling with accent and popping slightly with [`POP`].

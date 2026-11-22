@@ -62,6 +62,10 @@ pub const FIXTURES: &[&str] = &[
     "long-list-end-collapse-50",
     "dusk-50",
     "dusk-75",
+    "room-switch-50",
+    "room-hue-50",
+    "detail-open-50",
+    "detail-dusk-50",
 ];
 
 /// What to do.
