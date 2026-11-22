@@ -391,6 +391,7 @@ pub fn json() -> String {
         "motion": {
             "durationsMs": Value::Object(motion::DURATIONS.iter().map(|(k, v)| ((*k).to_owned(), json!(v))).collect()),
             "easings": Value::Object(motion::EASINGS.iter().map(|(k, e)| ((*k).to_owned(), json!([num(e.x1), num(e.y1), num(e.x2), num(e.y2)]))).collect()),
+            "cues": numbers_json(&motion::CUES),
         },
         "metrics": {
             "desktop": numbers_json(&desktop::ALL),

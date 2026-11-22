@@ -208,6 +208,17 @@ pub const DURATIONS: [(&str, u32); 23] = [
     ("reduced-fade", REDUCED_FADE),
 ];
 
+/// The choreography's cues and shapes that aren't durations (a scale, shares of [`DUSK`], a distance in
+/// pixels and an item count), for the exports. Clients that can't link this crate (Android) read them from
+/// `tokens.json` (`motion.cues`).
+pub const CUES: [(&str, f32); 5] = [
+    ("check-fill-from-scale", CHECK_FILL_FROM_SCALE),
+    ("dusk-night-at", DUSK_NIGHT_AT),
+    ("dusk-handover-at", DUSK_HANDOVER_AT),
+    ("dusk-handover-rise", DUSK_HANDOVER_RISE),
+    ("stagger-max-items", STAGGER_MAX_ITEMS as f32),
+];
+
 /// The duration to use with reduced motion: movement, scale, rotation and stagger become instant (`0 ms`),
 /// pure opacity and colour fades shrink to at most [`REDUCED_FADE`]. Functional timers that aren't animations
 /// ([`UNDO_WINDOW`], [`COMPLETE_HOLD`], [`SCROLLBAR_HOLD`]) are unchanged.
@@ -263,6 +274,17 @@ mod tests {
         assert_eq!(reduced(UNDO_WINDOW, false), UNDO_WINDOW);
         assert_eq!(reduced(COMPLETE_HOLD, false), COMPLETE_HOLD);
         assert_eq!(reduced(SCROLLBAR_HOLD, false), SCROLLBAR_HOLD);
+    }
+
+    #[test]
+    fn cues_are_exported_exactly() {
+        let cue = |name: &str| CUES.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
+        assert_eq!(cue("stagger-max-items"), Some(STAGGER_MAX_ITEMS as f32));
+        assert_eq!(cue("dusk-night-at"), Some(DUSK_NIGHT_AT));
+        // Shares of DUSK, in order.
+        const {
+            assert!(0. < DUSK_NIGHT_AT && DUSK_NIGHT_AT < DUSK_HANDOVER_AT && DUSK_HANDOVER_AT < 1.)
+        };
     }
 
     #[test]
