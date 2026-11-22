@@ -776,10 +776,20 @@ a {
   flex-wrap: wrap;
   align-items: end;
 }
-.pair-dialog label { display: grid; gap: var(--space-1); flex: 1; }
-.pair-dialog input { width: 100%; }
+.pair-dialog { inline-size: min(calc(var(--desktop-detail) + var(--space-10)), calc(100% - var(--space-4) * 2)); }
+.pair-dialog label { display: grid; gap: var(--space-1); flex: 1; min-width: 0; }
+.pair-dialog input {
+  width: 100%;
+  min-height: var(--component-button);
+  padding-inline: var(--space-2);
+  border: var(--hairline) solid var(--color-control);
+  border-radius: var(--radius-button);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  font: var(--text-meta);
+}
 .pair-dialog :is(p[role="status"], p[role="alert"]):empty { display: none; }
-.pair-dialog .pair-code { font: var(--text-summary-figures); }
+.pair-dialog .pair-code { font: var(--text-pairing-code); overflow-wrap: anywhere; }
 .pair-qr {
   width: min(100%, var(--component-pairing-qr));
   aspect-ratio: 1;

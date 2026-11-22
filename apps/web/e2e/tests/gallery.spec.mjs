@@ -104,7 +104,7 @@ for (const scheme of ["light", "dark"]) {
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.getByRole("button", { name: "Approve a device" }).click();
       await page.getByRole("textbox", { name: "Code shown on the device" }).fill("ABCD-EFGH");
-      await page.getByRole("button", { name: "Review" }).click();
+      await page.getByRole("dialog", { name: "Approve a device" }).getByRole("button", { name: "Review", exact: true }).click();
       await expect(page.getByText(/Approve “New phone”/)).toBeVisible();
       await shot(page, `device-approve-${scheme}`);
       await page.getByRole("button", { name: "Use another code" }).click();
