@@ -667,3 +667,51 @@ fn an_entry_another_tab_saw_refused_leaves_the_outbox() {
     assert_eq!(r.adopt_failed(vec![failed]).unwrap(), 0);
     assert!(notes(&mut r, task_id(1)).is_empty());
 }
+
+#[test]
+fn a_new_sender_merges_its_own_queue_with_what_another_tab_tried_by_submission_time() {
+    // This tab queued a rename at 20 while another tab was the sender; that tab had already tried
+    // its own rename from 10 (attempts 3) when it closed. This tab never sent anything, so the older
+    // rename goes first.
+    let (mut r, _server, _) = seeded();
+    r.submit(entry(2, add_note(task_id(1), "newer"), 20))
+        .unwrap();
+    let mut tried = entry(1, add_note(task_id(1), "older"), 10);
+    tried.attempts = 3;
+    assert_eq!(r.adopt(vec![tried]).unwrap(), 1);
+    let order: Vec<u128> = r.outbox().iter().map(|e| e.command_id.as_u128()).collect();
+    assert_eq!(order, [1, 2]);
+    assert_eq!(
+        r.next_to_send().unwrap().unwrap().command_id,
+        Uuid::from_u128(1)
+    );
+}
+
+#[test]
+fn a_replayed_command_that_is_already_confirmed_just_leaves() {
+    // The command was confirmed; a replica that no longer remembers it (reopened) adopts it from
+    // another tab's record, sends it, and the server replays the old result.
+    let (mut r, mut server, storage) = seeded();
+    let e = entry(1, add_note(task_id(1), "once"), 10);
+    let result = server
+        .execute(&owner(), e.command_id, e.command().unwrap())
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    drop(r);
+    let mut r = open(&storage);
+    assert_eq!(r.adopt(vec![e.clone()]).unwrap(), 1);
+    assert_eq!(r.next_to_send().unwrap().unwrap().command_id, e.command_id);
+    assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Recorded);
+    assert!(r.outbox().is_empty(), "no resync, and nothing left to send");
+    assert_eq!(notes(&mut r, task_id(1)), "once");
+    // An event at or below the cursor that the confirmed state lacks is still a divergence.
+    let other = entry(2, add_note(task_id(1), "x"), 20);
+    r.submit(other.clone()).unwrap();
+    let mut forged = result.clone();
+    forged.command_id = other.command_id;
+    forged.events[0].id = todo_core::ids::EventId::from_uuid(Uuid::from_u128(77));
+    assert_eq!(
+        r.acknowledge(other.command_id, &forged).unwrap(),
+        Ack::Diverged
+    );
+}

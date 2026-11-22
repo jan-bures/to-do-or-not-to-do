@@ -39,9 +39,12 @@
 //! a write succeeds, and asks before the page is closed while anything is unsaved.
 //!
 //! **Upgrades.** Opening the database at a newer version waits for every other connection to close.
-//! [`OpenHooks::blocked`] is told while it waits (the app asks the owner to close other tabs), and
-//! every connection closes itself when another tab needs a newer version
-//! ([`OpenHooks::version_change`], after writing what it still has). Version 1 kept the outbox and
+//! [`OpenHooks::blocked`] is told while it waits (the app asks the owner to close other tabs). Every
+//! connection closes itself when another tab needs a newer version ([`OpenHooks::version_change`]
+//! first, so the app stops making changes), but only once everything it wrote is in the database:
+//! while a write is still failing it keeps the connection open, which keeps blocking the upgrade, and
+//! [`OpenHooks::holding`] says so. A closed connection is reported to [`OpenHooks::closed`] (the app
+//! gives up the sender lock and reloads). Version 1 kept the outbox and
 //! the failed list as arrays in `kv`; they are split into records by the first write after the
 //! upgrade, in one transaction that puts every record before it deletes the array, keyed by command
 //! ID, so an interrupted conversion leaves either the array or the records and is simply done again.
@@ -567,9 +570,15 @@ pub struct OpenHooks {
     /// Called with `true` while the upgrade waits for other tabs to close their connections, and
     /// with `false` once it went ahead.
     pub blocked: Rc<dyn Fn(bool)>,
-    /// Called after this tab closed its connection because another tab opens a newer version (the
-    /// app should reload, to run the newer build).
+    /// Called when another tab opens a newer version: this tab should stop making changes (stop the
+    /// sync engine). The connection closes once everything written is stored.
     pub version_change: Rc<dyn Fn()>,
+    /// Called with `true` while the connection stays open for another tab's upgrade because writes
+    /// are still failing (the other tab waits), and with `false` once they landed.
+    pub holding: Rc<dyn Fn(bool)>,
+    /// Called after the connection closed for another tab's upgrade (the app should give up the
+    /// sender lock and reload, to run the newer build).
+    pub closed: Rc<dyn Fn()>,
 }
 
 impl fmt::Debug for OpenHooks {
@@ -583,6 +592,8 @@ impl Default for OpenHooks {
         Self {
             blocked: Rc::new(|_| {}),
             version_change: Rc::new(|| {}),
+            holding: Rc::new(|_| {}),
+            closed: Rc::new(|| {}),
         }
     }
 }
@@ -728,8 +739,8 @@ pub const SENDER_LOCK: &str = "todo-sender";
 /// The `BroadcastChannel` tabs announce new outbox records on.
 pub const CHANNEL: &str = "todo-outbox";
 
-/// How long a tab asked to close its connection waits for its last writes.
-const CLOSE_GRACE_MS: f64 = 2000.0;
+/// How often a tab asked to close its connection checks whether its writes have landed.
+const CLOSE_POLL: Duration = Duration::from_millis(250);
 
 /// Persists a [`MirrorStorage`]'s journal to IndexedDB. Clones share the connection.
 #[derive(Clone)]
@@ -861,15 +872,30 @@ impl IdbFlusher {
         Ok((outbox, failed))
     }
 
-    /// Writes what is left (for up to two seconds), then closes the connection.
-    async fn close(&self) {
-        let started = js_sys::Date::now();
-        while self.storage.has_pending() && js_sys::Date::now() - started < CLOSE_GRACE_MS {
-            if self.busy.get() {
-                sleep(Duration::from_millis(50)).await;
-            } else if self.flush().await.is_err() {
+    /// Writes what is left, then closes the connection. Never closes while anything written is not
+    /// stored: until then `holding(true)` is reported (and the flusher keeps retrying).
+    async fn close_when_saved(&self, holding: &dyn Fn(bool)) {
+        let mut held = false;
+        loop {
+            if !self.storage.has_pending() {
                 break;
             }
+            if !self.busy.get() {
+                let _ = self.flush().await;
+            }
+            if self.storage.has_pending() {
+                if !held && self.storage.flush_error().is_some() {
+                    tracing::info!(
+                        "unsaved changes keep the database open for another tab's upgrade"
+                    );
+                    held = true;
+                    holding(true);
+                }
+                sleep(CLOSE_POLL).await;
+            }
+        }
+        if held {
+            holding(false);
         }
         self.closed.set(true);
         self.db.close();
@@ -887,36 +913,76 @@ pub fn open_channel(on_message: impl Fn() + 'static) -> Option<BroadcastChannel>
     Some(channel)
 }
 
+/// The sender lock, held or asked for (see [`elect_sender`]). Clones share it.
+#[derive(Clone)]
+pub struct SenderLock {
+    abort: AbortController,
+    release: Rc<RefCell<Option<js_sys::Function>>>,
+}
+
+impl fmt::Debug for SenderLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SenderLock").finish_non_exhaustive()
+    }
+}
+
+impl SenderLock {
+    /// Gives the lock up (or stops waiting for it), so the next tab can send.
+    pub fn release(&self) {
+        self.abort.abort();
+        if let Some(resolve) = self.release.borrow_mut().take() {
+            let _ = resolve.call0(&JsValue::NULL);
+        }
+    }
+}
+
 /// Asks for the Web Lock [`SENDER_LOCK`] and calls `on_elected` once this tab holds it; it holds it
-/// until the page goes away. Returns false (and never calls `on_elected`) if the browser has no Web
-/// Locks, in which case every tab sends for itself.
-pub fn elect_sender(on_elected: impl FnOnce() + 'static) -> bool {
-    let Some(locks) = web_sys::window()
+/// until the page goes away or [`SenderLock::release`]. Returns `None` (and never calls `on_elected`)
+/// if the browser has no Web Locks, in which case every tab sends for itself.
+pub fn elect_sender(on_elected: impl FnOnce() + 'static) -> Option<SenderLock> {
+    let locks = web_sys::window()
         .and_then(|w| Reflect::get(&w, &JsValue::from_str("navigator")).ok())
         .and_then(|n| Reflect::get(&n, &JsValue::from_str("locks")).ok())
-        .filter(|l| !l.is_undefined() && !l.is_null())
-    else {
-        return false;
-    };
-    let Ok(request) = Reflect::get(&locks, &JsValue::from_str("request"))
+        .filter(|l| !l.is_undefined() && !l.is_null())?;
+    let request = Reflect::get(&locks, &JsValue::from_str("request"))
         .and_then(|f| f.dyn_into::<js_sys::Function>())
-    else {
-        return false;
+        .ok()?;
+    let abort = AbortController::new().ok()?;
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &JsValue::from_str("signal"), &abort.signal()).ok()?;
+    let lock = SenderLock {
+        abort,
+        release: Rc::new(RefCell::new(None)),
     };
+    let release = lock.release.clone();
     let mut on_elected = Some(on_elected);
     let granted = Closure::<dyn FnMut() -> Promise>::new(move || {
+        // Held until this promise resolves: at `release`, or when the page goes away.
+        let held = Promise::new(&mut |resolve, _| {
+            *release.borrow_mut() = Some(resolve);
+        });
         if let Some(f) = on_elected.take() {
             tracing::debug!("this tab sends for all tabs");
             f();
         }
-        // Never resolves: the lock is held until the page goes away.
-        Promise::new(&mut |_, _| {})
+        held
     });
-    let ok = request
-        .call2(&locks, &JsValue::from_str(SENDER_LOCK), granted.as_ref())
-        .is_ok();
+    let asked = request.call3(
+        &locks,
+        &JsValue::from_str(SENDER_LOCK),
+        &options,
+        granted.as_ref(),
+    );
     granted.forget();
-    ok
+    // Giving up while still waiting rejects the request: that is expected, not an error.
+    if let Ok(p) = asked.and_then(JsCast::dyn_into::<Promise>) {
+        let ignore = Closure::<dyn FnMut(JsValue)>::new(|_| {});
+        let _ = p.catch(&ignore);
+        ignore.forget();
+        Some(lock)
+    } else {
+        None
+    }
 }
 
 /// Opens (or creates) the IndexedDB database `name` and loads it into a [`MirrorStorage`], with what
@@ -944,15 +1010,20 @@ pub async fn open_storage(
         );
     }
     let flusher = IdbFlusher::new(db.clone(), storage.clone());
+    let closing = Rc::new(Cell::new(false));
     let on_version_change = {
         let flusher = flusher.clone();
         Closure::<dyn Fn()>::new(move || {
-            tracing::info!("another tab upgrades the database; closing this connection");
+            if closing.replace(true) {
+                return;
+            }
+            tracing::info!("another tab upgrades the database; closing once everything is stored");
+            (hooks.version_change)();
             let flusher = flusher.clone();
-            let done = hooks.version_change.clone();
+            let hooks = hooks.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                flusher.close().await;
-                done();
+                flusher.close_when_saved(&*hooks.holding).await;
+                (hooks.closed)();
             });
         })
     };

@@ -31,9 +31,15 @@
 //!
 //! In the browser, every tab has a replica over the same database, and one of them (elected with the
 //! Web Locks API) sends for all. It takes the other tabs' entries in with [`Replica::adopt`], which
-//! slots them in by submission time behind anything already sent, and skips what it already has,
-//! refused, or saw confirmed (a bounded memory of recently settled command IDs). Entries another tab
-//! refused come in with [`Replica::adopt_failed`].
+//! slots them in by submission time behind anything *this replica* already sent (entries another tab
+//! tried keep no place of their own: a tab that just became the sender merges everything, its own
+//! queued commands included, by submission time), and skips what it already has, refused, or saw
+//! confirmed recently. Entries another tab refused come in with [`Replica::adopt_failed`].
+//!
+//! The memory of recently settled command IDs is bounded, so an entry another tab still listed could
+//! in principle be adopted after its ID aged out. That is harmless: it is sent again, the server
+//! replays the command's result, and [`Replica::acknowledge`] finds its events already confirmed (the
+//! confirmed state remembers every event ID) and lets the entry go, without a resync.
 //!
 //! # The log epoch
 //!
@@ -149,6 +155,8 @@ pub struct Replica {
     /// Command IDs recently confirmed, refused, or acknowledged as changing nothing, oldest first.
     settled: VecDeque<CommandId>,
     settled_set: BTreeSet<CommandId>,
+    /// Entries this replica has sent (or is sending): [`Replica::adopt`] slots nothing before them.
+    sent_here: BTreeSet<CommandId>,
 }
 
 /// What [`Replica::open`] rebuilt from storage.
@@ -261,6 +269,7 @@ impl Replica {
             needs_snapshot: false,
             settled: VecDeque::new(),
             settled_set: BTreeSet::new(),
+            sent_here: BTreeSet::new(),
         };
         r.load()?;
         Ok(r)
@@ -404,6 +413,7 @@ impl Replica {
         next.attempts = next.attempts.saturating_add(1);
         self.storage.write(&[StorageOp::PutOutbox(&next)])?;
         *entry = next.clone();
+        self.sent_here.insert(next.command_id);
         Ok(Some(next))
     }
 
@@ -414,10 +424,14 @@ impl Replica {
     /// epoch than the replica's. While the replica has no epoch yet, it is recorded with its epoch and
     /// forgotten if the replica then adopts another one.
     ///
-    /// Returns [`Ack::Diverged`] if the entry is still pending but the server reports one of its
-    /// events at or below the cursor: had the confirmed state that event, it would have confirmed the
-    /// entry, so the server's log is not the one this replica followed (it was restored from a backup
-    /// and grew past the old cursor again).
+    /// If the server reports events at or below the cursor that the confirmed state already has, the
+    /// command was confirmed before this replica held the entry (another tab queued it, and it was
+    /// adopted after its confirmation): those events need nothing more, and if they are all of them,
+    /// the entry leaves the outbox at once.
+    ///
+    /// Returns [`Ack::Diverged`] if the server reports an event at or below the cursor that the
+    /// confirmed state doesn't have: the server's log is not the one this replica followed (it was
+    /// restored from a backup and grew past the old cursor again).
     pub fn acknowledge(
         &mut self,
         command_id: CommandId,
@@ -431,8 +445,21 @@ impl Replica {
         {
             return Ok(Ack::OtherEpoch);
         }
-        if result.events.iter().any(|r| r.seq <= self.cursor) {
+        let below = result.events.iter().filter(|r| r.seq <= self.cursor);
+        if below
+            .clone()
+            .any(|r| !self.confirmed.journal.has_seen(r.id))
+        {
             return Ok(Ack::Diverged);
+        }
+        let confirmed = below.count();
+        if confirmed > 0 && confirmed == result.events.len() {
+            tracing::debug!(%command_id, "the command was confirmed already");
+            self.storage.write(&[StorageOp::RemoveOutbox(command_id)])?;
+            self.outbox.remove(pos);
+            self.view = None;
+            self.remember_settled([command_id]);
+            return Ok(Ack::Recorded);
         }
         if result.events.is_empty() {
             self.storage.write(&[StorageOp::RemoveOutbox(command_id)])?;
@@ -523,21 +550,18 @@ impl Replica {
         let ops: Vec<StorageOp<'_>> = new.iter().map(StorageOp::PutOutbox).collect();
         self.storage.write(&ops)?;
         let added = new.len();
-        // Everything up to the last entry already sent (or acknowledged) stays where it is.
+        // Everything up to the last entry this replica sent stays where it is. Entries another tab
+        // tried (their attempts count says so) are ordered by submission time like the rest.
+        self.sent_here
+            .retain(|id| self.outbox.iter().any(|e| e.command_id == *id));
         let started = self
             .outbox
             .iter()
-            .rposition(|e| e.attempts > 0 || e.acked.is_some())
+            .rposition(|e| self.sent_here.contains(&e.command_id))
             .map_or(0, |i| i + 1);
-        let key = |e: &OutboxEntry| (e.submitted_at.as_millisecond(), e.command_id);
-        for e in new {
-            let at = started
-                + self.outbox[started..]
-                    .iter()
-                    .position(|o| key(o) > key(&e))
-                    .unwrap_or(self.outbox.len() - started);
-            self.outbox.insert(at, e);
-        }
+        // The rest, this replica's own queued entries and the adopted ones, in submission order.
+        self.outbox.extend(new);
+        self.outbox[started..].sort_by_key(|e| (e.submitted_at.as_millisecond(), e.command_id));
         self.view = None;
         Ok(added)
     }
