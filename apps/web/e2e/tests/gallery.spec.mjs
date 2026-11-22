@@ -21,6 +21,7 @@ for (const scheme of ["light", "dark"]) {
       await page.getByText("Prepare the November board update").first().click();
       await page.locator(".detail .d-title").waitFor();
       await shot(page, `desktop-${scheme}`);
+      await page.locator(".sidebar").screenshot({ path: `gallery/sidebar-${scheme}.png`, animations: "disabled" });
       await w.check();
     });
 

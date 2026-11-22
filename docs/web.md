@@ -295,6 +295,14 @@ hide a collection's lists without changing rooms. The browser remembers folded c
 with one key per ID so changes to different collections in separate tabs don't overwrite each other. Open tabs
 follow storage changes; after sync, the app drops keys for collections that no longer exist. If storage is
 unavailable, folding still works for this visit.
+
+The sidebar uses the desktop navigation metrics on wide screens while keeping touch-sized controls in the
+phone drawer. Smart-list and Activity icons keep their own glyph hue regardless of selection. Collection
+headers and lists share the desktop's name-to-glyph rules; a name that doesn't match defaults to layers for
+collections and to a document for lists. Every collection and list shows its open count, even zero.
+**Agent activity** shows a pip for tasks most recently changed by an agent today; it still opens the
+seven-day smart list. The creation controls stay pinned below the scrolling navigation.
+
 **New list** creates a sibling of the current list, a child of the current collection, or a top-level
 list from a smart room. **New collection** creates a collection at the end of the sidebar. Both get a swatch.
 
@@ -312,9 +320,10 @@ reasons. **Dismiss** clears one; **Dismiss all** clears only the entries shown d
 that arrives while the list is open stays for the next opening. Dismissing doesn't retry a change.
 
 **Activity** (`/app/activity`) shows confirmed changes from you, agents and email ingest, newest first
-and grouped by local day. Scroll down or choose **Load older activity** for more. Select an agent in the
-sidebar (the Lists drawer on a phone) to open `/app/activity/agent/<agent-id>`. Use **Clear filter** to see
-all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
+and grouped by local day. Scroll down or choose **Load older activity** for more. Its clock row follows the
+**Agent activity** smart list. Agents seen in today's creation and latest edit stamps appear indented below
+it; choose one to open `/app/activity/agent/<agent-id>`. The same links are in the Lists drawer on a phone.
+Use **Clear filter** to see all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
 new events arrive. If an older page is loading, the refresh waits for that request. If refreshing removes
 the focused row, focus moves to the Activity heading. A dot on the refresh button means the replica has
 advanced since the feed was read. Event summaries may use an item's current name, even for older changes.
@@ -439,7 +448,8 @@ The status bar shows shortcuts only when their actions are available.
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
-  `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
+  `apps/web/e2e/gallery/`, including `sidebar-light.png` and `sidebar-dark.png` crops; CI uploads them as
+  `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A

@@ -195,3 +195,75 @@ svg_set! {
         Wrench => "wrench",
     }
 }
+
+impl Glyph {
+    /// Picks a glyph from a list or collection name already folded to lowercase without accents.
+    /// Callers choose the fallback for an unmatched name: document for a list, layers for a collection.
+    pub fn for_folded_name(name: &str) -> Option<Self> {
+        // First match wins, as in "Work projects" or "Plan my trip".
+        const WORDS: &[(Glyph, &[&str])] = &[
+            (Glyph::Sun, &["my day", "today", "dnes"]),
+            (Glyph::Briefcase, &["work", "job", "prace", "zamestn"]),
+            (
+                Glyph::Coin,
+                &[
+                    "financ", "money", "budget", "tax", "invoice", "penize", "dane", "ucty",
+                    "faktur",
+                ],
+            ),
+            (Glyph::Paperclip, &["office", "kancel"]),
+            (
+                Glyph::CalendarStar,
+                &["event", "party", "akce", "udalost", "oslav"],
+            ),
+            (
+                Glyph::Code,
+                &["code", "dev", "app", "software", "program", "github"],
+            ),
+            (
+                Glyph::Wrench,
+                &[
+                    "renovat", "repair", "diy", "fix", "oprav", "rekonstr", "dilna",
+                ],
+            ),
+            (
+                Glyph::Book,
+                &["read", "book", "kniha", "knihy", "cteni", "studi", "learn"],
+            ),
+            (
+                Glyph::Basket,
+                &[
+                    "shop", "grocer", "errand", "buy", "nakup", "potravin", "obchod",
+                ],
+            ),
+            (
+                Glyph::Heart,
+                &[
+                    "health", "doctor", "fitness", "sport", "zdravi", "lekar", "cvic",
+                ],
+            ),
+            (
+                Glyph::PaperPlane,
+                &[
+                    "travel", "trip", "vacation", "holiday", "cest", "dovolen", "vylet",
+                ],
+            ),
+            (
+                Glyph::Document,
+                &["admin", "document", "paper", "doklad", "urad", "formular"],
+            ),
+            (Glyph::Flag, &["plan", "goal", "cil", "milestone"]),
+            (Glyph::Layers, &["project", "projekt"]),
+            (
+                Glyph::House,
+                &[
+                    "personal", "home", "house", "family", "osobni", "domov", "doma", "rodina",
+                ],
+            ),
+        ];
+        WORDS
+            .iter()
+            .find(|(_, words)| words.iter().any(|word| name.contains(word)))
+            .map(|(glyph, _)| *glyph)
+    }
+}

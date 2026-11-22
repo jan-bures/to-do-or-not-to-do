@@ -56,7 +56,7 @@ test("list and collection moves stay in their scope and are undoable", async ({ 
   const w = watch(page);
   await open(page);
   const lists = page.locator(".nav-section").filter({ has: page.getByRole("link", { name: /^Work( |$)/ }) }).locator(".nav-item.sub .nav-name");
-  const collections = page.locator(".nav-collection-row .nav-name");
+  const collections = page.locator(".nav-collection .nav-name");
   await expect(lists).toHaveText(["Planning", "Finance", "Team"]);
   await item(page, "Planning").click({ button: "right" });
   await expect(action(page, "Move up")).toBeDisabled();
@@ -142,7 +142,7 @@ test("held Tab stays in the phone drawer, and a move returns focus to its origin
   await expect(first).toBeFocused();
 
   const move = drawer.getByRole("button", { name: "Menu for Work" });
-  const collections = drawer.locator(".nav-collection-row .nav-name");
+  const collections = drawer.locator(".nav-collection .nav-name");
   await move.click();
   await action(page, "Move down").click();
   await expect(collections).toHaveText(["Osobní", "Work"]);

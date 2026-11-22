@@ -899,7 +899,7 @@ fn icon(i: Icon) -> impl IntoView {
 }
 
 fn glyph(g: Glyph) -> impl IntoView {
-    view! { <span class="glyph" aria-hidden="true" inner_html=g.svg()></span> }
+    view! { <span class="glyph" data-glyph=g.key() aria-hidden="true" inner_html=g.svg()></span> }
 }
 
 fn mark(m: &AgentMark) -> impl IntoView + use<> {
@@ -989,7 +989,7 @@ fn conn_key(s: &Sync) -> &'static str {
 #[component]
 fn SidebarPane() -> impl IntoView {
     let c = ctx();
-    let item = move |n: model::NavItem, sub: bool, children: Vec<RoomId>| {
+    let item = move |n: model::NavItem, nested: bool, children: Vec<RoomId>, pip: usize| {
         let room = n.room.clone();
         let active_room = n.room.clone();
         let active = move || c.room.with(|r| *r == active_room);
@@ -1003,18 +1003,37 @@ fn SidebarPane() -> impl IntoView {
         let href = room.path();
         let origin = room_actions::Subject::of(&room)
             .map(|s| room_actions::Origin(s, room_actions::Anchor::Link));
-        let lead = match (&n.room, n.glyph) {
-            (RoomId::Smart(id), _) => icon(model::smart_icon(id)).into_any(),
-            (RoomId::Activity(_), _) => icon(Icon::Clock).into_any(),
-            (_, Some(g)) => glyph(g).into_any(),
-            _ => ().into_any(),
+        let collection = match room {
+            RoomId::Collection(id) => Some(id),
+            _ => None,
+        };
+        let disclosure = collection.map(|id| {
+            let label = n.name.clone();
+            let folded = move || c.collapsed.with(|ids| ids.contains(&id));
+            view! {
+                <button type="button" class="collection-toggle"
+                    aria-expanded=move || (!folded()).to_string()
+                    aria-controls=format!("collection-{id}")
+                    aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
+                    on:click=move |_| c.toggle_fold(id)
+                >{icon(Icon::ChevronRight)}</button>
+            }
+        });
+        let (lead, count) = match (&n.room, n.glyph) {
+            (RoomId::Smart(id), _) => (
+                icon(model::smart_icon(id)).into_any(),
+                (*id != "agent_activity").then_some(n.count),
+            ),
+            (RoomId::Activity(_), _) => (icon(Icon::Clock).into_any(), None),
+            (_, Some(g)) => (glyph(g).into_any(), Some(n.count)),
+            _ => (().into_any(), None),
         };
         let link = view! {
             <a
                 id=origin.map(room_actions::Origin::dom_id)
                 class="nav-item"
                 class:menu-anchor=move || origin.is_some_and(|o| c.room_actions.anchored(o))
-                class:sub=sub
+                class:sub=nested
                 class:active=active.clone()
                 class:contains-active=contains_active
                 aria-current=move || active().then_some("page")
@@ -1036,12 +1055,16 @@ fn SidebarPane() -> impl IntoView {
             >
                 {lead}
                 <span class="nav-name">{n.name.clone()}</span>
-                <span class="count">{(n.count > 0).then(|| n.count.to_string())}</span>
+                {count.map(|n| view! { <span class="count">{n.to_string()}</span> })}
+                {(pip > 0).then(|| view! {
+                    <span class="count nav-pip"><i aria-hidden="true"></i>{format!("{pip} new")}</span>
+                })}
             </a>
         };
         if let Some(room_actions::Origin(subject, _)) = origin {
             view! {
-                <div class="nav-entry">
+                <div class="nav-entry" class:nav-collection=collection.is_some()>
+                    {disclosure}
                     {link}
                     <room_actions::MenuButton origin=room_actions::Origin(subject, room_actions::Anchor::Sidebar)
                         label=format!("Menu for {}", n.name)/>
@@ -1066,67 +1089,55 @@ fn SidebarPane() -> impl IntoView {
                     let sb = c.sidebar.get();
                     view! {
                         <div class="nav-section">
-                            {sb.smart.into_iter().map(|n| item(n, false, Vec::new())).collect_view()}
+                            {sb.smart.into_iter().map(|n| {
+                                let pip = if n.room == RoomId::Smart("agent_activity") { sb.agent_updates_today } else { 0 };
+                                item(n, false, Vec::new(), pip)
+                            }).collect_view()}
                             {item(model::NavItem {
                                 room: RoomId::Activity(None), name: "Activity".into(), count: 0,
                                 hue: "agent-activity", glyph: None,
-                            }, false, Vec::new())}
-                        </div>
-                        {sb
-                            .groups
-                            .into_iter()
-                            .filter_map(|g| {
-                                let RoomId::Collection(id) = g.head.room else { return None };
-                                let label = g.head.name.clone();
-                                let control = format!("collection-{id}");
-                                let children = g.lists.iter().map(|n| n.room.clone()).collect();
-                                let folded = move || c.collapsed.with(|ids| ids.contains(&id));
-                                Some(view! {
-                                    <div class="nav-section">
-                                        <div class="nav-collection-row">
-                                            <button type="button" class="icon-button collection-toggle"
-                                                aria-expanded=move || (!folded()).to_string()
-                                                aria-controls=control.clone()
-                                                aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
-                                                on:click=move |_| c.toggle_fold(id)
-                                            >{icon(Icon::ChevronRight)}</button>
-                                            {item(g.head, false, children)}
-                                        </div>
-                                        <div id=control hidden=folded>
-                                            {g.lists.into_iter().map(|n| item(n, true, Vec::new())).collect_view()}
-                                        </div>
-                                    </div>
-                                })
-                            })
-                            .collect_view()}
-                        {(!sb.loose.is_empty())
-                            .then(|| {
-                                view! {
-                                    <div class="nav-section">
-                                        <div class="caps nav-caps">"Lists"</div>
-                                        {sb.loose.into_iter().map(|n| item(n, false, Vec::new())).collect_view()}
-                                    </div>
-                                }
+                            }, false, Vec::new(), 0)}
+                            {(!sb.agents.is_empty()).then(|| view! {
+                                <section class="side-agents" aria-label="Agents">
+                                    <ul>
+                                        {sb.agents.into_iter().filter_map(|(agent, status)| {
+                                            let room = RoomId::Activity(Some(todo_core::actor::AgentId::new(&agent.name).ok()?));
+                                            let active_room = room.clone();
+                                            let active = move || c.room.with(|r| *r == active_room);
+                                            Some(view! {
+                                                <li><a class="nav-item nav-agent" class:active=active.clone()
+                                                    aria-current=move || active().then_some("page")
+                                                    href=room.path() on:click=link_room(c, room)>
+                                                    {mark(&agent)}<span class="nav-name">{model::agent_display(&agent.name)}</span>
+                                                    <span class="count">{status}</span>
+                                                </a></li>
+                                            })
+                                        }).collect_view()}
+                                    </ul>
+                                </section>
                             })}
-                        {(!sb.agents.is_empty()).then(|| view! {
-                            <section class="nav-section side-agents" aria-label="Agents">
-                                <h2 class="caps nav-caps">"Agents"</h2>
-                                <ul>
-                                    {sb.agents.into_iter().filter_map(|(agent, status)| {
-                                        let room = RoomId::Activity(Some(todo_core::actor::AgentId::new(&agent.name).ok()?));
-                                        let active_room = room.clone();
-                                        let active = move || c.room.with(|r| *r == active_room);
-                                        Some(view! {
-                                            <li><a class="nav-item" class:active=active.clone()
-                                                aria-current=move || active().then_some("page")
-                                                href=room.path() on:click=link_room(c, room)>
-                                                {mark(&agent)}<span class="nav-name">{model::agent_display(&agent.name)}</span>
-                                                <span class="count">{status}</span>
-                                            </a></li>
-                                        })
-                                    }).collect_view()}
-                                </ul>
-                            </section>
+                        </div>
+                        {(!sb.groups.is_empty()).then(|| view! {
+                            <div class="nav-collections">
+                                {sb.groups.into_iter().filter_map(|g| {
+                                    let RoomId::Collection(id) = g.head.room else { return None };
+                                    let children = g.lists.iter().map(|n| n.room.clone()).collect();
+                                    let folded = move || c.collapsed.with(|ids| ids.contains(&id));
+                                    Some(view! {
+                                        <div class="nav-section nav-group" class:folded=folded>
+                                            {item(g.head, false, children, 0)}
+                                            <div id=format!("collection-{id}") hidden=folded>
+                                                {g.lists.into_iter().map(|n| item(n, true, Vec::new(), 0)).collect_view()}
+                                            </div>
+                                        </div>
+                                    })
+                                }).collect_view()}
+                            </div>
+                        })}
+                        {(!sb.loose.is_empty()).then(|| view! {
+                            <div class="nav-section">
+                                {sb.loose.into_iter().map(|n| item(n, false, Vec::new(), 0)).collect_view()}
+                            </div>
                         })}
                     }
                 }}
@@ -1162,13 +1173,14 @@ impl NewRoomKind {
 #[component]
 fn NewRoom(kind: NewRoomKind) -> impl IntoView {
     let c = ctx();
-    let (button, field, name, create, cancel) = match kind {
+    let (button, field, name, create, cancel, leading) = match kind {
         NewRoomKind::List => (
             "New list",
             "new-list-name",
             "List name",
             "Create list",
             "Cancel new list",
+            Icon::Plus,
         ),
         NewRoomKind::Collection => (
             "New collection",
@@ -1176,6 +1188,7 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
             "Collection name",
             "Create collection",
             "Cancel new collection",
+            Icon::FolderPlus,
         ),
     };
     let close = move || {
@@ -1193,7 +1206,7 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
                     request_animation_frame(move || { platform::focus(field); });
                 }
             }
-        >{icon(Icon::Plus)}{button}</button>
+        >{icon(leading)}{button}</button>
         <Show when=open>
             <form on:submit=move |ev| {
                 ev.prevent_default();

@@ -812,7 +812,7 @@ test("move a list between web-created collections and see the new parent from an
   const other = await openApp();
   const problems = watch(page);
   const collection = (tab, name) => tab.locator(".nav-section").filter({
-    has: tab.getByRole("link", { name, exact: true }),
+    has: tab.getByRole("link", { name: `${name} 0`, exact: true }),
   });
   for (const name of ["Greenhouse", "Workshop"]) {
     await page.getByRole("button", { name: "New collection" }).click();
@@ -821,12 +821,12 @@ test("move a list between web-created collections and see the new parent from an
     await input.press("Enter");
     await expect(page.locator(".room-title")).toHaveText(name);
   }
-  await page.locator(".sidebar").getByRole("link", { name: "Greenhouse", exact: true }).click();
+  await collection(page, "Greenhouse").getByRole("link", { name: "Greenhouse 0", exact: true }).click();
   await page.getByRole("button", { name: "New list" }).click();
   const list = page.getByRole("textbox", { name: "List name" });
   await list.fill("Propagation");
   await list.press("Enter");
-  const link = (tab, name) => collection(tab, name).getByRole("link", { name: "Propagation", exact: true });
+  const link = (tab, name) => collection(tab, name).getByRole("link", { name: "Propagation 0", exact: true });
   await expect(link(other, "Greenhouse")).toBeVisible();
   await page.getByRole("button", { name: "Room menu" }).click();
   await page.getByRole("menuitem", { name: "Move to…" }).click();

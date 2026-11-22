@@ -238,42 +238,10 @@ pub fn swatch(color: Option<&str>, seed: &[u8; 16]) -> &'static str {
     hues::swatch_for_seed(seed).key
 }
 
-/// The hand-drawn glyph for a list or collection, chosen from words in its name.
+/// The hand-drawn glyph for a list, chosen from words in its name.
 #[must_use]
 pub fn glyph_for(name: &str) -> Glyph {
-    let n = name.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-    if has(&["work", "práce", "job", "office work"]) {
-        Glyph::Briefcase
-    } else if has(&["project", "projekt"]) {
-        Glyph::Layers
-    } else if has(&["personal", "osobní", "home", "doma", "family", "rodina"]) {
-        Glyph::House
-    } else if has(&["shop", "errand", "nákup", "groceries", "basket"]) {
-        Glyph::Basket
-    } else if has(&["health", "zdraví", "doctor", "fitness", "sport"]) {
-        Glyph::Heart
-    } else if has(&["travel", "trip", "cest", "vacation", "dovolen"]) {
-        Glyph::PaperPlane
-    } else if has(&["read", "book", "kni", "čten"]) {
-        Glyph::Book
-    } else if has(&["financ", "money", "peníz", "tax", "dan", "budget", "bill"]) {
-        Glyph::Coin
-    } else if has(&["code", "app", "dev", "software", "kód"]) {
-        Glyph::Code
-    } else if has(&["renovat", "repair", "fix", "garden", "zahrad", "oprav"]) {
-        Glyph::Wrench
-    } else if has(&["plan", "goal", "cíl"]) {
-        Glyph::Flag
-    } else if has(&["event", "akce", "party", "meeting", "schůz"]) {
-        Glyph::CalendarStar
-    } else if has(&["office", "admin", "kancel", "paper", "doklad"]) {
-        Glyph::Paperclip
-    } else if has(&["day", "den", "today", "sun"]) {
-        Glyph::Sun
-    } else {
-        Glyph::Document
-    }
+    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Document)
 }
 
 // ---- visibility --------------------------------------------------------------------------------------
@@ -356,8 +324,10 @@ pub struct Sidebar {
     pub groups: Vec<NavGroup>,
     /// Lists outside any collection.
     pub loose: Vec<NavItem>,
-    /// Agents active this week and what they did today.
+    /// Agents seen today and what they did.
     pub agents: Vec<(AgentMark, String)>,
+    /// Live tasks whose latest change today was made by an agent.
+    pub agent_updates_today: usize,
 }
 
 /// Builds the sidebar.
@@ -375,9 +345,13 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         })
         .collect();
     let mut open_by_list: BTreeMap<ListId, usize> = BTreeMap::new();
-    for t in state.tasks.values() {
-        if !t.is_done() && task_live(state, t) {
+    let mut agent_updates_today = 0;
+    for t in state.tasks.values().filter(|t| task_live(state, t)) {
+        if !t.is_done() {
             *open_by_list.entry(t.list).or_default() += 1;
+        }
+        if t.updated.by.is_agent() && local(t.updated.at, now.offset_s).date() == ctx.today {
+            agent_updates_today += 1;
         }
     }
     let item = |l: &List| NavItem {
@@ -397,7 +371,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
                     name: c.name.clone(),
                     count: lists.iter().map(|l| l.count).sum(),
                     hue: swatch(c.color.as_deref(), c.id.as_uuid().as_bytes()),
-                    glyph: Some(glyph_for(&c.name)),
+                    glyph: Some(Glyph::for_folded_name(&fold(&c.name)).unwrap_or(Glyph::Layers)),
                 },
                 lists,
             }
@@ -409,6 +383,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         groups,
         loose,
         agents: agent_summary(state, now),
+        agent_updates_today,
     }
 }
 
@@ -418,20 +393,19 @@ fn agent_summary(state: &State, now: &Now) -> Vec<(AgentMark, String)> {
     let mut agents = BTreeMap::new();
     for task in state.tasks.values().filter(|t| task_live(state, t)) {
         for (stamp, created) in [(&task.created, true), (&task.updated, false)] {
-            let day = local(stamp.at, now.offset_s).date();
             let Some(id) = stamp.by.agent_id() else {
                 continue;
             };
-            if !(0..=7).contains(&(today - day).get_days()) {
+            // The creation stamp is also the latest stamp until an edit occurs.
+            if local(stamp.at, now.offset_s).date() != today || (!created && *stamp == task.created)
+            {
                 continue;
             }
-            let (_, added, edited) = agents.entry(id).or_insert((&stamp.by, 0, 0));
-            if day == today {
-                if created {
-                    *added += 1;
-                } else if stamp.at != task.created.at {
-                    *edited += 1;
-                }
+            let entry = agents.entry(id).or_insert((&stamp.by, 0, 0));
+            if created {
+                entry.1 += 1;
+            } else {
+                entry.2 += 1;
             }
         }
     }
@@ -439,7 +413,6 @@ fn agent_summary(state: &State, now: &Now) -> Vec<(AgentMark, String)> {
         .into_values()
         .filter_map(|(actor, added, edited)| {
             let status = match (added, edited) {
-                (0, 0) => "idle".to_owned(),
                 (a, 0) => format!("{a} added"),
                 (0, e) => format!("{e} edited"),
                 (a, e) => format!("{a} added, {e} edited"),
@@ -1698,13 +1671,15 @@ mod tests {
         for g in &sb.groups {
             assert_eq!(g.head.count, g.lists.iter().map(|l| l.count).sum::<usize>());
         }
+        assert_eq!(sb.agent_updates_today, 2);
         assert_eq!(
             sb.agents
                 .iter()
-                .map(|(mark, _)| mark.name.as_str())
+                .map(|(mark, status)| (mark.name.as_str(), status.as_str()))
                 .collect::<Vec<_>>(),
-            ["claude", "codex", "pi"]
+            [("claude", "1 edited"), ("codex", "1 edited")]
         );
+        assert!(sidebar(&State::new(), &now()).agents.is_empty());
     }
 
     #[test]

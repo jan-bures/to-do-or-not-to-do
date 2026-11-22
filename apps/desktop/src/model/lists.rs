@@ -66,83 +66,14 @@ fn hex_hue(s: &str) -> Option<Hue> {
     Some(ok_b.atan2(ok_a).to_degrees().rem_euclid(360.0))
 }
 
-/// Words (folded: lowercase, no diacritics) that pick a glyph, checked in order.
-const GLYPH_WORDS: &[(Glyph, &[&str])] = &[
-    (Glyph::Sun, &["my day", "today", "dnes"]),
-    (Glyph::Briefcase, &["work", "job", "prace", "zamestn"]),
-    (
-        Glyph::Coin,
-        &[
-            "financ", "money", "budget", "tax", "invoice", "penize", "dane", "ucty", "faktur",
-        ],
-    ),
-    (Glyph::Paperclip, &["office", "kancel"]),
-    (
-        Glyph::CalendarStar,
-        &["event", "party", "akce", "udalost", "oslav"],
-    ),
-    (
-        Glyph::Code,
-        &["code", "dev", "app", "software", "program", "github"],
-    ),
-    (
-        Glyph::Wrench,
-        &[
-            "renovat", "repair", "diy", "fix", "oprav", "rekonstr", "dilna",
-        ],
-    ),
-    (
-        Glyph::Book,
-        &["read", "book", "kniha", "knihy", "cteni", "studi", "learn"],
-    ),
-    (
-        Glyph::Basket,
-        &[
-            "shop", "grocer", "errand", "buy", "nakup", "potravin", "obchod",
-        ],
-    ),
-    (
-        Glyph::Heart,
-        &[
-            "health", "doctor", "fitness", "sport", "zdravi", "lekar", "cvic",
-        ],
-    ),
-    (
-        Glyph::PaperPlane,
-        &[
-            "travel", "trip", "vacation", "holiday", "cest", "dovolen", "vylet",
-        ],
-    ),
-    (
-        Glyph::Document,
-        &["admin", "document", "paper", "doklad", "urad", "formular"],
-    ),
-    (Glyph::Flag, &["plan", "goal", "cil", "milestone"]),
-    (Glyph::Layers, &["project", "projekt"]),
-    (
-        Glyph::House,
-        &[
-            "personal", "home", "house", "family", "osobni", "domov", "doma", "rodina",
-        ],
-    ),
-];
-
-fn glyph_for(name: &str) -> Option<Glyph> {
-    let folded = fold(name);
-    GLYPH_WORDS
-        .iter()
-        .find(|(_, words)| words.iter().any(|w| folded.contains(w)))
-        .map(|(g, _)| *g)
-}
-
 /// A list's glyph: from its name, or a document.
 pub fn list_glyph(name: &str) -> Glyph {
-    glyph_for(name).unwrap_or(Glyph::Document)
+    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Document)
 }
 
 /// A collection's glyph: from its name, or layers.
 pub fn collection_glyph(name: &str) -> Glyph {
-    glyph_for(name).unwrap_or(Glyph::Layers)
+    Glyph::for_folded_name(&fold(name)).unwrap_or(Glyph::Layers)
 }
 
 /// The letter mark for an actor, if it is an agent.

@@ -496,6 +496,14 @@ pub fn state() -> State {
     for n in [32, 29] {
         b.run(Command::CompleteTask { id: task(n) });
     }
+
+    // Two agents have worked today; Pi was only present earlier in the week.
+    for (n, agent) in [(3, "codex"), (6, "claude")] {
+        if let (Some(task), Ok(actor)) = (b.state.tasks.get_mut(&task(n)), Actor::agent(agent)) {
+            task.updated.at = at("2026-11-21T09:00:00Z");
+            task.updated.by = actor;
+        }
+    }
     b.state
 }
 

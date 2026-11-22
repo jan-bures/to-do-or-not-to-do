@@ -272,8 +272,10 @@ a {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: none;
   height: var(--desktop-titlebar);
   padding: 0 var(--space-4);
+  box-shadow: inset 0 calc(-1 * var(--hairline)) var(--color-line);
   font: var(--text-nav-collection);
   color: var(--color-ink);
 }
@@ -288,45 +290,35 @@ a {
 .nav {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-2) var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-4) transparent;
 }
 
-.nav-section + .nav-section {
-  margin-top: var(--space-4);
+.nav > * + * {
+  margin-top: var(--space-3);
 }
 
-.nav-caps {
-  padding: var(--space-1) var(--space-2);
+.nav-group:not(.folded) + .nav-group {
+  margin-top: var(--space-2);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--desktop-nav-gap);
   height: var(--desktop-nav-row);
-  padding: 0 var(--space-3) 0 var(--space-3);
+  padding: 0 var(--desktop-nav-gap) 0 var(--space-2);
+  border: var(--hairline) solid transparent;
   border-radius: var(--radius-button);
   font: var(--text-nav);
   color: var(--color-ink-2);
-  transition: background var(--duration-hover) var(--ease-standard);
+  transition: background-color var(--duration-hover) var(--ease-standard),
+    border-color var(--duration-hover) var(--ease-standard);
 }
 
-.nav-item .icon {
-  color: var(--color-ink-3);
-}
-
-.nav-item .glyph {
+.nav-item :is(.icon, .glyph) {
   color: var(--list-glyph);
-}
-
-.nav-collection-row {
-  display: flex;
-  align-items: center;
-}
-
-.nav-collection-row .nav-entry {
-  flex: 1;
-  min-width: 0;
 }
 
 .nav-entry { position: relative; }
@@ -334,8 +326,8 @@ a {
 .nav-entry .room-menu-trigger {
   position: absolute;
   inset-inline-end: 0;
-  inset-block-start: 50%;
-  transform: translateY(-50%);
+  inset-block-start: 0;
+  height: 100%;
   opacity: 0;
 }
 
@@ -348,49 +340,72 @@ a {
 }
 
 .nav-entry:has(.room-menu-trigger:not(:disabled)):is(:hover, :focus-within, :has(.menu-anchor)) .count {
-  display: none;
+  /* Leave the total in the link's accessible name when the overflow button is visible. */
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.nav-collection-row .nav-item {
-  flex: 1;
-  min-width: 0;
-  padding-left: var(--space-2);
+.nav-entry > .nav-item {
+  height: var(--desktop-nav-sub-row);
+  font: var(--text-nav-sub);
+}
+
+.nav-item:is(.sub, .nav-agent) {
+  padding-inline-start: calc(var(--space-6) + var(--space-1));
+}
+
+.nav-item.nav-agent {
+  font: var(--text-nav-sub);
+  font-weight: 500;
+}
+
+.nav-collection .nav-item {
+  gap: var(--space-2);
+  padding-inline-start: calc(var(--space-1) + var(--component-icon-small) + var(--space-2));
   font: var(--text-nav-collection);
   color: var(--color-ink);
 }
 
+/* The chevron is a separate control over the same full-width row highlight. */
 .collection-toggle {
-  flex: none;
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: flex;
+  align-items: center;
+  padding-inline-start: calc(var(--hairline) + var(--space-1));
+  padding-inline-end: var(--space-1);
+  border-radius: var(--radius-button);
+  color: var(--color-ink-3);
 }
 
 .collection-toggle .icon {
   width: var(--component-icon-small);
   height: var(--component-icon-small);
+  transition: transform var(--duration-panel) var(--ease-standard);
 }
 
 .collection-toggle[aria-expanded="true"] .icon {
   transform: rotate(90deg);
 }
 
-.nav-item.sub {
-  height: var(--desktop-nav-sub-row);
-  padding-left: calc(var(--space-3) + var(--space-4));
-  font: var(--text-nav-sub);
+@media (prefers-reduced-motion: reduce) {
+  .collection-toggle .icon { transition: none; }
 }
 
-.nav-item:hover {
+.nav-item:hover,
+.nav-entry:hover > .nav-item {
   background: var(--color-hover);
 }
 
 .nav-item.active,
 .nav-item.contains-active {
   background: var(--color-raised);
-  box-shadow: inset 0 0 0 var(--hairline) var(--color-line);
+  border-color: var(--color-line);
   color: var(--color-ink);
-}
-
-.nav-item.active .icon {
-  color: var(--color-accent-strong);
+  font-weight: 600;
 }
 
 .nav-name {
@@ -407,33 +422,53 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+.nav-pip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--component-chip-gap);
+  color: var(--color-accent-strong);
+}
+
+.nav-pip i {
+  width: var(--component-chip-dot);
+  height: var(--component-chip-dot);
+  border-radius: var(--radius-checkbox);
+  background: var(--color-accent);
+}
+
 .side-agents ul {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-.side-agents .nav-item {
-  gap: var(--space-2);
-  font: var(--text-nav-sub);
-}
-
-.side-agents .count {
-  margin-left: auto;
-  text-align: right;
+.nav-agent .count {
+  white-space: nowrap;
 }
 
 .new-list {
-  padding: var(--space-2);
+  flex: none;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
   border-top: var(--hairline) solid var(--color-line);
 }
 
 .open-new-list {
-  gap: var(--space-2);
+  gap: var(--desktop-nav-gap);
   justify-content: flex-start;
   width: 100%;
+  height: var(--desktop-nav-sub-row);
   padding: 0 var(--space-2);
-  color: var(--color-ink-2);
+  font: var(--text-nav-sub);
+  color: var(--color-ink-3);
+}
+
+.open-new-list .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+}
+
+.open-new-list:focus-visible:not(:disabled) {
+  color: var(--color-ink);
 }
 
 .open-new-list:hover:not(:disabled) {
@@ -461,12 +496,13 @@ a {
 
 .side-foot {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--space-2);
   height: var(--desktop-sidebar-footer);
   padding: 0 var(--space-2) 0 var(--space-4);
   border-top: var(--hairline) solid var(--color-line);
-  font: var(--text-meta);
+  font: var(--text-count);
   color: var(--color-ink-3);
 }
 
@@ -2439,7 +2475,7 @@ a.source:hover {
   }
 
   .nav-item,
-  .collection-toggle,
+  .nav-entry > .nav-item,
   .open-new-list {
     height: var(--phone-touch);
   }
@@ -2451,8 +2487,8 @@ a.source:hover {
     height: var(--phone-touch);
   }
 
-  .nav-item.sub {
-    height: var(--phone-room-row);
+  .nav-collection .nav-item {
+    padding-inline-start: var(--phone-touch);
   }
 
   .nav-entry:has(.room-menu-trigger:not(:disabled)) .nav-item {
