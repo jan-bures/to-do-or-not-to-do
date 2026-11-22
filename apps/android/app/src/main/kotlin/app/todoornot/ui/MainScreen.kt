@@ -12,6 +12,8 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -20,12 +22,14 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
+import app.todoornot.model.MotionFrame
 import app.todoornot.model.UiState
 import kotlinx.coroutines.launch
 
 /**
  * The main screen. Folded (compact width) it is one pane: the room, or a task's detail over it.
  * Unfolded it is the list (450 dp) and the detail side by side, like the F2 inner-screen mockup.
+ * [motion] is the model's motion; the screen runs its frames while it's shown (none at rest).
  */
 @Composable
 fun MainScreen(
@@ -37,6 +41,22 @@ fun MainScreen(
     draft: String = "",
     drawerOpen: Boolean = false,
     collapsed: Boolean = false,
+    motion: MotionFrame = MotionFrame.Rest,
+) {
+    LaunchedEffect(motion) { motion.drive() }
+    CompositionLocalProvider(LocalMotion provides motion) { Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed) }
+}
+
+@Composable
+private fun Screen(
+    state: UiState,
+    actions: Actions,
+    dark: Boolean,
+    wide: Boolean,
+    server: String?,
+    draft: String,
+    drawerOpen: Boolean,
+    collapsed: Boolean,
 ) {
     TodoTheme(dark, state.room.hue) {
         val r = LocalDesign.current.room

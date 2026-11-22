@@ -16,7 +16,7 @@ What the first version does:
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
   room, even the same one, clears the filter and closes its field.
-- **Tasks.** Add, complete (with the check animation and undo), rename, add to or remove from My Day, mark
+- **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps. A step the core refuses
   (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
   draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
@@ -29,6 +29,51 @@ What the first version does:
 - **Layouts.** Folded (compact width) it is one pane, with the detail over the list. Unfolded it shows the
   list and the detail side by side, like the F2 inner-screen mockup. The header collapses while scrolling
   and while the keyboard is open. Light and dark follow the system.
+
+## Motion
+
+The motion follows `docs/design-language.md` (Motion, moments 1 and 2) and moves as the desktop's does. Its
+timing and state live in a pure model, `model/Motion.kt` (the same model as the desktop's
+`src/model/motion.rs`), driven by a monotonic clock and unit-tested in `MotionTest`, with a randomized
+test that any sequence of taps, changes from elsewhere, deletions and room switches stays consistent and
+comes to rest. `model/MotionHost.kt` holds it for the screen: the composables sample it at the frame's
+time through `LocalMotion`, and it asks for frames only while something moves. Every duration, curve and
+cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easings` and `motion.cues` in
+`tokens.json`).
+
+- **Completing a task.** The command is written at once (the toast offers Undo). The disc pops in
+  (`CHECK_FILL`, `POP`), the tick and the title's strike-through draw from the left as the title dims
+  (`CHECK_TICK` after `CHECK_TICK_DELAY`), the row holds still (`COMPLETE_HOLD`), then fades and collapses
+  (`ROW_COLLAPSE`, `EXIT`) while the rows below rise to close the gap. Only then is it released: it leaves
+  the open rows (entering an open Completed section, `ROW_ENTER`), and the counts (header, drawer, pills)
+  change and the sun travels to the new count (`SUN_TRAVEL`, `SUN`). Until the release the Rust view
+  model counts it as open: each read passes the rows in their choreography (`RowPlacement`) to
+  `TodoEngine.roomPlaced` and `homePlaced`.
+- **Reopening** a completed task mirrors it: the disc clears (`OVERLAY_OUT`), the row collapses out of its
+  completed place (it counts as done until then) and enters the open rows. Undo is a reopening.
+- **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
+  released. A change from elsewhere (another device, an agent, a refused command) settles a choreography
+  the same way; a deleted task, or one the list stops showing, stops at once; switching rooms puts
+  everything at rest. A row that has gone (or hasn't arrived) takes no taps.
+- **The sun** eases from where it is to wherever the count puts it, whatever changed it (a sync too),
+  retargeting mid-travel. A new room places it without travel.
+- **Dusk.** Once My Day's last row has left, the header grows into the dusk scene over `DUSK` (`SUN`): the
+  dusk sky and scene fade in over the strip, the text switches to the night's ink and the moon and stars
+  come out (in batches, `STAGGER` apart) from `DUSK_NIGHT_AT`, and tomorrow's hand-over enters from
+  `DUSK_HANDOVER_AT`, its first items `STAGGER` apart. A hand-over item takes taps only once it has begun
+  to appear. Reopening or adding a task lifts the dusk again over `ROOM_HUE`.
+- **Reduced motion and the animation scale.** The system's animator duration scale
+  (`Settings.Global.ANIMATOR_DURATION_SCALE`, read whenever a transition starts) stretches or shrinks every
+  animation, as it does everywhere else on the phone; the hold keeps its length. At 0 (*Remove
+  animations*) the reduced variants apply (`motion::reduced`): the checkbox and the strike switch at once,
+  the title dims and the row fades in `REDUCED_FADE` but never slides, the sun jumps, and dusk crossfades
+  while the header takes its new height at once.
+- **Idle is idle.** At rest no frame callback is pending: the driver waits for the next change; a row
+  holding still waits on one timer. The landscape's geometry is built once per size and scene, never per
+  frame.
+
+The gallery draws everything at rest, and freezes the motion at chosen moments (`GalleryTest.motion_frames`:
+the fill, the hold, the collapse half way, the sun half way, dusk half way and the hand-over entering).
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon
 paths, the font resources and the window colours from it, so nothing is copied by hand.

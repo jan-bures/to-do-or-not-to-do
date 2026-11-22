@@ -37,6 +37,7 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
+import app.todoornot.model.MotionFrame
 import app.todoornot.model.PairingState
 import app.todoornot.model.TodoModel
 import app.todoornot.model.Toast
@@ -111,8 +112,57 @@ class GalleryTest {
         drawer: Boolean = false,
         collapsed: Boolean = false,
         wide: Boolean = device === INNER,
+        motion: MotionFrame = MotionFrame.Rest,
     ) = shot(name, device) {
-        MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer, collapsed = collapsed)
+        MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer, collapsed = collapsed, motion = motion)
+    }
+
+    /**
+     * A model whose motion runs on a clock the test sets: [toggle] runs at 0, then the frames at [frames]
+     * (each releasing what's due and reading the screen again), and the last one stays on screen.
+     */
+    private fun moving(engine: TodoEngine, toggle: (TodoModel) -> Unit, vararg frames: Long): TodoModel {
+        var time = 0L
+        val m = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, clock = { time })
+        toggle(m)
+        for (t in frames) {
+            time = t
+            m.motion.freeze(t)
+        }
+        return m
+    }
+
+    private fun motionShot(name: String, m: TodoModel, dark: Boolean = false) =
+        main(name, COVER, m.ui.value, dark, motion = m.motion)
+
+    /**
+     * Frozen frames of the motion (`docs/design-language.md`, Motion): completing a task holds its row
+     * struck through, then collapses it as the rows below close up; only then does the count change and
+     * the sun travel. Completing the last task of My Day brings dusk, with tomorrow entering under it.
+     */
+    @Test
+    fun motion_frames() {
+        val m = Tokens.Motion
+        val landed = (m.CHECK_TICK_DELAY + m.CHECK_TICK).toLong()
+        val exit = landed + m.COMPLETE_HOLD
+        val release = exit + m.ROW_COLLAPSE
+        val complete = { model: TodoModel ->
+            model.setDone(model.ui.value.room.tasks.first { it.title == "Koupit rohlíky a mléko" }.id, true)
+        }
+        motionShot("motion_fill_light", moving(fixtureEngine(), complete, (m.CHECK_FILL / 2).toLong()))
+        motionShot("motion_hold_light", moving(fixtureEngine(), complete, landed + m.COMPLETE_HOLD / 2))
+        motionShot("motion_collapse_half_light", moving(fixtureEngine(), complete, exit + m.ROW_COLLAPSE / 2))
+        motionShot("motion_sun_half_light", moving(fixtureEngine(), complete, release, release + m.SUN_TRAVEL / 2))
+        motionShot("motion_sun_half_dark", moving(fixtureEngine(), complete, release, release + m.SUN_TRAVEL / 2), dark = true)
+
+        // The finished day with one task reopened: completing it brings dusk.
+        fun lastOfTheDay(): TodoEngine = fixtureEngine("finished").also { e ->
+            e.setDone(e.room(RoomKey.Smart(SmartList.MY_DAY), FIXTURE_NOW).completed.first().id, false)
+        }
+        val last = { model: TodoModel -> model.setDone(model.ui.value.room.tasks.first().id, true) }
+        motionShot("motion_dusk_half_light", moving(lastOfTheDay(), last, release, release + m.DUSK / 2))
+        motionShot("motion_dusk_handover_light", moving(lastOfTheDay(), last, release, release + (m.DUSK * 0.72f).toLong()))
+        motionShot("motion_dusk_handover_dark", moving(lastOfTheDay(), last, release, release + (m.DUSK * 0.72f).toLong()), dark = true)
     }
 
     @Test

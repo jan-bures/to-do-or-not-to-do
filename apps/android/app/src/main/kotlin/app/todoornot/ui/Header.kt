@@ -20,6 +20,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -29,12 +33,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.Eyebrow
 import app.todoornot.core.RoomView
+import app.todoornot.design.Design
 import app.todoornot.design.Landscape
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Scene
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.design.cubic
+import app.todoornot.model.DuskLook
 
 private val S = Tokens.Space
 
@@ -42,6 +48,10 @@ private val S = Tokens.Space
  * A room's header: the sky in the room's hue with the bar, the eyebrow, the title and the count, and the
  * landscape strip with the sun at done / total. When the day is finished the sky turns to dusk, and the
  * header is drawn in the dark palette so the text stays readable on it.
+ *
+ * Dusk falls when My Day's last task has left (`docs/design-language.md`, Motion, moment 2): the dusk sky
+ * fades in over the room's, the landscape grows into the dusk scene, and the text switches to the night's
+ * ink at its cue. Reopening a task lifts it again, more briskly.
  *
  * The bar (menu, [actions]) stays unless [bar] is false (typing in a short window). Everything under it
  * collapses with [collapse], and the room's name fades into the bar as it does.
@@ -56,10 +66,14 @@ fun RoomHeader(
     actions: @Composable RowScope.() -> Unit,
 ) {
     val outer = LocalDesign.current
-    if (room.finished && !outer.dark) {
-        TodoTheme(dark = true, roomHue = outer.roomHue) { HeaderBody(room, landscape, collapse, onMenu, bar, actions) }
-    } else {
-        HeaderBody(room, landscape, collapse, onMenu, bar, actions)
+    val motion = LocalMotion.current
+    val dusk: () -> DuskLook = remember(room.key, room.finished, motion) {
+        { motion.dusk(room.key) ?: DuskLook.rest(room.finished) }
+    }
+    val sun: () -> Float? = remember(room.key, motion) { { motion.sun(room.key) } }
+    val nightInk by remember(dusk) { derivedStateOf { dusk().nightInk } }
+    TodoTheme(dark = outer.dark || nightInk, roomHue = outer.roomHue) {
+        HeaderBody(room, landscape, collapse, onMenu, bar, outer, dusk, sun, actions)
     }
 }
 
@@ -70,15 +84,20 @@ private fun HeaderBody(
     collapse: HeaderCollapse,
     onMenu: () -> Unit,
     bar: Boolean,
+    outer: Design,
+    dusk: () -> DuskLook,
+    sun: () -> Float?,
     actions: @Composable RowScope.() -> Unit,
 ) {
     val d = LocalDesign.current
     val r = d.room
-    val sky = if (room.finished) {
-        val dusk = d.dusk()
-        Modifier.background(Brush.verticalGradient(listOf(dusk.top, dusk.low)))
-    } else {
-        Modifier.background(r.sky)
+    // The room's sky, and the dusk sky fading in over it (read at draw time).
+    val daySky = outer.room.sky
+    val duskSky = Brush.verticalGradient(outer.dusk().let { listOf(it.top, it.low) })
+    val sky = Modifier.drawBehind {
+        val scene = dusk().scene
+        if (scene < 1f) drawRect(daySky)
+        if (scene > 0f) drawRect(duskSky, alpha = scene)
     }
     val motion = tween<IntSize>(Tokens.Motion.PANEL, easing = Tokens.Motion.EASE_STANDARD.cubic())
     Column(sky.fillMaxWidth().statusBarsPadding()) {
@@ -109,7 +128,7 @@ private fun HeaderBody(
                     Summary(room, Modifier.padding(bottom = S.S2.dp))
                 }
             }
-            Landscape(Scene(room.done.toInt(), room.total.toInt(), room.finished), landscape)
+            Landscape(Scene(room.done.toInt(), room.total.toInt(), room.finished), landscape, design = outer, sun = sun, dusk = dusk)
         }
     }
 }

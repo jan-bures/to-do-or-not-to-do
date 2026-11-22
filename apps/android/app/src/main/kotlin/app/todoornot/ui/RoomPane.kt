@@ -36,7 +36,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -44,10 +46,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,10 +77,11 @@ import app.todoornot.design.Tokens
 import app.todoornot.design.cubic
 import app.todoornot.design.style
 import app.todoornot.model.Actions
+import app.todoornot.model.DuskLook
+import app.todoornot.model.MotionFrame
+import app.todoornot.model.rowIn
 import app.todoornot.model.Toast
 import app.todoornot.model.UiState
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
@@ -138,7 +141,7 @@ fun RoomPane(
             }
             if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
             Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true)) {
-                TaskList(room, state.selected, actions)
+                TaskList(room, state.selected, state.showCompleted, actions)
             }
             ToastStrip(state.toast, actions)
             Composer(room.addPlaceholder, draft, keyboard, actions::add)
@@ -249,30 +252,17 @@ private fun Banner(text: String, action: String, onAction: () -> Unit) {
 }
 
 /**
- * The tasks. Checking a box plays the fill and tick, holds for a moment so the tick reads, and only then
- * completes the task, which collapses its row.
+ * The tasks. Checking a box plays the choreography in place (`docs/design-language.md`, Motion): the
+ * row fills, holds and collapses while the rows below close up, and only then leaves for Completed. As
+ * dusk falls on a finished day, tomorrow's hand-over enters item by item, and takes taps only once it
+ * has begun to appear.
  */
 @Composable
-private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
+private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actions: Actions) {
     val r = LocalDesign.current.room
-    val scope = rememberCoroutineScope()
-    var completing by remember(room.key) { mutableStateOf(emptySet<String>()) }
-    var showDone by rememberSaveable(room.key.toString()) { mutableStateOf(false) }
-    // Forget rows that have finished completing (they left the open list).
-    LaunchedEffect(room.tasks) {
-        val open = room.tasks.mapTo(HashSet()) { it.id }
-        completing = completing.filterTo(HashSet()) { it in open }
-    }
-    fun check(t: TaskRow, on: Boolean) {
-        if (!on || t.done) {
-            actions.setDone(t.id, on)
-            return
-        }
-        completing = completing + t.id
-        scope.launch {
-            delay((M.CHECK_TICK_DELAY + M.CHECK_TICK + M.COMPLETE_HOLD).toLong())
-            actions.setDone(t.id, true)
-        }
+    val motion = LocalMotion.current
+    val dusk: () -> DuskLook = remember(room.key, room.finished, motion) {
+        { motion.dusk(room.key) ?: DuskLook.rest(room.finished) }
     }
     LazyColumn(Modifier.fillMaxSize()) {
         // Only when nothing at all is listed: a filter that matches only done tasks shows them under
@@ -280,23 +270,10 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
         if (showsEmptyLine(room)) {
             item("empty") { Empty(room.emptyLine) }
         }
-        items(room.tasks, key = { it.id }) { t ->
-            TaskRowView(
-                t,
-                selected = t.id == selected,
-                checked = t.done || t.id in completing,
-                onCheck = { check(t, it) },
-                onOpen = { actions.select(t.id) },
-                modifier = Modifier.animateItem(
-                    fadeInSpec = tween(M.ROW_COLLAPSE),
-                    placementSpec = tween(M.ROW_COLLAPSE, easing = M.EASE_STANDARD.cubic()),
-                    fadeOutSpec = tween(M.ROW_COLLAPSE),
-                ),
-            )
-        }
-        room.tomorrow?.let { tomorrow(it, actions) }
+        items(room.tasks, key = { it.id }) { t -> MovingRow(t, inCompleted = false, selected, actions, motion) }
+        room.tomorrow?.let { tomorrow(it, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
-        if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions) }
+        if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
         // The finished day keeps today's Completed section under the hand-over, as on the desktop.
         if (room.completed.isNotEmpty()) {
             item("completed-header") {
@@ -304,7 +281,7 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
                     Modifier
                         .fillMaxWidth()
                         .height(P.TOUCH.dp)
-                        .clickable { showDone = !showDone }
+                        .clickable { actions.setShowCompleted(!showDone) }
                         .padding(horizontal = P.ROW_PAD_LEFT.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
@@ -315,19 +292,35 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
                 }
             }
             if (showDone) {
-                items(room.completed, key = { "done-" + it.id }) { t ->
-                    TaskRowView(
-                        t,
-                        selected = t.id == selected,
-                        checked = true,
-                        onCheck = { check(t, it) },
-                        onOpen = { actions.select(t.id) },
-                        modifier = Modifier.animateItem(),
-                    )
-                }
+                items(room.completed, key = { "done-" + it.id }) { t -> MovingRow(t, inCompleted = true, selected, actions, motion) }
             }
         }
     }
+}
+
+/**
+ * A task row with its choreography: only a row that moves recomposes as the frames go by. A row at
+ * rest that the list just gained (a new task, another room) fades in; one arriving from its
+ * choreography enters as that says.
+ */
+@Composable
+private fun LazyItemScope.MovingRow(t: TaskRow, inCompleted: Boolean, selected: String?, actions: Actions, motion: MotionFrame) {
+    val look by remember(t.id, inCompleted, motion) { derivedStateOf { motion.rowIn(t.id, inCompleted) } }
+    val checked by remember(t.id, motion) { derivedStateOf { motion.checked(t.id) } }
+    val l = look
+    TaskRowView(
+        t,
+        selected = t.id == selected,
+        checked = checked ?: t.done,
+        onCheck = { actions.setDone(t.id, it) },
+        onOpen = { actions.select(t.id) },
+        modifier = Modifier.animateItem(
+            fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
+            placementSpec = null,
+            fadeOutSpec = null,
+        ),
+        look = l,
+    )
 }
 
 @Composable
@@ -338,16 +331,28 @@ private fun Empty(line: String) {
     }
 }
 
-/** The finished day hands over to tomorrow: the first thing, the rest of tomorrow, then the week. */
-private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions) {
+/** Whether item [i] of the hand-over has begun to appear: only then does it take taps. */
+@Composable
+private fun shown(i: Int, dusk: () -> DuskLook): Boolean {
+    val on by remember(i, dusk) { derivedStateOf { dusk().handoverShown(i) } }
+    return on
+}
+
+/**
+ * The finished day hands over to tomorrow: the first thing, the rest of tomorrow, then the week. Each
+ * item enters in turn as dusk falls ([handover]).
+ */
+private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions, dusk: () -> DuskLook) {
+    var n = 0
     item("tomorrow-first") {
         val d = LocalDesign.current
         val r = d.room
-        Column(Modifier.fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
+        val on = shown(0, dusk)
+        Column(Modifier.handover(0, dusk).fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
             Label("When the sun comes up", Tokens.Type.CAPS_LABEL, r.ink3)
             Spacer(Modifier.height(S.S3.dp))
             Row(
-                Modifier.fillMaxWidth().clickable { actions.select(t.first.id) },
+                Modifier.fillMaxWidth().clickable(enabled = on) { actions.select(t.first.id) },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(S.S4.dp),
             ) {
@@ -367,59 +372,74 @@ private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions) {
             }
             Spacer(Modifier.height(S.S4.dp))
             // Planning the next day happens in Planned, where tomorrow's tasks are (as on the desktop).
-            Button("Plan ${t.weekday}", primary = true) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
+            Button("Plan ${t.weekday}", primary = true, enabled = on) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
         }
     }
     if (t.also.isNotEmpty()) {
-        item("tomorrow-also") { Caps("Also on ${t.weekday}") }
-        items(t.also, key = { "also-" + it.id }) { SmallRow(it, actions) }
+        val caps = ++n
+        item("tomorrow-also") { Caps("Also on ${t.weekday}", Modifier.handover(caps, dusk)) }
+        val first = n + 1
+        n += t.also.size
+        itemsIndexed(t.also, key = { _, it -> "also-" + it.id }) { i, it -> SmallRow(it, actions, first + i, dusk) }
     }
     if (t.week.isNotEmpty()) {
-        item("tomorrow-week") { Caps("Rest of the week") }
-        items(t.week, key = { "week-" + it.id }) { SmallRow(it, actions) }
+        val caps = ++n
+        item("tomorrow-week") { Caps("Rest of the week", Modifier.handover(caps, dusk)) }
+        val first = n + 1
+        n += t.week.size
+        itemsIndexed(t.week, key = { _, it -> "week-" + it.id }) { i, it -> SmallRow(it, actions, first + i, dusk) }
     }
     if (t.more > 0u) {
+        val last = ++n
         item("tomorrow-more") {
             val r = LocalDesign.current.room
-            Label("${t.more} more", Tokens.Type.COUNT, r.ink3, Modifier.padding(start = S.S5.dp + S.S8.dp, top = S.S3.dp, bottom = S.S6.dp))
+            Label(
+                "${t.more} more",
+                Tokens.Type.COUNT,
+                r.ink3,
+                Modifier.handover(last, dusk).padding(start = S.S5.dp + S.S8.dp, top = S.S3.dp, bottom = S.S6.dp),
+            )
         }
     }
 }
 
-private fun LazyListScope.planOnly(weekday: String, actions: Actions) {
+private fun LazyListScope.planOnly(weekday: String, actions: Actions, dusk: () -> DuskLook) {
     item("plan-next") {
         val r = LocalDesign.current.room
-        Column(Modifier.fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
+        val on = shown(0, dusk)
+        Column(Modifier.handover(0, dusk).fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
             Label("When the sun comes up", Tokens.Type.CAPS_LABEL, r.ink3)
             Spacer(Modifier.height(S.S2.dp))
             Label("Nothing is due on $weekday yet.", Tokens.Type.NOTES, r.ink2)
             Spacer(Modifier.height(S.S4.dp))
-            Button("Plan $weekday", primary = true) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
+            Button("Plan $weekday", primary = true, enabled = on) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
         }
     }
 }
 
 @Composable
-private fun Caps(text: String) {
+private fun Caps(text: String, modifier: Modifier = Modifier) {
     val r = LocalDesign.current.room
-    Label(text, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S5.dp, top = S.S6.dp, bottom = S.S2.dp))
+    Label(text, Tokens.Type.CAPS_LABEL, r.ink3, modifier.padding(start = S.S5.dp, top = S.S6.dp, bottom = S.S2.dp))
 }
 
-/** A compact row for the hand-over: check, title, chip, and the date on the right. */
+/** A compact row for the hand-over (item [i] of it): check, title, chip, and the date on the right. */
 @Composable
-private fun SmallRow(t: TaskRow, actions: Actions) {
+private fun SmallRow(t: TaskRow, actions: Actions, i: Int, dusk: () -> DuskLook) {
     val r = LocalDesign.current.room
+    val on = shown(i, dusk)
     Row(
         Modifier
+            .handover(i, dusk)
             .fillMaxWidth()
             .height(P.TOUCH.dp)
             .hairline(r.line, top = true)
-            .clickable { actions.select(t.id) }
+            .clickable(enabled = on) { actions.select(t.id) }
             .padding(start = S.S3.dp, end = S.S5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
-        Check(t.done, { actions.setDone(t.id, it) }, t.title)
+        Check(t.done, { actions.setDone(t.id, it) }, t.title, enabled = on)
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
             t.chip?.let { ListChip(it) }

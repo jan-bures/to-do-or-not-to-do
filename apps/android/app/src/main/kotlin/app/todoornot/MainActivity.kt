@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
         when {
             m != null -> {
                 val ui by m.ui.collectAsStateWithLifecycle()
-                MainScreen(ui, m, dark, wide, server = (h as? Host.Ready)?.session?.server, draft = shared)
+                MainScreen(ui, m, dark, wide, server = (h as? Host.Ready)?.session?.server, draft = shared, motion = m.motion)
             }
             h is Host.CantOpen -> {
                 val problem by graph.unpairProblem.collectAsStateWithLifecycle()

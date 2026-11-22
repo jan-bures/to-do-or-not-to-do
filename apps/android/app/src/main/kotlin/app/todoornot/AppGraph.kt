@@ -13,6 +13,7 @@ import app.todoornot.core.EngineConfig
 import app.todoornot.core.NativeInit
 import app.todoornot.core.TodoEngine
 import app.todoornot.model.CorePairing
+import app.todoornot.model.Pace
 import app.todoornot.model.PairingModel
 import app.todoornot.model.TodoModel
 import app.todoornot.session.EngineHost
@@ -93,7 +94,7 @@ class AppGraph(private val app: Context) {
         _model.value = engine?.let { e ->
             val ms = CoroutineScope(SupervisorJob() + Dispatchers.Main)
             modelScope = ms
-            TodoModel(e, ms, Dispatchers.IO, onUnpair = ::unpair).also { m ->
+            TodoModel(e, ms, Dispatchers.IO, onUnpair = ::unpair, pace = ::pace).also { m ->
                 EngineHost.recoveredNotice((h as Host.Ready).recovered)?.let(m::notice)
                 if (foreground) m.resume()
             }
@@ -129,6 +130,13 @@ class AppGraph(private val app: Context) {
             }
         }
     }
+
+    /**
+     * How fast the next transition runs: the system's animator duration scale (Developer options, or
+     * Accessibility's "Remove animations", which sets it to 0 for reduced motion). Read each time, so a
+     * change applies to the next transition.
+     */
+    private fun pace(): Pace = Pace(Settings.Global.getFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f))
 
     private fun deviceName(): String =
         Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }

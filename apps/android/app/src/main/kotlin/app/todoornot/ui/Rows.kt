@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DueTone
@@ -23,6 +25,7 @@ import app.todoornot.core.TaskRow
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
+import app.todoornot.model.RowLook
 
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
@@ -34,6 +37,11 @@ private val S = Tokens.Space
  * undated row's chips start flush with the title. The row is
  * at least 64 dp and grows with the font scale: its bottom inset is what's left of 64 dp under the
  * title and a chip-high metadata line, so nothing in the second line is ever clipped.
+ *
+ * [look] is the row's frame of its choreography (null at rest): the disc pops and the tick draws, the
+ * title dims and its strike-through draws from the left, and the row fades and collapses. [checked] is
+ * whether the task is done as far as a tap is concerned (a held row is done, though it's still listed
+ * open). A row that has gone (or hasn't arrived) takes no taps.
  */
 @Composable
 fun TaskRowView(
@@ -43,16 +51,20 @@ fun TaskRowView(
     onCheck: (Boolean) -> Unit,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
+    look: RowLook? = null,
 ) {
     val r = LocalDesign.current.room
+    val l = look ?: RowLook.rest(task.done)
+    val live = !l.gone
     val titleLine = Tokens.Type.TASK_TITLE_PHONE.lineHeight.dp
     val bottom = (P.ROW.dp - P.ROW_PAD_TOP.dp - titleLine - S.S1.dp - metaLine).coerceAtLeast(0.dp)
     val m = modifier
+        .rowMotion(look)
         .fillMaxWidth()
         .heightIn(min = P.ROW.dp)
         .then(if (selected) Modifier.background(r.wash).selectionBar(r.accent) else Modifier)
         .hairline(r.line)
-        .clickable(onClick = onOpen)
+        .clickable(enabled = live, onClick = onOpen)
         .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = P.ROW_PAD_TOP.dp, bottom = bottom)
     Row(m, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
         Box(Modifier.size(P.COL_CHECK.dp, titleLine), contentAlignment = Alignment.Center) {
@@ -61,15 +73,12 @@ fun TaskRowView(
                 onToggle = onCheck,
                 label = task.title,
                 overdue = task.due?.tone == DueTone.OVERDUE,
+                enabled = live,
+                look = l,
             )
         }
         Column(Modifier.weight(1f)) {
-            Label(
-                task.title,
-                Tokens.Type.TASK_TITLE_PHONE,
-                if (task.done) r.ink3 else r.ink,
-                decoration = if (task.done) TextDecoration.LineThrough else null,
-            )
+            Title(task.title, lerp(r.ink, r.ink3, l.dim), l.strike)
             Spacer(Modifier.height(S.S1.dp))
             MetaLine(task)
         }
@@ -85,6 +94,23 @@ fun TaskRowView(
             Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
                 Priority(task.priority.toInt())
             }
+        }
+    }
+}
+
+/**
+ * The title, struck through by [strike] (0 to 1) from the left: while the strike draws, the part of the
+ * title it has reached is drawn struck and the rest plain, so the glyphs never double.
+ */
+@Composable
+private fun Title(text: String, color: Color, strike: Float) {
+    val token = Tokens.Type.TASK_TITLE_PHONE
+    when {
+        strike >= 1f -> Label(text, token, color, decoration = TextDecoration.LineThrough)
+        strike <= 0f -> Label(text, token, color)
+        else -> Box {
+            Label(text, token, color, Modifier.clipShare(strike, 1f))
+            Label(text, token, color, Modifier.clipShare(0f, strike), decoration = TextDecoration.LineThrough)
         }
     }
 }

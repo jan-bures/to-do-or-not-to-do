@@ -5,7 +5,11 @@ import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.core.TodoEngine
+import app.todoornot.design.Tokens
+import app.todoornot.model.DuskLook
 import app.todoornot.model.TodoModel
+import app.todoornot.model.Wake
+import app.todoornot.model.rowIn
 import app.todoornot.model.UnpairQuestion
 import app.todoornot.model.unsentCount
 import app.todoornot.ui.unpairWording
@@ -21,9 +25,17 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
+private val M = Tokens.Motion
+private val MY_DAY: RoomKey = RoomKey.Smart(SmartList.MY_DAY)
+
+/** Where a full-pace completion starts to leave, and where it's released. */
+private val EXIT_AT = (M.CHECK_TICK_DELAY + M.CHECK_TICK + M.COMPLETE_HOLD).toLong()
+private val RELEASE_AT = EXIT_AT + M.ROW_COLLAPSE
 
 /** The main screen's model over the real Rust engine (host build, through JNA) with fixture data. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -31,8 +43,17 @@ class TodoModelTest {
     /** Runs every model coroutine eagerly, so each call has taken effect when it returns. */
     private fun TestScope.eager() = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
 
+    /** The motion's clock: a test moves it and draws frames by hand ([frame]). */
+    private var time = 0L
+
     private fun TestScope.model(name: String = "world", engine: TodoEngine = fixtureEngine(name)) =
-        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW })
+        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time })
+
+    /** Moves the clock to [t] and draws a frame there. */
+    private fun TodoModel.frame(t: Long) {
+        time = t
+        motion.frame(t)
+    }
 
     @Test
     fun my_day_opens_first_with_the_fixture_numbers() = runTest {
@@ -57,21 +78,158 @@ class TodoModelTest {
     }
 
     @Test
-    fun completing_shows_an_undo_that_reopens() = runTest {
+    fun completing_holds_the_row_until_its_choreography_releases_it_and_undo_brings_it_back() = runTest {
         val m = model()
         val task = m.ui.value.room.tasks.first { it.title == "Koupit rohlíky a mléko" }
         m.setDone(task.id, true)
         advanceUntilIdle()
+        // Written at once (the toast offers undo), but the row holds its place and the counts wait.
         val toast = m.ui.value.toast!!
         assertEquals(task.id, toast.reopen)
+        assertEquals(true, m.engine.taskDone(task.id))
+        assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
+        assertEquals(3u, m.ui.value.room.done)
+        assertEquals("the drawer counts it as open too", 9u, m.ui.value.home.smart.first().open)
+
+        // Holding, then collapsing: still there.
+        m.frame(EXIT_AT + M.ROW_COLLAPSE / 2)
+        advanceUntilIdle()
+        assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
+        // Released: it leaves the open rows, the count changes, and the sun sets off from where it was.
+        m.frame(RELEASE_AT)
+        advanceUntilIdle()
         assertFalse(m.ui.value.room.tasks.any { it.id == task.id })
         assertEquals(4u, m.ui.value.room.done)
+        assertEquals(8u, m.ui.value.home.smart.first().open)
+        assertEquals(3f / 12f, m.motion.sun(MY_DAY)!!, 1e-6f)
+        m.frame(RELEASE_AT + M.SUN_TRAVEL)
+        assertEquals(4f / 12f, m.motion.sun(MY_DAY)!!, 1e-6f)
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
 
+        // Undo, with Completed closed: it goes straight back to the open rows, entering.
         m.undo(toast)
         advanceUntilIdle()
         assertNull(m.ui.value.toast)
         assertTrue(m.ui.value.room.tasks.any { it.id == task.id })
         assertEquals(3u, m.ui.value.room.done)
+        assertNotNull(m.motion.row(task.id))
+        m.frame(time + 5_000)
+        assertNull(m.motion.row(task.id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun a_second_tap_part_way_reverses_in_place_and_nothing_is_released() = runTest {
+        val m = model()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        advanceUntilIdle()
+        m.frame(EXIT_AT + 50)
+        m.setDone(id, false)
+        advanceUntilIdle()
+        assertEquals(false, m.engine.taskDone(id))
+        assertTrue(m.motion.motion.holding().isEmpty())
+        m.frame(time + 5_000)
+        advanceUntilIdle()
+        assertEquals(id, m.ui.value.room.tasks.first().id)
+        assertEquals(3u, m.ui.value.room.done)
+        assertNull(m.motion.row(id))
+    }
+
+    @Test
+    fun reopening_from_an_open_completed_section_keeps_its_place_until_it_leaves() = runTest {
+        val m = model()
+        m.setShowCompleted(true)
+        advanceUntilIdle()
+        val before = m.ui.value.room.completed
+        val done = before.first()
+        m.setDone(done.id, false)
+        advanceUntilIdle()
+        // Still in its completed place, and still counted, while the disc clears and the row leaves.
+        assertEquals(before.map { it.id }, m.ui.value.room.completed.map { it.id })
+        assertEquals(3u, m.ui.value.room.done)
+        assertFalse(m.ui.value.room.tasks.any { it.id == done.id })
+        m.frame((M.OVERLAY_OUT + M.ROW_COLLAPSE).toLong())
+        advanceUntilIdle()
+        assertTrue(m.ui.value.room.tasks.any { it.id == done.id })
+        assertEquals(2u, m.ui.value.room.done)
+        // It enters the open rows.
+        assertEquals(0f, m.motion.rowIn(done.id, false)!!.height)
+    }
+
+    @Test
+    fun a_change_from_elsewhere_settles_the_row_and_the_sun_eases_to_any_new_count() = runTest {
+        val engine = fixtureEngine()
+        val m = model(engine = engine)
+        val (a, b) = m.ui.value.room.tasks.take(2).map { it.id }
+        m.setDone(a, true)
+        advanceUntilIdle()
+        m.frame(300)
+        // Another device reopens it (or the server refused the completion): the row settles open.
+        engine.setDone(a, false)
+        m.refresh()
+        assertTrue(m.motion.motion.holding().isEmpty())
+        m.frame(5_000)
+        advanceUntilIdle()
+        assertEquals(a, m.ui.value.room.tasks.first().id)
+        assertEquals(3u, m.ui.value.room.done)
+        // Another device completes one: no choreography, but the sun still eases to the new count.
+        engine.setDone(b, true)
+        m.refresh()
+        assertEquals(4u, m.ui.value.room.done)
+        assertEquals(3f / 12f, m.motion.sun(MY_DAY)!!, 1e-6f)
+        assertNull(m.motion.row(b))
+        m.frame(time + M.SUN_TRAVEL / 2)
+        assertEquals(3.5f / 12f, m.motion.sun(MY_DAY)!!, 1e-3f)
+    }
+
+    @Test
+    fun switching_rooms_lets_a_held_task_go_at_once() = runTest {
+        val m = model()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        advanceUntilIdle()
+        m.open(RoomKey.Smart(SmartList.ALL))
+        advanceUntilIdle()
+        assertTrue(m.motion.motion.holding().isEmpty())
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
+    }
+
+    @Test
+    fun the_last_task_of_my_day_brings_dusk_once_it_has_left() = runTest {
+        val engine = fixtureEngine("finished")
+        val last = engine.room(MY_DAY, FIXTURE_NOW).completed.first().id
+        engine.setDone(last, false)
+        val m = model(engine = engine)
+        assertFalse(m.ui.value.room.finished)
+        m.setDone(last, true)
+        advanceUntilIdle()
+        // Holding: the day isn't finished yet, and the header is still the strip.
+        assertFalse(m.ui.value.room.finished)
+        assertEquals(DuskLook.rest(false), m.motion.dusk(MY_DAY))
+        m.frame(RELEASE_AT)
+        advanceUntilIdle()
+        assertTrue(m.ui.value.room.finished)
+        // Dusk falls from here; the hand-over takes taps only once it has begun to appear.
+        assertEquals(0f, m.motion.dusk(MY_DAY)!!.scene)
+        assertFalse(m.motion.dusk(MY_DAY)!!.handoverShown(0))
+        m.frame(RELEASE_AT + M.DUSK / 2)
+        assertFalse(m.motion.dusk(MY_DAY)!!.handoverShown(0))
+        m.frame(RELEASE_AT + M.DUSK)
+        assertTrue(m.motion.dusk(MY_DAY)!!.handoverShown(0))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+        // Reopening lifts it again, more briskly.
+        m.setShowCompleted(true)
+        advanceUntilIdle()
+        m.setDone(last, false)
+        advanceUntilIdle()
+        m.frame(time + M.OVERLAY_OUT + M.ROW_COLLAPSE)
+        advanceUntilIdle()
+        assertFalse(m.ui.value.room.finished)
+        val lifting = time
+        m.frame(lifting + M.ROOM_HUE)
+        assertEquals(DuskLook.rest(false), m.motion.dusk(MY_DAY))
     }
 
     @Test

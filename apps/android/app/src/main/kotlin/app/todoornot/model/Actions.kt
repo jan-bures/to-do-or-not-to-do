@@ -30,6 +30,9 @@ interface Actions {
 
     /** Folds or unfolds a collection in the drawer. */
     fun toggleCollection(id: String)
+
+    /** Opens or closes the room's Completed section. */
+    fun setShowCompleted(on: Boolean)
     fun undo(t: Toast)
     fun dismissToast(t: Toast)
     fun dismissFailed(id: String)
@@ -58,6 +61,7 @@ interface Actions {
         override fun setFilter(text: String) = Unit
         override fun setSearching(on: Boolean) = Unit
         override fun toggleCollection(id: String) = Unit
+        override fun setShowCompleted(on: Boolean) = Unit
         override fun undo(t: Toast) = Unit
         override fun dismissToast(t: Toast) = Unit
         override fun dismissFailed(id: String) = Unit

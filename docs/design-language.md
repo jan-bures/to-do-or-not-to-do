@@ -328,9 +328,10 @@ Completing a task is the one choreographed moment in the app.
     the rows below are drawn up by the share that has gone; the slot leaves the virtualized list only when
     the row is released. For the sun, interpolate a scalar `progress: f32` and evaluate `Landscape::sun` /
     `travelled` only while animating, returning to the cached paths as soon as the animation settles.
-  - *Compose:* `AnimatedVisibility` + `LazyColumn` `animateItem` handle smooth height collapse and sibling
-    repositioning; animate `progress` via `animateFloatAsState(tween(SUN_TRAVEL, easing = SunEasing))` inside
-    the header `Canvas`.
+  - *Compose:* Frame-driven from the same pure motion model as GPUI (`apps/android/.../model/Motion.kt`),
+    sampled at each frame's time: a leaving row is laid out at its share of its height inside the
+    `LazyColumn`, so the rows below rise with it, and it leaves the list only when released. The sun's
+    `progress` is read in the header `Canvas`'s draw, over geometry built once per size.
   - *Web:* Animate checkbox scale with `transform` and tick with `clip-path` or SVG `stroke-dashoffset`;
     collapse rows via a CSS `grid-template-rows: 1fr → 0fr` wrapper; animate the sun `<g>` and arc
     `stroke-dashoffset` over `var(--duration-sun-travel) var(--ease-sun)`.
@@ -361,8 +362,8 @@ Completing a task is the one choreographed moment in the app.
   - *GPUI:* Drive the transition from a single scalar `t: 0..1`, interpolating container height and alpha-blending
     cached `Scene::Slim` and `Scene::Finished` layers (plus lerped hill/sky fills) without rebuilding geometry per
     frame once settled.
-  - *Compose:* `updateTransition(isFinished)` drives `animateDpAsState` for height and `animateFloatAsState` for
-    dusk progress inside the header `Canvas`.
+  - *Compose:* The motion model's dusk phase drives the header's height (in layout) and the strip and dusk
+    scenes' opacities (in the `Canvas`'s draw), with geometry built once per scene.
   - *Web:* Transition header height and layered sky/SVG opacity (avoid repaints on body text by keeping the
     tomorrow handoff below the header).
 
