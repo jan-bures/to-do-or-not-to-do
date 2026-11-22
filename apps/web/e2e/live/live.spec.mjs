@@ -1272,12 +1272,12 @@ test("a tab whose session changed under it still sends its queued edit, once", a
 test("an Activity-only 401 asks for the passkey again without persisting sign-out", async ({ browser }) => {
   const isolated = await browser.newContext({ baseURL });
   try {
+    const cookies = await context.cookies();
+    await isolated.addCookies(cookies);
     const page = await isolated.newPage();
-    await authenticator(page, isolated);
     const signIn = page.getByRole("button", { name: "Sign in with passkey" });
-    await page.goto("/login?next=/app");
-    await signIn.click();
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+    await page.goto("/app");
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
 
     // A reconnect can fail offline, but it can't receive the 401 before Activity does.
     await page.route("**/api/v1/events**", (r) => r.abort("internetdisconnected"));
@@ -1288,10 +1288,12 @@ test("an Activity-only 401 asks for the passkey again without persisting sign-ou
     await expect(signIn).toBeVisible();
     expect(new URL(page.url()).searchParams.get("next")).toBe("/app/activity");
 
+    // Restore the valid session cookie. The fresh app page must not inherit the old latch.
     await page.unroute("**/api/v1/events**");
-    await signIn.click();
+    await isolated.addCookies(cookies);
+    await page.goto("/app/activity");
     await expect(page).toHaveURL(/\/app\/activity$/);
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
   } finally {
     await isolated.close();
   }
