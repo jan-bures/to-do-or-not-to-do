@@ -10,14 +10,13 @@ What the first version does:
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
   on any device. The device token is sealed with a key in the Android Keystore.
 - **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer. In the
-  drawer, collections fold with their chevron. **+ New list** adds a list with a swatch and opens it. It
-  creates a sibling from a list, a child from a collection, or a top-level list from a smart room. The
-  footer shows the sync state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired
-  server, Sync now, Unpair).
+  drawer, collections fold with their chevron. **+ New → List** adds a list with a swatch and opens it.
+  It creates a sibling from a list, a child from a collection, or a top-level list from a smart room.
+  The settings gear shows the paired server and offers Sync now and Unpair.
 - **Managing lists.** A long press on a list in the drawer opens its menu: **Rename**, **Move up**, **Move
   down**, **Move to…**, **Colour…** and **Delete list…**. The move picker lists the collections and **No collection**.
   A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The drawer's
-  **New collection** opens the collection after creating it. Both colour pickers use the twelve design swatches. A move
+  **+ New → Collection** opens the collection after creating it. Both colour pickers use the twelve design swatches. A move
   that would go past either end is greyed out. The room's **⋯** button offers what applies to the room:
   in a list or collection, Rename, Colour…, the moves, Show or Hide completed and Delete…; in My Day, Important, Planned and All, the Completed
   toggle. Completed and Agent activity have no menu, so no button. Renaming asks for the name in a dialog

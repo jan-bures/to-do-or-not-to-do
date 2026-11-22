@@ -474,18 +474,27 @@ fn the_sync_line_says_what_is_going_on() {
         unauthorized: false,
         synced_at: Some("2026-11-21T10:34:00Z".parse().expect("ts")),
     };
-    assert_eq!(sync_line(&s, &now), ("Synced 10:34".into(), Tone::Ok));
+    let check = |s: &SyncInfo, short: &str, full: &str, tone| {
+        let (text, actual) = sync_line(s, &now);
+        assert_eq!(
+            (text.short.as_str(), text.full.as_str(), actual),
+            (short, full, tone)
+        );
+    };
+    check(&s, "10:34", "Synced 10:34", Tone::Ok);
     s.connection = Connection::Offline;
     s.pending = 2;
-    assert_eq!(
-        sync_line(&s, &now),
-        ("Offline, 2 waiting".into(), Tone::Problem)
-    );
+    check(&s, "Offline · 2", "Offline, 2 waiting", Tone::Problem);
     s.failed = 1;
-    assert_eq!(sync_line(&s, &now).0, "1 couldn't sync");
+    check(&s, "1 not synced", "1 couldn't sync", Tone::Problem);
     s.unauthorized = true;
-    assert_eq!(sync_line(&s, &now).0, "Signed out by the server");
-    assert_eq!(sync_line(&SyncInfo::signed_out(), &now).0, "Not signed in");
+    check(&s, "Signed out", "Signed out by the server", Tone::Problem);
+    check(
+        &SyncInfo::signed_out(),
+        "Not signed in",
+        "Not signed in",
+        Tone::Problem,
+    );
 }
 
 #[test]

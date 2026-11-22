@@ -241,9 +241,12 @@ bottom:
    each agent's status says it ("2 added today", "2 added, 1 edited today");
 3. the collections, each with its lists;
 4. the lists outside any collection;
-5. **New list** and **New collection**, pinned under the scrolled rooms on the desktop and the web (a hairline
-   above them), so they stay in view however long the sidebar grows. The footer shows sync status and
-   **Sign out** on the web, the account gear on desktop, or settings on Android.
+5. One pinned footer row below a hairline: **+ New** on the left, the sync status in the middle, and the
+   settings gear on the right. **+ New** opens a menu with **List** and **Collection**, their icons and any
+   existing shortcut. Enter or Space opens the menu, arrows move between choices, and Escape closes it and
+   returns focus to **+ New**. Sync shows its coloured dot and a short label (for example, **20:18**,
+   **Syncing…**, or **Offline · 3**); a tooltip or accessible description keeps the full wording. At the
+   minimum sidebar width, only the sync label can truncate.
 
 Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
 room rows are not Tab stops.
@@ -669,7 +672,7 @@ Completing a task is the one choreographed moment in the app.
 - **What moves & properties:**
   - **Status dot & label (`CONTENT_SWAP` 120 ms, `STANDARD`):** Dot colour crossfades (`success` for Synced,
     `accent` for Syncing, `ink-4` for Offline, `danger` for Error) alongside a crossfade of the status label
-    (`Synced`, `Syncing…`, `Offline · 2 pending`).
+    (for example, `20:18`, `Syncing…`, `Offline · 2`).
   - **Anti-flicker debounce:** Wait `300 ms` before showing transient `Syncing…` so fast background round-trips
     do not blink the footer.
   - **Status-bar notice / Retry action:** Enters in place over `TOAST_IN` (`180 ms`, `ENTER`, `opacity: 0 → 1`)

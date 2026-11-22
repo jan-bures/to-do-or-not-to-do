@@ -61,6 +61,8 @@ pub enum MenuAction {
     Nudge(EntityId, i32),
     /// Fold or unfold a collection in the sidebar.
     ToggleCollection(CollectionId),
+    NewList,
+    NewCollection,
     NewListIn(CollectionId),
     /// Open the server's admin pages in the browser.
     OpenAdmin,
@@ -139,6 +141,8 @@ impl MenuAction {
             Self::RenameList(_)
                 | Self::RenameCollection(_)
                 | Self::RenameTag(_)
+                | Self::NewList
+                | Self::NewCollection
                 | Self::NewListIn(_)
                 | Self::DeleteList(_)
                 | Self::DeleteCollection(_)
@@ -270,6 +274,19 @@ fn danger(
         MenuEntry::Item(i) => MenuEntry::Item(MenuItem { danger: true, ..i }),
         other => other,
     }
+}
+
+/// The pinned sidebar button's choices. Neither has a dedicated keyboard shortcut.
+pub fn new_menu() -> Vec<MenuEntry> {
+    vec![
+        item("create-list", Icon::Plus, "List", MenuAction::NewList),
+        item(
+            "create-collection",
+            Icon::FolderPlus,
+            "Collection",
+            MenuAction::NewCollection,
+        ),
+    ]
 }
 
 /// The items of `entries`, in order: what the keyboard walks.

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
-import { open, watch } from "./helpers.mjs";
+import { chooseNew, open, watch } from "./helpers.mjs";
 
 const tokens = JSON.parse(readFileSync(new URL("../../../../crates/todo-design/generated/tokens.json", import.meta.url)));
 const { desktop, component } = tokens.metrics;
@@ -70,9 +70,9 @@ test("collection headers have their own glyphs, desktop spacing and a visible ze
   await expect(planning).toBeHidden();
   expect((await home.boundingBox()).y - workBox.y).toBe(workBox.height);
 
-  const create = nav.getByRole("button", { name: "New collection", exact: true });
+  const create = nav.getByRole("button", { name: "New", exact: true });
   await expect(create).toHaveCSS("height", `${desktop["nav-sub-row"]}px`);
-  await create.click();
+  await chooseNew(nav, "Collection");
   const input = nav.getByRole("textbox", { name: "Collection name" });
   await input.fill("Weekend");
   await input.press("Enter");
@@ -170,12 +170,76 @@ test("the narrow drawer shows four active agents and clips the status before a s
   await w.check();
 });
 
-test("creation actions stay pinned when the navigation scrolls", async ({ page }) => {
+test("the New menu supports keyboard activation, arrows, dismissal and both choices", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const nav = sidebar(page);
+  const trigger = nav.getByRole("button", { name: "New", exact: true });
+  const menu = nav.getByRole("menu", { name: "New" });
+  const list = menu.getByRole("menuitem", { name: "List", exact: true });
+  const collection = menu.getByRole("menuitem", { name: "Collection", exact: true });
+  await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(list).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(collection).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(list).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(list).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(collection).toBeFocused();
+  await page.keyboard.press("Enter");
+  const name = nav.getByRole("textbox", { name: "Collection name" });
+  await expect(name).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(list).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(nav.getByRole("textbox", { name: "List name" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await trigger.press("Enter");
+  await expect(list).toBeFocused();
+  await nav.locator(".brand").click();
+  await expect(menu).toBeHidden();
+  await w.check();
+});
+
+test("the compact footer fits in one row at the sidebar minimum", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, "/app?fixture=not-synced");
+  const nav = sidebar(page);
+  const footer = nav.locator(".side-foot");
+  await page.locator(".app").evaluate((el, min) => el.style.setProperty("--desktop-sidebar", `${min}px`), desktop["sidebar-min"]);
+  await expect(footer).toHaveCSS("height", `${desktop["sidebar-footer"]}px`);
+  expect(Math.abs((await nav.boundingBox()).width - desktop["sidebar-min"])).toBeLessThanOrEqual(1);
+  const sync = nav.getByRole("button", { name: "2 couldn't sync", exact: true });
+  await expect(sync).toHaveText("2 not synced");
+  await expect(sync).toHaveCSS("text-overflow", "ellipsis");
+  const newButton = await footer.getByRole("button", { name: "New", exact: true }).boundingBox();
+  const status = await footer.locator(".side-sync").boundingBox();
+  const settings = footer.getByRole("button", { name: "Settings", exact: true });
+  const gear = await settings.boundingBox();
+  expect(newButton.x + newButton.width).toBeLessThanOrEqual(status.x);
+  expect(status.x + status.width).toBeLessThanOrEqual(gear.x);
+  await settings.press("Enter");
+  await expect(footer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeFocused();
+  await w.check();
+});
+
+test("New stays pinned when the navigation scrolls", async ({ page }) => {
   const w = watch(page);
   await page.setViewportSize({ width: 1200, height: 420 });
   await open(page);
   const nav = sidebar(page).locator("nav");
-  const footer = sidebar(page).getByRole("button", { name: "New collection", exact: true });
+  const footer = sidebar(page).getByRole("button", { name: "New", exact: true });
   const before = await footer.boundingBox();
   const scrolled = await nav.evaluate((el) => (el.scrollTop = el.scrollHeight, el.scrollTop));
   expect(scrolled).toBeGreaterThan(0);
@@ -185,13 +249,13 @@ test("creation actions stay pinned when the navigation scrolls", async ({ page }
 });
 
 for (const width of [1440, 412]) {
-  test(`sync and sign-out stay inside the short sidebar with its form open (${width}px)`, async ({ page }) => {
+  test(`the footer stays inside the short sidebar with its form open (${width}px)`, async ({ page }) => {
     const w = watch(page);
     await page.setViewportSize({ width, height: 200 });
     await open(page);
     if (width < 760) await page.getByRole("button", { name: "Lists", exact: true }).click();
     const drawer = page.locator(".sidebar");
-    await drawer.getByRole("button", { name: "New list", exact: true }).click();
+    await chooseNew(drawer, "List");
     const input = drawer.getByRole("textbox", { name: "List name", exact: true });
     await expect(input).toBeFocused();
     await expect(input).toBeInViewport({ ratio: 1 });
@@ -199,7 +263,7 @@ for (const width of [1440, 412]) {
     const footer = await drawer.locator(".side-foot").boundingBox();
     expect(footer.y).toBeGreaterThanOrEqual(bounds.y);
     expect(footer.y + footer.height).toBeLessThanOrEqual(bounds.y + bounds.height);
-    await expect(drawer.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 });
+    await expect(drawer.getByRole("button", { name: "Settings" })).toBeInViewport({ ratio: 1 });
     await w.check();
   });
 }

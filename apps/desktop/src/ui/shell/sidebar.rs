@@ -1,11 +1,10 @@
 //! The sidebar: smart lists with Activity and today's agents after Agent activity,
-//! collections and lists with their counts, New list and New collection pinned below them, the sync
-//! line, and inline renaming (lists, collections, and the steps and tags of the detail pane). Its menus
-//! (a list's or collection's context menu, the account menu) are drawn by `menu.rs`. The order is the one
+//! collections and lists with their counts, the pinned footer, and inline renaming (lists, collections,
+//! and the steps and tags of the detail pane). Its menus are drawn by `menu.rs`. The order is the one
 //! every client follows (`docs/design-language.md`, *Sidebar order*).
 
 use gpui::{
-    ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
+    ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Role,
     SharedString, Stateful, Subscription, Window, div, prelude::*, px,
 };
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TagId};
@@ -452,27 +451,43 @@ impl ShellView {
     /// list of refused changes, upwards, to see and dismiss them. Tab reaches it (`Stop::SyncFailures`).
     fn sync_line(&self, dot: gpui::Hsla, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
+        let sb = &self.shell.sidebar;
         let line = div()
+            .min_w_0()
             .flex()
             .items_center()
-            .gap(px(space::S2))
+            .justify_center()
+            .gap(px(space::S1))
             .style(ty::COUNT)
-            .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(dot))
-            .child(self.shell.sidebar.sync.clone());
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(component::CHIP_DOT))
+                    .rounded_full()
+                    .bg(dot),
+            )
+            .child(div().min_w_0().truncate().child(sb.sync_short.clone()));
+        let wrap = div().flex_1().min_w_0();
         if self.store.sync().failed == 0 {
-            return line;
+            return wrap.child(
+                line.id("sync-status")
+                    .role(Role::Status)
+                    .aria_label(sb.sync.clone())
+                    .tooltip(kit::tooltip(p, sb.sync.clone())),
+            );
         }
         let button = line
             .id("sync-failures")
+            .aria_label(sb.sync.clone())
+            .tooltip(kit::tooltip(p, sb.sync.clone()))
             .relative()
             .h(px(component::ICON_BUTTON))
-            .px(px(space::S2))
-            .ml(px(-space::S2))
+            .px(px(space::S1))
             .rounded(px(radius::MD))
             .cursor_pointer()
             .track_focus(&self.sync_focus)
             .hover(|s| s.bg(p.hover))
-            .child(kit::icon(Icon::ChevronUp, component::ICON_SMALL, p.ink_3))
+            .child(kit::icon(Icon::ChevronUp, component::ICON_SMALL, p.ink_3).flex_none())
             .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                 this.toggle_menu(MenuKind::SyncFailures, Stop::SyncFailures, e, window, cx);
             }))
@@ -480,7 +495,12 @@ impl ShellView {
                 this.control_key(e, window, cx);
             }))
             .children(self.menu_anchor(|k| matches!(k, MenuKind::SyncFailures), cx));
-        ring(&p, self.sync_focus.is_focused(window), radius::MD, button)
+        wrap.child(ring(
+            &p,
+            self.sync_focus.is_focused(window),
+            radius::MD,
+            button,
+        ))
     }
 
     pub(super) fn sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -672,58 +692,36 @@ impl ShellView {
             .iter()
             .map(|l| self.list_row(l, space::S2, true, cx))
             .collect();
-        // New list and New collection: quiet rows, each a Tab stop (Enter or Space adds).
-        type Add = fn(&mut ShellView, &mut Window, &mut Context<ShellView>);
-        let add_row = |id: &'static str, icon: Icon, label: &'static str, stop: Stop, add: Add| {
-            let focused = self.stop_handle(stop).is_focused(window);
-            let row = div()
-                .id(id)
-                .relative()
-                .h(px(desktop::NAV_SUB_ROW))
-                .flex()
-                .items_center()
-                .gap(px(desktop::NAV_GAP))
-                .pl(px(space::S2))
-                .style(ty::NAV_SUB)
-                .text_color(if focused { p.ink } else { p.ink_3 })
-                .cursor_pointer()
-                .track_focus(self.stop_handle(stop))
-                .hover(|s| s.bg(p.hover))
-                .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
-                .child(label)
-                .on_click(cx.listener(move |this, _, window, cx| add(this, window, cx)))
-                .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                    this.control_key(e, window, cx);
-                }));
-            ring(&p, focused, radius::MD, row)
-        };
-        let new_list = add_row(
-            "new-list",
-            Icon::Plus,
-            "New list",
-            Stop::NewList,
-            |this, window, cx| this.new_list(None, window, cx),
-        );
-        let new_collection = add_row(
-            "new-collection",
-            Icon::FolderPlus,
-            "New collection",
-            Stop::NewCollection,
-            |this, window, cx| this.new_collection(window, cx),
-        );
-        // Pinned between the scrolled rooms and the footer, so they never scroll out of view. The
-        // insets match the scrolled column's, so the rows line up with the lists above them.
-        let adds = div()
-            .flex_none()
+        let focused = self.new_focus.is_focused(window);
+        let new = div()
+            .id("sidebar-new")
+            .relative()
+            .h(px(desktop::NAV_SUB_ROW))
+            .px(px(space::S2))
+            .rounded(px(radius::MD))
             .flex()
-            .flex_col()
-            .py(px(space::S2))
-            .pl(px(space::S2))
-            .pr(px(space::S3))
-            .border_t_1()
-            .border_color(p.line)
-            .child(new_list)
-            .child(new_collection);
+            .items_center()
+            .gap(px(space::S2))
+            .style(ty::NAV_SUB)
+            .text_color(if focused { p.ink } else { p.ink_3 })
+            .cursor_pointer()
+            .track_focus(&self.new_focus)
+            .aria_expanded(
+                self.menu
+                    .as_ref()
+                    .is_some_and(|m| m.kind == MenuKind::New && m.overlay.look(self.frame).open),
+            )
+            .hover(|s| s.bg(p.hover))
+            .child(kit::icon(Icon::Plus, component::ICON_SMALL, p.ink_3))
+            .child("New")
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                this.toggle_menu(MenuKind::New, Stop::New, e, window, cx);
+            }))
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                this.control_key(e, window, cx);
+            }))
+            .children(self.menu_anchor(|k| matches!(k, MenuKind::New), cx));
+        let new = ring(&p, focused, radius::MD, new).flex_none();
 
         let dot = match sb.tone {
             Tone::Ok => p.success,
@@ -754,7 +752,8 @@ impl ShellView {
             self.account_focus.is_focused(window),
             radius::MD,
             account,
-        );
+        )
+        .flex_none();
 
         div()
             .w(px(self.columns(window).width(Pane::Sidebar)))
@@ -800,19 +799,18 @@ impl ShellView {
                             .overlay(&self.sidebar_scroll, &p, self.animate),
                     ),
             )
-            .child(adds)
             .child(
                 div()
                     .h(px(desktop::SIDEBAR_FOOTER))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .pl(px(space::S4))
-                    .pr(px(space::S2))
+                    .gap(px(space::S1))
+                    .px(px(space::S2))
                     .border_t_1()
                     .border_color(p.line)
                     .text_color(p.ink_3)
+                    .child(new)
                     .child(self.sync_line(dot, window, cx))
                     .child(account),
             )
@@ -845,6 +843,69 @@ mod tests {
     use super::*;
     use crate::fixtures;
     use todo_core::Command;
+
+    #[gpui::test]
+    fn the_new_menu_opens_with_enter_or_space_and_returns_focus_on_escape(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = fixtures::by_name("sidebar-footer-min").expect("footer fixture");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let store = std::rc::Rc::new(crate::store::Store::fixture(&fixture));
+            let mut view = ShellView::new(store, fixture.ui, theme::Theme::Light, None, window, cx);
+            view.still();
+            view
+        });
+        let focus_new = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                let focus = shell.read(cx).new_focus.clone();
+                window.focus(&focus, cx);
+            })
+        };
+        let press = |cx: &mut gpui::VisualTestContext, key: &'static str| {
+            cx.simulate_keystrokes(key);
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).expect("key"),
+            });
+        };
+        let highlighted = |cx: &mut gpui::VisualTestContext, item: &str| {
+            cx.update(|window, cx| {
+                let view = shell.read(cx);
+                assert!(view.menu_focus.is_focused(window));
+                let menu = view.menu.as_ref().expect("New menu is open");
+                assert_eq!(menu.kind, MenuKind::New);
+                assert_eq!(menu.highlight.as_deref(), Some(item));
+            });
+        };
+        focus_new(cx);
+        press(cx, "enter");
+        highlighted(cx, "create-list");
+        press(cx, "down");
+        highlighted(cx, "create-collection");
+        press(cx, "up");
+        highlighted(cx, "create-list");
+        press(cx, "escape");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert!(view.menu.is_none());
+            assert!(view.new_focus.is_focused(window));
+        });
+
+        press(cx, "space");
+        highlighted(cx, "create-list");
+        press(cx, "down");
+        press(cx, "enter");
+        cx.update(|_, cx| assert!(matches!(shell.read(cx).ui.room, RoomKey::Collection(_))));
+        focus_new(cx);
+        press(cx, "enter");
+        press(cx, "space");
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            let RoomKey::List(list) = view.ui.room else {
+                panic!("created list should open")
+            };
+            assert!(view.store.view().lists[&list].collection.is_none());
+        });
+    }
 
     #[test]
     fn an_unchanged_inline_rename_saves_nothing() {

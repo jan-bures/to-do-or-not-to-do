@@ -807,9 +807,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     if key == "escape" {
         if c.editing.get_untracked() {
             c.editing.set(false);
-        } else if let Some(kind) = c.new_room.get_untracked().filter(|_| !modal) {
+        } else if !modal && c.new_room.get_untracked().is_some() {
             c.new_room.set(None);
-            platform::focus(kind.trigger());
+            platform::focus("open-new-room");
         } else if drawer {
             c.drawer.set(false);
         } else if c.selected.get_untracked().is_some() {
@@ -1045,27 +1045,25 @@ fn link_room(c: Ctx, room: RoomId) -> impl Fn(leptos::ev::MouseEvent) + Clone + 
     }
 }
 
-fn sync_text(s: &Sync, at: Option<Now>) -> String {
-    let mut t = if s.signed_out {
-        "Signed out".to_owned()
+fn sync_text(s: &Sync, at: Option<Now>) -> todo_client::sync_label::SyncText {
+    use todo_client::sync_label::SyncLabel;
+
+    let time = at.map(|n| {
+        let l = n.local();
+        format!("{:02}:{:02}", l.hour(), l.minute())
+    });
+    let label = if s.signed_out {
+        SyncLabel::SignedOut
+    } else if s.failed > 0 {
+        SyncLabel::Failed(s.failed)
     } else {
         match s.connection {
-            Connection::Offline if s.pending > 0 => format!("Offline · {} pending", s.pending),
-            Connection::Offline => "Offline".to_owned(),
-            Connection::Syncing => "Syncing…".to_owned(),
-            Connection::Online => at.map_or_else(
-                || "Synced".to_owned(),
-                |n| {
-                    let l = n.local();
-                    format!("Synced {:02}:{:02}", l.hour(), l.minute())
-                },
-            ),
+            Connection::Offline => SyncLabel::Offline(s.pending),
+            Connection::Syncing => SyncLabel::Syncing,
+            Connection::Online => SyncLabel::Synced(time.as_deref()),
         }
     };
-    if s.failed > 0 {
-        t.push_str(&format!(" · {} not synced", s.failed));
-    }
-    t
+    label.text()
 }
 
 fn conn_key(s: &Sync) -> &'static str {
@@ -1238,16 +1236,16 @@ fn SidebarPane() -> impl IntoView {
             </div>
             <div class="side-body" on:scroll=move |_| c.room_actions.position_menu()>
                 {navigation}
-                <div class="new-list">
-                    <NewRoom kind=NewRoomKind::List/>
-                    <NewRoom kind=NewRoomKind::Collection/>
-                </div>
+                {move || c.new_room.get().map(|kind| view! { <NewRoom kind/> })}
             </div>
             <div class="side-foot">
-                <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>
-                <room_actions::SyncLine/>
+                <NewRoomMenu/>
+                <div class="side-sync">
+                    <span class="conn" aria-hidden="true" data-conn=move || conn_key(&c.sync.get())></span>
+                    <room_actions::SyncLine/>
+                </div>
+                <SettingsMenu/>
                 <device_pairing::DeviceSettings/>
-                <SignOut/>
             </div>
         </aside>
     }
@@ -1259,11 +1257,144 @@ enum NewRoomKind {
     Collection,
 }
 
+#[derive(Clone, Copy)]
+struct FooterMenu {
+    open: RwSignal<bool>,
+    trigger: &'static str,
+    items: &'static [&'static str],
+}
+
+impl FooterMenu {
+    fn new(trigger: &'static str, items: &'static [&'static str]) -> Self {
+        Self {
+            open: RwSignal::new(false),
+            trigger,
+            items,
+        }
+    }
+
+    fn toggle(self) {
+        if self.open.get_untracked() {
+            self.close();
+        } else {
+            self.open_at(0);
+        }
+    }
+
+    fn open_at(self, index: usize) {
+        self.open.set(true);
+        request_animation_frame(move || {
+            if self.open.get_untracked() {
+                platform::focus(self.items[index]);
+            }
+        });
+    }
+
+    fn close(self) {
+        self.open.set(false);
+        platform::focus(self.trigger);
+    }
+
+    fn focus_out(self, ev: leptos::ev::FocusEvent) {
+        use wasm_bindgen::JsCast;
+        let inside = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+            .zip(
+                ev.related_target()
+                    .and_then(|t| t.dyn_into::<web_sys::Node>().ok()),
+            )
+            .is_some_and(|(menu, next)| menu.contains(Some(&next)));
+        if !inside {
+            self.open.set(false);
+        }
+    }
+
+    fn key(self, ev: leptos::ev::KeyboardEvent) {
+        use wasm_bindgen::JsCast;
+        if ev.alt_key() || ev.ctrl_key() || ev.meta_key() || ev.is_composing() {
+            return;
+        }
+        let last = self.items.len() - 1;
+        let open = self.open.get_untracked();
+        let from = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|el| self.items.iter().position(|id| *id == el.id()));
+        let next = match ev.key().as_str() {
+            "ArrowDown" => from.map_or(0, |i| (i + 1) % self.items.len()),
+            "ArrowUp" => from.map_or(last, |i| i.checked_sub(1).unwrap_or(last)),
+            "Home" if open => 0,
+            "End" if open => last,
+            "Tab" if open => {
+                // Let normal Tab order (including the phone drawer's trap) start at the trigger.
+                self.close();
+                return;
+            }
+            "Escape" if open => {
+                ev.prevent_default();
+                ev.stop_propagation();
+                self.close();
+                return;
+            }
+            _ => return,
+        };
+        ev.prevent_default();
+        ev.stop_propagation();
+        if open {
+            platform::focus(self.items[next]);
+        } else {
+            self.open_at(next);
+        }
+    }
+}
+
+#[component]
+fn NewRoomMenu() -> impl IntoView {
+    let c = ctx();
+    let menu = FooterMenu::new(
+        "open-new-room",
+        &["create-list-choice", "create-collection-choice"],
+    );
+    Effect::new(move |_| {
+        if c.read_only() {
+            menu.open.set(false);
+        }
+    });
+    let choose = move |kind| {
+        if c.read_only() {
+            return;
+        }
+        menu.close();
+        c.new_room.set(Some(kind));
+        request_animation_frame(move || {
+            if c.new_room.get_untracked() == Some(kind) {
+                platform::focus(kind.field());
+            }
+        });
+    };
+    view! {
+        <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
+            <button type="button" id=menu.trigger class="button footer-new" aria-haspopup="menu"
+                aria-controls="new-room-menu" aria-expanded=move || menu.open.get().to_string()
+                disabled=move || c.read_only() on:click=move |_| menu.toggle()>{icon(Icon::Plus)}"New"</button>
+            <Show when=move || menu.open.get() && !c.read_only()>
+                <div class="footer-popup new-room-menu" id="new-room-menu" role="menu" aria-labelledby=menu.trigger>
+                    <button type="button" id=menu.items[0] role="menuitem" tabindex="-1"
+                        on:click=move |_| choose(NewRoomKind::List)>{icon(Icon::Plus)}"List"</button>
+                    <button type="button" id=menu.items[1] role="menuitem" tabindex="-1"
+                        on:click=move |_| choose(NewRoomKind::Collection)>{icon(Icon::FolderPlus)}"Collection"</button>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
 impl NewRoomKind {
-    fn trigger(self) -> &'static str {
+    fn field(self) -> &'static str {
         match self {
-            Self::List => "open-new-list",
-            Self::Collection => "open-new-collection",
+            Self::List => "new-list-name",
+            Self::Collection => "new-collection-name",
         }
     }
 }
@@ -1271,41 +1402,21 @@ impl NewRoomKind {
 #[component]
 fn NewRoom(kind: NewRoomKind) -> impl IntoView {
     let c = ctx();
-    let (button, field, name, create, cancel, leading) = match kind {
-        NewRoomKind::List => (
-            "New list",
-            "new-list-name",
-            "List name",
-            "Create list",
-            "Cancel new list",
-            Icon::Plus,
-        ),
+    let (name, create, cancel) = match kind {
+        NewRoomKind::List => ("List name", "Create list", "Cancel new list"),
         NewRoomKind::Collection => (
-            "New collection",
-            "new-collection-name",
             "Collection name",
             "Create collection",
             "Cancel new collection",
-            Icon::FolderPlus,
         ),
     };
     let close = move || {
         c.new_room.set(None);
-        platform::focus(kind.trigger());
+        platform::focus("open-new-room");
     };
-    let open = move || c.new_room.get() == Some(kind);
     let input = NodeRef::<html::Input>::new();
     view! {
-        <button type="button" id=kind.trigger() class="button open-new-list"
-            aria-expanded=move || open().to_string() disabled=move || c.read_only()
-            on:click=move |_| {
-                if c.new_room.get_untracked() == Some(kind) { close(); } else {
-                    c.new_room.set(Some(kind));
-                    request_animation_frame(move || { platform::focus(field); });
-                }
-            }
-        >{icon(leading)}{button}</button>
-        <Show when=open>
+        <div class="new-list">
             <form on:submit=move |ev| {
                 ev.prevent_default();
                 if c.read_only() { return; }
@@ -1330,25 +1441,31 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
                     request_animation_frame(|| { platform::focus("room-title"); });
                 }
             }>
-                <input id=field node_ref=input type="text" autocomplete="off" required
+                <input id=kind.field() node_ref=input type="text" autocomplete="off" required
                     aria-label=name placeholder=format!("{name}…") disabled=move || c.read_only()/>
                 <button class="icon-button" type="submit" aria-label=create title=create
                     disabled=move || c.read_only()>{icon(Icon::Plus)}</button>
                 <button class="icon-button" type="button" aria-label=cancel title="Cancel"
                     on:click=move |_| close()>{icon(Icon::X)}</button>
             </form>
-        </Show>
+        </div>
     }
 }
 
 #[component]
-fn SignOut() -> impl IntoView {
+fn SettingsMenu() -> impl IntoView {
+    let menu = FooterMenu::new("open-settings", &["sign-out"]);
     let csrf = backend::csrf();
     let field = NodeRef::<html::Input>::new();
     csrf.map(|token| {
         view! {
+            <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
+                <button type="button" id=menu.trigger class="icon-button" title="Settings" aria-label="Settings"
+                    aria-haspopup="menu" aria-controls="settings-menu" aria-expanded=move || menu.open.get().to_string()
+                    on:click=move |_| menu.toggle()>{icon(Icon::Settings)}</button>
+                <Show when=move || menu.open.get()>
             <form
-                class="sign-out"
+                class="footer-popup settings-menu" id="settings-menu" role="menu" aria-labelledby=menu.trigger
                 method="post"
                 action="/auth/logout"
                 on:submit=move |_| {
@@ -1358,11 +1475,11 @@ fn SignOut() -> impl IntoView {
                     }
                 }
             >
-                <input type="hidden" name="csrf" value=token node_ref=field/>
-                <button type="submit" class="icon-button" title="Sign out" aria-label="Sign out">
-                    {icon(Icon::LogOut)}
-                </button>
+                <input type="hidden" name="csrf" value=token.clone() node_ref=field/>
+                <button type="submit" id=menu.items[0] role="menuitem" tabindex="-1">{icon(Icon::LogOut)}"Sign out"</button>
             </form>
+                </Show>
+            </div>
         }
     })
 }
@@ -1382,7 +1499,7 @@ fn AppBar() -> impl IntoView {
                 {move || {
                     let s = c.sync.get();
                     (s.connection != Connection::Online || s.pending > 0)
-                        .then(|| sync_text(&s, c.synced_at.get()))
+                        .then(|| sync_text(&s, c.synced_at.get()).full)
                 }}
             </span>
             <Show when=move || !c.room.with(RoomId::is_activity)>

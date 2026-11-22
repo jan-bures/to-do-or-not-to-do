@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { open, watch } from "./helpers.mjs";
+import { chooseNew, open, watch } from "./helpers.mjs";
 
 test.use({ viewport: { width: 1440, height: 900 } });
 const task = (page, name = "Review the API latency report") => page.getByRole("button", { name, exact: true });
@@ -198,13 +198,13 @@ test("links validate shared addresses, keep the draft on refusal, and support ex
 test("create a collection, move lists into it or out, and recolour lists and collections", async ({ page }) => {
   const w = watch(page);
   await open(page);
-  const create = page.getByRole("button", { name: "New collection" });
-  await create.press("Enter");
+  const create = page.getByRole("button", { name: "New", exact: true });
+  await chooseNew(page, "Collection");
   const name = page.getByRole("textbox", { name: "Collection name" });
   await expect(name).toBeFocused();
   await name.press("Escape");
   await expect(create).toBeFocused();
-  await create.click();
+  await chooseNew(page, "Collection");
   await name.fill("Workshop");
   await name.press("Enter");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Workshop");
@@ -300,7 +300,7 @@ test("new detail editors are disabled in read-only mode", async ({ page }) => {
   await expect(detail(page).getByRole("button", { name: "Repeat", exact: true })).toBeDisabled();
   await expect(detail(page).getByRole("button", { name: "Tags", exact: true })).toBeDisabled();
   await expect(detail(page).getByRole("textbox", { name: "Add a web link" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "New collection" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "New", exact: true })).toBeDisabled();
   await w.check();
 });
 

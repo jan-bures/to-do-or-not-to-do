@@ -2,7 +2,7 @@
 // from invented fixture data with a fixed clock (Saturday 21 November 2026, 10:35). The PNGs land in
 // e2e/gallery/ (CI uploads them); compare them with the approved mockups.
 import { expect, test } from "@playwright/test";
-import { open, watch } from "./helpers.mjs";
+import { chooseNew, open, watch } from "./helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
 const MEDIUM = { width: 1024, height: 768 };
@@ -21,7 +21,11 @@ for (const scheme of ["light", "dark"]) {
       await page.getByText("Prepare the November board update").first().click();
       await page.locator(".detail .d-title").waitFor();
       await shot(page, `desktop-${scheme}`);
-      await page.locator(".sidebar").screenshot({ path: `gallery/sidebar-${scheme}.png`, animations: "disabled" });
+      const sidebar = page.locator(".sidebar");
+      await sidebar.screenshot({ path: `gallery/sidebar-${scheme}.png`, animations: "disabled" });
+      await sidebar.getByRole("button", { name: "New", exact: true }).press("Enter");
+      await expect(sidebar.getByRole("menuitem", { name: "List", exact: true })).toBeFocused();
+      await sidebar.screenshot({ path: `gallery/sidebar-new-menu-${scheme}.png`, animations: "disabled" });
       await w.check();
     });
 
@@ -227,7 +231,7 @@ for (const scheme of ["light", "dark"]) {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);
       await open(page);
-      await page.getByRole("button", { name: "New collection" }).click();
+      await chooseNew(page, "Collection");
       const input = page.getByRole("textbox", { name: "Collection name" });
       await input.fill("Workshop");
       await expect(input).toBeFocused();
@@ -398,7 +402,7 @@ for (const scheme of ["light", "dark"]) {
       await page.setViewportSize(PHONE);
       await open(page, "/app?fixture=not-synced");
       await page.getByRole("button", { name: "Lists", exact: true }).click();
-      await page.getByRole("button", { name: /2 not synced/ }).click();
+      await page.getByRole("button", { name: "2 couldn't sync" }).click();
       await expect(page.getByRole("dialog", { name: "Not synced" })).toBeVisible();
       await shot(page, `phone-not-synced-${scheme}`);
       await w.check();

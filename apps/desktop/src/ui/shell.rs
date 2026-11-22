@@ -261,12 +261,11 @@ pub struct ShellView {
     /// Where each list and collection row in the sidebar was last painted: a screenshot fixture opens
     /// its context menu there, as a right-click would.
     nav_bounds: Rc<RefCell<HashMap<RoomKey, Bounds<Pixels>>>>,
-    /// Where the controls the keyboard can land on inside a scrolled pane were last painted (New list,
-    /// New collection, the link field), so landing there scrolls them into view (`scroll_into_view`).
+    /// Where controls inside a scrolled pane were last painted, so landing on them scrolls them into
+    /// view (`scroll_into_view`).
     probes: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
-    /// The sidebar's New list and New collection, which Tab reaches.
-    new_list_focus: FocusHandle,
-    new_collection_focus: FocusHandle,
+    /// The footer's New button, which Tab reaches.
+    new_focus: FocusHandle,
     /// Where a screenshot fixture that typed into a field puts the keyboard.
     preview_focus: Option<FocusHandle>,
     /// The sidebar footer's "N couldn't sync", a button while something couldn't sync.
@@ -423,8 +422,7 @@ impl ShellView {
             row_bounds: Rc::default(),
             nav_bounds: Rc::default(),
             probes: Rc::default(),
-            new_list_focus: cx.focus_handle(),
-            new_collection_focus: cx.focus_handle(),
+            new_focus: cx.focus_handle(),
             preview_focus: None,
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
@@ -1133,9 +1131,9 @@ impl ShellView {
                 self.preview_focus = Some(self.reminder_focus.clone());
                 return;
             }
-            // Tab onto New collection in a long sidebar: pinned under the scrolled rooms, with its ring.
-            "tab-new-collection" => {
-                self.preview_focus = Some(self.new_collection_focus.clone());
+            // Tab onto New in a long sidebar: pinned under the scrolled rooms, with its ring.
+            "tab-new" => {
+                self.preview_focus = Some(self.new_focus.clone());
                 return;
             }
             "tag-rename" => {
@@ -1168,6 +1166,7 @@ impl ShellView {
         let kind = match fixture {
             "room-menu" | "activity-menu" => Some(MenuKind::Room { page: Page::Main }),
             "account-menu" => Some(MenuKind::Account { confirm: false }),
+            "sidebar-new-menu" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
             "repeat-menu" => task.map(|task| MenuKind::Repeat { task, draft: None }),
@@ -3542,8 +3541,7 @@ impl ShellView {
             || on(&self.detail_important_focus)
             || on(&self.account_focus)
             || on(&self.sync_focus)
-            || on(&self.new_list_focus)
-            || on(&self.new_collection_focus)
+            || on(&self.new_focus)
         {
             Focus::Control
         } else {
@@ -3726,8 +3724,7 @@ impl ShellView {
                 .get(&control)
                 .unwrap_or(&self.attachment_ui.add),
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
-            Stop::NewList => &self.new_list_focus,
-            Stop::NewCollection => &self.new_collection_focus,
+            Stop::New => &self.new_focus,
             Stop::SyncFailures => &self.sync_focus,
             Stop::Account => &self.account_focus,
         }
@@ -3760,11 +3757,7 @@ impl ShellView {
             Stop::Attachment(control) => self.attachment_ui.rows.contains_key(&control),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
-            Stop::SidebarSplitter
-            | Stop::List
-            | Stop::NewList
-            | Stop::NewCollection
-            | Stop::Account => true,
+            Stop::SidebarSplitter | Stop::List | Stop::New | Stop::Account => true,
         }
     }
 

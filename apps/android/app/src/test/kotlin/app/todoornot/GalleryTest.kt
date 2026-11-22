@@ -33,6 +33,7 @@ import app.todoornot.core.DeviceInvitation
 import app.todoornot.core.FfiException
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
+import app.todoornot.core.SyncState
 import app.todoornot.core.TodoEngine
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.TodoTheme
@@ -348,6 +349,13 @@ class GalleryTest {
         val e = fixtureEngine()
         val personal = (e.collection("Personal") as RoomKey.Collection).id
         main("cover_drawer_folded_dark", COVER, state(e, fold = listOf(personal)), dark = true, drawer = true)
+    }
+
+    @Test
+    fun drawer_footer_offline() {
+        val state = state(fixtureEngine())
+        val offline = state.copy(status = state.status.copy(state = SyncState.OFFLINE, pending = 3u))
+        main("cover_drawer_footer_offline", COVER, offline, dark = false, drawer = true)
     }
 
     /** The filter under the pills: the query language narrows the rows, the sun still counts the room. */

@@ -132,13 +132,17 @@ test("held Tab stays in the phone drawer, and a move returns focus to its origin
   const drawer = page.getByRole("dialog", { name: "Lists" });
   await expect(drawer).toBeFocused();
   const first = drawer.getByRole("link", { name: /^My Day/ });
-  const last = drawer.getByRole("button", { name: "Sign out" });
+  const last = drawer.getByRole("button", { name: "Settings" });
   await last.focus();
   await page.keyboard.down("Tab");
   await expect(first).toBeFocused();
   await last.focus();
   await page.keyboard.down("Tab");
   await page.keyboard.up("Tab");
+  await expect(first).toBeFocused();
+  await last.press("Enter");
+  await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(first).toBeFocused();
 
   const move = drawer.getByRole("button", { name: "Menu for Work" });
@@ -178,7 +182,7 @@ test("the menu stays by its trigger and flips its origin when space runs out", a
 test("Not synced lists safe reasons, dismisses one or all, and restores focus", async ({ page }) => {
   const w = watch(page);
   await open(page, "/app?fixture=not-synced");
-  const trigger = page.getByRole("button", { name: /2 not synced/ });
+  const trigger = page.getByRole("button", { name: "2 couldn't sync" });
   await trigger.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Not synced" });
   await expect(dialog.getByRole("listitem")).toHaveCount(2);
@@ -191,7 +195,7 @@ test("Not synced lists safe reasons, dismisses one or all, and restores focus", 
   await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole("button", { name: "New list" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
   await expect(page.locator(".sync-text")).not.toContainText("not synced");
   await w.check();
 });

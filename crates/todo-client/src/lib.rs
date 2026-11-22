@@ -57,6 +57,7 @@ pub mod room_header;
 pub mod session;
 pub mod sse;
 pub mod storage;
+pub mod sync_label;
 
 #[cfg(feature = "native")]
 pub mod native;

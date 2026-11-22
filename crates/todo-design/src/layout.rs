@@ -448,9 +448,11 @@ pub mod component {
 
     /// Maximum square tile size for a pairing QR, including its quiet zone.
     pub const PAIRING_QR: f32 = 224.0;
+    /// Width of the compact New menu in the sidebar footer.
+    pub const NEW_MENU: f32 = 152.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 15] = [
+    pub const ALL: [(&str, f32); 16] = [
         ("checkbox", CHECKBOX),
         ("checkbox-ring", CHECKBOX_RING),
         ("checkbox-tick", CHECKBOX_TICK),
@@ -466,5 +468,6 @@ pub mod component {
         ("icon-small", ICON_SMALL),
         ("glyph", GLYPH),
         ("pairing-qr", PAIRING_QR),
+        ("new-menu", NEW_MENU),
     ];
 }

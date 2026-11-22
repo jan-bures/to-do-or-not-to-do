@@ -27,12 +27,14 @@ import app.todoornot.core.RowPlacement
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
+import app.todoornot.core.SyncText
 import app.todoornot.core.TaskMove
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
 import app.todoornot.core.quickAddDate
 import app.todoornot.core.reminderSetText
+import app.todoornot.core.syncStatusText
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
@@ -130,20 +132,16 @@ data class UnpairQuestion(val unsent: Int, val changed: Boolean = false)
 /** How the drawer's sync line reads: fine, busy, or a problem (its dot's colour). */
 enum class Tone { OK, BUSY, PROBLEM, IDLE }
 
-/**
- * The drawer footer's sync line, worded as on the desktop: "Synced 10:35", "Syncing…", "Offline, 3
- * waiting", "2 couldn't sync", "Signed out by the server". Paused (the app isn't syncing, as in the
- * screenshots) says how much is waiting, if anything.
- */
-fun syncLine(status: SyncStatus, syncedAt: LocalNow?): Pair<String, Tone> = when {
-    status.signedOut -> "Signed out by the server" to Tone.PROBLEM
-    status.failed > 0u -> "${status.failed} couldn’t sync" to Tone.PROBLEM
-    status.state == SyncState.OFFLINE && status.pending > 0u -> "Offline, ${status.pending} waiting" to Tone.PROBLEM
-    status.state == SyncState.OFFLINE -> "Offline" to Tone.PROBLEM
-    status.state == SyncState.SYNCING -> "Syncing…" to Tone.BUSY
-    status.state == SyncState.ONLINE -> (syncedAt?.let { "Synced ${clock(it)}" } ?: "Synced") to Tone.OK
-    status.pending > 0u -> "Not syncing, ${status.pending} waiting" to Tone.IDLE
-    else -> "Not syncing" to Tone.IDLE
+/** The drawer's compact sync label, its accessible description, and the dot's tone. */
+fun syncLine(status: SyncStatus, syncedAt: LocalNow?): Pair<SyncText, Tone> {
+    val tone = when {
+        status.signedOut || status.failed > 0u -> Tone.PROBLEM
+        status.state == SyncState.OFFLINE -> Tone.PROBLEM
+        status.state == SyncState.SYNCING -> Tone.BUSY
+        status.state == SyncState.ONLINE -> Tone.OK
+        else -> Tone.IDLE
+    }
+    return syncStatusText(status, syncedAt?.let(::clock)) to tone
 }
 
 /** "09:05", in the time's own UTC offset. */

@@ -90,10 +90,8 @@ pub enum Stop {
     Repeat,
     /// The task's Add file button, followed by each file's controls.
     Attachment(FileControl),
-    /// The sidebar's New list.
-    NewList,
-    /// The sidebar's New collection.
-    NewCollection,
+    /// The sidebar footer's New button.
+    New,
     /// The sidebar footer's "N couldn't sync", while something couldn't sync.
     SyncFailures,
     /// The account gear in the sidebar footer.
@@ -104,7 +102,7 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 17] = [
+pub const TAB_ORDER: [Stop; 16] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
@@ -118,8 +116,7 @@ pub const TAB_ORDER: [Stop; 17] = [
     Stop::Reminder,
     Stop::Repeat,
     Stop::Attachment(FileControl::Add),
-    Stop::NewList,
-    Stop::NewCollection,
+    Stop::New,
     Stop::SyncFailures,
     Stop::Account,
 ];
@@ -151,9 +148,8 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::DetailSplitter
         // Attachment controls have row-ID-based probes rather than fixed names.
         | Stop::Attachment(_)
-        // New list and New collection are pinned below the sidebar's scrolled rooms.
-        | Stop::NewList
-        | Stop::NewCollection
+        // The footer is pinned below the sidebar's scrolled rooms.
+        | Stop::New
         | Stop::SyncFailures
         | Stop::Account => None,
     }
@@ -587,8 +583,7 @@ mod tests {
                 Reminder,
                 Repeat,
                 Attachment(FileControl::Add),
-                NewList,
-                NewCollection,
+                New,
                 SyncFailures,
                 Account,
                 SidebarSplitter,
@@ -601,8 +596,7 @@ mod tests {
                 SidebarSplitter,
                 Account,
                 SyncFailures,
-                NewCollection,
-                NewList,
+                New,
                 Attachment(FileControl::Add),
                 Repeat,
                 Reminder,
@@ -628,7 +622,7 @@ mod tests {
         use Stop::*;
         let extra_detail_control = |s| matches!(s, DetailMyDay | DetailImportant | Attachment(_));
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
-        // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
+        // fixed stops only (New is always there). (Below, nothing couldn't
         // sync unless said.)
         let fixed = |s: Stop| {
             !extra_detail_control(s)
@@ -646,11 +640,11 @@ mod tests {
         };
         assert_eq!(
             round(List, true, fixed),
-            [NewList, NewCollection, Account, SidebarSplitter, List]
+            [New, Account, SidebarSplitter, List]
         );
         assert_eq!(
             round(List, false, fixed),
-            [SidebarSplitter, Account, NewCollection, NewList, List]
+            [SidebarSplitter, Account, New, List]
         );
         // Without the detail divider (narrow window, or no task open), both ways.
         let no_detail = |s: Stop| {
@@ -668,27 +662,11 @@ mod tests {
         };
         assert_eq!(
             round(RoomMenu, true, no_detail),
-            [
-                NewList,
-                NewCollection,
-                Account,
-                SidebarSplitter,
-                List,
-                Undo,
-                RoomMenu
-            ]
+            [New, Account, SidebarSplitter, List, Undo, RoomMenu]
         );
         assert_eq!(
             round(RoomMenu, false, no_detail),
-            [
-                Undo,
-                List,
-                SidebarSplitter,
-                Account,
-                NewCollection,
-                NewList,
-                RoomMenu
-            ]
+            [Undo, List, SidebarSplitter, Account, New, RoomMenu]
         );
         // A room without a menu skips its button both ways.
         let no_menu = |s: Stop| {
@@ -706,27 +684,11 @@ mod tests {
         };
         assert_eq!(
             round(Undo, true, no_menu),
-            [
-                DetailSplitter,
-                NewList,
-                NewCollection,
-                Account,
-                SidebarSplitter,
-                List,
-                Undo
-            ]
+            [DetailSplitter, New, Account, SidebarSplitter, List, Undo]
         );
         assert_eq!(
             round(Undo, false, no_menu),
-            [
-                List,
-                SidebarSplitter,
-                Account,
-                NewCollection,
-                NewList,
-                DetailSplitter,
-                Undo
-            ]
+            [List, SidebarSplitter, Account, New, DetailSplitter, Undo]
         );
         // Without the toast, Undo is skipped.
         let no_undo = |s: Stop| {
@@ -746,8 +708,7 @@ mod tests {
             [
                 RoomMenu,
                 DetailSplitter,
-                NewList,
-                NewCollection,
+                New,
                 Account,
                 SidebarSplitter,
                 List
@@ -758,8 +719,7 @@ mod tests {
             [
                 SidebarSplitter,
                 Account,
-                NewCollection,
-                NewList,
+                New,
                 DetailSplitter,
                 RoomMenu,
                 List
@@ -769,7 +729,7 @@ mod tests {
         // closed under its divider), it goes on from that stop's place.
         assert_eq!(tab_stop(Undo, true, no_undo), RoomMenu);
         assert_eq!(tab_stop(Undo, false, no_undo), List);
-        assert_eq!(tab_stop(DetailSplitter, true, no_detail), NewList);
+        assert_eq!(tab_stop(DetailSplitter, true, no_detail), New);
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
         let refused = |s: Stop| {
@@ -787,25 +747,11 @@ mod tests {
         };
         assert_eq!(
             round(List, true, refused),
-            [
-                NewList,
-                NewCollection,
-                SyncFailures,
-                Account,
-                SidebarSplitter,
-                List
-            ]
+            [New, SyncFailures, Account, SidebarSplitter, List]
         );
         assert_eq!(
             round(List, false, refused),
-            [
-                SidebarSplitter,
-                Account,
-                SyncFailures,
-                NewCollection,
-                NewList,
-                List
-            ]
+            [SidebarSplitter, Account, SyncFailures, New, List]
         );
         // The list is always there, even if asked otherwise.
         assert_eq!(tab_stop(Account, true, |_| false), List);
@@ -829,9 +775,8 @@ mod tests {
         // The toolbar's buttons sit above the feed and never scroll away.
         assert_eq!(reveal(Stop::ActivityRefresh), None);
         assert_eq!(reveal(Stop::ActivityFilter), None);
-        // New list and New collection are pinned under the sidebar's scrolled rooms, always in view.
-        assert_eq!(reveal(Stop::NewList), None);
-        assert_eq!(reveal(Stop::NewCollection), None);
+        // The footer is pinned under the sidebar's scrolled rooms, always in view.
+        assert_eq!(reveal(Stop::New), None);
     }
 
     #[test]
@@ -868,8 +813,7 @@ mod tests {
                 ActivityFilter,
                 ActivityRefresh,
                 ActivityMore,
-                NewList,
-                NewCollection,
+                New,
                 Account,
                 SidebarSplitter,
                 List
@@ -882,8 +826,7 @@ mod tests {
             [
                 SidebarSplitter,
                 Account,
-                NewCollection,
-                NewList,
+                New,
                 ActivityRefresh,
                 RoomMenu,
                 List

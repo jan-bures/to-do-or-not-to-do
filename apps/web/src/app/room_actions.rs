@@ -411,14 +411,18 @@ pub(super) fn RoomMenuButton() -> impl IntoView {
 #[component]
 pub(super) fn SyncLine() -> impl IntoView {
     let c = ctx();
-    let label = move || sync_text(&c.sync.get(), c.synced_at.get());
+    let label = Memo::new(move |_| sync_text(&c.sync.get(), c.synced_at.get()));
+    let full = move || label.with(|l| l.full.clone());
+    let short = move || label.with(|l| l.short.clone());
     view! {
         <Show when=move || c.failures.with(|f| !f.is_empty()) fallback=move || view! {
-            <span class="sync-text">{label}</span>
+            <span class="sync-text" role="status" title=full aria-label=full>
+                <span aria-hidden="true">{short}</span>
+            </span>
         }>
             <button type="button" class="sync-text sync-failures-trigger" id="open-sync-failures"
-                aria-haspopup="dialog" aria-controls="sync-failures" title="Not synced"
-                on:click=move |_| c.room_actions.open_failures(c)>{label}</button>
+                aria-haspopup="dialog" aria-controls="sync-failures" title=full aria-label=full
+                on:click=move |_| c.room_actions.open_failures(c)>{short}</button>
         </Show>
     }
 }
@@ -887,7 +891,7 @@ fn FailedDialog() -> impl IntoView {
             on:close=move |_| {
                 controls.seen.set(None);
                 error.set(false);
-                if !platform::focus("open-sync-failures") { platform::focus("open-new-list"); }
+                if !platform::focus("open-sync-failures") { platform::focus("open-new-room"); }
             }>
             <h2 id="sync-failures-heading">"Not synced"</h2>
             <Show when=move || shown.with(|rows| rows.is_empty())>

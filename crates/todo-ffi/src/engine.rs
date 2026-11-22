@@ -119,6 +119,36 @@ pub struct SyncStatus {
     pub problem_detail: Option<String>,
 }
 
+/// Both forms of the drawer's sync label.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SyncText {
+    pub short: String,
+    pub full: String,
+}
+
+#[uniffi::export]
+pub fn sync_status_text(status: SyncStatus, local_time: Option<String>) -> SyncText {
+    use todo_client::sync_label::SyncLabel;
+
+    let label = if status.revoked {
+        SyncLabel::SignedOut
+    } else if status.failed > 0 {
+        SyncLabel::Failed(status.failed as usize)
+    } else {
+        match status.state {
+            SyncState::Paused => SyncLabel::Paused(status.pending as usize),
+            SyncState::Offline => SyncLabel::Offline(status.pending as usize),
+            SyncState::Syncing => SyncLabel::Syncing,
+            SyncState::Online => SyncLabel::Synced(local_time.as_deref()),
+        }
+    };
+    let text = label.text();
+    SyncText {
+        short: text.short,
+        full: text.full,
+    }
+}
+
 /// A change the server refused.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct FailedChange {

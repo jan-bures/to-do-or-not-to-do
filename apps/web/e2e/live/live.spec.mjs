@@ -72,7 +72,7 @@ async function openApp() {
   const page = await context.newPage();
   await page.goto("/app");
   await expect(page.locator(".room-title")).toHaveText("My Day");
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   return page;
 }
 
@@ -191,7 +191,7 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/app$/);
   await expect(page.locator(".room-title")).toHaveText("My Day");
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
 
   // Lists come from the server; there are none yet, so make one through the API with the session.
   const created = await page.evaluate(async () => {
@@ -218,7 +218,7 @@ test("set up, sign in, and use the app against the server", async () => {
   // The server can't be reached: the edit waits in the outbox (IndexedDB).
   await page.route("**/api/v1/commands", (r) => r.abort("internetdisconnected"));
   await add(page, "Koupit mléko offline");
-  await expect(page.locator(".sync-text")).not.toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(page.locator(".sync-text")).not.toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   expect((await serverLog(page)).body).not.toContain("Koupit mléko offline");
   await committed(page, "Koupit mléko offline");
 
@@ -227,7 +227,7 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.reload();
   await expect(row(page, "Koupit mléko offline")).toHaveCount(1);
   await expect.poll(async () => (await serverLog(page)).body, { timeout: 15_000 }).toContain("Koupit mléko offline");
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
 
   // Live updates: a change made in another tab shows up here.
   const other = await context.newPage();
@@ -661,7 +661,7 @@ test("attachments wait for task creation and event delivery; the web session can
     };
   });
   await page.goto("/app");
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
   let allowCreate, allowUpload;
   const createGate = new Promise((resolve) => { allowCreate = resolve; });
   const uploadGate = new Promise((resolve) => { allowUpload = resolve; });
@@ -1083,7 +1083,7 @@ test("undo of a tag delete reports a name clash; losing the task closes the tag 
   await expect(originalRow).toHaveCount(0);
   await expect(tags(other)).toHaveAccessibleDescription(tag);
   await expect(other.locator(".sync-text")).toContainText("1 not synced");
-  await author.getByRole("button", { name: /1 not synced/ }).click();
+  await author.getByRole("button", { name: "1 couldn't sync" }).click();
   const failures = author.getByRole("dialog", { name: "Not synced" });
   await failures.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(author.locator(".sync-text")).not.toContainText("not synced");
@@ -1101,14 +1101,16 @@ test("move a list between web-created collections and see the new parent from an
     has: tab.getByRole("link", { name: `${name} 0`, exact: true }),
   });
   for (const name of ["Greenhouse", "Workshop"]) {
-    await page.getByRole("button", { name: "New collection" }).click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Collection", exact: true }).click();
     const input = page.getByRole("textbox", { name: "Collection name" });
     await input.fill(name);
     await input.press("Enter");
     await expect(page.locator(".room-title")).toHaveText(name);
   }
   await collection(page, "Greenhouse").getByRole("link", { name: "Greenhouse 0", exact: true }).click();
-  await page.getByRole("button", { name: "New list" }).click();
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("menuitem", { name: "List", exact: true }).click();
   const list = page.getByRole("textbox", { name: "List name" });
   await list.fill("Propagation");
   await list.press("Enter");
@@ -1162,7 +1164,7 @@ test("tracked undo of a confirmed recurring completion restores only the origina
   const completed = await occurrencesInList();
   expect(completed.find((t) => t.id === id).completed_at).toBeTruthy();
   expect(completed.find((t) => t.id !== id).due).not.toBe(due);
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
 
   const compensation = page.waitForResponse((r) => /\/api\/v1\/events\/\d+\/undo$/.test(r.url()));
   // Focus outside the input: Ctrl+Z still works even if the toast has already elapsed.
@@ -1186,7 +1188,7 @@ test("a follower undoes a recurring completion the sender has adopted; its late 
   const sync = follower.locator(".sync-text");
   await follower.locator(".sidebar").getByRole("link", { name: /^Inbox/ }).click();
   await add(follower, nextTitle);
-  await expect(sync).toHaveText(/^Synced/);
+  await expect(sync).toHaveAttribute("title", /^Synced/);
 
   let releaseComplete, releaseUndo, sawComplete, sawUndo;
   const completeGate = new Promise((resolve) => { releaseComplete = resolve; });
@@ -1218,13 +1220,13 @@ test("a follower undoes a recurring completion the sender has adopted; its late 
     await row(follower, nextTitle).getByRole("checkbox").click();
     await expect(follower.locator(".toast")).toContainText(nextTitle);
     releaseUndo();
-    await expect(sync).toHaveText(/^Synced/);
+    await expect(sync).toHaveAttribute("title", /^Synced/);
     await expect(row(follower, title)).toHaveCount(1);
     await expect(row(follower, title).locator(".row-title")).toHaveAttribute("id", `row-${original}`);
     await expect(row(follower, title).getByRole("checkbox")).not.toBeChecked();
     await expect(follower.locator(".toast")).toContainText(nextTitle);
     await follower.getByRole("button", { name: /^Undo/ }).click();
-    await expect(sync).toHaveText(/^Synced/);
+    await expect(sync).toHaveAttribute("title", /^Synced/);
     await expect(row(follower, nextTitle).getByRole("checkbox")).not.toBeChecked();
     await expect(follower.locator(".toast")).toContainText(`Undid: Completed “${nextTitle}”`);
     expect(problems).toEqual([]);
@@ -1267,10 +1269,10 @@ test("a live sidebar update cannot retarget a highlighted room action", async ()
   await expect(up).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(order).toHaveText(["Inbox", "Menu target", "New sibling"]);
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
   await page.keyboard.press("Control+z");
   await expect(order).toHaveText(["Inbox", "New sibling", "Menu target"]);
-  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
   for (const [cmd, list] of [[5, 2], [6, 4]]) {
     await send(id(cmd), { cmd: "delete", id: { kind: "list", id: id(list) } });
   }
@@ -1294,7 +1296,7 @@ test("Dismiss all does not drop a refusal that arrived after opening Not synced"
   }
   const dialog = page.getByRole("dialog", { name: "Not synced" });
   try {
-    await page.getByRole("button", { name: /1 not synced/ }).click();
+    await page.getByRole("button", { name: "1 couldn't sync" }).click();
     await expect(dialog.getByRole("listitem")).toHaveCount(1);
     await expect(dialog).toContainText("First refusal");
     await expect(dialog).not.toContainText("Raw response details");
@@ -1305,7 +1307,7 @@ test("Dismiss all does not drop a refusal that arrived after opening Not synced"
   await dialog.getByRole("button", { name: "Dismiss all" }).click();
   await expect(dialog).toContainText("No more changes to dismiss.");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page.getByRole("button", { name: /1 not synced/ }).click();
+  await page.getByRole("button", { name: "1 couldn't sync" }).click();
   await expect(dialog.getByRole("listitem")).toHaveCount(1);
   await expect(dialog).toContainText("Late refusal");
   await dialog.getByRole("button", { name: "Dismiss", exact: true }).click();
@@ -1324,8 +1326,8 @@ test("two tabs queue edits offline: both survive closing every tab, and each is 
   await add(a, "Z karty A offline");
   await add(b, "Z karty B offline");
   await add(a, "Zase z karty A");
-  await expect(a.locator(".sync-text")).not.toHaveText(/^Synced/, { timeout: 15_000 });
-  await expect(b.locator(".sync-text")).not.toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(a.locator(".sync-text")).not.toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
+  await expect(b.locator(".sync-text")).not.toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   for (const t of ["Z karty A offline", "Z karty B offline", "Zase z karty A"]) await committed(a, t);
   expect(problems).toEqual([]);
   await a.close();
@@ -1338,10 +1340,10 @@ test("two tabs queue edits offline: both survive closing every tab, and each is 
     await expect(row(c, t)).toHaveCount(1);
     await expect.poll(() => occurrences(c, t), { timeout: 15_000 }).toBe(1);
   }
-  await expect(c.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(c.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   // And only once, even after another reload.
   await c.reload();
-  await expect(c.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(c.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   for (const t of ["Z karty A offline", "Z karty B offline", "Zase z karty A"]) {
     expect(await occurrences(c, t)).toBe(1);
     await expect(row(c, t)).toHaveCount(1);
@@ -1383,7 +1385,7 @@ test("a tab whose session changed under it still sends its queued edit, once", a
   await a.evaluate(() => window.dispatchEvent(new Event("online")));
   await b.goto("/app");
   await expect.poll(() => occurrences(b, "Po novém přihlášení"), { timeout: 20_000 }).toBe(1);
-  await expect(a.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(a.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   await expect(a.locator(".sync-text")).not.toContainText("not synced");
   // A new edit from the old tab goes through too, on the new token.
   await add(a, "A ještě jedna");
@@ -1550,7 +1552,7 @@ test("one tab sends for all: a stalled tab's rename and a later one from another
   expect(body.indexOf("Pořadí z karty A")).toBeLessThan(body.indexOf("Pořadí z karty B"));
   for (const page of [a, b]) {
     await expect(page.locator(".d-title")).toHaveText("Pořadí z karty B", { timeout: 15_000 });
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   }
   // `a`'s title is in the log twice: as its rename's new title, and as the old title `b`'s rename
   // replaced (the event records it), which only happens in this order.
@@ -1590,7 +1592,7 @@ test("a new sender reads what the old one left before it sends its own: the newe
   const { body } = await serverLog(b);
   expect(body.indexOf("Předání starší"), "the older rename lands first").toBeLessThan(body.indexOf("Předání novější"));
   await expect(b.locator(".d-title")).toHaveText("Předání novější", { timeout: 15_000 });
-  await expect(b.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(b.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   expect(problems).toEqual([]);
   await b.close();
 });
@@ -1673,7 +1675,7 @@ test("an edit this browser can't store is never sent, says so, and goes through 
   });
   await expect(alert).toHaveCount(0, { timeout: 10_000 });
   await expect.poll(() => occurrences(a, "Nedá se uložit"), { timeout: 15_000 }).toBe(1);
-  await expect(a.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(a.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   expect(problems).toEqual([]);
   await a.close();
 });
@@ -1813,7 +1815,7 @@ test("an upgrade blocked by another tab says so, and goes ahead once that tab le
   await old.evaluate(() => window.__db.close());
   await expect(app.locator("#boot-notice")).toHaveCount(0, { timeout: 10_000 });
   await expect(app.locator(".room-title")).toHaveText("My Day");
-  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(app.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   await expect(row(app, "Po předání zámku")).toHaveCount(1, { timeout: 15_000 });
   expect(problems).toEqual([]);
   await app.close();
@@ -1880,7 +1882,7 @@ test("a tab with changes it couldn't save keeps an upgrade waiting until they're
   );
   expect(await occurrences(app, "Čeká na uložení")).toBe(0);
   await app.reload();
-  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(app.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   await app.close();
   await newer.close();
 });
@@ -1957,7 +1959,7 @@ test("once a newer version takes the database over, the tab takes no edits and s
       }),
   );
   await app.reload();
-  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(app.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   await expect(row(app, "Jen ke čtení")).toHaveCount(1, { timeout: 15_000 });
   await app.close();
   await newer.close();
@@ -1993,7 +1995,7 @@ test("a tab lets go of the database when a newer version needs it, and reloads",
       }),
   );
   await app.reload();
-  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(app.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   await app.close();
   await newer.close();
 });
@@ -2005,7 +2007,7 @@ test("quick-add uses the local date at submit and My Day refreshes on wake", asy
     const page = await isolated.newPage();
     await page.clock.setFixedTime(new Date("2026-11-20T23:59:59Z"));
     await page.goto("/app");
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
 
     // Change Date without running the view's 30-second interval or waking the tab.
     const title = "Check midnight quick-add";

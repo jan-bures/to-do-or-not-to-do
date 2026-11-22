@@ -1,5 +1,10 @@
 import { expect } from "@playwright/test";
 
+export async function chooseNew(sidebar, choice) {
+  await sidebar.getByRole("button", { name: "New", exact: true }).click();
+  await sidebar.getByRole("menuitem", { name: choice, exact: true }).click();
+}
+
 /** Fails the test on any console error, page error or CSP violation. */
 export function watch(page) {
   const problems = [];

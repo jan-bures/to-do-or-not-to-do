@@ -69,7 +69,9 @@ pub(super) enum TaskPage {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum MenuKind {
-    /// The sidebar footer's menu: the server, its admin pages, Sync now and Sign out (`confirm` once
+    /// The sidebar footer's New button.
+    New,
+    /// The sidebar footer's account menu: the server, its admin pages, Sync now and Sign out (`confirm` once
     /// asked).
     Account {
         confirm: bool,
@@ -122,13 +124,12 @@ pub(super) enum MenuKind {
 impl MenuKind {
     /// Which way the menu opens from its anchor: down (shifting in from above) or up.
     fn opens_up(self) -> bool {
-        matches!(self, Self::Account { .. } | Self::SyncFailures)
+        matches!(self, Self::New | Self::Account { .. } | Self::SyncFailures)
     }
 
-    /// Whether a button's menu hangs from its left edge (the sync line, at the sidebar's left) rather
-    /// than its right.
+    /// Whether a button's menu hangs from its left edge rather than its right.
     fn aligns_left(self) -> bool {
-        matches!(self, Self::SyncFailures)
+        matches!(self, Self::New | Self::SyncFailures)
     }
 
     /// The same menu, apart from its confirmation step (or the picker a task's menu turned into).
@@ -195,6 +196,7 @@ impl ShellView {
     fn live_menu_entries(&self, kind: MenuKind) -> Vec<MenuEntry> {
         let state = self.store.view();
         match kind {
+            MenuKind::New => menus::new_menu(),
             MenuKind::Account { confirm } => {
                 menus::account_menu(self.store.server().as_deref(), confirm)
             }
@@ -819,6 +821,8 @@ impl ShellView {
             }
             MenuAction::Nudge(id, by) => self.nudge(id, by, cx),
             MenuAction::ToggleCollection(id) => self.toggle_collection(id, cx),
+            MenuAction::NewList => self.new_list(None, window, cx),
+            MenuAction::NewCollection => self.new_collection(window, cx),
             MenuAction::NewListIn(id) => self.new_list(Some(id), window, cx),
             MenuAction::OpenAdmin => self.open_admin(cx),
             MenuAction::PairDevice => self.open_pairing_panel(true, window, cx),
@@ -1414,7 +1418,9 @@ impl ShellView {
         let shift = look.shift * space::S1;
         let opens_up = self.menu_opens_up(menu.kind);
         let shift = if opens_up { shift } else { -shift };
-        let width = if menus::is_wide(&entries) {
+        let width = if kind == MenuKind::New {
+            component::NEW_MENU
+        } else if menus::is_wide(&entries) {
             desktop::CONFIRM
         } else {
             desktop::MENU

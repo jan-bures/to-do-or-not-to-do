@@ -1,6 +1,6 @@
 // What the app does, in a real browser under the server's CSP (fixtures build: nothing leaves the page).
 import { expect, test } from "@playwright/test";
-import { open, watch } from "./helpers.mjs";
+import { chooseNew, open, watch } from "./helpers.mjs";
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -639,13 +639,13 @@ test("collection disclosure preserves navigation and new list creates in the cur
   await expect(finance).toBeHidden();
   await expect(work).toHaveClass(/contains-active/);
   await expect(page.locator(".room-title")).toHaveText("Finance");
-  const newList = sidebar.getByRole("button", { name: "New list" });
+  const create = sidebar.getByRole("button", { name: "New", exact: true });
   const name = sidebar.getByRole("textbox", { name: "List name" });
-  await newList.click();
+  await chooseNew(sidebar, "List");
   await expect(name).toBeFocused();
   await name.press("Escape");
-  await expect(newList).toBeFocused();
-  await newList.click();
+  await expect(create).toBeFocused();
+  await chooseNew(sidebar, "List");
   await expect(name).toBeFocused();
   await name.fill("Reading for the project");
   await name.press("Enter");
@@ -808,7 +808,9 @@ test("detail actions, schedule fields, sync label and context keyboard hints mat
   await open(page);
   const keys = page.locator(".sb-keys");
   await expect(keys).not.toContainText("Space");
-  await expect(page.getByText(/^Synced /)).toHaveCount(1);
+  const sync = page.getByRole("status", { name: /^Synced / });
+  await expect(sync).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(sync).toHaveAttribute("title", /^Synced \d{2}:\d{2}$/);
   await expect(page.locator(".sb-counts")).toHaveText("9 open · 3 done today");
   await rows(page).first().locator(".row-title").click();
   const buttons = page.locator(".detail-top button");

@@ -35,7 +35,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key as keyboardKey
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.Alignment
@@ -66,9 +74,9 @@ private val P = Tokens.Metrics.Phone
 /**
  * The rooms, in the order every client keeps (docs/design-language.md, *Sidebar order*): the smart lists,
  * with Activity and today's agents right after Agent activity, then each collection with its lists,
- * then loose lists, "+ New list" and "New collection". A collection folds with its chevron. A long press on a list or a collection opens its menu (rename, move, and for a list, delete), whose
- * choice goes to [onMenu]; the rows in [moving] glide to their new places. The footer says how syncing is
- * going, and its settings button holds the pairing, Sync now and Unpair.
+ * then loose lists. A collection folds with its chevron. A long press on a list or a collection opens
+ * its menu, whose choice goes to [onMenu]; the rows in [moving] glide to their new places. The pinned
+ * footer holds New, the sync status, and settings (pairing, Sync now and Unpair).
  */
 @Composable
 fun RoomDrawer(
@@ -85,6 +93,8 @@ fun RoomDrawer(
     val r = LocalDesign.current.room
     val current = state.room.key.takeIf { state.activity == null }
     var menu by remember { mutableStateOf<RoomKey?>(null) }
+    var namingList by rememberSaveable { mutableStateOf(false) }
+    val newFocus = remember { FocusRequester() }
 
     // A list's or a collection's row, with its long-press menu anchored to it.
     @Composable
@@ -142,72 +152,135 @@ fun RoomDrawer(
                     }
                 }
             }
-            Spacer(Modifier.height(S.S2.dp))
-            NewList(onNewList)
-            Choice("New collection", onClick = onNewCollection)
+        }
+        if (namingList) {
+            NewList(
+                onCreate = { name -> namingList = false; onNewList(name) },
+                onCancel = { namingList = false; newFocus.requestFocus() },
+            )
         }
         if (state.toast != null) ToastStrip(state.toast, actions)
-        Footer(state, server, actions)
+        Footer(state, server, actions, newFocus, { namingList = true }, onNewCollection)
     }
 }
 
-/** "+ New list": tap to name it, Done adds it and opens it. */
+/** The inline list name editor. Done adds a non-empty name and opens the list. */
 @Composable
-private fun NewList(onCreate: (String) -> Unit) {
+private fun NewList(onCreate: (String) -> Unit, onCancel: () -> Unit) {
     val r = LocalDesign.current.room
-    var naming by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
     val focus = remember { FocusRequester() }
-    TouchTarget({ naming = true }, Modifier.fillMaxWidth()) { press ->
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(P.NAV_ROW.dp)
-                .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
-                .then(press)
-                .padding(start = S.S2.dp, end = S.S3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-        ) {
-            Icon("plus", r.ink3, size = Tokens.Metrics.Component.GLYPH.dp)
-            if (!naming) {
-                Label("New list", Tokens.Type.NAV_SUB, r.ink3, Modifier.weight(1f))
-            } else {
-                LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-                fun done() {
-                    val n = name.trim()
-                    if (n.isNotEmpty()) onCreate(n)
-                    name = ""
-                    naming = false
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Row(
+        Modifier.fillMaxWidth().padding(start = S.S4.dp, end = S.S2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+    ) {
+        Icon("plus", r.ink3, size = Tokens.Metrics.Component.GLYPH.dp)
+        BasicTextField(
+            value = name,
+            onValueChange = { name = it.replace("\n", "") },
+            modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "New list name" }
+                .onPreviewKeyEvent { ev ->
+                    if (ev.keyboardKey != Key.Escape) false else {
+                        if (ev.type == KeyEventType.KeyUp) onCancel()
+                        true
+                    }
+                },
+            textStyle = Tokens.Type.NAV.style(r.ink),
+            singleLine = true,
+            cursorBrush = SolidColor(r.accent),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                val n = name.trim()
+                if (n.isNotEmpty()) onCreate(n) else onCancel()
+            }),
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (name.isEmpty()) Label("List name", Tokens.Type.NAV, r.ink3)
+                    inner()
                 }
-                BasicTextField(
-                    value = name,
-                    onValueChange = { name = it.replace("\n", "") },
-                    modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "New list name" },
-                    textStyle = Tokens.Type.NAV.style(r.ink),
-                    singleLine = true,
-                    cursorBrush = SolidColor(r.accent),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { done() }),
-                    decorationBox = { inner ->
-                        Box(contentAlignment = Alignment.CenterStart) {
-                            if (name.isEmpty()) Label("List name", Tokens.Type.NAV, r.ink3)
-                            inner()
+            },
+        )
+        IconButton("x", "Cancel new list", onClick = onCancel)
+    }
+}
+
+@Composable
+private fun NewMenu(trigger: FocusRequester, onNewList: () -> Unit, onNewCollection: () -> Unit) {
+    val r = LocalDesign.current.room
+    var open by remember { mutableStateOf(false) }
+    val list = remember { FocusRequester() }
+    val collection = remember { FocusRequester() }
+    fun dismiss() {
+        open = false
+        trigger.requestFocus()
+    }
+    Box {
+        TouchTarget(
+            onClick = { open = true },
+            modifier = Modifier.focusRequester(trigger).semantics { role = Role.Button }
+                .onPreviewKeyEvent { ev ->
+                    if (ev.keyboardKey !in listOf(Key.Enter, Key.Spacebar)) false else {
+                        if (ev.type == KeyEventType.KeyUp) open = true
+                        true
+                    }
+                },
+        ) { press ->
+            Row(
+                Modifier.height(P.NAV_ROW.dp).clip(RoundedCornerShape(Tokens.Radius.MD.dp))
+                    .then(press).padding(horizontal = S.S2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+            ) {
+                Icon("plus", r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                Label("New", Tokens.Type.NAV_SUB, r.ink3)
+            }
+        }
+        DropdownMenu(open, ::dismiss, containerColor = r.raised) {
+            if (open) LaunchedEffect(Unit) { list.requestFocus() }
+            @Composable
+            fun Item(label: String, icon: String, focus: FocusRequester, other: FocusRequester, choose: () -> Unit) {
+                val select = { open = false; choose() }
+                DropdownMenuItem(
+                    text = { Label(label, Tokens.Type.NAV_SUB, r.ink) },
+                    leadingIcon = { Icon(icon, r.ink2) },
+                    modifier = Modifier.focusRequester(focus).onPreviewKeyEvent { ev ->
+                        val key = ev.keyboardKey
+                        if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) {
+                            false
+                        } else {
+                            if (ev.type == KeyEventType.KeyUp) when (key) {
+                                Key.Escape -> dismiss()
+                                Key.Enter, Key.Spacebar -> select()
+                                else -> other.requestFocus()
+                            }
+                            true
                         }
                     },
+                    onClick = select,
                 )
             }
+            Item("List", "plus", list, collection, onNewList)
+            Item("Collection", "folder-plus", collection, list, onNewCollection)
         }
     }
 }
 
-/** The sync line with its dot ("Synced 10:35", "Offline, 3 waiting"), and the settings menu. */
+/** The single pinned row: New, the sync line, and the settings menu. */
 @Composable
-private fun Footer(state: UiState, server: String?, actions: Actions) {
+private fun Footer(
+    state: UiState,
+    server: String?,
+    actions: Actions,
+    newFocus: FocusRequester,
+    onNewList: () -> Unit,
+    onNewCollection: () -> Unit,
+) {
     val r = LocalDesign.current.room
     val (line, tone) = syncLine(state.status, state.syncedAt)
     Row(
-        Modifier.fillMaxWidth().hairline(r.line, top = true).padding(start = S.S5.dp, end = S.S2.dp),
+        Modifier.fillMaxWidth().hairline(r.line, top = true).padding(horizontal = S.S2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
@@ -217,8 +290,15 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
             Tone.PROBLEM -> r.danger
             Tone.IDLE -> r.ink4
         }
-        Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
-        Label(line, Tokens.Type.COUNT, r.ink3, Modifier.weight(1f).semantics { contentDescription = "Sync: $line" })
+        NewMenu(newFocus, onNewList, onNewCollection)
+        Row(
+            Modifier.weight(1f).clearAndSetSemantics { contentDescription = line.full },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S2.dp, Alignment.CenterHorizontally),
+        ) {
+            Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
+            Label(line.short, Tokens.Type.COUNT, r.ink3)
+        }
         var menu by remember { mutableStateOf(false) }
         // Only the invite/approval mode is saved. Credentials and scan state stay in the session model.
         var pairing by rememberSaveable { mutableStateOf<Boolean?>(null) }

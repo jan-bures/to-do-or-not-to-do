@@ -566,6 +566,7 @@ pub struct Sidebar {
     pub agents: Vec<AgentRow>,
     pub selected: RoomKey,
     pub sync: SharedString,
+    pub sync_short: SharedString,
     pub tone: Tone,
 }
 

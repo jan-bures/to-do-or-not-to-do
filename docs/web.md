@@ -311,11 +311,11 @@ phone drawer. Smart-list and Activity icons keep their own glyph hue regardless 
 headers and lists share the desktop's name-to-glyph rules; a name that doesn't match defaults to layers for
 collections and to a document for lists. Every collection and list shows its open count, even zero.
 **Agent activity** shows a pip for tasks most recently changed by an agent today; it still opens the
-seven-day smart list. The creation controls stay pinned below the scrolling navigation unless the
-viewport is too short. Then they scroll with the navigation, keeping sync status and sign-out visible.
+seven-day smart list. The pinned sidebar footer follows the shared design; its settings gear offers
+**Sign out**.
 
-**New list** creates a sibling of the current list, a child of the current collection, or a top-level
-list from a smart room. **New collection** creates a collection at the end of the sidebar. Both get a swatch.
+**+ New → List** creates a sibling of the current list, a child of the current collection, or a top-level
+list from a smart room. **+ New → Collection** creates a collection at the end of the sidebar. Both get a swatch.
 
 Right-click a list or collection in the sidebar, press **Shift+F10** on its link, or use its **…** button.
 A list or collection header has a **Room menu** too. Use Arrow Up/Down to navigate, Enter to act, or

@@ -466,17 +466,18 @@ class ParityTest {
     fun the_sync_line_reads_as_on_the_desktop() {
         fun s(state: SyncState, pending: UInt = 0u, failed: UInt = 0u, problem: ProblemKind? = null) =
             SyncStatus(state, pending, failed, caughtUp = false, revoked = problem == ProblemKind.UNAUTHORIZED, problem = problem, problemDetail = null)
-        assertEquals("Synced 10:35" to Tone.OK, syncLine(s(SyncState.ONLINE), FIXTURE_NOW))
-        assertEquals("Synced" to Tone.OK, syncLine(s(SyncState.ONLINE), null))
-        assertEquals("Syncing…" to Tone.BUSY, syncLine(s(SyncState.SYNCING, 2u), null))
-        assertEquals("Offline, 3 waiting" to Tone.PROBLEM, syncLine(s(SyncState.OFFLINE, 3u), null))
-        assertEquals("Offline" to Tone.PROBLEM, syncLine(s(SyncState.OFFLINE), null))
-        assertEquals("2 couldn’t sync" to Tone.PROBLEM, syncLine(s(SyncState.ONLINE, failed = 2u), null))
-        assertEquals(
-            "Signed out by the server" to Tone.PROBLEM,
-            syncLine(s(SyncState.OFFLINE, problem = ProblemKind.UNAUTHORIZED), null),
-        )
-        assertEquals("Not syncing, 1 waiting" to Tone.IDLE, syncLine(s(SyncState.PAUSED, 1u), null))
+        fun check(status: SyncStatus, short: String, full: String, tone: Tone, at: LocalNow? = null) {
+            val (text, actualTone) = syncLine(status, at)
+            assertEquals(Triple(short, full, tone), Triple(text.short, text.full, actualTone))
+        }
+        check(s(SyncState.ONLINE), "10:35", "Synced 10:35", Tone.OK, FIXTURE_NOW)
+        check(s(SyncState.ONLINE), "Synced", "Synced", Tone.OK)
+        check(s(SyncState.SYNCING, 2u), "Syncing…", "Syncing…", Tone.BUSY)
+        check(s(SyncState.OFFLINE, 3u), "Offline · 3", "Offline, 3 waiting", Tone.PROBLEM)
+        check(s(SyncState.OFFLINE), "Offline", "Offline", Tone.PROBLEM)
+        check(s(SyncState.ONLINE, failed = 2u), "2 not synced", "2 couldn't sync", Tone.PROBLEM)
+        check(s(SyncState.OFFLINE, problem = ProblemKind.UNAUTHORIZED), "Signed out", "Signed out by the server", Tone.PROBLEM)
+        check(s(SyncState.PAUSED, 1u), "Not syncing · 1", "Not syncing, 1 waiting", Tone.IDLE)
         assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600, "+01:00")))
         assertEquals("23:59", clock(LocalNow(-60_000L, 0, "UTC")))
     }

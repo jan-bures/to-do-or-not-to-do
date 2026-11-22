@@ -477,35 +477,30 @@ fn sidebar(
         lists: top,
         agents,
         selected: ui.room,
-        sync: sync_text.into(),
+        sync: sync_text.full.into(),
+        sync_short: sync_text.short.into(),
         tone,
     }
 }
 
-fn sync_line(sync: &SyncInfo, now: &Now) -> (String, Tone) {
-    if !sync.paired {
-        return ("Not signed in".into(), Tone::Problem);
-    }
-    if sync.unauthorized {
-        return ("Signed out by the server".into(), Tone::Problem);
-    }
-    if sync.failed > 0 {
-        return (format!("{} couldn't sync", sync.failed), Tone::Problem);
-    }
-    match sync.connection {
-        Connection::Offline if sync.pending > 0 => {
-            (format!("Offline, {} waiting", sync.pending), Tone::Problem)
+fn sync_line(sync: &SyncInfo, now: &Now) -> (todo_client::sync_label::SyncText, Tone) {
+    use todo_client::sync_label::SyncLabel;
+
+    let time = sync.synced_at.map(|at| labels::clock(at, &now.tz));
+    let (label, tone) = if !sync.paired {
+        (SyncLabel::Unpaired, Tone::Problem)
+    } else if sync.unauthorized {
+        (SyncLabel::SignedOut, Tone::Problem)
+    } else if sync.failed > 0 {
+        (SyncLabel::Failed(sync.failed), Tone::Problem)
+    } else {
+        match sync.connection {
+            Connection::Offline => (SyncLabel::Offline(sync.pending), Tone::Problem),
+            Connection::Syncing => (SyncLabel::Syncing, Tone::Busy),
+            Connection::Online => (SyncLabel::Synced(time.as_deref()), Tone::Ok),
         }
-        Connection::Offline => ("Offline".into(), Tone::Problem),
-        Connection::Syncing => ("Syncing…".into(), Tone::Busy),
-        Connection::Online => (
-            sync.synced_at.map_or_else(
-                || "Synced".to_string(),
-                |at| format!("Synced {}", labels::clock(at, &now.tz)),
-            ),
-            Tone::Ok,
-        ),
-    }
+    };
+    (label.text(), tone)
 }
 
 fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
