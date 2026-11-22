@@ -134,6 +134,10 @@ abstract class GenerateDesignTokens : DefaultTask() {
             val e = (v as List<*>).map { f(it) }
             out.appendLine("        val EASE_${constName(k)} = Easing(${e.joinToString()})")
         }
+        // Cues that aren't durations: a scale, shares of DUSK, a distance in dp and an item count.
+        motion["cues"].obj().forEach { (k, v) ->
+            out.appendLine("        const val ${constName(k)} = ${f(v)}")
+        }
         out.appendLine("    }")
 
         out.appendLine("    object Type {")

@@ -97,6 +97,16 @@ class TokensTest {
             "check-fill" to m.CHECK_FILL, "check-tick" to m.CHECK_TICK, "complete-hold" to m.COMPLETE_HOLD,
             "row-collapse" to m.ROW_COLLAPSE, "sun-travel" to m.SUN_TRAVEL, "undo-window" to m.UNDO_WINDOW,
         ).forEach { (k, v) -> assertEquals(k, motion.getInt(k), v) }
+
+        val cues = json.getJSONObject("motion").getJSONObject("cues")
+        mapOf(
+            "check-fill-from-scale" to m.CHECK_FILL_FROM_SCALE, "dusk-night-at" to m.DUSK_NIGHT_AT,
+            "dusk-handover-at" to m.DUSK_HANDOVER_AT, "dusk-handover-rise" to m.DUSK_HANDOVER_RISE,
+            "stagger-max-items" to m.STAGGER_MAX_ITEMS,
+        ).forEach { (k, v) -> assertEquals(k, cues.getDouble(k).toFloat(), v, 0f) }
+        val easing = json.getJSONObject("motion").getJSONObject("easings").getJSONArray("sun")
+        assertEquals(easing.getDouble(0).toFloat(), m.EASE_SUN.x1, 0f)
+        assertEquals(easing.getDouble(1).toFloat(), m.EASE_SUN.y1, 0f)
     }
 }
 
