@@ -75,8 +75,13 @@ What the first version does:
   a server with a smaller limit reports its own limit. **Save** downloads the complete file to private
   cache before copying to a destination you choose in the system file picker. Documents and images also
   have **Open**, which grants the viewer read-only access to that file through a `FileProvider`. Other
-  extensions are save-only. Neither action requires a storage permission. Cached copies are cleared
-  on unpair and at process startup. **Remove** works offline and offers **Undo**.
+  extensions are save-only. Neither action requires a storage permission. Opening a file replaces its
+  previous cached copy. Unpairing and process startup clear that cache: a viewer that tries to reopen
+  a file after this app’s process has restarted may need you to open it from task detail again.
+  Transfers stay with their task across rotation and navigation, but stop when the app goes into the
+  background or is unpaired. If a Save fails or is cancelled, the app asks the document provider to
+  delete the unfinished file. Add file waits for a new task to sync; after an upload, the status shows
+  whether it has reached the replica. **Remove** works offline and offers **Undo**.
 - **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
   behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.

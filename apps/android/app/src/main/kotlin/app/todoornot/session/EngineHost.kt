@@ -50,6 +50,7 @@ class EngineHost(
     private val newPairingId: () -> String = { PairingFiles.newPairingId() },
     /** Debug-level log lines (never task content). */
     private val debug: (String) -> Unit = {},
+    private val clearTransferCache: () -> Unit = {},
     private val openEngine: (Session, File) -> TodoEngine,
 ) {
     private val _state = MutableStateFlow<Host>(Host.SignedOut)
@@ -60,6 +61,7 @@ class EngineHost(
      * saved pairing itself was being unpaired when the app stopped, that unpair is completed.
      */
     fun load() {
+        clearTransferCache()
         var s = sessions.load()
         if (s != null && s.pairingId.isEmpty()) {
             // Saved before pairings had their own directories (never in a release): a new, empty cache.
@@ -112,6 +114,7 @@ class EngineHost(
         sessions.clear()
         forgetKey()
         (current as? Host.Ready)?.engine?.let(close)
+        clearTransferCache()
         _state.value = Host.SignedOut
         return if (files.remove(session.pairingId)) Unpaired.Clean else Unpaired.DataLeft
     }

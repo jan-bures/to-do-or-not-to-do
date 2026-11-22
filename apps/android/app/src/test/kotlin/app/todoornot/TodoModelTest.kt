@@ -23,6 +23,8 @@ import app.todoornot.core.TodoEngine
 import app.todoornot.design.Tokens
 import app.todoornot.model.DuskLook
 import app.todoornot.model.Ghost
+import app.todoornot.model.Documents
+import app.todoornot.model.FileAction
 import app.todoornot.model.Pace
 import app.todoornot.model.RowLook
 import app.todoornot.model.MenuAction
@@ -519,12 +521,12 @@ class TodoModelTest {
      * engine's change notifications are the test's to send ([changed]): its listener, on the engine's own
      * threads, would queue work in between the steps.
      */
-    private class Stepped(engine: TodoEngine, zone: java.time.ZoneId = java.time.ZoneOffset.ofHours(1), clock: () -> Long) {
+    private class Stepped(engine: TodoEngine, zone: java.time.ZoneId = java.time.ZoneOffset.ofHours(1), documents: Documents? = null, clock: () -> Long) {
         val main = Steps()
         val io = Steps()
         val scope = CoroutineScope(SupervisorJob() + main)
         private var onChange: () -> Unit = {}
-        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it }, zone = { zone })
+        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it }, zone = { zone }, documents = documents)
 
         /** The engine says something changed, as its listener would. */
         fun changed() = onChange()
@@ -568,25 +570,52 @@ class TodoModelTest {
     }
 
     @Test
-    fun offline_transfers_do_not_enqueue_commands_or_change_attachment_metadata() {
+    fun transfer_state_survives_navigation_and_failed_or_cancelled_saves_discard_the_document() {
         val e = fixtureEngine()
-        val s = Stepped(e) { time }
+        val discarded = mutableListOf<String>()
+        var copies = 0
+        val docs = object : Documents {
+            override fun temporary() = java.io.File.createTempFile("attachment", null)
+            override fun copyPicked(uri: String, file: java.io.File, check: () -> Unit): Documents.Picked {
+                copies++
+                return Documents.Picked("sample.txt", "text/plain")
+            }
+            override fun open(file: java.io.File, row: app.todoornot.core.AttachmentRow) = error("offline")
+            override fun save(file: java.io.File, uri: String, check: () -> Unit) = error("offline")
+            override fun discard(uri: String) { discarded += uri }
+        }
+        val s = Stepped(e, documents = docs) { time }
         val id = e.taskId(RoomKey.Smart(SmartList.MY_DAY), "Call the dentist to reschedule")
         s.model.select(id)
         s.drain()
         val before = s.model.ui.value.detail!!.attachments
-        val tmp = java.io.File.createTempFile("attachment", null)
-        try {
-            val errors = mutableListOf<String>()
-            s.scope.launch {
-                try { s.model.downloadAttachment(before.first().id, tmp) } catch (e: app.todoornot.core.FfiException.Invalid) { errors += e.detail }
-                try { s.model.uploadAttachment(id, "sample.txt", "text/plain", tmp) } catch (e: app.todoornot.core.FfiException.Invalid) { errors += e.detail }
-            }
-            s.drain()
-            assertEquals(listOf("Attachments download when connected to a server.", "Attachments upload when connected to a server."), errors)
-            assertEquals(0u, e.status().pending)
-            assertEquals(before, e.task(id, FIXTURE_NOW)!!.attachments)
-        } finally { tmp.delete(); s.scope.cancel() }
+        val add = FileAction.Upload(id, "picked")
+        s.model.transfer(add)
+        s.model.transfer(add)
+        assertEquals("Uploading…", s.model.ui.value.attachment?.text)
+        val late = s.io.hold()
+        s.model.select(null)
+        s.drain()
+        assertNull(s.model.ui.value.attachment)
+        s.model.select(id)
+        s.drain()
+        assertTrue(s.model.ui.value.attachment!!.busy)
+        late.run(); s.drain()
+        assertEquals(1, copies)
+        val offline = "Connect to upload or download attachments."
+        assertEquals(offline, s.model.ui.value.attachment?.text)
+        val save = FileAction.Save(id, before.first().id, before.first().name, "failed")
+        s.model.transfer(save)
+        s.drain()
+        assertEquals(offline, s.model.ui.value.attachment?.text)
+        s.model.transfer(save.copy(uri = "cancelled"))
+        s.model.pause()
+        s.drain()
+        assertEquals(listOf("failed", "cancelled"), discarded)
+        assertEquals("Transfer cancelled.", s.model.ui.value.attachment?.text)
+        assertEquals(0u, e.status().pending)
+        assertEquals(before, e.task(id, FIXTURE_NOW)!!.attachments)
+        s.scope.cancel()
     }
 
     @Test

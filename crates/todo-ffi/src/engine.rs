@@ -267,6 +267,8 @@ pub struct TodoEngine {
     undos: Mutex<HashMap<CommandId, Undone>>,
     /// Pending batch protection survives replacing the Activity room's pager.
     activity_undos: Mutex<todo_client::activity::Undos>,
+    /// Stop invalidates transfers, including ones still staging a picked document on Android.
+    transfer_epoch: tokio::sync::watch::Sender<u64>,
     run: Mutex<Option<JoinHandle<()>>>,
     watch: Mutex<Option<JoinHandle<()>>>,
 }
@@ -410,6 +412,7 @@ impl TodoEngine {
             fixture,
             undos: Mutex::new(HashMap::new()),
             activity_undos: Mutex::default(),
+            transfer_epoch: tokio::sync::watch::channel(0).0,
             run: Mutex::new(None),
             watch: Mutex::new(None),
         })
@@ -631,6 +634,7 @@ impl TodoEngine {
     /// idempotent by command ID, so a resend after [`start`](Self::start) is safe. The outbox stays.
     /// [`status`](Self::status) reports `Paused` from now on; the listener isn't called for that.
     pub fn stop(&self) {
+        self.cancel_attachment_transfers();
         if let Some(h) = locked(&self.run).take() {
             h.abort();
         }

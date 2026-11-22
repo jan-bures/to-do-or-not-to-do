@@ -1,5 +1,6 @@
 //! Direct, bounded file transfers. Neither the outbox nor the JVM heap holds the content.
-use super::{HttpTransport, network};
+use super::HttpTransport;
+use crate::failure;
 use crate::platform::{Method, TransportError, attachment_upload_path};
 use std::{future::Future, path::Path, time::Duration};
 use todo_core::ids::{AttachmentId, TaskId};
@@ -12,12 +13,83 @@ pub use todo_core::MAX_ATTACHMENT_BYTES as MAX_BYTES;
 pub enum FileError {
     #[error("file transfer failed")]
     Transport(#[from] TransportError),
+    #[error("could not connect")]
+    Connect,
+    #[error("the transfer timed out")]
+    Timeout,
+    #[error("connection interrupted during the transfer")]
+    Interrupted,
     #[error("could not read or write the file")]
     File(#[from] std::io::Error),
     #[error("the file transfer was refused (HTTP {status})")]
-    Refused { status: u16, max_bytes: Option<u64> },
+    Refused {
+        status: u16,
+        max_bytes: Option<u64>,
+        code: Option<String>,
+    },
     #[error("the download size did not match the attachment")]
     WrongSize,
+}
+
+fn transfer_error(e: reqwest::Error) -> FileError {
+    if e.is_timeout() {
+        FileError::Timeout
+    } else if e.is_connect() {
+        FileError::Connect
+    } else {
+        FileError::Interrupted
+    }
+}
+
+impl FileError {
+    pub fn download_message(&self) -> &'static str {
+        match self {
+            Self::Timeout => failure::DOWNLOAD_TIMEOUT,
+            Self::Connect => failure::ATTACHMENT_OFFLINE,
+            Self::WrongSize => "The download didn’t match the attachment size. Try again.",
+            Self::Refused { status, code, .. } => {
+                failure::attachment_download(*status, code.as_deref())
+            }
+            _ => "Couldn’t download the attachment.",
+        }
+    }
+
+    pub fn upload_message(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::Connect => failure::ATTACHMENT_OFFLINE.into(),
+            Self::Timeout => "The upload timed out. Check the task before trying again.".into(),
+            Self::Interrupted => "Couldn’t upload the selected file. It may be too large for the server, or the connection dropped.".into(),
+            Self::Refused { status: 401, .. } => "This device is signed out. Pair again to upload attachments.".into(),
+            Self::Refused { status: 404, .. } => "Couldn’t upload the file. The task is no longer available.".into(),
+            Self::Refused { status: status @ (413 | 429 | 507), max_bytes, .. } => {
+                failure::attachment_upload(Some(*status), *max_bytes)
+            }
+            _ => "Couldn’t upload the selected file.".into(),
+        }
+    }
+}
+
+// A refusal may arrive before the upload body is consumed; never infer offline from that.
+async fn refused(mut res: reqwest::Response) -> FileError {
+    let status = res.status().as_u16();
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = res.chunk().await {
+        if body.len() + chunk.len() > 8192 {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let error = serde_json::from_slice::<crate::protocol::ErrorBody>(&body)
+        .ok()
+        .map(|e| e.error);
+    let max_bytes = error
+        .as_ref()
+        .and_then(|e| e.details.as_ref()?.get("max_bytes")?.as_u64());
+    FileError::Refused {
+        status,
+        max_bytes,
+        code: error.map(|e| e.code),
+    }
 }
 
 /// Native file side of the paired HTTP transport. Paths are private staging files chosen by the
@@ -46,12 +118,9 @@ impl FileTransport for HttpTransport {
             .timeout(Duration::from_secs(300))
             .send()
             .await
-            .map_err(network)?;
+            .map_err(transfer_error)?;
         if res.status().as_u16() != 200 {
-            return Err(FileError::Refused {
-                status: res.status().as_u16(),
-                max_bytes: None,
-            });
+            return Err(refused(res).await);
         }
         if res.content_length().is_some_and(|n| n != size) {
             return Err(FileError::WrongSize);
@@ -62,7 +131,7 @@ impl FileTransport for HttpTransport {
             .open(path)
             .await?;
         let mut remaining = size;
-        while let Some(chunk) = res.chunk().await.map_err(network)? {
+        while let Some(chunk) = res.chunk().await.map_err(transfer_error)? {
             remaining = remaining
                 .checked_sub(chunk.len() as u64)
                 .ok_or(FileError::WrongSize)?;
@@ -89,10 +158,11 @@ impl FileTransport for HttpTransport {
             return Err(FileError::Refused {
                 status: 413,
                 max_bytes: Some(MAX_BYTES),
+                code: None,
             });
         }
         let path = attachment_upload_path(task, id, name);
-        let mut res = self
+        let res = self
             .authenticated(Method::Post, &path)?
             .header(reqwest::header::CONTENT_TYPE, media)
             .header(reqwest::header::CONTENT_LENGTH, size)
@@ -100,24 +170,11 @@ impl FileTransport for HttpTransport {
             .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(network)?;
+            .map_err(transfer_error)?;
         let status = res.status().as_u16();
         if matches!(status, 200 | 201) {
             return Ok(());
         }
-        let mut max_bytes = None;
-        if status == 413 {
-            let mut body = Vec::new();
-            while let Ok(Some(chunk)) = res.chunk().await {
-                if body.len() + chunk.len() > 8192 {
-                    break;
-                }
-                body.extend_from_slice(&chunk);
-            }
-            max_bytes = serde_json::from_slice::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|json| json.pointer("/error/details/max_bytes")?.as_u64());
-        }
-        Err(FileError::Refused { status, max_bytes })
+        Err(refused(res).await)
     }
 }

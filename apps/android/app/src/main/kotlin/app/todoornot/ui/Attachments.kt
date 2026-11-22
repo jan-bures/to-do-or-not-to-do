@@ -1,9 +1,8 @@
 package app.todoornot.ui
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
-import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -12,81 +11,66 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.AttachmentRow
-import app.todoornot.core.FfiException
 import app.todoornot.core.SyncState
-import app.todoornot.core.TaskDetail
-import app.todoornot.core.attachmentTooLarge
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
-import app.todoornot.files.AttachmentFiles
-import app.todoornot.model.Actions
-import app.todoornot.model.OrganizeEdit
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import app.todoornot.model.*
 
+private class Pickers(val add: (String) -> Unit, val save: (String, AttachmentRow) -> Unit)
+private val LocalPickers = staticCompositionLocalOf { Pickers({}, { _, _ -> }) }
+
+/** Register once above both pane layouts. A result belongs to the original pairing, task and file,
+ * not to the detail (if any) on screen after the picker or a configuration change. */
 @Composable
-internal fun Attachments(detail: TaskDetail, sync: SyncState, actions: Actions) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
-    var notice by remember { mutableStateOf<String?>(null) }
-    // Remember the exact destination through activity recreation. The section is keyed by task ID.
-    var saving by rememberSaveable { mutableStateOf<String?>(null) }
-    val offline = sync == SyncState.OFFLINE
-
-    fun transfer(progress: String, failure: String, work: suspend (java.io.File) -> String?) {
-        if (busy) return
-        busy = true
-        notice = progress
-        scope.launch {
-            try {
-                val file = AttachmentFiles.temporary(context)
-                try { notice = work(file) } finally { file.delete() }
-            } catch (e: CancellationException) { throw e }
-            catch (_: AttachmentFiles.TooLarge) { notice = attachmentTooLarge() }
-            catch (e: FfiException.Invalid) { notice = e.detail }
-            catch (_: Exception) { notice = failure }
-            finally { busy = false }
+internal fun AttachmentPickers(actions: Actions?, pairing: String?, discard: (String) -> Unit, content: @Composable () -> Unit) {
+    var source by rememberSaveable { mutableStateOf<Array<String>?>(null) }
+    var destination by rememberSaveable { mutableStateOf<Array<String>?>(null) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val pending = source
+        source = null
+        if (uri != null && pending != null && pairing == pending[0]) actions?.transfer(FileAction.Upload(pending[1], uri.toString()))
+    }
+    val create = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val pending = destination
+        destination = null
+        val uri = result.data?.data?.toString()
+        if (uri != null && result.resultCode == Activity.RESULT_OK) {
+            if (actions == null || pending == null || pairing != pending[0]) discard(uri)
+            else actions.transfer(FileAction.Save(pending[1], pending[2], pending[3], uri))
         }
     }
-
-    fun download(row: AttachmentRow, destination: Uri?) {
-        transfer("Downloading ${row.name}…", "Couldn't ${if (destination == null) "open" else "save"} ${row.name}.") { file ->
-            actions.downloadAttachment(row.id, file)
-            if (destination != null) {
-                withContext(Dispatchers.IO) { AttachmentFiles.save(context, file, destination) }
-                "Saved ${row.name}"
-            } else {
-                AttachmentFiles.open(context, file, row)
-                null
+    val pickers = Pickers(add = { task ->
+        if (pairing != null) {
+            source = arrayOf(pairing, task)
+            try { pick.launch(arrayOf("*/*")) } catch (_: ActivityNotFoundException) {
+                source = null; actions?.attachmentNotice(task, "Couldn’t open the file picker.")
             }
         }
-    }
-
-    val registry = LocalActivityResultRegistryOwner.current
-    val save = if (registry != null) rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val row = detail.attachments.find { it.id == saving }
-        saving = null
-        val destination = result.data?.data
-        if (result.resultCode == Activity.RESULT_OK && row != null && destination != null) download(row, destination)
-    } else null
-    val pick = if (registry != null) rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) transfer("Uploading…", "Couldn’t upload the selected files.") { file ->
-            val picked = withContext(Dispatchers.IO) { AttachmentFiles.copyPicked(context, uri, file) }
-            actions.uploadAttachment(detail.id, picked.name, picked.media, file)
-            "File uploaded."
+    }, save = { task, row ->
+        if (pairing != null) {
+            destination = arrayOf(pairing, task, row.id, row.name)
+            try { create.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(row.openType ?: "application/octet-stream").putExtra(Intent.EXTRA_TITLE, row.name)) }
+            catch (_: ActivityNotFoundException) { destination = null; actions?.attachmentNotice(task, "Couldn’t save ${row.name}.") }
         }
-    } else null
+    })
+    CompositionLocalProvider(LocalPickers provides pickers, content = content)
+}
 
+@Composable
+internal fun Attachments(state: UiState, actions: Actions) {
+    val detail = state.detail ?: return
+    val transfer = state.attachment
+    val offline = state.status.state == SyncState.OFFLINE
+    val available = !offline && !state.signedOut && transfer?.busy != true
+    val canAdd = available && state.attachmentTaskConfirmed
+    val pickers = LocalPickers.current
     val r = LocalDesign.current.room
     val space = Tokens.Space
     Caps("Attachments")
@@ -97,25 +81,22 @@ internal fun Attachments(detail: TaskDetail, sync: SyncState, actions: Actions) 
                 Label(row.name, Tokens.Type.NAV, r.ink)
                 Label(row.size, Tokens.Type.COUNT, r.ink3)
             }
-            if (row.openType != null) IconButton("external-link", "Open “${row.name}”", enabled = !offline && !busy) { download(row, null) }
-            IconButton("download", "Save “${row.name}”", enabled = !offline && !busy) {
-                saving = row.id
-                try {
-                    save?.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                        .setType(row.openType ?: "application/octet-stream").putExtra(Intent.EXTRA_TITLE, row.name))
-                } catch (_: android.content.ActivityNotFoundException) { notice = "Couldn't save ${row.name}." }
-            }
+            if (row.openType != null) IconButton("external-link", "Open “${row.name}”", enabled = available) { actions.transfer(FileAction.Open(detail.id, row)) }
+            IconButton("download", "Save “${row.name}”", enabled = available) { pickers.save(detail.id, row) }
             IconButton("trash-2", "Remove “${row.name}”") { actions.organize(OrganizeEdit.RemoveAttachment(row.id)) }
         }
     }
-    Row(Modifier.heightIn(min = Tokens.Metrics.Phone.TOUCH.dp).clickable(enabled = !busy && !offline) {
-        try { pick?.launch(arrayOf("*/*")) } catch (_: android.content.ActivityNotFoundException) { notice = "Couldn’t open the file picker." }
-    }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(space.S2.dp)) {
-        val ink = if (offline || busy) r.ink3 else r.accentStrong
+    Row(Modifier.heightIn(min = Tokens.Metrics.Phone.TOUCH.dp).clickable(enabled = canAdd) { pickers.add(detail.id) },
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(space.S2.dp)) {
+        val ink = if (canAdd) r.accentStrong else r.ink3
         Icon("plus", ink)
         Label("Add file", Tokens.Type.BUTTON_SMALL, ink)
     }
-    (if (offline && !busy) "Connect to upload or download attachments." else notice)?.let {
-        Label(it, Tokens.Type.META_PHONE, r.ink3, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, maxLines = Int.MAX_VALUE)
+    val text = when {
+        offline -> "Connect to upload or download attachments."
+        transfer != null -> transfer.text
+        !state.attachmentTaskConfirmed -> "Waiting to sync…"
+        else -> ""
     }
+    if (text.isNotEmpty()) Label(text, Tokens.Type.META_PHONE, r.ink3, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, maxLines = Int.MAX_VALUE)
 }

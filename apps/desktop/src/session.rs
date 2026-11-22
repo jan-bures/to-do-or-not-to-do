@@ -416,11 +416,19 @@ impl Session {
         async move {
             let res = transport
                 .send(Request::get(format!("/api/v1/attachments/{id}")))
-                .await?;
+                .await
+                .map_err(|e| match e {
+                    todo_client::platform::TransportError::Timeout => {
+                        anyhow::anyhow!(todo_client::failure::DOWNLOAD_TIMEOUT)
+                    }
+                    error => error.into(),
+                })?;
             if res.status != 200 {
-                let why = error_detail(&res)
-                    .map_or_else(|| format!("HTTP {}", res.status), |d| d.message);
-                anyhow::bail!("the server couldn't send it: {why}");
+                let error = error_detail(&res);
+                anyhow::bail!(todo_client::failure::attachment_download(
+                    res.status,
+                    error.as_ref().map(|e| e.code.as_str())
+                ));
             }
             Ok(res.body)
         }

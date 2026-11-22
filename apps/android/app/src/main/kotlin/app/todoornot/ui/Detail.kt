@@ -186,7 +186,7 @@ fun DetailPane(
                     }, overlay::close, webAddress = true)
                 }
             }
-            key(detail.id) { Attachments(detail, state.status.state, actions) }
+            Attachments(state, actions)
             // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
             Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
         }

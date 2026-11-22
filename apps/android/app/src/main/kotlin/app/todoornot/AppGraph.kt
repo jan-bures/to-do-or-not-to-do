@@ -63,6 +63,7 @@ class AppGraph(private val app: Context) {
         SessionStore(PrefsKeyValues(app), cipher),
         PairingFiles(app.noBackupFilesDir),
         forgetKey = cipher::destroy,
+        clearTransferCache = { AttachmentFiles.clear(app.cacheDir) },
         debug = { Log.d("EngineHost", it) },
     ) { s, db ->
         TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, Cleartext.allowLoopbackHttp))
@@ -88,8 +89,6 @@ class AppGraph(private val app: Context) {
     val pairing = PairingModel(CorePairing(Cleartext.allowLoopbackHttp), scope, Dispatchers.IO, deviceName(), host::paired)
 
     init {
-        // Cached attachment URIs last for this process and pairing only.
-        AttachmentFiles.clear(app)
         NativeInit.ensure(app)
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
         scope.launch { host.state.collect(::follow) }
@@ -132,7 +131,7 @@ class AppGraph(private val app: Context) {
                     }
                 })
             }
-            TodoModel(e, ms, Dispatchers.IO, onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() }).also { m ->
+            TodoModel(e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() }).also { m ->
                 EngineHost.recoveredNotice((h as Host.Ready).recovered)?.let(m::notice)
                 if (foreground) m.resume()
                 reminderChanges.tryEmit(Unit)
@@ -230,6 +229,9 @@ class AppGraph(private val app: Context) {
         }
     }
 
+    /** A create-document result returned after its pairing went away. */
+    fun discardDocument(uri: String) { scope.launch(Dispatchers.IO) { AttachmentFiles(app).discard(uri) } }
+
     /** Opens the cache again after it couldn't be opened. */
     fun retry() = host.retry()
 
@@ -254,7 +256,6 @@ class AppGraph(private val app: Context) {
                 m?.notice(text)
             }
             Unpaired.Clean, Unpaired.DataLeft -> {
-                AttachmentFiles.clear(app)
                 reminderScope.launch { reminders.clear() }
                 _unpairProblem.value = null
                 pairing.cancel()

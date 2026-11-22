@@ -54,6 +54,7 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -140,6 +141,9 @@ extensions.getByType<ApplicationAndroidComponentsExtension>().onVariants { varia
 
 // The JVM tests (unit and Paparazzi screenshots) load the host build of the core through JNA.
 tasks.withType<Test>().configureEach {
+    // Layoutlib (Paparazzi) and Robolectric load incompatible native Android runtimes.
+    // Keep them in separate worker JVMs, independent of JUnit’s class execution order.
+    forkEvery = 1
     dependsOn(uniffiBindings)
     systemProperty("jna.library.path", hostLibDir.absolutePath)
     // The checked-in tokens.json, for the test that compares it with the generated Kotlin.
@@ -197,6 +201,7 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
     testImplementation(libs.jna)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.json)

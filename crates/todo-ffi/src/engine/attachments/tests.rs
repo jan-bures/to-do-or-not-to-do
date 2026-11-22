@@ -36,7 +36,22 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             .is_some_and(|v| v == "Bearer fixture-only")
     };
     let payload = data.clone();
+    let other = state
+        .tasks
+        .keys()
+        .copied()
+        .find(|&id| id != file.task)
+        .unwrap();
     let app = Router::new()
+        .route(
+            &format!("/api/v1/tasks/{other}/attachments"),
+            post(|| async {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    r#"{"error":{"code":"payload_too_large","details":{"max_bytes":2}}}"#,
+                )
+            }),
+        )
         .route(
             &format!("/api/v1/attachments/{}", file.id),
             get(move |headers: HeaderMap| async move {
@@ -56,7 +71,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
                     if query["file_name"] == "smaller-limit.png" {
                         return (
                             StatusCode::PAYLOAD_TOO_LARGE,
-                            r#"{"error":{"details":{"max_bytes":2}}}"#,
+                            r#"{"error":{"code":"payload_too_large","details":{"max_bytes":2}}}"#,
                         );
                     }
                     assert_eq!(query["file_name"], "čaj & +.png");
@@ -98,7 +113,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().into_owned();
     engine
-        .download_attachment(file.id.to_string(), path.clone())
+        .download_attachment(file.id.to_string(), path.clone(), 0)
         .unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), data);
     std::fs::write(&path, [0xff, 0, 5]).unwrap();
@@ -108,6 +123,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             "čaj & +.png".into(),
             "image/png".into(),
             path.clone(),
+            0,
         )
         .unwrap();
     let refused = engine
@@ -116,12 +132,25 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             "smaller-limit.png".into(),
             "image/png".into(),
             path.clone(),
+            0,
         )
         .unwrap_err();
     assert_eq!(
         refused.to_string(),
         "That file is too large. The limit is 2 bytes."
     );
+    tmp.as_file().set_len(8 * 1024 * 1024).unwrap();
+    let early = engine
+        .upload_attachment(
+            other.to_string(),
+            "early.bin".into(),
+            "application/octet-stream".into(),
+            path.clone(),
+            0,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(early.contains("too large"), "{early}");
     tmp.as_file().set_len(MAX_BYTES + 1).unwrap();
     let err = engine
         .upload_attachment(
@@ -129,13 +158,90 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             "oversized".into(),
             "text/plain".into(),
             path,
+            0,
         )
         .unwrap_err();
     assert_eq!(
         err.to_string(),
         "That file is too large. The limit is 25 MiB."
     );
+    // A stop interrupts a blocked wait and prevents staging work from starting a late request.
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let client = &engine;
+        let worker = s.spawn(move || {
+            client.transfer(0, async {
+                tx.send(()).unwrap();
+                std::future::pending::<Result<(), FfiError>>().await
+            })
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        engine.stop();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().to_string(),
+            "Transfer cancelled."
+        );
+        assert!(engine.transfer(0, async { Ok(()) }).is_err());
+    });
     assert_eq!(engine.status().pending, 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn downloads_reject_incomplete_content_and_distinguish_refusals() {
+    use axum::{body::Body, response::Response};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use todo_client::native::attachments::FileError;
+    let n = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/api/v1/attachments/{id}",
+        get(move || {
+            let i = n.fetch_add(1, Ordering::Relaxed);
+            async move {
+                match i {
+                    0 => Response::new(Body::from("short")), // advertised length disagrees
+                    1 => Response::new(Body::from_stream(futures_util::stream::once(async {
+                        Ok::<_, std::io::Error>(Bytes::from_static(b"short"))
+                    }))), // early EOF, no length
+                    2 => Response::builder()
+                        .status(404)
+                        .body(Body::from(r#"{"error":{"code":"content_unavailable"}}"#))
+                        .unwrap(),
+                    _ => Response::builder().status(401).body(Body::empty()).unwrap(),
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let t = HttpTransport::new(&url, "fixture-only").unwrap();
+    let out = tempfile::NamedTempFile::new().unwrap();
+    let id = AttachmentId::from_uuid(uuid::Uuid::nil());
+    for _ in 0..2 {
+        assert!(matches!(
+            t.download_to(id, 10, out.path()).await,
+            Err(FileError::WrongSize)
+        ));
+    }
+    for message in [
+        "This attachment has no stored content.",
+        "This device is signed out. Pair again to download attachments.",
+    ] {
+        assert_eq!(
+            t.download_to(id, 10, out.path())
+                .await
+                .unwrap_err()
+                .download_message(),
+            message
+        );
+    }
+    assert_eq!(
+        FileError::Timeout.download_message(),
+        "The download timed out. Try again."
+    );
     server.abort();
 }
 
@@ -149,6 +255,12 @@ fn open_uses_a_safe_leaf_and_never_dispatches_a_supplied_mime_type() {
         }),
     );
     let mut file = state.attachments.values().next().unwrap().clone();
+    for name in ["..", "", ".pdf"] {
+        file.file_name = name.into();
+        let row = AttachmentRow::from(&file);
+        assert_eq!(row.name, if name == ".pdf" { name } else { "attachment" });
+        assert_eq!(row.open_type, None);
+    }
     file.file_name = "../../x\u{202e}.apk".into();
     file.media_type = "application/pdf".into();
     let row = AttachmentRow::from(&file);

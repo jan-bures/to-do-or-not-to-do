@@ -110,6 +110,8 @@ data class UiState(
     /** The generation in which this pager was created, unchanged if the underlying task room moves. */
     val pagerId: Long = 0L,
     val feed: ActivityView? = null,
+    val attachment: TransferStatus? = null,
+    val attachmentTaskConfirmed: Boolean = false,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -214,6 +216,7 @@ class TodoModel(
      * machine's zone.
      */
     private val zone: () -> ZoneId = { ZoneOffset.ofTotalSeconds(now().utcOffsetSecs) },
+    documents: Documents? = null,
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
@@ -271,6 +274,7 @@ class TodoModel(
     private fun selectTask(id: String?) {
         val previous = selection.getAndSet(id)
         if (previous == null || previous == id) return
+        transfers.forget(previous)
         val draft = noteDrafts[previous] ?: return
         draft.save(this) // No-op for a closed editor or a save already on its way.
         if (draft.text == null) noteDrafts.remove(previous, draft)
@@ -335,6 +339,7 @@ class TodoModel(
      */
     private val writes = Mutex()
 
+    private val transfers: AttachmentTransfers = AttachmentTransfers(engine, documents, scope, io, ::publishTransfer)
     private val _ui = MutableStateFlow(read())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
@@ -402,6 +407,8 @@ class TodoModel(
             home = engine.homePlaced(place.rows, n),
             room = roomRead(k, f, place, ids, seen, n),
             detail = detail,
+            attachment = transfers.status(detail?.id),
+            attachmentTaskConfirmed = detail != null && engine.attachmentTaskConfirmed(detail.id),
             status = status,
             failed = engine.failed(),
             toast = toast,
@@ -462,7 +469,7 @@ class TodoModel(
                 (generation > published && read.epoch == inputs && read.truth.placed == placement.version).also {
                     if (it) {
                         published = generation
-                        _ui.value = read.state
+                        _ui.value = read.state.copy(attachment = transfers.status(read.state.selected))
                     }
                 }
             }
@@ -1012,14 +1019,12 @@ class TodoModel(
         }
     }
 
-    override suspend fun downloadAttachment(id: String, file: java.io.File) = withContext(io) {
-        engine.downloadAttachment(id, file.absolutePath)
+    private fun publishTransfer(): Unit = synchronized(publishing) {
+        _ui.value = _ui.value.copy(attachment = transfers.status(_ui.value.selected))
     }
 
-    override suspend fun uploadAttachment(task: String, name: String, media: String, file: java.io.File) = withContext(io) {
-        engine.uploadAttachment(task, name, media, file.absolutePath)
-        engine.nudge()
-    }
+    override fun transfer(action: FileAction) = transfers.start(action)
+    override fun attachmentNotice(task: String, text: String) = transfers.notice(task, text)
 
     override fun organize(edit: OrganizeEdit) = act {
         fun tracked(change: OrganizeChange?) {
@@ -1138,6 +1143,8 @@ class TodoModel(
 
     /** The app went to the background: stop the stream. The outbox stays on disk. */
     fun pause() {
+        transfers.cancel()
+        engine.cancelAttachmentTransfers()
         foreground = false
         applyLifecycle()
     }

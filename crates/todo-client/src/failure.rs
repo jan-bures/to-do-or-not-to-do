@@ -9,6 +9,19 @@ use todo_core::ids::EntityId;
 
 use crate::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
 
+/// Transfer status shared across native clients. No server message or URL reaches the UI.
+pub const ATTACHMENT_OFFLINE: &str = "Connect to upload or download attachments.";
+pub const DOWNLOAD_TIMEOUT: &str = "The download timed out. Try again.";
+#[must_use]
+pub fn attachment_download(status: u16, code: Option<&str>) -> &'static str {
+    match (status, code) {
+        (404, Some("content_unavailable")) => "This attachment has no stored content.",
+        (404, _) => "This attachment is no longer available.",
+        (401, _) => "This device is signed out. Pair again to download attachments.",
+        _ => "Couldn’t download the attachment.",
+    }
+}
+
 /// Plain wording for a file upload failure. The only detail shown is a numeric size limit.
 #[must_use]
 pub fn attachment_upload(status: Option<u16>, max_bytes: Option<u64>) -> Cow<'static, str> {

@@ -112,18 +112,21 @@ class MainActivity : ComponentActivity() {
         val host by graph.host.state.collectAsStateWithLifecycle()
         val m = model
         val h = host
-        when {
-            m != null -> {
-                val ui by m.ui.collectAsStateWithLifecycle()
-                MainScreen(ui, m, dark, wide, server = (h as? Host.Ready)?.session?.server, draft = shared, motion = m.motion)
-            }
-            h is Host.CantOpen -> {
-                val problem by graph.unpairProblem.collectAsStateWithLifecycle()
-                CantOpenScreen(h.problem, h.session.server, dark, graph::retry, graph::unpair, problem)
-            }
-            else -> {
-                val state by graph.pairing.state.collectAsStateWithLifecycle()
-                PairingScreen(state, pairingActions(graph.pairing), dark)
+        val ready = h as? Host.Ready
+        app.todoornot.ui.AttachmentPickers(m?.takeIf { it.engine === ready?.engine }, ready?.session?.pairingId, graph::discardDocument) {
+            when {
+                m != null -> {
+                    val ui by m.ui.collectAsStateWithLifecycle()
+                    MainScreen(ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion)
+                }
+                h is Host.CantOpen -> {
+                    val problem by graph.unpairProblem.collectAsStateWithLifecycle()
+                    CantOpenScreen(h.problem, h.session.server, dark, graph::retry, graph::unpair, problem)
+                }
+                else -> {
+                    val state by graph.pairing.state.collectAsStateWithLifecycle()
+                    PairingScreen(state, pairingActions(graph.pairing), dark)
+                }
             }
         }
     }

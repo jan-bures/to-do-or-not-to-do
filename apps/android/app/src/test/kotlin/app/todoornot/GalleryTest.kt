@@ -223,7 +223,14 @@ class GalleryTest {
         val empty = engine.taskId(room, "Review sync-engine pull request")
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
-            main("attachments_list_$theme", COVER, state(engine, room, select = id), dark)
+            val list = state(engine, room, select = id)
+            val detail = requireNotNull(list.detail)
+            val long = detail.attachments.first().copy(name = "Dokumenty k žádosti o změnu termínu příští kontroly.pdf")
+            val varied = list.copy(detail = detail.copy(attachments = listOf(long) + detail.attachments.drop(1)))
+            main("attachments_list_$theme", COVER, list, dark)
+            main("attachments_offline_$theme", COVER, varied.copy(status = list.status.copy(state = app.todoornot.core.SyncState.OFFLINE)), dark)
+            main("attachments_busy_$theme", COVER, varied.copy(attachment = app.todoornot.model.TransferStatus(long.id, "Downloading ${long.name}…", true)), dark)
+            main("attachments_notice_$theme", COVER, varied.copy(attachment = app.todoornot.model.TransferStatus(long.id, "This attachment has no stored content.", false)), dark)
             main("attachments_empty_$theme", COVER, state(engine, room, select = empty), dark)
         }
     }
