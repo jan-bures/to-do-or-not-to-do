@@ -151,8 +151,10 @@ const taskButton = (page, title) => page.locator(".room").getByRole("button", { 
 const movePicker = (page) => page.getByRole("dialog", { name: "Move to…" });
 
 async function createRoom(page, kind, name) {
-  await page.getByRole("button", { name: `New ${kind}`, exact: true }).click();
-  const input = page.getByRole("textbox", { name: `${kind === "list" ? "List" : "Collection"} name` });
+  const label = kind === "list" ? "List" : "Collection";
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("menuitem", { name: label, exact: true }).click();
+  const input = page.getByRole("textbox", { name: `${label} name` });
   await input.fill(name);
   await input.press("Enter");
   await expect(page.locator(".room-title")).toHaveText(name);
