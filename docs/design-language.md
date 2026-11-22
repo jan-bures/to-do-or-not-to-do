@@ -172,14 +172,17 @@ bottom:
 
 1. the smart lists: **My Day**, **Important**, **Planned**, **All**, **Completed**, **Agent activity**;
 2. **Activity**, a row like the smart lists' (Clock icon in the `agent-activity` hue; the desktop adds its
-   **Ctrl H** hint), and under it, as indented sub-rows, the agents seen this week, only when there are any.
-   There is no "Agents" or "Today" heading: each agent's status says it ("2 added today", "idle");
+   **Ctrl H** hint), then indented sub-rows for up to four agents that added or edited tasks today, since
+   local midnight. An agent without activity today has no row. There is no "Agents" or "Today" heading:
+   each agent's status says it ("2 added today", "2 added, 1 edited today");
 3. the collections, each with its lists;
 4. the lists outside any collection;
 5. **New list** and **New collection**, pinned under the scrolled rooms on the desktop and the web (a hairline
-   above them), so they stay in view however long the sidebar grows. The sync line and settings close the pane.
+   above them), so they stay in view however long the sidebar grows. The footer shows sync status and
+   **Sign out** on the web, the account gear on desktop, or settings on Android.
 
-A client never reorders these, and keyboard order (Tab stops, arrows) follows the order on screen.
+Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
+room rows are not Tab stops.
 
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.

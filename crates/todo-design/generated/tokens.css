@@ -254,6 +254,7 @@
   --desktop-nav-row: 32px;
   --desktop-nav-sub-row: 28px;
   --desktop-nav-gap: 10px;
+  --desktop-nav-agent-name-min: 48px;
   --desktop-sidebar-footer: 44px;
   --desktop-detail-top: 48px;
   --desktop-detail-pad-x: 24px;

@@ -6,6 +6,7 @@ import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
+import app.todoornot.core.localNow
 import app.todoornot.design.Tokens
 import app.todoornot.model.StepDraft
 import app.todoornot.model.Tone
@@ -30,6 +31,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.util.TimeZone
 
 /** What the UX review asked for, matching the desktop: the star, steps, new lists, the filter, the drawer. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -426,6 +429,15 @@ class ParityTest {
         assertTrue(room.finished)
         assertTrue(room.tomorrow != null)
         assertTrue(room.completed.isNotEmpty())
+    }
+
+    @Test
+    fun the_local_day_starts_at_midnight_even_when_the_clock_changes() {
+        fun ms(instant: String) = Instant.parse(instant).toEpochMilli()
+        val now = localNow(ms("2026-03-29T10:00:00Z"), TimeZone.getTimeZone("Europe/Prague"))
+        assertEquals(7200, now.utcOffsetSecs)
+        assertEquals(ms("2026-03-28T23:00:00Z"), now.localDay?.startMs)
+        assertEquals(ms("2026-03-29T22:00:00Z"), now.localDay?.endMs)
     }
 
     @Test

@@ -91,6 +91,7 @@ fn now() -> LocalNow {
     LocalNow {
         epoch_ms: todo_core::time::Timestamp::now().as_millisecond(),
         utc_offset_secs: 0,
+        local_day: None,
     }
 }
 
@@ -299,6 +300,7 @@ fn notes_and_quick_add_preview_use_the_submit_builders_semantics() {
             .unwrap()
             .as_millisecond(),
         utc_offset_secs: 0,
+        local_day: None,
     };
     let engine = TodoEngine::fixture("blank".into(), n).unwrap();
     let text = "Sow seeds zítra !!";
@@ -1231,11 +1233,39 @@ fn a_restored_step_under_a_deleted_task_says_why_it_is_hidden() {
     );
 }
 
-/// The drawer's agent summary: agents seen this week, worded as the desktop's sidebar.
 #[test]
-fn the_drawer_lists_the_agents_seen_this_week() {
+fn the_drawer_lists_collection_groups_before_loose_lists() {
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
-    let agents = engine.home(now()).agents;
+    engine.create_list("Loose list".into(), my_day()).unwrap();
+    let home = engine.home(now());
+    let groups: Vec<_> = home
+        .groups
+        .iter()
+        .map(|g| g.collection.as_ref().map(|c| c.name.as_str()))
+        .collect();
+    assert_eq!(
+        groups,
+        [Some("Work"), Some("Personal"), Some("Projects"), None]
+    );
+    assert_eq!(home.groups[0].lists[0].name, "Finance");
+    assert_eq!(home.groups[3].lists[0].name, "Loose list");
+}
+
+/// Only agents active during the device's local day appear, never an idle row.
+#[test]
+fn the_drawer_lists_only_agents_active_today() {
+    let at = |s: &str| {
+        s.parse::<todo_core::time::Timestamp>()
+            .unwrap()
+            .as_millisecond()
+    };
+    let local = LocalNow {
+        epoch_ms: at("2026-03-29T10:00:00Z"),
+        utc_offset_secs: 7200,
+        local_day: None,
+    };
+    let engine = TodoEngine::fixture("world".into(), local).unwrap();
+    let agents = engine.home(local).agents;
     let names: Vec<_> = agents
         .iter()
         .map(|a| (a.mark.name.as_str(), a.mark.letter.as_str()))
@@ -1245,8 +1275,23 @@ fn the_drawer_lists_the_agents_seen_this_week() {
         agents.iter().all(|a| a.today.ends_with(" edited today")),
         "{agents:?}"
     );
-    let blank = TodoEngine::fixture("blank".into(), now()).unwrap();
-    assert!(blank.home(now()).agents.is_empty());
+    // After the spring clock change in Prague, the day's actual start used +01:00,
+    // not the current +02:00 offset. At 22:30Z on the 28th it was still yesterday.
+    use todo_ffi::labels::LocalDay;
+    let early = LocalNow {
+        epoch_ms: at("2026-03-28T23:15:00Z"),
+        ..local
+    };
+    let engine = TodoEngine::fixture("world".into(), early).unwrap();
+    assert_eq!(engine.home(local).agents.len(), 3); // fixed +02:00 would include the 22:30Z edits
+    let local = LocalNow {
+        local_day: Some(LocalDay {
+            start_ms: at("2026-03-28T23:00:00Z"),
+            end_ms: at("2026-03-29T22:00:00Z"),
+        }),
+        ..local
+    };
+    assert!(engine.home(local).agents.is_empty());
 }
 
 /// A sent task move, reorder and delete each have a checked inverse. An out-of-band reorder

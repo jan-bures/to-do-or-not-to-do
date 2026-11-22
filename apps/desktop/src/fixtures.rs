@@ -141,7 +141,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // menus at their sidebar rows; deleting the Work collection from its room's menu; a list's
         // room menu turned into the collection picker and the colour swatches.
         "new-collection" => Some(new_collection()),
-        // Tab onto New collection in a sidebar longer than the window: it scrolls into view.
+        // Tab onto the pinned New collection, without scrolling the rooms.
         "tab-new-collection" => Some(long_sidebar()),
         "collection-menu" | "list-context-menu" => Some(my_day()),
         "delete-collection-confirm" => {
@@ -169,7 +169,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "long-sidebar" => Some(long_sidebar()),
         // The worst case for the pinned New list and New collection: the smallest window, the
         // narrowest sidebar.
-        "short-sidebar" => {
+        "short-sidebar" | "short-sidebar-new-list" | "short-sidebar-new-collection" => {
             let mut f = long_sidebar();
             f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MIN);
             Some(f)

@@ -65,10 +65,8 @@ private val P = Tokens.Metrics.Phone
 
 /**
  * The rooms, in the order every client keeps (docs/design-language.md, *Sidebar order*): the smart lists,
- * with Activity and under it the agents seen this week right after Agent activity, then the top-level
- * lists and each collection with its lists (glyphs in each list's hue), then "+ New list" and "New
- * collection". A collection folds with its chevron. A
- * long press on a list or a collection opens its menu (rename, move, and for a list, delete), whose
+ * with Activity and today's agents right after Agent activity, then each collection with its lists,
+ * then loose lists, "+ New list" and "New collection". A collection folds with its chevron. A long press on a list or a collection opens its menu (rename, move, and for a list, delete), whose
  * choice goes to [onMenu]; the rows in [moving] glide to their new places. The footer says how syncing is
  * going, and its settings button holds the pairing, Sync now and Unpair.
  */
@@ -115,6 +113,7 @@ fun RoomDrawer(
                 if (i + 1 == activityAt) ActivityRows(state, onActivity)
             }
             if (activityAt == 0) ActivityRows(state, onActivity)
+            // Home supplies the display order: collection groups, then the loose lists.
             state.home.groups.forEach { g ->
                 val c = g.collection
                 key(c?.key ?: "top") {
@@ -259,9 +258,8 @@ internal fun activityAt(smart: List<NavItem>): Int {
 }
 
 /**
- * Activity, a row like the smart lists', and under it, indented, the agents seen in the last week, each
- * with its letter mark and what it did today ("2 added, 1 edited today", "idle"), as the desktop's
- * sidebar shows them. Tap one to open Activity filtered to it.
+ * Activity, a row like the smart lists', and under it, indented, today's active agents with their
+ * letter marks and statuses ("2 added, 1 edited today"). Tap one to open Activity filtered to it.
  */
 @Composable
 private fun ActivityRows(state: UiState, onActivity: (String?) -> Unit) {

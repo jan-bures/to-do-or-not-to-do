@@ -7,6 +7,7 @@
 use crate::labels::{self, DueLabel, Now};
 use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
+use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{LinkKind, List, Priority, Task};
@@ -169,31 +170,27 @@ pub struct NavGroup {
     pub lists: Vec<NavItem>,
 }
 
-/// An agent seen in the last week, and what it did today (its row under the drawer's Activity).
+/// An agent active today and what it did (its row under the drawer's Activity).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AgentSummary {
     /// Exact filter key, not the display name.
     pub id: String,
     /// Its letter mark and name.
     pub mark: AgentMark,
-    /// "2 added, 1 edited today", "3 edited today" or "idle": the drawer has no "Today" heading.
+    /// "2 added, 1 edited today" or "3 edited today": the drawer has no "Today" heading.
     pub today: String,
 }
 
-/// The navigation: smart lists, then collections and lists, and the agents seen this week (drawn under
-/// Activity, after Agent activity).
+/// The navigation: smart lists, Activity with today's agents, then collections and loose lists.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Home {
     /// Smart lists.
     pub smart: Vec<NavItem>,
-    /// Top-level lists first, then each collection.
+    /// Each collection in display order, then the loose lists if any.
     pub groups: Vec<NavGroup>,
-    /// Agents seen in the last seven days, by ID, at most [`AGENTS_SHOWN`].
+    /// Agents active today, by ID, at most four.
     pub agents: Vec<AgentSummary>,
 }
-
-/// How many agents the drawer lists, as the desktop's sidebar does.
-pub const AGENTS_SHOWN: usize = 4;
 
 /// The small line above a room's title.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -1011,17 +1008,6 @@ pub fn home(state: &State, now: &Now) -> Home {
     };
     let ordered = ordered_lists(state);
     let mut groups = Vec::new();
-    let top: Vec<NavItem> = ordered
-        .iter()
-        .filter(|l| l.collection.is_none())
-        .map(|l| list_item(l))
-        .collect();
-    if !top.is_empty() {
-        groups.push(NavGroup {
-            collection: None,
-            lists: top,
-        });
-    }
     let mut cols: Vec<_> = state
         .collections
         .values()
@@ -1050,6 +1036,17 @@ pub fn home(state: &State, now: &Now) -> Home {
             lists: lists_in,
         });
     }
+    let top: Vec<_> = ordered
+        .iter()
+        .filter(|l| l.collection.is_none())
+        .map(|l| list_item(l))
+        .collect();
+    if !top.is_empty() {
+        groups.push(NavGroup {
+            collection: None,
+            lists: top,
+        });
+    }
     Home {
         smart,
         groups,
@@ -1057,46 +1054,17 @@ pub fn home(state: &State, now: &Now) -> Home {
     }
 }
 
-/// Agents seen in the last week (they created or last changed a task), by ID, with what they did today:
-/// tasks added, and tasks they changed after creating them. Worded as the desktop's sidebar words it.
-pub fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
-    let today = now.today();
-    let week_ago = add_days(today, -7).unwrap_or(today);
-    let mut seen: BTreeMap<&str, (&todo_core::Actor, u32, u32)> = BTreeMap::new();
-    for t in state.tasks.values().filter(|t| t.deleted.is_none()) {
-        for (stamp, created) in [(&t.created, true), (&t.updated, false)] {
-            let Some(id) = stamp.by.agent_id() else {
-                continue;
-            };
-            let day = now.date_of(stamp.at);
-            if day < week_ago {
-                continue;
-            }
-            let e = seen.entry(id.as_str()).or_insert((&stamp.by, 0, 0));
-            if day == today {
-                if created {
-                    e.1 += 1;
-                } else if t.created.at != t.updated.at {
-                    e.2 += 1;
-                }
-            }
-        }
-    }
-    seen.values()
-        .filter_map(|&(actor, added, edited)| {
-            let today = match (added, edited) {
-                (0, 0) => "idle".to_owned(),
-                (a, 0) => format!("{a} added today"),
-                (0, e) => format!("{e} edited today"),
-                (a, e) => format!("{a} added, {e} edited today"),
-            };
+/// Agents who added or last edited a task today, with the shared sidebar status.
+fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
+    let counts = agent_counts_today(state, |at| now.is_today(at));
+    select_agent_rows(counts)
+        .filter_map(|(actor, added, edited)| {
             Some(AgentSummary {
                 id: actor.agent_id()?.as_str().into(),
                 mark: lists::agent(actor)?,
-                today,
+                today: agent_status(added, edited),
             })
         })
-        .take(AGENTS_SHOWN)
         .collect()
 }
 

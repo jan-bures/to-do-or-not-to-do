@@ -28,9 +28,10 @@ What the first version does:
   question is asked, saying it changed. Deleting the open list goes to My Day, and the drawer closes so the
   toast's **Undo** is in view; it brings the list and its tasks back either way.
 - **Agents.** The drawer's **Activity** row sits right after Agent activity, and under it, indented, the
-  agents seen in the last seven days (at most four), each with its letter mark and what it did today ("2
-  added, 1 edited today", "3 edited today", "idle"), worded as the desktop's sidebar words it
-  (`view::agents` in `todo-ffi`). Tap one to open Activity filtered to its ID. The order of the drawer is
+  agents active today (at most four), each with its letter mark and what it did ("2 added, 1 edited today",
+  "3 edited today"). The selection and wording are shared with desktop (`todo_client::activity`), and
+  the phone supplies the actual bounds of its local day, including on days the clocks change.
+  Tap one to open Activity filtered to its ID. The order of the drawer is
   the one every client keeps (`docs/design-language.md`, *Sidebar order*).
 - **Activity.** The drawer's Activity room reads the confirmed event log, newest first. Events are grouped
   by local calendar day and show the actor and relative time. Scrolling reads older pages. New events mark

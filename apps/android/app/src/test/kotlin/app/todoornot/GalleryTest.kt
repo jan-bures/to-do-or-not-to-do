@@ -703,11 +703,12 @@ class GalleryTest {
         }
     }
 
-    /** The drawer with every collection folded: Activity and its agents after Agent activity, then New list. */
+    /** Today's agents under Activity, then folded collections followed by a loose list. */
     @Test
     fun agent_summary() {
         for (dark in listOf(false, true)) {
             val e = fixtureEngine()
+            e.createList("Loose list", RoomKey.Smart(SmartList.MY_DAY))
             val folded = e.home(FIXTURE_NOW).groups.mapNotNull { (it.collection?.key as? RoomKey.Collection)?.id }
             main("agent_summary_${if (dark) "dark" else "light"}", COVER, state(e, fold = folded), dark, drawer = true)
         }

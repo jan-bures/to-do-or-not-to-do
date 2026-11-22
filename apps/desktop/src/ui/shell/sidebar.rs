@@ -1,4 +1,4 @@
-//! The sidebar: smart lists with Activity and the agents seen this week after Agent activity,
+//! The sidebar: smart lists with Activity and today's agents after Agent activity,
 //! collections and lists with their counts, New list and New collection pinned below them, the sync
 //! line, and inline renaming (lists, collections, and the steps and tags of the detail pane). Its menus
 //! (a list's or collection's context menu, the account menu) are drawn by `menu.rs`. The order is the one
@@ -13,7 +13,7 @@ use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TagId};
 use super::menu::{MenuKind, ring};
 use super::{Notice, ShellView, quick_add_colors};
 use crate::model::hints::Stop;
-use crate::model::layout::Pane;
+use crate::model::layout::{self, Pane};
 use crate::model::menus::Page;
 use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
@@ -51,6 +51,7 @@ pub(super) struct Inline {
     /// The text the editor started with: the name as drawn (`labels::one_line`). Only a change from it is
     /// saved, so opening and leaving the editor never rewrites a stored name.
     seed: String,
+    reveal: bool,
     _subscriptions: [Subscription; 2],
 }
 
@@ -95,6 +96,7 @@ impl ShellView {
             target,
             input,
             seed,
+            reveal: matches!(target, InlineTarget::List(_) | InlineTarget::Collection(_)),
             _subscriptions: [events, blur],
         });
         cx.notify();
@@ -153,6 +155,61 @@ impl ShellView {
             self.submit(vec![cmd]);
         }
         self.refresh(cx);
+    }
+
+    /// Once the editor has been laid out, scroll its row clear of the viewport edges. Focusing a
+    /// pinned button doesn't open an editor, so it never changes the scroll position.
+    fn reveal_inline_after_layout(&mut self, window: &Window, cx: &Context<Self>) {
+        let Some(inline) = self.inline.as_mut().filter(|i| i.reveal) else {
+            return;
+        };
+        let key = match inline.target {
+            InlineTarget::List(id) => {
+                // A list added to a folded collection opens the group. Wait for it to finish
+                // expanding, so the row isn't clipped and the scroll range includes it.
+                if self.shell.sidebar.collections.iter().any(|c| {
+                    c.lists.iter().any(|l| l.id == id)
+                        && self.motion.sidebar.group(c.id, !c.collapsed, self.frame).0 < 1.
+                }) {
+                    return;
+                }
+                RoomKey::List(id)
+            }
+            InlineTarget::Collection(id) => RoomKey::Collection(id),
+            _ => return,
+        };
+        inline.reveal = false;
+        let (target, input) = (inline.target, inline.input.entity_id());
+        // Don't reuse geometry from a frame in which the row may have been elsewhere.
+        self.nav_bounds.borrow_mut().remove(&key);
+        let view = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            view.update(cx, |this, cx| {
+                if this
+                    .inline_for(target)
+                    .is_none_or(|i| i.entity_id() != input)
+                {
+                    return;
+                }
+                let Some(row) = this.nav_bounds.borrow().get(&key).copied() else {
+                    return;
+                };
+                let scroll = &this.sidebar_scroll;
+                let viewport = scroll.bounds();
+                let offset = scroll.offset();
+                if let Some(y) = layout::reveal_offset(
+                    (viewport.top().into(), viewport.bottom().into()),
+                    (row.top().into(), row.bottom().into()),
+                    offset.y.into(),
+                    scroll.max_offset().y.into(),
+                    space::S2,
+                ) {
+                    scroll.set_offset(gpui::point(offset.x, px(y)));
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     /// Records where a list's or collection's row was painted (`nav_bounds`).
@@ -306,8 +363,8 @@ impl ShellView {
         )
     }
 
-    /// Activity (**Ctrl+H**), a nav row like the smart lists, and under it a sub-row for each agent seen
-    /// this week, saying what it did today: each opens Activity filtered to that agent.
+    /// Activity (**Ctrl+H**), with a sub-row for each agent active today. Each opens Activity
+    /// filtered to that agent.
     fn activity_rows(&self, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         let p = self.palette;
         let t = self.theme;
@@ -351,9 +408,15 @@ impl ShellView {
                 .style(ty::NAV_SUB)
                 .text_color(p.ink_2)
                 .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
-                // In a narrow sidebar the name and the status both give way, in step with their widths;
-                // the tooltip has both in full.
-                .child(div().flex_auto().min_w_0().truncate().child(a.name.clone()))
+                // Keep short names legible even at the minimum sidebar width. The tooltip
+                // has the full name and status, even if a long name also needs to truncate.
+                .child(
+                    div()
+                        .flex_auto()
+                        .min_w(px(desktop::NAV_AGENT_NAME_MIN))
+                        .truncate()
+                        .child(a.name.clone()),
+                )
                 .child(
                     div()
                         .min_w_0()
@@ -409,7 +472,8 @@ impl ShellView {
         ring(&p, self.sync_focus.is_focused(window), radius::MD, button)
     }
 
-    pub(super) fn sidebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        self.reveal_inline_after_layout(window, cx);
         let p = self.palette;
         let t = self.theme;
         let sb = &self.shell.sidebar;
@@ -467,8 +531,7 @@ impl ShellView {
                 )
             })
             .collect();
-        // Activity right after Agent activity, and under it the agents seen this week: each opens
-        // Activity filtered to it.
+        // Activity right after Agent activity, followed by the agents active today.
         let after = sb.activity_at();
         let activity = self.activity_rows(cx);
         smart.splice(after..after, activity);

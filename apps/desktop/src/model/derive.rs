@@ -4,11 +4,11 @@
 //! tasks completed today of those plus the open ones, so a list with years of finished tasks doesn't
 //! show a sun that has long set.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use gpui::SharedString;
+use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
 use todo_core::State;
-use todo_core::actor::Actor;
 use todo_core::ids::{ListId, TaskId};
 use todo_core::model::{LinkKind, Priority, Task};
 use todo_core::query::{EvalContext, Query, fold};
@@ -588,48 +588,16 @@ fn sidebar(
         .map(|l| nav(l))
         .collect();
 
-    // Agents seen this week, with what they did today: the sidebar has no "Today" heading, so the
-    // status says it.
-    let week_ago = add_days(today, -7).unwrap_or(today);
-    let mut agents: BTreeMap<String, (Actor, u32, u32)> = BTreeMap::new();
-    for t in state.tasks.values().filter(|t| t.deleted.is_none()) {
-        for (stamp, created) in [(&t.created, true), (&t.updated, false)] {
-            let Some(id) = stamp.by.agent_id() else {
-                continue;
-            };
-            let day = now.date_of(stamp.at);
-            if day < week_ago {
-                continue;
-            }
-            let e = agents
-                .entry(id.as_str().to_owned())
-                .or_insert((stamp.by.clone(), 0, 0));
-            if day == today {
-                if created {
-                    e.1 += 1;
-                } else if t.created.at != t.updated.at {
-                    e.2 += 1;
-                }
-            }
-        }
-    }
-    let agents = agents
-        .values()
+    let counts = agent_counts_today(state, |at| now.date_of(at) == today);
+    let agents = select_agent_rows(counts)
         .filter_map(|(actor, added, edited)| {
-            let status = match (added, edited) {
-                (0, 0) => "idle".to_string(),
-                (a, 0) => format!("{a} added today"),
-                (0, e) => format!("{e} edited today"),
-                (a, e) => format!("{a} added, {e} edited today"),
-            };
             Some(AgentRow {
                 key: AgentKey::of(actor.agent_id()?)?,
                 agent: lists::agent(actor)?,
                 name: lists::agent_name(actor)?.into(),
-                status: status.into(),
+                status: agent_status(added, edited).into(),
             })
         })
-        .take(4)
         .collect();
 
     let (sync_text, tone) = sync_line(sync, now);

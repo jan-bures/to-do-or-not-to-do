@@ -461,6 +461,7 @@ mod tests {
         Now::new(LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 3600,
+            local_day: None,
         })
     }
 

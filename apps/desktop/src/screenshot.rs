@@ -46,7 +46,9 @@ pub fn window_size(fixture: &str) -> (f32, f32) {
             (crate::app::MIN_WINDOW.0, MAIN_SIZE.1)
         }
         "finished-short" => (MAIN_SIZE.0, 700.),
-        "short-sidebar" => crate::app::MIN_WINDOW,
+        "short-sidebar" | "short-sidebar-new-list" | "short-sidebar-new-collection" => {
+            crate::app::MIN_WINDOW
+        }
         _ => MAIN_SIZE,
     }
 }

@@ -322,6 +322,7 @@ mod tests {
                 .unwrap()
                 .as_millisecond(),
             utc_offset_secs: 3600,
+            local_day: None,
         };
         let e = TodoEngine::fixture("blank".into(), now).unwrap();
         let all = ActivityPager::new(None);
@@ -370,6 +371,7 @@ mod tests {
         let now = LocalNow {
             epoch_ms: 0,
             utc_offset_secs: 0,
+            local_day: None,
         };
         let engine = TodoEngine::fixture("blank".into(), now).unwrap();
         let pager = ActivityPager::new(None);

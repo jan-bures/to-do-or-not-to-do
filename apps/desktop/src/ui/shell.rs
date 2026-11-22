@@ -1002,6 +1002,14 @@ impl ShellView {
             .and_then(|d| d.tags.first())
             .map(|t| t.id);
         match fixture {
+            "short-sidebar-new-list" => {
+                self.new_list(None, window, cx);
+                return;
+            }
+            "short-sidebar-new-collection" => {
+                self.new_collection(window, cx);
+                return;
+            }
             "new-collection" => {
                 if let RoomKey::Collection(id) = self.ui.room {
                     self.start_inline(

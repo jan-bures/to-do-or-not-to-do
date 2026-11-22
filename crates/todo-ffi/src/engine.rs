@@ -1230,6 +1230,7 @@ mod tests {
         let now = LocalNow {
             epoch_ms: 0,
             utc_offset_secs: 0,
+            local_day: None,
         };
         let e = TodoEngine::fixture("world".into(), now).unwrap();
         let before = e.state();
@@ -1387,6 +1388,7 @@ mod tests {
         let now = LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 0,
+            local_day: None,
         };
         let engine = TodoEngine::fixture("blank".into(), now).expect("fixture");
         let before = engine.state();
@@ -1471,6 +1473,7 @@ mod tests {
         LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 0,
+            local_day: None,
         }
     }
 

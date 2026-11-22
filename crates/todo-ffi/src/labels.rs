@@ -6,21 +6,35 @@ use jiff::tz::{Offset, TimeZone};
 use todo_core::query::EvalContext;
 use todo_core::time::{Date, Timestamp, Weekday, days_between};
 
-/// The current time and the owner's UTC offset, from the device.
+/// The current time and the owner's local day, from the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct LocalNow {
     /// Milliseconds since the Unix epoch.
     pub epoch_ms: i64,
     /// The device's current UTC offset in seconds (Prague in winter: 3600).
     pub utc_offset_secs: i32,
+    /// The device's real local day, which can span a change in UTC offset. When absent, the
+    /// offset above is used for the entire day (for fixed-offset clocks).
+    #[uniffi(default = None)]
+    pub local_day: Option<LocalDay>,
 }
 
-/// [`LocalNow`] resolved: a timestamp and a fixed-offset zone.
+/// The device's local calendar day as a half-open range of Unix milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LocalDay {
+    /// The first instant of the day.
+    pub start_ms: i64,
+    /// The first instant of the next day.
+    pub end_ms: i64,
+}
+
+/// [`LocalNow`] resolved: a timestamp, a fixed-offset zone and optional real local day bounds.
 #[derive(Clone, Debug)]
 pub struct Now {
     /// The time.
     pub at: Timestamp,
     tz: TimeZone,
+    local_day: Option<LocalDay>,
 }
 
 impl Now {
@@ -31,6 +45,7 @@ impl Now {
         Self {
             at,
             tz: TimeZone::fixed(offset),
+            local_day: now.local_day,
         }
     }
 
@@ -46,6 +61,14 @@ impl Now {
     /// The local date of `ts`.
     pub fn date_of(&self, ts: Timestamp) -> Date {
         self.zoned(ts).date()
+    }
+
+    /// Whether `ts` is in the device's local calendar day, even when it crossed a clock change.
+    pub fn is_today(&self, ts: Timestamp) -> bool {
+        self.local_day.map_or_else(
+            || self.date_of(ts) == self.today(),
+            |day| (day.start_ms..day.end_ms).contains(&ts.as_millisecond()),
+        )
     }
 
     /// The query evaluation context: local today and the UTC offset.
@@ -197,6 +220,7 @@ mod tests {
         Now::new(LocalNow {
             epoch_ms: at.as_millisecond(),
             utc_offset_secs: 3600,
+            local_day: None,
         })
     }
 

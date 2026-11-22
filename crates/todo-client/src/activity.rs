@@ -11,6 +11,7 @@ use crate::platform::{Request, Response};
 use crate::protocol::{self, EventRef, LogEvent};
 use serde::Deserialize;
 use todo_core::Actor;
+use todo_core::State;
 use todo_core::actor::AgentId;
 use todo_core::ids::EventId;
 use todo_core::state::Journal;
@@ -144,6 +145,52 @@ pub fn agent_name(id: &str) -> String {
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
     })
+}
+
+/// Counts today's task creations and subsequent last edits by agent, in ID order.
+/// `is_today` checks the timestamp against the caller's local calendar day.
+pub fn agent_counts_today(
+    state: &State,
+    is_today: impl Fn(Timestamp) -> bool,
+) -> impl Iterator<Item = (&Actor, u32, u32)> {
+    let mut counts: BTreeMap<&AgentId, (&Actor, u32, u32)> = BTreeMap::new();
+    for task in state.tasks.values().filter(|t| t.deleted.is_none()) {
+        for (stamp, added) in [(&task.created, true), (&task.updated, false)] {
+            if let Some(id) = stamp.by.agent_id()
+                && (added || task.created.at != task.updated.at)
+                && is_today(stamp.at)
+            {
+                let row = counts.entry(id).or_insert((&stamp.by, 0, 0));
+                if added {
+                    row.1 += 1;
+                } else {
+                    row.2 += 1;
+                }
+            }
+        }
+    }
+    counts.into_values()
+}
+
+/// The sidebar shows the first four active agents in input order. Idle agents never use a slot.
+pub fn select_agent_rows<T>(
+    counts: impl IntoIterator<Item = (T, u32, u32)>,
+) -> impl Iterator<Item = (T, u32, u32)> {
+    counts
+        .into_iter()
+        .filter(|(_, added, edited)| *added != 0 || *edited != 0)
+        .take(4)
+}
+
+/// The sidebar status, or an empty string when the agent did nothing today.
+#[must_use]
+pub fn agent_status(added: u32, edited: u32) -> String {
+    match (added, edited) {
+        (0, 0) => String::new(),
+        (a, 0) => format!("{a} added today"),
+        (0, e) => format!("{e} edited today"),
+        (a, e) => format!("{a} added, {e} edited today"),
+    }
 }
 
 /// Relative time, using the caller's clock. Future timestamps (clock skew) read as “Just now”.
@@ -617,6 +664,32 @@ pub fn confirmed(journal: &Journal, id: EventId, compensating: bool) -> Option<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_status_only_describes_activity_today() {
+        assert_eq!(agent_status(0, 0), "");
+        assert_eq!(agent_status(2, 0), "2 added today");
+        assert_eq!(agent_status(0, 3), "3 edited today");
+        assert_eq!(agent_status(2, 1), "2 added, 1 edited today");
+    }
+
+    #[test]
+    fn idle_agents_do_not_count_towards_the_sidebar_cap() {
+        assert_eq!(select_agent_rows([("idle", 0, 0)]).next(), None);
+        let counts = [
+            ("a-idle", 0, 0),
+            ("b", 1, 0),
+            ("c-idle", 0, 0),
+            ("d", 0, 1),
+            ("e", 1, 1),
+            ("f", 2, 0),
+            ("g", 0, 2),
+        ];
+        assert_eq!(
+            select_agent_rows(counts).collect::<Vec<_>>(),
+            [("b", 1, 0), ("d", 0, 1), ("e", 1, 1), ("f", 2, 0)]
+        );
+    }
     use crate::platform::Method;
     use serde_json::json;
 

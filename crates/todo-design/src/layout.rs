@@ -254,6 +254,8 @@ pub mod desktop {
     pub const NAV_SUB_ROW: f32 = 28.0;
     /// Gap between a sidebar row's icon, label and count, and the row's inset from its right edge.
     pub const NAV_GAP: f32 = 10.0;
+    /// Reserve room for short agent names such as Claude and Codex before truncating the status.
+    pub const NAV_AGENT_NAME_MIN: f32 = 48.0;
     /// Sidebar footer (sync state).
     pub const SIDEBAR_FOOTER: f32 = 44.0;
     /// Detail pane top bar (breadcrumb and actions).
@@ -274,7 +276,7 @@ pub mod desktop {
     pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 53] = [
+    pub const ALL: [(&str, f32); 54] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -319,6 +321,7 @@ pub mod desktop {
         ("nav-row", NAV_ROW),
         ("nav-sub-row", NAV_SUB_ROW),
         ("nav-gap", NAV_GAP),
+        ("nav-agent-name-min", NAV_AGENT_NAME_MIN),
         ("sidebar-footer", SIDEBAR_FOOTER),
         ("detail-top", DETAIL_TOP),
         ("detail-pad-x", DETAIL_PAD_X),
