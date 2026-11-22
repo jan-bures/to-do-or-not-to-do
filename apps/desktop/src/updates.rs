@@ -477,9 +477,15 @@ mod tests {
         let result = body.read_exact(&mut [0]);
         let _ = release.send(());
         server.join().expect("server thread");
-        assert_eq!(
-            result.expect_err("body deadline").kind(),
-            std::io::ErrorKind::TimedOut
+        let error = result.expect_err("body deadline");
+        assert!(
+            matches!(
+                error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<ureq::Error>()),
+                Some(ureq::Error::Timeout(_))
+            ),
+            "expected a ureq timeout, got {error:?}"
         );
     }
 
