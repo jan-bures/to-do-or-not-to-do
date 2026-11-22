@@ -5,6 +5,7 @@ import app.todoornot.core.ChangeListener
 import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
+import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
@@ -40,6 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import app.todoornot.reminders.reminderLabel
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -136,6 +138,17 @@ fun clock(t: LocalNow): String {
 fun isoDay(t: LocalNow): String =
     LocalDate.ofEpochDay(Math.floorDiv(t.epochMs + t.utcOffsetSecs * 1000L, 86_400_000L)).toString()
 
+/**
+ * The detail with its Reminder row worded in the phone's [zone], at the offset that applies at the
+ * reminder's own instant. The core words it at the phone's offset now, which is an hour off for a reminder
+ * on the other side of a change of the clocks.
+ */
+fun localReminder(detail: TaskDetail, now: LocalNow, zone: ZoneId): TaskDetail {
+    val r = detail.reminder ?: return detail
+    val label = reminderLabel(r.atMs, now.epochMs, zone)
+    return detail.copy(fields = detail.fields.map { if (it.edit == FieldEdit.REMINDER) it.copy(value = label) else it })
+}
+
 /** A name on one line, for a toast. */
 private fun oneLine(s: String): String = s.replace(Regex("[\\p{Cntrl}\u2028\u2029]"), " ")
 
@@ -180,8 +193,12 @@ class TodoModel(
             override fun onChange() = onChange()
         })
     },
-    /** The phone's time zone, for the times the model words itself (a reminder's). */
-    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
+    /**
+     * The phone's time zone, for the times the model words itself (a reminder's): the app passes the
+     * system's. By default the fixed offset [now] carries, so tests and the gallery don't depend on the
+     * machine's zone.
+     */
+    private val zone: () -> ZoneId = { ZoneOffset.ofTotalSeconds(now().utcOffsetSecs) },
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
@@ -357,7 +374,7 @@ class TodoModel(
         val n = now()
         pruneDrafts(n)
         val reading = selected
-        val detail = reading?.let { engine.task(it, n) }
+        val detail = reading?.let { engine.task(it, n) }?.let { localReminder(it, n, zone()) }
         if (detail == null) selection.compareAndSet(reading, null)
         val status = engine.status()
         if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n

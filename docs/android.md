@@ -51,7 +51,10 @@ What the first version does:
   headline and mode toggle, and the calendar scrolls under the buttons, which stay in view. The **Priority** row opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
   high priority or none, as on the desktop.
-- **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none. It
+- **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.
+  The model words its time in the phone's time zone, at the offset of the reminder's own instant
+  (`localReminder`), as the toast and the notification do: a reminder after the clocks change reads as
+  set, not an hour off as the phone's offset today would put it. It
   opens the reminder picker: the Material date picker and time input (24 hours, as the rest of the app) in
   the room's colours and the tokens' type, on the overlay surface. It opens on the reminder's own day and
   time; with none, on 09:00 of a later due date, else on the next whole hour. **Save** keeps a whole

@@ -514,12 +514,12 @@ class TodoModelTest {
      * engine's change notifications are the test's to send ([changed]): its listener, on the engine's own
      * threads, would queue work in between the steps.
      */
-    private class Stepped(engine: TodoEngine, clock: () -> Long) {
+    private class Stepped(engine: TodoEngine, zone: java.time.ZoneId = java.time.ZoneOffset.ofHours(1), clock: () -> Long) {
         val main = Steps()
         val io = Steps()
         val scope = CoroutineScope(SupervisorJob() + main)
         private var onChange: () -> Unit = {}
-        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it }, zone = { java.time.ZoneOffset.ofHours(1) })
+        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it }, zone = { zone })
 
         /** The engine says something changed, as its listener would. */
         fun changed() = onChange()
@@ -1934,5 +1934,26 @@ class TodoModelTest {
         s.drain()
         assertEquals(false, done)
         assertEquals(2, saved)
+    }
+
+    @Test
+    fun the_reminder_row_reads_in_the_phones_zone_across_a_change_of_the_clocks() {
+        // Prague, in winter (UTC+1); the reminder is after the clocks go forward on 28 March 2027 (UTC+2).
+        val prague = java.time.ZoneId.of("Europe/Prague")
+        val s = Stepped(fixtureEngine(), zone = prague) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        val nine = java.time.LocalDateTime.of(2027, 4, 1, 9, 0).atZone(prague).toInstant().toEpochMilli()
+        m.setReminder(id, m.ui.value.detail?.reminder, nine)
+        s.drain()
+        val row = m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }
+        // Not 08:00, as the phone's offset today would put it.
+        assertEquals("Thu 1 Apr 2027, 09:00", row.value)
+        assertEquals("Reminder set for Thu 1 Apr 2027, 09:00", m.ui.value.toast?.text)
+        // A reminder before the change reads in winter time, as before.
+        val dec = java.time.LocalDateTime.of(2026, 12, 1, 9, 0).atZone(prague).toInstant().toEpochMilli()
+        m.setReminder(id, m.ui.value.detail?.reminder, dec)
+        s.drain()
+        assertEquals("Tue 1 Dec, 09:00", m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }.value)
     }
 }

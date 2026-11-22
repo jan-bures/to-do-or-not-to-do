@@ -30,6 +30,7 @@ import app.todoornot.session.Unpaired
 import android.os.SystemClock
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.SyncState
+import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -128,7 +129,7 @@ class AppGraph(private val app: Context) {
                     }
                 })
             }
-            TodoModel(e, ms, Dispatchers.IO, onUnpair = ::unpair, pace = ::pace, listen = listen).also { m ->
+            TodoModel(e, ms, Dispatchers.IO, onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() }).also { m ->
                 EngineHost.recoveredNotice((h as Host.Ready).recovered)?.let(m::notice)
                 if (foreground) m.resume()
                 reminderChanges.tryEmit(Unit)
