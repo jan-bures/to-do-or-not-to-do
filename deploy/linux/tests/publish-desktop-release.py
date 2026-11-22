@@ -59,6 +59,25 @@ class PublishingTests(unittest.TestCase):
         self.assertFalse((self.dest / new).exists())
         self.assertEqual((self.dest / publisher.INDEX).read_bytes(), previous)
 
+    def test_setup_hash_mismatch_leaves_the_published_release_intact(self):
+        release(self.source, 9, b"old")
+        digest = hashlib.sha256(b"MZfake").hexdigest().upper()
+        publisher.publish(self.source, self.dest, setup_sha256=digest)
+        previous = (self.dest / publisher.INDEX).read_bytes()
+        new = release(self.source, 10, b"new")
+        (self.source / publisher.SETUP).write_bytes(b"MZchanged")
+        with self.assertRaisesRegex(ValueError, "staged Setup.exe SHA-256 does not match"):
+            publisher.publish(self.source, self.dest, setup_sha256=digest)
+        self.assertFalse((self.dest / new).exists())
+        self.assertEqual((self.dest / publisher.INDEX).read_bytes(), previous)
+        self.assertEqual((self.dest / publisher.SETUP).read_bytes(), b"MZfake")
+
+    def test_invalid_setup_hash_is_rejected(self):
+        release(self.source, 9, b"old")
+        with self.assertRaisesRegex(ValueError, "64-digit hexadecimal"):
+            publisher.publish(self.source, self.dest, setup_sha256="not-a-digest")
+        self.assertFalse((self.dest / publisher.INDEX).exists())
+
     def test_package_names_are_not_paths(self):
         release(self.source, 9, b"old")
         index = self.source / publisher.INDEX

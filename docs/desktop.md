@@ -43,6 +43,7 @@ On a Windows x64 build machine, install PowerShell 7, the MSVC x64 build tools, 
 and the .NET 8 SDK/runtime. From a clean checkout with full history:
 
 ```powershell
+git fetch origin
 pwsh -NoProfile -File apps/desktop/scripts/package.ps1
 ```
 
@@ -52,8 +53,9 @@ The result in `apps/desktop/target/desktop-release/` contains `todo-desktop-win-
 `releases.win.json` and the full `.nupkg`. After the first release, keep that directory (or seed
 `-ReleaseDir` with the previously published feed and packages) so `vpk` can also make a delta `.nupkg`
 against the latest full package. Keep the full package even when a delta exists: installs that cannot
-apply a delta fall back to it. No command here runs Setup.exe. The Windows packaging CI job builds and
-checks the same output without uploading or publishing it.
+apply a delta fall back to it. No command here runs Setup.exe. Packaging requires `HEAD` to be on the
+history of `origin/main`. For local test builds and pull-request CI, `-AllowUnmerged` skips that check.
+Use a separate `-ReleaseDir` for test builds and never publish them. CI does not upload or publish installers.
 
 The Velopack version is **`<desktop Cargo.toml version>-build.<Git first-parent commit count>`**. For
 example, `0.1.0-build.10` follows `0.1.0-build.9`: the final component is numeric, not a string or SemVer
@@ -99,19 +101,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not create the upload directory.' }
 if ($LASTEXITCODE -ne 0) { throw 'Could not copy the publisher.' }
 Push-Location apps/desktop/target/desktop-release
 try {
+    $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'todo-desktop-win-Setup.exe').Hash
     $files = @('releases.win.json', 'todo-desktop-win-Setup.exe') + @(Get-ChildItem -File *.nupkg -Name)
     & $gcloud compute scp @g @files "${instance}:$upload/"
     if ($LASTEXITCODE -ne 0) { throw 'Could not copy the desktop release.' }
 } finally { Pop-Location }
-& $gcloud compute ssh $instance @g --command "sudo python3 $upload/publish-desktop-release.py $upload /opt/todo/desktop-releases"
+& $gcloud compute ssh $instance @g --command "sudo python3 $upload/publish-desktop-release.py $upload /opt/todo/desktop-releases --setup-sha256 $setupHash"
 if ($LASTEXITCODE -ne 0) { throw 'Desktop publish failed.' }
 & $gcloud compute ssh $instance @g --command "rm -rf $upload"
 ```
 
 With plain SSH, use the same `mkdir`, `scp`, `sudo python3` and cleanup steps via the SSH target used for
-server deployment. The publisher uses Python 3 (included when Python is installed on Debian 13). It verifies package
-sizes and SHA-256 hashes, refuses version rollback or overwriting existing package bytes, and publishes the
-manifest last by atomic rename. No server restart is needed for later publishes. Old packages remain available
+server deployment. The publisher uses Python 3 (included when Python is installed on Debian 13). It verifies
+package sizes and SHA-256 hashes from the feed. Pass `--setup-sha256` with the hash from the trusted build
+output to verify the staged Setup.exe too. The publisher refuses version rollback or overwriting existing
+package bytes and publishes the manifest last by atomic rename. No server restart is needed for later publishes. Old packages remain available
 for clients that have fetched the old manifest; do not clean them up while either feed references them or a
 client could still be downloading them. Keep write access to the directory and the deployment channel tightly
 controlled: the unsigned feed can deliver executable code to every paired desktop. Transport security and
@@ -126,15 +130,19 @@ bypass policy or run an unverified installer. Quit any older unpackaged copy fir
 under `%LOCALAPPDATA%` without elevation and adds Start menu and desktop shortcuts. Pair once in the app
 using your server's HTTPS address (for example `https://todo.example.com`). An existing local pairing from
 the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
-to point Windows at the installed copy.
+to point Windows at the installed copy. Uninstall removes the app's Start with Windows entry.
 
-An installed, paired app checks `<paired server>/releases` when its session starts and every six hours
-thereafter, on a Windows background-priority thread. Nothing is compiled in. A missing/disabled feed, HTTP
+An installed, paired app first checks `<paired server>/releases` about one minute after its session starts,
+then every six hours, on a Windows background-priority thread. After consecutive failures it retries after
+five minutes, thirty minutes, then six hours. The updater and sync both use Windows to verify HTTPS
+certificates. The server address is never compiled in. A missing/disabled feed, HTTP
 (including loopback), an offline server, or an unpaired app doesn't interrupt normal use. Updates download
 quietly and do not stop a running app. To pick up a staged update, choose **Quit** from the tray (closing the
 window usually just hides it), then open the app again. The next primary launch applies the package before
-opening the window; it keeps the local data and pairing. There is no update notification or new UI. Once an
-update is staged it belongs to the installation, not to a particular pairing.
+opening the window; it keeps the local data and pairing. If the updater relaunches the app with a newer
+package still pending, the app logs a warning and skips that version. A later release can still be staged.
+There is no update notification or new UI. Once an update is staged it belongs to the installation, not to a
+particular pairing.
 
 ## Vendored `gpui_windows`
 

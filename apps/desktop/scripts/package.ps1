@@ -6,9 +6,11 @@
     Requires the pinned Rust toolchain, Windows MSVC x64 build tools and the .NET 8 SDK/runtime.
     The Velopack vpk tool is installed without admin rights in the workspace target directory.
     Keep the previous output in ReleaseDir to build a delta against its latest full package.
+.PARAMETER AllowUnmerged
+    Skip the origin/main ancestry check for test builds. Do not publish those packages.
 #>
 [CmdletBinding()]
-param([string]$ReleaseDir = '')
+param([string]$ReleaseDir = '', [switch]$AllowUnmerged)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -32,6 +34,12 @@ try {
     if ($LASTEXITCODE -ne 0 -or $shallow -ne 'false') { throw 'Packaging needs a full Git history.' }
     $dirty = git status --porcelain --untracked-files=no
     if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit changes to tracked files before packaging.' }
+    if (-not $AllowUnmerged) {
+        git merge-base --is-ancestor HEAD origin/main
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Packaging a release requires a commit on origin/main. Run git fetch origin, or use -AllowUnmerged for a test build only.'
+        }
+    }
     $height = git rev-list --first-parent --count HEAD
     if ($LASTEXITCODE -ne 0) { throw "Could not determine Git commit count ($LASTEXITCODE)." }
     $metadataJson = cargo metadata --locked --no-deps --format-version 1
@@ -68,7 +76,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $metadata.target_directory "$target/release/$appId.exe") -Destination $staging
         & $vpk pack --packId $appId --packVersion $version.ToString() --packTitle 'To-do or not to do' `
             --packDir $staging --outputDir $ReleaseDir --mainExe "$appId.exe" --channel $channel `
-            --runtime win-x64 --instLocation PerUser --delta BestSpeed `
+            --runtime win-x64 --delta BestSpeed `
             --icon (Join-Path $repo 'assets/brand/generated/todo.ico')
         if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)." }
     } finally {

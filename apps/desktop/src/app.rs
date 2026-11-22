@@ -118,7 +118,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         }
     };
     let standalone = primary.is_none();
-    if !standalone && bench.is_none() && !restarted && crate::updates::apply_pending() {
+    if !standalone && bench.is_none() && crate::updates::apply_pending(restarted) {
         return Ok(());
     }
     let mut metrics = Metrics::default();

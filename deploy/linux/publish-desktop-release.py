@@ -66,7 +66,9 @@ def feed(path):
     return latest, packages, raw
 
 
-def publish(source, dest):
+def publish(source, dest, setup_sha256=None):
+    if setup_sha256 is not None and not re.fullmatch(r"[a-fA-F0-9]{64}", setup_sha256):
+        raise ValueError("expected a 64-digit hexadecimal Setup.exe SHA-256")
     dest_meta = dest.lstat()
     if not stat.S_ISDIR(dest_meta.st_mode) or dest_meta.st_uid != os.geteuid() or dest_meta.st_mode & 0o022:
         raise ValueError("destination must be a plain directory only the publishing user can write")
@@ -97,10 +99,13 @@ def publish(source, dest):
                     if actual != expected:
                         raise ValueError(f"refusing to replace published package bytes: {name}")
 
-            shutil.copyfile(regular(source / SETUP), staging / SETUP)
-            with (staging / SETUP).open("rb") as file:
+            setup = staging / SETUP
+            shutil.copyfile(regular(source / SETUP), setup)
+            with setup.open("rb") as file:
                 if file.read(2) != b"MZ":
                     raise ValueError("Setup.exe is not a Windows executable")
+            if setup_sha256 is not None and fingerprint(setup)[0] != setup_sha256.lower():
+                raise ValueError("staged Setup.exe SHA-256 does not match")
             for file in staging.iterdir():
                 install(file, dest)
             sync_directory(dest)
@@ -129,9 +134,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="uploaded vpk output directory")
     parser.add_argument("dest", type=Path, help="existing [releases] dir")
+    parser.add_argument("--setup-sha256", help="expected SHA-256 of Setup.exe from the trusted build output")
     args = parser.parse_args()
     try:
-        publish(args.source, args.dest)
+        publish(args.source, args.dest, setup_sha256=args.setup_sha256)
     except (OSError, ValueError, TypeError, KeyError) as error:
         parser.exit(1, f"Cannot publish desktop release: {error}\n")
 

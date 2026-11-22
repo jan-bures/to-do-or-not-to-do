@@ -56,7 +56,7 @@ tray-icon = "0.21"
 # Keep the Rust updater and the vpk tool in scripts/package.ps1 on the same release.
 velopack = { version = "=1.2.161", features = ["public-utils"] }
 semver = "1"
-ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier"] }
 windows-registry = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

@@ -73,15 +73,27 @@ impl<'k> Autostart<'k> {
 
     /// Turns Start with Windows on or off for `exe`.
     pub fn set_enabled(&self, exe: &Path, enabled: bool) -> windows_registry::Result<()> {
-        let key = self.root.create(&self.path)?;
         if enabled {
-            key.set_string(VALUE_NAME, run_command(exe))
+            self.root
+                .create(&self.path)?
+                .set_string(VALUE_NAME, run_command(exe))
         } else {
-            match key.remove_value(VALUE_NAME) {
-                // Already absent.
-                Err(e) if e.code().0 as u32 == 0x8007_0002 => Ok(()),
-                other => other,
-            }
+            self.disable()
+        }
+    }
+
+    /// Remove the app's Run value without needing an executable path (also used by uninstall).
+    pub fn disable(&self) -> windows_registry::Result<()> {
+        match self
+            .root
+            .options()
+            .write()
+            .open(&self.path)
+            .and_then(|key| key.remove_value(VALUE_NAME))
+        {
+            // The key or value is already absent.
+            Err(e) if e.code().0 as u32 == 0x8007_0002 => Ok(()),
+            other => other,
         }
     }
 }
@@ -157,6 +169,8 @@ mod tests {
         let autostart = Autostart::at(CURRENT_USER, scratch.0.clone());
         let exe = PathBuf::from(r"C:\Program Files\To-do\todo-desktop.exe");
         assert!(!autostart.is_enabled(&exe));
+        autostart.disable().expect("absent key");
+        assert!(CURRENT_USER.open(&scratch.0).is_err());
 
         autostart.set_enabled(&exe, true).expect("enable");
         assert!(autostart.is_enabled(&exe));
@@ -170,7 +184,10 @@ mod tests {
 
         autostart.set_enabled(&exe, false).expect("disable");
         assert!(!autostart.is_enabled(&exe));
-        // Disabling twice is fine.
-        autostart.set_enabled(&exe, false).expect("disable again");
+        autostart.disable().expect("already absent");
+
+        autostart.set_enabled(&exe, true).expect("enable again");
+        autostart.disable().expect("uninstall cleanup");
+        assert!(!autostart.is_enabled(&exe));
     }
 }

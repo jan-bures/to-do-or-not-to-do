@@ -39,6 +39,10 @@ fn main() -> ExitCode {
         // A second launch must activate the existing app, not start replacing it. The primary
         // instance checks for a staged update after claiming the mutex, before setting up GPUI.
         .set_auto_apply_on_startup(false)
+        .on_before_uninstall_fast_callback(|_| {
+            // Best effort: one registry operation, no UI or other startup work.
+            let _ = platform::autostart::Autostart::current_user().disable();
+        })
         .on_restarted(|_| restarted = true)
         .run();
     platform::win::attach_parent_console();

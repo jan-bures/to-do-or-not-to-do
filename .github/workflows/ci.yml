@@ -97,7 +97,7 @@ jobs:
           key: desktop-package
       - run: ./scripts/test-package-version.ps1
       # Keep packages outside the build cache as well as out of release artifacts.
-      - run: ./scripts/package.ps1 -ReleaseDir (Join-Path $env:RUNNER_TEMP 'desktop-release')
+      - run: ./scripts/package.ps1 -ReleaseDir (Join-Path $env:RUNNER_TEMP 'desktop-release') -AllowUnmerged:('${{ github.event_name }}' -eq 'pull_request')
 
   shared-crates-targets:
     name: shared crates build for wasm32 and Android
