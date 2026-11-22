@@ -125,7 +125,6 @@ fn load(c: Ctx, feed: RwSignal<FeedState>, agent: Option<AgentId>, before: Optio
         });
         match next {
             Some(Loaded::Refresh) => load(c, feed, agent, None),
-            Some(Loaded::SignIn) => platform::sign_in(&platform::path()),
             Some(Loaded::Applied) => {
                 if let Some(row) = focused_row {
                     request_animation_frame(move || {
@@ -135,7 +134,7 @@ fn load(c: Ctx, feed: RwSignal<FeedState>, agent: Option<AgentId>, before: Optio
                     });
                 }
             }
-            Some(Loaded::Ignore) | None => {}
+            Some(Loaded::SignIn | Loaded::Ignore) | None => {}
         }
     });
 }

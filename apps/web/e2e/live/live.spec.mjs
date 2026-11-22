@@ -119,6 +119,15 @@ async function committed(page, text) {
   await expect.poll(() => stored(page, text), { timeout: 15_000 }).toBeGreaterThan(0);
 }
 
+/** Can be toggled per tab to simulate a quota failure. */
+function injectStorageFailure() {
+  const put = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function (...args) {
+    if (window.__failIdb) throw new DOMException("injected write failure", "QuotaExceededError");
+    return put.apply(this, args);
+  };
+}
+
 /** Renames a task through the detail pane. */
 async function rename(page, from, to) {
   await row(page, from).click();
@@ -1395,14 +1404,25 @@ test("an Activity-only 401 asks for the passkey again without persisting sign-ou
     await page.goto("/app");
     await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
 
+    // Count attempts, including any navigation that gets cancelled before it commits.
+    const cdp = await isolated.newCDPSession(page);
+    await cdp.send("Page.enable");
+    const redirects = [];
+    cdp.on("Page.frameRequestedNavigation", ({ url }) => {
+      if (new URL(url).pathname === "/login") redirects.push(url);
+    });
+
     // A reconnect can fail offline, but it can't receive the 401 before Activity does.
     await page.route("**/api/v1/events**", (r) => r.abort("internetdisconnected"));
     await isolated.clearCookies();
-    const refusal = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/v1/activity");
-    await page.getByRole("link", { name: "Activity", exact: true }).click();
-    expect((await refusal).status()).toBe(401);
+    const [refusal] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === "/api/v1/activity"),
+      page.getByRole("link", { name: "Activity", exact: true }).click(),
+    ]);
+    expect(refusal.status()).toBe(401);
     await expect(signIn).toBeVisible();
     expect(new URL(page.url()).searchParams.get("next")).toBe("/app/activity");
+    expect(redirects).toEqual([page.url()]);
 
     // Restore the valid session cookie. The fresh app page must not inherit the old latch.
     await page.unroute("**/api/v1/events**");
@@ -1410,6 +1430,43 @@ test("an Activity-only 401 asks for the passkey again without persisting sign-ou
     await page.goto("/app/activity");
     await expect(page).toHaveURL(/\/app\/activity$/);
     await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  } finally {
+    await isolated.close();
+  }
+});
+
+test("a revoked tab goes to sign-in only after storing its pending edit", async ({ browser }) => {
+  const cookies = await context.cookies();
+  const isolated = await browser.newContext({ baseURL });
+  try {
+    await isolated.addCookies(cookies);
+    const page = await isolated.newPage();
+    await page.addInitScript(injectStorageFailure);
+    await page.goto("/app");
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await page.evaluate(() => { window.__failIdb = true; });
+    const title = "Queued before sign-out";
+    await add(page, title);
+    await expect(page.locator(".toast-error[role=alert]")).toContainText("Couldn’t save in this browser");
+
+    await page.route("**/api/v1/events**", (r) => r.abort("internetdisconnected"));
+    const dialogs = [];
+    page.on("dialog", async (d) => {
+      dialogs.push(d.type());
+      await d.dismiss();
+    });
+    await isolated.clearCookies();
+    await page.getByRole("link", { name: "Activity", exact: true }).click();
+    await expect(page.locator(".sync-text")).toHaveText("Signed out");
+    await expect(page).toHaveURL(/\/app\/activity$/);
+
+    await page.evaluate(() => { window.__failIdb = false; });
+    await expect(page.getByRole("button", { name: "Sign in with passkey" })).toBeVisible();
+    expect(dialogs).toEqual([]);
+    await page.unroute("**/api/v1/events**");
+    await isolated.addCookies(cookies);
+    await page.goto("/app");
+    await expect.poll(() => occurrences(page, title), { timeout: 15_000 }).toBe(1);
   } finally {
     await isolated.close();
   }
@@ -1581,13 +1638,7 @@ test("the sender finds an edit whose announcement was missed, and a failing read
 
 test("an edit this browser can't store is never sent, says so, and goes through once storage works", async () => {
   // Every page of the context can be made to fail IndexedDB writes (as when the quota runs out).
-  await context.addInitScript(() => {
-    const put = IDBObjectStore.prototype.put;
-    IDBObjectStore.prototype.put = function (...args) {
-      if (window.__failIdb) throw new DOMException("injected write failure", "QuotaExceededError");
-      return put.apply(this, args);
-    };
-  });
+  await context.addInitScript(injectStorageFailure);
   const a = await openApp();
   const problems = watch(a);
   await a.evaluate(() => {
@@ -1770,13 +1821,7 @@ test("an upgrade blocked by another tab says so, and goes ahead once that tab le
 });
 
 test("a tab with changes it couldn't save keeps an upgrade waiting until they're stored", async () => {
-  await context.addInitScript(() => {
-    const put = IDBObjectStore.prototype.put;
-    IDBObjectStore.prototype.put = function (...args) {
-      if (window.__failIdb) throw new DOMException("injected write failure", "QuotaExceededError");
-      return put.apply(this, args);
-    };
-  });
+  await context.addInitScript(injectStorageFailure);
   const app = await openApp();
   const problems = watch(app);
   await app.evaluate(() => {

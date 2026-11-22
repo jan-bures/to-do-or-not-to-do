@@ -175,8 +175,9 @@ typed-in `none` too) or whose `Origin`, if present, isn't the server's. And it n
 looks the session up without touching it, so a sibling origin or a forgotten tab can't keep an idle session
 alive through it.
 
-When the session is gone (the stream or a request gets a 401), the app sends the browser to
-`/login?next=<the current path>`. Changes not yet sent stay in IndexedDB and go out after signing in.
+When the session is gone (the stream or a request gets a 401), the page's revocation latch triggers one
+navigation to `/login?next=<the current path>`, after any pending local writes finish. Changes not yet
+sent stay in IndexedDB and go out after signing in. A fresh page starts with a new latch.
 
 ## The event stream: a streaming `fetch`, not `EventSource`
 

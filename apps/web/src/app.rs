@@ -101,6 +101,7 @@ pub struct Toast {
 pub struct Ctx {
     state: RwSignal<Arc<State>>,
     sync: RwSignal<Sync>,
+    sign_in_started: StoredValue<bool>,
     synced_at: RwSignal<Option<Now>>,
     now: RwSignal<Now>,
     live: bool,
@@ -165,7 +166,11 @@ impl Ctx {
         if s.offline_demo && self.synced_at.get_untracked().is_none() {
             self.synced_at.set(Some(self.now.get_untracked()));
         }
-        if s.signed_out {
+        // The revocation latch also covers Activity and attachments. Only this path navigates:
+        // a second location change could cancel the first before the login document commits.
+        // Wait for local writes first, so the beforeunload guard cannot cancel our one attempt.
+        if s.signed_out && !self.sign_in_started.get_value() && !backend::unsaved() {
+            self.sign_in_started.set_value(true);
             platform::sign_in(&platform::path());
         }
         self.sync.set(s);
@@ -559,6 +564,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let c = Ctx {
         state,
         sync: RwSignal::new(backend::status()),
+        sign_in_started: StoredValue::new(false),
         synced_at: RwSignal::new(None),
         now,
         live,

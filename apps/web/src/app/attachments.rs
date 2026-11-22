@@ -71,10 +71,7 @@ impl Uploads {
             let notice = match self.transfer(task, files).await {
                 Ok(notice) => notice,
                 Err(UploadError::Failed(message)) => Some(message),
-                Err(UploadError::SignedOut) => {
-                    platform::sign_in(&platform::path());
-                    None
-                }
+                Err(UploadError::SignedOut) => None,
             };
             // Show the observed attachments in the same update that releases the Add file button.
             c.refresh();
