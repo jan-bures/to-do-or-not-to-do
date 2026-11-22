@@ -235,7 +235,11 @@ fn undo_failure_message(rejection: &Rejection) -> String {
     match rejection.code.as_str() {
         "undo_conflict" => "Couldn't undo: the task was changed again.".into(),
         "undo_no_event" => "Couldn't undo: the original change couldn't be found.".into(),
-        _ => format!("Couldn't undo that: {}", rejection.message),
+        "epoch_mismatch" | "event_mismatch" => {
+            "Couldn't undo: the server's history changed.".into()
+        }
+        "not_found" => "Couldn't undo: the task no longer exists.".into(),
+        _ => "Couldn't undo that.".into(),
     }
 }
 
@@ -244,6 +248,27 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use todo_core::state::Scope;
+
+    #[test]
+    fn undo_failures_never_show_raw_server_text() {
+        for code in [
+            "undo_conflict",
+            "undo_no_event",
+            "epoch_mismatch",
+            "event_mismatch",
+            "not_found",
+            "something_new",
+        ] {
+            let rejection = Rejection {
+                code: code.into(),
+                message: "resync from seq 0".into(),
+                status: 409,
+            };
+            let message = undo_failure_message(&rejection);
+            assert!(message.starts_with("Couldn't undo"), "{code}: {message}");
+            assert!(!message.contains("seq"), "{code}: {message}");
+        }
+    }
 
     proptest! {
         #[test]
