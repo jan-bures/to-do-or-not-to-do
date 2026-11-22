@@ -855,7 +855,9 @@ impl ShellView {
                 );
                 return;
             }
-            repeat::Action::Preset(p) => p.map(|p| p.rule(t.due.unwrap_or(today))),
+            repeat::Action::Preset(p) => {
+                p.map(|p| p.rule_for(t.due.unwrap_or(today), t.recurrence.as_ref()))
+            }
             repeat::Action::Apply => {
                 let Some(d) = draft else { return };
                 Some(d.rule())

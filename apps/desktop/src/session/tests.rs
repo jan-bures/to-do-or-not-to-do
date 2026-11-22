@@ -226,7 +226,11 @@ fn a_reported_undo_failure_does_not_stay_in_the_failed_queue() {
     for (code, notice) in [
         (
             "undo_conflict",
-            "Couldn't undo: the task was changed again.",
+            "Couldn't undo: the item was changed again.",
+        ),
+        (
+            "duplicate_name",
+            "Couldn't undo: another tag already uses that name.",
         ),
         (
             "undo_no_event",
@@ -857,7 +861,7 @@ fn undoing_an_acknowledged_move_after_a_reorder_elsewhere_conflicts_and_leaves_t
     });
     assert_eq!(
         store.undo_result(undo),
-        Some(Err("Couldn't undo: the task was changed again.".into()))
+        Some(Err("Couldn't undo: the item was changed again.".into()))
     );
     for (who, state) in [("server", d.server.state()), ("A", store.view())] {
         assert_eq!(order(&state, repairs), [other, d.task], "{who}: left alone");

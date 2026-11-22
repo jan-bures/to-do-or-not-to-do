@@ -207,6 +207,27 @@ async fn undo_that_would_break_an_invariant_is_a_typed_422_even_with_force() {
 }
 
 #[tokio::test]
+async fn restore_and_undo_refuse_a_reused_tag_name() {
+    let t = TestServer::start().await;
+    let tag = id();
+    t.ok(json!({"cmd":"create_tag","id":tag,"name":"planning"}))
+        .await;
+    let target = json!({"kind":"tag","id":tag});
+    let deleted = t.ok(json!({"cmd":"delete","id":target})).await;
+    t.ok(json!({"cmd":"create_tag","id":id(),"name":"Planning"}))
+        .await;
+    for (status, body) in [
+        t.command(json!({"cmd":"restore","id":target})).await,
+        t.undo(first_seq(&deleted), None).await,
+        t.undo(first_seq(&deleted), Some(json!({"force":true})))
+            .await,
+    ] {
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"]["code"], "duplicate_name");
+    }
+}
+
+#[tokio::test]
 async fn undo_conflict_force_and_redo() {
     let t = TestServer::start().await;
     let list = t.create_list("L").await;

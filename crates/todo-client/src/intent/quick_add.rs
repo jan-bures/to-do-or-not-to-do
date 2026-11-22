@@ -38,6 +38,11 @@ pub struct Parsed {
     pub priority: Option<Priority>,
 }
 
+/// A full date in plain English, e.g. `21 Nov 2026`.
+pub fn long_date(date: Date) -> String {
+    date.strftime("%-d %b %Y").to_string()
+}
+
 /// The date chip shared by the clients: `Sun 22 Nov`, adding the year only outside this year.
 #[must_use]
 pub fn short_date(date: Date, today: Date) -> String {

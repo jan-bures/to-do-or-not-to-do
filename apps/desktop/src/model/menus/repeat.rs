@@ -138,6 +138,7 @@ fn choice(
 pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
     let anchor = t.due.unwrap_or(today);
     let mut entries = vec![];
+    let mut starts = None;
     if let Some(d) = draft {
         entries.push(MenuEntry::Heading("Custom repeat".into()));
         entries.push(MenuEntry::Controls {
@@ -179,7 +180,12 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
             rule: d.rule(),
             until: t.recurrence.as_ref().and_then(|r| r.until),
         };
-        match r.validate() {
+        let valid = if t.due.is_none() {
+            r.first_due(today).map(|date| starts = Some(date))
+        } else {
+            r.validate()
+        };
+        match valid {
             Ok(()) => {
                 entries.push(MenuEntry::Note(describe_repeat(&r).into()));
                 entries.push(item(
@@ -192,6 +198,9 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
             Err(e) => entries.push(MenuEntry::Note(match e {
                 todo_core::recurrence::RecurrenceError::NoWeekdays => {
                     "Choose at least one weekday.".into()
+                }
+                todo_core::recurrence::RecurrenceError::NoOccurrence => {
+                    "No future date matches this rule.".into()
                 }
                 _ => format!("Choose an interval from 1 to {MAX_INTERVAL}.").into(),
             })),
@@ -207,17 +216,16 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
                 format!("Weekly on {}", crate::model::labels::weekday(anchor)),
                 Preset::Weekly,
             ),
-            (
-                "monthly",
-                format!("Monthly on day {}", anchor.day()),
-                Preset::Monthly,
-            ),
+            ("monthly", "Monthly".into(), Preset::Monthly),
             ("yearly", "Yearly".into(), Preset::Yearly),
         ] {
-            let on = t
-                .recurrence
-                .as_ref()
-                .is_some_and(|r| r.rule == preset.rule(anchor));
+            let rule = preset.rule_for(anchor, t.recurrence.as_ref());
+            let label = if let Rule::Monthly { day, .. } = rule {
+                format!("Monthly on day {day}")
+            } else {
+                label
+            };
+            let on = t.recurrence.as_ref().is_some_and(|r| r.rule == rule);
             matched |= on;
             entries.push(MenuEntry::Item(choice(
                 t.id,
@@ -255,7 +263,10 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
     }
     if t.due.is_none() {
         entries.push(MenuEntry::Note(
-            "Choosing a repeat also sets Due to today.".into(),
+            starts
+                .map(|date| format!("Due will be {}.", crate::model::labels::long_date(date)))
+                .unwrap_or_else(|| "Due starts today or on the next matching day.".into())
+                .into(),
         ));
     }
     entries
@@ -265,6 +276,28 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
 mod tests {
     use super::*;
     use crate::fixtures;
+    #[test]
+    fn a_clamped_month_end_stays_on_day_31_in_the_picker_and_command() {
+        let f = fixtures::my_day();
+        let mut t = f.state.tasks[&f.ui.task.expect("task")].clone();
+        let april_end = Date::constant(2025, 4, 30);
+        t.due = Some(april_end);
+        let rule = Rule::Monthly {
+            interval: 1,
+            day: 31,
+        };
+        t.recurrence = Some(Recurrence::new(rule.clone()));
+        let menu = entries(&t, april_end, None);
+        let monthly = super::super::items(&menu)
+            .find(|i| i.key == "monthly")
+            .expect("monthly");
+        assert!(monthly.checked);
+        assert_eq!(monthly.label, "Monthly on day 31");
+        assert_eq!(
+            Preset::Monthly.rule_for(april_end, t.recurrence.as_ref()),
+            rule
+        );
+    }
     #[test]
     fn custom_is_not_applied_until_valid_and_keeps_the_imported_month_day() {
         let f = fixtures::my_day();

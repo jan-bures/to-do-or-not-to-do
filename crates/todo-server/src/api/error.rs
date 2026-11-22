@@ -390,6 +390,10 @@ pub fn undo_error(e: &UndoError, seqs: &BTreeMap<EventId, u64>) -> ApiError {
             ApiError::new(StatusCode::CONFLICT, "event_mismatch", msg)
                 .with_details(json!({ "event": event_ref(*id, seqs) }))
         }
+        U::Invariant {
+            source: source @ DomainError::DuplicateName(_),
+            ..
+        } => domain_error(source),
         U::Invariant { target, source } => {
             let inner = domain_error(source);
             ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "undo_invariant", msg).with_details(

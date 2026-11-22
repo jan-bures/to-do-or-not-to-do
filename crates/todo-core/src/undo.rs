@@ -53,7 +53,7 @@
 use crate::access::{authorize_inverse, is_rekey};
 use crate::actor::Actor;
 use crate::apply::{apply, apply_changes};
-use crate::decide::validate_entity;
+use crate::decide::{unique_tag_name, validate_entity};
 use crate::error::{ApplyError, FieldConflict, UndoConflict, UndoError};
 use crate::event::{Change, Event, EventPayload, FieldChange, FieldKey};
 use crate::ids::{EntityId, EventId};
@@ -379,6 +379,18 @@ fn conflicts(
 fn validate_result(state: &State, inverse: &EventPayload) -> Result<(), UndoError> {
     let (target, entity) = match inverse {
         EventPayload::Created { entity } => (entity.id(), entity.clone()),
+        EventPayload::Restored {
+            target: EntityId::Tag(id),
+            ..
+        } => {
+            let target = (*id).into();
+            let tag = state
+                .tags
+                .get(id)
+                .ok_or(UndoError::BrokenReference(target))?;
+            return unique_tag_name(state, &tag.name, Some(*id))
+                .map_err(|source| UndoError::Invariant { target, source });
+        }
         EventPayload::Updated { target, changes } => {
             let mut e = state
                 .entity(*target)
@@ -388,7 +400,13 @@ fn validate_result(state: &State, inverse: &EventPayload) -> Result<(), UndoErro
         }
         _ => return Ok(()),
     };
-    validate_entity(&entity).map_err(|source| UndoError::Invariant { target, source })
+    let invariant = |source| UndoError::Invariant { target, source };
+    if let Entity::Tag(t) = &entity
+        && t.deleted.is_none()
+    {
+        unique_tag_name(state, &t.name, Some(t.id)).map_err(invariant)?;
+    }
+    validate_entity(&entity).map_err(invariant)
 }
 
 /// The journal's record of `event`, after checking that `event` is exactly what was applied.

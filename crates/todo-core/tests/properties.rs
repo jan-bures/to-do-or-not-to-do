@@ -449,6 +449,45 @@ fn cfg() -> ProptestConfig {
 proptest! {
     #![proptest_config(cfg())]
 
+    #[test]
+    fn tag_delete_undo_preserves_name_uniqueness_and_replays(
+        name in "[a-z]{1,12}", collide in any::<bool>(), force in any::<bool>(), rename in any::<bool>()
+    ) {
+        let mut w = World::new();
+        let original_id = w.ids.tag();
+        let other = w.ids.tag();
+        let create = |id, name| Command::CreateTag { id, name, color: None };
+        w.run(create(original_id, name.clone()));
+        let original = w.state.tags[&original_id].clone();
+        let deleted = w.run(Command::Delete { id: original_id.into() });
+        let later = if collide { name.to_uppercase() } else { format!("{name}-other") };
+        if rename {
+            w.run(create(other, "spare name".into()));
+            w.run(Command::UpdateTag { id: other, name: Some(later), color: None });
+        } else {
+            w.run(create(other, later));
+        }
+        let before = w.state.clone();
+        let n = w.log.len();
+        let undo = w.undo_as(&w.owner.clone(), &deleted[0], force);
+        if collide {
+            let expected = UndoError::Invariant {
+                target: original_id.into(), source: DomainError::DuplicateName(name),
+            };
+            prop_assert_eq!(undo, Err(expected));
+            prop_assert_eq!(&w.state, &before);
+            prop_assert_eq!(w.log.len(), n);
+        } else {
+            prop_assert!(undo.is_ok());
+            let mut expected = before;
+            expected.tags.insert(original_id, original);
+            prop_assert!(expected.data_eq(&w.state));
+        }
+        let mut replay = State::new();
+        for e in &w.log { apply(&mut replay, e).unwrap(); }
+        prop_assert_eq!(w.state, replay);
+    }
+
     /// (a) Replaying the log (also after a JSON round trip) on a fresh state gives an identical state.
     #[test]
     fn replay_rebuilds_identical_state(ops in ops()) {

@@ -1341,11 +1341,13 @@ pub fn tag_confirm(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> {
         .values()
         .filter(|t| t.tags.contains(&tag) && t.deleted.is_none() && state.is_live(t.list.into()))
         .count();
-    let noun = if n == 1 { "task" } else { "tasks" };
+    let impact = match n {
+        0 => String::new(),
+        1 => " It’s on 1 task. The task stays.".into(),
+        n => format!(" It’s on {n} tasks. The tasks stay."),
+    };
     vec![confirm(
-        format!(
-            "Delete the tag “{name}”? It’s on {n} {noun}. The tasks stay. Undo restores the tag."
-        ),
+        format!("Delete the tag “{name}”?{impact} Undo restores the tag."),
         danger(
             "tag-delete",
             Icon::TrashTwo,
@@ -2021,6 +2023,45 @@ second line"
             by: todo_core::Actor::System,
         });
         assert!(tag_edit_menu(&gone, task, planning).is_empty());
+    }
+
+    #[test]
+    fn a_tags_count_excludes_deleted_tasks_and_tasks_in_a_deleted_list() {
+        let mut f = fixtures::my_day();
+        let task = f.ui.task.expect("open task");
+        let tag = commands::tag_named(&f.state, "planning").expect("tag");
+        let list = f.state.tasks[&task].list;
+        let other = f
+            .state
+            .tasks
+            .values()
+            .find(|t| t.list != list)
+            .expect("other list")
+            .list;
+        let tomb = todo_core::model::Tombstone {
+            at: f.now.at,
+            by: todo_core::Actor::System,
+        };
+        f.state.lists.get_mut(&other).expect("list").deleted = Some(tomb.clone());
+        for t in f.state.tasks.values_mut() {
+            t.tags.insert(tag);
+            if t.id != task && t.list != other {
+                t.deleted = Some(tomb.clone());
+            }
+        }
+        let menu = tag_confirm(&f.state, task, tag);
+        assert!(question(&menu).expect("question").contains("on 1 task."));
+        f.state
+            .tasks
+            .get_mut(&task)
+            .expect("open task")
+            .tags
+            .remove(&tag);
+        let menu = tag_confirm(&f.state, task, tag);
+        assert_eq!(
+            question(&menu).expect("question").as_ref(),
+            "Delete the tag “planning”? Undo restores the tag."
+        );
     }
 
     #[test]

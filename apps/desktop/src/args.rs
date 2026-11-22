@@ -19,7 +19,7 @@ Options:
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, room-menu, account-menu, priority-menu,
-                    repeat-menu, repeat-custom, repeat-none, repeat-weekly, repeat-monthly, delete-tag-confirm,
+                    repeat-menu, repeat-custom, repeat-focus, repeat-none, repeat-weekly, repeat-monthly, delete-tag-confirm,
                     task-context-menu, move-to-picker, sync-failures, delete-list-confirm,
                     new-collection, tab-new-collection, collection-menu, list-context-menu,
                     delete-collection-confirm, move-list-picker, list-colour, tag-picker, tag-create, tag-edit, tag-colour,
@@ -47,6 +47,7 @@ pub const FIXTURES: &[&str] = &[
     "priority-menu",
     "repeat-menu",
     "repeat-custom",
+    "repeat-focus",
     "repeat-none",
     "repeat-weekly",
     "repeat-monthly",

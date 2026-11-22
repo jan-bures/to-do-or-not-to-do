@@ -853,7 +853,7 @@ impl ShellView {
                         .into_any_element(),
                     _ => field_value(&p, f.kind, f.value.clone()).into_any_element(),
                 };
-                div()
+                let row = div()
                     .id(("field", i))
                     .relative()
                     .h(px(desktop::PROP_ROW))
@@ -899,10 +899,14 @@ impl ShellView {
                     .when(f.edit == Some(FieldEdit::Repeat) && live, |el| {
                         el.track_focus(&self.repeat_focus)
                             .role(gpui::Role::Button)
-                            .tooltip(kit::tooltip(p, format!("Repeat: {}", f.value)))
-                            .when(self.repeat_focus.is_focused(window), |el| {
-                                el.bg(p.tint).border_color(p.accent)
-                            })
+                            .tooltip(kit::tooltip(
+                                p,
+                                if f.kind == FieldKind::Empty {
+                                    "Choose how often this task repeats".into()
+                                } else {
+                                    f.value.clone()
+                                },
+                            ))
                             .hover(|s| s.bg(p.hover))
                             .cursor_pointer()
                             .child(div().flex_1())
@@ -947,7 +951,18 @@ impl ShellView {
                     // Shown, not edited here yet: say so rather than look like the rows that are.
                     .when(f.edit.is_none(), |el| {
                         el.tooltip(kit::tooltip(p, "Shown here; not editable in this app yet"))
-                    })
+                    });
+                if f.edit == Some(FieldEdit::Repeat) {
+                    super::menu::ring(
+                        &p,
+                        live && self.repeat_focus.is_focused(window),
+                        radius::BUTTON,
+                        row.bg(p.pane),
+                    )
+                    .into_any_element()
+                } else {
+                    row.into_any_element()
+                }
             })
             .collect();
         let has_mail = d.links.iter().any(|l| l.email);

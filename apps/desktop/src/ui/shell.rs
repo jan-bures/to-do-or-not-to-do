@@ -959,6 +959,10 @@ impl ShellView {
                 return;
             }
             // Tab onto New collection, below the fold of a long sidebar: scrolled into view, with its ring.
+            "repeat-focus" => {
+                self.preview_focus = Some(self.repeat_focus.clone());
+                return;
+            }
             "tab-new-collection" => {
                 self.preview_focus = Some(self.new_collection_focus.clone());
                 let view = cx.entity().downgrade();
@@ -2691,9 +2695,7 @@ impl ShellView {
                         this.open_task_menu(TaskPage::Main, window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &PickRepeat, window, cx| {
-                        if this.has_stop(hints::Stop::Repeat)
-                            && let Some(task) = this.ui.task
-                        {
+                        if let Some(task) = this.repeat_target() {
                             this.scroll_into_view(&this.detail_scroll, "repeat-row");
                             this.open_menu(
                                 MenuKind::Repeat { task, draft: None },
@@ -3266,6 +3268,12 @@ impl ShellView {
         }
     }
 
+    fn repeat_target(&self) -> Option<TaskId> {
+        repeat_target(self.detail_placement(), self.ui.task, |id| {
+            self.task_is_visible(id)
+        })
+    }
+
     /// Whether a Tab stop is there now: Undo while its toast is up, the room's button in a room with a
     /// menu, the detail divider while the docked detail shows it. The others always are.
     fn has_stop(&self, stop: hints::Stop) -> bool {
@@ -3276,10 +3284,7 @@ impl ShellView {
                     && (self.last_undo.is_some() || !self.animate)
             }
             Stop::RoomMenu => self.has_room_menu(),
-            Stop::Repeat => {
-                self.detail_placement() != DetailPane::Hidden
-                    && self.ui.task.is_some_and(|id| self.task_is_visible(id))
-            }
+            Stop::Repeat => self.repeat_target().is_some(),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter
@@ -3495,6 +3500,15 @@ fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
         && !key.modifiers.function
 }
 
+/// R and the Repeat Tab stop have the same target. A stale selection behind a hidden pane is inert.
+fn repeat_target(
+    pane: DetailPane,
+    selected: Option<TaskId>,
+    visible: impl Fn(TaskId) -> bool,
+) -> Option<TaskId> {
+    selected.filter(|&id| pane != DetailPane::Hidden && visible(id))
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -3503,6 +3517,19 @@ mod tests {
     use crate::fixtures;
     use crate::model::motion::{Motion, Pace, Release};
     use crate::theme::{desktop, motion as m};
+
+    #[test]
+    fn r_has_no_target_behind_a_hidden_pane() {
+        use super::{DetailPane, repeat_target};
+        let selected = fixtures::my_day().ui.task;
+        assert!(selected.is_some());
+        assert_eq!(repeat_target(DetailPane::Hidden, selected, |_| true), None);
+        assert_eq!(repeat_target(DetailPane::Docked, selected, |_| false), None);
+        assert_eq!(
+            repeat_target(DetailPane::Overlay, selected, |_| true),
+            selected
+        );
+    }
 
     fn ms(n: u32) -> Duration {
         Duration::from_millis(u64::from(n))

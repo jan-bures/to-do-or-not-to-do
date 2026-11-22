@@ -176,6 +176,24 @@ pub fn validate_entity(entity: &Entity) -> Result<(), DomainError> {
     }
 }
 
+/// All writes that make a tag name visible use the same case-insensitive comparison.
+pub(crate) fn unique_tag_name(
+    state: &State,
+    name: &str,
+    except: Option<TagId>,
+) -> Result<(), DomainError> {
+    let lower = name.to_lowercase();
+    if state
+        .tags
+        .values()
+        .any(|t| t.deleted.is_none() && Some(t.id) != except && t.name.to_lowercase() == lower)
+    {
+        Err(DomainError::DuplicateName(name.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
 impl<'a> Decider<'a> {
     fn stamp(&self) -> Stamp {
         Stamp {
@@ -277,19 +295,6 @@ impl<'a> Decider<'a> {
             }
         }
         Ok(ch)
-    }
-
-    fn unique_tag_name(&self, name: &str, except: Option<TagId>) -> Result<(), DomainError> {
-        let lower = name.to_lowercase();
-        let dup =
-            self.state.tags.values().any(|t| {
-                t.deleted.is_none() && Some(t.id) != except && t.name.to_lowercase() == lower
-            });
-        if dup {
-            Err(DomainError::DuplicateName(name.to_owned()))
-        } else {
-            Ok(())
-        }
     }
 
     fn create_task(&mut self, n: &NewTask) -> Result<(), DomainError> {
@@ -621,6 +626,9 @@ impl<'a> Decider<'a> {
         {
             return Err(DomainError::Deleted(p));
         }
+        if let Entity::Tag(t) = &e {
+            unique_tag_name(self.state, &t.name, Some(t.id))?;
+        }
         self.push(EventPayload::Restored {
             target: id,
             tombstone,
@@ -694,7 +702,7 @@ impl<'a> Decider<'a> {
             }
             Entity::Tag(t) => {
                 t.name = text("name", &t.name, MAX_NAME)?;
-                self.unique_tag_name(&t.name, None)?;
+                unique_tag_name(self.state, &t.name, None)?;
                 t.created.by = by;
             }
             Entity::Task(t) => {
@@ -961,7 +969,7 @@ impl<'a> Decider<'a> {
                 self.require_new((*id).into())?;
                 let name = text("name", name, MAX_NAME)?;
                 color(col)?;
-                self.unique_tag_name(&name, None)?;
+                unique_tag_name(self.state, &name, None)?;
                 self.push(EventPayload::Created {
                     entity: Entity::Tag(Tag {
                         id: *id,
@@ -985,7 +993,7 @@ impl<'a> Decider<'a> {
                     .ok_or(DomainError::NotFound((*id).into()))?;
                 let ch = self.name_changes(&g.name, &g.color, name, col, MAX_NAME)?;
                 if let Some(FieldChange::Name(c)) = ch.first() {
-                    self.unique_tag_name(&c.new, Some(*id))?;
+                    unique_tag_name(self.state, &c.new, Some(*id))?;
                 }
                 self.update((*id).into(), ch);
             }

@@ -15,6 +15,9 @@ pub const MAX_INTERVAL: u32 = 999;
 /// Errors from validating or parsing a recurrence.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecurrenceError {
+    /// No occurrence falls on or after the requested start within the supported date range.
+    #[error("no repeat date on or after the requested start")]
+    NoOccurrence,
     /// The interval is zero or above [`MAX_INTERVAL`].
     #[error("interval must be between 1 and {MAX_INTERVAL}")]
     BadInterval,
@@ -143,6 +146,24 @@ impl Recurrence {
             Ok(())
         } else {
             Err(RecurrenceError::BadInterval)
+        }
+    }
+
+    /// First due date for a new schedule anchored at `start`: today if it matches (including a
+    /// month-end clamp), otherwise the next occurrence by the same rules used on completion.
+    pub fn first_due(&self, start: Date) -> Result<Date, RecurrenceError> {
+        self.validate()?;
+        let matches = match &self.rule {
+            Rule::Weekly { days, .. } => days.contains(&Weekday::of(start)),
+            Rule::Monthly { day, .. } => {
+                start.day() as u8 == (*day).min(start.days_in_month() as u8)
+            }
+            Rule::Daily { .. } | Rule::Yearly { .. } => true,
+        };
+        if matches && self.until.is_none_or(|until| start <= until) {
+            Ok(start)
+        } else {
+            self.next_after(start).ok_or(RecurrenceError::NoOccurrence)
         }
     }
 

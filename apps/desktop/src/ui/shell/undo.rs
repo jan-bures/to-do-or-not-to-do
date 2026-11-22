@@ -25,6 +25,7 @@ pub(super) enum EditKind {
     DeleteStep,
     DeleteTag,
     Repeat,
+    ClearDue,
     AddLink,
     DeleteLink,
     DeleteList,
@@ -46,9 +47,14 @@ impl EditKind {
                 EntityId::Collection(_) => (id, Self::DeleteCollection),
                 _ => return None,
             },
-            Command::UpdateTask { id, ref patch } if patch.recurrence.is_some() => {
-                (id.into(), Self::Repeat)
-            }
+            Command::UpdateTask { id, ref patch } if patch.recurrence.is_some() => (
+                id.into(),
+                if patch.due == Some(None) {
+                    Self::ClearDue
+                } else {
+                    Self::Repeat
+                },
+            ),
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
             Command::MoveList { id, .. } => (id.into(), Self::MoveList),
             // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
@@ -73,6 +79,7 @@ impl EditKind {
             Self::DeleteStep => "Deleted step",
             Self::DeleteTag => "Deleted tag",
             Self::Repeat => "Changed schedule for",
+            Self::ClearDue => "Cleared due date for",
             Self::AddLink => "Added link",
             Self::DeleteLink => "Removed link",
             Self::DeleteList => "Deleted list",
@@ -88,7 +95,7 @@ impl EditKind {
                 Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
                 Self::DeleteTag => "Restored tag",
-                Self::Repeat => "Restored schedule for",
+                Self::Repeat | Self::ClearDue => "Restored schedule for",
                 Self::AddLink => "Removed link",
                 Self::DeleteLink => "Restored link",
                 Self::DeleteList => "Restored list",
@@ -113,7 +120,7 @@ impl EditKind {
 
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
-            (Self::Repeat, EntityId::Task(id)) => before
+            (Self::Repeat | Self::ClearDue, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)
                 .zip(after.tasks.get(&id))
@@ -354,7 +361,7 @@ impl ShellView {
         let queued = match self.store.undo(&action.target) {
             Err(error) => {
                 // In particular a cache write failure must leave the action retryable.
-                self.notice = Some(Notice::error(format!("Couldn't undo that: {error}")));
+                self.notice = Some(Notice::error(error));
                 self.last_undo = Some(action);
                 cx.notify();
                 return;
@@ -861,7 +868,7 @@ mod tests {
         let store = Store::fixture(&f);
         let target = store.submit_undoable(cmd).expect("repeat");
         let after = store.view();
-        assert_eq!(after.tasks[&task].due, Some(today));
+        assert_eq!(after.tasks[&task].due, todo_core::time::add_days(today, 2)); // Saturday → Monday
         assert!(after.tasks[&task].recurrence.is_some());
         store.undo(&target).expect("undone");
         let back = store.view();
@@ -870,6 +877,15 @@ mod tests {
             (None, &None)
         );
         assert!(kind.undo_changed_view(entity, &after, &back));
+    }
+
+    #[test]
+    fn clearing_due_on_a_repeat_has_its_own_toast() {
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected");
+        let cmd = crate::model::commands::set_due(&f.state, task, None).expect("clear due");
+        let (entity, kind) = EditKind::of(&cmd).expect("undoable");
+        assert!(toast_label(&f.state, &cmd, entity, kind).starts_with("Cleared due date for"));
     }
 
     #[test]

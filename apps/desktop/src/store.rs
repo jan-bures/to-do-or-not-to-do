@@ -137,7 +137,13 @@ impl Store {
                 let actor = Actor::owner("desktop").map_err(|e| e.to_string())?;
                 let mut state = (**s.state.borrow()).clone();
                 let inverse = undo_batch(&state, events, &actor, s.now.at, UndoOptions::default())
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| match e {
+                        todo_core::error::UndoError::Invariant {
+                            source: todo_core::error::DomainError::DuplicateName(_),
+                            ..
+                        } => todo_client::failure::undo_message("duplicate_name").to_owned(),
+                        _ => format!("Couldn't undo that: {e}"),
+                    })?;
                 for event in &inverse {
                     apply(&mut state, event).map_err(|e| e.to_string())?;
                 }
@@ -148,7 +154,7 @@ impl Store {
                 .session
                 .client()
                 .undo_tracked(t)
-                .map_err(|e| e.to_string()),
+                .map_err(|e| format!("Couldn't undo that: {e}")),
             _ => Ok(TrackedUndo::Unavailable),
         }
     }
@@ -285,15 +291,7 @@ impl Store {
 }
 
 fn undo_failure_message(rejection: &Rejection) -> String {
-    match rejection.code.as_str() {
-        "undo_conflict" => "Couldn't undo: the task was changed again.".into(),
-        "undo_no_event" => "Couldn't undo: the original change couldn't be found.".into(),
-        "epoch_mismatch" | "event_mismatch" => {
-            "Couldn't undo: the server's history changed.".into()
-        }
-        "not_found" => "Couldn't undo: the task no longer exists.".into(),
-        _ => "Couldn't undo that.".into(),
-    }
+    todo_client::failure::undo_message(&rejection.code).into()
 }
 
 #[cfg(test)]

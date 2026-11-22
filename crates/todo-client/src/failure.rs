@@ -172,6 +172,7 @@ pub fn why(failed: &FailedEntry) -> &'static str {
 #[must_use]
 pub fn undo_message(code: &str) -> &'static str {
     match code {
+        "duplicate_name" => "Couldn't undo: another tag already uses that name.",
         "undo_conflict" => "Couldn't undo: the item was changed again.",
         "undo_no_event" | "event_not_found" => {
             "Couldn't undo: the original change couldn't be found."

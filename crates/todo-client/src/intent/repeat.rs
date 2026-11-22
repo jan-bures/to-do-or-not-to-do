@@ -15,6 +15,22 @@ pub enum Preset {
 }
 
 impl Preset {
+    /// Preserve the intended month-day when the most recent occurrence was clamped to a shorter month.
+    pub fn rule_for(self, anchor: Date, current: Option<&Recurrence>) -> Rule {
+        if self == Self::Monthly
+            && let Some(Recurrence {
+                rule: Rule::Monthly { day, .. },
+                ..
+            }) = current
+        {
+            return Rule::Monthly {
+                interval: 1,
+                day: *day,
+            };
+        }
+        self.rule(anchor)
+    }
+
     pub fn rule(self, anchor: Date) -> Rule {
         match self {
             Self::Daily => Rule::Daily { interval: 1 },
@@ -59,11 +75,16 @@ fn patch(
         rule,
         until: old.and_then(|r| r.until),
     });
-    if let Some(r) = &next {
-        r.validate()?;
-    }
-    Ok((old != next.as_ref()).then(|| TaskPatch {
-        due: (due.is_none() && next.is_some()).then_some(Some(today)),
+    let due = match (&next, due) {
+        (Some(r), None) => Some(Some(r.first_due(today)?)),
+        (Some(r), Some(_)) => {
+            r.validate()?;
+            None
+        }
+        (None, _) => None,
+    };
+    Ok((old != next.as_ref()).then_some(TaskPatch {
+        due,
         recurrence: Some(next),
         ..Default::default()
     }))
@@ -120,7 +141,7 @@ pub fn describe_repeat(r: &Recurrence) -> String {
         Rule::Yearly { interval } => every(*interval, "year"),
     };
     if let Some(date) = r.until {
-        text.push_str(&format!(", until {date}"));
+        text.push_str(&format!(", until {}", super::quick_add::long_date(date)));
     }
     text
 }
@@ -164,7 +185,56 @@ mod tests {
         };
         assert_eq!(
             describe_repeat(&r),
-            "Every week on Mon, Tue, Wed, Thu, Sun, until 2025-03-31"
+            "Every week on Mon, Tue, Wed, Thu, Sun, until 31 Mar 2025"
+        );
+    }
+    #[test]
+    fn first_due_matches_the_schedule() {
+        let sat = Date::constant(2025, 3, 29);
+        let tue = Date::constant(2025, 4, 1);
+        for (today, rule, expected) in [
+            (sat, Preset::Weekdays.rule(sat), MON),
+            (MON, Preset::Weekdays.rule(MON), MON),
+            (
+                tue,
+                Rule::Weekly {
+                    interval: 2,
+                    days: [Weekday::Mon, Weekday::Thu].into(),
+                },
+                Date::constant(2025, 4, 3),
+            ),
+            (
+                Date::constant(2025, 4, 30),
+                Rule::Monthly {
+                    interval: 1,
+                    day: 31,
+                },
+                Date::constant(2025, 4, 30),
+            ),
+        ] {
+            assert_eq!(
+                patch(None, None, Some(rule), today).unwrap().unwrap().due,
+                Some(Some(expected))
+            );
+        }
+    }
+    #[test]
+    fn month_ordinals_and_year_intervals() {
+        for (day, suffix) in [
+            (1, "1st"),
+            (3, "3rd"),
+            (11, "11th"),
+            (12, "12th"),
+            (13, "13th"),
+        ] {
+            assert_eq!(
+                describe_repeat(&Recurrence::new(Rule::Monthly { interval: 1, day })),
+                format!("Every month on the {suffix}")
+            );
+        }
+        assert_eq!(
+            describe_repeat(&Recurrence::new(Rule::Yearly { interval: 3 })),
+            "Every 3 years"
         );
     }
     #[test]
