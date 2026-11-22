@@ -3,7 +3,11 @@
 
 mod activity;
 mod attachments;
+mod links;
+mod pickers;
+mod repeat;
 mod room_actions;
+mod tags;
 
 use crate::backend::{self, Sync, UndoTarget};
 use crate::changes::{self, Failure};
@@ -95,7 +99,7 @@ pub struct Ctx {
     narrow: RwSignal<bool>,
     detail_modal: Memo<bool>,
     collapsed: RwSignal<BTreeSet<CollectionId>>,
-    new_list: RwSignal<bool>,
+    new_room: RwSignal<Option<NewRoomKind>>,
     filter_open: RwSignal<bool>,
     filter_text: RwSignal<String>,
     completed_open: RwSignal<bool>,
@@ -275,7 +279,7 @@ impl Ctx {
     fn reset_room_controls(self) {
         self.room_actions.close_menu(false);
         self.drawer.set(false);
-        self.new_list.set(false);
+        self.new_room.set(None);
         self.filter_open.set(false);
         self.filter_text.set(String::new());
         self.completed_open.set(false);
@@ -537,7 +541,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         narrow,
         detail_modal,
         collapsed: RwSignal::new(platform::load_folded().unwrap_or_default()),
-        new_list: RwSignal::new(false),
+        new_room: RwSignal::new(None),
         filter_open: RwSignal::new(false),
         filter_text,
         completed_open,
@@ -724,9 +728,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     if key == "escape" {
         if c.editing.get_untracked() {
             c.editing.set(false);
-        } else if c.new_list.get_untracked() && !modal {
-            c.new_list.set(false);
-            platform::focus("open-new-list");
+        } else if let Some(kind) = c.new_room.get_untracked().filter(|_| !modal) {
+            c.new_room.set(None);
+            platform::focus(kind.trigger());
         } else if drawer {
             c.drawer.set(false);
         } else if c.selected.get_untracked().is_some() {
@@ -831,6 +835,30 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             if c.detail.with_untracked(Option::is_some) && !c.read_only() {
                 ev.prevent_default();
                 c.editing.set(true);
+            }
+        }
+        "r" | "t" | "l"
+            if !ev.shift_key() && !c.read_only() && c.detail.with_untracked(Option::is_some) =>
+        {
+            ev.prevent_default();
+            match key.as_str() {
+                "l" => {
+                    platform::focus("add-task-link");
+                }
+                _ => {
+                    let id = if key == "r" {
+                        "edit-task-repeat"
+                    } else {
+                        "edit-task-tags"
+                    };
+                    if platform::focus(id)
+                        && let Some(button) = document()
+                            .get_element_by_id(id)
+                            .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+                    {
+                        button.click();
+                    }
+                }
             }
         }
         "d" | "p" if !c.read_only() => {
@@ -1102,7 +1130,10 @@ fn SidebarPane() -> impl IntoView {
                     }
                 }}
             </nav>
-            <NewList/>
+            <div class="new-list">
+                <NewRoom kind=NewRoomKind::List/>
+                <NewRoom kind=NewRoomKind::Collection/>
+            </div>
             <div class="side-foot">
                 <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>
                 <room_actions::SyncLine/>
@@ -1112,52 +1143,89 @@ fn SidebarPane() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewRoomKind {
+    List,
+    Collection,
+}
+
+impl NewRoomKind {
+    fn trigger(self) -> &'static str {
+        match self {
+            Self::List => "open-new-list",
+            Self::Collection => "open-new-collection",
+        }
+    }
+}
+
 #[component]
-fn NewList() -> impl IntoView {
+fn NewRoom(kind: NewRoomKind) -> impl IntoView {
     let c = ctx();
-    let close = move || {
-        c.new_list.set(false);
-        platform::focus("open-new-list");
+    let (button, field, name, create, cancel) = match kind {
+        NewRoomKind::List => (
+            "New list",
+            "new-list-name",
+            "List name",
+            "Create list",
+            "Cancel new list",
+        ),
+        NewRoomKind::Collection => (
+            "New collection",
+            "new-collection-name",
+            "Collection name",
+            "Create collection",
+            "Cancel new collection",
+        ),
     };
+    let close = move || {
+        c.new_room.set(None);
+        platform::focus(kind.trigger());
+    };
+    let open = move || c.new_room.get() == Some(kind);
     let input = NodeRef::<html::Input>::new();
     view! {
-        <div class="new-list">
-            <button type="button" id="open-new-list" class="button open-new-list"
-                aria-expanded=move || c.new_list.get().to_string()
-                disabled=move || c.read_only()
-                on:click=move |_| {
-                    if c.new_list.get_untracked() { close(); } else {
-                        c.new_list.set(true);
-                        request_animation_frame(|| { platform::focus("new-list-name"); });
-                    }
+        <button type="button" id=kind.trigger() class="button open-new-list"
+            aria-expanded=move || open().to_string() disabled=move || c.read_only()
+            on:click=move |_| {
+                if c.new_room.get_untracked() == Some(kind) { close(); } else {
+                    c.new_room.set(Some(kind));
+                    request_animation_frame(move || { platform::focus(field); });
                 }
-            >{icon(Icon::Plus)}"New list"</button>
-            <Show when=move || c.new_list.get()>
-                <form on:submit=move |ev| {
-                    ev.prevent_default();
-                    let Some(i) = input.get_untracked() else { return };
-                    let name = i.value().trim().to_owned();
-                    if name.is_empty() { return; }
-                    let room = c.room.get_untracked();
-                    let collection = c.state.with_untracked(|state| intent::list_collection(state, (&room).into()));
-                    let id = ListId::from_uuid(backend::new_uuid());
-                    if c.submit(intent::create_list(id, collection, &name)) {
-                        if let Some(group) = collection {
-                            c.fold(group, false);
-                        }
-                        c.go(RoomId::List(id));
-                        request_animation_frame(|| { platform::focus("room-title"); });
+            }
+        >{icon(Icon::Plus)}{button}</button>
+        <Show when=open>
+            <form on:submit=move |ev| {
+                ev.prevent_default();
+                if c.read_only() { return; }
+                let Some(i) = input.get_untracked() else { return };
+                let name = i.value();
+                if name.trim().is_empty() { return; }
+                let (command, destination, parent) = match kind {
+                    NewRoomKind::List => {
+                        let room = c.room.get_untracked();
+                        let parent = c.state.with_untracked(|state| intent::list_collection(state, (&room).into()));
+                        let id = ListId::from_uuid(backend::new_uuid());
+                        (intent::create_list(id, parent, &name), RoomId::List(id), parent)
                     }
-                }>
-                    <input id="new-list-name" node_ref=input type="text" autocomplete="off" required
-                        aria-label="List name" placeholder="List name…" disabled=move || c.read_only()/>
-                    <button class="icon-button" type="submit" aria-label="Create list" title="Create list"
-                        disabled=move || c.read_only()>{icon(Icon::Plus)}</button>
-                    <button class="icon-button" type="button" aria-label="Cancel new list" title="Cancel"
-                        on:click=move |_| close()>{icon(Icon::X)}</button>
-                </form>
-            </Show>
-        </div>
+                    NewRoomKind::Collection => {
+                        let id = CollectionId::from_uuid(backend::new_uuid());
+                        (intent::organize::create_collection(id, &name), RoomId::Collection(id), None)
+                    }
+                };
+                if c.submit(command) {
+                    if let Some(group) = parent { c.fold(group, false); }
+                    c.go(destination);
+                    request_animation_frame(|| { platform::focus("room-title"); });
+                }
+            }>
+                <input id=field node_ref=input type="text" autocomplete="off" required
+                    aria-label=name placeholder=format!("{name}…") disabled=move || c.read_only()/>
+                <button class="icon-button" type="submit" aria-label=create title=create
+                    disabled=move || c.read_only()>{icon(Icon::Plus)}</button>
+                <button class="icon-button" type="button" aria-label=cancel title="Cancel"
+                    on:click=move |_| close()>{icon(Icon::X)}</button>
+            </form>
+        </Show>
     }
 }
 
@@ -1981,7 +2049,7 @@ fn DetailPane() -> impl IntoView {
             inert=move || c.detail.with(Option::is_none)
             on:dragover=move |ev| uploads.drag_over(c, ev)
             on:drop=move |ev| uploads.drop_files(c, ev)>
-            <div class="detail-scroll">
+            <div class="detail-scroll" on:scroll=move |_| pickers::position_detail_pickers()>
                 {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered uploads=uploads/> })}
             </div>
             // Modal feedback belongs inside the dialog, outside the inert room.
@@ -2029,9 +2097,17 @@ fn DetailBody(
                 <dl class="props">
                     <DueEditor id=id detail=d/>
                     <PriorityEditor id=id detail=d/>
+                    <repeat::RepeatEditor id=id detail=d/>
+                    <tags::TagEditor task=id detail=d/>
+                    {move || d.with(|d| d.as_ref().and_then(|d| d.reminder.clone())).map(|reminder| view! {
+                        <div class="prop" title="Reminder is read only">
+                            <dt>{icon(Icon::Bell)}"Reminder"</dt>
+                            <dd class="mono">{reminder}</dd>
+                        </div>
+                    })}
                 </dl>
             </section>
-            {move || d.get().map(|d| view! { <DetailFields d=d/> })}
+            <links::Links task=id detail=d/>
             <attachments::Section task=id detail=d uploads=uploads/>
             {move || d.get().map(|d| view! { <DetailActivity d=d/> })}
         </div>
@@ -2383,46 +2459,6 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
 }
 
 #[component]
-fn DetailFields(d: Detail) -> impl IntoView {
-    view! {
-    <section class="d-section" aria-label="Read-only task fields">
-    <h3 class="caps d-caps">"Task fields · Read only"</h3>
-    <dl class="props">
-        <div class="prop">
-            <dt>{icon(Icon::Bell)}"Reminder"</dt>
-            <dd class="mono">{d.reminder.clone().unwrap_or_else(|| "—".to_owned())}</dd>
-        </div>
-        <div class="prop">
-            <dt>{icon(Icon::Repeat)}"Repeat"</dt>
-            <dd>{d.repeat.clone()}</dd>
-        </div>
-        <div class="prop">
-            <dt>{icon(Icon::Hash)}"Tags"</dt>
-            <dd class="mono">
-                {if d.tags.is_empty() {
-                    "—".to_owned()
-                } else {
-                    d.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join("  ")
-                }}
-            </dd>
-        </div>
-    </dl>
-    </section>
-
-    {(!d.sources.is_empty())
-        .then(|| {
-            view! {
-                <section class="d-section">
-                    <h3 class="caps d-caps">"Source"</h3>
-                    {d.sources.clone().into_iter().map(source_card).collect_view()}
-                </section>
-            }
-        })}
-
-    }
-}
-
-#[component]
 fn DetailActivity(d: Detail) -> impl IntoView {
     view! {
     <section class="d-section">
@@ -2446,34 +2482,6 @@ fn DetailActivity(d: Detail) -> impl IntoView {
                 .collect_view()}
         </ul>
     </section>
-    }
-}
-
-fn source_card(s: Source) -> impl IntoView {
-    let (lead, title, meta, href) = match s {
-        Source::Email {
-            subject,
-            meta,
-            href,
-        } => (Icon::Mail, subject, meta, href),
-        Source::Web { title, href } => (Icon::Link, title, href.clone(), Some(href)),
-    };
-    let inner = move |arrow: bool| {
-        view! {
-            <span class="source-icon">{icon(lead)}</span>
-            <span class="source-text">
-                <span class="source-title">{title.clone()}</span>
-                <span class="source-meta">{meta.clone()}</span>
-            </span>
-            {arrow.then(|| icon(Icon::ArrowUpRight))}
-        }
-    };
-    match href {
-        Some(h) => view! {
-            <a class="source" href=h target="_blank" rel="noopener noreferrer">{inner(true)}</a>
-        }
-        .into_any(),
-        None => view! { <div class="source">{inner(false)}</div> }.into_any(),
     }
 }
 

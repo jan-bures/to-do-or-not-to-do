@@ -213,7 +213,7 @@ test("the due date accepts relative and past dates, rejects bad input, and can b
   await input.press("Enter");
   await expect(due).toHaveText("Set date");
   await expect(board.locator(".col-due")).toBeEmpty();
-  await expect(page.getByRole("region", { name: "Read-only task fields" }).locator(".prop:nth-child(2) dd")).toHaveText("Does not repeat");
+  await expect(page.getByRole("button", { name: "Repeat", exact: true })).toHaveText("Does not repeat");
   await w.check();
 });
 
@@ -715,12 +715,12 @@ test("detail actions, read-only fields, sync label and context keyboard hints ma
   await rows(page).first().locator(".row-title").click();
   const buttons = page.locator(".detail-top button");
   expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Close"]);
-  const fields = page.getByRole("region", { name: "Read-only task fields" });
-  await expect(fields.locator("dt")).toHaveText(["Reminder", "Repeat", "Tags"]);
-  const editable = page.getByRole("region", { name: "Schedule and priority" });
-  await expect(editable.locator("dt")).toHaveText(["Due", "Priority"]);
+  const fields = page.getByRole("region", { name: "Schedule and priority" });
+  await expect(fields.locator("dt")).toHaveText(["Due", "Priority", "Repeat", "Tags", "Reminder"]);
+  await expect(fields.getByRole("button", { name: "Repeat" })).toBeEnabled();
+  await expect(fields.getByRole("button", { name: "Tags" })).toBeEnabled();
   const muted = await page.locator(".detail .notes").evaluate((el) => getComputedStyle(el).color);
-  await expect(fields.locator("dd").first()).toHaveCSS("color", muted);
+  await expect(fields.locator("[title='Reminder is read only'] dd")).toHaveCSS("color", muted);
   await expect(keys).toContainText("Esc");
   await expect(keys).toContainText("Space");
   await page.locator(".sidebar").getByRole("link", { name: "Garden" }).click();

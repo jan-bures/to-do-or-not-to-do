@@ -15,10 +15,9 @@ use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::Offset;
 use std::collections::BTreeMap;
 use todo_client::intent::{self, TaskRoom, quick_add};
-use todo_core::ids::{AttachmentId, CollectionId, ListId, TaskId};
+use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
-use todo_core::recurrence::Rule;
 use todo_core::{Actor, Command, State};
 use todo_design::Glyph;
 use todo_design::hues::{self, SWATCHES};
@@ -570,7 +569,8 @@ fn weekday_long(w: Weekday) -> &'static str {
     }
 }
 
-fn core_weekday(w: todo_core::time::Weekday) -> &'static str {
+#[cfg(target_arch = "wasm32")]
+pub fn core_weekday(w: todo_core::time::Weekday) -> &'static str {
     use todo_core::time::Weekday as W;
     match w {
         W::Mon => "Monday",
@@ -1138,6 +1138,8 @@ pub enum Source {
     },
     /// A web page.
     Web {
+        /// The link to remove.
+        id: LinkId,
         /// Title or URL.
         title: String,
         /// The URL (`http` or `https` only).
@@ -1179,8 +1181,8 @@ pub struct Detail {
     pub reminder: Option<String>,
     /// The repeat rule.
     pub repeat: String,
-    /// Tag names.
-    pub tags: Vec<String>,
+    /// Attached tags in display order.
+    pub tags: Vec<Chip>,
     /// Email and web sources.
     pub sources: Vec<Source>,
     /// Attachments.
@@ -1260,32 +1262,10 @@ fn long_when(at: Timestamp, now: &Now) -> String {
 /// The repeat rule in words.
 #[must_use]
 pub fn repeat_text(rule: Option<&todo_core::recurrence::Recurrence>) -> String {
-    let Some(r) = rule else {
-        return "Does not repeat".to_owned();
-    };
-    let every = |n: u32, one: &str, many: &str| {
-        if n == 1 {
-            format!("Every {one}")
-        } else {
-            format!("Every {n} {many}")
-        }
-    };
-    match &r.rule {
-        Rule::Daily { interval } => every(*interval, "day", "days"),
-        Rule::Weekly { interval, days } => {
-            let names: Vec<&str> = days.iter().map(|d| core_weekday(*d)).collect();
-            let base = every(*interval, "week", "weeks");
-            if *interval == 1 && names.len() == 1 {
-                format!("Every {}", names[0])
-            } else {
-                format!("{base} on {}", names.join(", "))
-            }
-        }
-        Rule::Monthly { interval, day } => {
-            format!("{} on day {day}", every(*interval, "month", "months"))
-        }
-        Rule::Yearly { interval } => every(*interval, "year", "years"),
-    }
+    rule.map_or_else(
+        || "Does not repeat".to_owned(),
+        intent::repeat::describe_repeat,
+    )
 }
 
 fn size_text(bytes: u64) -> String {
@@ -1328,14 +1308,20 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         .find(|r| r.at >= now.at)
         .or(reminders.last())
         .map(|r| long_when(r.at, now));
-    let mut tags: Vec<String> = t
+    let mut tags: Vec<_> = t
         .tags
         .iter()
         .filter_map(|tid| state.tags.get(tid))
         .filter(|tag| tag.deleted.is_none())
-        .map(|tag| tag.name.clone())
         .collect();
-    tags.sort();
+    tags.sort_by_cached_key(|tag| (fold(&tag.name), tag.id));
+    let tags = tags
+        .into_iter()
+        .map(|tag| Chip {
+            label: tag.name.clone(),
+            hue: swatch(tag.color.as_deref(), tag.id.as_uuid().as_bytes()),
+        })
+        .collect();
     let sources = state
         .links
         .values()
@@ -1351,6 +1337,7 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
             }),
             LinkKind::Web { url, title } => {
                 (url.starts_with("https://") || url.starts_with("http://")).then(|| Source::Web {
+                    id: l.id,
                     title: title.clone().unwrap_or_else(|| url.clone()),
                     href: url.clone(),
                 })

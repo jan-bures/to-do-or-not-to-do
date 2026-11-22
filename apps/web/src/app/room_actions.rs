@@ -1,12 +1,12 @@
 //! List and collection actions, and the sidebar's list of refused changes.
 
-use super::{Ctx, RoomId, backend, ctx, icon, platform, sync_text};
+use super::{Ctx, RoomId, backend, ctx, glyph, icon, model, pickers, platform, sync_text};
 use leptos::html;
 use leptos::prelude::*;
 use todo_client::{CommandId, intent};
 use todo_core::ids::{CollectionId, EntityId, ListId};
 use todo_core::{Command, State};
-use todo_design::Icon;
+use todo_design::{Glyph, Icon};
 use wasm_bindgen::JsCast;
 
 const MENU_ID: &str = "room-action-menu";
@@ -48,6 +48,14 @@ impl Subject {
             Self::List(id) => state.lists.get(&id).map(|l| l.name.as_str()),
             Self::Collection(id) => state.collections.get(&id).map(|c| c.name.as_str()),
         }
+    }
+
+    fn hue(self, state: &State) -> Option<&'static str> {
+        let (colour, id) = match self {
+            Self::List(id) => (state.lists.get(&id)?.color.as_deref(), id.as_uuid()),
+            Self::Collection(id) => (state.collections.get(&id)?.color.as_deref(), id.as_uuid()),
+        };
+        Some(model::swatch(colour, id.as_bytes()))
     }
 
     fn rename(self, state: &State, name: &str) -> Option<Command> {
@@ -110,6 +118,8 @@ enum Item {
     Rename,
     Up,
     Down,
+    Colour,
+    MoveTo,
     Fold,
     Completed,
     Delete,
@@ -121,6 +131,8 @@ impl Item {
             Self::Rename => "menu-rename",
             Self::Up => "menu-move-up",
             Self::Down => "menu-move-down",
+            Self::Colour => "menu-colour",
+            Self::MoveTo => "menu-move-to",
             Self::Fold => "menu-fold",
             Self::Completed => "menu-completed",
             Self::Delete => "menu-delete",
@@ -136,7 +148,10 @@ struct Menu {
 
 impl Menu {
     fn items(self) -> Vec<Item> {
-        let mut items = vec![Item::Rename, Item::Up, Item::Down];
+        let mut items = vec![Item::Rename, Item::Up, Item::Down, Item::Colour];
+        if matches!(self.origin.0, Subject::List(_)) {
+            items.push(Item::MoveTo);
+        }
         if self.origin.1 == Anchor::Header {
             items.push(Item::Completed);
         } else if matches!(self.origin.0, Subject::Collection(_)) {
@@ -145,6 +160,13 @@ impl Menu {
         items.push(Item::Delete);
         items
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Actions,
+    Colour,
+    Move,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -172,6 +194,7 @@ impl Edit {
 #[derive(Clone, Copy)]
 pub(super) struct Controls {
     menu: RwSignal<Option<Menu>>,
+    page: RwSignal<Page>,
     popover: NodeRef<html::Div>,
     edit: RwSignal<Option<Edit>>,
     edit_dialog: NodeRef<html::Dialog>,
@@ -184,6 +207,7 @@ impl Controls {
     pub(super) fn new() -> Self {
         Self {
             menu: RwSignal::new(None),
+            page: RwSignal::new(Page::Actions),
             popover: NodeRef::new(),
             edit: RwSignal::new(None),
             edit_dialog: NodeRef::new(),
@@ -216,6 +240,7 @@ impl Controls {
             self.close_menu(true);
             return;
         }
+        self.page.set(Page::Actions);
         self.menu.set(Some(Menu {
             origin,
             highlighted: Item::Rename,
@@ -232,6 +257,20 @@ impl Controls {
                 platform::focus(Item::Rename.id());
             }
         });
+    }
+
+    fn page(self, page: Page, focus: Option<Item>) {
+        self.page.set(page);
+        request_animation_frame(move || self.position_menu());
+        if let Some(item) = focus {
+            request_animation_frame(move || {
+                if self.menu.with_untracked(Option::is_some) && self.page.get_untracked() == page {
+                    platform::focus(item.id());
+                }
+            });
+        } else {
+            pickers::focus_choice(MENU_ID, "room-picker-back");
+        }
     }
 
     pub(super) fn position_menu(self) {
@@ -372,8 +411,10 @@ fn ActionMenu() -> impl IntoView {
         }
     });
     view! {
-        <div id=MENU_ID role="menu" aria-label="Room actions" class="room-action-menu" popover="auto"
-            node_ref=controls.popover
+        <div id=MENU_ID role=move || if controls.page.get() == Page::Actions { "menu" } else { "dialog" }
+            aria-label=move || match controls.page.get() { Page::Actions => "Room actions", Page::Colour => "Colour", Page::Move => "Move to" }
+            class="room-action-menu" class:swatch-picker=move || controls.page.get() == Page::Colour
+            popover="auto" node_ref=controls.popover
             on:toggle=move |_| {
                 if let Some(el) = controls.popover.get_untracked()
                     && !el.matches(":popover-open").unwrap_or(false)
@@ -382,10 +423,15 @@ fn ActionMenu() -> impl IntoView {
                 }
             }
             on:keydown=move |ev| menu_key(c, &ev)>
-            {move || origin.get().map(|origin| {
-                Menu { origin, highlighted: Item::Rename }.items().into_iter().map(|item| view! {
+            {move || origin.get().map(|origin| match controls.page.get() {
+                Page::Actions => Menu { origin, highlighted: Item::Rename }.items().into_iter().map(|item| view! {
                     <MenuItem origin=origin item=item/>
-                }).collect_view()
+                }).collect_view().into_any(),
+                Page::Colour => view! { <ColourPicker origin=origin/> }.into_any(),
+                Page::Move => match origin.0 {
+                    Subject::List(id) => view! { <MovePicker origin=origin id=id/> }.into_any(),
+                    Subject::Collection(_) => ().into_any(),
+                },
             })}
         </div>
     }
@@ -409,6 +455,18 @@ fn menu_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         ev.prevent_default();
         controls.close_menu(true);
         c.undo();
+        return;
+    }
+    let page = controls.page.get_untracked();
+    if page != Page::Actions {
+        match key.as_str() {
+            "Escape" => {
+                ev.prevent_default();
+                controls.close_menu(true);
+            }
+            "Tab" => platform::contain_tab(MENU_ID, ev),
+            _ => pickers::choice_key(MENU_ID, if page == Page::Colour { 6 } else { 1 }, ev),
+        }
         return;
     }
     let items = menu.items();
@@ -446,6 +504,8 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
         Item::Rename => format!("Rename {}", subject.kind()),
         Item::Up => "Move up".into(),
         Item::Down => "Move down".into(),
+        Item::Colour => "Colour…".into(),
+        Item::MoveTo => "Move to…".into(),
         Item::Fold => {
             if matches!(subject, Subject::Collection(id) if c.collapsed.with(|ids| ids.contains(&id)))
             {
@@ -463,12 +523,17 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
             intent::nudge(s, subject.id(), if item == Item::Up { -1 } else { 1 }).is_none()
         }),
         Item::Completed => c.view_room.with(|r| r.completed.is_empty()),
+        Item::MoveTo => {
+            matches!(subject, Subject::List(id) if !c.state.with(|s| intent::organize::can_move_list(s, id)))
+        }
         _ => false,
     };
     let glyph = match item {
         Item::Rename => Icon::Pencil,
         Item::Up => Icon::ChevronUp,
         Item::Down => Icon::ChevronDown,
+        Item::Colour => Icon::Pencil,
+        Item::MoveTo => Icon::ChevronRight,
         Item::Fold => Icon::ChevronRight,
         Item::Completed => Icon::Check,
         Item::Delete => Icon::TrashTwo,
@@ -483,15 +548,25 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
                 if !disabled() && controls.menu.with_untracked(|m| m.is_some_and(|m| m.origin == origin)) {
                     activate(c, origin, item);
                 }
-            }>{icon(glyph)}{label}</button>
+            }>
+            {if item == Item::Colour {
+                view! { <span class="tag-dot" data-list-hue=move || c.state.with(|s| subject.hue(s))></span> }.into_any()
+            } else { icon(glyph).into_any() }}
+            {label}
+        </button>
     }
 }
 
 fn activate(c: Ctx, origin: Origin, item: Item) {
     let controls = c.room_actions;
     let subject = origin.0;
-    controls.close_menu(false);
     match item {
+        Item::Colour => return controls.page(Page::Colour, None),
+        Item::MoveTo => return controls.page(Page::Move, None),
+        _ => controls.close_menu(false),
+    }
+    match item {
+        Item::Colour | Item::MoveTo => {}
         Item::Rename => controls.open_edit(Edit::Rename(origin)),
         Item::Delete => controls.open_edit(Edit::Delete(origin)),
         Item::Up | Item::Down => {
@@ -520,7 +595,100 @@ fn activate(c: Ctx, origin: Origin, item: Item) {
     }
 }
 
-fn scrim_click(ev: &leptos::ev::MouseEvent) -> bool {
+#[component]
+fn ColourPicker(origin: Origin) -> impl IntoView {
+    let c = ctx();
+    view! {
+        <div class="picker-page">
+            <h3>"Colour"</h3>
+            <pickers::Swatches selected=Signal::derive(move || c.state.with(|s| origin.0.hue(s)))
+                disabled=Signal::derive(move || c.read_only())
+                choose=Callback::new(move |key| {
+                    if c.read_only() { return; }
+                    let cmd = c.state.with_untracked(|s| intent::organize::set_color(s, origin.0.id(), key));
+                    if cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Colour changed.".into(), None)) {
+                        c.room_actions.close_menu(true);
+                    }
+                })/>
+            <PickerBack item=Item::Colour/>
+        </div>
+    }
+}
+
+#[component]
+fn MovePicker(origin: Origin, id: ListId) -> impl IntoView {
+    let c = ctx();
+    let ids = Memo::new(move |_| c.state.with(|s| intent::organize::collections(s)));
+    let choose = Callback::new(move |to: Option<CollectionId>| {
+        if c.read_only() {
+            return;
+        }
+        let change = c.state.with_untracked(|s| {
+            Some((
+                intent::organize::move_list(s, id, to)?,
+                format!("Moved “{}”", origin.0.name(s)?),
+            ))
+        });
+        if let Some((cmd, label)) = change {
+            if !c.submit_undoable(cmd, label, None) {
+                return;
+            }
+            if let Some(to) = to {
+                c.fold(to, false);
+            }
+        }
+        c.room_actions.close_menu(true);
+    });
+    view! {
+        <div class="picker-page">
+            <h3>"Move to"</h3>
+            <For each=move || ids.get() key=|id| *id children=move |to| view! { <MoveChoice list=id to=Some(to) choose=choose/> }/>
+            <MoveChoice list=id to=None choose=choose/>
+            <PickerBack item=Item::MoveTo/>
+        </div>
+    }
+}
+
+#[component]
+fn MoveChoice(
+    list: ListId,
+    to: Option<CollectionId>,
+    choose: Callback<Option<CollectionId>>,
+) -> impl IntoView {
+    let c = ctx();
+    let name = move || {
+        c.state.with(|s| {
+            to.and_then(|id| s.collections.get(&id).map(|c| c.name.clone()))
+                .unwrap_or_else(|| "No collection".into())
+        })
+    };
+    let hue = move || {
+        c.state
+            .with(|s| to.and_then(|id| Subject::Collection(id).hue(s)))
+    };
+    view! {
+        <button type="button" data-picker-option="" class="move-choice"
+            disabled=move || c.read_only() || c.state.with(|s| to.is_some_and(|id| !s.is_live(id.into())))
+            aria-pressed=move || c.state.with(|s| s.lists.get(&list).is_some_and(|l| l.collection == to)).to_string()
+            on:click=move |_| choose.run(to)>
+            <span data-list-hue=hue class="move-glyph">{glyph(Glyph::Layers)}</span>
+            <span class="picker-label">{name}</span>
+            <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
+        </button>
+    }
+}
+
+#[component]
+fn PickerBack(item: Item) -> impl IntoView {
+    let controls = ctx().room_actions;
+    view! {
+        <button type="button" id="room-picker-back" on:click=move |_| controls.page(Page::Actions, Some(item))>
+            {icon(Icon::ChevronLeft)}"Back"
+        </button>
+    }
+}
+
+pub(super) fn scrim_click(ev: &leptos::ev::MouseEvent) -> bool {
     let Some(dialog) = ev
         .target()
         .and_then(|el| el.dyn_into::<web_sys::HtmlDialogElement>().ok())
@@ -532,13 +700,13 @@ fn scrim_click(ev: &leptos::ev::MouseEvent) -> bool {
     x < r.left() || x >= r.right() || y < r.top() || y >= r.bottom()
 }
 
-fn close_dialog(node: NodeRef<html::Dialog>) {
+pub(super) fn close_dialog(node: NodeRef<html::Dialog>) {
     if let Some(dialog) = node.get_untracked() {
         dialog.close();
     }
 }
 
-fn block_dialog_repeat(ev: &leptos::ev::KeyboardEvent) {
+pub(super) fn block_dialog_repeat(ev: &leptos::ev::KeyboardEvent) {
     if ev.repeat() && matches!(ev.key().as_str(), "Enter" | "Escape") {
         ev.prevent_default();
     }

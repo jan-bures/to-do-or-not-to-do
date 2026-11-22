@@ -6,10 +6,11 @@ as the other clients, so the state, the commands, the smart-list queries and the
 desktop's and Android's. `todo-server` serves it at `/app`, and it signs in with the owner's passkey session:
 there is no token in the browser.
 
-This first version covers sign-in, the smart lists and every collection and list, the task list, the task
-detail, adding, completing (with the F2 check animation), editing titles, steps and notes, My Day, and live
-updates. Attachments can be uploaded, downloaded and removed. Lists and collections can be renamed,
-moved up or down, and deleted. Activity shows confirmed changes and lets you undo past events.
+The web app covers sign-in, smart lists, collections, lists, task detail, adding, completing (with the F2
+check animation), and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
+tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
+and delete lists and collections, and move lists between collections. Activity shows confirmed changes
+and lets you undo past events.
 Undo compensates the exact change. It has the desktop layout on wide
 windows and the phone layout on narrow ones, in both themes.
 
@@ -56,7 +57,7 @@ dependencies stay out of the root lock, and the root `cargo … --workspace` job
 to the output. Trunk would have been the usual choice, but it injects an inline bootstrap `<script>`, and
 the page's CSP allows no inline script. `boot.js` is a module file that sets the theme and starts the wasm
 module. The script also writes gzipped copies of the larger files (`*.gz`), which the server sends to
-browsers that accept gzip (the wasm module is about 4.5 MB, 0.7 MB gzipped).
+browsers that accept gzip.
 
 ## Layout of the code
 
@@ -67,7 +68,8 @@ browsers that accept gzip (the wasm module is about 4.5 MB, 0.7 MB gzipped).
 | `src/app.rs` | The Leptos components. They set classes and `data-*` hue keys only. |
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
-| `src/app/room_actions.rs` | List and collection menus, rename and delete dialogs, and the Not synced list. |
+| `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
+| `src/app/repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
 | `src/fixtures.rs` | Invented gallery data with a fixed clock (Saturday 21 November 2026, 10:35). |
@@ -294,11 +296,13 @@ with one key per ID so changes to different collections in separate tabs don't o
 follow storage changes; after sync, the app drops keys for collections that no longer exist. If storage is
 unavailable, folding still works for this visit.
 **New list** creates a sibling of the current list, a child of the current collection, or a top-level
-list from a smart room. Each new list gets a swatch.
+list from a smart room. **New collection** creates a collection at the end of the sidebar. Both get a swatch.
 
 Right-click a list or collection in the sidebar, press **Shift+F10** on its link, or use its **…** button.
 A list or collection header has a **Room menu** too. Use Arrow Up/Down to navigate, Enter to act, or
-Escape to close the menu. **Move up** and **Move down** stay within the item's siblings. **Delete**
+Escape to close the menu. **Move up** and **Move down** stay within the item's siblings. **Move to…**
+chooses the collection for a list, or **No collection** for the top level. Moving into a folded collection
+unfolds it. **Colour…** offers the twelve design swatches, with the current swatch ticked. **Delete**
 asks before hiding the item and its contents; the scrim blocks other controls and focus starts on
 **Cancel**. Undo brings back the deleted item and makes its surviving contents visible again.
 
@@ -337,8 +341,9 @@ draws, the row holds in place struck through (`--duration-complete-hold`), then 
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
 running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
-Completion, reorders and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`: it
-queues undo of the whole original event batch, waiting for its authoritative event if necessary. A tab never
+Completion, reorders, list moves, colour changes, repeat changes, tag edits and membership changes, web link edits,
+and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`. It queues undo of
+the whole original event batch, waiting for its authoritative event if necessary. A tab never
 cancels the original locally, because another tab may already be sending it. For recurring tasks, Undo reopens
 the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
 refusals are also listed in Not synced, in plain language. Reduced motion turns movement into instant changes.
@@ -352,8 +357,23 @@ blank field clears both the date and any repeat rule. Choose any of the four lev
 field (also reachable with **Shift+P**), or press **P** to cycle none → low → normal → high → none. The
 Important star still toggles high priority. Click a step's title to rename it, or use the step's up,
 down and delete buttons (visible on hover or keyboard focus on desktop, always visible on phones).
-The Undo toast restores a deleted step. Reminder, Repeat and Tags are still labelled read-only. On a narrower viewport,
-the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
+The Undo toast restores a deleted step. A set reminder is shown but is read-only.
+
+**Repeat** (or **R**) offers Daily, Weekdays, Weekly, Monthly and Yearly, plus **Custom…** for an
+interval, unit and days of the week. **Don’t repeat** keeps the due date. Setting repeat on an undated
+task picks the first matching date on or after today, in the same undoable change. The summary uses
+the shared repeat description.
+
+**Tags** (or **T**) opens the tag picker. Select a tag to put it on or take it off the task without
+closing the picker. Type to filter, or create a new tag with that name and attach it. Undo detaches it;
+the new tag remains available for other tasks. Open a tag’s chevron (or press **Right** on the tag) to
+rename, recolour or delete it. A delete confirmation rechecks the tag and its live task count on confirm
+and asks again if they changed. Deleting hides that tag on every task; Undo restores it and its memberships.
+
+In **Links**, type a web address (or press **L** to focus the field). For a bare host like `example.com`
+the shared builder adds `https://`. Remove a web link with its remove button; Undo brings it back.
+
+On a narrower viewport, the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
 scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
 While the detail is modal, Undo and other toast feedback appear in its own bottom strip, above the scrim.
@@ -380,7 +400,8 @@ of scope for now, and the generated 192 and 512 px and maskable icons are ready 
 
 Keyboard: **J/K** or the arrows move the selection, **Space** toggles a selected task from the list, **E**
 edits the detail title, **D** edits its due date, **P** cycles priority (**Shift+P** focuses the picker),
-**Alt+Up/Down** reorders in a list, and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
+**R** opens repeat, **T** opens tags, **L** focuses the link field, **Alt+Up/Down** reorders in a list,
+and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
 the active editor, overlay or filter. App shortcuts don't run while typing and held keys don't repeat actions.
 The status bar shows shortcuts only when their actions are available.
 
@@ -396,7 +417,9 @@ The status bar shows shortcuts only when their actions are available.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, due-date editor, step controls and delete Undo, attachments (empty, uploading, failed, listed
   and removed with Undo), a collapsed collection, sidebar and room menus,
-  rename and delete dialogs, a delete Undo toast, the phone Not synced list, an active query filter, the finished
+  rename and delete dialogs, a delete Undo toast, collection creation, list moves, list and collection swatches,
+  repeat presets and custom repeat, the tag picker and its creation, management, rename, colour and delete views,
+  the link field and removal, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
@@ -408,7 +431,9 @@ The status bar shows shortcuts only when their actions are available.
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
   header being refused. Activity reads confirmed edits from another tab and undoes one through the session.
-  The suite also uploads, downloads and removes a file with the web session. Then:
+  The suite also uploads, downloads and removes a file with the web session, sets a repeat rule and sees
+  the next occurrence on completion, adds and removes tags and links across tabs, checks tag delete confirmation
+  against a live change in membership, and moves a list between collections. Then:
   exact Undo of a confirmed recurring completion (including removal of its
   next occurrence), including Undo before the sending tab has a receipt and late feedback preserving a
   newer Undo toast; a live sidebar change leaving the highlighted menu action on the same list;
@@ -453,7 +478,5 @@ The status bar shows shortcuts only when their actions are available.
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
-- **Editing more fields.** Reminders, repeat rules and tags are shown but not editable yet. Moving tasks
-  between lists and creating collections aren't available.
-- **The wasm size.** About 4.5 MB (0.7 MB gzipped). `wasm-opt` and Leptos's `erase_components` haven't been
-  tried in the release build yet.
+- **Editing more fields.** Reminders are shown but are not editable yet. Moving tasks between lists isn't available.
+- **The wasm size.** `wasm-opt` and Leptos's `erase_components` haven't been tried in the release build yet.

@@ -456,6 +456,141 @@ test("upload refusals show fixed wording, not the server message", async () => {
   await page.close();
 });
 
+test("set a repeat in detail, then complete it and see the next occurrence from the server", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  const list = "0193b2c0-0000-7000-8000-000000000001";
+  const title = "Refill the seed trays";
+  await page.locator(".sidebar").getByRole("link", { name: /^Inbox/ }).click();
+  await add(page, title);
+  await row(page, title).locator(".row-title").click();
+  await page.getByRole("button", { name: "Repeat", exact: true }).click();
+  await page.getByRole("dialog", { name: "Repeat", exact: true }).getByRole("button", { name: "Daily" }).click();
+  await expect(page.getByRole("button", { name: "Repeat", exact: true })).toHaveText("Every day");
+  const items = () => page.evaluate(async ({ list, title }) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    const res = await fetch(`/api/v1/lists/${list}/tasks`, { headers: { "X-CSRF-Token": csrf } });
+    if (!res.ok) throw new Error(`Read list: ${res.status}`);
+    return (await res.json()).items.filter((t) => t.title === title);
+  }, { list, title });
+  await expect.poll(items).toEqual([expect.objectContaining({
+    due: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    recurrence: expect.objectContaining({ rule: { freq: "daily", interval: 1 } }),
+  })]);
+  const [first] = await items();
+  await row(page, title).getByRole("checkbox").click();
+  await expect.poll(items).toHaveLength(2);
+  const next = (await items()).find((t) => t.id !== first.id);
+  expect(next.due > first.due).toBe(true);
+  expect(next.completed_at).toBeNull();
+  await expect(row(page, title)).toHaveCount(1); // the original finishes its completion motion first
+  await expect(row(page, title).locator(".row-title")).toHaveAttribute("id", `row-${next.id}`);
+  expect(problems).toEqual([]);
+  await page.close();
+});
+
+test("tags and links sync across tabs, and delete rechecks the tag’s impact at confirmation", async () => {
+  const page = await openApp();
+  const other = await openApp();
+  const firstProblems = watch(page);
+  const otherProblems = watch(other);
+  const title = "Pick swatches for the guide";
+  const second = "Review the guide layout";
+  const tag = "guide-review";
+  const href = "https://example.com/guide";
+  const select = (tab, name) => row(tab, name).locator(".row-title").click();
+  const tags = (tab) => tab.getByRole("button", { name: "Tags", exact: true });
+  const picker = (tab) => tab.getByRole("dialog", { name: "Tags", exact: true });
+  const link = (tab) => tab.locator(`#task-detail a[href="${href}"]`);
+  await add(page, title);
+  await add(page, second);
+  await select(page, title);
+  await tags(page).click();
+  const filter = picker(page).getByRole("textbox", { name: "Type to find or create a tag" });
+  await filter.fill(tag);
+  await filter.press("Enter");
+  await expect(tags(page)).toContainText(tag);
+  await filter.press("Escape");
+  const input = page.getByRole("textbox", { name: "Add a web link" });
+  await input.fill("example.com/guide");
+  await input.press("Enter");
+
+  await select(other, title);
+  await expect(tags(other)).toContainText(tag);
+  await expect(link(other)).toBeVisible();
+  await page.getByRole("button", { name: /Remove link/ }).click();
+  await expect(link(other)).toHaveCount(0);
+  await page.locator(".room-title").focus();
+  await page.keyboard.press("Control+z");
+  await expect(link(other)).toBeVisible();
+  await page.getByRole("button", { name: /Remove link/ }).click();
+  await expect(link(other)).toHaveCount(0);
+
+  await tags(page).click();
+  await picker(page).getByRole("button", { name: tag, exact: true }).click();
+  await expect(tags(other)).not.toContainText(tag);
+  await picker(page).getByRole("button", { name: tag, exact: true }).click();
+  await expect(tags(other)).toContainText(tag);
+  await picker(page).getByRole("button", { name: `Manage tag “${tag}”` }).click();
+  await page.getByRole("button", { name: "Delete tag…" }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete tag" });
+  await expect(confirm).toContainText("It’s on 1 task.");
+
+  // The owner added the tag to another task since the question was presented.
+  await select(other, second);
+  await tags(other).click();
+  await picker(other).getByRole("button", { name: tag, exact: true }).click();
+  await expect(row(page, second)).toContainText(`#${tag}`);
+  const remove = confirm.getByRole("button", { name: "Delete tag", exact: true });
+  await remove.click();
+  await expect(confirm).toContainText("It’s on 2 tasks.");
+  await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await expect(tags(other)).toContainText(tag);
+  await remove.click();
+  await expect(tags(other)).not.toContainText(tag);
+  await page.locator(".room-title").focus();
+  await page.keyboard.press("Control+z");
+  await expect(tags(other)).toContainText(tag);
+  expect([...firstProblems, ...otherProblems]).toEqual([]);
+  await other.close();
+  await page.close();
+});
+
+test("move a list between web-created collections and see the new parent from another tab", async () => {
+  const page = await openApp();
+  const other = await openApp();
+  const problems = watch(page);
+  const collection = (tab, name) => tab.locator(".nav-section").filter({
+    has: tab.getByRole("link", { name, exact: true }),
+  });
+  for (const name of ["Greenhouse", "Workshop"]) {
+    await page.getByRole("button", { name: "New collection" }).click();
+    const input = page.getByRole("textbox", { name: "Collection name" });
+    await input.fill(name);
+    await input.press("Enter");
+    await expect(page.locator(".room-title")).toHaveText(name);
+  }
+  await page.locator(".sidebar").getByRole("link", { name: "Greenhouse", exact: true }).click();
+  await page.getByRole("button", { name: "New list" }).click();
+  const list = page.getByRole("textbox", { name: "List name" });
+  await list.fill("Propagation");
+  await list.press("Enter");
+  const link = (tab, name) => collection(tab, name).getByRole("link", { name: "Propagation", exact: true });
+  await expect(link(other, "Greenhouse")).toBeVisible();
+  await page.getByRole("button", { name: "Room menu" }).click();
+  await page.getByRole("menuitem", { name: "Move to…" }).click();
+  await page.getByRole("dialog", { name: "Move to" }).getByRole("button", { name: "Workshop" }).click();
+  await expect(link(other, "Greenhouse")).toHaveCount(0);
+  await expect(link(other, "Workshop")).toBeVisible();
+  await page.locator(".room-title").focus();
+  await page.keyboard.press("Control+z");
+  await expect(link(other, "Greenhouse")).toBeVisible();
+  await expect(link(other, "Workshop")).toHaveCount(0);
+  expect(problems).toEqual([]);
+  await other.close();
+  await page.close();
+});
+
 test("tracked undo of a confirmed recurring completion restores only the original", async () => {
   const page = await openApp();
   const problems = watch(page);
@@ -590,7 +725,7 @@ test("a live sidebar update cannot retarget a highlighted room action", async ()
   await expect(up).toBeFocused();
 
   await send(id(3), { cmd: "create_list", id: id(4), name: "New sibling", placement: { at: "before", sibling: { kind: "list", id: id(2) } } });
-  const order = sidebar.locator('.nav-item[href^="/app/list/"] .nav-name');
+  const order = sidebar.locator('.nav-item:not(.sub)[href^="/app/list/"] .nav-name');
   await expect(order).toHaveText(["Inbox", "New sibling", "Menu target"]);
   await expect(up).toBeFocused();
   await page.keyboard.press("Enter");
