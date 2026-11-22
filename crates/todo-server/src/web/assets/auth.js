@@ -246,7 +246,7 @@
     if (setupForm) setupForm.addEventListener("submit", setup);
     const inviteForm = root.querySelector('form[data-action="redeem-invite"]');
     if (inviteForm) bindInvite(inviteForm);
-    root.querySelectorAll('form[method="post"]').forEach(function (f) {
+    root.querySelectorAll('form[method="post"]:not([data-action="redeem-invite"])').forEach(function (f) {
       const action = f.getAttribute("action") || "";
       if (action.indexOf("/admin/") === 0 || action.indexOf("/pair/") === 0) {
         f.addEventListener("submit", submitInPlace);
