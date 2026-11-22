@@ -284,8 +284,10 @@ maps its own room key to the shared task intent. This resolves the creation drif
 ## Work package: list suggestion
 
 The shared `todo_client::intent::suggest::ListSuggester` learns from live tasks, including completed
-ones. It ranks lists from folded title words, word pairs and character fragments, without storing
-training titles. A list needs three training tasks; the default confidence threshold is 0.9.
+ones. Pass the title returned by `quick_add::parse`, not the raw composer text. The model keeps sparse
+counts of hashed words, word pairs and character fragments, not training titles. It abstains unless
+at least two live lists have three training tasks each, the folded title has a word of at least three
+characters, and it recognizes a feature. The default confidence threshold is 0.9.
 The model checks the winner against the current replica before suggesting it. UI integration in
 My Day, Planned, Important and All is pending on every client; the current destination is unchanged.
 

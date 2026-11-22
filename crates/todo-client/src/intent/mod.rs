@@ -455,10 +455,8 @@ mod tests {
         w.run(Command::Delete { id: deleted.into() });
         let mut model = ListSuggester::from_state(&w.state);
         // The deleted example must not qualify the class. Completion must not disqualify it.
-        assert_ne!(
-            model.suggest("zluta repa", &w.state).map(|s| s.list),
-            Some(seeds)
-        );
+        assert_eq!(model.suggest("zluta repa", &w.state), None);
+        assert_eq!(model.suggest("blue wrench", &w.state), None);
         w.task(seeds, "ŽLUTÁ ŘEPA");
         model.observe("ŽLUTÁ ŘEPA", seeds);
         let expected = model.suggest("zluta repa", &w.state).unwrap();
@@ -473,8 +471,35 @@ mod tests {
         }
         w.run(Command::Delete { id: seeds.into() });
         assert_eq!(model.suggest("zluta repa", &w.state), None);
+        assert_eq!(model.suggest("blue wrench", &w.state), None);
         w.state.lists.remove(&seeds);
         assert_eq!(model.suggest("zluta repa", &w.state), None);
+    }
+
+    #[test]
+    fn short_or_unseen_input_abstains_even_with_a_dominant_list() {
+        let mut w = World::new();
+        let a = w.list("A");
+        let b = w.list("B");
+        let c = w.list("C");
+        let mut model = suggest::ListSuggester::default();
+        for i in 0..3 {
+            model.observe("spare wrench", a);
+            model.observe(&format!("zz{i}"), c);
+        }
+        for i in 0..200 {
+            model.observe(
+                &format!("weekly status report number {i} for project alpha"),
+                b,
+            );
+        }
+        assert_eq!(model.suggest("xq", &w.state), None);
+        // Even a known short word ("zz") is insufficient. Unseen long words cannot win on priors.
+        model.observe("zz", c);
+        let permissive = model.with_threshold(0.);
+        for title in ["xq", "a zz", "ΨΨΨ"] {
+            assert_eq!(permissive.suggest(title, &w.state), None, "{title}");
+        }
     }
 
     #[test]
