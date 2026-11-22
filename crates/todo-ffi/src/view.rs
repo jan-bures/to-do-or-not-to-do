@@ -392,6 +392,8 @@ pub enum FieldEdit {
     Due,
     /// The priority (four levels).
     Priority,
+    /// The reminder (a date and time picker).
+    Reminder,
 }
 
 /// A property row in the detail pane.
@@ -448,6 +450,9 @@ pub struct TaskDetail {
     pub due: Option<String>,
     /// It has a repeat rule, which clearing the due date also clears.
     pub repeats: bool,
+    /// The reminder the Reminder row shows and edits (`intent::reminder::shown`), in milliseconds since
+    /// the Unix epoch, for its picker.
+    pub reminder_at: Option<i64>,
     /// Collection and list chips ("Personal / Admin").
     pub breadcrumb: Vec<Chip>,
     /// "Created 12 Nov / Edited today 08:50".
@@ -1074,7 +1079,6 @@ pub fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
 pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
     let id: TaskId = id.parse().ok()?;
     let task = state.tasks.get(&id).filter(|t| task_live(state, t))?;
-    let ix = Index::new(state, now);
     let today = now.today();
     let mut subtitle = format!(
         "Created {}",
@@ -1131,16 +1135,15 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             empty: task.priority == Priority::None,
         },
     ];
-    if let Some(at) = ix.reminder.get(&id) {
-        fields.push(DetailField {
-            edit: None,
-            icon: "bell".into(),
-            label: "Reminder".into(),
-            value: labels::when(*at, now),
-            mono: true,
-            empty: false,
-        });
-    }
+    let reminder = todo_client::intent::reminder::shown(state, id, &now.eval()).map(|r| r.at);
+    fields.push(DetailField {
+        edit: Some(FieldEdit::Reminder),
+        icon: "bell".into(),
+        label: "Reminder".into(),
+        value: reminder.map_or_else(|| "–".into(), |at| labels::when(at, now)),
+        mono: reminder.is_some(),
+        empty: reminder.is_none(),
+    });
     fields.push(DetailField {
         edit: None,
         icon: "repeat".into(),
@@ -1220,6 +1223,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         priority: priority_marks(task.priority),
         due: task.due.map(|d| d.to_string()),
         repeats: task.recurrence.is_some(),
+        reminder_at: reminder.map(|at| at.as_millisecond()),
         breadcrumb,
         subtitle,
         steps: steps

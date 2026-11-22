@@ -48,7 +48,9 @@ impl EvalContext {
         }
     }
 
-    fn local_date(&self, ts: Timestamp) -> Date {
+    /// The owner's local date of `ts`.
+    #[must_use]
+    pub fn local_date(&self, ts: Timestamp) -> Date {
         let shifted = Timestamp::from_second(ts.as_second() + i64::from(self.utc_offset_seconds));
         utc_date(shifted.unwrap_or(ts))
     }

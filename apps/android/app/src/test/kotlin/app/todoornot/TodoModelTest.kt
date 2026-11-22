@@ -3,6 +3,7 @@ package app.todoornot
 import app.todoornot.core.Completion
 import app.todoornot.core.quickAddDate
 import app.todoornot.core.FailedChange
+import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
 import app.todoornot.core.LocalNow
 import app.todoornot.core.NoHandle
@@ -1833,5 +1834,72 @@ class TodoModelTest {
         s.drain()
         assertEquals(null, results.last())
         assertEquals("That list was deleted elsewhere.", m.ui.value.toast?.text)
+    }
+
+    @Test
+    fun reminders_are_set_moved_and_removed_from_the_detail_pane_with_undo() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        fun row() = m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }
+        val before = requireNotNull(m.ui.value.detail?.reminderAt)
+        assertEquals("Today, 18:00", row().value)
+        // Tomorrow at 15:00 local (UTC+1).
+        val at = java.time.Instant.parse("2026-11-22T14:00:00Z").toEpochMilli()
+        m.setReminder(id, at)
+        s.drain()
+        assertEquals(at, m.ui.value.detail?.reminderAt)
+        assertEquals("Tomorrow, 15:00", row().value)
+        val moved = m.ui.value.toast!!
+        assertEquals("Reminder set for Tomorrow, 15:00", moved.text)
+        assertTrue(moved.undoable)
+        m.undo(moved)
+        m.undo(moved) // A second tap on the same toast does nothing.
+        s.drain()
+        assertEquals(before, m.ui.value.detail?.reminderAt)
+        assertNull(m.ui.value.toast)
+
+        m.setReminder(id, null)
+        s.drain()
+        assertNull(m.ui.value.detail?.reminderAt)
+        assertEquals("–", row().value)
+        assertTrue(row().empty)
+        val removed = m.ui.value.toast!!
+        assertEquals("Reminder removed", removed.text)
+        m.undo(removed)
+        s.drain()
+        assertEquals(before, m.ui.value.detail?.reminderAt)
+
+        // A time that has passed is refused in plain words, and nothing is queued.
+        val pending = m.ui.value.status.pending
+        m.setReminder(id, FIXTURE_NOW.epochMs - 60_000)
+        s.drain()
+        assertEquals("Pick a time that hasn't passed.", m.ui.value.toast?.text)
+        assertFalse(m.ui.value.toast!!.undoable)
+        assertEquals(pending, m.ui.value.status.pending)
+    }
+
+    @Test
+    fun completing_from_a_reminder_goes_through_the_apps_command() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (_, id) = s.openAdmin()
+        val pending = m.ui.value.status.pending
+        assertTrue(m.engine.reminderAlarms(0, FIXTURE_NOW).any { it.task == id })
+        var done: Boolean? = null
+        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) }
+        s.drain()
+        assertEquals(true, done)
+        assertEquals(true, m.engine.taskDone(id))
+        assertEquals(true, m.ui.value.detail?.done)
+        assertEquals(pending + 1u, m.ui.value.status.pending)
+        // No toast to undo it: the notification is the owner's only view of it.
+        assertNull(m.ui.value.toast)
+        // A done task alerts for nothing.
+        assertTrue(m.engine.reminderAlarms(0, FIXTURE_NOW).none { it.task == id })
+        // Completing it again (a second tap on a stale notification) changes nothing.
+        s.scope.launch { done = m.completeFromNotification(id, syncFor = 0) }
+        s.drain()
+        assertEquals(pending + 1u, m.ui.value.status.pending)
     }
 }

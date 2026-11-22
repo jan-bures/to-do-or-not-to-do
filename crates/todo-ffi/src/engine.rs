@@ -26,7 +26,7 @@ use todo_client::{
 };
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
 use todo_core::model::Entity;
-use todo_core::time::Date;
+use todo_core::time::{Date, Timestamp};
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
@@ -135,6 +135,25 @@ pub struct Deletion {
 #[derive(Debug, uniffi::Object)]
 pub struct TaskMove(TrackedCommand);
 
+/// The exact reminder change (set, moved or removed) the toast can undo.
+#[derive(Debug, uniffi::Object)]
+pub struct ReminderChange(TrackedCommand);
+
+/// A reminder the phone alerts for (`intent::reminder::alarms`).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReminderAlarm {
+    /// Reminder ID: one alarm per reminder.
+    pub id: String,
+    /// Its task, for the notification's actions.
+    pub task: String,
+    /// The task's title, on one line (task content: never log it).
+    pub title: String,
+    /// When it fires, in milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    /// When it fires, in words: "Today, 15:30".
+    pub label: String,
+}
+
 /// One destination in the Move to… picker.
 #[derive(Debug, uniffi::Record)]
 pub struct Destination {
@@ -182,6 +201,7 @@ enum Undone {
     Completion,
     Step,
     List,
+    Reminder,
 }
 
 impl Undone {
@@ -201,6 +221,7 @@ impl Undone {
             Self::Completion => "Undo a completion",
             Self::Step => "Undo deleting a step",
             Self::List => "Undo deleting a list",
+            Self::Reminder => "Undo a reminder change",
         }
     }
 
@@ -209,6 +230,7 @@ impl Undone {
             Self::TaskDelete | Self::TaskMove | Self::Completion => "task",
             Self::Step => "step",
             Self::List => "list",
+            Self::Reminder => "reminder",
         }
     }
 }
@@ -407,6 +429,10 @@ impl TodoEngine {
                     .map(|t| Arc::new(TaskMove(t)))
             })
             .transpose()?)
+    }
+
+    fn track_reminder(&self, cmd: Command) -> Result<Arc<ReminderChange>, FfiError> {
+        Ok(Arc::new(ReminderChange(self.client.submit_tracked(cmd)?)))
     }
 
     /// Deletes a live step or list, tracked for its Undo.
@@ -740,6 +766,69 @@ impl TodoEngine {
         let (id, state) = self.live_task(&id)?;
         self.submit_some(intent::pick_priority(&state, id, priority))?;
         Ok(())
+    }
+
+    /// Sets the task's reminder (the one its Reminder row shows) to `at_ms`, milliseconds since the Unix
+    /// epoch: moves it, or adds one (`intent::reminder::set_reminder`). `None` when it is already then.
+    /// A time that has passed is refused. The handle undoes exactly this change.
+    pub fn set_reminder(
+        &self,
+        id: String,
+        at_ms: i64,
+        now: LocalNow,
+    ) -> Result<Option<Arc<ReminderChange>>, FfiError> {
+        let at = Timestamp::from_millisecond(at_ms).map_err(|_| invalid("That isn't a time."))?;
+        let (id, state) = self.live_task(&id)?;
+        let now = Now::new(now);
+        let Some(cmd) =
+            intent::reminder::set_reminder(&state, id, at, &now.eval(), || self.client.new_uuid())
+        else {
+            return Ok(None);
+        };
+        if at <= now.at {
+            return Err(invalid("Pick a time that hasn't passed."));
+        }
+        self.track_reminder(cmd).map(Some)
+    }
+
+    /// Removes the task's reminder (the one its Reminder row shows; `intent::reminder::remove_reminder`).
+    /// `None` when it has none. The handle undoes exactly this removal.
+    pub fn remove_reminder(
+        &self,
+        id: String,
+        now: LocalNow,
+    ) -> Result<Option<Arc<ReminderChange>>, FfiError> {
+        let (id, state) = self.live_task(&id)?;
+        intent::reminder::remove_reminder(&state, id, &Now::new(now).eval())
+            .map(|cmd| self.track_reminder(cmd))
+            .transpose()
+    }
+
+    /// Reverses this exact reminder change. A later conflicting change is not overwritten.
+    pub fn undo_reminder(&self, change: Arc<ReminderChange>) -> Result<(), FfiError> {
+        self.undo_tracked(&change.0, Undone::Reminder)
+    }
+
+    /// The reminders to alert for, from `since_ms` on (milliseconds since the Unix epoch), earliest
+    /// first: live reminders of open tasks (`intent::reminder::alarms`). One that's missing has been
+    /// removed, or its task completed or deleted, here or elsewhere.
+    pub fn reminder_alarms(&self, since_ms: i64, now: LocalNow) -> Vec<ReminderAlarm> {
+        let state = self.client.view();
+        let since = Timestamp::from_millisecond(since_ms).unwrap_or(Timestamp::UNIX_EPOCH);
+        let now = Now::new(now);
+        intent::reminder::alarms(&state, since)
+            .into_iter()
+            .filter_map(|a| {
+                let task = state.tasks.get(&a.task)?;
+                Some(ReminderAlarm {
+                    id: a.reminder.to_string(),
+                    task: a.task.to_string(),
+                    title: crate::labels::one_line(&task.title),
+                    at_ms: a.at.as_millisecond(),
+                    label: crate::labels::when(a.at, &now),
+                })
+            })
+            .collect()
     }
 
     /// Deletes a task immediately. The toast holds the exact deletion for Undo.
@@ -1385,6 +1474,117 @@ mod tests {
     }
 
     #[test]
+    fn reminders_queue_exactly_the_shared_builders_and_undo_them() {
+        let now = fixture_now();
+        let e = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let id = e
+            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .expect("task");
+        let task = task_id(&id).expect("id");
+        let ctx = Now::new(now).eval();
+        let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
+        let later: Timestamp = "2026-11-22T08:00:00Z".parse().expect("timestamp");
+        let from = e.client.pending().len();
+
+        let state = e.state();
+        e.set_reminder(id.clone(), at.as_millisecond(), now)
+            .expect("set")
+            .expect("handle");
+        let Some(Command::AddReminder { id: reminder, .. }) = queued(&e, from).first().cloned()
+        else {
+            panic!("expected an added reminder");
+        };
+        let mut expected = vec![
+            intent::reminder::set_reminder(&state, task, at, &ctx, || reminder.as_uuid())
+                .expect("add"),
+        ];
+        assert_eq!(
+            e.task(id.clone(), now).expect("task").reminder_at,
+            Some(at.as_millisecond())
+        );
+        // The same time again queues nothing.
+        assert!(
+            e.set_reminder(id.clone(), at.as_millisecond(), now)
+                .expect("same")
+                .is_none()
+        );
+        let state = e.state();
+        let moved = e
+            .set_reminder(id.clone(), later.as_millisecond(), now)
+            .expect("move")
+            .expect("handle");
+        expected.push(
+            intent::reminder::set_reminder(&state, task, later, &ctx, Uuid::nil).expect("move"),
+        );
+        let state = e.state();
+        let removed = e
+            .remove_reminder(id.clone(), now)
+            .expect("remove")
+            .expect("handle");
+        expected.push(intent::reminder::remove_reminder(&state, task, &ctx).expect("remove"));
+        assert!(e.remove_reminder(id.clone(), now).expect("none").is_none());
+        assert_eq!(queued(&e, from), expected);
+        let detail = e.task(id.clone(), now).expect("task");
+        assert_eq!(detail.reminder_at, None);
+        let row = detail
+            .fields
+            .iter()
+            .find(|f| f.label == "Reminder")
+            .expect("the row is always there");
+        assert_eq!(
+            (row.edit, row.empty),
+            (Some(view::FieldEdit::Reminder), true)
+        );
+
+        // Undo brings back exactly what each change replaced.
+        e.undo_reminder(removed).expect("undo");
+        assert_eq!(
+            e.task(id.clone(), now).expect("task").reminder_at,
+            Some(later.as_millisecond())
+        );
+        e.undo_reminder(moved).expect("undo");
+        assert_eq!(
+            e.task(id.clone(), now).expect("task").reminder_at,
+            Some(at.as_millisecond())
+        );
+
+        // A time that has passed is refused, and queues nothing.
+        let pending = e.client.pending().len();
+        let past = Timestamp::from_millisecond(now.epoch_ms - 60_000).expect("past");
+        assert!(matches!(
+            e.set_reminder(id.clone(), past.as_millisecond(), now),
+            Err(FfiError::Invalid { .. })
+        ));
+        assert_eq!(e.client.pending().len(), pending);
+    }
+
+    #[test]
+    fn alarms_follow_the_reminders_of_open_tasks() {
+        let now = fixture_now();
+        let e = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let id = e
+            .add_task(RoomKey::default(), "Call the dentist".into(), now)
+            .expect("task");
+        let at: Timestamp = "2026-11-21T14:00:00Z".parse().expect("timestamp");
+        e.set_reminder(id.clone(), at.as_millisecond(), now)
+            .expect("set");
+        let alarms = e.reminder_alarms(now.epoch_ms, now);
+        assert_eq!(alarms.len(), 1);
+        assert_eq!(alarms[0].task, id);
+        assert_eq!(alarms[0].title, "Call the dentist");
+        assert_eq!(alarms[0].at_ms, at.as_millisecond());
+        assert_eq!(alarms[0].label, "Today, 14:00");
+        // Gone once it has passed the window's start, and while its task is done.
+        assert!(e.reminder_alarms(at.as_millisecond() + 1, now).is_empty());
+        let done = e.set_done(id.clone(), true).expect("done").expect("handle");
+        assert!(e.reminder_alarms(now.epoch_ms, now).is_empty());
+        e.undo_completion(done).expect("undo");
+        assert_eq!(e.reminder_alarms(now.epoch_ms, now).len(), 1);
+        e.fixture_delete_task(id).expect("delete");
+        assert!(e.reminder_alarms(now.epoch_ms, now).is_empty());
+    }
+
+    #[test]
     fn clearing_the_due_date_also_clears_the_repeat() {
         use todo_core::command::TaskPatch;
         use todo_core::recurrence::{Recurrence, Rule};
@@ -1468,6 +1668,7 @@ mod tests {
             Some(Undone::Completion),
             Some(Undone::Step),
             Some(Undone::List),
+            Some(Undone::Reminder),
         ] {
             for code in [
                 "undo_conflict",

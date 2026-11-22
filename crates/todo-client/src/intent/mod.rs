@@ -7,6 +7,7 @@
 
 pub mod organize;
 pub mod quick_add;
+pub mod reminder;
 pub mod repeat;
 pub mod suggest;
 

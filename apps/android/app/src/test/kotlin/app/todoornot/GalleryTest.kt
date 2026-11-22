@@ -55,6 +55,9 @@ import app.todoornot.ui.DialogBackdrop
 import app.todoornot.ui.DueDateCard
 import app.todoornot.ui.MenuCard
 import app.todoornot.ui.RenameCard
+import app.todoornot.ui.ReminderAccessCard
+import app.todoornot.ui.ReminderCard
+import app.todoornot.reminders.ReminderNeed
 import app.todoornot.ui.MainScreen
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
@@ -453,6 +456,68 @@ class GalleryTest {
         val s2 = state(e2, admin2, select = id2)
         overlaid("due_date_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
             DialogBackdrop { DueDateCard(s2.detail?.due, s2.today, repeats = true, onSave = {}, onCancel = {}, markToday = false) }
+        }
+    }
+
+    /**
+     * The Reminder row, set (the passport task's, today at 18:00) and empty (a new task's), with its
+     * chevron: it always opens the reminder picker.
+     */
+    @Test
+    fun reminder_row() {
+        for (dark in listOf(false, true)) {
+            val suffix = if (dark) "dark" else "light"
+            val (e, admin, id) = admin()
+            main("reminder_row_set_$suffix", COVER, state(e, admin, select = id), dark)
+            val fresh = e.addTask(admin, "Book the car service", FIXTURE_NOW)
+            main("reminder_row_empty_$suffix", COVER, state(e, admin, select = fresh), dark)
+        }
+    }
+
+    /**
+     * The reminder picker over the task: the date picker and the 24-hour time input, on the reminder's day
+     * and time, with Remove; for a task without one, on the next whole hour, with nothing to remove; and in
+     * a short window, where it scrolls under the buttons.
+     */
+    @Test
+    fun reminder_picker() {
+        val zone = java.time.ZoneOffset.ofHours(1)
+        for (dark in listOf(false, true)) {
+            val (e, admin, id) = admin()
+            val s = state(e, admin, select = id)
+            val detail = requireNotNull(s.detail)
+            overlaid("reminder_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
+                DialogBackdrop {
+                    ReminderCard(detail.reminderAt, detail.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false)
+                }
+            }
+        }
+        val (e, admin, _) = admin()
+        val fresh = e.addTask(admin, "Book the car service", FIXTURE_NOW)
+        val s = state(e, admin, select = fresh)
+        overlaid("reminder_picker_new_light", COVER, s, dark = false) {
+            DialogBackdrop { ReminderCard(null, null, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
+        }
+        val (e2, admin2, id2) = admin()
+        val s2 = state(e2, admin2, select = id2)
+        overlaid("reminder_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
+            DialogBackdrop { ReminderCard(s2.detail?.reminderAt, s2.detail?.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
+        }
+    }
+
+    /** Why reminders need notifications (and exact alarms), asked after the first reminder is set. */
+    @Test
+    fun reminder_permission() {
+        for (dark in listOf(false, true)) {
+            val (e, admin, id) = admin()
+            val s = state(e, admin, select = id)
+            overlaid("reminder_permission_${if (dark) "dark" else "light"}", COVER, s, dark) {
+                DialogBackdrop { ReminderAccessCard(ReminderNeed.NOTIFICATIONS, onAllow = {}, onNotNow = {}) }
+            }
+        }
+        val (e, admin, id) = admin()
+        overlaid("reminder_permission_exact_light", COVER, state(e, admin, select = id), dark = false) {
+            DialogBackdrop { ReminderAccessCard(ReminderNeed.EXACT_ALARMS, onAllow = {}, onNotNow = {}) }
         }
     }
 

@@ -52,7 +52,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Pop-out list windows (always on top) | n/a | missing (planned) | n/a | n/a |
 | Drop an email (`.eml`) to create a task | client parses, sends `CreateTask` and `AddLink` | missing (planned) | missing | n/a |
 | Share text into the app | `CreateTask` | n/a | n/a | wired: `A/MainActivity.kt:30` (`ACTION_SEND`) pre-fills the composer |
-| Reminder notifications | reminders stored (`C/command.rs:340`); no push | missing (planned: Windows toasts while in the tray) | missing | missing |
+| Reminder notifications | reminders stored (`C/command.rs:340`); no push. What to alert for: `T/intent/reminder.rs` `alarms` | missing (planned: Windows toasts while in the tray) | missing | wired: local alarms (exact when allowed, else inexact), rescheduled after every sync change, a reboot and a clock or time-zone change; a notification on the Reminders channel with Complete (the app's own command, which syncs) and Snooze 10 min; missed reminders from the last 24 hours shown once (`A/reminders/ReminderPlan.kt`, `A/reminders/Reminders.kt`, `A/reminders/AndroidAlarms.kt`, `F/engine.rs::reminder_alarms`) |
 | Address-bar routes for rooms and tasks | n/a | n/a | wired `W/app.rs:153`, `W/app.rs:161` | n/a |
 
 ### Pairing, account and sync
@@ -139,7 +139,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | wired: up/down buttons (`W/app.rs`, `DetailStep`) | wired: Move up and down in its ⋯ menu (`A/ui/Detail.kt`, `F/engine.rs::move_step`) |
 | Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button with Undo (`W/app.rs`, `DetailStep`) | wired, with undo (`A/ui/Detail.kt`, `F/engine.rs::delete_step`, `undo_deletion`) |
 | Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | wired: the Due row opens a Material date picker in the tokens' colours and type; Clear also clears the repeat (`A/ui/Editing.kt` `DueDateCard`, `F/engine.rs::set_due`, `T/intent/mod.rs` `set_due`) |
-| Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | shown |
+| Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete`. Builders: `T/intent/reminder.rs` (`set_reminder`, `remove_reminder`, which reminder the row shows) | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | wired: the Reminder row is always there and opens a date and time picker; set, change or remove, with Undo (`A/ui/Reminders.kt` `ReminderCard`, `F/engine.rs::set_reminder`, `remove_reminder`, `undo_reminder`) |
 | Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | wired: always-present Repeat row, Tab or R; presets, custom interval/unit/weekly days and Don’t repeat. An undated task gets its first matching due date on or after today in the same undoable patch (`D/model/menus/repeat.rs`, `T/intent/repeat.rs`). Clearing Due clears Repeat. | shown "read only" | shown. Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`), and the date picker says so. |
 | Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | wired: the detail pane's Tags row (always there, each tag a dot in its colour) or T opens the tag picker; choosing a tag puts it on or takes it off, and the picker stays open (`D/model/derive.rs:764`, `D/model/menus.rs:1133`, `D/ui/shell/menu.rs:576`, `T/intent/organize.rs:293`) | shown "read only" | shown |
 | Create, rename, recolour or delete a tag | `CreateTag` / `UpdateTag` / `Delete` | wired: type a new name into the tag picker to create it (and put it on the task); a tag's own page (its chevron, or Right) renames it (any tag) in place in the Tags row or recolours it; names stay unique ignoring case, as the core compares them (`to_lowercase`, so composed and decomposed accents are still two names; the search fold would merge them but the core doesn't use it) (`D/ui/shell/menu.rs:733`, `D/model/menus.rs:1187`, `T/intent/organize.rs:250`, `:268`). Delete tag… confirms with the live task count, rechecked on confirm; Undo restores it (`D/model/menus.rs::tag_confirm`, `D/ui/shell/undo.rs`). | missing | missing |
@@ -191,7 +191,8 @@ Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), 
 - **Tags.** Creating, renaming and recolouring them, and attaching and detaching them on a task, are
   on the desktop only. Only the desktop deletes a tag (`Delete`).
 - **Reminders.** Add, change and delete (`AddReminder`, `UpdateReminder`; MCP `add_reminder`,
-  `update_reminder`).
+  `update_reminder`). Android now edits one per task, the one its Reminder row shows; the desktop and the
+  web don't yet.
 - **Repeat rules.** Editable on the desktop only (`UpdateTask.recurrence`; MCP `update_task`).
 - **Links.** Adding and deleting a web link are on the desktop only.
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
@@ -262,8 +263,8 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.7 | **Done.** Lists: rename, delete, reorder; collections: rename, reorder. | M |
 | 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
 | 4.9 | **Done.** Agent summary in the drawer. | S |
-| 4.10 | Reminder notifications (local alarms from synced reminders). | L |
-| 4.11 | **Done: task actions** (menu, delete, move between lists, manual reorder and undo). Still missing: tags, reminders and repeat. The shared builders for tags and links (`intent::toggle_tag`, `tag_task_named`, `add_link`, `delete_link`) and for collections and colours (`intent::create_collection`, `move_list`, `set_color`) exist. | — |
+| 4.10 | **Done.** Reminder notifications: local alarms from the synced reminders, with Complete and Snooze 10 min, and a Reminder row that sets, changes and removes a reminder. | L |
+| 4.11 | **Done: task actions** (menu, delete, move between lists, manual reorder and undo) and reminders (4.10). Still missing: tags and repeat. The shared builders for tags and links (`intent::toggle_tag`, `tag_task_named`, `add_link`, `delete_link`) and for collections and colours (`intent::create_collection`, `move_list`, `set_color`) exist. | — |
 
 ## Shared gesture-to-command code
 
@@ -280,6 +281,9 @@ maps its own room key to the shared task intent. This resolves the creation drif
   list, a list moves last into its new collection, colours are only the design's swatches, a typed link
   is checked by the core's own rules (`todo_core::decide::validate_link`), and tag names stay unique
   ignoring case, as the domain requires.
+- `intent::reminder` picks the reminder a task's Reminder row shows and edits (the first from the local
+  today, else the latest), builds the commands that set, move or remove it, and lists what a client
+  should alert for (`alarms`). Android uses it; the desktop's toasts (2.4) and the web can reuse it.
 - Web and Android parse the same trailing date and priority as desktop. All three preview the parsed date while typing.
 
 ## Work package: list suggestion

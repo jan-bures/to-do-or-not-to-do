@@ -68,6 +68,8 @@ import app.todoornot.model.MenuAction
 import app.todoornot.model.UiState
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.stepMenu
+import app.todoornot.reminders.ReminderNeed
+import java.time.ZoneId
 import kotlinx.coroutines.delay
 
 private val P = Tokens.Metrics.Phone
@@ -317,12 +319,16 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
 
 /**
  * The property rows. Due opens the date picker; Priority opens its picker, all four levels with the
- * current one ticked. Reminder, Repeat and Tags are shown only.
+ * current one ticked; Reminder opens the date and time picker. Repeat and Tags are shown only. After the
+ * owner sets a reminder, the app asks for what reminders need, if anything ([LocalReminderAccess]).
  */
 @Composable
 private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
     var pickingDue by rememberSaveable { mutableStateOf(false) }
     var pickingPriority by remember { mutableStateOf(false) }
+    var pickingReminder by rememberSaveable { mutableStateOf(false) }
+    var asking by remember { mutableStateOf<ReminderNeed?>(null) }
+    val access = LocalReminderAccess.current
     detail.fields.forEach { f ->
         when (f.edit) {
             FieldEdit.DUE -> FieldRow(f, "Change the due date") { pickingDue = true }
@@ -338,12 +344,28 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
                     )
                 }
             }
+            FieldEdit.REMINDER -> FieldRow(f, if (f.empty) "Add a reminder" else "Change the reminder") { pickingReminder = true }
             null -> FieldRow(f)
         }
     }
     if (pickingDue) {
         DueDateDialog(detail.due, today, detail.repeats, onSave = { actions.setDue(detail.id, it) }, onDismiss = { pickingDue = false })
     }
+    if (pickingReminder) {
+        val now = remember { System.currentTimeMillis() }
+        ReminderDialog(
+            detail.reminderAt,
+            detail.due,
+            now,
+            ZoneId.systemDefault(),
+            onSave = { at ->
+                actions.setReminder(detail.id, at)
+                if (at != null) asking = access.toAsk()
+            },
+            onDismiss = { pickingReminder = false },
+        )
+    }
+    asking?.let { need -> ReminderAccessDialog(need, access, onDone = { asking = null }) }
 }
 
 @Composable

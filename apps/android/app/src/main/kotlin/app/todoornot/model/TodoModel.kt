@@ -5,10 +5,12 @@ import app.todoornot.core.ChangeListener
 import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
+import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
 import app.todoornot.core.ProblemKind
+import app.todoornot.core.ReminderChange
 import app.todoornot.core.Reopening
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
@@ -28,10 +30,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -42,7 +46,7 @@ data class CompletionAction(val task: String, val target: Completion)
 
 /**
  * A short message above the composer, with an optional undo: of a completion (which plays the row's
- * motion back), a deletion or a move.
+ * motion back), a deletion, a move or a reminder change.
  */
 data class Toast(
     val serial: Long,
@@ -51,8 +55,9 @@ data class Toast(
     val deletion: Deletion? = null,
     val moved: TaskMove? = null,
     val swap: TaskSwap? = null,
+    val reminder: ReminderChange? = null,
 ) {
-    val undoable: Boolean get() = completion != null || deletion != null || moved != null
+    val undoable: Boolean get() = completion != null || deletion != null || moved != null || reminder != null
 }
 
 /** Everything the main screen shows, read from the engine in one go. */
@@ -735,6 +740,11 @@ class TodoModel(
 
     override fun undo(t: Toast) {
         if (toast?.serial != t.serial) return
+        t.reminder?.let { change ->
+            show(null)
+            act { engine.undoReminder(change) }
+            return
+        }
         t.deletion?.let { deletion ->
             show(null)
             act { engine.undoDeletion(deletion)?.let { show(Toast(++serial, it)) } }
@@ -872,6 +882,42 @@ class TodoModel(
 
     override fun setPriority(id: String, marks: Int) = act { engine.setPriority(id, marks.coerceIn(0, 3).toUByte()) }
 
+    /**
+     * Sets the task's reminder to [atMs] (milliseconds since the Unix epoch), or removes it (null). The
+     * toast says when it is now and offers Undo, which reverses exactly this change.
+     */
+    override fun setReminder(id: String, atMs: Long?) = act {
+        val change = if (atMs == null) engine.removeReminder(id, now()) else engine.setReminder(id, atMs, now())
+        change ?: return@act
+        val text = if (atMs == null) {
+            "Reminder removed"
+        } else {
+            engine.task(id, now())?.fields?.firstOrNull { it.edit == FieldEdit.REMINDER && !it.empty }
+                ?.let { "Reminder set for ${it.value}" } ?: "Reminder set"
+        }
+        show(Toast(++serial, text, reminder = change))
+    }
+
+    /**
+     * Completes a task from its reminder's notification: the same command as the checkbox's, so it syncs.
+     * No row plays (the app is usually not on screen; a change from elsewhere settles anything that does)
+     * and no toast offers Undo. With the app in the background it syncs for up to [syncFor] ms, to send the
+     * completion now, then stops again. Returns whether the task is done.
+     */
+    suspend fun completeFromNotification(id: String, syncFor: Long = NOTIFICATION_SYNC_MS): Boolean {
+        val error = writeEdit { engine.setDone(id, true) }
+        scope.launch { refresh() }
+        if (error != null) return false
+        if (!foreground && syncFor > 0) {
+            withContext(io) { lifecycle.withLock { if (!foreground) engine.start() } }
+            withTimeoutOrNull(syncFor) {
+                while (withContext(io) { engine.status().pending } > 0u) delay(SYNC_POLL_MS)
+            }
+            withContext(io) { lifecycle.withLock { if (!foreground) engine.stop() } }
+        }
+        return true
+    }
+
     override fun renameStep(id: String, title: String) = act { engine.renameStep(id, title) }
 
     override fun moveStep(id: String, by: Int) = act { engine.moveStep(id, by) }
@@ -1007,3 +1053,8 @@ class TodoModel(
         }
     }
 }
+
+/** How long a completion from a notification syncs for, with the app in the background. */
+const val NOTIFICATION_SYNC_MS = 8_000L
+
+private const val SYNC_POLL_MS = 250L

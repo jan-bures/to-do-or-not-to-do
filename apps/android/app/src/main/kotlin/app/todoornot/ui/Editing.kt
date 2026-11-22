@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import app.todoornot.design.LocalDesign
+import app.todoornot.design.RoomColors
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import java.time.LocalDate
@@ -60,7 +61,7 @@ fun utcMillisToIso(ms: Long): String = LocalDate.ofEpochDay(Math.floorDiv(ms, DA
  * The type the Material pieces use, from our tokens: day numbers and weekdays in the UI face, the headline
  * in the detail title's style, the month and the buttons as our buttons.
  */
-private fun tokenTypography(): Typography {
+internal fun tokenTypography(): Typography {
     val body = Tokens.Type.BODY.style()
     val label = Tokens.Type.BUTTON_SMALL.style()
     val headline = Tokens.Type.DETAIL_TITLE_PHONE.style()
@@ -98,28 +99,7 @@ fun DueDateCard(
     val r = d.room
     val opening = remember(due, today) { isoToUtcMillis(due ?: today.ifEmpty { LocalDate.now().toString() }) }
     val state = rememberDatePickerState(initialSelectedDateMillis = due?.let(::isoToUtcMillis), initialDisplayedMonthMillis = opening)
-    val colors = DatePickerDefaults.colors(
-        containerColor = r.raised,
-        titleContentColor = r.ink3,
-        headlineContentColor = r.ink,
-        weekdayContentColor = r.ink3,
-        subheadContentColor = r.ink2,
-        navigationContentColor = r.ink2,
-        yearContentColor = r.ink,
-        disabledYearContentColor = r.ink4,
-        currentYearContentColor = r.accentStrong,
-        selectedYearContentColor = r.onAccent,
-        selectedYearContainerColor = r.accentFill,
-        dayContentColor = r.ink,
-        disabledDayContentColor = r.ink4,
-        selectedDayContentColor = r.onAccent,
-        selectedDayContainerColor = r.accentFill,
-        todayContentColor = if (markToday) r.accentStrong else r.ink,
-        todayDateBorderColor = if (markToday) r.accent else Color.Transparent,
-        dayInSelectionRangeContentColor = r.ink,
-        dayInSelectionRangeContainerColor = r.tint,
-        dividerColor = r.line,
-    )
+    val colors = datePickerColors(r, markToday)
     val shape = RoundedCornerShape(Tokens.Radius.XL.dp)
     BoxWithConstraints(modifier) {
     val compact = maxHeight < COMPACT_BELOW
@@ -164,8 +144,34 @@ fun DueDateCard(
     }
 }
 
+/** The Material date picker in the room's colours; [markToday] rings today's date. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun datePickerColors(r: RoomColors, markToday: Boolean) = DatePickerDefaults.colors(
+    containerColor = r.raised,
+    titleContentColor = r.ink3,
+    headlineContentColor = r.ink,
+    weekdayContentColor = r.ink3,
+    subheadContentColor = r.ink2,
+    navigationContentColor = r.ink2,
+    yearContentColor = r.ink,
+    disabledYearContentColor = r.ink4,
+    currentYearContentColor = r.accentStrong,
+    selectedYearContentColor = r.onAccent,
+    selectedYearContainerColor = r.accentFill,
+    dayContentColor = r.ink,
+    disabledDayContentColor = r.ink4,
+    selectedDayContentColor = r.onAccent,
+    selectedDayContainerColor = r.accentFill,
+    todayContentColor = if (markToday) r.accentStrong else r.ink,
+    todayDateBorderColor = if (markToday) r.accent else Color.Transparent,
+    dayInSelectionRangeContentColor = r.ink,
+    dayInSelectionRangeContainerColor = r.tint,
+    dividerColor = r.line,
+)
+
 /** Below this height the date picker drops its headline (the cover screen on its side). */
-private val COMPACT_BELOW = Tokens.Metrics.Phone.INNER_LIST.dp + Tokens.Space.S10.dp * 2
+internal val COMPACT_BELOW = Tokens.Metrics.Phone.INNER_LIST.dp + Tokens.Space.S10.dp * 2
 
 /** Shown when the list changed (renamed, or tasks came or went) while the delete question was open. */
 const val LIST_CHANGED = "The list changed while the question was open. Check it, then confirm again."

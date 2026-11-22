@@ -51,6 +51,15 @@ What the first version does:
   headline and mode toggle, and the calendar scrolls under the buttons, which stay in view. The **Priority** row opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
   high priority or none, as on the desktop.
+- **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none. It
+  opens the reminder picker: the Material date picker and time input (24 hours, as the rest of the app) in
+  the room's colours and the tokens' type, on the overlay surface. It opens on the reminder's own day and
+  time; with none, on 09:00 of a later due date, else on the next whole hour. **Save** keeps a time still
+  to come (a time that has passed can't be saved, and the engine refuses it too), **Remove** takes the
+  reminder away, and the toast offers **Undo** for either, through the tracked undo. A task can carry
+  more than one reminder (an agent can add them); the row shows and edits one, the first from today
+  (else the latest), as `todo_client::intent::reminder` picks it. In a short window the time comes first
+  and the calendar scrolls under the buttons. See *Reminder notifications* below.
 - **Steps.** Tap a step's title to rename it in place (Done or leaving the field keeps a changed title; a
   blank one is dropped). Its **⋯** button opens its menu: **Rename**, **Move up**, **Move down** and
   **Delete step**. A moved step and the one it swaps with glide to their places. Deleting a step shows the
@@ -81,6 +90,44 @@ What the first version does:
 - **Layouts.** Folded (compact width) it is one pane, with the detail over the list. Unfolded it shows the
   list and the detail side by side, like the F2 inner-screen mockup. The header collapses while scrolling
   and while the keyboard is open. Light and dark follow the system.
+
+## Reminder notifications
+
+The phone alerts for the synced reminders with local alarms. Nothing comes from the server: whatever
+device sets a reminder, the phone sees it after a sync and sets its alarm.
+
+- **What gets an alarm.** `TodoEngine.reminderAlarms` lists the live reminders of open tasks
+  (`intent::reminder::alarms`). `reminders/ReminderPlan.kt` decides, purely, which alarms to set or cancel
+  and which notifications to show or hide, and `reminders/Reminders.kt` applies it and remembers what it
+  did (reminder IDs and times only, never task content) in the app's private preferences. Every change the
+  engine reports runs it again, so a reminder removed, or a task completed or deleted, here or on another
+  device, loses its alarm and its notification, and a moved reminder's alarm moves.
+- **Exact or not.** With *Alarms & reminders* allowed, alarms are exact (`setExactAndAllowWhileIdle`);
+  without it, inexact (`setAndAllowWhileIdle`), which Android may deliver a few minutes late.
+- **Set again.** After a reboot or an app update, a clock or time-zone change, or a change to the
+  exact-alarm permission, `ReminderReceiver` sets every alarm again; so does the first pass after the
+  process starts, as a reboot clears them.
+- **The notification** is on the *Reminders* channel: the task's title, when it was for, and two
+  actions. **Complete** completes the task through the app's own command
+  (`TodoModel.completeFromNotification`, the checkbox's `setDone`), so it syncs: with the app in the
+  background, it syncs for up to eight seconds to send it, then stops again. **Snooze 10 min** puts the
+  notification away and shows it again ten minutes later. A snooze is this phone's own: it is never synced
+  and doesn't move the reminder (a repeating task's next reminders stay where they were). Tapping the
+  notification opens the task.
+- **Missed reminders.** A reminder whose time has come is shown once for that time, whether the alarm
+  went off or the app found it due when it started or synced. One missed while the phone was off, or that
+  synced in late, is shown once if its time is within the last 24 hours, and never if it is older. Nothing
+  is shown twice: what was shown is written down before the notification goes up.
+- **Permissions, asked when they matter.** Never at launch: right after the owner sets a reminder, the app
+  says why it needs notifications (Android 13 and later), then Android asks. A later reminder asks for
+  exact alarms the same way (Android 12 and later), opening the system's page. Each is asked once; **Not
+  now** (or Back) is kept.
+- **Unpairing** cancels every alarm and notification.
+- Log lines about reminders are counts, at debug level; never task content.
+
+`RemindersTest` checks the policy against the fixture engine with a fake `AlarmSink` and a clock the test
+sets: which alarms are set, moved or cancelled, what is shown once, snoozes, missed reminders, a restart,
+and unpairing.
 
 ## Motion
 
@@ -188,8 +235,10 @@ Popups and dialogs are windows of their own, which Paparazzi can't draw, so the 
 cards in place over the screen, at rest: the date picker (`due_date_picker`, drawn with today's ring off,
 since the picker reads the device's clock for it), the priority picker, a step being renamed and a step's
 menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
-rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), and the agent
-summary; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
+rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
+reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
+Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
+agent summary; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon
