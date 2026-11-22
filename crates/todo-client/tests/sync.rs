@@ -6,10 +6,11 @@ mod server;
 
 use server::*;
 use std::time::Duration;
-use todo_client::{Connection, MemoryStorage, Replica};
+use todo_client::{Connection, MemoryStorage, Replica, TrackedUndo};
 use todo_core::Command;
-use todo_core::command::{NewTask, Placement};
+use todo_core::command::{NewTask, Placement, TaskPatch};
 use todo_core::ids::{ListId, TaskId};
+use todo_core::recurrence::{Recurrence, Rule};
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -397,6 +398,153 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     assert_eq!(a.failed()[0].rejection.code, "already_undone");
     stop(&a, ha).await;
     stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tracked_undo_restores_a_repeat_as_a_unit_but_refuses_a_conflicting_remote_completion() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, make_list) = new_list(&a, "Undo tracked");
+    a.submit(make_list).unwrap();
+    let task = TaskId::from_uuid(a.new_uuid());
+    let mut repeat = NewTask::new(task, list, "Water seedlings");
+    repeat.due = Some("2026-11-21".parse().unwrap());
+    repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+    a.submit(Command::CreateTask(Box::new(repeat))).unwrap();
+    let complete = Command::CompleteTask { id: task };
+    let first = a.submit_tracked(complete.clone()).unwrap();
+    eventually("another device sees the whole repeat batch", WAIT, || {
+        converged(&a, &server) && converged(&b, &server) && b.view().tasks.len() == 2
+    })
+    .await;
+    b.submit(Command::UpdateTask {
+        id: task,
+        patch: TaskPatch {
+            title: Some("Water the seedlings after lunch".into()),
+            ..TaskPatch::default()
+        },
+    })
+    .unwrap();
+    eventually("a sees the unrelated edit", WAIT, || {
+        a.view().tasks[&task].title.ends_with("lunch")
+    })
+    .await;
+    let preview = a.preview_tracked_undo(&first).unwrap();
+    assert!(!preview.tasks[&task].is_done());
+    assert_eq!(preview.tasks.len(), 1);
+    assert!(matches!(
+        a.undo_tracked(&first).unwrap(),
+        TrackedUndo::Queued(_)
+    ));
+    eventually("the exact inverse reached both clients", WAIT, || {
+        converged(&a, &server) && converged(&b, &server) && !b.view().tasks[&task].is_done()
+    })
+    .await;
+    assert_eq!(b.view().tasks.len(), 1, "the spawned repeat is gone too");
+    assert_eq!(
+        b.view().tasks[&task].title,
+        "Water the seedlings after lunch"
+    );
+
+    // A newer completion of the same task must not be undone, even though the task looks done again.
+    let second = a.submit_tracked(complete.clone()).unwrap();
+    eventually("b sees the new completion", WAIT, || {
+        b.view().tasks[&task].is_done()
+    })
+    .await;
+    b.submit(Command::UncompleteTask { id: task }).unwrap();
+    b.submit(complete).unwrap();
+    eventually("the remote completion settles", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    assert!(a.preview_tracked_undo(&second).is_none());
+    let TrackedUndo::Queued(undo) = a.undo_tracked(&second).unwrap() else {
+        panic!("the undo should be queued")
+    };
+    eventually("server refuses the conflicting undo", WAIT, || {
+        a.failed().iter().any(|f| f.entry.command_id == undo)
+    })
+    .await;
+    assert_eq!(a.failed()[0].rejection.code, "undo_conflict");
+    assert!(a.view().tasks[&task].is_done());
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_can_cancel_the_latest_unsent_command() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let (list, make_list) = new_list(&a, "Undo unsent");
+    a.submit(make_list).unwrap();
+    let (task, make_task) = new_task(&a, list, "Send invoice");
+    a.submit(make_task).unwrap();
+    // There is no send loop yet. Undo must take back just the local completion.
+    let done = a
+        .submit_tracked(Command::CompleteTask { id: task })
+        .unwrap();
+    assert!(a.view().tasks[&task].is_done());
+    assert_eq!(a.undo_tracked(&done).unwrap(), TrackedUndo::Cancelled);
+    assert!(!a.view().tasks[&task].is_done());
+    assert_eq!(a.pending().len(), 2);
+    let ha = spawn(&a);
+    eventually("remaining work syncs", WAIT, || converged(&a, &server)).await;
+    assert!(!server.state().tasks[&task].is_done());
+    assert_eq!(server.head(), 2);
+    stop(&a, ha).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undo_of_a_possibly_sent_completion_previews_immediately_and_survives_restart() {
+    let server = TestServer::start().await;
+    let storage = MemoryStorage::new();
+    let transport = Switch::new(server.transport(TOKEN_A));
+    let a = client(transport.clone(), storage.clone(), alpha());
+    let ha = spawn(&a);
+    let (list, make_list) = new_list(&a, "Undo in flight");
+    a.submit(make_list).unwrap();
+    let (task, make_task) = new_task(&a, list, "Post the letters");
+    a.submit(make_task).unwrap();
+    eventually("task is confirmed", WAIT, || converged(&a, &server)).await;
+
+    transport.set_online(false);
+    let tracked = a
+        .submit_tracked(Command::CompleteTask { id: task })
+        .unwrap();
+    eventually("the completion may have been sent", WAIT, || {
+        a.pending().first().is_some_and(|e| e.attempts > 0)
+    })
+    .await;
+    let TrackedUndo::Queued(id) = a.undo_tracked(&tracked).unwrap() else {
+        panic!("an attempted command cannot be cancelled");
+    };
+    assert!(
+        a.view().tasks[&task].is_done(),
+        "the replica still needs the server's verdict"
+    );
+    assert!(!a.preview_tracked_undo(&tracked).unwrap().tasks[&task].is_done());
+    stop(&a, ha).await;
+    drop(a);
+
+    let a = client(server.transport(TOKEN_A), storage, alpha());
+    let ha = spawn(&a);
+    eventually("completion and undo both reach the server", WAIT, || {
+        server.head() == 4 && converged(&a, &server)
+    })
+    .await;
+    assert!(!a.view().tasks[&task].is_done());
+    assert!(
+        server
+            .stored_command_ids()
+            .contains(&(id.to_string(), "undo".into()))
+    );
+    stop(&a, ha).await;
     server.stop().await;
 }
 

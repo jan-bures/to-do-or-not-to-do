@@ -58,7 +58,7 @@ pub use client::{ClientConfig, Connection, ErrorKind, Status, SyncClient, SyncEr
 pub use notify::Backoff;
 pub use outbox::{CommandId, Epoch, FailedEntry, Operation, OutboxEntry, Rejection};
 pub use platform::{Clock, Entropy, EventStream, Transport};
-pub use replica::{Replica, SubmitError};
+pub use replica::{Replica, SubmitError, TrackedCommand, TrackedUndo};
 pub use storage::{MemoryStorage, Storage, StorageError};
 pub use todo_core::PROTOCOL_VERSION;
 

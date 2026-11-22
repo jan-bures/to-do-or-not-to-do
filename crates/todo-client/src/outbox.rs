@@ -36,6 +36,11 @@ pub enum Operation {
         #[serde(default)]
         epoch: Option<Epoch>,
     },
+    /// A local undo waiting for an earlier command's receipt. It is resolved to `Undo` before send.
+    UndoAfter {
+        /// The command as identified by its idempotency key, not by its predicted events.
+        original: CommandId,
+    },
 }
 
 /// A command or undo waiting to be confirmed by the server.
@@ -79,7 +84,7 @@ impl OutboxEntry {
     pub fn command(&self) -> Option<&Command> {
         match &self.op {
             Operation::Command { command } => Some(command),
-            Operation::Undo { .. } => None,
+            Operation::Undo { .. } | Operation::UndoAfter { .. } => None,
         }
     }
 }

@@ -152,6 +152,9 @@ pub fn entry_request(command_id: CommandId, op: &Operation) -> Result<Request, s
                 command,
             })?,
         ),
+        Operation::UndoAfter { .. } => {
+            return Err(serde::ser::Error::custom("undo receipt not yet available"));
+        }
         Operation::Undo {
             seq,
             force,

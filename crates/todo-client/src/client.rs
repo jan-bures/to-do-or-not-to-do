@@ -45,7 +45,9 @@ use crate::protocol::{
     self, CATCH_UP_FRAME, CatchUpNotice, EPOCH_MISMATCH, EVENT_FRAME, EVENT_MISMATCH, EventPage,
     HELLO_FRAME, Hello, LogEvent, SendOutcome, error_detail,
 };
-use crate::replica::{Ack, ConfirmError, OpenError, Replica, SubmitError};
+use crate::replica::{
+    Ack, ConfirmError, OpenError, Replica, SubmitError, TrackedCommand, TrackedUndo,
+};
 use crate::storage::{Storage, StorageError};
 use futures_util::future::{Either, join, select};
 use std::fmt;
@@ -382,10 +384,14 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         uuid_v7(ms, rand)
     }
 
-    fn enqueue(&self, op: Operation) -> Result<CommandId, SubmitError> {
+    fn enqueue<R>(
+        &self,
+        op: Operation,
+        result: impl FnOnce(&mut Replica, CommandId) -> R,
+    ) -> Result<R, SubmitError> {
         let command_id = self.new_uuid();
         let now = self.inner.clock.now();
-        self.with(|s| {
+        let result = self.with(|s| {
             // Strictly increasing submission times keep two identical commands submitted within one
             // millisecond from deciding to identical events in the view.
             let ms = now.as_millisecond().max(s.last_submitted_ms + 1);
@@ -399,11 +405,11 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                 acked_epoch: None,
             })?;
             s.last_submitted_ms = ms;
-            Ok::<_, SubmitError>(())
+            Ok::<_, SubmitError>(result(&mut s.replica, command_id))
         })?;
         self.inner.outbox_changed.notify();
         self.changed();
-        Ok(command_id)
+        Ok(result)
     }
 
     /// Queues a command and applies it to the view at once.
@@ -411,7 +417,49 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// Fails without queueing if the command is invalid against the current view, or if the outbox
     /// cannot be written.
     pub fn submit(&self, command: Command) -> Result<CommandId, SubmitError> {
-        self.enqueue(Operation::Command { command })
+        self.enqueue(Operation::Command { command }, |_, id| id)
+    }
+
+    /// Submits a command for which the UI offers Undo. The returned handle correlates the command
+    /// with the authoritative log, not with similar commands from other devices. Use with a
+    /// standalone outbox, not one jointly owned by multiple browser tabs.
+    pub fn submit_tracked(&self, command: Command) -> Result<TrackedCommand, SubmitError> {
+        self.enqueue(Operation::Command { command }, Replica::track)
+    }
+
+    /// Cancels an unsent command or durably queues a non-forced undo of this exact command.
+    /// If its outcome is still unknown, the undo waits in the outbox for an authoritative receipt.
+    pub fn undo_tracked(&self, target: &TrackedCommand) -> Result<TrackedUndo, SubmitError> {
+        let command_id = self.new_uuid();
+        let now = self.inner.clock.now();
+        let result = self.with(|s| {
+            let ms = now.as_millisecond().max(s.last_submitted_ms + 1);
+            let result = s.replica.undo_tracked(target, |op| OutboxEntry {
+                command_id,
+                op,
+                submitted_at: Timestamp::from_millisecond(ms).unwrap_or(now),
+                attempts: 0,
+                acked: None,
+                acked_epoch: None,
+            })?;
+            if matches!(result, TrackedUndo::Queued(_)) {
+                s.last_submitted_ms = ms;
+            }
+            Ok::<_, SubmitError>(result)
+        })?;
+        if matches!(result, TrackedUndo::Cancelled | TrackedUndo::Queued(_)) {
+            self.inner.outbox_changed.notify();
+            self.changed();
+        }
+        Ok(result)
+    }
+
+    /// Preview available while a requested undo waits for sync, using the core's conflict checks.
+    /// This does not write to the replica or authorize any change; the server still decides.
+    #[must_use]
+    pub fn preview_tracked_undo(&self, target: &TrackedCommand) -> Option<State> {
+        let now = self.inner.clock.now();
+        self.with(|s| s.replica.preview_tracked_undo(target, now))
     }
 
     /// Queues an undo of the command that produced event `seq` (or a redo, if `seq` is a compensating
@@ -426,12 +474,15 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         force: bool,
     ) -> Result<CommandId, SubmitError> {
         let epoch = self.with(|s| s.replica.epoch());
-        self.enqueue(Operation::Undo {
-            seq,
-            force,
-            expected_event_id,
-            epoch,
-        })
+        self.enqueue(
+            Operation::Undo {
+                seq,
+                force,
+                expected_event_id,
+                epoch,
+            },
+            |_, id| id,
+        )
     }
 
     /// The log epoch the confirmed state belongs to.
@@ -962,7 +1013,14 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// Applies confirmed events from the log with `epoch` (or only checks the epoch). Returns the step
     /// to take if they could not all be applied, except for a gap, which the caller handles.
     fn confirm(&self, epoch: Epoch, events: &[LogEvent]) -> Result<(), ConfirmFailure> {
-        let result = self.with(|s| s.replica.apply_confirmed(epoch, events));
+        let (result, has_outbox) = self.with(|s| {
+            let result = s.replica.apply_confirmed(epoch, events);
+            (result, !s.replica.outbox().is_empty())
+        });
+        // A confirmation may have resolved the next waiting undo.
+        if has_outbox && !events.is_empty() {
+            self.inner.outbox_changed.notify();
+        }
         self.changed();
         match result {
             Ok(_) => Ok(()),

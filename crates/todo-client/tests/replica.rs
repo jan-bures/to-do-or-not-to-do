@@ -126,6 +126,101 @@ fn events_arriving_before_the_acknowledgement_confirm_the_entry_by_its_command_i
 }
 
 #[test]
+fn undo_after_survives_restart_and_resolves_only_against_its_command() {
+    let (mut r, mut server, storage) = seeded();
+    let mine = entry(22, Command::CompleteTask { id: task_id(1) }, 1);
+    r.submit(mine.clone()).unwrap();
+    assert_eq!(
+        r.next_to_send().unwrap().unwrap().command_id,
+        mine.command_id
+    );
+    let undo = OutboxEntry {
+        command_id: Uuid::from_u128(23),
+        op: Operation::UndoAfter {
+            original: mine.command_id,
+        },
+        ..mine.clone()
+    };
+    r.submit(undo.clone()).unwrap();
+    drop(r);
+    let mut r = open(&storage);
+    assert_eq!(
+        r.outbox(),
+        [
+            OutboxEntry {
+                attempts: 1,
+                ..mine.clone()
+            },
+            undo.clone()
+        ]
+    );
+    // An unrelated completion is not an undo target, even if it has identical command content.
+    let another = Uuid::from_u128(24);
+    server
+        .execute(&owner(), another, mine.command().unwrap())
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert_eq!(r.outbox()[1].op, undo.op);
+    server
+        .execute(
+            &owner(),
+            Uuid::from_u128(25),
+            &Command::UncompleteTask { id: task_id(1) },
+        )
+        .unwrap();
+    let result = server
+        .execute(&owner(), mine.command_id, mine.command().unwrap())
+        .unwrap();
+
+    // The stream beats the POST response. The receipt and undo must become durable together.
+    storage.set_fail_writes(true);
+    assert!(matches!(
+        r.apply_confirmed(EPOCH, &server.log),
+        Err(ConfirmError::Storage(_))
+    ));
+    assert_eq!(r.outbox()[1].op, undo.op);
+    storage.set_fail_writes(false);
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    drop(r);
+    let mut reopened = open(&storage);
+    let ready = reopened.next_to_send().unwrap().unwrap();
+    assert_eq!(ready.command_id, undo.command_id);
+    assert_eq!(
+        ready.op,
+        Operation::Undo {
+            seq: result.events[0].seq,
+            expected_event_id: result.events[0].id,
+            epoch: Some(EPOCH),
+            force: false
+        }
+    );
+}
+
+#[test]
+fn undo_after_a_noop_does_not_send_an_undo_for_a_different_change() {
+    let (mut r, mut server, _) = seeded();
+    let mine = entry(31, Command::UncompleteTask { id: task_id(1) }, 1);
+    r.submit(mine.clone()).unwrap();
+    let undo_id = Uuid::from_u128(32);
+    r.submit(OutboxEntry {
+        command_id: undo_id,
+        op: Operation::UndoAfter {
+            original: mine.command_id,
+        },
+        ..mine.clone()
+    })
+    .unwrap();
+    let result = server
+        .execute(&owner(), mine.command_id, mine.command().unwrap())
+        .unwrap();
+    assert!(result.events.is_empty());
+    r.acknowledge(mine.command_id, &result).unwrap();
+    assert!(r.next_to_send().unwrap().is_none());
+    assert_eq!(r.failed()[0].entry.command_id, undo_id);
+    assert_eq!(r.failed()[0].rejection.code, "undo_no_event");
+}
+
+#[test]
 fn an_identical_command_from_another_session_does_not_confirm_a_pending_one() {
     // Another session of the same actor (same device ID) makes exactly the same change, and its
     // event reaches this replica first, before this replica's own command was even executed.
