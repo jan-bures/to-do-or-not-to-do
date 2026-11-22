@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn old_files_get_default_widths_and_stored_widths_are_clamped() {
-        use crate::model::layout::Pane;
+        use crate::model::layout::{DetailPane, Pane};
         use crate::theme::desktop;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -731,13 +731,25 @@ mod tests {
         let old = data.load_ui();
         assert_eq!(old.collapsed_collections, BTreeSet::from([id]));
         assert_eq!(old.panes, PaneWidths::default());
-        std::fs::write(&path, r#"{"panes":{"sidebar":1,"detail":10000}}"#).expect("widths");
-        assert_eq!(
-            data.load_ui().panes,
-            PaneWidths::default()
-                .with(Pane::Sidebar, desktop::SIDEBAR_MIN)
-                .with(Pane::Detail, desktop::DETAIL_MAX)
-        );
+        for (saved, expected) in [(1., desktop::DETAIL_MIN), (560., 560.), (10000., 10000.)] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"panes":{{"sidebar":1,"detail":{saved}}}}}"#),
+            )
+            .expect("widths");
+            let prefs = data.load_ui().panes;
+            assert_eq!(
+                prefs,
+                PaneWidths::default()
+                    .with(Pane::Sidebar, desktop::SIDEBAR_MIN)
+                    .with(Pane::Detail, expected)
+            );
+            let columns = prefs.at(1440., DetailPane::Docked);
+            assert_eq!(
+                columns.width(Pane::Detail),
+                expected.min(columns.max(Pane::Detail))
+            );
+        }
     }
 
     #[test]

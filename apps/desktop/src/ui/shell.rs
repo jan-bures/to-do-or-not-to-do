@@ -1789,15 +1789,26 @@ impl ShellView {
             div()
                 .w(px(elevation::HAIRLINE))
                 .h(px(ty::CAPS_LABEL.size - 0.5))
+                .flex_none()
                 .bg(line)
         };
         let mono = |s: &SharedString| {
             div()
+                .flex_none()
+                .whitespace_nowrap()
                 .style(ty::EYEBROW_META)
                 .text_color(ink_3)
                 .child(s.to_uppercase())
         };
-        let dow = |s: SharedString| div().style(ty::EYEBROW_DAY).text_color(ink_2).child(s);
+        let dow = |s: SharedString| {
+            div()
+                .min_w_0()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .style(ty::EYEBROW_DAY)
+                .text_color(ink_2)
+                .child(s)
+        };
         let row = div()
             .flex()
             .items_center()
@@ -2010,6 +2021,8 @@ impl ShellView {
             }));
         let eyebrow = div()
             .relative()
+            .flex_1()
+            .min_w_0()
             .child(
                 self.eyebrow(&room.eyebrow)
                     .relative()
@@ -2020,6 +2033,7 @@ impl ShellView {
                 self.eyebrow(&old.eyebrow)
                     .absolute()
                     .left_0()
+                    .right_0()
                     .top(px(swap.outgoing_y))
                     .opacity(swap.outgoing)
             }));
@@ -2039,12 +2053,12 @@ impl ShellView {
                             .h(px(desktop::EYEBROW))
                             .flex()
                             .items_center()
-                            .justify_between()
+                            .gap(px(space::S2))
                             .child(eyebrow)
-                            .child(div().flex().mr(px(-space::S2)).children(more)),
+                            .children(more.map(|d| d.flex_none().mr(px(-space::S2)))),
                     )
-                    .child(if self.width.counts_under_title() {
-                        // Narrow: the title keeps the whole line, and the counts go under it.
+                    .child(if self.columns(window).counts_under_title() {
+                        // A narrow room can keep the whole line for the title, with counts below it.
                         div()
                             .flex()
                             .flex_col()
@@ -2391,8 +2405,8 @@ impl ShellView {
         let show_priority = show_agent || task.priority > 0;
         let full_due = show_priority || !matches!(task.due, Due::None);
         // The title column's width: the row less its padding, the checkbox and the trailing columns.
-        let mut title_width =
-            self.room_width(window) - 2. * desktop::LIST_PAD_X - desktop::COL_CHECK;
+        let room_width = self.room_width(window);
+        let mut title_width = room_width - 2. * desktop::LIST_PAD_X - desktop::COL_CHECK;
         title_width -= desktop::ROW_GAP
             + if full_due {
                 desktop::COL_DUE
@@ -2406,7 +2420,25 @@ impl ShellView {
             title_width -= desktop::ROW_GAP + desktop::COL_AGENT;
         }
         title_width -= desktop::ROW_GAP;
-        let meta = self.meta(task, chips, title_width, window);
+        let meta_width = fit::row_meta_width(room_width, title_width);
+        let meta = self.meta(task, chips, meta_width, window);
+        let (meta, compact_meta) = if meta_width > title_width {
+            // The trailing columns occupy only the title line. Fit metadata under them when
+            // docked detail leaves the room too narrow for the regular layout.
+            (
+                None,
+                Some(
+                    meta.absolute()
+                        .left(px(desktop::LIST_PAD_X
+                            + desktop::COL_CHECK
+                            + desktop::ROW_GAP))
+                        .top(px(desktop::ROW_PAD_TOP + ty::TASK_TITLE.line_height))
+                        .w(px(meta_width)),
+                ),
+            )
+        } else {
+            (Some(meta), None)
+        };
         let id = task.id;
         let check = match look {
             Some(l) => kit::checkbox_at(
@@ -2457,8 +2489,9 @@ impl ShellView {
                     .flex()
                     .flex_col()
                     .child(title)
-                    .child(meta),
+                    .children(meta),
             )
+            .children(compact_meta)
             .when(show_agent, |row| {
                 row.child(
                     div().w(px(desktop::COL_AGENT)).flex_none().children(

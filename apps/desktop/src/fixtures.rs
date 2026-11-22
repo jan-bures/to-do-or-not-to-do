@@ -194,6 +194,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             f.ui.panes = f.ui.panes.with(Pane::Detail, desktop::DETAIL_MIN);
             Some(f)
         }
+        "detail-wide" | "detail-wide-1920" => Some(wide_detail()),
         "resize-handle-hover" => Some(my_day()),
         "long-names" | "narrow-detail" => Some(long_names()),
         "long-names-narrow" => Some(long_names_narrow()),
@@ -1208,9 +1209,8 @@ fn long_sidebar() -> Fixture {
 /// The name of the long list in `long-names`.
 pub const LONG_LIST: &str = "Planning the quarterly roadmap and every review meeting";
 
-/// My Day with a long list name and more tags than a row has room for: the row's chip ends in an ellipsis,
-/// the tags that don't fit are counted, and the detail pane's breadcrumb gives way to its actions.
-fn long_names() -> Fixture {
+/// The shared crowded list and tags for the name and pane-width fixtures.
+fn long_names_data() -> (Builder, Lists) {
     let (mut b, l) = sample();
     b.run(
         &owner(),
@@ -1229,6 +1229,13 @@ fn long_names() -> Fixture {
             Command::AddTag { task: l.q4, tag },
         );
     }
+    (b, l)
+}
+
+/// My Day with a long list name and more tags than a row has room for: the row's chip ends in an ellipsis,
+/// the tags that don't fit are counted, and the detail pane's breadcrumb gives way to its actions.
+fn long_names() -> Fixture {
+    let (b, l) = long_names_data();
     fixture(
         b,
         UiState {
@@ -1238,6 +1245,51 @@ fn long_names() -> Fixture {
         },
         MORNING,
     )
+}
+
+/// Detail at the divider's maximum, with prose long enough to show the reading measure.
+fn wide_detail() -> Fixture {
+    let (mut b, l) = long_names_data();
+    b.run(
+        &owner(),
+        MORNING,
+        Command::UpdateTask {
+            id: l.q4,
+            patch: TaskPatch {
+                title: Some("Prepare the quarterly roadmap review and share the proposed milestones with the teams responsible for delivering them".into()),
+                notes: Some("Keep the summary to one page so everyone can read it before the review. Compare the shipped work with the original goals and write down where the dates changed, why they changed, and what we learned. Leave room for questions that need a decision before the next planning round.".into()),
+                ..TaskPatch::default()
+            },
+        },
+    );
+    // Use an existing step so the links and attachments still fit in the reference window.
+    if let Some(id) = b
+        .state
+        .steps
+        .values()
+        .find(|s| s.task == l.q4 && s.completed_at.is_none())
+        .map(|s| s.id)
+    {
+        b.run(
+            &owner(),
+            MORNING,
+            Command::UpdateStep {
+                id,
+                title: "Check the proposed milestones with each project lead and record the decisions we still need before the next planning round".into(),
+            },
+        );
+    }
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    );
+    f.ui.panes = f.ui.panes.with(Pane::Detail, 1920.);
+    f
 }
 
 /// Enough rows and steps to overflow both the virtualized list and the detail pane.
@@ -1750,6 +1802,25 @@ mod tests {
         assert!(q4.from_mail && q4.steps.is_some());
         let detail = shell.detail.expect("detail");
         assert_eq!(detail.list.name.as_ref(), LONG_LIST);
+    }
+
+    #[test]
+    fn wide_detail_fixtures_use_the_whole_budget_and_include_long_prose() {
+        use crate::model::layout::DetailPane;
+
+        for name in ["detail-wide", "detail-wide-1920"] {
+            let f = by_name(name).expect("wide fixture");
+            let (width, _) = crate::screenshot::window_size(name);
+            let columns = f.ui.panes.at(width, DetailPane::Docked);
+            assert_eq!(columns.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
+            assert_eq!(columns.width(Pane::Detail), columns.max(Pane::Detail));
+            let detail = f.shell().detail.expect("selected task");
+            let measure = desktop::DETAIL_TEXT_MEASURE as usize;
+            assert!(detail.title.len() > measure);
+            assert!(detail.notes.len() > measure);
+            assert!(detail.steps.iter().any(|s| s.title.len() > measure));
+            assert!(!detail.attachments.is_empty() && !detail.links.is_empty());
+        }
     }
 
     #[test]

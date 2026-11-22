@@ -174,12 +174,18 @@ column-resize cursor and fades in a centred **3 px** bar (`desktop::PANE_HANDLE_
 even if the pointer leaves the strip. During a drag the divider follows the pointer without easing, in
 whole logical pixels; the bar fades out over the same duration when neither hovered nor grabbed.
 
-- **Widths (logical px):** sidebar **200–320**, default **248**; docked detail **320–560**, default **392**.
-  The list keeps at least **556** (`desktop::LIST_MIN`, not counting the divider hairlines). A drag stops at
-  the available limit. The **1200** docking breakpoint is fixed: a narrow window never docks, and a wide
-  window never switches to an overlay just because the chosen panes are wide. If both preferences won’t fit,
-  the docked detail gives up width first and recovers it as room becomes available. Narrow desktop keeps
-  the sidebar handle; the detail overlay keeps its original default width and has no handle.
+- **Widths (logical px):** sidebar **200–320**, default **248**; docked detail starts at **320**, defaults
+  to **392**, and can grow until the list reaches **400** (`desktop::LIST_MIN_BESIDE_DETAIL`, excluding
+  divider hairlines). Without docked detail the list keeps at least **556** (`desktop::LIST_MIN`). Below
+  that room width, the header counts move below the title even in a wide window. The **1200** docking
+  breakpoint is fixed: a narrow window never docks, and a wide window never switches to an overlay just
+  because the chosen panes are wide. If both preferences won’t fit, the docked detail gives up width first
+  and recovers it as room becomes available. Narrow desktop keeps the sidebar handle; the detail overlay
+  keeps its default width and has no handle.
+- **Reading width:** In a wide detail pane, left-align the title, notes and step text within the normal
+  pane padding. Cap their line length at **72 ch** (`desktop::DETAIL_TEXT_MEASURE`) in each text style.
+  Let long step titles wrap when there is room for that measure. Keep step progress and actions near
+  their text; fields, links and attachments can use the full width.
 - **Keys and focus:** Tab reaches the dividers, which expose their name and current width as vertical
   splitters. Left and Right move the divider in that direction by **8** px (**32** with Shift). Keyboard
   focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade. Esc returns
@@ -189,7 +195,8 @@ whole logical pixels; the bar fades out over the same duration when neither hove
   width change can interrupt the reset. Idle dividers request no frames.
 - **Remembered locally:** Save the two preferred widths with the desktop pairing’s UI preferences. Passive
   window resizing never writes them. Save arrow-key changes when a key is released or the divider loses
-  focus, not on every repeat. Saved values are clamped to the current tokens on load. Web and phone layouts
+  focus, not on every repeat. On load, clamp the sidebar to its limits and the detail to at least its
+  minimum. The live window, not the saved detail preference, sets the maximum. Web and phone layouts
   are unchanged.
 
 **Sidebar order.** The desktop and web sidebars and the Android drawer list the rooms in one order, top to
@@ -217,8 +224,9 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
   instead of stopping short. A row without a date keeps only the dash.
 - A long title truncates with an ellipsis before the agent column. Test this with a long Czech title, for example
   *Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení*.
-- The metadata line reads list chip, steps, source mark (mail), then tags, so the compact indicators are never the
-  ones pushed out. A list chip is at most **180** wide (`desktop::CHIP_MAX`) and ends in an ellipsis inside the
+- Below **556** px of room width, the metadata line starts under the title as usual, but can use the empty
+  space beneath the trailing columns. It reads list chip, steps, source mark (mail), then tags, so the compact
+  indicators are never the ones pushed out. A list chip is at most **180** wide (`desktop::CHIP_MAX`) and ends in an ellipsis inside the
   pill. Tags that don't fit whole collapse into a mono `+N`; nothing is ever cut mid-glyph. In a narrow column the
   items give way in order (tags, then the mail mark, then the step meter, then the step count) and the chip narrows
   last, down to its dot and an ellipsis.
@@ -503,7 +511,7 @@ Completing a task is the one choreographed moment in the app.
   the detail pane is open (switch).
 - **What moves & properties:**
   - **Open (`PANEL` 200 ms, `ENTER`):**
-    - *Desktop wide (fixed 392 px column):* The empty placeholder fades out (`CONTENT_SWAP` 120 ms, `EXIT`) and
+    - *Desktop wide (docked column at the current width):* The empty placeholder fades out (`CONTENT_SWAP` 120 ms, `EXIT`) and
       the detail content enters (`PANEL` 200 ms, `ENTER`, `opacity: 0 → 1`, `translateX: 8 px → 0`).
     - *Web drawer / phone:* Slides in from the right edge (`translateX: 100 % → 0` on phone, `24 px → 0`
       overlay on the web) with `opacity: 0 → 1` (`PANEL` 200 ms, `ENTER`).

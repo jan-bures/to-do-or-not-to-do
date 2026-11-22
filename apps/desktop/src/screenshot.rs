@@ -35,7 +35,7 @@ const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAI
 
 /// The logical window size a fixture renders at: the reference window, except the quick-add window, the
 /// narrowest main window (`long-names-narrow`, `narrow-detail`), a short one (`finished-short`) and the
-/// smallest (`short-sidebar`).
+/// smallest (`short-sidebar`), or the large wide-detail showcase.
 pub fn window_size(fixture: &str) -> (f32, f32) {
     match fixture {
         "quick-add" => (
@@ -46,6 +46,7 @@ pub fn window_size(fixture: &str) -> (f32, f32) {
             (crate::app::MIN_WINDOW.0, MAIN_SIZE.1)
         }
         "finished-short" => (MAIN_SIZE.0, 700.),
+        "detail-wide-1920" => (1920., 1080.),
         "short-sidebar" | "short-sidebar-new-list" | "short-sidebar-new-collection" => {
             crate::app::MIN_WINDOW
         }
@@ -339,6 +340,8 @@ mod tests {
         assert_eq!(window_size("narrow-detail"), (960., 900.));
         assert_eq!(window_size("narrow-undo-toast"), (960., 900.));
         assert_eq!(window_size("finished-short"), (1440., 700.));
+        assert_eq!(window_size("detail-wide"), (1440., 900.));
+        assert_eq!(window_size("detail-wide-1920"), (1920., 1080.));
         assert_eq!(window_size("short-sidebar"), (960., 600.));
     }
 

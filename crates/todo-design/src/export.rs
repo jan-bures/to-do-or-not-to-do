@@ -162,8 +162,13 @@ pub fn css() -> String {
         ("phone", &phone::ALL[..]),
         ("component", &component::ALL[..]),
     ] {
-        for (k, v) in all {
-            root.push((format!("{group}-{k}"), format!("{v}px")));
+        for &(k, v) in all {
+            let unit = if (group, k) == ("desktop", "detail-text-measure") {
+                "ch"
+            } else {
+                "px"
+            };
+            root.push((format!("{group}-{k}"), format!("{v}{unit}")));
         }
     }
     for (k, v) in LANDSCAPE {

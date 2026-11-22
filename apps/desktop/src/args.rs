@@ -27,7 +27,8 @@ Options:
                     tag-rename, task-links, add-link, collapsed-collection, long-sidebar, short-sidebar,
                     short-sidebar-new-list and short-sidebar-new-collection (960 x 600), long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
-                    sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
+                    sidebar-wide, detail-narrow, detail-wide, detail-wide-1920 (1920 × 1080),
+                    resize-handle-hover, caption-hover,
                     caption-close-hover, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, pairing,
                     pairing-code, open-failed or open-failed-confirm.
@@ -93,6 +94,8 @@ pub const FIXTURES: &[&str] = &[
     "long-task-list",
     "sidebar-wide",
     "detail-narrow",
+    "detail-wide",
+    "detail-wide-1920",
     "resize-handle-hover",
     "caption-hover",
     "caption-close-hover",

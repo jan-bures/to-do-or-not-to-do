@@ -31,12 +31,6 @@ impl Width {
             Self::Wide
         }
     }
-
-    /// The room header puts its done and open counts on a line of their own, under the title, so the
-    /// title never gives way to them.
-    pub fn counts_under_title(self) -> bool {
-        self == Self::Narrow
-    }
 }
 
 /// Where the detail pane goes.
@@ -86,13 +80,6 @@ impl Pane {
         }
     }
 
-    const fn max(self) -> f32 {
-        match self {
-            Self::Sidebar => desktop::SIDEBAR_MAX,
-            Self::Detail => desktop::DETAIL_MAX,
-        }
-    }
-
     /// Positive screen movement widens the left pane and narrows the right one.
     fn signed(self, delta: f32) -> f32 {
         match self {
@@ -122,12 +109,13 @@ impl Default for PaneWidths {
 impl PaneWidths {
     pub fn with(mut self, pane: Pane, width: f32) -> Self {
         let width = if width.is_finite() {
-            width.clamp(pane.min(), pane.max())
+            width.max(pane.min())
         } else {
             pane.default_width()
         };
         match pane {
-            Pane::Sidebar => self.sidebar = width,
+            Pane::Sidebar => self.sidebar = width.min(desktop::SIDEBAR_MAX),
+            // A finite preference can outlast a smaller window. `at` bounds the displayed width.
             Pane::Detail => self.detail = width,
         }
         self
@@ -143,8 +131,11 @@ impl PaneWidths {
     /// The overlay keeps its original width; a hidden detail takes no space.
     pub fn at(self, window: f32, detail: DetailPane) -> Columns {
         let docked = detail == DetailPane::Docked;
-        let budget =
-            window - desktop::LIST_MIN - if docked { 2. } else { 1. } * elevation::HAIRLINE;
+        let budget = if docked {
+            window - desktop::LIST_MIN_BESIDE_DETAIL - 2. * elevation::HAIRLINE
+        } else {
+            window - desktop::LIST_MIN - elevation::HAIRLINE
+        };
         let sidebar = self.sidebar.min(
             (budget - if docked { desktop::DETAIL_MIN } else { 0. }).max(desktop::SIDEBAR_MIN),
         );
@@ -213,12 +204,13 @@ impl Columns {
     }
 
     pub fn max(self, pane: Pane) -> f32 {
-        let other = match pane {
-            Pane::Sidebar if self.docked => desktop::DETAIL_MIN,
-            Pane::Sidebar => 0.,
-            Pane::Detail => self.sidebar,
-        };
-        (self.budget - other).clamp(pane.min(), pane.max())
+        match pane {
+            Pane::Sidebar => {
+                let other = if self.docked { desktop::DETAIL_MIN } else { 0. };
+                (self.budget - other).clamp(desktop::SIDEBAR_MIN, desktop::SIDEBAR_MAX)
+            }
+            Pane::Detail => (self.budget - self.sidebar).max(desktop::DETAIL_MIN),
+        }
     }
 
     /// Hit strip inset from the sidebar's left edge or the detail pane's right edge. The hairline
@@ -241,6 +233,11 @@ impl Columns {
             } else {
                 0.
             }
+    }
+
+    /// Give the title a line to itself in a narrow window or when docked detail squeezes the room.
+    pub fn counts_under_title(self) -> bool {
+        Width::of(self.window) == Width::Narrow || self.room_width() < desktop::LIST_MIN
     }
 
     pub fn step(self, pane: Pane, right: bool, shift: bool) -> f32 {
@@ -375,6 +372,9 @@ mod tests {
     /// The narrowest window (`app::MIN_WINDOW`, which only builds on Windows).
     const MIN_WINDOW: f32 = 960.;
 
+    /// A preference too wide to fit the windows used in these tests.
+    const WIDE_DETAIL: f32 = 1600.;
+
     #[test]
     fn the_breakpoint_is_the_three_pane_minimum() {
         assert_eq!(Width::of(MIN_WINDOW), Width::Narrow);
@@ -386,21 +386,50 @@ mod tests {
         );
         let prefs = PaneWidths::default()
             .with(Pane::Sidebar, desktop::SIDEBAR_MAX)
-            .with(Pane::Detail, desktop::DETAIL_MAX);
+            .with(Pane::Detail, WIDE_DETAIL);
         let columns = prefs.at(desktop::THREE_PANE_MIN, DetailPane::Docked);
         assert_eq!(columns.width(Pane::Sidebar), desktop::SIDEBAR_MAX);
         assert!(columns.width(Pane::Detail) >= desktop::DETAIL_MIN);
-        assert_eq!(columns.room_width(), desktop::LIST_MIN);
-        assert_eq!(
-            prefs.at(1600., DetailPane::Docked).width(Pane::Detail),
-            desktop::DETAIL_MAX
-        );
+        assert_eq!(columns.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
     }
 
     #[test]
-    fn a_narrow_window_puts_the_counts_under_the_title() {
-        assert!(Width::Narrow.counts_under_title());
-        assert!(!Width::Wide.counts_under_title());
+    fn detail_can_take_all_the_space_beyond_the_minimum_room() {
+        let window = 1920.;
+        let start = PaneWidths::default();
+        let columns = start.at(window, DetailPane::Docked);
+        let max =
+            window - desktop::SIDEBAR - desktop::LIST_MIN_BESIDE_DETAIL - 2. * elevation::HAIRLINE;
+        assert_eq!(columns.max(Pane::Detail), max);
+        let drag = Grab::new(Pane::Detail, 1528., columns);
+        assert_eq!(drag.moved(10.), Some(max));
+        let prefs = start.with(Pane::Detail, max);
+        let wide = prefs.at(window, DetailPane::Docked);
+        assert_eq!(wide.width(Pane::Detail), max);
+        assert_eq!(wide.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
+
+        let smaller = prefs.at(1440., DetailPane::Docked);
+        assert_eq!(smaller.width(Pane::Detail), max - (window - 1440.));
+        assert_eq!(smaller.room_width(), wide.room_width());
+        assert_eq!(smaller.width(Pane::Sidebar), wide.width(Pane::Sidebar));
+        assert_eq!(prefs.at(window, DetailPane::Docked), wide);
+    }
+
+    #[test]
+    fn narrow_rooms_put_the_counts_under_the_title_even_beside_docked_detail() {
+        let prefs = PaneWidths::default();
+        assert!(
+            prefs
+                .at(MIN_WINDOW, DetailPane::Overlay)
+                .counts_under_title()
+        );
+        assert!(!prefs.at(1440., DetailPane::Docked).counts_under_title());
+        assert!(
+            prefs
+                .with(Pane::Detail, WIDE_DETAIL)
+                .at(1440., DetailPane::Docked)
+                .counts_under_title()
+        );
     }
 
     #[test]
@@ -440,7 +469,7 @@ mod tests {
     fn the_room_keeps_its_width_under_an_overlay() {
         let prefs = PaneWidths::default()
             .with(Pane::Sidebar, desktop::SIDEBAR_MAX)
-            .with(Pane::Detail, desktop::DETAIL_MAX);
+            .with(Pane::Detail, WIDE_DETAIL);
         let full = MIN_WINDOW - desktop::SIDEBAR_MAX - elevation::HAIRLINE;
         let overlay = prefs.at(MIN_WINDOW, DetailPane::Overlay);
         assert_eq!(overlay.width(Pane::Detail), desktop::DETAIL);
@@ -467,14 +496,14 @@ mod tests {
         assert_eq!(side.moved(0.), Some(desktop::SIDEBAR_MIN));
         let detail = Grab::new(Pane::Detail, 808., columns);
         assert_eq!(detail.moved(820.), Some(desktop::DETAIL - 12.));
-        assert_eq!(detail.moved(700.), Some(columns.max(Pane::Detail)));
+        assert_eq!(detail.moved(500.), Some(columns.max(Pane::Detail)));
         for width in [side.moved(500.), side.moved(0.)].into_iter().flatten() {
             let resized = PaneWidths::default().with(Pane::Sidebar, width);
             assert!(
                 resized
                     .at(desktop::THREE_PANE_MIN, DetailPane::Docked)
                     .room_width()
-                    >= desktop::LIST_MIN
+                    >= desktop::LIST_MIN_BESIDE_DETAIL
             );
         }
     }
@@ -519,10 +548,10 @@ mod tests {
 
     #[test]
     fn sidebar_can_widen_when_the_list_is_already_at_its_minimum() {
-        let prefs = PaneWidths::default().with(Pane::Detail, desktop::DETAIL_MAX);
+        let prefs = PaneWidths::default().with(Pane::Detail, WIDE_DETAIL);
         let window = desktop::THREE_PANE_MIN;
         let columns = prefs.at(window, DetailPane::Docked);
-        assert_eq!(columns.room_width(), desktop::LIST_MIN);
+        assert_eq!(columns.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
         assert_eq!(columns.max(Pane::Sidebar), desktop::SIDEBAR_MAX);
         let step = columns.step(Pane::Sidebar, true, false);
         assert_eq!(step, desktop::SIDEBAR + desktop::PANE_KEY_STEP);
@@ -533,7 +562,7 @@ mod tests {
         let widened = prefs
             .with(Pane::Sidebar, step)
             .at(window, DetailPane::Docked);
-        assert_eq!(widened.room_width(), desktop::LIST_MIN);
+        assert_eq!(widened.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
         assert_eq!(
             widened.width(Pane::Detail),
             columns.width(Pane::Detail) - desktop::PANE_KEY_STEP
@@ -546,9 +575,9 @@ mod tests {
         let drag = Grab::new(Pane::Detail, 800.25, columns);
         assert_eq!(drag.moved(800.), None);
         assert_eq!(drag.moved(798.75), Some(desktop::DETAIL + 2.));
-        assert_eq!(drag.moved(700.), Some(columns.max(Pane::Detail).floor()));
+        assert_eq!(drag.moved(500.), Some(columns.max(Pane::Detail).floor()));
 
-        let prefs = PaneWidths::default().with(Pane::Detail, desktop::DETAIL_MAX);
+        let prefs = PaneWidths::default().with(Pane::Detail, WIDE_DETAIL);
         let columns = prefs.at(desktop::THREE_PANE_MIN + 0.75, DetailPane::Docked);
         assert!(columns.width(Pane::Detail).fract() > 0.);
         assert_eq!(Grab::new(Pane::Detail, 800.25, columns).moved(800.25), None);
@@ -616,6 +645,25 @@ mod tests {
             tight.step(Pane::Sidebar, true, true),
             tight.max(Pane::Sidebar)
         );
+        let max = columns.max(Pane::Detail);
+        let near_max = PaneWidths::default()
+            .with(Pane::Detail, max - desktop::PANE_KEY_STEP)
+            .at(1440., DetailPane::Docked);
+        assert_eq!(near_max.step(Pane::Detail, false, true), max);
+        let capped = PaneWidths::default().with(Pane::Detail, WIDE_DETAIL);
+        let mut resize = KeyResize::default();
+        assert!(
+            resize
+                .step(
+                    capped,
+                    capped.at(1440., DetailPane::Docked),
+                    Pane::Detail,
+                    false,
+                    true
+                )
+                .is_none()
+        );
+        assert!(!resize.finish(capped));
         let min = PaneWidths::default()
             .with(Pane::Detail, desktop::DETAIL_MIN)
             .at(1440., DetailPane::Docked);
@@ -624,7 +672,7 @@ mod tests {
 
     #[test]
     fn reset_animates_from_the_visible_width_and_saves_the_default_even_when_constrained() {
-        let prefs = PaneWidths::default().with(Pane::Detail, desktop::DETAIL_MAX);
+        let prefs = PaneWidths::default().with(Pane::Detail, WIDE_DETAIL);
         let visible = prefs.at(1440., DetailPane::Docked);
         let now = Duration::from_secs(1);
         let (reset, track) = prefs.reset(Pane::Detail, visible, now, false);

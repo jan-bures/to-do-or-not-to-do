@@ -215,9 +215,10 @@
   --desktop-sidebar-max: 320px;
   --desktop-list: 800px;
   --desktop-list-min: 556px;
+  --desktop-list-min-beside-detail: 400px;
   --desktop-detail: 392px;
   --desktop-detail-min: 320px;
-  --desktop-detail-max: 560px;
+  --desktop-detail-text-measure: 72ch;
   --desktop-pane-handle-hit: 12px;
   --desktop-pane-handle-highlight: 3px;
   --desktop-pane-key-step: 8px;

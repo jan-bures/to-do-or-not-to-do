@@ -6,6 +6,18 @@
 //! are in logical pixels. GPUI rounds each element's size up to a whole pixel, so every width is rounded up
 //! here too before it is added: summing raw widths undercounts a line of many small items.
 
+use crate::theme::desktop;
+
+/// In a squeezed room, use the empty space below the trailing columns for the metadata line.
+/// Keep its left edge aligned with the title in either layout.
+pub fn row_meta_width(room: f32, title_width: f32) -> f32 {
+    if room < desktop::LIST_MIN {
+        room - 2. * desktop::LIST_PAD_X - desktop::COL_CHECK - desktop::ROW_GAP
+    } else {
+        title_width
+    }
+}
+
 /// How many tags a metadata line shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TagFit {
@@ -265,6 +277,26 @@ mod tests {
         assert_eq!(fit.chip, Some(180.));
         assert!(fit.meter && fit.count && fit.mail);
         assert_eq!(fit.tags, TagFit { shown: 3, more: 0 });
+    }
+
+    #[test]
+    fn crowded_docked_rows_can_show_a_chip_steps_mail_and_a_tag_count() {
+        let room = desktop::LIST_MIN_BESIDE_DETAIL;
+        let title_width = room
+            - (2. * desktop::LIST_PAD_X
+                + desktop::COL_CHECK
+                + desktop::COL_AGENT
+                + desktop::COL_PRIORITY
+                + desktop::COL_DUE
+                + 4. * desktop::ROW_GAP);
+        let width = row_meta_width(room, title_width);
+        let items = row();
+        let fit = fit_meta(width, &items, count);
+        assert_eq!(fit.chip, Some(180.));
+        assert!(fit.meter && fit.count && fit.mail);
+        assert_eq!(fit.tags, TagFit { shown: 0, more: 3 });
+        assert!(fit.width(&items, count) <= width);
+        assert_eq!(row_meta_width(desktop::LIST_MIN, title_width), title_width);
     }
 
     #[test]

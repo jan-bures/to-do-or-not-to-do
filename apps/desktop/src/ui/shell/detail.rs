@@ -21,6 +21,7 @@ use super::{Notice, ShellView, quick_add_colors};
 use crate::model::draft::Draft;
 use crate::model::files;
 use crate::model::hints::Stop;
+use crate::model::layout::Pane;
 use crate::model::menus::TagPage;
 use crate::model::{self, Detail, FieldEdit, FieldKind, commands, fit, quick_add};
 use crate::theme::{
@@ -34,6 +35,12 @@ use todo_core::model::Priority;
 /// The width of a property row's label column (Due, Priority, Tags): the row draws it and the Tags row's
 /// chips are fitted beside it, so both read it from here.
 const FIELD_LABEL: f32 = space::S10 * 2.;
+const STEP_CONTROL: f32 = component::ICON_BUTTON - space::S2;
+
+/// `ch` is the advance of the zero glyph in the text's own face and size.
+fn prose_width(window: &Window, style: ty::TextStyle) -> gpui::Pixels {
+    px(desktop::DETAIL_TEXT_MEASURE * kit::text_width(window, style, "0"))
+}
 
 /// The pane's editors and what they hold.
 pub(super) struct Editors {
@@ -455,7 +462,14 @@ impl ShellView {
         .detach();
     }
 
-    fn step_row(&self, i: usize, s: &model::StepRow, cx: &mut Context<Self>) -> impl IntoElement {
+    fn step_row(
+        &self,
+        i: usize,
+        s: &model::StepRow,
+        measure: gpui::Pixels,
+        wrap: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let p = self.palette;
         let id = s.id;
         let mark = if s.done {
@@ -468,6 +482,7 @@ impl ShellView {
             Some(input) => div()
                 .flex_1()
                 .min_w_0()
+                .max_w(measure)
                 .style(ty::STEP)
                 .child(input)
                 .into_any_element(),
@@ -476,7 +491,8 @@ impl ShellView {
                     .id(("step-title", i))
                     .flex_1()
                     .min_w_0()
-                    .truncate()
+                    .max_w(measure)
+                    .when(!wrap, |d| d.truncate())
                     .style(ty::STEP)
                     .child(s.title.clone());
                 let t = if s.done {
@@ -494,7 +510,7 @@ impl ShellView {
         let control = |key: &'static str, icon: Icon| {
             div()
                 .id((key, i))
-                .size(px(component::ICON_BUTTON - space::S2))
+                .size(px(STEP_CONTROL))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -505,7 +521,8 @@ impl ShellView {
         div()
             .group(group.clone())
             .relative()
-            .h(px(desktop::STEP_ROW))
+            .min_h(px(desktop::STEP_ROW))
+            .when(wrap, |d| d.py(px(space::S1)))
             .flex()
             .items_center()
             .gap(px(space::S3))
@@ -524,6 +541,7 @@ impl ShellView {
             .child(title)
             .child(
                 div()
+                    .ml_auto()
                     .flex_none()
                     .style(ty::COUNT)
                     .text_color(p.ink_4)
@@ -747,11 +765,23 @@ impl ShellView {
             )
             .child(kit::kbd(&p, if link_focused { "Enter" } else { "L" }))
             .when(live, |d| d.child(self.probe("link-field")));
+        let step_measure = prose_width(window, ty::STEP);
+        // Keep the progress and step actions near the text on wide panes, leaving room for them
+        // beyond the longest title line. This group uses the same left inset as Notes and Fields.
+        let steps_width = step_measure
+            + px(2. * desktop::DETAIL_PAD_X
+                + component::GLYPH
+                + 2. * space::S3
+                + 3. * STEP_CONTROL);
+        let wrap_steps = px(self.columns(window).width(Pane::Detail)) >= steps_width;
         let steps: Vec<AnyElement> = d
             .steps
             .iter()
             .enumerate()
-            .map(|(i, s)| self.step_row(i, s, cx).into_any_element())
+            .map(|(i, s)| {
+                self.step_row(i, s, step_measure, wrap_steps, cx)
+                    .into_any_element()
+            })
             .collect();
         let attachments: Vec<_> = d
             .attachments
@@ -1082,6 +1112,7 @@ impl ShellView {
                                         div()
                                             .flex_1()
                                             .min_w_0()
+                                            .max_w(prose_width(window, ty::DETAIL_TITLE))
                                             .style(ty::DETAIL_TITLE)
                                             .text_color(p.ink)
                                             .when(live, |el| el.child(self.edit.title.clone()))
@@ -1099,71 +1130,81 @@ impl ShellView {
                     )
                     .child(
                         div()
-                            .px(px(desktop::DETAIL_PAD_X))
-                            .pt(px(space::S5))
-                            .pb(px(space::S1))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(kit::label(&p, "Steps"))
-                            .when(steps_total > 0, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(space::S2))
-                                        .child(kit::meter(&p, steps_done, steps_total))
-                                        .child(
-                                            div()
-                                                .style(ty::TAG)
-                                                .text_color(p.ink_2)
-                                                .child(format!("{steps_done}/{steps_total}")),
-                                        ),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .h(px(elevation::HAIRLINE))
-                            .mx(px(desktop::DETAIL_PAD_X))
-                            .bg(p.line),
-                    )
-                    .children(steps)
-                    .child(
-                        div()
-                            .h(px(desktop::STEP_ROW))
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S3))
-                            .px(px(desktop::DETAIL_PAD_X))
-                            .style(ty::STEP)
-                            .text_color(p.ink_3)
-                            .child(kit::icon(
-                                Icon::Plus,
-                                component::GLYPH,
-                                if step_focused {
-                                    p.accent_strong
-                                } else {
-                                    p.ink_3
-                                },
-                            ))
+                            .w_full()
+                            .max_w(steps_width)
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .when(live, |el| el.child(self.edit.step.clone()))
-                                    .when(!live, |el| el.child("Add a step")),
+                                    .px(px(desktop::DETAIL_PAD_X))
+                                    .pt(px(space::S5))
+                                    .pb(px(space::S1))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(kit::label(&p, "Steps"))
+                                    .when(steps_total > 0, |d| {
+                                        d.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(space::S2))
+                                                .child(kit::meter(&p, steps_done, steps_total))
+                                                .child(
+                                                    div().style(ty::TAG).text_color(p.ink_2).child(
+                                                        format!("{steps_done}/{steps_total}"),
+                                                    ),
+                                                ),
+                                        )
+                                    }),
                             )
-                            .child(kit::kbd(&p, "Enter")),
+                            .child(
+                                div()
+                                    .h(px(elevation::HAIRLINE))
+                                    .mx(px(desktop::DETAIL_PAD_X))
+                                    .bg(p.line),
+                            )
+                            .children(steps)
+                            .child(
+                                div()
+                                    .h(px(desktop::STEP_ROW))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S3))
+                                    .px(px(desktop::DETAIL_PAD_X))
+                                    .style(ty::STEP)
+                                    .text_color(p.ink_3)
+                                    .child(kit::icon(
+                                        Icon::Plus,
+                                        component::GLYPH,
+                                        if step_focused {
+                                            p.accent_strong
+                                        } else {
+                                            p.ink_3
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .max_w(step_measure)
+                                            .when(live, |el| el.child(self.edit.step.clone()))
+                                            .when(!live, |el| el.child("Add a step")),
+                                    )
+                                    .child(
+                                        div().ml_auto().flex_none().child(kit::kbd(&p, "Enter")),
+                                    ),
+                            ),
                     )
                     .child(section("Notes"))
                     .child(
-                        div()
-                            .px(px(desktop::DETAIL_PAD_X))
-                            .style(ty::NOTES)
-                            .text_color(p.ink_2)
-                            .when(live, |el| el.child(self.edit.notes.clone()))
-                            .when(!live, |el| el.child(d.notes.clone())),
+                        div().px(px(desktop::DETAIL_PAD_X)).child(
+                            div()
+                                .w_full()
+                                .max_w(prose_width(window, ty::NOTES))
+                                .style(ty::NOTES)
+                                .text_color(p.ink_2)
+                                .when(live, |el| el.child(self.edit.notes.clone()))
+                                .when(!live, |el| el.child(d.notes.clone())),
+                        ),
                     )
                     .child(
                         div()

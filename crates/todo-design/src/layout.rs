@@ -172,14 +172,16 @@ pub mod desktop {
     pub const SIDEBAR_MAX: f32 = 320.0;
     /// Task list width at the reference window size (1440 × 900).
     pub const LIST: f32 = 800.0;
-    /// Smallest readable list width (not counting the divider hairlines).
+    /// Minimum room width without docked detail, and below which to stack the header counts.
     pub const LIST_MIN: f32 = 556.0;
+    /// Smallest readable list beside docked detail, excluding the divider hairlines.
+    pub const LIST_MIN_BESIDE_DETAIL: f32 = 400.0;
     /// Default detail width, also used when the detail is an overlay.
     pub const DETAIL: f32 = 392.0;
     /// Narrowest docked detail pane.
     pub const DETAIL_MIN: f32 = 320.0;
-    /// Widest docked detail pane.
-    pub const DETAIL_MAX: f32 = 560.0;
+    /// Maximum line length for prose in the detail pane, in zero-glyph widths (`ch`).
+    pub const DETAIL_TEXT_MEASURE: f32 = 72.0;
     /// Hit width of a pane divider; only its hairline is visible at rest.
     pub const PANE_HANDLE_HIT: f32 = 12.0;
     /// Width of the accent bar centred on a hovered or grabbed pane divider.
@@ -276,15 +278,16 @@ pub mod desktop {
     pub const SUNRISE_MARK: f32 = 52.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 54] = [
+    pub const ALL: [(&str, f32); 55] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
         ("list", LIST),
         ("list-min", LIST_MIN),
+        ("list-min-beside-detail", LIST_MIN_BESIDE_DETAIL),
         ("detail", DETAIL),
         ("detail-min", DETAIL_MIN),
-        ("detail-max", DETAIL_MAX),
+        ("detail-text-measure", DETAIL_TEXT_MEASURE),
         ("pane-handle-hit", PANE_HANDLE_HIT),
         ("pane-handle-highlight", PANE_HANDLE_HIGHLIGHT),
         ("pane-key-step", PANE_KEY_STEP),
