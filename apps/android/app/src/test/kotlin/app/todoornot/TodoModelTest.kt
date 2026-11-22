@@ -158,7 +158,7 @@ class TodoModelTest {
 
     @Test
     fun the_date_chip_uses_submit_syntax() {
-        assertEquals("Tomorrow", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
+        assertEquals("Sun 22 Nov", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds \\tomorrow", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds tomorrow at noon", FIXTURE_NOW))
     }
@@ -177,7 +177,9 @@ class TodoModelTest {
             draft.save(m)
             draft.save(m)
             assertTrue(m.notesDraft(id).saving)
-            s.drain()
+            s.drain {
+                if (draft.text == null) assertEquals("no flash of the old notes", notes, m.ui.value.detail?.notes)
+            }
             assertNull(draft.text)
             assertNull(draft.problem)
             assertEquals(notes, m.ui.value.detail?.notes)
@@ -192,6 +194,57 @@ class TodoModelTest {
         assertNull(draft.problem)
         assertNull(draft.text)
         assertEquals("", m.ui.value.detail?.notes)
+    }
+
+    @Test
+    fun leaving_detail_saves_notes_for_the_task_that_was_open() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val (id, next) = m.ui.value.room.tasks.take(2).map { it.id }
+        for ((index, leave) in listOf<() -> Unit>({ m.select(null) }, { m.select(next) }, { m.open(ALL) }).withIndex()) {
+            m.select(id)
+            s.drain()
+            val text = "Draft $index\nSecond line"
+            m.notesDraft(id).edit(text)
+            leave()
+            s.drain()
+            assertEquals(text, m.engine.task(id, FIXTURE_NOW)?.notes)
+        }
+    }
+
+    @Test
+    fun leaving_an_untouched_editor_does_not_write_over_synced_notes() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.select(id)
+        s.drain()
+        m.notesDraft(id).begin(m.ui.value.detail!!.notes)
+        m.engine.setNotes(id, "Changed elsewhere")
+        m.select(null)
+        s.drain()
+        assertEquals("Changed elsewhere", m.engine.task(id, FIXTURE_NOW)?.notes)
+    }
+
+    @Test
+    fun a_refused_navigation_save_keeps_the_draft_and_notifies_the_owner() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.select(id)
+        s.drain()
+        val text = "n".repeat(100_001)
+        m.notesDraft(id).edit(text)
+        m.select(null)
+        s.drain()
+        assertTrue(m.ui.value.toast!!.text.startsWith("Couldn't save notes"))
+        m.select(id)
+        s.drain()
+        assertEquals(text, m.notesDraft(id).text)
+        assertNotNull(m.notesDraft(id).problem)
     }
 
     @Test

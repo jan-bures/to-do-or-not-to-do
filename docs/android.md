@@ -24,11 +24,13 @@ What the first version does:
   draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
 - **Notes and sources.** Tap the notes, or **Add notes** on an empty task. Enter inserts a new line;
-  **Save notes** keeps the plain text (clear the field to remove it), and **Cancel** leaves it unchanged.
+  **Save notes** keeps the plain text (clear the field to remove it). Back, opening another task, or
+  switching rooms also saves the edit. **Cancel** discards it. If saving fails after you leave, the app
+  tells you; reopen the task to correct the draft.
   A source with a web address opens in the browser. Sources without an HTTP or HTTPS destination are
   text only, with no arrow.
 - **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) while typing and on
-  submit. A calendar chip previews a recognized date without changing the text. A trailing date can be
+  submit. A calendar chip previews a recognized date (for example, **Sun 22 Nov**) without changing the text. A trailing date can be
   `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
   keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
   priority and Planned defaults to due today. New tasks go first in their list's manual order. If no

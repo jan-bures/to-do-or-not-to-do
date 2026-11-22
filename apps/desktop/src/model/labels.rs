@@ -29,11 +29,6 @@ pub fn weekday(d: Date) -> &'static str {
     WEEKDAYS[weekday_index(d)]
 }
 
-/// "Sat".
-pub fn weekday_short(d: Date) -> &'static str {
-    &WEEKDAYS[weekday_index(d)][..3]
-}
-
 fn month(d: Date) -> &'static str {
     MONTHS[usize::try_from(d.month() - 1).unwrap_or(0).min(11)]
 }
@@ -43,14 +38,7 @@ pub fn long_date(d: Date) -> String {
     format!("{} {} {}", d.day(), month(d), d.year())
 }
 
-/// "Mon 23 Nov", with the year when it isn't `today`'s.
-pub fn short_date(d: Date, today: Date) -> String {
-    if d.year() == today.year() {
-        format!("{} {} {}", weekday_short(d), d.day(), month(d))
-    } else {
-        format!("{} {} {} {}", weekday_short(d), d.day(), month(d), d.year())
-    }
-}
+pub use todo_client::intent::quick_add::short_date;
 
 /// "14 Nov" (or "14 Nov 2025" in another year): for creation dates and the like.
 pub fn day_month(d: Date, today: Date) -> String {

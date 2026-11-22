@@ -291,10 +291,19 @@ fn bad_input_is_refused_before_it_reaches_the_outbox() {
 #[test]
 fn notes_and_quick_add_preview_use_the_submit_builders_semantics() {
     use todo_ffi::engine::quick_add_date;
-    let n = now();
+    let n = LocalNow {
+        epoch_ms: "2026-11-21T12:00:00Z"
+            .parse::<todo_core::time::Timestamp>()
+            .unwrap()
+            .as_millisecond(),
+        utc_offset_secs: 0,
+    };
     let engine = TodoEngine::fixture("blank".into(), n).unwrap();
     let text = "Sow seeds zítra !!";
-    assert_eq!(quick_add_date(text.into(), n).as_deref(), Some("Tomorrow"));
+    assert_eq!(
+        quick_add_date(text.into(), n).as_deref(),
+        Some("Sun 22 Nov")
+    );
     assert!(quick_add_date(r"Sow seeds \tomorrow".into(), n).is_none());
     assert!(quick_add_date("Sow seeds !!".into(), n).is_none());
     let id = engine.add_task(my_day(), text.into(), n).unwrap();

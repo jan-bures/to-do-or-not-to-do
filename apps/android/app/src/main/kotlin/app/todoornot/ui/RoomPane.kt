@@ -65,8 +65,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import app.todoornot.core.quickAddDate
-import app.todoornot.core.localNow
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
 import app.todoornot.core.SmartList
@@ -153,7 +151,7 @@ fun RoomPane(
                 TaskList(room, state.selected, state.showCompleted, state.generation, actions)
             }
             ToastStrip(state.toast, actions)
-            Composer(room.addPlaceholder, draft, keyboard, actions::add)
+            Composer(room.addPlaceholder, draft, keyboard, actions)
         }
     }
 }
@@ -541,14 +539,15 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
 
 /** The single 48 dp composer at the bottom, docked above the keyboard. Enter adds the task to this room. */
 @Composable
-private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAdd: (String) -> Unit) {
+private fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions) {
     val r = LocalDesign.current.room
     var text by rememberSaveable(draft) { mutableStateOf(draft) }
-    val date = remember(text) { if (text.isBlank()) null else quickAddDate(text, localNow()) }
+    // Recompute only when the text changes; submit parses again against now(), not this preview.
+    val date = remember(text) { if (text.isBlank()) null else actions.previewDate(text) }
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
     fun submit() {
         val t = text.trim()
-        if (t.isNotEmpty()) onAdd(t)
+        if (t.isNotEmpty()) actions.add(t)
         text = ""
     }
     Box(
@@ -598,13 +597,13 @@ private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAd
             ) { label ->
                 if (label != null) {
                     Row(
-                        Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.MD.dp))
+                        Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.SM.dp))
                             .padding(horizontal = S.S2.dp, vertical = S.S1.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
                     ) {
                         Icon("calendar", r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
-                        Label(label, Tokens.Type.DUE, r.ink)
+                        Label(label, Tokens.Type.COUNT, r.accentStrong, weight = Tokens.Type.DUE.weight)
                     }
                 }
             }

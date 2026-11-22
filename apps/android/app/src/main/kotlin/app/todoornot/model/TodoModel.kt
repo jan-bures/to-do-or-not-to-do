@@ -17,6 +17,7 @@ import app.todoornot.core.SyncStatus
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
+import app.todoornot.core.quickAddDate
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
@@ -187,12 +188,20 @@ class TodoModel(
      */
     private val stepDrafts = ConcurrentHashMap<String, StepDraft>()
 
-    // The open editor (including an in-flight save) survives Activity recreation without putting
-    // potentially long notes in the saved-state Bundle. A different task gets a different editor.
-    @Volatile private var notes: NotesDraft? = null
+    // A draft stays with its task through rotation, navigation during a save, or a refused save.
+    // Never put potentially long notes in the Activity's saved-state Bundle.
+    private val noteDrafts = ConcurrentHashMap<String, NotesDraft>()
 
-    override fun notesDraft(task: String): NotesDraft =
-        notes?.takeIf { it.task == task } ?: NotesDraft(task).also { notes = it }
+    override fun notesDraft(task: String): NotesDraft = noteDrafts.getOrPut(task) { NotesDraft(task) }
+
+    private fun selectTask(id: String?) {
+        val previous = selected
+        selected = id
+        if (previous == null || previous == id) return
+        val draft = noteDrafts[previous] ?: return
+        draft.save(this) // No-op for a closed editor or a save already on its way.
+        if (draft.text == null) noteDrafts.remove(previous, draft)
+    }
 
     @Volatile private var syncedAt: LocalNow? = null
 
@@ -542,8 +551,7 @@ class TodoModel(
                 generation++
                 key = room
                 if (fresh) {
-                    notes = null
-                    selected = null
+                    selectTask(null)
                     filter = ""
                     searching = false
                     showCompleted = false
@@ -603,13 +611,13 @@ class TodoModel(
     }
 
     override fun select(id: String?) {
-        if (notes?.task != id) notes = null
-        selected = id
+        selectTask(id)
         scope.launch { refresh() }
     }
 
-    // The room is read now, on the caller's thread: the task goes where the owner was when they typed
-    // it, even if they switch rooms before the IO action runs.
+    override fun previewDate(text: String): String? = quickAddDate(text, now())
+
+    // Capture the room on the caller's thread, even if they switch before the IO action runs.
     override fun add(title: String) {
         val room = key
         act { engine.addTask(room, title, now()) }
@@ -732,26 +740,37 @@ class TodoModel(
         }
     }
 
-    override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) =
-        editWithResult(onResult) { engine.setNotes(id, notes) }
-
-    override fun addStep(task: String, title: String, onResult: (String?) -> Unit) =
-        editWithResult(onResult) { engine.addStep(task, title) }
-
-    private fun editWithResult(onResult: (String?) -> Unit, edit: () -> Unit) {
+    override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) {
         scope.launch {
-            val problem = writes.withLock {
-                withContext(io) {
-                    try {
-                        edit()
-                        null
-                    } catch (e: FfiException) {
-                        PairingModel.describe(e)
-                    }
+            val error = writeEdit { engine.setNotes(id, notes) }
+            // Publish the saved text before switching back to the read-only label.
+            refresh()
+            onResult(error)
+            if (id != selected) {
+                if (error == null) {
+                    noteDrafts[id]?.takeIf { it.text == null }?.let { noteDrafts.remove(id, it) }
+                } else {
+                    notice("Couldn't save notes: $error")
                 }
             }
-            onResult(problem)
-            refresh()
+        }
+    }
+
+    override fun addStep(task: String, title: String, onResult: (String?) -> Unit) {
+        scope.launch {
+            onResult(writeEdit { engine.addStep(task, title) })
+            refresh() // Prune drafts after the step is no longer in flight.
+        }
+    }
+
+    private suspend fun writeEdit(edit: () -> Unit): String? = writes.withLock {
+        withContext(io) {
+            try {
+                edit()
+                null
+            } catch (e: FfiException) {
+                PairingModel.describe(e)
+            }
         }
     }
 

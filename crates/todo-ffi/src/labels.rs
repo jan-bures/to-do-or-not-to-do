@@ -79,10 +79,6 @@ pub fn weekday(d: Date) -> &'static str {
     WEEKDAYS[Weekday::of(d).offset()]
 }
 
-fn weekday_short(d: Date) -> &'static str {
-    &weekday(d)[..3]
-}
-
 fn month(d: Date) -> &'static str {
     MONTHS[usize::try_from(d.month() - 1).unwrap_or(0).min(11)]
 }
@@ -96,10 +92,7 @@ pub fn day_month(d: Date, today: Date) -> String {
     }
 }
 
-/// "Mon 23 Nov", with the year when it isn't this year.
-pub fn short_date(d: Date, today: Date) -> String {
-    format!("{} {}", weekday_short(d), day_month(d, today))
-}
+pub use todo_client::intent::quick_add::short_date;
 
 /// "W47": the ISO 8601 week.
 pub fn iso_week(d: Date) -> String {

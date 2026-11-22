@@ -27,6 +27,17 @@ pub struct Parsed {
     pub priority: Option<Priority>,
 }
 
+/// The date chip shared by the clients: `Sun 22 Nov`, adding the year only outside this year.
+#[must_use]
+pub fn short_date(date: Date, today: Date) -> String {
+    let pattern = if date.year() == today.year() {
+        "%a %-d %b"
+    } else {
+        "%a %-d %b %Y"
+    };
+    date.strftime(pattern).to_string()
+}
+
 fn weekday(word: &str, abbreviated: bool) -> Option<Weekday> {
     let day = match word {
         "monday" | "pondeli" => Weekday::Mon,
@@ -156,6 +167,19 @@ mod tests {
     fn ctx() -> EvalContext {
         // Saturday 21 Nov 2026.
         EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"))
+    }
+
+    #[test]
+    fn chip_labels_show_the_weekday_and_disambiguate_other_years() {
+        let today = ctx().today;
+        assert_eq!(
+            short_date("2026-11-22".parse().expect("date"), today),
+            "Sun 22 Nov"
+        );
+        assert_eq!(
+            short_date("2027-01-04".parse().expect("date"), today),
+            "Mon 4 Jan 2027"
+        );
     }
 
     fn literal_title(words: &[&str]) -> String {

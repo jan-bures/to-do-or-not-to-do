@@ -13,6 +13,13 @@ class NotesDraft(val task: String) {
     var problem by mutableStateOf<String?>(null)
         private set
 
+    private var original: String? = null
+
+    fun begin(notes: String) {
+        original = notes
+        edit(notes)
+    }
+
     fun edit(value: String?) {
         if (saving) return
         text = value
@@ -22,6 +29,11 @@ class NotesDraft(val task: String) {
     fun save(actions: Actions) {
         val value = text ?: return
         if (saving) return
+        // Opening and leaving an untouched editor must not overwrite a change received meanwhile.
+        if (value == original) {
+            edit(null)
+            return
+        }
         saving = true
         actions.setNotes(task, value) { error ->
             saving = false

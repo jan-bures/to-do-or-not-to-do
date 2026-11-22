@@ -123,7 +123,7 @@ pub fn quick_add_date(text: String, now: LocalNow) -> Option<String> {
     let now = Now::new(now);
     intent::quick_add::parse(&text, &now.eval())
         .due
-        .map(|d| crate::labels::relative_day(d, now.today()))
+        .map(|d| intent::quick_add::short_date(d, now.today()))
 }
 
 /// The sync engine and view model.
@@ -170,7 +170,7 @@ fn describe(entry: &OutboxEntry) -> &'static str {
         Some(Command::CompleteStep { .. }) => "Complete a step",
         Some(Command::UncompleteStep { .. }) => "Reopen a step",
         Some(_) => "A change",
-        None => "Undo",
+        None => "Undo a completion",
     }
 }
 
@@ -478,7 +478,8 @@ impl TodoEngine {
             Ok(todo_client::TrackedUndo::Unavailable) => Err(invalid(
                 "Couldn't undo: the original change couldn't be found.",
             )),
-            Err(_) => Err(invalid("Couldn't undo that.")),
+            Err(todo_client::SubmitError::Storage(e)) => Err(e.into()),
+            Err(todo_client::SubmitError::Invalid(_)) => Err(invalid("Couldn't undo that.")),
         }
     }
 

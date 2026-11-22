@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +30,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -38,6 +40,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -107,6 +111,7 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, genera
         Column(
             Modifier
                 .weight(1f)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = S.S6.dp, end = S.S6.dp, top = S.S4.dp + S.S1.dp / 2)
                 .navigationBarsPadding(),
@@ -218,7 +223,7 @@ private fun TaskNotes(detail: TaskDetail, actions: Actions) {
     if (text == null) {
         Box(
             Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Edit notes") {
-                draft.edit(detail.notes)
+                draft.begin(detail.notes)
             },
             contentAlignment = Alignment.CenterStart,
         ) {
@@ -233,6 +238,8 @@ private fun TaskNotes(detail: TaskDetail, actions: Actions) {
 @Composable
 private fun NotesEditor(text: String, saving: Boolean, problem: String?, onEdit: (String) -> Unit, onCancel: () -> Unit, onSave: () -> Unit) {
     val r = LocalDesign.current.room
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { if (!saving) focus.requestFocus() }
     Column(verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
         BasicTextField(
             value = text,
@@ -240,7 +247,7 @@ private fun NotesEditor(text: String, saving: Boolean, problem: String?, onEdit:
             enabled = !saving,
             modifier = Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
                 .border(Tokens.Elevation.HAIRLINE.dp, r.control, RoundedCornerShape(Tokens.Radius.MD.dp))
-                .padding(S.S2.dp).semantics { contentDescription = "Notes" },
+                .padding(S.S2.dp).focusRequester(focus).semantics { contentDescription = "Notes" },
             textStyle = Tokens.Type.NOTES.style(r.ink),
             cursorBrush = SolidColor(r.accent),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),

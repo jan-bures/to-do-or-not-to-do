@@ -206,9 +206,9 @@ class GalleryTest {
 
     @Test
     fun parsed_quick_add_date() {
-        val s = state(fixtureEngine())
+        val m = TodoModel(fixtureEngine(), scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, listen = {})
         shot("quick_add_date", COVER) {
-            MainScreen(s, Actions.None, false, false, draft = "Water the plants zítra !!", collapsed = true)
+            MainScreen(m.ui.value, m, false, false, draft = "Water the plants zítra !!", collapsed = true)
         }
     }
 

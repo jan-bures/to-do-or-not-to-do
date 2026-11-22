@@ -7,6 +7,7 @@ interface Actions {
     fun open(room: RoomKey)
     fun select(id: String?)
     fun add(title: String)
+    fun previewDate(text: String): String?
     /**
      * Completes or reopens a task. A row tap and the detail pane pass the room [generation] they were read
      * in ([UiState.generation]); null (Undo) is the room on screen now. [row] says the tap was on the task's
@@ -57,6 +58,7 @@ interface Actions {
         override fun open(room: RoomKey) = Unit
         override fun select(id: String?) = Unit
         override fun add(title: String) = Unit
+        override fun previewDate(text: String): String? = null
         override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) = Unit
         override fun rename(id: String, title: String) = Unit
         override fun notesDraft(task: String) = NotesDraft(task)
