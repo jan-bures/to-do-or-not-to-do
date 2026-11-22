@@ -189,11 +189,17 @@ impl Store {
         }
     }
 
-    /// Empties the "couldn't sync" list. Returns how many it held.
-    pub fn dismiss_all_failed(&self) -> Result<usize, String> {
+    /// Takes the given refused changes (the ones shown) off the "couldn't sync" list at once; one
+    /// refused since stays. Returns how many were removed.
+    pub fn dismiss_failed_many(&self, ids: &[CommandId]) -> Result<usize, String> {
         match self {
-            Self::Local(s) => Ok(std::mem::take(&mut *s.failed.borrow_mut()).len()),
-            Self::Live(s) => s.session.client().dismiss_all().map_err(|e| e.to_string()),
+            Self::Local(s) => {
+                let mut failed = s.failed.borrow_mut();
+                let before = failed.len();
+                failed.retain(|f| !ids.contains(&f.entry.command_id));
+                Ok(before - failed.len())
+            }
+            Self::Live(s) => (s.session.client().dismiss_many(ids)).map_err(|e| e.to_string()),
         }
     }
 
@@ -333,9 +339,17 @@ mod tests {
         assert_eq!(store.dismiss_failed(first), Ok(false));
         assert_eq!(store.sync().failed, 2);
         assert!(store.failed().iter().all(|e| e.entry.command_id != first));
-        assert_eq!(store.dismiss_all_failed(), Ok(2));
+        // Dismiss all takes only what was shown.
+        let shown: Vec<_> = store.failed()[..1]
+            .iter()
+            .map(|e| e.entry.command_id)
+            .collect();
+        assert_eq!(store.dismiss_failed_many(&shown), Ok(1));
+        assert_eq!(store.sync().failed, 1);
+        let rest: Vec<_> = store.failed().iter().map(|e| e.entry.command_id).collect();
+        assert_eq!(store.dismiss_failed_many(&rest), Ok(1));
+        assert_eq!(store.dismiss_failed_many(&rest), Ok(0));
         assert_eq!(store.sync().failed, 0);
-        assert_eq!(store.dismiss_all_failed(), Ok(0));
     }
 
     proptest! {

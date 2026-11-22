@@ -807,3 +807,46 @@ fn a_task_moved_out_of_a_list_keeps_its_place_until_its_row_has_left() {
     let detail = leaving.detail.expect("still open");
     assert_eq!(detail.list.name.as_ref(), "Errands");
 }
+
+#[test]
+fn a_hand_over_task_deleted_leaves_its_line_and_one_moved_stays() {
+    let mut f = fixtures::finished();
+    let shell = f.shell();
+    let next = shell.room.handover().expect("hands over");
+    let task = next.tasks().nth(1).expect("a second task").clone();
+    // The hand-over's lines count as shown, as rows do.
+    assert_eq!(shell.shown_row(task.id), Some(&task));
+    assert!(shell.rows().all(|r| r.id != task.id), "not a row");
+    // Moved to another list, it's still tomorrow's: still shown, so it keeps the selection.
+    let other = f
+        .state
+        .lists
+        .values()
+        .find(|l| l.id != f.state.tasks[&task.id].list && f.state.is_live(l.id.into()))
+        .expect("another list")
+        .id;
+    let mut moved = f.state.clone();
+    run(
+        &mut moved,
+        fixtures_now(),
+        Command::MoveTask {
+            id: task.id,
+            list: other,
+            placement: todo_core::command::Placement::First,
+        },
+    );
+    let after = derive(&moved, &f.ui, &f.sync, &f.now);
+    assert!(after.shown_row(task.id).is_some());
+    // Deleted, it's gone, unless it's leaving: then its line keeps its place until released.
+    let snapshot = f.state.tasks[&task.id].clone();
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::Delete { id: task.id.into() },
+    );
+    assert!(f.shell().shown_row(task.id).is_none());
+    f.ui.leaving.insert(task.id, snapshot);
+    let leaving = f.shell();
+    let next = leaving.room.handover().expect("still hands over");
+    assert_eq!(next.tasks().nth(1).map(|t| t.id), Some(task.id));
+}

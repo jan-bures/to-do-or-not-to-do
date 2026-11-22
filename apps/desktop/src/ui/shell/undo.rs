@@ -303,11 +303,10 @@ impl ShellView {
         if kind == EditKind::Move
             && self.animate
             && let EntityId::Task(id) = entity
-            && (self.motion.is_leaving(id) || !self.shell.rows().any(|r| r.id == id))
+            && (self.motion.is_leaving(id) || self.shell.shown_row(id).is_none())
             && let Some(task) = state.tasks.get(&id)
         {
-            self.motion
-                .restore(id, task.is_done(), self.now(), self.pace());
+            self.restore_row(id, task.is_done());
         }
         let animated = !kind.needs_row_restore() || self.animate_restored(kind, entity, &state);
         if let Some(undo_id) = queued {
@@ -341,11 +340,23 @@ impl ShellView {
             && kind.is_restored(entity, state)
             && let Some(task) = state.tasks.get(&id)
         {
-            self.motion
-                .restore(id, task.is_done(), self.now(), self.pace());
+            self.restore_row(id, task.is_done());
             return true;
         }
         false
+    }
+
+    /// Brings a restored task's row back (`Motion::restore`). A completion or reopening its delete cut
+    /// short picks up again: a reopening keeps the completed place it had (`UiState::reopening`, from
+    /// the task as it was when it left); a completion is held in the open rows again by the motion.
+    fn restore_row(&mut self, id: TaskId, done: bool) {
+        let completed = self.ui.leaving.get(&id).and_then(|t| t.completed_at);
+        self.motion.restore(id, done, self.now(), self.pace());
+        if let Some(at) = completed
+            && self.motion.reopening().any(|r| r == id)
+        {
+            self.ui.reopening.insert(id, at);
+        }
     }
 
     /// Animate the compensation once using the same view that also decides new commands.

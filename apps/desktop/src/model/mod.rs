@@ -681,6 +681,14 @@ impl Shell {
         )
     }
 
+    /// How task `id` is drawn in the room now, if it is: its row, or its line in the finished day's
+    /// hand-over to tomorrow (`shown_tasks`).
+    pub fn shown_row(&self, id: TaskId) -> Option<&TaskRow> {
+        self.rows()
+            .chain(self.room.handover().into_iter().flat_map(Tomorrow::tasks))
+            .find(|r| r.id == id)
+    }
+
     /// Whether a row action still targets a row in the live room, not a snapshot or stale hitbox.
     pub fn has_row_in(&self, room: RoomKey, id: TaskId) -> bool {
         self.room.key == room && self.rows().any(|row| row.id == id)

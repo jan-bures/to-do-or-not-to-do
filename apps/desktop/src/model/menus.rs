@@ -209,6 +209,26 @@ pub fn is_wide(entries: &[MenuEntry]) -> bool {
         .any(|e| matches!(e, MenuEntry::Confirm { .. } | MenuEntry::Failure { .. }))
 }
 
+/// The key of item `i`, as the keyboard counts them. The keyboard's highlight is kept as the item's key,
+/// never its place, so data that changes under the menu (a list added above, a new refusal) never moves
+/// it to another item.
+pub fn key_at(entries: &[MenuEntry], i: usize) -> Option<SharedString> {
+    items(entries).nth(i).map(|item| item.key.clone())
+}
+
+/// Where the item with `key` is now, if it's still there.
+pub fn index_of(entries: &[MenuEntry], key: &str) -> Option<usize> {
+    items(entries).position(|item| item.key == key)
+}
+
+/// What Enter does on the highlighted item (`key`): its action, or nothing when that item has gone.
+pub fn chosen(entries: &[MenuEntry], key: Option<&str>) -> Option<MenuAction> {
+    let key = key?;
+    items(entries)
+        .find(|item| item.key == key)
+        .map(|i| i.action)
+}
+
 /// Where the keyboard starts in a menu opened from the keyboard: on the current choice (the priority
 /// picker's level), on Cancel in a confirmation, so a second Enter never destroys anything, else on the
 /// first item.
@@ -665,6 +685,17 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
     entries
 }
 
+/// The refused changes the open "couldn't sync" list shows: of those there now (`failed`), the ones
+/// that were there when it opened (`shown`). One dismissed since is gone; one refused since waits for
+/// the list to open again, so the rows never shift under the pointer and Dismiss all takes only what
+/// was seen.
+pub fn shown_failures(failed: Vec<FailedEntry>, shown: &[CommandId]) -> Vec<FailedEntry> {
+    failed
+        .into_iter()
+        .filter(|f| shown.contains(&f.entry.command_id))
+        .collect()
+}
+
 /// The "couldn't sync" list (the sidebar's sync line, when something was refused): each refused change
 /// in plain words, what it was about and why (never the server's own text), beside its Dismiss
 /// button, then Dismiss all.
@@ -1117,6 +1148,29 @@ second line"
             Some(MenuAction::MoveTask(task, own))
         );
         assert!(items(&menu).all(|i| i.glyph.is_some()));
+        // A list added above the highlighted one (by a sync) leaves the highlight on the same list, and
+        // Enter on a list that has gone does nothing.
+        let errands_key = format!("move-{}", list_named(&f.state, "Errands"));
+        let mut added = f.state.clone();
+        let new = ListId::from_uuid(uuid::Uuid::from_u128(77));
+        let mut list = added.lists[&list_named(&f.state, "Planning")].clone();
+        list.id = new;
+        list.name = "Aardvarks".into();
+        added.lists.insert(new, list);
+        let after = move_menu(&added, task, "");
+        assert_eq!(items(&after).count(), live + 1);
+        assert_ne!(
+            index_of(&after, &errands_key),
+            index_of(&menu, &errands_key)
+        );
+        assert_eq!(
+            chosen(&after, Some(&errands_key)),
+            Some(MenuAction::MoveTask(task, list_named(&f.state, "Errands")))
+        );
+        assert_eq!(chosen(&after, Some("move-gone")), None);
+        assert_eq!(chosen(&after, None), None);
+        let first = key_at(&menu, 0).expect("a key");
+        assert_eq!(index_of(&menu, &first), Some(0));
         // The keyboard scrolls the lists, under the filter line that stays put: the first list is the
         // second entry that scrolls (after its collection's name), the last one the last.
         assert_eq!(child_of_item(&menu, 0), Some(1));
@@ -1177,6 +1231,28 @@ second line"
         expected.push(MenuAction::DismissAllFailures);
         assert_eq!(actions(&menu), expected);
         assert!(is_wide(&menu) && !is_confirmation(&menu));
+        // A change refused while the list is open waits for it to open again: the rows, and what each
+        // highlighted key does, stay as they were.
+        let shown: Vec<CommandId> = failed.iter().map(|f| f.entry.command_id).collect();
+        let mut now = failed.clone();
+        let mut new = failed[0].clone();
+        new.entry.command_id = uuid::Uuid::from_u128(99);
+        now.insert(0, new);
+        let still = failures_menu(&f.state, &shown_failures(now.clone(), &shown));
+        assert_eq!(still, menu);
+        let all = failures_menu(&f.state, &now);
+        assert_eq!(
+            chosen(&all, Some("dismiss-all")),
+            Some(MenuAction::DismissAllFailures)
+        );
+        let second = format!("dismiss-{}", failed[1].entry.command_id);
+        assert_eq!(
+            chosen(&all, Some(&second)),
+            Some(MenuAction::DismissFailure(failed[1].entry.command_id))
+        );
+        // One dismissed meanwhile is gone from the list.
+        let fewer = shown_failures(now[2..].to_vec(), &shown);
+        assert_eq!(fewer.len(), 2);
         // One refused change needs no Dismiss all; none, no list.
         let one = failures_menu(&f.state, &failed[..1]);
         assert!(matches!(&one[0], MenuEntry::Heading(h) if h == "1 change couldn't sync"));

@@ -34,13 +34,18 @@ pub(super) struct Menu {
     /// A context menu opens at the pointer (or, opened from the keyboard, under its row). A menu with
     /// a button opens from it, drawn inside it, and has none.
     pub at: Option<Point<Pixels>>,
-    /// The item the keyboard is on, if it has moved yet.
-    pub highlight: Option<usize>,
+    /// The item the keyboard is on (its key, `menus::key_at`), if it has moved yet. Kept by key, so data
+    /// that changes under the menu never moves it to another item; Enter on an item that has gone does
+    /// nothing.
+    pub highlight: Option<SharedString>,
     pub overlay: Overlay,
     /// Where closing the menu from the keyboard gives the keyboard back: its button.
     pub trigger: Option<Stop>,
     /// What's been typed to narrow the list picker.
     pub filter: String,
+    /// The refused changes the "couldn't sync" list shows: those there when it opened (one refused
+    /// since shows the next time it opens). Dismiss all takes exactly these.
+    pub failures: Vec<todo_client::CommandId>,
 }
 
 /// What a task's context menu shows: its items, or in their place the priority picker or the list
@@ -152,7 +157,14 @@ impl ShellView {
                 let filter = self.menu.as_ref().map_or("", |m| m.filter.as_str());
                 menus::move_menu(&state, id, filter)
             }
-            MenuKind::SyncFailures => menus::failures_menu(&state, &self.store.failed()),
+            MenuKind::SyncFailures => {
+                let shown = self
+                    .menu
+                    .as_ref()
+                    .map_or(&[][..], |m| m.failures.as_slice());
+                let failed = menus::shown_failures(self.store.failed(), shown);
+                menus::failures_menu(&state, &failed)
+            }
         }
     }
 
@@ -199,6 +211,13 @@ impl ShellView {
                 },
                 trigger,
                 filter: String::new(),
+                failures: if kind == MenuKind::SyncFailures {
+                    (self.store.failed().iter())
+                        .map(|f| f.entry.command_id)
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             },
         };
         // A keyboard user stays on the keyboard: a confirmation starts on Cancel.
@@ -251,9 +270,10 @@ impl ShellView {
         let Some(kind) = self.menu.as_ref().map(|m| m.kind) else {
             return;
         };
-        let child = at.and_then(|i| menus::child_of_item(&self.menu_entries(kind), i));
+        let entries = self.menu_entries(kind);
+        let child = at.and_then(|i| menus::child_of_item(&entries, i));
         if let Some(menu) = self.menu.as_mut() {
-            menu.highlight = at;
+            menu.highlight = at.and_then(|i| menus::key_at(&entries, i));
         }
         if let Some(child) = child {
             self.menu_scroll.scroll_to_item(child);
@@ -361,7 +381,8 @@ impl ShellView {
                 } else {
                     -1
                 };
-                let next = menus::step_highlight(menu.highlight, by, count);
+                let at = (menu.highlight.as_deref()).and_then(|k| menus::index_of(&entries, k));
+                let next = menus::step_highlight(at, by, count);
                 self.highlight(next);
                 cx.notify();
             }
@@ -371,11 +392,8 @@ impl ShellView {
                 cx.notify();
             }
             "enter" | "space" if !e.is_held => {
-                let chosen = menu
-                    .highlight
-                    .and_then(|i| menus::items(&entries).nth(i))
-                    .map(|i| i.action);
-                if let Some(action) = chosen {
+                // The highlighted item as the menu shows it now; nothing if it has gone meanwhile.
+                if let Some(action) = menus::chosen(&entries, menu.highlight.as_deref()) {
                     self.run_menu_action(action, true, window, cx);
                 }
             }
@@ -397,8 +415,14 @@ impl ShellView {
         let Some(menu) = self.menu.clone() else {
             return;
         };
-        if keyboard && let Some(m) = self.menu.as_mut() {
-            m.highlight = Some(m.highlight.unwrap_or(0));
+        let entries = self.menu_entries(menu.kind);
+        if keyboard
+            && menu.highlight.is_none()
+            && let Some(m) = self.menu.as_mut()
+        {
+            m.highlight = menus::items(&entries)
+                .find(|i| i.action == action)
+                .map(|i| i.key.clone());
         }
         match action {
             MenuAction::AskDeleteList(id) => {
@@ -431,10 +455,11 @@ impl ShellView {
             }
             // The list stays open while more are left, the keyboard on the item that took its place.
             MenuAction::DismissFailure(id) => {
-                self.dismiss_failure(Some(id));
+                let at = (menu.highlight.as_deref()).and_then(|k| menus::index_of(&entries, k));
+                self.dismiss_failure(Some(id), &menu);
                 let left = menus::items(&self.menu_entries(menu.kind)).count();
                 if left > 0 {
-                    self.highlight(menu.highlight.map(|i| i.min(left - 1)));
+                    self.highlight(at.map(|i| i.min(left - 1)));
                     self.refresh(cx);
                     return;
                 }
@@ -496,7 +521,7 @@ impl ShellView {
             MenuAction::MoveTask(task, list) => self.move_task_to(task, list, cx),
             MenuAction::DeleteTask(task) => self.delete_task(task, cx),
             MenuAction::DismissAllFailures => {
-                self.dismiss_failure(None);
+                self.dismiss_failure(None, &menu);
                 self.refresh(cx);
             }
             MenuAction::DismissFailure(_) => self.refresh(cx),
@@ -508,12 +533,13 @@ impl ShellView {
         }
     }
 
-    /// Takes one refused change (or, with `None`, all of them) off the "couldn't sync" list. A cache
-    /// that can't be written leaves them there, and the status bar says so.
-    fn dismiss_failure(&mut self, id: Option<todo_client::CommandId>) {
+    /// Takes one refused change (or, with `None`, every one the list shows) off the "couldn't sync"
+    /// list. One refused since the list opened stays. A cache that can't be written leaves them there,
+    /// and the status bar says so.
+    fn dismiss_failure(&mut self, id: Option<todo_client::CommandId>, menu: &Menu) {
         let result = match id {
             Some(id) => self.store.dismiss_failed(id).map(drop),
-            None => self.store.dismiss_all_failed().map(drop),
+            None => self.store.dismiss_failed_many(&menu.failures).map(drop),
         };
         if let Err(error) = result {
             tracing::warn!(%error, "couldn't dismiss a refused change");
@@ -580,22 +606,16 @@ impl ShellView {
         let look = menu.overlay.look(self.frame);
         let live = look.open;
         let kind = menu.kind;
-        let mut index = 0;
+        let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
         let rows: Vec<AnyElement> = menus::scrolling(&entries)
             .map(|entry| match entry {
-                MenuEntry::Item(item) => {
-                    let i = index;
-                    index += 1;
-                    self.menu_item(&p, item, menu.highlight == Some(i), live, cx)
-                        .into_any_element()
-                }
+                MenuEntry::Item(item) => self
+                    .menu_item(&p, item, on(item), live, cx)
+                    .into_any_element(),
                 MenuEntry::Confirm { message, buttons } => {
-                    let first = index;
-                    index += buttons.len();
-                    let buttons = buttons.iter().enumerate().map(|(k, item)| {
-                        let highlighted = menu.highlight == Some(first + k);
-                        self.confirm_button(&p, item, highlighted, live, cx)
-                    });
+                    let buttons = buttons
+                        .iter()
+                        .map(|item| self.confirm_button(&p, item, on(item), live, cx));
                     div()
                         .px(px(space::S3))
                         .pt(px(space::S2))
@@ -621,8 +641,7 @@ impl ShellView {
                 }
                 // A refused change: what it was and why, both in full (they wrap), beside Dismiss.
                 MenuEntry::Failure { what, why, dismiss } => {
-                    let highlighted = menu.highlight == Some(index);
-                    index += 1;
+                    let highlighted = on(dismiss);
                     div()
                         .px(px(space::S3))
                         .py(px(space::S2))
@@ -957,9 +976,23 @@ impl ShellView {
     }
 }
 
+/// Whether the keyboard goes back to the task list after a menu was `dropped` because its subject went
+/// away (a task or list deleted on another device): when the keyboard was on the menu, or, the menu's
+/// element gone, on nothing at all. Otherwise Escape and Tab would have nowhere to go. A keyboard that
+/// has moved on (a text field) is left there.
+pub(super) fn keyboard_back_to_list(
+    dropped: bool,
+    menu_focused: bool,
+    nothing_focused: bool,
+) -> bool {
+    dropped && (menu_focused || nothing_focused)
+}
+
 /// What a key does to the list picker's filter (Move to…): the filter it leaves, or `None` when the key
 /// isn't typing there. Letters add to it, Backspace takes the last one back, and Escape clears it before
 /// it closes the picker. Space types once something is typed (before that it chooses, as in any menu).
+/// A held key's repeats type nothing (only Backspace repeats), so holding M, which opens the picker,
+/// doesn't fill it with m's.
 fn picker_edit(menu: &Menu, e: &KeyDownEvent) -> Option<String> {
     let picking = matches!(
         menu.kind,
@@ -970,6 +1003,9 @@ fn picker_edit(menu: &Menu, e: &KeyDownEvent) -> Option<String> {
     );
     let m = &e.keystroke.modifiers;
     if !picking || m.control || m.alt || m.platform || m.function {
+        return None;
+    }
+    if e.is_held && e.keystroke.key != "backspace" {
         return None;
     }
     let typed = &menu.filter;
@@ -1146,11 +1182,16 @@ mod tests {
             overlay: Overlay::rest(),
             trigger: None,
             filter: filter.into(),
+            failures: Vec::new(),
         };
         let key = |text: &'static str| KeyDownEvent {
             keystroke: Keystroke::parse(text).expect("keystroke"),
             is_held: false,
             prefer_character_input: false,
+        };
+        let held = |text: &'static str| KeyDownEvent {
+            is_held: true,
+            ..key(text)
         };
         let typed = |m: &Menu, k: &'static str| picker_edit(m, &key(k));
         let empty = menu(TaskPage::Move, "");
@@ -1162,6 +1203,13 @@ mod tests {
         let some = menu(TaskPage::Move, "err");
         assert_eq!(typed(&some, "space-> ").as_deref(), Some("err "));
         assert_eq!(typed(&some, "backspace").as_deref(), Some("er"));
+        // Holding M (which opened it) types nothing more; holding Backspace keeps deleting.
+        assert_eq!(picker_edit(&empty, &held("m->m")), None);
+        assert_eq!(picker_edit(&some, &held("m->m")), None);
+        assert_eq!(
+            picker_edit(&some, &held("backspace")).as_deref(),
+            Some("er")
+        );
         assert_eq!(typed(&some, "escape").as_deref(), Some(""));
         // Escape and Backspace with nothing typed, and the keys that walk and choose, are the menu's.
         for k in ["escape", "backspace", "enter", "tab", "down", "up", "home"] {
@@ -1172,6 +1220,17 @@ mod tests {
         // Only the list picker takes typing.
         assert_eq!(typed(&menu(TaskPage::Main, ""), "e->e"), None);
         assert_eq!(typed(&menu(TaskPage::Priority, ""), "e->e"), None);
+    }
+
+    #[test]
+    fn a_menu_whose_subject_went_away_gives_the_keyboard_back_to_the_list() {
+        // On the menu, or nowhere once its element stopped rendering: back to the list.
+        assert!(keyboard_back_to_list(true, true, false));
+        assert!(keyboard_back_to_list(true, false, true));
+        // Typing somewhere else meanwhile: left there.
+        assert!(!keyboard_back_to_list(true, false, false));
+        // Nothing was dropped: the usual rules apply.
+        assert!(!keyboard_back_to_list(false, true, false));
     }
 
     #[test]

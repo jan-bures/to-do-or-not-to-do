@@ -798,7 +798,8 @@ proptest! {
             let holding: BTreeSet<TaskId> = mo.holding().collect();
             let reopening: BTreeSet<TaskId> = mo.reopening().collect();
             for (id, d) in &done {
-                if !holding.contains(id) && !reopening.contains(id) {
+                // A leaving row keeps the place it had (`UiState::leaving` holds the task as it was).
+                if !holding.contains(id) && !reopening.contains(id) && !leaving.contains(id) {
                     placed.insert(*id, *d);
                 }
             }
@@ -915,4 +916,43 @@ fn a_held_completion_that_is_deleted_leaves_from_its_hold() {
     assert_eq!(mo.holding().count(), 0);
     assert_eq!(mo.row(id, hold), Some(RowLook::rest(true)));
     assert_eq!(mo.advance(hold + ms(m::ROW_COLLAPSE)), [Release::Left(id)]);
+}
+
+#[test]
+fn undoing_a_delete_that_cut_a_completion_short_resumes_it() {
+    let id = task(11);
+    let mut mo = Motion::default();
+    mo.complete(id, ms(0), Pace::FULL);
+    let hold = ms(m::CHECK_TICK_DELAY + m::CHECK_TICK + 10);
+    mo.leave(id, false, hold, Pace::FULL);
+    assert_eq!(mo.holding().count(), 0);
+    // Undo part way out: the task is back, still done, and held in the open rows again from where it
+    // is, so the completion plays on to its own release.
+    let at = hold + ms(m::ROW_COLLAPSE / 2);
+    let gone = mo.row(id, at).expect("leaving");
+    mo.restore(id, true, at, Pace::FULL);
+    assert_eq!(mo.holding().collect::<Vec<_>>(), [id]);
+    let back = mo.row(id, at).expect("completing");
+    assert!(close(back.height, gone.height) && back.fill == 1. && back.strike == 1.);
+    let end = at + ms(10_000);
+    assert_eq!(mo.advance(end), [Release::Completed(id)]);
+    // Reopened elsewhere meanwhile, it only settles back, open.
+    let mut mo = Motion::default();
+    mo.complete(id, ms(0), Pace::FULL);
+    mo.leave(id, false, hold, Pace::FULL);
+    mo.restore(id, false, at, Pace::FULL);
+    assert_eq!(mo.holding().count(), 0);
+    assert!(mo.advance(end).is_empty());
+}
+
+#[test]
+fn undoing_a_delete_that_cut_a_reopening_short_resumes_it() {
+    let id = task(12);
+    let mut mo = Motion::default();
+    assert_eq!(mo.reopen(id, ms(0), Pace::FULL), Keep::Reopening);
+    mo.leave(id, true, ms(50), Pace::FULL);
+    assert_eq!(mo.reopening().count(), 0);
+    mo.restore(id, false, ms(100), Pace::FULL);
+    assert_eq!(mo.reopening().collect::<Vec<_>>(), [id]);
+    assert_eq!(mo.advance(ms(10_000)), [Release::Reopened(id)]);
 }

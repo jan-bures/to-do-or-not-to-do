@@ -793,6 +793,79 @@ fn undoing_an_acknowledged_move_puts_the_task_back_and_keeps_an_edit_made_meanwh
     d.finish(store);
 }
 
+/// The move keeps the task's key (it goes into an empty list), and B then reorders it there. Undoing
+/// the acknowledged move must conflict rather than put the task back in the wrong place.
+#[test]
+fn undoing_an_acknowledged_move_after_a_reorder_elsewhere_conflicts_and_leaves_the_task_alone() {
+    use todo_client::TrackedUndo;
+    use todo_core::command::Placement;
+
+    let d = Deletes::new();
+    let store = d.store(true);
+    let session = store.session().expect("session");
+    let (garden, repairs) = (d.lists[1], d.lists[2]);
+    // A second task in Garden, after the first.
+    let second = TaskId::from_uuid(store.new_uuid());
+    store
+        .submit(todo_core::Command::CreateTask(Box::new(
+            todo_core::command::NewTask {
+                placement: Placement::Last,
+                ..todo_core::command::NewTask::new(second, garden, "Rake the leaves")
+            },
+        )))
+        .expect("second task");
+    assert_eq!(order(&store.view(), garden), [d.task, second]);
+    let key = store.view().tasks[&d.task].position.clone();
+    let moved = commands::move_to_list(&store.view(), d.task, repairs).expect("move");
+    let target = store.submit_undoable(moved).expect("move");
+    eventually("the move is acknowledged", || {
+        session.client().pending().is_empty()
+    });
+    assert_eq!(
+        d.server.state().tasks[&d.task].position,
+        key,
+        "into an empty list, it keeps its key"
+    );
+    // B adds a task to Repairs and puts the moved one after it.
+    let other = TaskId::from_uuid(d.b.client().new_uuid());
+    eventually("B sees the move", || {
+        d.b.client().view().tasks[&d.task].list == repairs
+    });
+    submit(
+        &d.b,
+        vec![
+            todo_core::Command::CreateTask(Box::new(todo_core::command::NewTask::new(
+                other,
+                repairs,
+                "Fix the gate",
+            ))),
+            todo_core::Command::Reorder {
+                id: d.task.into(),
+                placement: Placement::After(other.into()),
+            },
+        ],
+    );
+    eventually("A sees B's reorder", || {
+        order(&store.view(), repairs) == [other, d.task]
+    });
+    let undo = match store.undo(&target).expect("undo") {
+        TrackedUndo::Queued(undo) => undo,
+        other => panic!("an acknowledged move is undone through the server: {other:?}"),
+    };
+    eventually("the server answers the undo", || {
+        store.undo_result(undo).is_some()
+    });
+    assert_eq!(
+        store.undo_result(undo),
+        Some(Err("Couldn't undo: the task was changed again.".into()))
+    );
+    for (who, state) in [("server", d.server.state()), ("A", store.view())] {
+        assert_eq!(order(&state, repairs), [other, d.task], "{who}: left alone");
+        assert_eq!(order(&state, garden), [second], "{who}");
+    }
+    d.finish(store);
+}
+
 #[test]
 fn refused_changes_are_listed_in_plain_words_and_dismissed_for_good() {
     use crate::model::menus::{self, MenuAction, MenuEntry};
@@ -859,7 +932,18 @@ fn refused_changes_are_listed_in_plain_words_and_dismissed_for_good() {
     assert!(menus::items(&menu).any(|i| i.action == MenuAction::DismissAllFailures));
     assert_eq!(store.dismiss_failed(ids[1]), Ok(true));
     assert_eq!(store.sync().failed, 2);
-    assert_eq!(store.dismiss_all_failed(), Ok(2));
+    // What was shown, and one refused since, which stays.
+    let shown: Vec<_> = store.failed().iter().map(|f| f.entry.command_id).collect();
+    client
+        .adopt_failed(vec![refused(
+            todo_core::Command::UncompleteTask { id: task },
+            "deleted",
+        )])
+        .expect("refused since");
+    assert_eq!(store.dismiss_failed_many(&shown), Ok(2));
+    assert_eq!(store.sync().failed, 1);
+    let later: Vec<_> = store.failed().iter().map(|f| f.entry.command_id).collect();
+    assert_eq!(store.dismiss_failed_many(&later), Ok(1));
     assert_eq!(store.sync().failed, 0);
     drop(store);
     let reopened = Session::open(net, &paths, &pairing).expect("reopen");

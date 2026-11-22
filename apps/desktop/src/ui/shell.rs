@@ -57,7 +57,6 @@ actions!(
         PickPriority,
         MoveTaskUp,
         MoveTaskDown,
-        DeleteTask,
         MoveTaskTo,
         TaskMenu,
         UndoTask,
@@ -80,7 +79,6 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-p", PickPriority, list),
         KeyBinding::new("alt-up", MoveTaskUp, list),
         KeyBinding::new("alt-down", MoveTaskDown, list),
-        KeyBinding::new("delete", DeleteTask, list),
         KeyBinding::new("m", MoveTaskTo, list),
         KeyBinding::new("shift-f10", TaskMenu, list),
         KeyBinding::new("j", NextTask, list),
@@ -206,6 +204,8 @@ pub struct ShellView {
     menu_focus: FocusHandle,
     /// A long menu's scroll (the list picker).
     menu_scroll: ScrollHandle,
+    /// The open menu was dropped because its subject went away; the keyboard goes back to the list.
+    menu_dropped: bool,
     /// Where each task row in the room was last painted: a task's menu opened from the keyboard hangs
     /// under its row.
     row_bounds: Rc<RefCell<HashMap<TaskId, Bounds<Pixels>>>>,
@@ -335,6 +335,7 @@ impl ShellView {
             menu_press: menu::PressGuard::default(),
             menu_focus: cx.focus_handle(),
             menu_scroll: ScrollHandle::new(),
+            menu_dropped: false,
             row_bounds: Rc::default(),
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
@@ -438,6 +439,7 @@ impl ShellView {
         });
         if stale_menu {
             self.menu = None;
+            self.menu_dropped = true;
         }
         self.follow_data(&state);
         let session = self.store.session();
@@ -800,19 +802,24 @@ impl ShellView {
     /// The keyboard never stays on something that's gone: a menu that closed or has nothing left, or the
     /// room's "more" button in a room without a menu. It goes back to the list.
     fn keep_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // A menu whose subject went away (a list deleted on another device) has nothing left to offer.
+        // A menu whose subject went away (a list or task deleted on another device) has nothing left to
+        // offer: it closes at once, and the keyboard goes back to the list, so Escape and Tab still work.
         if self
             .menu
             .as_ref()
             .is_some_and(|m| self.menu_entries(m.kind).is_empty())
         {
             self.menu = None;
+            self.menu_dropped = true;
         }
+        let dropped = std::mem::take(&mut self.menu_dropped);
         let menu_open = self
             .menu
             .as_ref()
             .is_some_and(|m| m.overlay.look(self.frame).open);
-        if (self.menu_focus.is_focused(window) && !menu_open)
+        let menu_focused = self.menu_focus.is_focused(window);
+        if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
+            || (menu_focused && !menu_open)
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
             || (self.sync_focus.is_focused(window) && self.store.sync().failed == 0)
         {
@@ -1217,7 +1224,8 @@ impl ShellView {
             return self.keep_unsaved(cx);
         }
         let state = self.store.view();
-        let shown = self.shell.rows().any(|r| r.id == id);
+        // Its row or its line in the finished day's hand-over, as drawn now.
+        let shown = self.shell.shown_row(id).map(|r| r.done);
         let snapshot = state.tasks.get(&id).cloned().map(|mut task| {
             // As the list places it now: still open while its completion holds, still done while
             // its reopening plays.
@@ -1239,18 +1247,12 @@ impl ShellView {
             &self.store.sync(),
             &self.store.now(),
         );
-        let gone = !after.rows().any(|r| r.id == id);
+        let gone = after.shown_row(id).is_none();
         if gone
-            && shown
             && self.animate
-            && let Some(task) = snapshot
+            && let (Some(done), Some(task)) = (shown, snapshot)
         {
             let (now, pace) = (self.now(), self.pace());
-            let done = self
-                .shell
-                .rows()
-                .find(|r| r.id == id)
-                .is_some_and(|r| r.done);
             self.motion.leave(id, done, now, pace);
             self.ui.leaving.insert(id, task);
         }
@@ -1260,6 +1262,11 @@ impl ShellView {
         self.refresh(cx);
         if let Some(i) = self.shell.selected_task.filter(|_| gone) {
             self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
+        } else if let (true, Some(next), Some(id)) =
+            (gone, self.shell.room.handover(), self.ui.task)
+            && let Some(child) = next.child(id)
+        {
+            self.handover_scroll.scroll_to_item(child);
         }
     }
 
@@ -2414,18 +2421,20 @@ impl ShellView {
                     .on_action(
                         cx.listener(|this, _: &PreviousTask, _, cx| this.move_selection(-1, cx)),
                     )
-                    // Space completes or reopens the selected task. It's a key handler rather than a
-                    // binding so a held key's repeats can be told apart: only the first press counts,
-                    // and holding Space never flips a task back and forth.
+                    // Space completes or reopens the selected task, and Delete deletes it (`list_key`):
+                    // a held key's repeats are consumed without acting.
                     .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
-                        if e.keystroke.key == "space" && !e.keystroke.modifiers.modified() {
-                            cx.stop_propagation();
-                            if !e.is_held
-                                && let Some(id) = this.ui.task
-                                && this.task_is_visible(id)
-                            {
-                                this.toggle_complete(id, cx);
-                            }
+                        let Some((key, act)) = list_key(e) else {
+                            return;
+                        };
+                        cx.stop_propagation();
+                        let Some(id) = this.ui.task.filter(|&id| act && this.task_is_visible(id))
+                        else {
+                            return;
+                        };
+                        match key {
+                            ListKey::Toggle => this.toggle_complete(id, cx),
+                            ListKey::Delete => this.delete_task(id, cx),
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, _, cx| this.select_task(None, cx)))
@@ -2449,11 +2458,6 @@ impl ShellView {
                     }))
                     .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
                     .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
-                    .on_action(cx.listener(|this, _: &DeleteTask, _, cx| {
-                        if let Some(id) = this.ui.task.filter(|&id| this.task_is_visible(id)) {
-                            this.delete_task(id, cx);
-                        }
-                    }))
                     .on_action(cx.listener(|this, _: &MoveTaskTo, window, cx| {
                         this.open_task_menu(TaskPage::Move, window, cx);
                     }))
@@ -3178,6 +3182,28 @@ impl Render for ShellView {
     }
 }
 
+/// The task list's keys that act on the selected task, read from the raw key event rather than bound,
+/// so a held key's repeats can be told apart: `(key, act)`, where `act` is false for a repeat, which is
+/// consumed without acting. Holding Space never flips a task back and forth, and holding Delete never
+/// deletes the rows that take the selection one after another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListKey {
+    Toggle,
+    Delete,
+}
+
+fn list_key(e: &gpui::KeyDownEvent) -> Option<(ListKey, bool)> {
+    if e.keystroke.modifiers.modified() {
+        return None;
+    }
+    let key = match e.keystroke.key.as_str() {
+        "space" => ListKey::Toggle,
+        "delete" => ListKey::Delete,
+        _ => return None,
+    };
+    Some((key, !e.is_held))
+}
+
 /// Both tab directions navigate without stealing system or application shortcuts.
 fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
     let key = &event.keystroke;
@@ -3245,6 +3271,59 @@ mod tests {
             card_paint(None, false),
             (RowLook::rest(false), desktop::SUNRISE_MARK)
         );
+    }
+
+    #[test]
+    fn holding_delete_deletes_only_the_task_selected_when_it_was_pressed() {
+        use super::{ListKey, list_key};
+        use crate::model::commands;
+        use gpui::{KeyDownEvent, Keystroke};
+        let press = |text, is_held| KeyDownEvent {
+            keystroke: Keystroke::parse(text).expect("keystroke"),
+            is_held,
+            prefer_character_input: false,
+        };
+        let f = fixtures::my_day();
+        let store = crate::store::Store::fixture(&f);
+        let mut ui = f.ui.clone();
+        let first = ui.task.expect("selected");
+        // Windows sends the press, then repeats while the key is held. Each delete hands the selection
+        // to the next row, so a repeat that acted would delete that one too.
+        for held in [false, true, true, true] {
+            let Some((ListKey::Delete, act)) = list_key(&press("delete", held)) else {
+                panic!("Delete is the list's");
+            };
+            if !act {
+                continue;
+            }
+            let id = ui.task.expect("a selection");
+            let shell = crate::model::derive(&store.view(), &ui, &store.sync(), &store.now());
+            let rows: Vec<_> = shell.rows().map(|r| r.id).collect();
+            let at = rows.iter().position(|&r| r == id).expect("shown");
+            store
+                .submit(commands::delete_task(&store.view(), id).expect("delete"))
+                .expect("deleted");
+            ui.task = rows.get(at + 1).copied();
+        }
+        let state = store.view();
+        let deleted: Vec<_> = (state.tasks.values())
+            .filter(|t| t.deleted.is_some() && !f.state.tasks[&t.id].deleted.is_some())
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(deleted, [first], "only the first press deleted");
+        assert_ne!(ui.task, Some(first), "the selection moved on");
+        assert!(state.is_live(ui.task.expect("selected").into()));
+        // Space works the same way; modified keys aren't the list's.
+        assert_eq!(
+            list_key(&press("space", true)),
+            Some((ListKey::Toggle, false))
+        );
+        assert_eq!(
+            list_key(&press("space", false)),
+            Some((ListKey::Toggle, true))
+        );
+        assert_eq!(list_key(&press("shift-delete", false)), None);
+        assert_eq!(list_key(&press("e", false)), None);
     }
 
     #[test]
