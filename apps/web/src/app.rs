@@ -1,6 +1,7 @@
 //! The Leptos components. Layout and look are in `static/app.css`, which takes every value from
 //! `tokens.css`; this file only sets classes and `data-*` hue keys.
 
+mod attachments;
 mod room_actions;
 
 use crate::backend::{self, Sync, UndoTarget};
@@ -1905,13 +1906,16 @@ fn DetailPane() -> impl IntoView {
         c.detail.get().or_else(|| prev.cloned().flatten())
     });
     let id = Memo::new(move |_| rendered.with(|d| d.as_ref().map(|d| d.id)));
+    let uploads = attachments::Uploads::new();
     view! {
         <section class="detail" id="task-detail" tabindex="-1" aria-label="Task detail"
             role=move || c.detail_modal.get().then_some("dialog")
             aria-modal=move || c.detail_modal.get().then_some("true")
-            inert=move || c.detail.with(Option::is_none)>
+            inert=move || c.detail.with(Option::is_none)
+            on:dragover=move |ev| uploads.drag_over(c, ev)
+            on:drop=move |ev| uploads.drop_files(c, ev)>
             <div class="detail-scroll">
-                {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered/> })}
+                {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered uploads=uploads/> })}
             </div>
             // Modal feedback belongs inside the dialog, outside the inert room.
             <Show when=move || c.detail_modal.get()>
@@ -1922,7 +1926,11 @@ fn DetailPane() -> impl IntoView {
 }
 
 #[component]
-fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
+fn DetailBody(
+    id: TaskId,
+    rendered: Memo<Option<Detail>>,
+    uploads: attachments::Uploads,
+) -> impl IntoView {
     let d = Memo::new(move |_| rendered.get().filter(|d| d.id == id));
     let field = move |f: fn(&Detail) -> String| {
         Signal::derive(move || d.with(|d| d.as_ref().map(f).unwrap_or_default()))
@@ -1956,7 +1964,9 @@ fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
                     <PriorityEditor id=id detail=d/>
                 </dl>
             </section>
-            {move || d.get().map(|d| view! { <DetailRest d=d/> })}
+            {move || d.get().map(|d| view! { <DetailFields d=d/> })}
+            <attachments::Section task=id detail=d uploads=uploads/>
+            {move || d.get().map(|d| view! { <DetailActivity d=d/> })}
         </div>
     }
 }
@@ -2306,7 +2316,7 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
 }
 
 #[component]
-fn DetailRest(d: Detail) -> impl IntoView {
+fn DetailFields(d: Detail) -> impl IntoView {
     view! {
     <section class="d-section" aria-label="Read-only task fields">
     <h3 class="caps d-caps">"Task fields · Read only"</h3>
@@ -2342,41 +2352,12 @@ fn DetailRest(d: Detail) -> impl IntoView {
             }
         })}
 
-    {(!d.attachments.is_empty())
-        .then(|| {
-            view! {
-                <section class="d-section">
-                    <h3 class="caps d-caps">"Attachments"</h3>
-                    <ul class="files">
-                        {d
-                            .attachments
-                            .clone()
-                            .into_iter()
-                            .map(|a| {
-                                let (aid, name) = (a.id.clone(), a.name.clone());
-                                view! {
-                                    <li>
-                                        <button
-                                            class="file"
-                                            on:click=move |_| {
-                                                let (aid, name) = (aid.clone(), name.clone());
-                                                leptos::task::spawn_local(platform::download(aid, name));
-                                            }
-                                        >
-                                            {icon(Icon::Paperclip)}
-                                            <span class="file-name">{a.name.clone()}</span>
-                                            <span class="file-size">{a.size.clone()}</span>
-                                            {icon(Icon::Download)}
-                                        </button>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
-                </section>
-            }
-        })}
+    }
+}
 
+#[component]
+fn DetailActivity(d: Detail) -> impl IntoView {
+    view! {
     <section class="d-section">
         <h3 class="caps d-caps">"Activity"</h3>
         <ul class="activity">

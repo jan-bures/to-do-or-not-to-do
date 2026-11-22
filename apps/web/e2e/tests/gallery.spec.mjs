@@ -45,6 +45,51 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`attachments: empty, uploading, refused and removed with Undo (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app?fixture=upload-fails");
+      const section = page.getByRole("region", { name: "Attachments" });
+      const add = section.getByRole("button", { name: "Add file" });
+      await page.getByRole("button", { name: "Review the API latency report", exact: true }).click();
+      await expect(add).toBeEnabled();
+      await expect(section.locator(".file-row")).toHaveCount(0);
+      await section.scrollIntoViewIfNeeded();
+      await shot(page, `attachments-empty-${scheme}`);
+
+      // Freeze the fixture's simulated network delay to capture a real, in-flight selection.
+      await page.clock.install({ time: new Date("2026-11-21T10:35:00Z") });
+      await page.clock.pauseAt(new Date("2026-11-21T10:36:00Z"));
+      const picker = page.waitForEvent("filechooser");
+      await add.click();
+      await (await picker).setFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Notes") });
+      await expect(section.getByRole("status")).toHaveText("Uploading…");
+      await expect(add).toBeDisabled();
+      await shot(page, `attachments-uploading-${scheme}`);
+      await page.clock.runFor(2000);
+      await expect(section.getByRole("alert")).toHaveText("Couldn’t upload the selected files.");
+      await expect(add).toBeEnabled();
+      await expect(section.locator(".file-row")).toHaveCount(0);
+      await shot(page, `attachments-failed-${scheme}`);
+      await page.clock.resume();
+
+      await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+      const remove = section.getByRole("button", { name: "Remove “board-pack-draft.pdf”" });
+      await expect(remove).toBeVisible();
+      await section.scrollIntoViewIfNeeded();
+      await shot(page, `attachments-populated-${scheme}`);
+      await remove.click();
+      await expect(remove).toHaveCount(0);
+      await expect(add).toBeFocused();
+      await expect(page.locator(".toast")).toContainText("Removed attachment “board-pack-draft.pdf”");
+      const undo = page.getByRole("button", { name: /^Undo/ });
+      await expect(undo).toBeVisible();
+      await shot(page, `attachments-removed-undo-${scheme}`);
+      await undo.click();
+      await expect(remove).toBeVisible();
+      await w.check();
+    });
+
     test(`quick-add previews the shared date label (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

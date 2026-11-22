@@ -440,7 +440,7 @@ test("the medium detail dims and disables the room, traps focus, and restores th
   const sun = detail.getByRole("button", { name: "My Day" });
   await page.keyboard.press("Tab");
   await expect(sun).toBeFocused();
-  const last = detail.getByRole("button", { name: /board-pack-draft/ });
+  const last = detail.getByRole("button", { name: "Add file" });
   await last.focus();
   // Keydown with repeat=true must still wrap at the last control.
   await page.keyboard.down("Tab");
@@ -471,6 +471,7 @@ test("the completed-task toast stays announced and usable in medium detail", asy
   const task = row(page, "Rotate the backup encryption keys");
   const detail = page.getByRole("dialog", { name: "Task detail" });
   const toast = detail.locator(".toast");
+  const announcement = detail.locator(".detail-toast").getByRole("status");
   const undo = toast.getByRole("button", { name: /Undo/ });
   const openDetail = () => row(page, "Review the API latency report").locator(".row-title").click();
   const complete = () => task.getByRole("checkbox").click();
@@ -478,8 +479,8 @@ test("the completed-task toast stays announced and usable in medium detail", asy
   await complete();
   await openDetail();
   await expect(page.locator("main")).toHaveAttribute("inert", "");
-  await expect(detail.getByRole("status")).toHaveAttribute("aria-live", "polite");
-  await expect(detail.getByRole("status")).toContainText("Completed “Rotate the backup encryption keys”");
+  await expect(announcement).toHaveAttribute("aria-live", "polite");
+  await expect(announcement).toContainText("Completed “Rotate the backup encryption keys”");
   await expect(detail).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(toast.getByRole("button", { name: "Dismiss" })).toBeFocused();
@@ -487,13 +488,13 @@ test("the completed-task toast stays announced and usable in medium detail", asy
   await expect(undo).toBeFocused();
   await undo.click();
   await expect(task.locator(".check")).toHaveAttribute("aria-checked", "false");
-  await expect(detail.getByRole("status")).toContainText("Change undone.");
+  await expect(announcement).toContainText("Change undone.");
   await expect(undo).toHaveCount(0);
   await expect(detail).toBeFocused();
 
   // Completing a task from inside the modal uses the already-mounted live region.
   await detail.getByRole("checkbox", { name: "Complete", exact: true }).click();
-  await expect(detail.getByRole("status")).toContainText("Completed “Review the API latency report”");
+  await expect(announcement).toContainText("Completed “Review the API latency report”");
   await undo.click();
   await expect(detail.getByRole("checkbox", { name: "Complete", exact: true })).toBeVisible();
   await w.check();

@@ -8,8 +8,9 @@ there is no token in the browser.
 
 This first version covers sign-in, the smart lists and every collection and list, the task list, the task
 detail, adding, completing (with the F2 check animation), editing titles, steps and notes, My Day, and live
-updates. Lists and collections can be renamed, moved up or down, and deleted. Undo compensates the exact
-change. It has the desktop layout on wide windows and the phone layout on narrow ones, in both themes.
+updates. Attachments can be uploaded, downloaded and removed. Lists and collections can be renamed,
+moved up or down, and deleted. Undo compensates the exact change. It has the desktop layout on wide
+windows and the phone layout on narrow ones, in both themes.
 
 ## Building and running
 
@@ -61,6 +62,7 @@ browsers that accept gzip (the wasm module is about 4.5 MB, 0.7 MB gzipped).
 | `src/app.rs` | The Leptos components. They set classes and `data-*` hue keys only. |
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/room_actions.rs` | List and collection menus, rename and delete dialogs, and the Not synced list. |
+| `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
 | `src/fixtures.rs` | Invented gallery data with a fixed clock (Saturday 21 November 2026, 10:35). |
 | `static/app.css` | The layout. Every colour, size, radius, font and duration is a `tokens.css` variable. |
@@ -129,8 +131,9 @@ password, no key.
 
 `auth::require_auth_or_session` implements this for `/api/v1` only. A request with an `Authorization`
 header always takes the bearer path, unchanged: agents and paired devices work exactly as before, and a
-wrong token is a 401 even with a live session cookie. MCP and attachment uploads stay bearer-only. A session
-acts as the owner on the device `web` (`Actor::Owner { device: "web" }`), so its changes are attributed like
+wrong token is a 401 even with a live session cookie. The attachment upload (`POST /api/v1/tasks/{id}/attachments`)
+uses the same middleware with its own body limit and deadline. MCP and the imported-attachment content fill
+(`PUT /api/v1/attachments/{id}/content`) stay bearer-only. A session acts as the owner on the device `web` (`Actor::Owner { device: "web" }`), so its changes are attributed like
 any other device's. The session's event stream is closed when the session ends (sign-out, expiry), checked
 on revocation and on every heartbeat.
 
@@ -149,7 +152,9 @@ request. If the token hasn't changed, the refusal was about something else (the 
 the engine treats a `403 csrf` as "retry later" with backoff, never as a verdict on the command, so queued
 changes are never marked "couldn't sync" for it. If the refresh itself fails, the request counts as a network
 failure and is retried later; a 401 from it means signed out. The page uses the refreshed token too
-(sign-out, downloads).
+(sign-out, downloads). An attachment upload uses the same token refresh: it sends the browser `File` as
+its raw body and reuses its `attachment_id` if it has to send it again. The attachment arrives in the
+replica over the event stream, not through a separate local edit.
 
 `GET /auth/session` (cookie only, `{"csrf": "..."}`, a 401 without a session) answers this origin only: it
 refuses a request whose `Sec-Fetch-Site` is anything but `same-origin` (so `same-site`, `cross-site` and a
@@ -311,7 +316,7 @@ draws, the row holds in place struck through (`--duration-complete-hold`), then 
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
 running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
-Completion, reorders and deletion of a list, collection or step use `SyncClient::compensate_tracked`: it
+Completion, reorders and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`: it
 queues undo of the whole original event batch, waiting for its authoritative event if necessary. A tab never
 cancels the original locally, because another tab may already be sending it. For recurring tasks, Undo reopens
 the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
@@ -331,6 +336,11 @@ the detail takes focus, limits Tab to the pane and makes the rest of the app ine
 scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
 While the detail is modal, Undo and other toast feedback appear in its own bottom strip, above the scrim.
+
+In **Attachments**, choose **Add file** or drop files anywhere on the task's detail pane. Files are sent
+one at a time; **Uploading…** stays visible while they are being sent. Uploads need a connection and
+aren't queued for later. If an upload fails, the pane shows a plain message without quoting the server.
+Click a file to download it. **Remove** hides the attachment at once, and **Undo** restores it.
 
 Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
 **Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.
@@ -358,9 +368,10 @@ The status bar shows shortcuts only when their actions are available.
 - **Browser tests** (`e2e/tests`, Playwright, Chromium): the fixtures build served by `e2e/serve.mjs` the way
   the server serves it, with the server's exact CSP (read from `spa.rs`). They add and complete tasks, undo,
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
-  any console error or CSP violation.
+  any console error or CSP violation. Set `FIXTURE_PORT` to use a different port from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, due-date editor, step controls and delete Undo, a collapsed collection, sidebar and room menus,
+  the detail, due-date editor, step controls and delete Undo, attachments (empty, uploading, failed, listed
+  and removed with Undo), a collapsed collection, sidebar and room menus,
   rename and delete dialogs, a delete Undo toast, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, the desktop and phone quick-add date chip, the storage-error and read-only alerts
@@ -372,7 +383,8 @@ The status bar shows shortcuts only when their actions are available.
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
-  header being refused. Then: exact Undo of a confirmed recurring completion (including removal of its
+  header being refused. The suite also uploads, downloads and removes a file with the web session. Then:
+  exact Undo of a confirmed recurring completion (including removal of its
   next occurrence), including Undo before the sending tab has a receipt and late feedback preserving a
   newer Undo toast; a live sidebar change leaving the highlighted menu action on the same list;
   Dismiss all preserving a refusal that arrived after opening Not synced;
@@ -394,7 +406,8 @@ The status bar shows shortcuts only when their actions are available.
   27412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as
   the `web` device, missing or wrong CSRF tokens, cross-origin and originless writes, expired and ended
-  sessions, bearer precedence, MCP and uploads staying bearer-only), the `/app` routes and headers, gzip,
+  sessions, session upload success, CSRF and origin refusals, upload size limit, bearer precedence, MCP and
+  imported content fill staying bearer-only), the `/app` routes and headers, gzip,
   `no-store, no-transform` on everything that carries a secret, `/auth/session` (same origin only, and never
   extending the session), refused requests not extending the session, and the event stream closing on
   sign-out. `tests/attachments.rs` checks `private, no-store, no-transform` on downloads.
@@ -417,6 +430,5 @@ The status bar shows shortcuts only when their actions are available.
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
 - **Editing more fields.** Reminders, repeat rules and tags are shown but not editable yet. Moving tasks
   between lists and creating collections aren't available.
-- **Attachments** are download links (fetched with the session, saved as a blob); there is no upload.
 - **The wasm size.** About 4.5 MB (0.7 MB gzipped). `wasm-opt` and Leptos's `erase_components` haven't been
   tried in the release build yet.

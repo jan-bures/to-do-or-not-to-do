@@ -1,21 +1,29 @@
 //! The OpenAPI document, generated with `utoipa` and served at `/api/v1/openapi.json`.
 
 use super::{attachments, commands, dto, error, events, pair, read};
-use crate::auth::Authenticated;
+use crate::auth::{Authenticated, session};
 use crate::engine::{CommandResult, EventRef};
 use axum::Json;
 use std::sync::OnceLock;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-struct BearerAuth;
+struct ApiAuth;
 
-impl Modify for BearerAuth {
+impl Modify for ApiAuth {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer",
             SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).build()),
+        );
+        components.add_security_scheme(
+            "web_session",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(session::SESSION_COOKIE))),
+        );
+        components.add_security_scheme(
+            "csrf",
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new(session::CSRF_HEADER))),
         );
     }
 }
@@ -77,7 +85,7 @@ impl Modify for BearerAuth {
         error::ErrorBody,
         error::ErrorDetail,
     )),
-    modifiers(&BearerAuth),
+    modifiers(&ApiAuth),
 )]
 pub struct ApiDoc;
 

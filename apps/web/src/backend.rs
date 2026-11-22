@@ -34,6 +34,7 @@ use todo_client::{
     ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
     TrackedUndo,
 };
+use todo_core::ids::{AttachmentId, TaskId};
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
 
@@ -480,6 +481,60 @@ pub fn new_uuid() -> Uuid {
 
 /// Why [`submit`] refuses every command once a newer version took the database over.
 pub const READ_ONLY: &str = "a newer version is open in another tab";
+
+#[derive(Debug)]
+pub enum UploadError {
+    Failed,
+    SignedOut,
+}
+
+/// Uploads directly; the file is not an offline edit. The live replica sees the result through SSE.
+pub async fn upload_attachment(task: TaskId, file: web_sys::File) -> Result<(), UploadError> {
+    if status().read_only {
+        return Err(UploadError::Failed);
+    }
+    let id = AttachmentId::from_uuid(new_uuid());
+    let csrf = CSRF.with(|c| c.borrow().clone());
+    if let Some(csrf) = csrf {
+        let result = FetchTransport::new(csrf)
+            .upload_attachment(task, id, &file)
+            .await
+            .map_err(|_| UploadError::Failed)?;
+        return match result.status {
+            200 | 201 => Ok(()),
+            401 => Err(UploadError::SignedOut),
+            _ => Err(UploadError::Failed),
+        };
+    }
+
+    #[cfg(feature = "fixtures")]
+    {
+        // Simulate network latency for the gallery; this is not a UI animation or timer.
+        sleep(Duration::from_secs(2)).await;
+        if crate::platform::query().contains("fixture=upload-fails") {
+            return Err(UploadError::Failed);
+        }
+        let media_type = file.type_();
+        // File.size is a non-negative byte count (limited to JS precision).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let size_bytes = file.size() as u64;
+        submit(Command::AddAttachment {
+            id,
+            task,
+            file_name: file.name(),
+            media_type: if media_type.is_empty() {
+                "application/octet-stream".into()
+            } else {
+                media_type
+            },
+            size_bytes,
+            storage_key: format!("fixture-upload/{id}"),
+        })
+        .map_err(|_| UploadError::Failed)
+    }
+    #[cfg(not(feature = "fixtures"))]
+    Err(UploadError::Failed)
+}
 
 /// Queues a command; the view reflects it at once. Fails if the command is invalid against the view,
 /// and refuses every command (with [`READ_ONLY`], applying nothing) once another tab upgrades the

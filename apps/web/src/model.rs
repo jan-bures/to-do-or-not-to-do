@@ -15,7 +15,7 @@ use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::Offset;
 use std::collections::BTreeMap;
 use todo_client::intent::{self, TaskRoom, quick_add};
-use todo_core::ids::{CollectionId, ListId, TaskId};
+use todo_core::ids::{AttachmentId, CollectionId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::recurrence::Rule;
@@ -1118,8 +1118,8 @@ pub enum Source {
 /// An attachment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachmentView {
-    /// The attachment ID (for the download URL).
-    pub id: String,
+    /// The attachment ID (for download and removal).
+    pub id: AttachmentId,
     /// File name.
     pub name: String,
     /// `1.2 MB`.
@@ -1335,7 +1335,7 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         .values()
         .filter(|a| a.task == id && a.deleted.is_none())
         .map(|a| AttachmentView {
-            id: a.id.to_string(),
+            id: a.id,
             name: a.file_name.clone(),
             size: size_text(a.size_bytes),
         })

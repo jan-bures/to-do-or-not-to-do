@@ -13,7 +13,7 @@
 //! - **The web app** (`/app`) uses that same session for the REST API under `/api/v1`, and only
 //!   there ([`require_auth_or_session`]): every request must carry the session's CSRF token in
 //!   `X-CSRF-Token`, and every write the public `Origin`. It acts as the owner on the device
-//!   [`WEB_DEVICE`]. `/mcp` and the attachment upload stay bearer-only.
+//!   [`WEB_DEVICE`]. `/mcp` and the imported-attachment content fill stay bearer-only.
 //! - **A local operator** may use the admin API on its own loopback listener with the `tdx_` admin
 //!   token (see [`crate::admin`]). That token is unknown here: every route of the public listener
 //!   refuses it.

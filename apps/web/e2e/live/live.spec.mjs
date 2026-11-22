@@ -218,6 +218,45 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+test("the web session uploads, downloads and removes a task attachment", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  const title = "Draft a letter";
+  const name = "Příloha + notes & plan.txt";
+  const buffer = Buffer.from("Example attachment\n");
+  await add(page, title);
+  await expect.poll(() => occurrences(page, title)).toBe(1);
+  await row(page, title).click();
+  const section = page.getByRole("region", { name: "Attachments" });
+  const upload = page.waitForResponse((r) => r.request().method() === "POST" &&
+    new URL(r.url()).pathname.endsWith("/attachments"));
+  const picker = page.waitForEvent("filechooser");
+  await section.getByRole("button", { name: "Add file" }).click();
+  await (await picker).setFiles({ name, mimeType: "text/plain", buffer });
+  const response = await upload;
+  expect(response.status()).toBe(201);
+  const { attachment } = await response.json();
+  expect(attachment).toMatchObject({ file_name: name, media_type: "text/plain", size_bytes: buffer.length });
+
+  const file = section.getByRole("button", { name: `Download “${name}”` });
+  await expect(file).toBeVisible(); // Arrived through the event stream, not from a local placeholder.
+  const downloading = page.waitForEvent("download");
+  await file.click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe(name);
+  expect(readFileSync(await download.path())).toEqual(buffer);
+
+  await section.getByRole("button", { name: `Remove “${name}”` }).click();
+  await expect(file).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Undo/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(async (id) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    return (await fetch(`/api/v1/attachments/${id}`, { method: "HEAD", headers: { "X-CSRF-Token": csrf } })).status;
+  }, attachment.id)).toBe(404);
+  expect(problems).toEqual([]);
+  await page.close();
+});
+
 test("tracked undo of a confirmed recurring completion restores only the original", async () => {
   const page = await openApp();
   const problems = watch(page);

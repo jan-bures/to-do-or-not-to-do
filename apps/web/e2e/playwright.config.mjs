@@ -2,6 +2,9 @@
 // (`node ../scripts/build.mjs --fixtures`), served with the server's CSP by serve.mjs.
 import { defineConfig } from "@playwright/test";
 
+const port = Number(process.env.FIXTURE_PORT ?? 4173);
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "tests",
   outputDir: "test-results",
@@ -9,14 +12,14 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL,
     browserName: "chromium",
     locale: "en-GB",
     timezoneId: "Europe/Prague",
   },
   webServer: {
-    command: "node serve.mjs ../dist-fixtures 4173",
-    url: "http://127.0.0.1:4173/app",
+    command: `node serve.mjs ../dist-fixtures ${port}`,
+    url: `${baseURL}/app`,
     reuseExistingServer: !process.env.CI,
   },
 });

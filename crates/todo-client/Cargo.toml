@@ -43,7 +43,7 @@ web-sys = { workspace = true, optional = true, features = [
     "AbortController", "AbortSignal", "BroadcastChannel", "Crypto", "DomException", "DomStringList", "Headers",
     "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest",
     "IdbTransaction", "IdbTransactionMode", "ReadableStream", "ReadableStreamDefaultReader",
-    "Request", "RequestCredentials", "RequestInit", "Response", "Window",
+    "Request", "RequestCredentials", "RequestInit", "RequestMode", "Response", "Window", "File",
 ] }
 
 [dev-dependencies]

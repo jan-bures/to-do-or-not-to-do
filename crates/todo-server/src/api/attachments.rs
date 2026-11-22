@@ -33,6 +33,8 @@
 //!
 //! **Access.** Uploading is `add_attachment`: the owner, or an agent with capture access on the task's
 //! list, exactly as `todo-core` decides for the command; it counts as one write against an agent's quota.
+//! Upload accepts bearer authentication or the owner's web session with its CSRF token and matching
+//! `Origin`. Filling imported content still requires an owner bearer token.
 //! Downloading needs read access on the task's list; a task or attachment the caller cannot see, a
 //! deleted one, and a missing one all give the same 404. Share pages never show attachments.
 //!
@@ -314,7 +316,10 @@ pub fn upload_router(state: AppState) -> Router<AppState> {
     let upload = Router::new()
         .route("/api/v1/tasks/{id}/attachments", post(upload))
         // Route layers only: a `layer` would also wrap this router's fallback, which becomes the app's.
-        .route_layer(from_fn_with_state(state.clone(), crate::auth::require_auth))
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            crate::auth::require_auth_or_session,
+        ))
         .route_layer(from_fn(super::tag_route))
         .route_layer(from_fn_with_state(timeout, crate::app::deadline))
         // Like the global limit, an announced oversized body is refused before authentication.
@@ -399,6 +404,9 @@ enum Plan {
 }
 
 /// Uploads an attachment to a task.
+///
+/// Send a bearer token or, for the owner’s web session, its cookie and `X-CSRF-Token` with an
+/// `Origin` that matches the server's public origin. An `Authorization` header takes precedence.
 #[utoipa::path(
     post,
     path = "/api/v1/tasks/{id}/attachments",
@@ -412,8 +420,8 @@ enum Plan {
     responses(
         (status = 201, description = "Stored", body = UploadResponse),
         (status = 200, description = "Already stored under this `attachment_id` (header `idempotent-replayed: true`); the body was not read", body = UploadResponse),
-        (status = 401, description = "Missing or invalid token", body = ErrorBody),
-        (status = 403, description = "No capture access on the task's list", body = ErrorBody),
+        (status = 401, description = "Missing or invalid token or session", body = ErrorBody),
+        (status = 403, description = "No capture access on the task's list, or the session's CSRF or Origin check failed", body = ErrorBody),
         (status = 404, description = "No such task (or one you cannot see)", body = ErrorBody),
         (status = 408, description = "The deadline passed before the attachment was recorded", body = ErrorBody),
         (status = 409, description = "The task is deleted; `attachment_id` is taken (`already_exists`, or `id_unavailable` for agents, whoever holds it); or an upload with this `attachment_id` is still in progress (`upload_in_progress`, see `Retry-After`)", body = ErrorBody),
@@ -424,7 +432,7 @@ enum Plan {
         (status = 503, description = "Too many uploads at once (`overloaded`)", body = ErrorBody),
         (status = 507, description = "Attachment storage is full (`storage_budget_exhausted`)", body = ErrorBody),
     ),
-    security(("bearer" = []))
+    security(("bearer" = []), ("web_session" = [], "csrf" = []))
 )]
 #[allow(clippy::too_many_lines)]
 pub async fn upload(

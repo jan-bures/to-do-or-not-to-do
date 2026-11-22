@@ -84,6 +84,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+use todo_core::ids::{AttachmentId, TaskId};
 use todo_core::time::Timestamp;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -91,7 +92,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     AbortController, BroadcastChannel, Headers, IdbDatabase, IdbObjectStore, IdbOpenDbRequest,
     IdbRequest, IdbTransaction, IdbTransactionMode, ReadableStreamDefaultReader,
-    RequestCredentials, RequestInit,
+    RequestCredentials, RequestInit, RequestMode,
 };
 
 /// The header carrying the session's CSRF token.
@@ -142,19 +143,42 @@ impl FetchTransport {
         }
     }
 
+    /// Uploads a browser file as a raw body, without buffering its bytes in wasm memory or queuing
+    /// them in the replica. A refresh resends the same file with the same `attachment` ID.
+    /// The event stream brings the new attachment into the replica.
+    pub async fn upload_attachment(
+        &self,
+        task: TaskId,
+        attachment: AttachmentId,
+        file: &web_sys::File,
+    ) -> Result<Response, TransportError> {
+        let name = js_sys::encode_uri_component(&file.name());
+        let path =
+            format!("/api/v1/tasks/{task}/attachments?file_name={name}&attachment_id={attachment}");
+        let media = file.type_();
+        let media = if media.is_empty() {
+            "application/octet-stream"
+        } else {
+            &media
+        };
+        self.send_body(&path, Method::Post, Some((file.as_ref(), media)))
+            .await
+    }
+
     /// Asks the server for the session's current token (see the module docs).
     async fn refresh(&self) -> Result<Fresh, TransportError> {
         let abort = new_abort()?;
-        let req = Request {
-            method: Method::Get,
-            path: CSRF_PATH.to_owned(),
-            body: None,
-        };
         // The refresh needs no token, but sending the current one does no harm.
         let res = read(
-            &self
-                .fetch(&req, &self.csrf.get(), "application/json", &abort.0)
-                .await?,
+            &Self::fetch(
+                CSRF_PATH,
+                Method::Get,
+                None,
+                &self.csrf.get(),
+                "application/json",
+                &abort.0,
+            )
+            .await?,
         )
         .await?;
         match res.status {
@@ -171,9 +195,36 @@ impl FetchTransport {
         }
     }
 
-    async fn fetch(
+    async fn send_body(
         &self,
-        request: &Request,
+        path: &str,
+        method: Method,
+        body: Option<(&JsValue, &str)>,
+    ) -> Result<Response, TransportError> {
+        with_fresh_token(
+            &self.csrf,
+            |token| async move {
+                let abort = new_abort()?;
+                let res = read(
+                    &Self::fetch(path, method, body, &token, "application/json", &abort.0).await?,
+                )
+                .await?;
+                Ok(if is_csrf_refusal(&res) {
+                    Attempt::CsrfRefused(res)
+                } else {
+                    Attempt::Done(res)
+                })
+            },
+            || self.refresh(),
+            |signed_out| signed_out,
+        )
+        .await
+    }
+
+    async fn fetch(
+        path: &str,
+        method: Method,
+        body: Option<(&JsValue, &str)>,
         token: &str,
         accept: &str,
         abort: &AbortController,
@@ -188,18 +239,18 @@ impl FetchTransport {
         set("Accept", accept)?;
         let init = RequestInit::new();
         init.set_credentials(RequestCredentials::SameOrigin);
+        init.set_mode(RequestMode::SameOrigin);
         init.set_signal(Some(&abort.signal()));
-        match request.method {
+        match method {
             Method::Get => init.set_method("GET"),
             Method::Post => init.set_method("POST"),
         }
-        if let Some(body) = &request.body {
-            set("Content-Type", "application/json")?;
-            let bytes = Uint8Array::from(body.as_slice());
-            init.set_body(&bytes);
+        if let Some((body, content_type)) = body {
+            set("Content-Type", content_type)?;
+            init.set_body(body);
         }
         init.set_headers(&headers);
-        let req = web_sys::Request::new_with_str_and_init(&request.path, &init)
+        let req = web_sys::Request::new_with_str_and_init(path, &init)
             .map_err(|e| TransportError::Network(js_err(&e)))?;
         let res = JsFuture::from(window()?.fetch_with_request(&req))
             .await
@@ -306,41 +357,25 @@ impl Transport for FetchTransport {
     type Stream = FetchEventStream;
 
     async fn send(&self, request: Request) -> Result<Response, TransportError> {
-        let request = &request;
-        with_fresh_token(
-            &self.csrf,
-            |token| async move {
-                let abort = new_abort()?;
-                let res = read(
-                    &self
-                        .fetch(request, &token, "application/json", &abort.0)
-                        .await?,
-                )
-                .await?;
-                Ok(if is_csrf_refusal(&res) {
-                    Attempt::CsrfRefused(res)
-                } else {
-                    Attempt::Done(res)
-                })
-            },
-            || self.refresh(),
-            |signed_out| signed_out,
-        )
-        .await
+        let json = request.body.as_deref().map(Uint8Array::from);
+        let body = json.as_ref().map(|b| (b.as_ref(), "application/json"));
+        self.send_body(&request.path, request.method, body).await
     }
 
     async fn open_stream(
         &self,
         request: Request,
     ) -> Result<StreamOpen<FetchEventStream>, TransportError> {
-        let request = &request;
+        let path = request.path.as_str();
+        let method = request.method;
+        let json = request.body.as_deref().map(Uint8Array::from);
+        let body = json.as_ref().map(|b| (b.as_ref(), "application/json"));
         let opened = with_fresh_token(
             &self.csrf,
             |token| async move {
                 let abort = new_abort()?;
-                let res = self
-                    .fetch(request, &token, "text/event-stream", &abort.0)
-                    .await?;
+                let res =
+                    Self::fetch(path, method, body, &token, "text/event-stream", &abort.0).await?;
                 if res.status() == 200 {
                     return Ok(Attempt::Done(Opened::Open(res, abort)));
                 }

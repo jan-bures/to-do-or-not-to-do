@@ -436,7 +436,7 @@ pub fn sign_in(next: &str) {
 
 /// Downloads an attachment: `fetch` with the session and CSRF header, then a blob link. (A plain link
 /// can't carry the CSRF header the API requires.)
-pub async fn download(id: String, file_name: String) {
+pub async fn download(id: todo_core::ids::AttachmentId, file_name: String) {
     use wasm_bindgen_futures::JsFuture;
     let Some(w) = window() else { return };
     let Some(token) = crate::backend::csrf() else {

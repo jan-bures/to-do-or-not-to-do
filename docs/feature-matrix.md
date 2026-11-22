@@ -145,10 +145,10 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
 | Links: open a web or email link | `Link` | wired, http(s) only (`D/ui/shell/detail.rs:600`) | wired `W/app.rs:1906` | wired: `SourceCard` opens an HTTP(S) destination through `ACTION_VIEW`; otherwise text only (`A/ui/Detail.kt`, `F/view.rs`) |
 | Add or remove a link | `AddLink` `C/command.rs:316`; `Delete` | missing | missing | missing |
-| Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired `W/app.rs:1842`, `W/platform.rs:255` | missing (not in `TaskDetail`, `F/view.rs:402`) |
+| Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired (`W/app/attachments.rs`, `W/platform.rs::download`) | missing (not in `TaskDetail`, `F/view.rs:402`) |
 | Attachments: open | same | wired: documents and images only (`D/ui/shell/detail.rs:656`) | n/a (the browser opens downloads) | missing |
-| Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs:315`), bearer only | missing | missing (the route refuses the session cookie) | missing |
-| Attachments: remove | `Delete` | missing | missing | missing |
+| Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs`), bearer or owner session with CSRF and matching origin | missing | wired: **Add file** or drop onto task detail (`W/app/attachments.rs`) | missing |
+| Attachments: remove | `Delete` | missing | wired: **Remove** with Undo (`W/app/attachments.rs`) | missing |
 | Created and edited stamps | stamps | shown `D/model/derive.rs:654` | shown `W/app.rs:1625` | shown `A/ui/Detail.kt:115` |
 | Per-task activity (who created, edited, completed it) | stamps | missing (the subtitle only) | shown `W/app.rs:1863` (from stamps, not the event log) | missing (the subtitle only) |
 | Merge two tasks | `MergeTasks` `C/command.rs:248` | missing | missing | missing |
@@ -161,7 +161,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | wired: compensates the whole completion, including the next occurrence (`W/backend.rs`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
 | Undo a reorder | same | wired | wired: tasks, steps, lists and collections (`W/app.rs`, `W/app/room_actions.rs`) | wired for tasks (`F/engine.rs::undo_task_move`) |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step, list or collection (`W/app.rs`, `W/app/room_actions.rs`) | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step, list, collection or attachment (`W/app.rs`, `W/app/room_actions.rs`, `W/app/attachments.rs`) | partial: tracked undo for deleting a task, step or list and for moving a task (`F/engine.rs::undo_deletion`, `undo_task_move`); renames and edits can't |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
@@ -193,7 +193,6 @@ Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), 
   `update_reminder`).
 - **Repeat rules.** `UpdateTask.recurrence` (MCP `update_task`).
 - **Links.** Add and delete (`AddLink`; MCP `add_link`).
-- **Attachments.** Upload (`POST /api/v1/tasks/{id}/attachments`) and delete.
 - **Activity.** The feed (`GET /api/v1/activity`; MCP `get_activity`) and undoing any event in it,
   including an agent's.
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
@@ -248,7 +247,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.8 | **Done.** Hand-over rows select the task and can complete it from the checkbox. | S |
 | 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
 | 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |
-| 3.11 | Upload attachments. The server must also accept the session (cookie and CSRF) on the upload route, which is bearer-only today. | M |
+| 3.11 | **Done.** Upload attachments from the picker or by dropping files onto the task detail. The upload route accepts the owner's session with CSRF and a matching origin; removal offers Undo. | M |
 | 3.12 | Everything in section 2 that isn't desktop-only (2.1–2.7, 2.12), once the desktop has it. | — |
 
 ### 4. What Android lacks relative to the desktop

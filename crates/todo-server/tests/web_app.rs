@@ -301,7 +301,7 @@ async fn bearer_tokens_are_unchanged_and_take_precedence_over_a_cookie() {
 }
 
 #[tokio::test]
-async fn the_session_opens_neither_mcp_nor_the_upload() {
+async fn the_session_opens_neither_mcp_nor_imported_content_fill() {
     let env = Env::start().await;
     let b = env.owner().await;
     let csrf = b.csrf.clone().unwrap();
@@ -317,14 +317,122 @@ async fn the_session_opens_neither_mcp_nor_the_upload() {
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     let (s, _, _) = api(
         &b,
-        Method::POST,
-        &format!("/api/v1/tasks/{}/attachments", id()),
+        Method::PUT,
+        &format!("/api/v1/attachments/{}/content", id()),
         Some(&csrf),
         Some(SITE),
         Some(json!({})),
     )
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+async fn upload_url(env: &Env) -> String {
+    let list = env.t.create_list("Inbox").await;
+    let task = env.t.create_task(&list, "With files", json!({})).await;
+    format!(
+        "{}/api/v1/tasks/{task}/attachments?file_name=letter.txt",
+        env.t.url
+    )
+}
+
+fn upload_request(b: &Browser, url: &str) -> reqwest::RequestBuilder {
+    b.client
+        .post(url)
+        .header(
+            COOKIE,
+            format!("__Host-todo_session={}", b.cookie.as_ref().unwrap()),
+        )
+        .header(CONTENT_TYPE, "text/plain")
+        .body("A letter")
+}
+
+#[tokio::test]
+async fn a_session_upload_records_the_attachment_as_the_web_device() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let url = upload_url(&env).await;
+    let res = upload_request(&b, &url)
+        .header(ORIGIN, SITE)
+        .header("x-csrf-token", b.csrf.as_ref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["attachment"]["file_name"], "letter.txt");
+    assert_eq!(v["attachment"]["size_bytes"], 8);
+    assert_eq!(
+        v["attachment"]["created"]["by"],
+        json!({"type": "owner", "device": "web"})
+    );
+}
+
+#[tokio::test]
+async fn uploads_require_csrf_and_same_origin_for_a_session() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let url = upload_url(&env).await;
+    let before = event_count(&env).await;
+    for req in [
+        upload_request(&b, &url).header(ORIGIN, SITE),
+        upload_request(&b, &url)
+            .header(ORIGIN, "https://other.example.com")
+            .header("x-csrf-token", b.csrf.as_ref().unwrap()),
+    ] {
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "csrf");
+    }
+    assert_eq!(event_count(&env).await, before);
+    assert!(env.t.server.engine.state().attachments.is_empty());
+}
+
+#[tokio::test]
+async fn session_uploads_keep_the_attachment_size_limit() {
+    let env = Env::start_with(|c| c.attachments.max_upload_bytes = 7).await;
+    let b = env.owner().await;
+    let url = upload_url(&env).await;
+    let res = upload_request(&b, &url)
+        .header(ORIGIN, SITE)
+        .header("x-csrf-token", b.csrf.as_ref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "payload_too_large");
+    assert_eq!(v["error"]["details"]["max_bytes"], 7);
+    assert!(env.t.server.engine.state().attachments.is_empty());
+}
+
+#[tokio::test]
+async fn bearer_uploads_keep_working_and_take_precedence_over_a_session() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let url = upload_url(&env).await;
+    let res = upload_request(&b, &url)
+        .bearer_auth("tda_nope")
+        .header(ORIGIN, SITE)
+        .header("x-csrf-token", b.csrf.as_ref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert!(env.t.server.engine.state().attachments.is_empty());
+
+    let res = upload_request(&b, &url)
+        .bearer_auth(TOKEN_A)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        v["attachment"]["created"]["by"],
+        json!({"type": "owner", "device": "alpha"})
+    );
 }
 
 #[tokio::test]

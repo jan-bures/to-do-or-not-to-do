@@ -8,6 +8,9 @@ use todo_core::ids::EntityId;
 
 use crate::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
 
+/// Plain wording for a file upload failure, without echoing the server's response.
+pub const UPLOAD_ATTACHMENT_FAILED: &str = "Couldn’t upload the selected files.";
+
 fn delete(id: EntityId) -> &'static str {
     match id {
         EntityId::Collection(_) => "Delete a collection",
