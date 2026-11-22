@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
+import app.todoornot.core.DeviceInvitation
 import app.todoornot.core.FfiException
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
@@ -65,7 +66,12 @@ import app.todoornot.ui.MoveTaskCard
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.DeleteListCard
 import app.todoornot.ui.DetailPane
+import app.todoornot.ui.Button
+import app.todoornot.ui.DeviceInviteContent
+import app.todoornot.ui.DeviceReviewContent
+import app.todoornot.ui.Label
 import app.todoornot.ui.DialogBackdrop
+import app.todoornot.ui.DialogCard
 import app.todoornot.ui.DueDateCard
 import app.todoornot.ui.MenuCard
 import app.todoornot.ui.RenameCard
@@ -389,8 +395,34 @@ class GalleryTest {
             )
         }
         val waiting = PairingState.Waiting("https://todo.example.com", "WXYZ-2345", "https://todo.example.com/pair?code=WXYZ-2345", 0)
-        shot("pairing_code_light", COVER) { PairingScreen(waiting, PairingActions.None, dark = false) }
-        shot("pairing_code_dark", COVER) { PairingScreen(waiting, PairingActions.None, dark = true) }
+        shot("pairing_code_light", COVER) { PairingScreen(waiting, PairingActions.None, dark = false, fixedRemainingSeconds = 285) }
+        shot("pairing_code_dark", COVER) { PairingScreen(waiting, PairingActions.None, dark = true, fixedRemainingSeconds = 285) }
+        val invite = DeviceInvitation("fixture", "ABCDEF-GHJKMN", "https://todo.example.com/pair/invite#" + "A".repeat(43), 300u)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            shot("device_invite_$theme", COVER) {
+                TodoTheme(dark, "my-day") {
+                    DialogBackdrop {
+                        DialogCard("Pair a new device") {
+                            Label("Pair a new device", Tokens.Type.DETAIL_TITLE, LocalDesign.current.room.ink)
+                            DeviceInviteContent(invite, 300, false) {}
+                            Button("Close", primary = false) {}
+                        }
+                    }
+                }
+            }
+            shot("device_approve_$theme", COVER) {
+                TodoTheme(dark, "my-day") {
+                    DialogBackdrop {
+                        DialogCard("Approve a device") {
+                            Label("Approve a device", Tokens.Type.DETAIL_TITLE, LocalDesign.current.room.ink)
+                            DeviceReviewContent("New phone", false, {}, {})
+                            Button("Close", primary = false) {}
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @Test

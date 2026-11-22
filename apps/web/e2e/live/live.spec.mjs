@@ -31,7 +31,7 @@ function watch(page) {
 }
 
 /** A virtual authenticator for `page`, holding the registered passkey (if there is one yet). */
-async function authenticator(page, ctx = context) {
+async function authenticator(page, ctx = context, seed = true) {
   const cdp = await ctx.newCDPSession(page);
   await cdp.send("WebAuthn.enable");
   const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
@@ -44,7 +44,7 @@ async function authenticator(page, ctx = context) {
       automaticPresenceSimulation: true,
     },
   });
-  for (const credential of credentials) {
+  for (const credential of seed ? credentials : []) {
     await cdp.send("WebAuthn.addCredential", { authenticatorId, credential });
   }
   return { cdp, authenticatorId };
@@ -391,6 +391,37 @@ test("remote picker updates preserve option focus and removals focus the filter"
   expect(problems.flat()).toEqual([]);
   await b.close();
   await a.close();
+});
+
+test("a signed-in tab invites a new browser without sharing its existing passkey", async ({ browser }) => {
+  const issuer = await openApp();
+  const freshBrowser = await browser.newContext({ baseURL });
+  try {
+    const fresh = await freshBrowser.newPage();
+    const { cdp, authenticatorId } = await authenticator(fresh, freshBrowser, false);
+    const problems = watch(fresh);
+    await issuer.getByRole("button", { name: "Device settings" }).click();
+    await issuer.getByRole("button", { name: "Pair a new device" }).click();
+    await issuer.getByRole("button", { name: "Create invite" }).click();
+    const link = issuer.getByRole("textbox", { name: "Invite link" });
+    await expect(link).toBeVisible();
+    const url = await link.inputValue();
+    expect(new URL(url).hash).toMatch(/^#[A-Za-z0-9_-]{43}$/);
+    await fresh.goto(url);
+    await expect(fresh).toHaveURL(/\/pair\/invite$/);
+    await fresh.getByRole("textbox", { name: "Device name" }).fill("Invited browser");
+    await fresh.getByRole("button", { name: "Register passkey" }).click();
+    await expect(fresh).toHaveURL(/\/app$/);
+    await expect(fresh.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    expect((await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials).toHaveLength(1);
+    await expect(issuer.getByText("Invited browser signed in.")).toBeVisible({ timeout: 10_000 });
+    await fresh.goto("/admin/devices");
+    await expect(fresh.getByText(/Invited browser/)).toBeVisible();
+    expect(problems).toEqual([]);
+  } finally {
+    await freshBrowser.close();
+    await issuer.close();
+  }
 });
 
 test("Activity reads confirmed changes and compensates another tab's past edit", async () => {

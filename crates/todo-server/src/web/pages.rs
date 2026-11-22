@@ -140,6 +140,21 @@ pub async fn login(
     ok_page("Sign in", &chrome, &body)
 }
 
+/// `GET /auth/verify`: verify a signed-in session before handing out credentials.
+pub async fn verify(
+    State(app): State<AppState>,
+    s: OwnerSession,
+    Query(q): Query<NextQuery>,
+) -> PageResult {
+    let next = safe_next(q.next.as_deref());
+    let body = format!(
+        r#"<p>Verify with your passkey before pairing or approving a new device.</p>
+<p><button type="button" data-action="step-up" data-next="{}">Verify with passkey</button></p>"#,
+        esc(&next)
+    );
+    ok_page("Verify to pair", &owner_chrome(&app.authsvc, &s), &body)
+}
+
 /// `GET /setup`: exists until the first passkey is registered, then 404 for good.
 pub async fn setup(State(app): State<AppState>) -> PageResult {
     if !blocking(&app.authsvc, AuthService::setup_open).await?? {
@@ -177,6 +192,23 @@ pub async fn logout(
 }
 
 // ---- pairing --------------------------------------------------------------------------------------
+
+/// `GET /pair/invite`: the link credential is in the fragment, never in the HTTP request.
+pub async fn invite() -> PageResult {
+    let chrome = Chrome {
+        script: true,
+        ..Chrome::default()
+    };
+    ok_page(
+        "Pair this browser",
+        &chrome,
+        r#"<p>Choose a name for this device, then register a passkey to sign in. Only continue if you requested this link from your own signed-in app.</p>
+<form data-action="redeem-invite" method="post" action="/pair/invite">
+<label>Device name <input id="invite-device-name" maxlength="64" autocomplete="off" required></label>
+<button type="submit">Register passkey</button>
+</form>"#,
+    )
+}
 
 /// A form or query.
 #[derive(Debug, Deserialize)]
@@ -366,7 +398,17 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
             esc(&d.last_used_at.map_or_else(|| "never".into(), time)),
         );
     }
-    body.push_str("</table>");
+    body.push_str("</table><h2>Browser passkeys</h2><ul>");
+    let passkeys = blocking(&app.authsvc, |svc| svc.store().passkeys()).await??;
+    for p in &passkeys {
+        let _ = write!(
+            body,
+            "<li>{} · {}</li>",
+            esc(&p.name),
+            esc(&time(p.created_at))
+        );
+    }
+    body.push_str("</ul>");
     ok_page("Devices", &owner_chrome(&app.authsvc, &s), &body)
 }
 

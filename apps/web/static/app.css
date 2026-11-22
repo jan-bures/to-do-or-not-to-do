@@ -770,6 +770,24 @@ a {
 }
 
 .room-dialog .action-error { color: var(--color-danger-ink); }
+.pair-dialog .pair-actions, .pair-dialog form {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: end;
+}
+.pair-dialog label { display: grid; gap: var(--space-1); flex: 1; }
+.pair-dialog input { width: 100%; }
+.pair-dialog :is(p[role="status"], p[role="alert"]):empty { display: none; }
+.pair-dialog .pair-code { font: var(--text-summary-figures); }
+.pair-qr {
+  width: min(100%, var(--component-pairing-qr));
+  aspect-ratio: 1;
+  background: var(--color-pane);
+  color: var(--color-ink);
+  margin-block: var(--space-3);
+}
+.pair-qr svg { display: block; width: 100%; fill: currentColor; }
 
 .room-name-input {
   width: 100%;

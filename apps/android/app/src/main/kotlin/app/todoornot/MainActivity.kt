@@ -36,6 +36,7 @@ import app.todoornot.reminders.ReminderNeed
 import app.todoornot.session.Host
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.LocalReminderAccess
+import app.todoornot.ui.LocalPairingOwner
 import app.todoornot.ui.MainScreen
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
@@ -143,10 +144,12 @@ class MainActivity : ComponentActivity() {
                 m != null -> {
                     val ui by m.ui.collectAsStateWithLifecycle()
                     val focus = composerRoom?.takeIf { it.first === m && it.second == ui.room.key && ui.activity == null }
-                    MainScreen(
-                        ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
-                        composerFocus = if (focus != null) ::clearComposerRequest else null,
-                    )
+                    CompositionLocalProvider(LocalPairingOwner provides ready?.session) {
+                        MainScreen(
+                            ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
+                            composerFocus = if (focus != null) ::clearComposerRequest else null,
+                        )
+                    }
                 }
                 h is Host.CantOpen -> {
                     val problem by graph.unpairProblem.collectAsStateWithLifecycle()
@@ -164,6 +167,7 @@ class MainActivity : ComponentActivity() {
     private fun pairingActions(p: PairingModel) = object : PairingActions {
         override fun submit(address: String) = p.submit(address)
         override fun cancel() = p.cancel()
+        override fun redeem(address: String, invite: String) = p.redeem(address, invite)
         override fun openLink(url: String) {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }

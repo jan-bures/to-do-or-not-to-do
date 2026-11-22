@@ -222,6 +222,7 @@ pub fn public_routes() -> Vec<(String, String)> {
         ("GET".to_owned(), "/health".to_owned()),
         ("POST".to_owned(), "/api/v1/pair/start".to_owned()),
         ("POST".to_owned(), "/api/v1/pair/poll".to_owned()),
+        ("POST".to_owned(), "/api/v1/pair/redeem".to_owned()),
         // Authenticated by its HMAC signature instead (see `crate::ingest`).
         ("POST".to_owned(), "/api/v1/ingest/email".to_owned()),
     ];

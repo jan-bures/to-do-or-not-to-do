@@ -31,6 +31,7 @@ uuid.workspace = true
 futures-util.workspace = true
 # Parses typed links (`intent::web_address`); pure Rust, builds for wasm32 and Android.
 url.workspace = true
+qrcode.workspace = true
 # `native`
 todo-fs = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }

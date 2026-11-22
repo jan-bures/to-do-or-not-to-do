@@ -446,8 +446,11 @@ pub mod component {
     /// List glyph size in the sidebar.
     pub const GLYPH: f32 = 16.0;
 
+    /// Maximum square tile size for a pairing QR, including its quiet zone.
+    pub const PAIRING_QR: f32 = 224.0;
+
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 14] = [
+    pub const ALL: [(&str, f32); 15] = [
         ("checkbox", CHECKBOX),
         ("checkbox-ring", CHECKBOX_RING),
         ("checkbox-tick", CHECKBOX_TICK),
@@ -462,5 +465,6 @@ pub mod component {
         ("icon", ICON),
         ("icon-small", ICON_SMALL),
         ("glyph", GLYPH),
+        ("pairing-qr", PAIRING_QR),
     ];
 }

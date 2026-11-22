@@ -8,6 +8,7 @@
 //! |---|---|---|
 //! | `/auth/setup/{start,finish}` | none; the setup code | registers the first passkey, signs in |
 //! | `/auth/login/{start,finish}` | none | signs in |
+//! | `/auth/invite/{start,finish}` | none; the invite secret | registers a new passkey, signs in |
 //! | `/auth/step-up/{start,finish}` | yes, `X-CSRF-Token` | marks the session freshly verified |
 //! | `/auth/passkeys/{start,finish}` | yes, `X-CSRF-Token`, fresh | registers another passkey |
 //!
@@ -123,6 +124,34 @@ pub async fn setup_finish(
     })
     .await??;
     Ok(signed_in(&app, &session.cookie, "/admin"))
+}
+
+/// `POST /auth/invite/start`. The invite, not any cookie sent with the request, authorizes this.
+pub async fn invite_start(
+    State(app): State<AppState>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let req: crate::api::invite::Redeem = parse(&body)?;
+    let name = crate::api::invite::device_name(&req.device_name)?;
+    let (handle, options) = blocking(&app.authsvc, move |svc| {
+        svc.invite_passkey_start(&req.secret, name)
+    })
+    .await??;
+    Ok(started(handle, options))
+}
+
+/// `POST /auth/invite/finish`.
+pub async fn invite_finish(
+    State(app): State<AppState>,
+    ClientIp(ip): ClientIp,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let req: Registration = parse(&body)?;
+    let session = blocking(&app.authsvc, move |svc| {
+        svc.invite_passkey_finish(&req.ceremony, &req.credential, ip)
+    })
+    .await??;
+    Ok(signed_in(&app, &session.cookie, "/"))
 }
 
 /// `POST /auth/login/start`.

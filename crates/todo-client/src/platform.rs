@@ -55,13 +55,15 @@ pub enum Method {
     Get,
     /// `POST`
     Post,
+    /// `DELETE`
+    Delete,
 }
 
 /// An HTTP request relative to the server's base URL.
 ///
 /// The transport adds the base URL and the `Authorization: Bearer` header; the engine never sees the
 /// token. A body is always JSON.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     /// The method.
     pub method: Method,
@@ -69,6 +71,15 @@ pub struct Request {
     pub path: String,
     /// JSON body.
     pub body: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Request {
@@ -94,7 +105,7 @@ impl Request {
 }
 
 /// An HTTP response with its whole body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Response {
     /// Status code.
     pub status: u16,
@@ -102,6 +113,15 @@ pub struct Response {
     pub retry_after: Option<Duration>,
     /// Body bytes.
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("retry_after", &self.retry_after)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The request did not produce a response.

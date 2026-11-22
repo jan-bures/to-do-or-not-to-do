@@ -821,6 +821,8 @@ impl ShellView {
             MenuAction::ToggleCollection(id) => self.toggle_collection(id, cx),
             MenuAction::NewListIn(id) => self.new_list(Some(id), window, cx),
             MenuAction::OpenAdmin => self.open_admin(cx),
+            MenuAction::PairDevice => self.open_pairing_panel(true, window, cx),
+            MenuAction::ApproveDevice => self.open_pairing_panel(false, window, cx),
             MenuAction::SyncNow => self.sync_now(cx),
             MenuAction::SignOut => cx.emit(ShellEvent::SignOut),
             MenuAction::SetPriority(task, level) => {

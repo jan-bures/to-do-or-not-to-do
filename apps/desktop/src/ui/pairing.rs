@@ -14,6 +14,7 @@ use gpui::{
     App, AsyncApp, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
     WeakEntity, Window, div, prelude::*, px,
 };
+use todo_client::device_pairing::{self, Qr};
 use todo_client::native::HttpTransport;
 use todo_client::pairing::{self, PairError, Polled, Started};
 use todo_core::DeviceId;
@@ -143,14 +144,10 @@ fn start_error(e: &PairError) -> SharedString {
     }
 }
 
-/// "expires in 9 min", rounded up.
+/// Remaining time, rounded up to a whole second.
 fn expires_in(left: Duration) -> String {
-    let mins = left.as_secs().div_ceil(60);
-    if mins <= 1 {
-        "expires in a minute".into()
-    } else {
-        format!("expires in {mins} min")
-    }
+    let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+    format!("expires in {}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// Where the network and the saved pairing live. The screenshot fixture has neither.
@@ -166,6 +163,7 @@ pub struct PairingView {
     palette: Palette,
     landscape: LandscapeCache,
     input: Entity<TextInput>,
+    invite: Entity<TextInput>,
     step: Step,
     /// The name the owner sees when approving.
     device_name: SharedString,
@@ -213,7 +211,7 @@ impl PairingView {
             this.step = Step::Waiting {
                 server: server.into(),
                 code: code.to_string().into(),
-                verify: format!("{server}/pair"),
+                verify: pairing::approval_url(server, code),
                 expires: Instant::now() + Duration::from_secs(600),
                 note: None,
             };
@@ -246,15 +244,79 @@ impl PairingView {
             },
         )
         .detach();
+        let invite =
+            cx.new(|cx| TextInput::new("Invite code or link", quick_add_colors(&palette), cx));
+        cx.subscribe_in(&invite, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Submit) {
+                this.redeem(cx);
+            }
+        })
+        .detach();
         Self {
             wiring: None,
             palette,
             landscape: LandscapeCache::default(),
             input,
+            invite,
             step: Step::Enter { error: None },
             device_name,
             attempt: 0,
         }
+    }
+
+    fn redeem(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.step, Step::Enter { .. }) {
+            return;
+        }
+        let Some(wiring) = self.wiring.clone() else {
+            return;
+        };
+        let input = self.invite.read(cx).content.to_string();
+        let parsed = device_pairing::invite_input(&input).map_err(|e| e.to_string());
+        let result = parsed.and_then(|input| {
+            let typed = self.input.read(cx).content.to_string();
+            config::normalize_server(input.origin.as_deref().unwrap_or(&typed))
+                .map(|server| (input.secret, server))
+        });
+        let (secret, server) = match result {
+            Ok(values) => values,
+            Err(error) => {
+                self.step = Step::Enter {
+                    error: Some(error.into()),
+                };
+                cx.notify();
+                return;
+            }
+        };
+        let Ok(transport) = HttpTransport::anonymous(&server) else {
+            return;
+        };
+        self.attempt += 1;
+        let attempt = self.attempt;
+        self.step = Step::Starting {
+            server: server.clone(),
+        };
+        let name = self.device_name.to_string();
+        self.invite
+            .update(cx, |i, cx| i.set_text(String::new(), cx));
+        cx.notify();
+        let result = session::spawn(&wiring.rt, async move {
+            device_pairing::redeem(&transport, &secret, &name).await
+        });
+        cx.spawn(async move |this, cx| {
+            let next = match result.await {
+                Ok(Ok(credential)) => Next::Approved(credential.device_id, credential.token),
+                Ok(Err(PairError::Refused { status: 404, .. })) => {
+                    Next::Stop("This invite is invalid, expired or already used.".into())
+                }
+                Ok(Err(e)) => Next::Stop(start_error(&e)),
+                Err(_) => Next::Stop("Couldn't reach the server.".into()),
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.after(attempt, next, &server, &wiring.paths, cx)
+            });
+        })
+        .detach();
     }
 
     fn connect(&mut self, cx: &mut Context<Self>) {
@@ -306,7 +368,7 @@ impl PairingView {
             let started: Started = match started {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::info!("pairing start failed: {e}");
+                    tracing::debug!("pairing start failed");
                     let _ = this.update(cx, |v, cx| {
                         if v.attempt == attempt {
                             v.step = Step::Enter {
@@ -326,7 +388,6 @@ impl PairingView {
                 }
                 // Never the server's `verification_uri`: the page comes from the checked origin.
                 let verify = approval_page(&server, &started);
-                cx.open_url(&verify);
                 v.step = Step::Waiting {
                     server: server.clone(),
                     code: started.user_code.clone().into(),
@@ -340,6 +401,31 @@ impl PairingView {
             if !matches!(ok, Ok(true)) {
                 return;
             }
+            let ticker = this.clone();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(u64::from(
+                            theme::motion::PAIRING_TICK,
+                        )))
+                        .await;
+                    if !ticker
+                        .update(cx, |view, cx| {
+                            if view.attempt == attempt && matches!(view.step, Step::Waiting { .. })
+                            {
+                                cx.notify();
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                }
+            })
+            .detach();
             let mut wait = interval;
             let mut failures = 0;
             loop {
@@ -504,6 +590,10 @@ impl PairingView {
                             .child(format!("This computer will appear as “{}”.", self.device_name)),
                     ),
             )
+            .when(!busy, |body| body.child(div().mt(px(space::S6)).child(kit::label(&p, "Or use an invite"))
+                .child(div().flex().items_center().gap(px(space::S2)).mt(px(space::S2))
+                    .child(div().flex_1().min_w_0().px(px(space::S3)).py(px(space::S2)).rounded(px(radius::BUTTON)).border(px(elevation::HAIRLINE)).border_color(p.control).child(self.invite.clone()))
+                    .child(div().id("redeem-invite").child(kit::button_quiet(&p, "Use invite")).on_click(cx.listener(|this, _, _, cx| this.redeem(cx)))))))
     }
 
     fn waiting(
@@ -525,17 +615,17 @@ impl PairingView {
             Some(n) => n.clone(),
             None => format!("Waiting for approval · {}", expires_in(left)).into(),
         };
+        let qr = Qr::encode(verify);
+        let copy = verify.to_owned();
         let verify = verify.to_string();
         div()
             .flex()
             .flex_col()
             .child(kit::label(&p, "Your code"))
             .child(
-                div()
-                    .mt(px(space::S2))
-                    .style(ty::PAIRING_CODE)
-                    .text_color(p.ink)
-                    .child(code.clone()),
+                div().flex().items_center().gap(px(space::S4)).mt(px(space::S2))
+                    .children(qr.map(super::pairing_qr::tile))
+                    .child(div().style(ty::PAIRING_CODE).text_color(p.ink).child(code.clone())),
             )
             .child(
                 div()
@@ -543,7 +633,7 @@ impl PairingView {
                     .style(ty::BODY)
                     .text_color(p.ink_2)
                     .child(format!(
-                        "Your browser opened {host}. Sign in there, check that it shows this code, and approve this computer."
+                        "Scan with your signed-in phone or enter the code on a signed-in device. You can also approve on {host} in your browser."
                     )),
             )
             .child(
@@ -571,9 +661,10 @@ impl PairingView {
                     .child(
                         div()
                             .id("open-again")
-                            .child(kit::button_quiet(&p, "Open the page again"))
+                            .child(kit::button_quiet(&p, "Open approval page"))
                             .on_click(move |_, _, cx| cx.open_url(&verify)),
                     )
+                    .child(div().id("copy-pairing-link").child(kit::button_quiet(&p, "Copy link")).on_click(move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))
                     .child(
                         div()
                             .id("cancel")
@@ -616,6 +707,22 @@ impl Render for PairingView {
         };
         div()
             .id("pairing")
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if e.keystroke.key == "tab" && !e.is_held && matches!(this.step, Step::Enter { .. })
+                {
+                    let server = this.input.read(cx).focus_handle.clone();
+                    let invite = this.invite.read(cx).focus_handle.clone();
+                    window.focus(
+                        if server.is_focused(window) {
+                            &invite
+                        } else {
+                            &server
+                        },
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -688,8 +795,11 @@ impl Render for PairingView {
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
             .child(
                 div()
+                    .id("pairing-content")
                     .flex_1()
-                    .child(div().w(px(COLUMN)).mx_auto().pt(px(space::S10)).child(body)),
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(div().w(px(COLUMN)).mx_auto().py(px(space::S10)).child(body)),
             )
     }
 }
@@ -804,8 +914,8 @@ mod tests {
 
     #[test]
     fn expiry_rounds_up_to_minutes() {
-        assert_eq!(expires_in(Duration::from_secs(600)), "expires in 10 min");
-        assert_eq!(expires_in(Duration::from_secs(61)), "expires in 2 min");
-        assert_eq!(expires_in(Duration::from_secs(30)), "expires in a minute");
+        assert_eq!(expires_in(Duration::from_secs(600)), "expires in 10:00");
+        assert_eq!(expires_in(Duration::from_secs(61)), "expires in 1:01");
+        assert_eq!(expires_in(Duration::from_millis(29_001)), "expires in 0:30");
     }
 }

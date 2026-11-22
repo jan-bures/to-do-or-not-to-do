@@ -684,8 +684,11 @@ Completing a task is the one choreographed moment in the app.
 
 - **Trigger:** First run or post-sign-out transitions between `Enter server address`, `Starting`, `Waiting for
   approval` (user code), and the paired handoff into the main shell (or returning to `Enter` on denial/expiry).
-- **Hard rule:** Nothing spins while waiting for browser passkey approval — the code and plain status text carry
-  the state.
+- **Hard rule:** Nothing spins while waiting for approval — the code and plain status text carry the state.
+  Invite and approval QR tiles always use dark modules on the light My Day pane (including in dark mode),
+  a four-module quiet zone from the shared encoder, and the `component::PAIRING_QR` size. Render modules
+  on whole device pixels or with SVG crisp edges. The countdown uses the functional `PAIRING_TICK` timer,
+  independent of animation preferences.
 - **What moves & properties:**
   - **Step transitions:** Outgoing step content fades out and shifts `12 px` opposite the direction of travel
     (`OVERLAY_OUT` 120 ms, `EXIT`); incoming step fades in from `±12 px` to `0` (`PANEL` 200 ms, `ENTER`). The

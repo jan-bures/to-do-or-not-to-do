@@ -127,7 +127,10 @@ server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...)
 ## Signing in and the API
 
 The app uses the owner's existing passkey session. Nothing new is stored in the browser: no token, no
-password, no key.
+password, no key. Under **Device settings**, the owner can [invite a new browser or
+native app, or approve a pending pairing](device-pairing.md). A stale session asks for passkey
+verification first. On a new browser, the invite link opens a passkey-registration form and signs the
+browser in, without requiring an existing passkey there.
 
 - **The session cookie** (`__Host-todo_session`, `HttpOnly`, `Secure`, `SameSite=Strict`) is sent with every
   same-origin `fetch`.

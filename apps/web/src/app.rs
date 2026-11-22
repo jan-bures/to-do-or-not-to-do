@@ -4,6 +4,7 @@
 mod activity;
 mod attachments;
 mod detail_splitter;
+mod device_pairing;
 mod links;
 mod pickers;
 mod reminder;
@@ -1236,6 +1237,7 @@ fn SidebarPane() -> impl IntoView {
             <div class="side-foot">
                 <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>
                 <room_actions::SyncLine/>
+                <device_pairing::DeviceSettings/>
                 <SignOut/>
             </div>
         </aside>

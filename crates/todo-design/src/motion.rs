@@ -176,6 +176,8 @@ pub const REDUCED_FADE: u32 = 100;
 pub const COMPLETE_HOLD: u32 = 450;
 /// Timer: how long an overlay scrollbar stays visible after scrolling stops. Unchanged under reduced motion.
 pub const SCROLLBAR_HOLD: u32 = 1000;
+/// Refresh cadence for a visible pairing countdown (functional timer).
+pub const PAIRING_TICK: u32 = 1000;
 /// Timer: how long the undo toast stays (its countdown line runs linearly for this long). Ctrl+Z works after that too.
 pub const UNDO_WINDOW: u32 = 6000;
 /// How far the undo toast rises into place, in logical pixels.
@@ -195,7 +197,7 @@ pub const DIALOG_RISE: f32 = 6.0;
 pub const DIALOG_DROP: f32 = 4.0;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 23] = [
+pub const DURATIONS: [(&str, u32); 24] = [
     ("hover", HOVER),
     ("content-swap", CONTENT_SWAP),
     ("room-title-overlap", ROOM_TITLE_OVERLAP),
@@ -215,6 +217,7 @@ pub const DURATIONS: [(&str, u32); 23] = [
     ("undo-window", UNDO_WINDOW),
     ("panel", PANEL),
     ("scrollbar-hold", SCROLLBAR_HOLD),
+    ("pairing-tick", PAIRING_TICK),
     ("scrollbar-out", SCROLLBAR_OUT),
     ("sync-highlight", SYNC_HIGHLIGHT),
     ("stagger", STAGGER),
@@ -325,7 +328,10 @@ mod tests {
         // Functional timers must not collide numerically with non-timer durations so `reduced()` stays exact.
         let timers = [UNDO_WINDOW, COMPLETE_HOLD, SCROLLBAR_HOLD];
         for (name, ms) in DURATIONS {
-            if !matches!(name, "undo-window" | "complete-hold" | "scrollbar-hold") {
+            if !matches!(
+                name,
+                "undo-window" | "complete-hold" | "scrollbar-hold" | "pairing-tick"
+            ) {
                 assert!(
                     !timers.contains(&ms),
                     "non-timer duration {name} ({ms} ms) collides with a timer duration in reduced()"

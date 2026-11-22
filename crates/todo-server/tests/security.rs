@@ -45,9 +45,13 @@ const PUBLIC: &[(&str, &str)] = &[
     ("GET", "/health"),
     ("POST", "/api/v1/pair/start"),
     ("POST", "/api/v1/pair/poll"),
+    ("POST", "/api/v1/pair/redeem"),
     ("GET", "/login"),
     ("GET", "/setup"),
     ("GET", "/pair"),
+    ("GET", "/pair/invite"),
+    ("POST", "/auth/invite/start"),
+    ("POST", "/auth/invite/finish"),
     ("POST", "/auth/login/start"),
     ("POST", "/auth/login/finish"),
     ("POST", "/auth/setup/start"),
@@ -1760,7 +1764,13 @@ async fn html_pages_carry_strict_security_headers() {
     let env = Env::start_with(move |cfg| cfg.web.dir = Some(web_dir)).await;
     let anon = env.browser();
     let mut pages = Vec::new();
-    for path in ["/login", "/setup", "/pair", "/pair?code=ABCD-EFGH"] {
+    for path in [
+        "/login",
+        "/setup",
+        "/pair",
+        "/pair?code=ABCD-EFGH",
+        "/pair/invite",
+    ] {
         pages.push((path.to_owned(), anon.get(path).await));
     }
     let owner = env.owner().await;
@@ -1788,6 +1798,7 @@ async fn html_pages_carry_strict_security_headers() {
         "/admin/shares".to_owned(),
         "/admin/ingest".to_owned(),
         "/admin/audit".to_owned(),
+        "/auth/verify".to_owned(),
         "/pair".to_owned(),
         "/app".to_owned(),
         "/app/list/x".to_owned(),
@@ -2104,6 +2115,22 @@ async fn tokens_secrets_and_task_content_never_reach_the_log_at_info() {
         .unwrap();
     let p = owner.get(&format!("/pair?code={user_code}")).await;
     assert_eq!(p.status, StatusCode::OK);
+
+    let created = owner.post_json("/api/v1/pair/invites", json!({})).await;
+    assert_eq!(created.status, StatusCode::OK);
+    let invite = created.json();
+    let code = invite["code"].as_str().unwrap();
+    let secret = invite["link"].as_str().unwrap().split_once('#').unwrap().1;
+    secrets.extend([code.to_owned(), secret.to_owned()]);
+    let redeemed = env
+        .browser()
+        .post_json(
+            "/api/v1/pair/redeem",
+            json!({ "secret": secret, "device_name": "New device" }),
+        )
+        .await;
+    assert_eq!(redeemed.status, StatusCode::OK);
+    secrets.push(redeemed.json()["token"].as_str().unwrap().to_owned());
 
     // A share link.
     let share = env

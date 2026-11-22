@@ -197,13 +197,14 @@ adopting it then is cheap.
 owner types the server's address, for example `todo.example.com`; `https://` is added, and plain `http://`
 is refused except for `localhost`, so the token never crosses a network unencrypted. The app calls
 `POST /api/v1/pair/start` with the device name ("To-do on <computer name>", read at run time), shows the
-user code, opens the approval page in the browser and polls `POST /api/v1/pair/poll` at the interval the
+user code and the approval QR, offers to open the approval page in the browser and polls `POST /api/v1/pair/poll` at the interval the
 server asks for. The address is checked with the transport's own parser (`todo_client::native::server_origin`):
 https, or plain http only for this computer, and no user name, query or fragment. The approval page is built
 from that address (`<server>/pair?code=…`); the `verification_uri` the server sends is never opened. The
 transport follows no redirects and gives every finite request 30 s. Rate limits wait for `Retry-After`; a run of network failures, a denial or an expired code
 go back to the address with a message. Nothing spins while it waits. **The server address is never built
-into the app**: it is learnt here and saved in the user's config.
+into the app**: it is learnt here and saved in the user's config. Alternatively, paste an
+[invite link or code](device-pairing.md) from a signed-in app. A typed code also needs the server address.
 
 **Where things are kept** (`src/config.rs`):
 
@@ -227,7 +228,7 @@ pairing never picks up an old cache and cleaning up an old one can't touch the c
 
 **The account menu** (the gear in the sidebar footer) names the server the app is paired with, opens its
 admin pages (`<server>/admin`, built from the paired address with the transport's own check, never a
-built-in host), and has **Sync now**, which retries at once instead of waiting out the backoff
+built-in host), offers **Pair a new device** and **Approve a device**, and has **Sync now**, which retries at once instead of waiting out the backoff
 (`SyncClient::nudge`).
 
 **Sign out** (the account menu) runs in order: syncing stops and downloads in flight are

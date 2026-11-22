@@ -16,9 +16,7 @@ pub const DEVICE_TOKEN_PREFIX: &str = "tdd_";
 pub const AGENT_TOKEN_PREFIX: &str = "tda_";
 /// Prefix of the local admin API token (see [`crate::admin`]).
 pub const ADMIN_TOKEN_PREFIX: &str = "tdx_";
-/// Letters of pairing user codes and setup codes: no `0`/`O`, `1`/`I`/`L`, so they read back
-/// unambiguously.
-pub const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+pub use todo_core::pairing::{CODE_ALPHABET, normalize_code};
 
 /// The OS random number generator failed (should never happen on a supported platform).
 #[derive(Debug, thiserror::Error)]
@@ -51,16 +49,6 @@ pub fn random_code(len: usize) -> Result<String, RandomError> {
         }
     }
     Ok(out)
-}
-
-/// Normalises a typed code: upper case, without spaces and dashes.
-#[must_use]
-pub fn normalize_code(input: &str) -> String {
-    input
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
-        .map(|c| c.to_ascii_uppercase())
-        .collect()
 }
 
 /// SHA-256 of a secret.

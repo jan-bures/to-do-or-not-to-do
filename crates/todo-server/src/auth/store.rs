@@ -364,6 +364,37 @@ impl AuthStore {
         Ok(n == 1)
     }
 
+    /// Saves a passkey and its initial session together, so neither can be left half-created.
+    pub(crate) fn add_passkey_with_session(
+        &self,
+        name: &str,
+        passkey: &Passkey,
+        session: &SessionRow,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let n = tx.execute(
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (cred_id) DO NOTHING",
+            params![
+                hex::encode(passkey.cred_id()),
+                name,
+                serde_json::to_string(passkey)?,
+                session.created_at
+            ],
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at)
+             VALUES (?1, ?2, ?3, ?3, ?3)",
+            params![session.id_hash, session.csrf, session.created_at],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Saves a passkey after use (new sign counter) and records the use.
     pub fn update_passkey(&self, id: i64, passkey: &Passkey, now: i64) -> Result<()> {
         self.conn().execute(

@@ -115,7 +115,8 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // The menus, open at rest: the room's "more" menu in a list, the account menu and the detail
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
-        "account-menu" | "priority-menu" | "repeat-focus" | "delete-tag-confirm" => Some(my_day()),
+        "account-menu" | "device-invite" | "device-approve" | "priority-menu" | "repeat-focus"
+        | "delete-tag-confirm" => Some(my_day()),
         // The reminder picker on the open task's reminder (Today 17:00): its presets, and its custom
         // page with a time typed; the row with the keyboard on it.
         "reminder-menu" | "reminder-custom" | "reminder-focus" => Some(my_day()),

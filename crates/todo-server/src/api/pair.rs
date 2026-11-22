@@ -183,7 +183,7 @@ pub async fn poll(
     Ok(Json(status).into_response())
 }
 
-fn gone() -> ApiError {
+pub(super) fn gone() -> ApiError {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "pairing_not_found",

@@ -23,6 +23,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,6 +47,7 @@ import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.PairingState
+import kotlinx.coroutines.delay
 
 private val S = Tokens.Space
 private val P = Tokens.Metrics.Phone
@@ -53,6 +56,7 @@ private val P = Tokens.Metrics.Phone
 interface PairingActions {
     fun submit(address: String)
     fun cancel()
+    fun redeem(address: String, invite: String) = Unit
     fun openLink(url: String)
     fun copyLink(url: String)
 
@@ -69,16 +73,16 @@ interface PairingActions {
  * passkey. The example address is a placeholder; nothing is filled in.
  */
 @Composable
-fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean) {
+fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, fixedRemainingSeconds: Long? = null) {
     // No tasks yet, so nothing to measure: the hills only, no sun (`docs/design-language.md`).
     Welcome("Welcome", "Pair this phone", Scene(0, 0, finished = false), dark) {
         when (state) {
             is PairingState.Entering -> Entering(state, actions)
             is PairingState.Starting -> {
-                Body("Asking ${state.server} for a code…")
+                Body("Contacting your server…")
                 Button("Cancel", primary = false, onClick = actions::cancel)
             }
-            is PairingState.Waiting -> Waiting(state, actions)
+            is PairingState.Waiting -> Waiting(state, actions, fixedRemainingSeconds)
         }
     }
 }
@@ -146,6 +150,10 @@ private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
 private fun Entering(state: PairingState.Entering, actions: PairingActions) {
     val r = LocalDesign.current.room
     var address by rememberSaveable(state.address) { mutableStateOf(state.address) }
+    var invite by remember { mutableStateOf("") }
+    var cameraError by remember { mutableStateOf(false) }
+    val scanner = if (actions === PairingActions.None) ({}) else
+        rememberPairingScanner({ scanned -> actions.redeem(address, scanned) }, { cameraError = true })
     Body("Enter your to-do server’s address. You approve this phone there with your passkey.")
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
     Box(
@@ -175,12 +183,27 @@ private fun Entering(state: PairingState.Entering, actions: PairingActions) {
     }
     state.error?.let { Label(it, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 4) }
     Button("Get a pairing code", primary = true, enabled = address.isNotBlank()) { actions.submit(address) }
+    Label("Or use an invite", Tokens.Type.CAPS_LABEL, r.ink3)
+    androidx.compose.material3.OutlinedTextField(
+        invite, { invite = it }, label = { Label("Invite code or link", Tokens.Type.META_PHONE, r.ink2) },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+    )
+    Button("Use invite", primary = false, enabled = invite.isNotBlank()) { actions.redeem(address, invite); invite = "" }
+    Button("Scan invite QR code", primary = false, onClick = scanner)
+    if (cameraError) Label("Camera access was not granted. You can type the code instead.", Tokens.Type.META_PHONE, r.dangerInk)
 }
 
 @Composable
-private fun Waiting(state: PairingState.Waiting, actions: PairingActions) {
+private fun Waiting(state: PairingState.Waiting, actions: PairingActions, fixedRemainingSeconds: Long?) {
     val r = LocalDesign.current.room
-    Body("Open this link on a device with your passkey and approve the code. This screen moves on by itself.")
+    var left by remember(state.expiresAtMs) { mutableStateOf(pairingRemaining(state.expiresAtMs, System.currentTimeMillis())) }
+    LaunchedEffect(state.expiresAtMs, fixedRemainingSeconds) {
+        while (fixedRemainingSeconds == null && left > 0) {
+            delay(Tokens.Motion.PAIRING_TICK.toLong())
+            left = pairingRemaining(state.expiresAtMs, System.currentTimeMillis())
+        }
+    }
+    Body("Scan with your signed-in phone or enter this code on a signed-in device. You can also open the approval link in a browser.")
     Column(
         Modifier
             .fillMaxWidth()
@@ -190,11 +213,13 @@ private fun Waiting(state: PairingState.Waiting, actions: PairingActions) {
             .padding(S.S5.dp),
         verticalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
+        PairingQrTile(state.approvalUrl, "Approval QR code")
         Label("Code", Tokens.Type.CAPS_LABEL, r.ink3)
         Label(state.userCode, Tokens.Type.PAIRING_CODE, r.ink)
         Spacer(Modifier.height(S.S1.dp))
         Label("Link", Tokens.Type.CAPS_LABEL, r.ink3)
         Label(state.approvalUrl, Tokens.Type.DUE, r.accentStrong, maxLines = 3)
+        Label(pairTime(fixedRemainingSeconds ?: left), Tokens.Type.META_PHONE, r.ink3)
     }
     if (state.retrying) Label("Can’t reach the server right now. Still trying…", Tokens.Type.META_PHONE, r.dangerInk)
     Row(horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {

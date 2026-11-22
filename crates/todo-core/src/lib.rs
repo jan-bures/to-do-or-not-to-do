@@ -47,6 +47,7 @@ pub mod fingerprint;
 pub mod ids;
 pub mod model;
 pub mod ordering;
+pub mod pairing;
 pub mod query;
 pub mod recurrence;
 pub mod state;

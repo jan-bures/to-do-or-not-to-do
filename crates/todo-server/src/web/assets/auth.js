@@ -148,7 +148,9 @@
     "step-up": guarded(async function (el) {
       status("Waiting for your passkey…");
       await assert("/auth/step-up");
-      if (el.getAttribute("data-after") === "back" && !swapped) window.history.back();
+      const next = el.getAttribute("data-next");
+      if (next) window.location.replace(next);
+      else if (el.getAttribute("data-after") === "back" && !swapped) window.history.back();
       else window.location.reload();
     }),
     "add-passkey": guarded(async function () {
@@ -158,6 +160,31 @@
       window.location.reload();
     }),
   };
+
+  function bindInvite(form) {
+    let secret = window.location.hash.slice(1);
+    // Clear the address bar and this history entry before user interaction or navigation.
+    if (window.location.hash) window.history.replaceState(null, "", "/pair/invite");
+    const button = form.querySelector('button[type="submit"]');
+    if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) {
+      status("Open a new invite link from your signed-in app.", true);
+      button.disabled = true;
+      return;
+    }
+    form.addEventListener("submit", guarded(async function () {
+      if (button.disabled || !secret) return;
+      button.disabled = true;
+      try {
+        const name = document.getElementById("invite-device-name").value.trim();
+        status("Waiting for your new passkey…");
+        const r = await register("/auth/invite", { secret: secret, device_name: name });
+        secret = "";
+        window.location.replace(r.redirect || "/");
+      } finally {
+        button.disabled = !secret;
+      }
+    }));
+  }
 
   const setup = guarded(async function (form) {
     const code = form.querySelector('input[name="code"]').value;
@@ -217,6 +244,8 @@
     });
     const setupForm = root.querySelector('form[data-action="setup"]');
     if (setupForm) setupForm.addEventListener("submit", setup);
+    const inviteForm = root.querySelector('form[data-action="redeem-invite"]');
+    if (inviteForm) bindInvite(inviteForm);
     root.querySelectorAll('form[method="post"]').forEach(function (f) {
       const action = f.getAttribute("action") || "";
       if (action.indexOf("/admin/") === 0 || action.indexOf("/pair/") === 0) {

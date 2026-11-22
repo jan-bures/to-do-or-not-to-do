@@ -6,6 +6,7 @@ pub mod dto;
 pub mod error;
 pub mod events;
 pub mod hidden;
+pub(crate) mod invite;
 pub mod openapi;
 pub mod pair;
 pub mod read;
@@ -127,16 +128,23 @@ async fn not_found() -> ApiError {
 }
 
 /// The API router, to be nested at `/api/v1`. Everything needs a bearer token (or the web app's
-/// session, see [`auth::require_auth_or_session`]) except the two pairing
+/// session, see [`auth::require_auth_or_session`]) except the public pairing
 /// endpoints and the email ingest endpoint (HMAC-signed).
 pub fn router(state: AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/pair/start", post(pair::start))
         .route("/pair/poll", post(pair::poll))
+        .route("/pair/redeem", post(invite::redeem))
         // No bearer token: signed with HMAC instead, and 404 unless configured (see `crate::ingest`).
         .route("/ingest/email", post(crate::ingest::post_email));
     Router::new()
         .route("/openapi.json", get(openapi::document))
+        .route("/pair/invites", post(invite::create))
+        .route(
+            "/pair/invites/{id}",
+            get(invite::status).delete(invite::cancel),
+        )
+        .route("/pair/review", post(invite::review))
         .route("/commands", post(commands::post_command))
         .route("/events", get(events::get_events))
         .route("/events/{seq}/undo", post(commands::post_undo))

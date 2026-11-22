@@ -242,6 +242,7 @@ impl FetchTransport {
         match method {
             Method::Get => init.set_method("GET"),
             Method::Post => init.set_method("POST"),
+            Method::Delete => init.set_method("DELETE"),
         }
         if let Some((body, content_type)) = body {
             set("Content-Type", content_type)?;

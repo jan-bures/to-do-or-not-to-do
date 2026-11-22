@@ -220,6 +220,9 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
         Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
         Label(line, Tokens.Type.COUNT, r.ink3, Modifier.weight(1f).semantics { contentDescription = "Sync: $line" })
         var menu by remember { mutableStateOf(false) }
+        var pairing by remember { mutableStateOf<Boolean?>(null) }
+        val owner = LocalPairingOwner.current
+        if (owner != null) pairing?.let { DevicePairingDialog(owner, it) { pairing = null } }
         Box {
             IconButton("settings", "Settings") { menu = true }
             DropdownMenu(menu, { menu = false }, containerColor = r.raised) {
@@ -233,6 +236,18 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
                     onClick = {},
                     enabled = false,
                 )
+                if (owner != null) {
+                    DropdownMenuItem(
+                        text = { Label("Pair a new device", Tokens.Type.BODY, r.ink) },
+                        leadingIcon = { Icon("plus", r.ink2) },
+                        onClick = { menu = false; pairing = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Label("Approve a device", Tokens.Type.BODY, r.ink) },
+                        leadingIcon = { Icon("circle-check", r.ink2) },
+                        onClick = { menu = false; pairing = false },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Label("Sync now", Tokens.Type.BODY, r.ink) },
                     leadingIcon = { Icon("refresh-cw", r.ink2) },

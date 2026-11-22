@@ -23,6 +23,7 @@
 mod owner_token;
 mod principal;
 
+pub(crate) mod invite;
 pub mod limits;
 pub mod pairing;
 pub mod secret;

@@ -172,9 +172,10 @@ small and visible, and the owner has to be able to recover without it.
 - **No task data.** No tasks, notes, steps, attachments, events, activity, the event stream or MCP,
   and no commands or undo. Lists and collections appear only as IDs and names. An operator that needs
   task data is an agent, and gets an agent token with grants the owner chose.
-- **No new credentials.** It can't create agent tokens, approve device pairings, create or rotate
-  share links, or make admin tokens. Each of those hands out access, so each stays behind the owner's
-  passkey on the admin pages. The API can only take access away, and narrow or widen what an existing
+- **No new credentials.** It can't create agent tokens, approve device pairings, issue device or browser
+  invites, create or rotate share links, or make admin tokens. Pairing and invites require an already
+  paired owner device token or a freshly verified owner web session; other credential creation on the
+  admin pages requires the owner's passkey. The API can only take access away, and narrow or widen what an existing
   agent may do within the levels the owner's pages offer.
 - **Nothing about passkeys or sessions.** Signing in, step-up and passkeys exist to keep the owner in
   control; a token can't stand in for them.

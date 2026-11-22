@@ -139,7 +139,7 @@ struct PollBody<'a> {
     poll_token: &'a str,
 }
 
-fn refused(res: &Response) -> PairError {
+pub(super) fn refused(res: &Response) -> PairError {
     let detail = error_detail(res);
     if res.status == 404
         && detail
@@ -160,14 +160,14 @@ fn refused(res: &Response) -> PairError {
     }
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(res: &Response) -> Result<T, PairError> {
+pub(super) fn parse<T: for<'de> Deserialize<'de>>(res: &Response) -> Result<T, PairError> {
     if res.status != 200 {
         return Err(refused(res));
     }
     serde_json::from_slice(&res.body).map_err(|e| PairError::Protocol(e.to_string()))
 }
 
-fn body(value: &impl Serialize) -> Result<Vec<u8>, PairError> {
+pub(super) fn body(value: &impl Serialize) -> Result<Vec<u8>, PairError> {
     serde_json::to_vec(value).map_err(|e| PairError::Protocol(e.to_string()))
 }
 

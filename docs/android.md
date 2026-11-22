@@ -405,10 +405,16 @@ because the Keystore key goes with it.
    certificates (Let's Encrypt, Google Trust Services, SSL.com, and Sectigo as the backup). Android fetches OCSP responses and CRLs over plain http when it
    checks the server certificate, and if that fetch is blocked, the verifier reports the certificate as
    revoked.
-2. The app shows a code and a link. Open the link on a device where you can sign in with your passkey (or
-   tap *Open link* to use the phone's browser), check that the code matches, and approve it.
+2. The app shows a code, a QR code and a link. Scan the QR from an already paired phone, type the
+   code into **Approve a device** on a signed-in app, or open the link on a device where you can sign
+   in with your passkey (or tap *Open link* to use the phone's browser). Check that the code matches,
+   then approve it.
 3. The app moves on by itself. **Unpair this phone**, under the settings button in the drawer's footer,
    forgets the token, the Keystore key and the local cache.
+
+Alternatively [use an invitation](device-pairing.md): scan its QR code on the signed-out screen or
+enter its code with the server address. An already paired phone can also issue invites and approve
+requests from Settings in the drawer. Camera access is optional and requested only when scanning.
 
 **Unpairing always asks first.** The question says how many changes haven't reached the server; with any,
 the button reads **Unpair and discard**, and Cancel is the default. The same question guards **Pair again**

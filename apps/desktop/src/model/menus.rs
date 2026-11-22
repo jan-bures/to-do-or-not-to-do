@@ -64,6 +64,10 @@ pub enum MenuAction {
     NewListIn(CollectionId),
     /// Open the server's admin pages in the browser.
     OpenAdmin,
+    /// Show the one-time device invite panel.
+    PairDevice,
+    /// Review a pending pairing code.
+    ApproveDevice,
     /// Retry syncing now instead of waiting out the backoff.
     SyncNow,
     /// Ask before signing out: the item turns into the confirmation.
@@ -140,6 +144,8 @@ impl MenuAction {
                 | Self::DeleteCollection(_)
                 | Self::AddLink(_)
                 | Self::SignOut
+                | Self::PairDevice
+                | Self::ApproveDevice
         )
     }
 }
@@ -973,6 +979,18 @@ pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
             Icon::ExternalLink,
             "Open admin pages",
             MenuAction::OpenAdmin,
+        ));
+        entries.push(item(
+            "pair-device",
+            Icon::Plus,
+            "Pair a new device",
+            MenuAction::PairDevice,
+        ));
+        entries.push(item(
+            "approve-device",
+            Icon::CircleCheck,
+            "Approve a device",
+            MenuAction::ApproveDevice,
         ));
         entries.push(item(
             "sync-now",
@@ -2122,6 +2140,8 @@ second line"
             actions(&menu),
             [
                 MenuAction::OpenAdmin,
+                MenuAction::PairDevice,
+                MenuAction::ApproveDevice,
                 MenuAction::SyncNow,
                 MenuAction::AskSignOut
             ]

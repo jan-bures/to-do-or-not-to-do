@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 /// How long a pairing request stays valid.
 pub const PAIRING_TTL_MS: i64 = 5 * 60 * 1000;
 /// Length of a user code.
-pub const USER_CODE_LEN: usize = 8;
+pub const USER_CODE_LEN: usize = todo_core::pairing::APPROVAL_CODE_LEN;
 /// Most pending requests at once.
 pub const MAX_PENDING: usize = 64;
 /// Longest accepted device name, in characters.
@@ -107,6 +107,26 @@ struct Inner {
 }
 
 impl Inner {
+    fn code_hash(&self, code: &str) -> Option<[u8; 32]> {
+        let mut found = None;
+        for (candidate, hash) in &self.by_code {
+            if secret::ct_eq(candidate.as_bytes(), code.as_bytes()) {
+                found = Some(*hash);
+            }
+        }
+        found
+    }
+
+    fn poll_hash(&self, hash: &[u8; 32]) -> Option<[u8; 32]> {
+        let mut found = None;
+        for candidate in self.by_poll.keys() {
+            if secret::ct_eq(candidate, hash) {
+                found = Some(*candidate);
+            }
+        }
+        found
+    }
+
     fn purge(&mut self, now: i64) {
         let expired: Vec<[u8; 32]> = self
             .by_poll
@@ -206,10 +226,10 @@ impl Pairings {
         let code = secret::normalize_code(user_code);
         let mut inner = self.lock();
         inner.purge(now);
-        let hash = inner.by_code.get(&code)?;
+        let hash = inner.code_hash(&code)?;
         inner
             .by_poll
-            .get(hash)
+            .get(&hash)
             .filter(|p| p.status == Status::Pending)
             .cloned()
     }
@@ -217,12 +237,32 @@ impl Pairings {
     /// Approves or denies a pending request. Returns it, or `None` if there is no such pending request.
     /// A user code can be decided once.
     pub fn decide(&self, user_code: &str, approve: bool, now: i64) -> Option<Pairing> {
+        self.decide_inner(user_code, approve, None, now)
+    }
+
+    /// Approves the request matching the code and creation time reviewed by the owner.
+    pub(crate) fn approve_reviewed(
+        &self,
+        code: &str,
+        created_at: i64,
+        now: i64,
+    ) -> Option<Pairing> {
+        self.decide_inner(code, true, Some(created_at), now)
+    }
+
+    fn decide_inner(
+        &self,
+        user_code: &str,
+        approve: bool,
+        created_at: Option<i64>,
+        now: i64,
+    ) -> Option<Pairing> {
         let code = secret::normalize_code(user_code);
         let mut inner = self.lock();
         inner.purge(now);
-        let hash = inner.by_code.remove(&code)?;
+        let hash = inner.code_hash(&code)?;
         let p = inner.by_poll.get_mut(&hash)?;
-        if p.status != Status::Pending {
+        if p.status != Status::Pending || created_at.is_some_and(|at| p.created_at != at) {
             return None;
         }
         p.status = if approve {
@@ -230,6 +270,8 @@ impl Pairings {
         } else {
             Status::Denied
         };
+        // Keep the code reserved until the request is purged or collected, so its cleanup
+        // cannot remove a newer pairing that happened to get the same code.
         Some(p.clone())
     }
 
@@ -239,6 +281,9 @@ impl Pairings {
         let hash = secret::digest(poll_token);
         let mut inner = self.lock();
         inner.purge(now);
+        let Some(hash) = inner.poll_hash(&hash) else {
+            return Poll::Gone;
+        };
         let Some(p) = inner.by_poll.get(&hash) else {
             return Poll::Gone;
         };

@@ -262,6 +262,7 @@ impl HttpTransport {
         let mut b = match method {
             Method::Get => self.client.get(url),
             Method::Post => self.client.post(url),
+            Method::Delete => self.client.delete(url),
         };
         if let Some(auth) = &self.auth {
             b = b.header(AUTHORIZATION, auth.clone());

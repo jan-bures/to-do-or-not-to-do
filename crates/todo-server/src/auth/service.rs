@@ -211,6 +211,7 @@ pub struct AuthService {
     code_lookups: Mutex<HashMap<String, u32>>,
     /// Pending device pairings.
     pub pairings: Pairings,
+    pub(crate) invites: super::invite::Invites,
     /// Agent write quotas.
     pub quotas: WriteQuotas,
     /// Per-token API request limits.
@@ -391,6 +392,7 @@ impl AuthService {
             setup_file: config.data_dir.join(SETUP_CODE_FILE),
             code_lookups: Mutex::new(HashMap::new()),
             pairings: Pairings::default(),
+            invites: super::invite::Invites::default(),
             quotas: WriteQuotas::default(),
             api_limiter: KeyedLimiter::new(a.api_requests_per_minute, a.api_request_burst),
             ip_limiter: KeyedLimiter::new(a.auth_requests_per_minute, a.auth_request_burst),
@@ -1119,14 +1121,108 @@ impl AuthService {
         Ok(())
     }
 
+    pub(crate) fn paired_device(&self, device: &DeviceId, headers: &HeaderMap) -> bool {
+        bearer(headers).ok().is_some_and(|token| {
+            self.snapshot()
+                .bearers
+                .get(&secret::digest(token))
+                .is_some_and(|entry| matches!(&entry.kind, BearerKind::Device(id) if id == device))
+        })
+    }
+
+    pub(crate) fn invite_issuer_live(&self, issuer: &super::invite::Issuer) -> bool {
+        match issuer {
+            super::invite::Issuer::Device(device) => self
+                .snapshot()
+                .bearers
+                .values()
+                .any(|entry| matches!(&entry.kind, BearerKind::Device(id) if id == device)),
+            super::invite::Issuer::Session(session) => self.session_live(session),
+        }
+    }
+
+    pub(crate) fn invite_passkey_start(
+        &self,
+        secret: &str,
+        name: String,
+    ) -> Result<(String, Value), ApiError> {
+        let issuer = self
+            .invites
+            .browser_issuer(secret, self.now())
+            .ok_or_else(crate::api::invite::invite_gone)?;
+        if !self.invite_issuer_live(&issuer) || self.setup_open()? {
+            return Err(crate::api::invite::invite_gone());
+        }
+        let (options, registration) = self.registration_options()?;
+        let handle = self
+            .invites
+            .start_browser(secret, registration, name, self.now())?
+            .ok_or_else(crate::api::invite::invite_gone)?;
+        Ok((handle, options))
+    }
+
+    pub(crate) fn invite_passkey_finish(
+        &self,
+        handle: &str,
+        credential: &RegisterPublicKeyCredential,
+        ip: Option<IpAddr>,
+    ) -> Result<NewSession, ApiError> {
+        let (id, registration, name) = self
+            .invites
+            .take_browser(handle, self.now())
+            .ok_or_else(ceremony_expired)?;
+        let passkey = self
+            .webauthn()?
+            .finish_passkey_registration(credential, &registration)
+            .map_err(|_| ceremony_failed())?;
+        let claim = self
+            .invites
+            .claim_browser(&id, self.now())
+            .ok_or_else(crate::api::invite::invite_gone)?;
+        let result = (|| {
+            let guard = self.begin_mutation();
+            if !self.invite_issuer_live(&claim.issuer) {
+                return Err(crate::api::invite::invite_gone());
+            }
+            let session = self.new_session_values()?;
+            if !self
+                .store
+                .add_passkey_with_session(&name, &passkey, &session.row)?
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "already_registered",
+                    "this passkey is already registered",
+                ));
+            }
+            drop(guard);
+            self.audit(
+                audit::PASSKEY_ADDED,
+                ip,
+                json!({ "name": name, "issuer": claim.issuer }),
+            );
+            Ok(session)
+        })();
+        self.invites
+            .finish(&claim, result.as_ref().ok().map(|_| name), self.now());
+        result
+    }
+
     // ---- sessions ---------------------------------------------------------------------------------
 
     fn new_session(&self) -> Result<NewSession, ApiError> {
+        let session = self.new_session_values()?;
+        let row = &session.row;
+        self.store
+            .create_session(&row.id_hash, &row.csrf, row.created_at)?;
+        Ok(session)
+    }
+
+    fn new_session_values(&self) -> Result<NewSession, ApiError> {
         let cookie = secret::random_token::<32>()?;
         let csrf = secret::random_token::<32>()?;
         let id_hash = secret::digest_hex(&cookie);
         let now = self.now();
-        self.store.create_session(&id_hash, &csrf, now)?;
         Ok(NewSession {
             cookie,
             row: SessionRow {
@@ -1212,7 +1308,9 @@ impl AuthService {
 
     /// Ends a session. Blocking.
     pub fn end_session(&self, session: &SessionRow, ip: Option<IpAddr>) -> Result<(), StoreError> {
+        let guard = self.begin_mutation();
         self.store.delete_session(&session.id_hash)?;
+        drop(guard);
         // The web app's event streams re-check their session and close.
         self.revoked();
         self.audit(audit::SIGN_OUT, ip, json!({}));
@@ -1261,9 +1359,21 @@ impl AuthService {
         name: &str,
         ip: Option<IpAddr>,
     ) -> Result<(DeviceId, String), ApiError> {
+        self.create_device_with_issuer(name, ip, None)
+    }
+
+    pub(crate) fn create_device_with_issuer(
+        &self,
+        name: &str,
+        ip: Option<IpAddr>,
+        issuer: Option<&super::invite::Issuer>,
+    ) -> Result<(DeviceId, String), ApiError> {
         let id = device_id_for(name)?;
         let token = format!("{DEVICE_TOKEN_PREFIX}{}", secret::random_token::<32>()?);
         let guard = self.begin_mutation();
+        if issuer.is_some_and(|issuer| !self.invite_issuer_live(issuer)) {
+            return Err(crate::api::invite::invite_gone());
+        }
         self.store
             .add_device(&id, name, &secret::digest_hex(&token), self.now())?;
         self.publish(&guard)?;
@@ -1271,7 +1381,11 @@ impl AuthService {
         self.audit(
             audit::DEVICE_PAIRED,
             ip,
-            json!({ "device": id, "name": name }),
+            if let Some(issuer) = issuer {
+                json!({ "device": id, "name": name, "issuer": issuer })
+            } else {
+                json!({ "device": id, "name": name })
+            },
         );
         Ok((id, token))
     }

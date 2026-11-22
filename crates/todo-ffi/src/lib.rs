@@ -21,6 +21,7 @@
 
 uniffi::setup_scaffolding!();
 
+pub mod device_pairing;
 pub mod engine;
 mod error;
 pub mod fixtures;

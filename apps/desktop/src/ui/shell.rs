@@ -4,6 +4,7 @@
 
 mod activity;
 mod detail;
+mod device_pairing;
 mod menu;
 mod panes;
 mod reminders;
@@ -274,6 +275,7 @@ pub struct ShellView {
     detail_important_focus: FocusHandle,
     reminder_focus: FocusHandle,
     account_focus: FocusHandle,
+    pairing_panel: Option<Entity<device_pairing::Panel>>,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
     filter: Entity<TextInput>,
@@ -426,6 +428,7 @@ impl ShellView {
             detail_important_focus: cx.focus_handle(),
             reminder_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
+            pairing_panel: None,
             inline: None,
             filter,
             edit,
@@ -963,6 +966,10 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(fixture, "device-invite" | "device-approve") {
+            self.open_pairing_panel(fixture == "device-invite", window, cx);
+            return;
+        }
         // An undo asked for from the keyboard: the change selected, then Enter.
         let change = match fixture {
             "activity-pending" => Some(crate::fixtures::PENDING_ACTIVITY_SEQ),
@@ -3733,7 +3740,7 @@ impl ShellView {
     /// Held or modified Tab is left alone, and so is Tab off the stops: a text field keeps it, and an
     /// open menu has already taken it (it closes).
     fn tab_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !navigation_tab(e) {
+        if self.pairing_panel.is_some() || !navigation_tab(e) {
             return;
         }
         let forward = !e.keystroke.modifiers.shift;
@@ -3830,7 +3837,7 @@ impl Render for ShellView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    if !window.default_prevented() {
+                    if this.pairing_panel.is_none() && !window.default_prevented() {
                         window.focus(&this.list_focus, cx);
                     }
                 }),
@@ -3887,6 +3894,7 @@ impl Render for ShellView {
             })
             .child(self.press_counter(cx))
             .children(self.confirmation_scrim())
+            .children(self.pairing_overlay())
             // Context menus open at the pointer; the others hang from their buttons.
             .children(self.popover(
                 |k| {

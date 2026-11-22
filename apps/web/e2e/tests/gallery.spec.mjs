@@ -89,6 +89,27 @@ for (const scheme of ["light", "dark"]) {
       await shot(page, `toggle-states-off-${scheme}`);
     });
 
+    test(`device invite and approval settings (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.getByRole("button", { name: "Device settings" }).click();
+      await page.getByRole("button", { name: "Pair a new device" }).click();
+      await page.getByRole("button", { name: "Create invite" }).click();
+      await expect(page.getByRole("img", { name: "Invite QR code" })).toBeVisible();
+      await expect(page.getByText("ABCDEF-GHJKMN")).toBeVisible();
+      await shot(page, `device-invite-${scheme}`);
+      await page.getByRole("button", { name: "Cancel invite" }).click();
+      await expect(page.getByText("Invite cancelled.")).toBeVisible();
+      await page.getByRole("button", { name: "Back", exact: true }).click();
+      await page.getByRole("button", { name: "Approve a device" }).click();
+      await page.getByRole("textbox", { name: "Code shown on the device" }).fill("ABCD-EFGH");
+      await page.getByRole("button", { name: "Review" }).click();
+      await expect(page.getByText(/Approve “New phone”/)).toBeVisible();
+      await shot(page, `device-approve-${scheme}`);
+      await w.check();
+    });
+
     test(`editing due date and steps (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

@@ -42,6 +42,7 @@
 
 pub mod activity;
 pub mod client;
+pub mod device_pairing;
 pub mod failure;
 pub mod intent;
 pub mod mirror;

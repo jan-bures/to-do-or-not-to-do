@@ -3,6 +3,7 @@ package app.todoornot.model
 import app.todoornot.core.FfiException
 import app.todoornot.core.PairPoll
 import app.todoornot.core.PairStarted
+import app.todoornot.core.deviceInviteRedeem
 import app.todoornot.core.normalizeServerAddress
 import app.todoornot.core.pairPoll
 import app.todoornot.core.pairStart
@@ -25,6 +26,9 @@ interface PairingApi {
     fun start(server: String, deviceName: String): PairStarted
 
     fun poll(server: String, pollToken: String): PairPoll
+
+    fun redeem(server: String, invite: String, deviceName: String): Session =
+        throw FfiException.Invalid("Invites are unavailable.")
 }
 
 /** The real endpoints, in the Rust core. Blocking: call off the main thread. */
@@ -35,6 +39,9 @@ class CorePairing(private val allowLoopbackHttp: Boolean) : PairingApi {
     override fun start(server: String, deviceName: String): PairStarted = pairStart(server, deviceName, allowLoopbackHttp)
 
     override fun poll(server: String, pollToken: String): PairPoll = pairPoll(server, pollToken, allowLoopbackHttp)
+
+    override fun redeem(server: String, invite: String, deviceName: String): Session =
+        deviceInviteRedeem(server, invite, deviceName, allowLoopbackHttp).let { Session(it.server, it.deviceId, it.token) }
 }
 
 sealed interface PairingState {
@@ -92,6 +99,21 @@ class PairingModel(
             val expiresAt = clock() + started.expiresInSecs.toLong() * 1000
             _state.value = PairingState.Waiting(server, started.userCode, started.approvalUrl, expiresAt)
             follow(address, server, started, expiresAt)
+        }
+    }
+
+    fun redeem(address: String, invite: String) {
+        if (_state.value !is PairingState.Entering) return
+        job?.cancel()
+        job = scope.launch {
+            _state.value = PairingState.Starting(address)
+            try {
+                onPaired(withContext(io) { api.redeem(address, invite, deviceName) })
+            } catch (e: FfiException.Expired) {
+                _state.value = PairingState.Entering(address, "This invite is invalid, expired or already used.")
+            } catch (e: FfiException) {
+                _state.value = PairingState.Entering(address, describe(e))
+            }
         }
     }
 

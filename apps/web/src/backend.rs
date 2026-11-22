@@ -575,6 +575,11 @@ pub async fn wait_for_attachments(ids: &[AttachmentId]) -> bool {
     )
 }
 
+/// Authenticated transport for the owner-only pairing settings.
+pub fn pairing_transport() -> Option<FetchTransport> {
+    CSRF.with(|c| c.borrow().clone()).map(FetchTransport::new)
+}
+
 /// Uploads directly; the file is not an offline edit. The live replica sees the result through SSE.
 pub async fn upload_attachment(
     task: TaskId,

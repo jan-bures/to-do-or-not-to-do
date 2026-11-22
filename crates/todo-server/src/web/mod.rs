@@ -184,6 +184,27 @@ fn table() -> Vec<Route> {
         r(Method::GET, "/setup", Public, true, get(pages::setup)),
         r(Method::GET, "/pair", Public, true, get(pages::pair)),
         r(
+            Method::GET,
+            "/pair/invite",
+            Public,
+            true,
+            get(pages::invite),
+        ),
+        r(
+            Method::POST,
+            "/auth/invite/start",
+            Public,
+            true,
+            post(ceremony::invite_start),
+        ),
+        r(
+            Method::POST,
+            "/auth/invite/finish",
+            Public,
+            true,
+            post(ceremony::invite_finish),
+        ),
+        r(
             Method::POST,
             "/auth/login/start",
             Public,
@@ -252,6 +273,13 @@ fn table() -> Vec<Route> {
             Session,
             true,
             post(pages::pair_deny),
+        ),
+        r(
+            Method::GET,
+            "/auth/verify",
+            Session,
+            true,
+            get(pages::verify),
         ),
         // Admin.
         r(Method::GET, "/", Session, false, get(pages::root)),

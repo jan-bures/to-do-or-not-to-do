@@ -371,6 +371,10 @@ impl Session {
         self.transport.base_url()
     }
 
+    pub fn pairing_transport(&self) -> (Runtime, HttpTransport) {
+        (self.rt.clone(), self.transport.clone())
+    }
+
     /// This pairing's data directory.
     pub fn data(&self) -> &DataDir {
         &self.data
