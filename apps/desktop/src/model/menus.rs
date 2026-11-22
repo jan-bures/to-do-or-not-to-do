@@ -15,7 +15,7 @@ use todo_core::model::Priority;
 use todo_core::query::fold;
 use todo_core::time::Date;
 
-use super::{RoomKey, commands, labels, lists};
+use super::{AgentKey, AgentRow, RoomKey, commands, labels, lists};
 use crate::theme::{Glyph, Hue, Icon, hues};
 
 /// What a list's, a collection's or the room's menu shows: its items, or in their place the delete
@@ -115,6 +115,10 @@ pub enum MenuAction {
     /// Takes one refused change off the "couldn't sync" list.
     DismissFailure(CommandId),
     DismissAllFailures,
+    /// Reads the newest changes again (the Activity room).
+    RefreshActivity,
+    /// Shows every change, or (`Some`) one agent's, in the Activity room.
+    FilterActivity(Option<AgentKey>),
 }
 
 impl MenuAction {
@@ -383,6 +387,7 @@ fn has_completed_section(room: RoomKey) -> bool {
     match room {
         RoomKey::Smart(s) => s.done_query().is_some(),
         RoomKey::List(_) | RoomKey::Collection(_) => true,
+        RoomKey::Activity(_) => false,
     }
 }
 
@@ -633,7 +638,9 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         match room {
             RoomKey::List(id) => id.into(),
             RoomKey::Collection(id) => id.into(),
-            RoomKey::Smart(_) => return completed_only(room, show_completed),
+            RoomKey::Smart(_) | RoomKey::Activity(_) => {
+                return completed_only(room, show_completed);
+            }
         },
     );
     match room {
@@ -691,6 +698,56 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
 }
 
 /// A smart list's room menu: the Completed toggle, where it has a Completed section.
+/// The Activity room's menu (the header's "more" button): Refresh activity, then whose changes it
+/// shows: every change, or one of the agents the sidebar lists, the current choice ticked.
+pub fn activity_menu(agents: &[AgentRow], current: Option<AgentKey>) -> Vec<MenuEntry> {
+    let mut entries = vec![
+        item(
+            "activity-refresh",
+            Icon::RefreshCw,
+            todo_client::activity::REFRESH,
+            MenuAction::RefreshActivity,
+        ),
+        MenuEntry::Separator,
+        with(
+            item(
+                "activity-all",
+                Icon::Clock,
+                "All changes",
+                MenuAction::FilterActivity(None),
+            ),
+            |i| MenuItem {
+                checked: current.is_none(),
+                ..i
+            },
+        ),
+    ];
+    // The agent the feed is filtered to stays offered even once the sidebar no longer lists it.
+    let mut keys: Vec<(AgentKey, SharedString, Option<Hue>)> = agents
+        .iter()
+        .map(|a| (a.key, a.name.clone(), Some(a.agent.hue())))
+        .collect();
+    if let Some(key) = current.filter(|k| !keys.iter().any(|(a, ..)| a == k)) {
+        keys.push((key, key.name().into(), None));
+    }
+    entries.extend(keys.into_iter().map(|(key, name, hue)| {
+        with(
+            item(
+                format!("activity-agent-{}", key.as_str()),
+                Icon::Sparkles,
+                format!("Only {name}"),
+                MenuAction::FilterActivity(Some(key)),
+            ),
+            |i| MenuItem {
+                dot: hue,
+                checked: current == Some(key),
+                ..i
+            },
+        )
+    }));
+    entries
+}
+
 fn completed_only(room: RoomKey, show_completed: bool) -> Vec<MenuEntry> {
     if has_completed_section(room) {
         vec![completed_item(show_completed)]

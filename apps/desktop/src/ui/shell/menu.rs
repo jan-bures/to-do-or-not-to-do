@@ -191,9 +191,7 @@ impl ShellView {
                 self.ui.collapsed_collections.contains(&id),
                 page,
             ),
-            MenuKind::Room { page } => {
-                menus::room_menu(&state, self.shell.room.key, self.ui.show_completed, page)
-            }
+            MenuKind::Room { page } => self.room_entries(&state, page),
             MenuKind::Tags {
                 task,
                 page: TagPage::Pick,
@@ -257,13 +255,17 @@ impl ShellView {
 
     /// Whether the room header shows its "more" button: only when its menu offers something.
     pub(super) fn has_room_menu(&self) -> bool {
-        !menus::room_menu(
-            &self.store.view(),
-            self.shell.room.key,
-            self.ui.show_completed,
-            Page::Main,
-        )
-        .is_empty()
+        !self.room_entries(&self.store.view(), Page::Main).is_empty()
+    }
+
+    /// The room's menu: Activity's (refresh, and whose changes it shows), or a task room's.
+    fn room_entries(&self, state: &todo_core::State, page: Page) -> Vec<MenuEntry> {
+        match self.shell.room.key {
+            crate::model::RoomKey::Activity(agent) if page == Page::Main => {
+                menus::activity_menu(&self.shell.sidebar.agents, agent)
+            }
+            room => menus::room_menu(state, room, self.ui.show_completed, page),
+        }
     }
 
     /// Opens a menu, or turns the open one into `kind` (its confirmation step) in place. The keyboard
@@ -795,6 +797,10 @@ impl ShellView {
                 self.refresh(cx);
             }
             MenuAction::DismissFailure(_) => self.refresh(cx),
+            MenuAction::RefreshActivity => self.refresh_activity(cx),
+            MenuAction::FilterActivity(agent) => {
+                self.select_room(crate::model::RoomKey::Activity(agent), cx);
+            }
             MenuAction::AskDeleteList(_)
             | MenuAction::AskDeleteCollection(_)
             | MenuAction::AskMoveList(_)

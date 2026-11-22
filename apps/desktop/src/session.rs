@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
+use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::platform::Request;
 use todo_client::protocol::error_detail;
@@ -350,6 +351,17 @@ impl Session {
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Reads a page of activity on the network runtime, with the same token and transport as sync.
+    /// It writes nothing, so signing out needn't wait for it.
+    pub fn activity(
+        &self,
+        query: ActivityQuery,
+    ) -> impl Future<Output = Result<ActivityPage, ActivityError>> + use<> {
+        let client = self.client.clone();
+        let read = spawn(&self.rt, async move { client.activity(&query).await });
+        async move { read.await.unwrap_or(Err(ActivityError::Unavailable)) }
     }
 
     pub fn server(&self) -> &str {

@@ -31,6 +31,8 @@ pub struct Fixture {
     pub moment: Option<Moment>,
     /// Changes the server refused ("couldn't sync").
     pub failed: Vec<todo_client::FailedEntry>,
+    /// The activity feed, newest first (the Activity room reads it a page at a time).
+    pub activity: Vec<todo_client::activity::ActivityItem>,
 }
 
 /// A moment part way through a transition, for the gallery's frozen frames. Times are milliseconds into
@@ -188,6 +190,18 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD + m::ROW_COLLAPSE / 2,
         )),
         "pairing" | "pairing-code" | "open-failed" | "open-failed-confirm" => Some(pairing()),
+        // Activity: the feed; one agent's changes; nothing yet; an undo waiting to be sent; and an
+        // undo the server refused, in plain words beside its change (`ShellView::preview_menu` asks
+        // for those two undos, as Enter on the selected change would).
+        "activity" | "activity-pending" | "activity-refused" | "activity-menu" => {
+            Some(activity(None))
+        }
+        "activity-agent" => Some(activity(Some("claude"))),
+        "activity-empty" => {
+            let mut f = activity(None);
+            f.activity.clear();
+            Some(f)
+        }
         // The completion choreography, frozen: the disc popping and the tick drawing, the hold, half way
         // through the collapse; the sun half way to the new count; a reopened task half way out of
         // Completed.
@@ -829,6 +843,7 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
         quick_add_text: None,
         moment: None,
         failed: Vec::new(),
+        activity: activity_items(),
     }
 }
 
@@ -1410,6 +1425,208 @@ pub fn finished_nothing_tomorrow() -> Fixture {
     f
 }
 
+/// The sample change whose undo the fixtures leave waiting to be sent.
+pub const PENDING_ACTIVITY_SEQ: u64 = 122;
+/// The sample change whose undo the fixtures refuse, as the server would after a later edit.
+pub const REFUSED_ACTIVITY_SEQ: u64 = 119;
+
+/// The Activity room, every change or (`agent`) one agent's, over the sample data.
+pub fn activity(agent: Option<&str>) -> Fixture {
+    let mut f = my_day();
+    let agent = agent
+        .and_then(|a| AgentId::new(a).ok())
+        .and_then(|a| crate::model::AgentKey::of(&a));
+    f.ui = UiState {
+        room: RoomKey::Activity(agent),
+        task: None,
+        ..f.ui
+    };
+    f
+}
+
+/// Invented changes to the sample data, newest first, as the server describes them: from the owner,
+/// the agents and email, over five days, more than a page of them. One was undone already.
+pub fn activity_items() -> Vec<todo_client::activity::ActivityItem> {
+    use todo_client::{activity::ActivityItem, protocol::LogEvent};
+    use todo_core::{Event, event::EventPayload, ids::EventId};
+
+    let you = owner();
+    let mail = Actor::EmailIngest;
+    let (claude, codex, pi) = (agent("claude"), agent("codex"), agent("pi"));
+    let changes: [(u64, &Actor, &str, &str); 24] = [
+        (
+            124,
+            &you,
+            "2026-11-21T10:31:00Z",
+            "Completed task \"Send the meeting notes\"",
+        ),
+        (
+            123,
+            &codex,
+            "2026-11-21T10:12:00Z",
+            "Created task \"Renew the domain\"",
+        ),
+        (
+            PENDING_ACTIVITY_SEQ,
+            &claude,
+            "2026-11-21T09:58:00Z",
+            "Updated task \"Venue booking for 4 Dec\" (due date)",
+        ),
+        (
+            121,
+            &mail,
+            "2026-11-21T09:40:00Z",
+            "Created task \"Pay the electricity bill\"",
+        ),
+        (
+            120,
+            &pi,
+            "2026-11-21T09:05:00Z",
+            "Added step \"Estimate effort per theme\"",
+        ),
+        (
+            REFUSED_ACTIVITY_SEQ,
+            &claude,
+            "2026-11-21T08:23:00Z",
+            "Updated task \"File the receipts\" (priority)",
+        ),
+        (
+            118,
+            &you,
+            "2026-11-21T08:02:00Z",
+            "Moved task \"Back up the photos\" to Errands",
+        ),
+        (
+            117,
+            &codex,
+            "2026-11-20T17:10:00Z",
+            "Created task \"Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení od lékaře\"",
+        ),
+        (
+            116,
+            &you,
+            "2026-11-20T16:45:00Z",
+            "Restored list \"Reading list\"",
+        ),
+        (
+            115,
+            &claude,
+            "2026-11-20T15:12:00Z",
+            "Updated list \"Home renovation\" (name)",
+        ),
+        (
+            114,
+            &codex,
+            "2026-11-20T14:00:00Z",
+            "Completed task \"Order new filters\"",
+        ),
+        (
+            113,
+            &pi,
+            "2026-11-20T11:20:00Z",
+            "Updated task \"Draft three themes for next quarter\" (tags)",
+        ),
+        (
+            112,
+            &mail,
+            "2026-11-19T18:30:00Z",
+            "Created task \"Call the dentist to reschedule the check-up and ask about the bill from March\"",
+        ),
+        (
+            111,
+            &you,
+            "2026-11-19T12:00:00Z",
+            "Deleted task \"Fix the squeaky door\"",
+        ),
+        (
+            110,
+            &claude,
+            "2026-11-19T09:30:00Z",
+            "Created task \"Plan the offsite agenda\"",
+        ),
+        (
+            109,
+            &codex,
+            "2026-11-18T16:00:00Z",
+            "Created task \"Update the team calendar\"",
+        ),
+        (
+            108,
+            &you,
+            "2026-11-18T13:15:00Z",
+            "Completed task \"Return the library books\"",
+        ),
+        (
+            107,
+            &pi,
+            "2026-11-18T10:40:00Z",
+            "Updated task \"Check the tyre pressure\" (due date)",
+        ),
+        (
+            106,
+            &claude,
+            "2026-11-17T17:05:00Z",
+            "Created task \"Clean out the inbox\"",
+        ),
+        (105, &you, "2026-11-17T15:30:00Z", "Created list \"Travel\""),
+        (
+            104,
+            &codex,
+            "2026-11-17T11:00:00Z",
+            "Completed task \"Collect shipped features from the changelog\"",
+        ),
+        (
+            103,
+            &mail,
+            "2026-11-17T09:20:00Z",
+            "Created task \"Venue booking for 4 Dec\"",
+        ),
+        (
+            102,
+            &you,
+            "2026-11-16T19:00:00Z",
+            "Updated task \"Pull the actuals\" (notes)",
+        ),
+        (
+            101,
+            &pi,
+            "2026-11-16T10:10:00Z",
+            "Created task \"Order printer toner\"",
+        ),
+    ];
+    changes
+        .into_iter()
+        .map(|(seq, actor, at, summary)| {
+            let command_id = uuid_v7(1_795_100_000_000 + seq, [0xac; 10]);
+            let id = EventId::from_uuid(command_id);
+            let undone = seq == 117;
+            ActivityItem {
+                event: LogEvent {
+                    event: Event {
+                        id,
+                        seq: Some(seq),
+                        group: id,
+                        actor: actor.clone(),
+                        at: ts(at),
+                        undoes: None,
+                        forced: false,
+                        payload: EventPayload::Updated {
+                            target: TaskId::from_uuid(command_id).into(),
+                            changes: Vec::new(),
+                        },
+                    },
+                    command_id,
+                    command_idx: 0,
+                    command_len: Some(1),
+                },
+                summary: summary.to_owned(),
+                undone,
+                can_undo: !undone,
+            }
+        })
+        .collect()
+}
+
 /// Before pairing: the sample data isn't shown; the pairing view draws its own screen.
 pub fn pairing() -> Fixture {
     Fixture {
@@ -1420,6 +1637,7 @@ pub fn pairing() -> Fixture {
         quick_add_text: None,
         moment: None,
         failed: Vec::new(),
+        activity: activity_items(),
     }
 }
 

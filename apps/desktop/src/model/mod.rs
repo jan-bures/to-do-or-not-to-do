@@ -7,6 +7,7 @@
 //!
 //! Nothing here touches GPUI windows, the network or the disk, so it is all unit-tested.
 
+pub mod activity;
 mod derive;
 pub mod draft;
 pub mod files;
@@ -29,6 +30,7 @@ use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TagId, 
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
+pub use activity::AgentKey;
 pub use derive::{derive, my_day_progress};
 
 use crate::theme::{Agent, Glyph, Hue, Icon, hues};
@@ -171,9 +173,16 @@ pub enum RoomKey {
     Smart(Smart),
     Collection(CollectionId),
     List(ListId),
+    /// Every confirmed change, or one agent's (`model::activity`).
+    Activity(Option<AgentKey>),
 }
 
 impl RoomKey {
+    /// The Activity room, filtered or not.
+    pub fn is_activity(self) -> bool {
+        matches!(self, Self::Activity(_))
+    }
+
     /// A deleted room takes the owner back to My Day.
     pub fn resolved(self, state: &State) -> Self {
         match self {
@@ -190,7 +199,8 @@ impl From<RoomKey> for commands::TaskRoom {
             RoomKey::Smart(Smart::MyDay) => Self::MyDay,
             RoomKey::Smart(Smart::Important) => Self::Important,
             RoomKey::Smart(Smart::Planned) => Self::Planned,
-            RoomKey::Smart(Smart::All | Smart::Completed | Smart::AgentActivity) => Self::Other,
+            RoomKey::Smart(Smart::All | Smart::Completed | Smart::AgentActivity)
+            | RoomKey::Activity(_) => Self::Other,
             RoomKey::Collection(id) => Self::Collection(id),
             RoomKey::List(id) => Self::List(id),
         }
@@ -224,6 +234,7 @@ mod task_room_tests {
                 TaskRoom::Collection(collection),
             ),
             (RoomKey::List(list), TaskRoom::List(list)),
+            (RoomKey::Activity(None), TaskRoom::Other),
         ] {
             assert_eq!(TaskRoom::from(room), expected, "{room:?}");
         }
@@ -432,6 +443,12 @@ impl Room {
         self.finishes_day && self.total > 0 && self.done >= self.total
     }
 
+    /// The room leaves the detail column out while no task is open: the finished day, and Activity,
+    /// which never opens a task.
+    pub fn leaves_detail_out(&self) -> bool {
+        self.finished_day() || self.key.is_activity()
+    }
+
     /// What the finished day shows instead of rows: tomorrow's hand-over, unless the Completed section is
     /// open (then its rows show) or there is nothing to hand over.
     pub fn handover(&self) -> Option<&Tomorrow> {
@@ -527,6 +544,8 @@ pub struct CollectionNav {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
+    /// Its ID: clicking the row opens Activity filtered to it.
+    pub key: AgentKey,
     pub agent: Agent,
     pub name: SharedString,
     pub status: SharedString,

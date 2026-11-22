@@ -6,80 +6,50 @@ use jiff::civil::Date;
 use leptos::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
-use todo_client::activity::{self, ActivityError, ActivityItem, ActivityQuery};
+use todo_client::Epoch;
+use todo_client::activity::{
+    self, ActivityQuery, Entry, Feed as Pages, Loaded, UndoAction, UndoOutcome,
+};
 use todo_client::protocol::EventRef;
-use todo_client::{CommandId, Epoch};
 use todo_core::actor::{Actor, AgentId};
 use todo_core::ids::EventId;
-use todo_core::time::Timestamp;
 use todo_design::Icon;
 
 const PAGE_SIZE: usize = 20;
 type Revision = Option<(Option<Epoch>, u64)>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Outcome {
-    Pending(CommandId),
-    FixtureDone,
-    Refused(&'static str),
-}
-
+/// The undos asked for from the feed (`activity::Undos`), and what was last said about them.
 #[derive(Clone, Copy)]
 pub(super) struct Undos {
-    outcomes: RwSignal<BTreeMap<EventId, (EventId, Outcome)>>,
+    outcomes: RwSignal<activity::Undos>,
     announcement: RwSignal<Option<&'static str>>,
 }
 
 impl Undos {
     pub(super) fn new() -> Self {
         Self {
-            outcomes: RwSignal::new(BTreeMap::new()),
+            outcomes: RwSignal::new(activity::Undos::default()),
             announcement: RwSignal::new(None),
         }
     }
 
     pub(super) fn settle(self) {
-        let settled: Vec<_> = self.outcomes.with_untracked(|undos| {
-            undos
-                .iter()
-                .filter_map(|(&id, &(_, outcome))| {
-                    let Outcome::Pending(command) = outcome else {
-                        return None;
-                    };
-                    backend::undo_result(command).map(|result| (id, result.err()))
-                })
-                .collect()
-        });
-        if !settled.is_empty() {
-            self.outcomes.update(|undos| {
-                for (id, refusal) in settled {
-                    self.announcement
-                        .set(Some(refusal.unwrap_or("Change undone.")));
-                    if let Some(message) = refusal {
-                        if let Some(entry) = undos.get_mut(&id) {
-                            entry.1 = Outcome::Refused(message);
-                        }
-                    } else {
-                        // A successful live undo is now in the confirmed journal. Don't keep a
-                        // `Done` override: a later undo of the compensation may redo the change.
-                        undos.remove(&id);
-                    }
-                }
-            });
+        if !self.outcomes.with_untracked(activity::Undos::any_pending) {
+            return;
+        }
+        let mut undos = self.outcomes.get_untracked();
+        if let Some(said) = undos.settle(backend::undo_result) {
+            self.outcomes.set(undos);
+            self.announcement.set(Some(said));
         }
     }
 
-    fn outcome(self, id: EventId) -> Option<Outcome> {
-        self.outcomes
-            .with(|undos| undos.get(&id).map(|entry| entry.1))
+    fn refusal(self, id: EventId) -> Option<&'static str> {
+        self.outcomes.with(|undos| undos.refusal(id))
     }
 
-    fn group_outcome(self, group: EventId) -> Option<Outcome> {
-        self.outcomes.with(|undos| {
-            undos.values().find_map(|&(g, outcome)| {
-                (group == g && !matches!(outcome, Outcome::Refused(_))).then_some(outcome)
-            })
-        })
+    fn group_outcome(self, group: EventId) -> Option<UndoOutcome> {
+        self.outcomes.with(|undos| undos.group_outcome(group))
     }
 
     fn run(self, c: Ctx, target: EventRef, group: EventId) {
@@ -87,96 +57,29 @@ impl Undos {
             return;
         }
         let outcome = match backend::undo_activity(target) {
-            Ok(Some(command)) => Outcome::Pending(command),
-            Ok(None) => Outcome::FixtureDone,
-            Err(message) => Outcome::Refused(message),
+            Ok(Some(command)) => UndoOutcome::Pending(command),
+            Ok(None) => UndoOutcome::Done,
+            Err(message) => UndoOutcome::Refused(message),
         };
-        self.outcomes.update(|undos| {
-            undos.insert(target.id, (group, outcome));
-        });
-        self.announcement.set(Some(match outcome {
-            Outcome::Pending(_) => "Undoing…",
-            Outcome::FixtureDone => "Change undone.",
-            Outcome::Refused(message) => message,
-        }));
+        let said = self
+            .outcomes
+            .try_update(|undos| undos.record(target.id, group, outcome));
+        self.announcement.set(said);
         c.refresh();
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Entry {
-    target: EventRef,
-    group: EventId,
-    actor: Actor,
-    at: Timestamp,
-    what: String,
-    compensating: bool,
-    undone: bool,
-    can_undo: bool,
-}
-
-impl Entry {
-    fn from_item(item: ActivityItem) -> Option<Self> {
-        let target = item.event_ref()?;
-        let what = item.what_happened().to_owned();
-        let event = item.event.event;
-        Some(Self {
-            target,
-            group: event.group,
-            actor: event.actor,
-            at: event.at,
-            what,
-            compensating: event.undoes.is_some(),
-            undone: item.undone,
-            can_undo: item.can_undo,
-        })
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Load {
-    Latest,
-    Older,
-}
-
-enum AfterLoad {
-    Ignore,
-    Applied,
-    Refresh,
-    SignIn,
-}
-
+/// The pages read so far (shared with every client), and the replica's position when the newest
+/// page was read, for the refresh button's dot.
 #[derive(Default)]
-struct Pages {
-    entries: BTreeMap<Reverse<u64>, Entry>,
-    next: Option<u64>,
-    pending: Option<Load>,
-    refresh_queued: bool,
-    error: Option<(Option<u64>, ActivityError)>,
-    reading: bool,
+struct Feed {
+    pages: Pages,
     revision: Revision,
-    request: u64,
 }
 
-fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u64>) {
+fn load(c: Ctx, feed: RwSignal<Feed>, agent: Option<AgentId>, before: Option<u64>) {
     let revision = c.activity_revision.get_untracked();
-    let kind = if before.is_none() {
-        Load::Latest
-    } else {
-        Load::Older
-    };
-    let Some(Some(request)) = pages.try_update(|state| {
-        if let Some(pending) = state.pending {
-            if kind == Load::Latest && pending == Load::Older {
-                state.refresh_queued = true;
-            }
-            return None;
-        }
-        state.pending = Some(kind);
-        state.error = None;
-        state.request += 1;
-        Some(state.request)
-    }) else {
+    let Some(Some(request)) = feed.try_update(|state| state.pages.begin(before)) else {
         return;
     };
     c.activity_undos.announcement.set(None);
@@ -187,54 +90,34 @@ fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u
             agent: agent.clone(),
         })
         .await;
-        let focused_row = if kind == Load::Latest && result.is_ok() {
+        let fresh = before.is_none() && result.is_ok();
+        let focused_row = if fresh {
             document()
                 .active_element()
                 .and_then(|el| el.closest(".activity-row").ok().flatten())
         } else {
             None
         };
-        let next = pages.try_update(|state| {
-            if state.request != request {
-                return AfterLoad::Ignore;
+        let next = feed.try_update(|state| {
+            let loaded = state.pages.finish(request, before, result);
+            if loaded == Loaded::Applied && fresh {
+                state.revision = revision;
             }
-            state.pending = None;
-            let refresh = std::mem::take(&mut state.refresh_queued);
-            match result {
-                Err(ActivityError::Unauthorized) => return AfterLoad::SignIn,
-                // The refresh replaces all pages. Don't append the stale page just to discard it.
-                _ if refresh => return AfterLoad::Refresh,
-                Ok(page) => {
-                    if before.is_none() {
-                        state.entries.clear();
-                        state.revision = revision;
-                    }
-                    state.reading = true;
-                    // A cursor must advance even on a page with no entries visible to the caller.
-                    state.next = page
-                        .next_before
-                        .filter(|next| before.is_none_or(|n| *next < n));
-                    for entry in page.items.into_iter().filter_map(Entry::from_item) {
-                        state.entries.insert(Reverse(entry.target.seq), entry);
-                    }
-                }
-                Err(error) => state.error = Some((before, error)),
-            }
-            AfterLoad::Applied
+            loaded
         });
         match next {
-            Some(AfterLoad::Refresh) => load(c, pages, agent, None),
-            Some(AfterLoad::SignIn) => platform::sign_in(&platform::path()),
-            Some(AfterLoad::Applied) => {
+            Some(Loaded::Refresh) => load(c, feed, agent, None),
+            Some(Loaded::SignIn) => platform::sign_in(&platform::path()),
+            Some(Loaded::Applied) => {
                 if let Some(row) = focused_row {
                     request_animation_frame(move || {
-                        if !row.is_connected() && pages.try_with_untracked(|_| ()).is_some() {
+                        if !row.is_connected() && feed.try_with_untracked(|_| ()).is_some() {
                             platform::refocus_row("room-title");
                         }
                     });
                 }
             }
-            Some(AfterLoad::Ignore) | None => {}
+            Some(Loaded::Ignore) | None => {}
         }
     });
 }
@@ -242,21 +125,19 @@ fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u
 #[component]
 pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> impl IntoView {
     let c = ctx();
-    let pages = RwSignal::new(Pages::default());
+    let feed = RwSignal::new(Feed::default());
     let announcement = c.activity_undos.announcement;
     let request = Callback::new({
         let agent = agent.clone();
-        move |before| load(c, pages, agent.clone(), before)
+        move |before| load(c, feed, agent.clone(), before)
     });
     // Changing the agent remounts the feed. A replaced log must not continue with an old cursor.
     Effect::new(move |prev: Option<Option<Epoch>>| {
         let epoch = c.activity_revision.get().and_then(|(epoch, _)| epoch);
         if prev.is_none() || prev.flatten().is_some_and(|old| Some(old) != epoch) {
-            pages.update(|state| {
-                *state = Pages {
-                    request: state.request,
-                    ..Pages::default()
-                }
+            feed.update(|state| {
+                state.pages.reset();
+                state.revision = None;
             });
             request.run(None);
         }
@@ -265,8 +146,7 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
     Effect::new(move |last: Option<u64>| {
         let bottom = reached_bottom.get();
         if last.is_some_and(|before| before != bottom)
-            && let Some(next) =
-                pages.with_untracked(|p| p.error.is_none().then_some(p.next).flatten())
+            && let Some(next) = feed.with_untracked(|f| f.pages.older())
         {
             request.run(Some(next));
         }
@@ -275,37 +155,40 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
     // Dates group all entries on the same local calendar day, even across page boundaries.
     let days = Memo::new(move |_| {
         let offset = c.now.with(|n| n.offset_s);
-        pages.with(|state| {
-            let mut days: BTreeMap<Reverse<Date>, Vec<(u64, EventId)>> = BTreeMap::new();
-            for entry in state.entries.values() {
-                let day = model::local(entry.at, offset).date();
-                days.entry(Reverse(day))
-                    .or_default()
-                    .push((entry.target.seq, entry.target.id));
-            }
-            days
+        feed.with(|state| {
+            let pages = &state.pages;
+            pages
+                .days(|at| model::local(at, offset).date())
+                .into_iter()
+                .map(|(day, seqs)| {
+                    let rows = seqs
+                        .into_iter()
+                        .filter_map(|seq| Some((seq, pages.entry(seq)?.target.id)))
+                        .collect();
+                    (Reverse(day), rows)
+                })
+                .collect::<BTreeMap<Reverse<Date>, Vec<(u64, EventId)>>>()
         })
     });
-    let has_older = move || pages.with(|p| p.next.is_some() && p.error.is_none());
-    let pending = move || pages.with(|p| p.pending.is_some());
-    let refresh_pending =
-        move || pages.with(|p| p.pending == Some(Load::Latest) || p.refresh_queued);
+    let has_older = move || feed.with(|f| f.pages.older().is_some());
+    let pending = move || feed.with(|f| f.pages.pending().is_some());
+    let refresh_pending = move || feed.with(|f| f.pages.refreshing());
     let has_updates = move || {
         let revision = c.activity_revision.get();
-        pages.with(|p| p.reading && p.revision != revision)
+        feed.with(|f| f.pages.loaded() && f.revision != revision)
     };
     view! {
         <div class="activity-body">
             <div class="activity-toolbar">
-                <span class="caps">"Newest first"</span>
+                <span class="caps">{activity::NEWEST_FIRST}</span>
                 <div class="activity-actions">
                     {agent.is_some().then(|| view! {
                         <a class="button activity-button" href=RoomId::Activity(None).path()
-                            on:click=link_room(c, RoomId::Activity(None))>"Clear filter"</a>
+                            on:click=link_room(c, RoomId::Activity(None))>{activity::CLEAR_FILTER}</a>
                     })}
                     <button class="button activity-button" type="button" aria-disabled=move || refresh_pending().to_string()
                         on:click=move |_| request.run(None)>
-                        "Refresh activity"
+                        {activity::REFRESH}
                         <span aria-hidden="true">{move || has_updates().then_some(" •")}</span>
                     </button>
                 </div>
@@ -315,36 +198,32 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                     view! {
                         <section class="activity-day" aria-labelledby=format!("activity-day-{}", day.0)>
                             <h2 class="caps" id=format!("activity-day-{}", day.0)>{move || {
-                                let today = c.now.with(model::Now::today);
-                                if day.0 == today { "Today".to_owned() }
-                                else if Some(day.0) == today.yesterday().ok() { "Yesterday".to_owned() }
-                                else { model::short_date(day.0, today) }
+                                activity::day_label(day.0, c.now.with(model::Now::today))
                             }}</h2>
                             <ol>
                                 <For each=move || days.with(|groups| groups.get(&day).cloned().unwrap_or_default())
                                     key=|key| *key children=move |(seq, id)| {
-                                        let entry = Memo::new(move |_| pages.with(|p| p.entries.get(&Reverse(seq)).cloned()));
+                                        let entry = Memo::new(move |_| feed.with(|f| f.pages.entry(seq).cloned()));
                                         view! { <ActivityRow id=id entry=entry/> }
                                     }/>
                             </ol>
                         </section>
                     }
                 }/>
-            <Show when=move || pages.with(|p| p.reading && p.entries.is_empty() && p.next.is_none() && p.error.is_none())>
-                <p class="empty-line">{if agent.is_some() { "No activity from this agent." } else { "No activity yet." }}</p>
+            <Show when=move || feed.with(|f| f.pages.is_empty_feed())>
+                <p class="empty-line">{activity::empty_line(agent.is_some())}</p>
             </Show>
             <div class="activity-page-controls">
-                <p class="activity-progress" aria-hidden="true">{move || pending().then_some("Loading activity…")}</p>
+                <p class="activity-progress" aria-hidden="true">{move || pending().then_some(activity::LOADING)}</p>
                 <span class="activity-announcement" role="status">{move || {
-                    announcement.get().or_else(|| pending().then_some("Loading activity…"))
+                    announcement.get().or_else(|| pending().then_some(activity::LOADING))
                 }}</span>
-                {move || pages.with(|p| p.error).map(|(before, error)| {
-                    let next = match error { ActivityError::TooLarge { next_before } => Some(next_before), _ => before };
+                {move || feed.with(|f| f.pages.error().zip(f.pages.retry())).map(|(error, next)| {
                     view! {
                         <div class="activity-page-error">
                             <p role="alert">{error.to_string()}</p>
                             <button class="button activity-button" type="button" on:click=move |_| request.run(next)>
-                                {if matches!(error, ActivityError::TooLarge { .. }) { "Skip this change" } else { "Try again" }}
+                                {activity::retry_label(error)}
                             </button>
                         </div>
                     }
@@ -352,30 +231,11 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                 <Show when=has_older>
                     <button class="button activity-button" type="button" aria-disabled=move || pending().to_string()
                         on:click=move |_| {
-                            if let Some(next) = pages.with_untracked(|p| p.next) { request.run(Some(next)); }
-                        }>"Load older activity"</button>
+                            if let Some(next) = feed.with_untracked(|f| f.pages.older()) { request.run(Some(next)); }
+                        }>{activity::LOAD_OLDER}</button>
                 </Show>
             </div>
         </div>
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Action {
-    Undo,
-    Undoing,
-    Undone,
-    Unavailable,
-}
-
-impl Action {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Undo => "Undo",
-            Self::Undoing => "Undoing",
-            Self::Undone => "Undone",
-            Self::Unavailable => "Undo unavailable",
-        }
     }
 }
 
@@ -388,25 +248,15 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
         c.sync.track();
         entry.with(|item| {
             let Some(row) = item.as_ref() else {
-                return Action::Unavailable;
+                return UndoAction::Unavailable;
             };
-            let group = undos.group_outcome(row.group);
             let flags = backend::activity_flags(id, row.compensating);
-            // The feed can be ahead of the replica. Once either knows the link is no longer a
-            // head, it cannot be undone again (a redo creates a new link).
-            let (undone, can_undo) = match flags.confirmed {
-                Some((undone, false)) => (undone, false),
-                _ => (row.undone, row.can_undo),
-            };
-            if group == Some(Outcome::FixtureDone) || undone {
-                Action::Undone
-            } else if !can_undo {
-                Action::Unavailable
-            } else if flags.pending || matches!(group, Some(Outcome::Pending(_))) {
-                Action::Undoing
-            } else {
-                Action::Undo
-            }
+            activity::undo_action(
+                row,
+                flags.confirmed,
+                flags.pending,
+                undos.group_outcome(row.group),
+            )
         })
     });
     view! {
@@ -432,13 +282,10 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
                     </time>
                 </div>
-                <div class="activity-refusal">{move || match undos.outcome(id) {
-                    Some(Outcome::Refused(message)) => Some(message),
-                    _ => None,
-                }}</div>
+                <div class="activity-refusal">{move || undos.refusal(id)}</div>
             </div>
             <div class="activity-row-action">
-                <Show when=move || matches!(action.get(), Action::Undo | Action::Undoing)
+                <Show when=move || action.get().is_button()
                     fallback=move || view! {
                         <span class="activity-undone">{move || action.get().label()}</span>
                     }>
@@ -446,9 +293,9 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                         aria-label=move || entry.with(|item| item.as_ref().map(|row| {
                             format!("{}: {}", action.get().label(), row.what)
                         }))
-                        aria-disabled=move || (action.get() != Action::Undo || c.read_only()).to_string()
+                        aria-disabled=move || (action.get() != UndoAction::Undo || c.read_only()).to_string()
                         on:click=move |_| {
-                            if !c.read_only() && action.get_untracked() == Action::Undo
+                            if !c.read_only() && action.get_untracked() == UndoAction::Undo
                                 && let Some(row) = entry.get_untracked()
                             {
                                 undos.run(c, row.target, row.group);

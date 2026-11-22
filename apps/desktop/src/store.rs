@@ -5,8 +5,13 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use todo_client::outbox::{FailedEntry, Rejection};
-use todo_client::{CommandId, Connection, ErrorKind, TrackedCommand, TrackedUndo};
+use todo_client::activity::{
+    ActivityError, ActivityItem, ActivityPage, ActivityQuery, Entry, UndoOutcome,
+};
+use todo_client::failure::undo_message;
+use todo_client::outbox::FailedEntry;
+use todo_client::protocol::EventRef;
+use todo_client::{CommandId, Connection, Epoch, ErrorKind, TrackedCommand, TrackedUndo};
 use todo_core::event::Event;
 use todo_core::time::Timestamp;
 use todo_core::undo::undo_batch;
@@ -25,6 +30,8 @@ pub struct LocalStore {
     sync: SyncInfo,
     /// The fixture's "couldn't sync" list, which Dismiss empties.
     failed: RefCell<Vec<FailedEntry>>,
+    /// The fixture's activity feed, newest first, which Undo marks undone.
+    activity: RefCell<Vec<ActivityItem>>,
     next: Cell<u64>,
     /// Tests: refuse every submit, as a cache that can't be written would.
     #[cfg(test)]
@@ -83,6 +90,7 @@ impl Store {
             now: f.now.clone(),
             sync: f.sync.clone(),
             failed: RefCell::new(f.failed.clone()),
+            activity: RefCell::new(f.activity.clone()),
             next: Cell::new(0),
             #[cfg(test)]
             refuse: Cell::new(false),
@@ -161,17 +169,94 @@ impl Store {
 
     /// None while the compensation is pending, otherwise its outcome.
     pub fn undo_result(&self, id: CommandId) -> Option<Result<(), String>> {
-        let client = self.session()?.client();
-        if client.pending().iter().any(|entry| entry.command_id == id) {
+        self.undo_settled(id).map(|r| r.map_err(String::from))
+    }
+
+    /// What became of a queued undo, in the shared plain words (`SyncClient::undo_result`). A
+    /// fixture's never settles.
+    pub fn undo_settled(&self, id: CommandId) -> Option<Result<(), &'static str>> {
+        self.session()?.client().undo_result(id)
+    }
+
+    /// A page of a fixture's activity, read at once; `None` for a live session, which reads it from
+    /// the server (`Session::activity`).
+    pub fn local_activity(
+        &self,
+        query: &ActivityQuery,
+    ) -> Option<Result<ActivityPage, ActivityError>> {
+        let Self::Local(s) = self else {
             return None;
+        };
+        let items = s.activity.borrow();
+        let limit = query.limit.unwrap_or(50).clamp(1, 200);
+        let mut matches = items.iter().filter(|item| {
+            let event = &item.event.event;
+            query
+                .before
+                .is_none_or(|before| event.seq.is_some_and(|n| n < before))
+                && (query.agent.as_ref()).is_none_or(|agent| event.actor.agent_id() == Some(agent))
+        });
+        let page: Vec<ActivityItem> = matches.by_ref().take(limit).cloned().collect();
+        let next_before = matches.next().and_then(|_| page.last()?.event.event.seq);
+        Some(Ok(ActivityPage {
+            items: page,
+            next_before,
+        }))
+    }
+
+    /// Asks to undo a change from the feed: queued for the server (live), or at once (a fixture's,
+    /// where two of the sample changes stay pending and refused, for the gallery).
+    pub fn undo_activity(&self, event: EventRef) -> UndoOutcome {
+        match self {
+            Self::Live(s) => match s.session.client().undo_activity(event) {
+                Ok(command) => UndoOutcome::Pending(command),
+                Err(error) => {
+                    tracing::debug!(%error, "couldn't queue an activity undo");
+                    UndoOutcome::Refused(undo_message(""))
+                }
+            },
+            Self::Local(s) => {
+                let mut items = s.activity.borrow_mut();
+                let Some(item) = items.iter_mut().find(|i| i.event_ref() == Some(event)) else {
+                    return UndoOutcome::Refused(undo_message("event_not_found"));
+                };
+                if !item.can_undo {
+                    return UndoOutcome::Refused(undo_message("already_undone"));
+                }
+                match event.seq {
+                    crate::fixtures::REFUSED_ACTIVITY_SEQ => {
+                        UndoOutcome::Refused(undo_message("undo_conflict"))
+                    }
+                    crate::fixtures::PENDING_ACTIVITY_SEQ => {
+                        UndoOutcome::Pending(uuid::Uuid::from_u128(u128::from(event.seq)))
+                    }
+                    _ => {
+                        item.can_undo = false;
+                        item.undone = true;
+                        UndoOutcome::Done
+                    }
+                }
+            }
         }
-        Some(
-            client
-                .failed()
-                .iter()
-                .find(|entry| entry.entry.command_id == id)
-                .map_or(Ok(()), |err| Err(undo_failure_message(&err.rejection))),
+    }
+
+    /// The replica's view of a feed entry: its confirmed journal flags, and whether the outbox holds
+    /// an undo of it. A fixture has neither; its undos are the window's own.
+    pub fn activity_flags(&self, entry: &Entry) -> (Option<(bool, bool)>, bool) {
+        let Some(session) = self.session() else {
+            return (None, false);
+        };
+        let client = session.client();
+        (
+            client.activity_confirmed(entry.target.id, entry.compensating),
+            client.pending_undo(entry.target.id).is_some(),
         )
+    }
+
+    /// The confirmed position (not the optimistic view): when it moves on, the feed has news.
+    pub fn activity_revision(&self) -> Option<(Option<Epoch>, u64)> {
+        let client = self.session()?.client();
+        Some((client.epoch(), client.cursor()))
     }
 
     /// The changes the server refused ("couldn't sync"), oldest first.
@@ -290,10 +375,6 @@ impl Store {
     }
 }
 
-fn undo_failure_message(rejection: &Rejection) -> String {
-    todo_client::failure::undo_message(&rejection.code).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,15 +391,65 @@ mod tests {
             "not_found",
             "something_new",
         ] {
-            let rejection = Rejection {
-                code: code.into(),
-                message: "resync from seq 0".into(),
-                status: 409,
-            };
-            let message = undo_failure_message(&rejection);
+            let message = undo_message(code);
             assert!(message.starts_with("Couldn't undo"), "{code}: {message}");
             assert!(!message.contains("seq"), "{code}: {message}");
         }
+    }
+
+    #[test]
+    fn a_fixtures_activity_pages_filters_and_undoes() {
+        use todo_core::actor::AgentId;
+        let f = crate::fixtures::activity(None);
+        let store = Store::fixture(&f);
+        let page = |before, agent: Option<&str>| {
+            store
+                .local_activity(&ActivityQuery {
+                    before,
+                    limit: Some(5),
+                    agent: agent.and_then(|a| AgentId::new(a).ok()),
+                })
+                .expect("a fixture reads at once")
+                .expect("a page")
+        };
+        let first = page(None, None);
+        assert_eq!(first.items.len(), 5);
+        let next = first.next_before.expect("more");
+        let second = page(Some(next), None);
+        assert!(second.items.iter().all(|i| i.event.event.seq < Some(next)));
+        let claude = page(None, Some("claude"));
+        assert!(!claude.items.is_empty());
+        assert!(
+            claude
+                .items
+                .iter()
+                .all(|i| i.event.event.actor.agent_id().map(AgentId::as_str) == Some("claude"))
+        );
+        let event = |seq| {
+            f.activity
+                .iter()
+                .find_map(|i| i.event_ref().filter(|e| e.seq == seq))
+                .expect("the sample change")
+        };
+        let plain = first.items[0].event_ref().expect("an event");
+        assert_eq!(store.undo_activity(plain), UndoOutcome::Done);
+        assert_eq!(
+            store.undo_activity(plain),
+            UndoOutcome::Refused(undo_message("already_undone"))
+        );
+        assert!(page(None, None).items[0].undone);
+        assert_eq!(
+            store.undo_activity(event(crate::fixtures::REFUSED_ACTIVITY_SEQ)),
+            UndoOutcome::Refused(undo_message("undo_conflict"))
+        );
+        assert!(matches!(
+            store.undo_activity(event(crate::fixtures::PENDING_ACTIVITY_SEQ)),
+            UndoOutcome::Pending(_)
+        ));
+        let entry = Entry::from_item(first.items[1].clone()).expect("an entry");
+        assert_eq!(store.activity_flags(&entry), (None, false));
+        assert_eq!(store.activity_revision(), None);
+        assert_eq!(store.undo_settled(uuid::Uuid::nil()), None);
     }
 
     #[test]

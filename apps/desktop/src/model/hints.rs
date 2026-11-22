@@ -28,6 +28,9 @@ pub enum Focus {
     /// A button that opens a menu (the room's "more", the sync line's "couldn't sync", the account
     /// gear), reached with Tab.
     Control,
+    /// A button that acts at once (the Activity room's Refresh, Clear filter and Load older), reached
+    /// with Tab.
+    Button,
     /// Nothing that takes keys: only the window's Ctrl shortcuts work.
     Elsewhere,
 }
@@ -37,7 +40,12 @@ impl Focus {
     /// menu, a menu's button, or nowhere in particular. A text field keeps Ctrl+Z for its own text.
     pub fn allows_task_undo(self) -> bool {
         match self {
-            Self::List | Self::Splitter | Self::Menu | Self::Control | Self::Elsewhere => true,
+            Self::List
+            | Self::Splitter
+            | Self::Menu
+            | Self::Control
+            | Self::Button
+            | Self::Elsewhere => true,
             Self::QuickAdd
             | Self::Filter
             | Self::Title
@@ -61,6 +69,13 @@ pub enum Stop {
     Undo,
     /// The room header's "more" button, in rooms that have a menu.
     RoomMenu,
+    /// The Activity room's Clear filter, while the feed shows one agent's changes.
+    ActivityFilter,
+    /// The Activity room's Refresh activity.
+    ActivityRefresh,
+    /// The button at the end of the Activity feed: Load older activity, or after a failed read, Try
+    /// again (or Skip this change).
+    ActivityMore,
     /// The divider between the list and the docked detail pane, while it shows.
     DetailSplitter,
     /// Repeat, when a task is open.
@@ -79,11 +94,14 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 10] = [
+pub const TAB_ORDER: [Stop; 13] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
     Stop::RoomMenu,
+    Stop::ActivityFilter,
+    Stop::ActivityRefresh,
+    Stop::ActivityMore,
     Stop::DetailSplitter,
     Stop::Repeat,
     Stop::NewList,
@@ -133,6 +151,19 @@ pub struct HintState {
     pub reorder: bool,
     /// A task change can still be undone, even if its toast has expired.
     pub undo: bool,
+    /// The room is Activity: the list's keys walk and undo changes instead of tasks.
+    pub activity: Option<ActivityHints>,
+}
+
+/// What the list's keys can do in the Activity room.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActivityHints {
+    /// There are changes to move through.
+    pub rows: bool,
+    /// A change is selected.
+    pub selected: bool,
+    /// The selected change can be undone.
+    pub undo: bool,
 }
 
 /// The selected task, as far as the hints care.
@@ -153,6 +184,19 @@ pub type Hint = (&'static str, &'static str);
 pub fn key_hints(s: HintState) -> Vec<Hint> {
     let mut hints = Vec::new();
     match s.focus {
+        Focus::List if s.activity.is_some() => {
+            let a = s.activity.unwrap_or_default();
+            if a.rows {
+                hints.push(("↑↓", "move"));
+            }
+            if a.undo {
+                hints.push(("Enter", "undo"));
+            }
+            hints.push(("R", "refresh"));
+            if a.selected {
+                hints.push(("Esc", "clear"));
+            }
+        }
         Focus::List => {
             if s.rows {
                 hints.push(("J K", "move"));
@@ -193,6 +237,11 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
         Focus::Menu => hints.extend([("↑↓", "choose"), ("Enter", "select"), ("Esc", "close")]),
         Focus::Control => hints.extend([
             ("Enter", "open"),
+            ("Tab", "next"),
+            ("Esc", "back to the list"),
+        ]),
+        Focus::Button => hints.extend([
+            ("Enter", "press"),
             ("Tab", "next"),
             ("Esc", "back to the list"),
         ]),
@@ -290,6 +339,7 @@ mod tests {
             selected: selected.then_some(Selected { done: false }),
             reorder,
             undo: false,
+            activity: None,
         }
     }
 
@@ -344,6 +394,7 @@ mod tests {
                 selected: Some(Selected { done: false }),
                 reorder: true,
                 undo: true,
+                activity: None,
             });
             assert_eq!(k, ["Enter", "Esc"], "{focus:?}");
         }
@@ -357,6 +408,7 @@ mod tests {
             selected: Some(Selected { done: false }),
             reorder: true,
             undo: false,
+            activity: None,
         });
         assert_eq!(k, ["Ctrl K"]);
     }
@@ -376,6 +428,7 @@ mod tests {
             selected: Some(Selected { done: false }),
             reorder: true,
             undo: false,
+            activity: None,
         };
         assert_eq!(keys(state(Focus::Menu)), ["↑↓", "Enter", "Esc"]);
         assert_eq!(keys(state(Focus::Control)), ["Enter", "Tab", "Esc"]);
@@ -397,6 +450,7 @@ mod tests {
                 selected: None,
                 reorder: false,
                 undo: true,
+                activity: None,
             });
             assert_eq!(k.last(), Some(&"Ctrl Z"), "{focus:?}");
         }
@@ -454,6 +508,9 @@ mod tests {
             [
                 Undo,
                 RoomMenu,
+                ActivityFilter,
+                ActivityRefresh,
+                ActivityMore,
                 DetailSplitter,
                 Repeat,
                 NewList,
@@ -474,6 +531,9 @@ mod tests {
                 NewList,
                 Repeat,
                 DetailSplitter,
+                ActivityMore,
+                ActivityRefresh,
+                ActivityFilter,
                 RoomMenu,
                 Undo,
                 List
@@ -491,8 +551,18 @@ mod tests {
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
         // sync unless said.)
-        let fixed =
-            |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | Repeat | SyncFailures);
+        let fixed = |s: Stop| {
+            !matches!(
+                s,
+                Undo | RoomMenu
+                    | DetailSplitter
+                    | Repeat
+                    | ActivityFilter
+                    | ActivityRefresh
+                    | ActivityMore
+                    | SyncFailures
+            )
+        };
         assert_eq!(
             round(List, true, fixed),
             [NewList, NewCollection, Account, SidebarSplitter, List]
@@ -502,7 +572,17 @@ mod tests {
             [SidebarSplitter, Account, NewCollection, NewList, List]
         );
         // Without the detail divider (narrow window, or no task open), both ways.
-        let no_detail = |s: Stop| !matches!(s, DetailSplitter | Repeat | SyncFailures);
+        let no_detail = |s: Stop| {
+            !matches!(
+                s,
+                DetailSplitter
+                    | Repeat
+                    | ActivityFilter
+                    | ActivityRefresh
+                    | ActivityMore
+                    | SyncFailures
+            )
+        };
         assert_eq!(
             round(RoomMenu, true, no_detail),
             [
@@ -528,7 +608,12 @@ mod tests {
             ]
         );
         // A room without a menu skips its button both ways.
-        let no_menu = |s: Stop| !matches!(s, RoomMenu | Repeat | SyncFailures);
+        let no_menu = |s: Stop| {
+            !matches!(
+                s,
+                RoomMenu | Repeat | ActivityFilter | ActivityRefresh | ActivityMore | SyncFailures
+            )
+        };
         assert_eq!(
             round(Undo, true, no_menu),
             [
@@ -554,7 +639,12 @@ mod tests {
             ]
         );
         // Without the toast, Undo is skipped.
-        let no_undo = |s: Stop| !matches!(s, Undo | Repeat | SyncFailures);
+        let no_undo = |s: Stop| {
+            !matches!(
+                s,
+                Undo | Repeat | ActivityFilter | ActivityRefresh | ActivityMore | SyncFailures
+            )
+        };
         assert_eq!(
             round(List, true, no_undo),
             [
@@ -586,7 +676,17 @@ mod tests {
         assert_eq!(tab_stop(DetailSplitter, true, no_detail), NewList);
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
-        let refused = |s: Stop| !matches!(s, Undo | RoomMenu | DetailSplitter | Repeat);
+        let refused = |s: Stop| {
+            !matches!(
+                s,
+                Undo | RoomMenu
+                    | DetailSplitter
+                    | Repeat
+                    | ActivityFilter
+                    | ActivityRefresh
+                    | ActivityMore
+            )
+        };
         assert_eq!(
             round(List, true, refused),
             [
@@ -612,6 +712,82 @@ mod tests {
         // The list is always there, even if asked otherwise.
         assert_eq!(tab_stop(Account, true, |_| false), List);
         assert_eq!(tab_stop(Account, false, |_| false), List);
+    }
+
+    #[test]
+    fn the_activity_rooms_buttons_come_after_its_menu_button() {
+        use Stop::*;
+        // Activity filtered to an agent, with older changes to read; no toast, detail or refusals.
+        let activity = |s: Stop| !matches!(s, Undo | DetailSplitter | Repeat | SyncFailures);
+        assert_eq!(
+            round(List, true, activity),
+            [
+                RoomMenu,
+                ActivityFilter,
+                ActivityRefresh,
+                ActivityMore,
+                NewList,
+                NewCollection,
+                Account,
+                SidebarSplitter,
+                List
+            ]
+        );
+        // Unfiltered, at the end of the feed: only Refresh.
+        let plain = |s: Stop| activity(s) && !matches!(s, ActivityFilter | ActivityMore);
+        assert_eq!(
+            round(List, false, plain),
+            [
+                SidebarSplitter,
+                Account,
+                NewCollection,
+                NewList,
+                ActivityRefresh,
+                RoomMenu,
+                List
+            ]
+        );
+        assert!(Focus::Button.allows_task_undo());
+        assert_eq!(
+            keys(HintState {
+                focus: Focus::Button,
+                rows: false,
+                selected: None,
+                reorder: false,
+                undo: false,
+                activity: Some(ActivityHints::default()),
+            }),
+            ["Enter", "Tab", "Esc"]
+        );
+    }
+
+    #[test]
+    fn in_activity_the_list_keys_walk_and_undo_changes() {
+        let state = |activity| HintState {
+            focus: Focus::List,
+            rows: false,
+            selected: None,
+            reorder: false,
+            undo: false,
+            activity: Some(activity),
+        };
+        assert_eq!(keys(state(ActivityHints::default())), ["R"]);
+        assert_eq!(
+            keys(state(ActivityHints {
+                rows: true,
+                selected: true,
+                undo: true
+            })),
+            ["↑↓", "Enter", "R", "Esc"]
+        );
+        assert_eq!(
+            keys(state(ActivityHints {
+                rows: true,
+                selected: true,
+                undo: false
+            })),
+            ["↑↓", "R", "Esc"]
+        );
     }
 
     #[test]
@@ -645,6 +821,7 @@ mod tests {
                 }),
                 reorder: false,
                 undo: false,
+                activity: None,
             });
             let space = hint.iter().find(|(k, _)| *k == "Space").map(|(_, w)| *w);
             let expected = match commands::toggle_complete(&f.state, task.id) {

@@ -440,6 +440,8 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     assert_eq!(b.pending_undo(event.id), Some(undo_id));
     assert_eq!(b.undo_activity(event).unwrap(), undo_id);
     assert_eq!(b.pending().len(), 1, "the same undo isn't queued twice");
+    assert_eq!(b.undo_result(undo_id), None, "still queued");
+    assert_eq!(b.activity_confirmed(event.id, false), Some((false, true)));
     b.set_sending(true);
     eventually("b sees the undo", WAIT, || {
         b.view().tasks[&task].title == "rename me"
@@ -449,15 +451,21 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
         converged(&a, &server) && converged(&b, &server)
     })
     .await;
+    assert_eq!(b.undo_result(undo_id), Some(Ok(())));
+    assert_eq!(b.activity_confirmed(event.id, false), Some((true, false)));
     assert!(
         server
             .stored_command_ids()
             .contains(&(undo_id.to_string(), "undo".to_owned()))
     );
     // Undoing the same event again is refused for good: it is already undone.
-    b.undo_activity(event).unwrap();
+    let again = b.undo_activity(event).unwrap();
     eventually("refused", WAIT, || b.failed().len() == 1).await;
     assert_eq!(b.failed()[0].rejection.code, "already_undone");
+    assert_eq!(
+        b.undo_result(again),
+        Some(Err("Couldn't undo: the change was already undone."))
+    );
     stop(&a, ha).await;
     stop(&b, hb).await;
     server.stop().await;
@@ -501,6 +509,10 @@ async fn activity_undo_refuses_a_later_edit_of_the_same_field() {
     let failure = &b.failed()[0];
     assert_eq!(failure.entry.command_id, undo);
     assert_eq!(failure.rejection.code, "undo_conflict");
+    assert_eq!(
+        b.undo_result(undo),
+        Some(Err("Couldn't undo: the item was changed again."))
+    );
     assert_eq!(b.pending_undo(event.id), None);
     assert_eq!(b.view().tasks[&task].title, "later edit");
     assert_eq!(server.state().tasks[&task].title, "later edit");

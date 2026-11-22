@@ -593,6 +593,31 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| (s.replica.epoch(), s.replica.cursor()))
     }
 
+    /// What became of a queued undo (or any command): `None` while it is still in the outbox,
+    /// otherwise whether the server took it, a refusal in plain words ([`crate::failure::undo_message`],
+    /// never the server's own text). A refusal also stays in the "couldn't sync" list.
+    #[must_use]
+    pub fn undo_result(&self, command: CommandId) -> Option<Result<(), &'static str>> {
+        self.with(|s| {
+            if s.replica.outbox().iter().any(|e| e.command_id == command) {
+                return None;
+            }
+            Some(
+                (s.replica.failed().iter())
+                    .find(|f| f.entry.command_id == command)
+                    .map_or(Ok(()), |f| {
+                        Err(crate::failure::undo_message(&f.rejection.code))
+                    }),
+            )
+        })
+    }
+
+    /// The confirmed journal's view of a feed event: see [`activity::confirmed`].
+    #[must_use]
+    pub fn activity_confirmed(&self, event: EventId, compensating: bool) -> Option<(bool, bool)> {
+        self.with_confirmed(|state| activity::confirmed(&state.journal, event, compensating))
+    }
+
     /// The log epoch the confirmed state belongs to.
     #[must_use]
     pub fn epoch(&self) -> Option<Epoch> {

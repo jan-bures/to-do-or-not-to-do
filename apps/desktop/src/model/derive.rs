@@ -189,13 +189,15 @@ fn room_tasks<'a>(
                 .unwrap_or_default();
             (open, done)
         }
+        // Activity shows changes, not tasks (`model::activity`).
+        RoomKey::Activity(_) => (Vec::new(), Vec::new()),
         RoomKey::List(_) | RoomKey::Collection(_) => {
             let in_room = |t: &Task| match key {
                 RoomKey::List(l) => t.list == l,
                 RoomKey::Collection(c) => {
                     state.lists.get(&t.list).and_then(|l| l.collection) == Some(c)
                 }
-                RoomKey::Smart(_) => false,
+                RoomKey::Smart(_) | RoomKey::Activity(_) => false,
             };
             let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| l.position.clone());
             let mut open = Vec::new();
@@ -299,7 +301,8 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         })
         .count();
 
-    let filtered = !ui.filter.trim().is_empty();
+    // The filter narrows tasks; Activity has none to narrow.
+    let filtered = !ui.filter.trim().is_empty() && !key.is_activity();
     let open = filter(state, &ui.filter, ctx, open);
     let done = filter(state, &ui.filter, ctx, done);
     let completed_count = done.len();
@@ -343,6 +346,17 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
                 format!("Add a task to {}…", labels::one_line(&col.name)).into(),
             )
         }
+        RoomKey::Activity(agent) => (
+            "Activity".into(),
+            Eyebrow::Kind {
+                kind: "History".into(),
+                detail: activity::scope(agent).into(),
+            },
+            hues::AGENT_ACTIVITY,
+            Chips::None,
+            todo_client::activity::empty_line(agent.is_some()).into(),
+            "".into(),
+        ),
         RoomKey::List(l) => {
             let list = ix.list(l);
             let still_open = progress_total - progress_done;
@@ -411,6 +425,8 @@ fn empty_hint(key: RoomKey, filtered: bool) -> &'static str {
         RoomKey::Smart(Smart::MyDay) => "Add one above, or press Ctrl+Alt+Space from anywhere.",
         RoomKey::Smart(Smart::Completed) => "Tasks show up here when you finish them.",
         RoomKey::Smart(Smart::AgentActivity) => "Tasks your agents add or change show up here.",
+        RoomKey::Activity(Some(_)) => "Clear the filter to see every change.",
+        RoomKey::Activity(None) => "Changes from you, your agents and email show up here.",
         _ => "Add one above; Ctrl+N takes you there.",
     }
 }
@@ -606,6 +622,7 @@ fn sidebar(
                 (a, e) => format!("{a} added, {e} edited"),
             };
             Some(AgentRow {
+                key: AgentKey::of(actor.agent_id()?)?,
                 agent: lists::agent(actor)?,
                 name: lists::agent_name(actor)?.into(),
                 status: status.into(),

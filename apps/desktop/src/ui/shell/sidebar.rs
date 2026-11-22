@@ -567,41 +567,81 @@ impl ShellView {
             .child(new_list)
             .child(new_collection);
 
-        let agents = (!sb.agents.is_empty()).then(|| {
-            div()
-                .border_t_1()
-                .border_color(p.line)
-                .pt(px(space::S3))
-                .px(px(space::S1))
-                .pb(px(space::S2))
+        // Activity, and under it the agents seen this week: each opens Activity filtered to it.
+        let activity_on = sb.selected == RoomKey::Activity(None);
+        let activity_row = div()
+            .h(px(desktop::NAV_ROW))
+            .flex()
+            .items_center()
+            .gap(px(space::S2 + 2.))
+            .pl(px(space::S2))
+            .pr(px(space::S2))
+            .rounded(px(radius::MD))
+            .style(ty::NAV)
+            .text_color(p.ink_2)
+            .child(kit::icon(
+                Icon::Clock,
+                component::ICON,
+                theme::list_colors(t, theme::hues::AGENT_ACTIVITY).glyph,
+            ))
+            .child(div().flex_1().child("Activity"))
+            .child(kit::kbd(&p, "Ctrl H"));
+        let activity_row = self.clickable(
+            self.nav_row(RoomKey::Activity(None), activity_on, activity_row),
+            "nav-activity",
+            activity_on,
+            cx,
+            |this, _, _, cx| this.select_room(RoomKey::Activity(None), cx),
+        );
+        let agent_rows = sb.agents.iter().map(|a| {
+            let key = RoomKey::Activity(Some(a.key));
+            let on = sb.selected == key;
+            let row = div()
+                .h(px(desktop::NAV_ROW))
+                .flex()
+                .items_center()
+                .gap(px(space::S2 + 2.))
+                .px(px(space::S2))
+                .rounded(px(radius::MD))
+                .style(ty::NAV_SUB.with_weight(500))
+                .text_color(p.ink_2)
+                .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
+                .child(div().flex_1().min_w_0().truncate().child(a.name.clone()))
                 .child(
+                    div()
+                        .style(ty::COUNT)
+                        .text_color(p.ink_3)
+                        .child(a.status.clone()),
+                );
+            self.clickable(
+                self.nav_row(key, on, row),
+                SharedString::from(format!("agent-{}", a.key.as_str())),
+                on,
+                cx,
+                move |this, _, _, cx| this.select_room(key, cx),
+            )
+        });
+        let agents = div()
+            .border_t_1()
+            .border_color(p.line)
+            .pt(px(space::S2))
+            .pb(px(space::S2))
+            .flex()
+            .flex_col()
+            .child(activity_row)
+            .when(!sb.agents.is_empty(), |d| {
+                d.child(
                     div()
                         .flex()
                         .justify_between()
-                        .px(px(space::S1))
+                        .px(px(space::S2))
+                        .pt(px(space::S2))
                         .mb(px(space::S1))
                         .child(kit::label(&p, "Agents"))
                         .child(kit::label(&p, "Today")),
                 )
-                .children(sb.agents.iter().map(|a| {
-                    div()
-                        .h(px(desktop::NAV_ROW))
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S2 + 2.))
-                        .px(px(space::S1))
-                        .style(ty::NAV_SUB.with_weight(500))
-                        .text_color(p.ink_2)
-                        .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
-                        .child(div().flex_1().child(a.name.clone()))
-                        .child(
-                            div()
-                                .style(ty::COUNT)
-                                .text_color(p.ink_3)
-                                .child(a.status.clone()),
-                        )
-                }))
-        });
+                .children(agent_rows)
+            });
 
         let dot = match sb.tone {
             Tone::Ok => p.success,
@@ -672,7 +712,7 @@ impl ShellView {
                                     })
                                     .child(adds)
                                     .child(div().flex_1().min_h(px(space::S3)))
-                                    .children(agents),
+                                    .child(agents),
                             ),
                     )
                     .child(

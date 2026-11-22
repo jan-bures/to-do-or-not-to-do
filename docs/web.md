@@ -318,6 +318,8 @@ all actors again. **Refresh activity** starts from the newest changes again with
 new events arrive. If an older page is loading, the refresh waits for that request. If refreshing removes
 the focused row, focus moves to the Activity heading. A dot on the refresh button means the replica has
 advanced since the feed was read. Event summaries may use an item's current name, even for older changes.
+The pages, the undos asked for, what each row's Undo offers and the wording are shared with the desktop's
+Activity room (`todo_client::activity`: `Feed`, `Undos`, `undo_action`).
 
 Each change at the head of its undo chain offers **Undo**. A queued undo disables the action for that
 event, including after reload and when another tab sees it in the shared outbox. Conflict and other refusals stay beside the

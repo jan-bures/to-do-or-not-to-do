@@ -2,6 +2,7 @@
 //! bar. It draws a `model::Shell`, derived from the store's state whenever the data or the window's own
 //! state changes, and turns clicks and keys into commands for the store.
 
+mod activity;
 mod detail;
 mod menu;
 mod panes;
@@ -64,6 +65,7 @@ actions!(
         PickRepeat,
         AddLinkKey,
         UndoTask,
+        OpenActivity,
         Escape
     ]
 );
@@ -77,6 +79,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-n", FocusQuickAdd, Some("Shell")),
         KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
         KeyBinding::new("ctrl-z", UndoTask, Some("Shell")),
+        // Activity, from anywhere but a text field (the handler leaves typing alone).
+        KeyBinding::new("ctrl-h", OpenActivity, Some("Shell")),
         KeyBinding::new("e", EditTask, list),
         KeyBinding::new("d", EditDue, list),
         KeyBinding::new("p", CyclePriority, list),
@@ -163,6 +167,11 @@ enum OutgoingBody {
         top: gpui::Pixels,
     },
     Plan(SharedString),
+    /// The Activity room's changes, as painted, at the feed's scroll.
+    Activity {
+        days: Vec<model::activity::ActivityDay>,
+        top: gpui::Pixels,
+    },
 }
 
 #[derive(Debug)]
@@ -263,6 +272,16 @@ pub struct ShellView {
     closing_groups: HashMap<CollectionId, Vec<model::ListNav>>,
     /// Whether panes animate. The screenshot fixtures draw them at rest.
     animate: bool,
+    /// The Activity room's feed, selection and undos (`model::activity`), while it shows.
+    activity: model::activity::ActivityState,
+    activity_scroll: ScrollHandle,
+    activity_bar: kit::Scrollbar,
+    /// Where each change was last painted, so the keyboard's selection scrolls into view.
+    activity_rows: Rc<RefCell<HashMap<u64, Bounds<Pixels>>>>,
+    /// The room's Clear filter, Refresh activity and the button at the end of the feed (Tab stops).
+    activity_filter_focus: FocusHandle,
+    activity_refresh_focus: FocusHandle,
+    activity_more_focus: FocusHandle,
 }
 
 impl EventEmitter<ShellEvent> for ShellView {}
@@ -385,6 +404,13 @@ impl ShellView {
             closing: None,
             closing_groups: HashMap::new(),
             animate: true,
+            activity: model::activity::ActivityState::default(),
+            activity_scroll: ScrollHandle::new(),
+            activity_bar: kit::Scrollbar::default(),
+            activity_rows: Rc::default(),
+            activity_filter_focus: cx.focus_handle(),
+            activity_refresh_focus: cx.focus_handle(),
+            activity_more_focus: cx.focus_handle(),
         };
         cx.on_focus(&this.undo_focus, window, |_, _, cx| cx.notify())
             .detach();
@@ -398,6 +424,9 @@ impl ShellView {
         this.load_detail(cx);
         this.settle_detail();
         let _ = this.follow_shell();
+        if let Some(agent) = this.activity_room() {
+            this.open_activity(agent, cx);
+        }
         this.watch(cx);
         this
     }
@@ -519,6 +548,11 @@ impl ShellView {
         } else {
             self.settle_detail();
         }
+        match self.activity_room() {
+            Some(agent) if room_changed => self.open_activity(agent, cx),
+            Some(_) => self.follow_activity(cx),
+            None => {}
+        }
         if self.follow_shell() {
             // A held task the list no longer shows was let go: derive again without it. That pass lets
             // nothing else go, since only shown rows are left.
@@ -629,11 +663,14 @@ impl ShellView {
                 theme::motion::EXIT
             },
         );
-        let ring = if self.undo_ring.moving(now) || self.settle_menu() {
-            Wake::Frame
-        } else {
-            Wake::Idle
-        };
+        self.activity.motion.prune(now);
+        let ring =
+            if self.undo_ring.moving(now) || self.settle_menu() || self.activity.motion.moving(now)
+            {
+                Wake::Frame
+            } else {
+                Wake::Idle
+            };
         match self.motion.wake(now).or(self.toast.wake(now)).or(ring) {
             Wake::Idle => {}
             Wake::Frame => window.request_animation_frame(),
@@ -849,6 +886,13 @@ impl ShellView {
             || (menu_focused && !menu_open)
             || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
+            || [
+                hints::Stop::ActivityFilter,
+                hints::Stop::ActivityRefresh,
+                hints::Stop::ActivityMore,
+            ]
+            .into_iter()
+            .any(|stop| self.stop_handle(stop).is_focused(window) && !self.has_stop(stop))
             || (self.sync_focus.is_focused(window) && self.store.sync().failed == 0)
         {
             window.focus(&self.list_focus, cx);
@@ -861,6 +905,17 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // An undo asked for from the keyboard: the change selected, then Enter.
+        let change = match fixture {
+            "activity-pending" => Some(crate::fixtures::PENDING_ACTIVITY_SEQ),
+            "activity-refused" => Some(crate::fixtures::REFUSED_ACTIVITY_SEQ),
+            _ => None,
+        };
+        if let Some(seq) = change {
+            self.select_change(Some(seq), cx);
+            self.undo_change(seq, cx);
+            return;
+        }
         let task_page = match fixture {
             "task-context-menu" => Some(TaskPage::Main),
             "move-to-picker" => Some(TaskPage::Move),
@@ -1004,7 +1059,7 @@ impl ShellView {
         }
         let tags = |page| task.map(|task| MenuKind::Tags { task, page });
         let kind = match fixture {
-            "room-menu" => Some(MenuKind::Room { page: Page::Main }),
+            "room-menu" | "activity-menu" => Some(MenuKind::Room { page: Page::Main }),
             "account-menu" => Some(MenuKind::Account { confirm: false }),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
@@ -1537,6 +1592,7 @@ impl ShellView {
     pub fn still(&mut self) {
         self.animate = false;
         self.settle_detail();
+        self.activity.motion.settle();
     }
 
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -1679,6 +1735,10 @@ impl ShellView {
             .pb(px(space::S3))
             .style(ty::SUMMARY)
             .text_color(ink_2);
+        if room.key.is_activity() {
+            // Changes aren't scored: the feed itself says what happened.
+            return row;
+        }
         if total == 0 {
             let finished = room.finished_this_month;
             return row.child(div().style(ty::SUMMARY_FIGURES).child(if finished > 0 {
@@ -2048,7 +2108,7 @@ impl ShellView {
         DetailPane::at(
             self.width,
             self.shell.detail.is_some(),
-            self.shell.room.finished_day(),
+            self.shell.room.leaves_detail_out(),
         )
     }
 
@@ -2464,7 +2524,12 @@ impl ShellView {
 
     fn capture_body(&self, min_height: f32) -> OutgoingBody {
         let room = &self.shell.room;
-        if let Some(next) = room.handover() {
+        if room.key.is_activity() && !self.activity.feed.is_empty_feed() {
+            OutgoingBody::Activity {
+                days: self.activity_days(),
+                top: self.activity_scroll.offset().y,
+            }
+        } else if let Some(next) = room.handover() {
             OutgoingBody::Handover {
                 tomorrow: Box::new(next.clone()),
                 top: self.handover_scroll.offset().y,
@@ -2551,6 +2616,9 @@ impl ShellView {
             OutgoingBody::Plan(weekday) => self
                 .plan_only(weekday.clone(), false, cx)
                 .into_any_element(),
+            OutgoingBody::Activity { days, top } => {
+                self.activity_snapshot(days, *top, cx).into_any_element()
+            }
         };
         Some(
             div()
@@ -2570,7 +2638,9 @@ impl ShellView {
             && !(room.finished_day() && room.completed.is_empty())
             && self.shell.row_count() > 0;
         // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
-        let body: AnyElement = if let Some(next) = room.handover() {
+        let body: AnyElement = if room.key.is_activity() {
+            self.activity_feed(window, cx)
+        } else if let Some(next) = room.handover() {
             self.tomorrow(next, None, cx).into_any_element()
         } else if let Some(weekday) = room.plan_only() {
             self.plan_only(weekday.clone(), true, cx).into_any_element()
@@ -2647,13 +2717,30 @@ impl ShellView {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .on_action(cx.listener(|this, _: &NextTask, _, cx| this.move_selection(1, cx)))
-                    .on_action(
-                        cx.listener(|this, _: &PreviousTask, _, cx| this.move_selection(-1, cx)),
-                    )
+                    .on_action(cx.listener(|this, _: &NextTask, _, cx| {
+                        if this.in_activity() {
+                            this.activity_step(1, cx);
+                        } else {
+                            this.move_selection(1, cx);
+                        }
+                    }))
+                    .on_action(cx.listener(|this, _: &PreviousTask, _, cx| {
+                        if this.in_activity() {
+                            this.activity_step(-1, cx);
+                        } else {
+                            this.move_selection(-1, cx);
+                        }
+                    }))
                     // Space completes or reopens the selected task, and Delete deletes it (`list_key`):
                     // a held key's repeats are consumed without acting.
                     .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                        // In Activity, Enter (or U) undoes the selected change.
+                        if this.in_activity() {
+                            if this.activity_key(e, cx) {
+                                cx.stop_propagation();
+                            }
+                            return;
+                        }
                         let Some((key, act)) = list_key(e) else {
                             return;
                         };
@@ -2667,7 +2754,13 @@ impl ShellView {
                             ListKey::Delete => this.delete_task(id, cx),
                         }
                     }))
-                    .on_action(cx.listener(|this, _: &Escape, _, cx| this.select_task(None, cx)))
+                    .on_action(cx.listener(|this, _: &Escape, _, cx| {
+                        if this.in_activity() {
+                            this.select_change(None, cx);
+                        } else {
+                            this.select_task(None, cx);
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &EditTask, window, cx| {
                         if this.ui.task.is_some() {
                             let handle = this.edit.title.read(cx).focus_handle.clone();
@@ -2695,7 +2788,10 @@ impl ShellView {
                         this.open_task_menu(TaskPage::Main, window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &PickRepeat, window, cx| {
-                        if let Some(task) = this.repeat_target() {
+                        // In Activity, R reads the newest changes again.
+                        if this.in_activity() {
+                            this.refresh_activity(cx);
+                        } else if let Some(task) = this.repeat_target() {
                             this.scroll_into_view(&this.detail_scroll, "repeat-row");
                             this.open_menu(
                                 MenuKind::Repeat { task, draft: None },
@@ -3093,6 +3189,11 @@ impl ShellView {
             Focus::Rename
         } else if on(&self.menu_focus) {
             Focus::Menu
+        } else if on(&self.activity_filter_focus)
+            || on(&self.activity_refresh_focus)
+            || on(&self.activity_more_focus)
+        {
+            Focus::Button
         } else if on(&self.room_menu_focus)
             || on(&self.repeat_focus)
             || on(&self.account_focus)
@@ -3108,8 +3209,15 @@ impl ShellView {
 
     fn status_bar(&self, window: &Window, cx: &App) -> Div {
         let p = &self.palette;
-        let open = self.shell.room.summary().2;
-        let done = self.shell.room.done_today;
+        // Activity counts the changes it shows, and today's among them; the rooms their tasks.
+        let ((open, open_label), (done, done_label)) = if self.in_activity() {
+            let (shown, today) = model::activity::counts(&self.activity, &self.store.now());
+            let n = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+            ((n(shown), "shown"), (n(today), "today"))
+        } else {
+            let room = &self.shell.room;
+            ((room.summary().2, "open"), (room.done_today, "done today"))
+        };
         let keys = hints::key_hints(hints::HintState {
             focus: self.focus_now(window, cx),
             rows: !self.nav_tasks().is_empty(),
@@ -3121,6 +3229,7 @@ impl ShellView {
             reorder: matches!(self.ui.room, RoomKey::List(_)),
             undo: self.last_undo.is_some()
                 || (!self.animate && self.toast.look(self.frame).is_some_and(|t| t.active)),
+            activity: self.activity_hints(),
         });
         let hint = |key: &'static str, what: &'static str| {
             div()
@@ -3147,8 +3256,8 @@ impl ShellView {
         let figures = ty::COUNT.with_weight(500);
         let left = kit::text_width(window, figures, &open.to_string())
             + kit::text_width(window, figures, &done.to_string())
-            + kit::text_width(window, ty::COUNT, "open")
-            + kit::text_width(window, ty::COUNT, "done today")
+            + kit::text_width(window, ty::COUNT, open_label)
+            + kit::text_width(window, ty::COUNT, done_label)
             + 2. * component::CHIP_GAP
             + space::S4;
         let notice = kit::text_width(window, ty::COUNT, &right)
@@ -3188,7 +3297,7 @@ impl ShellView {
                             .flex()
                             .gap(px(component::CHIP_GAP))
                             .child(strong(open.to_string()))
-                            .child("open"),
+                            .child(open_label),
                     )
                     .child(
                         div()
@@ -3196,7 +3305,7 @@ impl ShellView {
                             .gap(px(component::CHIP_GAP))
                             // Completed since midnight; "Completed n" above holds every finished task.
                             .child(strong(done.to_string()))
-                            .child("done today"),
+                            .child(done_label),
                     ),
             )
             .child(
@@ -3259,6 +3368,9 @@ impl ShellView {
             Stop::List => &self.list_focus,
             Stop::Undo => &self.undo_focus,
             Stop::RoomMenu => &self.room_menu_focus,
+            Stop::ActivityFilter => &self.activity_filter_focus,
+            Stop::ActivityRefresh => &self.activity_refresh_focus,
+            Stop::ActivityMore => &self.activity_more_focus,
             Stop::Repeat => &self.repeat_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::NewList => &self.new_list_focus,
@@ -3284,6 +3396,9 @@ impl ShellView {
                     && (self.last_undo.is_some() || !self.animate)
             }
             Stop::RoomMenu => self.has_room_menu(),
+            Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
+                self.has_activity_stop(stop)
+            }
             Stop::Repeat => self.repeat_target().is_some(),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
@@ -3359,11 +3474,17 @@ impl ShellView {
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.resize(Width::of(f32::from(window.viewport_size().width)));
+        self.activity_read_ahead(cx);
         self.drive_motion(window, cx);
         self.drive_splitters(window, cx);
         self.keep_focus(window, cx);
         let p = self.palette;
-        let quick_add = self.quick_add_field(window, cx);
+        // Activity has no tasks to add: its toolbar takes the quick-add's place.
+        let quick_add = if self.in_activity() {
+            self.activity_toolbar(window, cx)
+        } else {
+            self.quick_add_field(window, cx)
+        };
         let detail = self.docked().then(|| self.detail_pane(window, cx));
         let overlay = self.detail_overlay(window, cx);
         let footer = self.list_footer(overlay.is_none(), cx);
@@ -3382,12 +3503,26 @@ impl Render for ShellView {
                     this.request_undo(cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenActivity, window, cx| {
+                // Never while typing: the field keeps the keyboard and nothing changes.
+                if this.focus_now(window, cx).allows_task_undo() {
+                    if this.focus_now(window, cx) == hints::Focus::Menu {
+                        this.close_menu(false, window, cx);
+                    }
+                    this.select_room(RoomKey::Activity(None), cx);
+                    window.focus(&this.list_focus, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 let handle = this.filter.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusQuickAdd, window, cx| {
+                // Activity has no quick-add: adding a task goes to My Day's.
+                if this.in_activity() {
+                    this.select_room(RoomKey::default(), cx);
+                }
                 let handle = this.quick_add.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
                 cx.notify();

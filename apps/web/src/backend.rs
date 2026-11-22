@@ -772,20 +772,7 @@ pub fn activity_flags(id: EventId, compensating: bool) -> ActivityFlags {
     };
     let pending = c.pending_undo(id).is_some()
         || (!c.is_sending() && SHARED_UNDOS.with(|shared| shared.borrow().contains(&id)));
-    let confirmed = c.with_confirmed(|state| {
-        let journal = &state.journal;
-        if !journal.has_seen(id) {
-            return None;
-        }
-        let root = journal.root_of(id);
-        let head = journal.head_of(root);
-        let undone = if compensating {
-            head != id
-        } else {
-            journal.is_undone(root)
-        };
-        Some((undone, head == id))
-    });
+    let confirmed = c.activity_confirmed(id, compensating);
     ActivityFlags { confirmed, pending }
 }
 
@@ -827,16 +814,7 @@ pub fn undo_activity(event: protocol::EventRef) -> Result<Option<CommandId>, &'s
 
 /// None while the compensation is still queued. Durable refusals also remain in Not synced.
 pub fn undo_result(id: CommandId) -> Option<Result<(), &'static str>> {
-    let c = live()?;
-    if c.pending().iter().any(|entry| entry.command_id == id) {
-        return None;
-    }
-    Some(
-        c.failed()
-            .iter()
-            .find(|f| f.entry.command_id == id)
-            .map_or(Ok(()), |f| Err(changes::undo_failure(&f.rejection.code))),
-    )
+    live()?.undo_result(id)
 }
 
 pub fn failures() -> Vec<Failure> {
