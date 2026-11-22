@@ -301,17 +301,17 @@ Completing a task is the one choreographed moment in the app.
      selected `wash` row) and scales `0.55 → 1.0`, overshooting slightly (~`1.06`) before settling at `1.0`.
   2. **Tick & title (`CHECK_TICK_DELAY` 60 ms offset, then `CHECK_TICK` 180 ms, `STANDARD`):** The checkmark
      draws from left to right; simultaneously the task title fades to `ink-3` and acquires a strike-through.
-  3. **Sun advance (`SUN_TRAVEL` 700 ms, `SUN`):** Starts immediately on completion (overlapping the hold so the
-     header feels directly coupled to the action). The sun disc, halo and rays glide along the arc from the old
-     ratio to the new ratio while the travelled stroke grows in lockstep. The header count updates immediately.
-     Rapid completions retarget smoothly from the sun's current progress.
-  4. **Hold (`COMPLETE_HOLD` 450 ms timer):** After the tick finishes (`CHECK_TICK_DELAY + CHECK_TICK +
+  3. **Hold (`COMPLETE_HOLD` 450 ms timer):** After the tick finishes (`CHECK_TICK_DELAY + CHECK_TICK +
      COMPLETE_HOLD` total before exit), the struck-through row stays stationary so the eye confirms it landed.
      Clicking the checkbox again or pressing `Ctrl+Z` cancels the timer and reverses at once.
-  5. **Exit & settle (`ROW_COLLAPSE` 220 ms, `EXIT`):** The row fades (`opacity: 1 → 0`) and collapses its
+  4. **Exit & settle (`ROW_COLLAPSE` 220 ms, `EXIT`):** The row fades (`opacity: 1 → 0`) and collapses its
      height (`row → 0`) so rows below close the gap. If "Completed" is currently expanded below, the task enters
      at the top of Completed (`ROW_ENTER` 180 ms, `ENTER`, `height: 0 → row`, `opacity: 0 → 1`); otherwise the
      "Completed *n*" toggle updates its count when the row finishes leaving.
+  5. **Sun advance (`SUN_TRAVEL` 700 ms, `SUN`):** Starts once the row has left, together with the header
+     count, so the count and the sun confirm the row's departure rather than racing it. The sun disc, halo and
+     rays glide along the arc from the old ratio to the new ratio while the travelled stroke grows in lockstep.
+     Rapid completions retarget smoothly from the sun's current progress.
 - **Reopening:** Checkbox clears (`OVERLAY_OUT` 120 ms, `EXIT`), row exits Completed (`ROW_COLLAPSE` 220 ms,
   `EXIT`), enters the open list at its sorted slot (`ROW_ENTER` 180 ms, `ENTER`), and the sun glides backwards
   along its arc (`SUN_TRAVEL` 700 ms, `SUN`).
@@ -321,9 +321,11 @@ Completing a task is the one choreographed moment in the app.
   `REDUCED_FADE` (`100 ms`) and snaps out of layout at the end (no height slide); the sun jumps immediately
   (`0 ms`) to its new position.
 - **Platform notes:**
-  - *GPUI:* Uses `with_animation` on the checkbox disc (`POP`) and clipped tick (`STANDARD`). Because
-    `uniform_list` uses fixed row height, GPUI fades the leaving row over `ROW_COLLAPSE` before removing it from
-    the virtualized list. For the sun, interpolate a scalar `progress: f32` and evaluate `Landscape::sun` /
+  - *GPUI:* Frame-driven from a pure motion model (`apps/desktop/src/model/motion.rs`) sampled each frame:
+    the disc scales with `POP`, the tick and the title's strike-through are clipped from the left
+    (`STANDARD`). Because `uniform_list` uses fixed row height, the leaving row collapses inside its slot and
+    the rows below are drawn up by the share that has gone; the slot leaves the virtualized list only when
+    the row is released. For the sun, interpolate a scalar `progress: f32` and evaluate `Landscape::sun` /
     `travelled` only while animating, returning to the cached paths as soon as the animation settles.
   - *Compose:* `AnimatedVisibility` + `LazyColumn` `animateItem` handle smooth height collapse and sibling
     repositioning; animate `progress` via `animateFloatAsState(tween(SUN_TRAVEL, easing = SunEasing))` inside
