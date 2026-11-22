@@ -34,8 +34,8 @@ use todo_client::web::{
     OpenStorageError, SenderLock, elect_sender, open_channel, open_storage, sleep,
 };
 use todo_client::{
-    ClientConfig, CommandId, Connection, SubmitError, SyncClient, TrackedCommand,
-    TrackedUndo, failure, protocol,
+    ClientConfig, CommandId, Connection, SubmitError, SyncClient, TrackedCommand, TrackedUndo,
+    failure, protocol,
 };
 use todo_core::ids::{AttachmentId, EventId, TaskId};
 use todo_core::{Actor, Command, State};
