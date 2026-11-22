@@ -9,7 +9,7 @@ use todo_design::fonts::FACES;
 use crate::theme::ty;
 
 /// The families the app asks for.
-pub const FAMILIES: [&str; 4] = [ty::DISPLAY, ty::DISPLAY_TEXT, ty::UI, ty::MONO];
+pub const FAMILIES: [&str; 2] = [ty::UI, ty::MONO];
 
 /// Registers every bundled face with GPUI's text system. Returns the families that are still missing
 /// afterwards (empty when all is well).

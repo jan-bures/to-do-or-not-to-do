@@ -36,12 +36,13 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
 
   | Room | Eyebrow |
   |---|---|
-  | Smart lists | the day: *Saturday* `21 NOV 2026` `W47`, since they measure today's work |
-  | Collections | *Collection* `4 LISTS` |
-  | Lists | the collection's name (or *List*) and what is still open: *Work* `9 OPEN` |
-  | Activity | *History* `ALL CHANGES`, or `AGENT: CLAUDE` while filtered to one agent |
+  | Smart lists | the day: Saturday `21 NOV 2026` `W47`, since they measure today's work |
+  | Collections | Collection `4 LISTS` |
+  | Lists | the collection's name (or List) and what is still open: Work `9 OPEN` |
+  | Activity | History `ALL CHANGES`, or `AGENT: CLAUDE` while filtered to one agent |
 
-  The lead is italic Fraunces; the details are mono caps, set by the type token, not by the words.
+  The lead is upright Geist in the room's `accent-strong`; the details are mono caps, set by the type
+  token, not by the words.
 - **The status bar counts the same room.** `9 open · 3 done today`: what is open now and what was finished since
   local midnight. Activity counts its feed instead: `20 shown · 4 today`.
 - **There is only one sun.** No sun icon in the title, no clock ticks, no crescent endpoints. The sun's amber is the
@@ -56,7 +57,7 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   There is no congratulation copy and no stats recap. The scene is the reward. The dusk scene is a night scene in
   both themes, so the header block uses dark-theme text over it.
 - **An empty list shows the hills only.** With no tasks there is nothing to measure, so there is no sun and no arc.
-  Below the quick-add sits one italic Fraunces line ("Nothing here yet."; a smart list has its own, such as
+  Below the quick-add sits one line of regular Geist in `ink-2` ("Nothing here yet."; a smart list has its own, such as
   "Nothing planned yet.", and a filter that matches nothing says "Nothing matches the filter.") and, if an
   agent has any, suggestions.
 - **Restraint keeps it from being clip art.** There are no faces, no characters and no idle animation. Whimsy rests
@@ -130,18 +131,18 @@ The crate's tests check two things:
 
 ## Type
 
-There are three families, and each has a single job. All three are OFL licensed and bundled as static instances
-with full Czech coverage. The files and their sources are in `assets/fonts/`.
+Two families share one visual language. Both are OFL licensed and bundled as static instances with full
+Czech coverage. The files and their sources are in `assets/fonts/`.
 
 | Family | Role | Examples |
 |---|---|---|
-| **Fraunces** (soft display serif, `opsz` 144 / 36, SOFT 100) | the room's voice | the room title at 360, 56/60, −0.028em; the italic day name "Saturday"; the empty-state line |
-| **Schibsted Grotesk** | everything you read and operate | task titles at 500, 15/20; body at 14/20; detail title at 600, 21/28; chips at 550, 12/20 |
-| **Geist Mono** | anything you compare or scan in a column | due times, counts, tags (`#tax`), keycaps, priority, the `CAPS LABELS` at +0.12em |
+| **Geist** | room titles, eyebrows, empty states and all interface text | desktop room title at 600, 42/48, −0.04em; upright accent eyebrow at 500, 13/22; task titles at 500, 15/20; detail title at 600, 21/28 |
+| **Geist Mono** | content you compare or scan as data | due times, counts, tags (`#tax`), keycaps, priority and `CAPS LABELS` at +0.12em |
 
-The pairing works by contrast. The serif appears only at display sizes and in one italic accent. The sans does all
-the work. The mono gives numbers tabular figures and makes metadata read as data. The detail title is in the sans,
-not the serif, because it sits next to dense steps.
+Size, weight and spacing give Geist its hierarchy without changing family: the room title is compact and
+semibold, while the empty-state line is regular and uses `ink-2`. Geist Mono keeps a visible distinction
+between prose and metadata, and its tabular figures let numbers line up. An eyebrow pairs the two at a
+glance: **Collection** `12 LISTS`.
 
 `todo_design::typography` holds the full scale, with desktop and phone variants. Don't add sizes ad hoc: add a
 named style.
@@ -460,7 +461,7 @@ Completing a task is the one choreographed moment in the app.
     row`, `opacity: 0 → 1`, `translateY: -4 px → 0`). If the task lands mid-list (for example, adding a dated
     task in Planned), scroll it smoothly into view and settle its background from `wash → pane` over `ROOM_HUE`
     (`360 ms`, `EXIT`) so the eye finds it immediately.
-  - **Empty list → first task:** The italic Fraunces empty-state line fades out (`OVERLAY_OUT` 120 ms, `EXIT`),
+  - **Empty list → first task:** The empty-state line fades out (`OVERLAY_OUT` 120 ms, `EXIT`),
     and the sun and arc fade into the header (`ROW_ENTER` 180 ms, `ENTER`).
   - **Sun update:** If the room already has completed tasks, the sun eases to the updated `done / total` ratio
     (`SUN_TRAVEL` 700 ms, `SUN`).
@@ -758,7 +759,7 @@ Completing a task is the one choreographed moment in the app.
   standard CSS transitions with no missing state.
 - **Named elements (`view-transition-name`):**
   - `room-sky` (landscape header): crossfades sky and hills with `var(--duration-room-hue)` and `var(--ease-sun)`.
-  - `room-title` (Fraunces room title and eyebrow): crossfade + `4 px` vertical glide with
+  - `room-title` (room title and eyebrow): crossfade + `4 px` vertical glide with
     `var(--duration-content-swap)` and `var(--ease-standard)`.
   - `task-detail` (narrow-viewport detail sheet): enters/exits with `var(--duration-panel)` and
     `var(--ease-enter)` / `var(--ease-exit)`.

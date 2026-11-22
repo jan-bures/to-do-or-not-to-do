@@ -69,14 +69,10 @@ object Fonts {
         },
     )
 
-    val display = family(FontRole.DISPLAY)
-    val displayText = family(FontRole.DISPLAY_TEXT)
     val ui = family(FontRole.UI)
     val mono = family(FontRole.MONO)
 
     fun of(role: FontRole): FontFamily = when (role) {
-        FontRole.DISPLAY -> display
-        FontRole.DISPLAY_TEXT -> displayText
         FontRole.UI -> ui
         FontRole.MONO -> mono
     }

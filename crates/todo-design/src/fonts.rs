@@ -1,4 +1,4 @@
-//! The bundled font files in `assets/fonts/`: static instances of Fraunces, Schibsted Grotesk and Geist Mono
+//! The bundled font files in `assets/fonts/`: static instances of Geist and Geist Mono
 //! (all SIL OFL 1.1), subset to Latin and Latin Extended so Czech renders fully. `assets/fonts/README.md`
 //! records the upstream sources and how the instances are built.
 //!
@@ -34,18 +34,13 @@ const fn face(family: &'static str, weight: u16, italic: bool, file: &'static st
     }
 }
 
-use crate::typography::{DISPLAY, DISPLAY_TEXT, MONO, UI};
+use crate::typography::{MONO, UI};
 
 /// Every bundled face.
-pub const FACES: [FontFace; 12] = [
-    face(DISPLAY, 360, false, "FrauncesDisplay-Book.ttf"),
-    face(DISPLAY, 360, true, "FrauncesDisplay-BookItalic.ttf"),
-    face(DISPLAY_TEXT, 400, true, "FrauncesText-Italic.ttf"),
-    face(UI, 400, false, "SchibstedGrotesk-400.ttf"),
-    face(UI, 500, false, "SchibstedGrotesk-500.ttf"),
-    face(UI, 550, false, "SchibstedGrotesk-550.ttf"),
-    face(UI, 600, false, "SchibstedGrotesk-600.ttf"),
-    face(UI, 650, false, "SchibstedGrotesk-650.ttf"),
+pub const FACES: [FontFace; 7] = [
+    face(UI, 400, false, "Geist-400.ttf"),
+    face(UI, 500, false, "Geist-500.ttf"),
+    face(UI, 600, false, "Geist-600.ttf"),
     face(MONO, 400, false, "GeistMono-400.ttf"),
     face(MONO, 500, false, "GeistMono-500.ttf"),
     face(MONO, 600, false, "GeistMono-600.ttf"),
@@ -73,14 +68,9 @@ impl FontFace {
             };
         }
         embed!(
-            "FrauncesDisplay-Book.ttf",
-            "FrauncesDisplay-BookItalic.ttf",
-            "FrauncesText-Italic.ttf",
-            "SchibstedGrotesk-400.ttf",
-            "SchibstedGrotesk-500.ttf",
-            "SchibstedGrotesk-550.ttf",
-            "SchibstedGrotesk-600.ttf",
-            "SchibstedGrotesk-650.ttf",
+            "Geist-400.ttf",
+            "Geist-500.ttf",
+            "Geist-600.ttf",
             "GeistMono-400.ttf",
             "GeistMono-500.ttf",
             "GeistMono-600.ttf",

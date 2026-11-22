@@ -15,7 +15,7 @@
 //! # let _ = gpui_rgb;
 //!
 //! let chip = list_colors(Theme::Dark, 200.0);
-//! let title = typography::ROOM_TITLE; // Fraunces Display 360, 56/60
+//! let title = typography::ROOM_TITLE; // Geist 600, 42/48
 //! let gap = space::S3; // 12
 //! # let _ = (chip, title, gap);
 //! ```

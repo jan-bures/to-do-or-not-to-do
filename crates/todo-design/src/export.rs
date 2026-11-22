@@ -62,19 +62,21 @@ fn css_shadow(theme: Theme) -> String {
 }
 
 fn css_font(style: &TextStyle) -> String {
-    let var = match style.family {
-        typography::DISPLAY => "--font-display",
-        typography::DISPLAY_TEXT => "--font-display-text",
-        typography::MONO => "--font-mono",
-        _ => "--font-ui",
-    };
+    let var = css_font_var(style.family);
     format!(
-        "{}{} {}px/{}px var({var})",
+        "{}{} {}px/{}px var(--{var})",
         if style.italic { "italic " } else { "" },
         style.weight,
         style.size,
         style.line_height
     )
+}
+
+fn css_font_var(family: &str) -> &'static str {
+    match family {
+        typography::MONO => "font-mono",
+        _ => "font-ui",
+    }
 }
 
 fn css_block(out: &mut String, selector: &str, vars: &[(String, String)]) {
@@ -118,13 +120,10 @@ pub fn css() -> String {
 
     let mut root: Vec<(String, String)> = Vec::new();
     for (family, fallback) in typography::FALLBACKS {
-        let var = match family {
-            typography::DISPLAY => "font-display",
-            typography::DISPLAY_TEXT => "font-display-text",
-            typography::MONO => "font-mono",
-            _ => "font-ui",
-        };
-        root.push((var.into(), format!("\"{family}\", {fallback}")));
+        root.push((
+            css_font_var(family).into(),
+            format!("\"{family}\", {fallback}"),
+        ));
     }
     for (name, style) in typography::ALL {
         root.push((format!("text-{name}"), css_font(&style)));

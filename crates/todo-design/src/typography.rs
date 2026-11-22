@@ -1,26 +1,17 @@
-//! The type scale. Three families, each with one job:
+//! The type scale. Two families, each with one job:
 //!
-//! - **Fraunces** (display serif) for room titles and the italic day name. It is bundled as static instances
-//!   with the optical size, softness and weight baked in ([`DISPLAY`], [`DISPLAY_TEXT`]).
-//! - **Schibsted Grotesk** ([`UI`]) for all interface text.
+//! - **Geist** ([`UI`]) for room titles, eyebrows and all interface text.
 //! - **Geist Mono** ([`MONO`]) for counts, due times, tags, keycaps, priority marks and caps labels.
 //!
 //! Sizes and line heights are in logical pixels (dp on Android). Letter spacing is in em.
 
-/// Fraunces at optical size 144, SOFT 100, WONK 0, weight 360 (roman and italic). Room titles and the
-/// empty-state line.
-pub const DISPLAY: &str = "Fraunces Display";
-/// Fraunces at optical size 36, SOFT 100, WONK 0, weight 400, italic only. The day name above the title.
-pub const DISPLAY_TEXT: &str = "Fraunces Text";
-/// Schibsted Grotesk. All interface text.
-pub const UI: &str = "Schibsted Grotesk";
+/// Geist. Titles, eyebrows and interface text.
+pub const UI: &str = "Geist";
 /// Geist Mono. Numbers, times, tags, keycaps, labels.
 pub const MONO: &str = "Geist Mono";
 
 /// CSS fallback stacks for each family.
-pub const FALLBACKS: [(&str, &str); 4] = [
-    (DISPLAY, "Georgia, serif"),
-    (DISPLAY_TEXT, "Georgia, serif"),
+pub const FALLBACKS: [(&str, &str); 2] = [
     (UI, "system-ui, sans-serif"),
     (MONO, "ui-monospace, monospace"),
 ];
@@ -28,7 +19,7 @@ pub const FALLBACKS: [(&str, &str); 4] = [
 /// One text style.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
-    /// Family name, one of [`DISPLAY`], [`DISPLAY_TEXT`], [`UI`], [`MONO`].
+    /// Family name: [`UI`] or [`MONO`].
     pub family: &'static str,
     /// Font size in logical pixels.
     pub size: f32,
@@ -58,11 +49,6 @@ impl TextStyle {
             uppercase: false,
             tabular: family_is_mono(family),
         }
-    }
-
-    const fn italic(mut self) -> TextStyle {
-        self.italic = true;
-        self
     }
 
     const fn tracking(mut self, em: f32) -> TextStyle {
@@ -103,44 +89,42 @@ const fn family_is_mono(family: &str) -> bool {
 }
 
 /// Desktop room title: "My Day", "Work".
-pub const ROOM_TITLE: TextStyle = TextStyle::new(DISPLAY, 360, 56.0, 60.0).tracking(-0.028);
-/// Room title in narrow panes (the empty and quick-add states) and on the inner phone screen.
-pub const ROOM_TITLE_COMPACT: TextStyle = TextStyle::new(DISPLAY, 360, 48.0, 52.0).tracking(-0.028);
+pub const ROOM_TITLE: TextStyle = TextStyle::new(UI, 600, 42.0, 48.0).tracking(-0.04);
+/// Compact room title.
+pub const ROOM_TITLE_COMPACT: TextStyle = TextStyle::new(UI, 600, 36.0, 40.0).tracking(-0.04);
 /// Phone room title.
-pub const ROOM_TITLE_PHONE: TextStyle = TextStyle::new(DISPLAY, 360, 44.0, 48.0).tracking(-0.026);
+pub const ROOM_TITLE_PHONE: TextStyle = TextStyle::new(UI, 600, 33.0, 36.0).tracking(-0.037);
 /// Phone room title in the collapsed header bar: one line, while scrolling or typing.
-pub const ROOM_TITLE_BAR: TextStyle = TextStyle::new(DISPLAY, 360, 24.0, 28.0).tracking(-0.016);
-/// The italic day name above the title ("Saturday").
-pub const EYEBROW_DAY: TextStyle = TextStyle::new(DISPLAY_TEXT, 400, 18.0, 22.0).italic();
-/// Phone day name.
-pub const EYEBROW_DAY_PHONE: TextStyle = TextStyle::new(DISPLAY_TEXT, 400, 17.0, 20.0).italic();
+pub const ROOM_TITLE_BAR: TextStyle = TextStyle::new(UI, 600, 18.0, 20.0).tracking(-0.023);
+/// The day or room kind above the title. Shares a 22 px line box with the mono metadata.
+pub const EYEBROW_DAY: TextStyle = TextStyle::new(UI, 500, 13.0, 22.0);
+/// Phone eyebrow lead.
+pub const EYEBROW_DAY_PHONE: TextStyle = TextStyle::new(UI, 500, 13.0, 20.0);
 /// The date and week next to the day name, in mono caps.
 pub const EYEBROW_META: TextStyle = TextStyle::new(MONO, 400, 11.0, 22.0).tracking(0.1).caps();
 /// Phone date and week.
 pub const EYEBROW_META_PHONE: TextStyle =
     TextStyle::new(MONO, 400, 10.5, 20.0).tracking(0.1).caps();
-/// The one italic line of an empty list ("Nothing here yet.").
-pub const EMPTY_LINE: TextStyle = TextStyle::new(DISPLAY, 360, 32.0, 38.0)
-    .italic()
-    .tracking(-0.02);
-/// Detail pane title. Sans, so it sits well next to dense steps.
+/// The quiet line of an empty list ("Nothing here yet.").
+pub const EMPTY_LINE: TextStyle = TextStyle::new(UI, 400, 24.0, 32.0).tracking(-0.02);
+/// Detail pane title.
 pub const DETAIL_TITLE: TextStyle = TextStyle::new(UI, 600, 21.0, 28.0).tracking(-0.012);
 /// Detail title on the inner phone screen.
-pub const DETAIL_TITLE_PHONE: TextStyle = TextStyle::new(UI, 600, 23.0, 30.0).tracking(-0.012);
+pub const DETAIL_TITLE_PHONE: TextStyle = TextStyle::new(UI, 600, 23.0, 32.0).tracking(-0.012);
 /// The next task in the finished state ("When the sun comes up").
-pub const NEXT_TITLE: TextStyle = TextStyle::new(UI, 600, 19.0, 26.0).tracking(-0.01);
+pub const NEXT_TITLE: TextStyle = TextStyle::new(UI, 600, 19.0, 28.0).tracking(-0.01);
 /// Task title in a desktop row.
 pub const TASK_TITLE: TextStyle = TextStyle::new(UI, 500, 15.0, 20.0);
 /// Task title in a phone row.
-pub const TASK_TITLE_PHONE: TextStyle = TextStyle::new(UI, 500, 16.0, 22.0);
+pub const TASK_TITLE_PHONE: TextStyle = TextStyle::new(UI, 500, 16.0, 24.0);
 /// Default body text.
 pub const BODY: TextStyle = TextStyle::new(UI, 400, 14.0, 20.0);
 /// Notes in the detail pane.
-pub const NOTES: TextStyle = TextStyle::new(UI, 400, 14.0, 22.0);
+pub const NOTES: TextStyle = TextStyle::new(UI, 400, 14.0, 24.0);
 /// Quick-add input text.
 pub const QUICK_ADD: TextStyle = TextStyle::new(UI, 400, 14.5, 20.0);
 /// Phone composer text.
-pub const COMPOSER: TextStyle = TextStyle::new(UI, 400, 15.5, 22.0);
+pub const COMPOSER: TextStyle = TextStyle::new(UI, 400, 15.5, 24.0);
 /// Smart lists in the sidebar.
 pub const NAV: TextStyle = TextStyle::new(UI, 500, 14.0, 20.0);
 /// Lists inside a collection in the sidebar.
@@ -158,15 +142,15 @@ pub const SUMMARY: TextStyle = TextStyle::new(UI, 400, 12.5, 16.0);
 /// Numbers inside the header summary.
 pub const SUMMARY_FIGURES: TextStyle = TextStyle::new(MONO, 400, 12.0, 16.0);
 /// List chips and the overdue badge's neighbour text.
-pub const CHIP: TextStyle = TextStyle::new(UI, 550, 12.0, 20.0);
+pub const CHIP: TextStyle = TextStyle::new(UI, 500, 12.0, 20.0);
 /// Phone room pills.
-pub const ROOM_PILL: TextStyle = TextStyle::new(UI, 550, 13.5, 20.0);
+pub const ROOM_PILL: TextStyle = TextStyle::new(UI, 500, 13.5, 20.0);
 /// The overdue badge ("2d overdue").
 pub const OVERDUE_BADGE: TextStyle = TextStyle::new(MONO, 600, 12.0, 20.0);
 /// Toast message.
-pub const TOAST: TextStyle = TextStyle::new(UI, 550, 13.5, 20.0);
+pub const TOAST: TextStyle = TextStyle::new(UI, 500, 13.5, 20.0);
 /// The toast's Undo action.
-pub const TOAST_ACTION: TextStyle = TextStyle::new(UI, 650, 13.5, 20.0);
+pub const TOAST_ACTION: TextStyle = TextStyle::new(UI, 600, 13.5, 20.0);
 /// Buttons.
 pub const BUTTON: TextStyle = TextStyle::new(UI, 600, 14.0, 20.0);
 /// Small buttons and the suggestion chip.

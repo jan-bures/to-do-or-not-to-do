@@ -9,7 +9,7 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import java.io.File
 
-/** `FrauncesDisplay-Book.ttf` → `fraunces_display_book` (an Android resource name). */
+/** `GeistMono-400.ttf` → `geist_mono_400` (an Android resource name). */
 fun fontResName(file: String): String =
     file.substringAfterLast('/').substringBeforeLast('.')
         .replace(Regex("([a-z])([A-Z])"), "$1_$2")
@@ -84,7 +84,7 @@ abstract class GenerateDesignTokens : DefaultTask() {
         dataClass("AgentColors", light["agents"].obj().values.first().obj())
         dataClass("DuskColors", colors["dusk"].obj().values.first().obj())
 
-        out.appendLine("enum class FontRole { DISPLAY, DISPLAY_TEXT, UI, MONO }")
+        out.appendLine("enum class FontRole { UI, MONO }")
         out.appendLine()
         out.appendLine("data class TextToken(")
         out.appendLine("    val role: FontRole,")
@@ -106,9 +106,7 @@ abstract class GenerateDesignTokens : DefaultTask() {
         out.appendLine()
 
         fun role(family: String) = when (family) {
-            "Fraunces Display" -> "FontRole.DISPLAY"
-            "Fraunces Text" -> "FontRole.DISPLAY_TEXT"
-            "Schibsted Grotesk" -> "FontRole.UI"
+            "Geist" -> "FontRole.UI"
             "Geist Mono" -> "FontRole.MONO"
             else -> error("unknown family $family")
         }

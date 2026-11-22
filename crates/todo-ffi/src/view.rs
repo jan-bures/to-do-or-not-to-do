@@ -184,7 +184,7 @@ pub struct Home {
 pub enum Eyebrow {
     /// Smart lists: "Saturday | 21 Nov 2026 | W47".
     Day {
-        /// "Saturday" (Fraunces italic).
+        /// "Saturday" (the eyebrow lead).
         weekday: String,
         /// "21 Nov 2026".
         date: String,
@@ -193,7 +193,7 @@ pub enum Eyebrow {
     },
     /// Collections and lists: "Collection | 3 lists".
     Kind {
-        /// "Collection", or the list's collection name, or "List" (Fraunces italic).
+        /// "Collection", or the list's collection name, or "List" (the eyebrow lead).
         kind: String,
         /// "3 lists", "9 open" (mono caps).
         detail: String,

@@ -1514,7 +1514,7 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
     }
 }
 
-/// The line above the title: an italic lead, then the details in mono caps.
+/// The line above the title: an accented lead, then the details in mono caps.
 #[component]
 fn EyebrowLine() -> impl IntoView {
     let c = ctx();

@@ -16,7 +16,7 @@ test("reminder presets are keyboard accessible and adding or removing a reminder
   await task(page).click();
   const reminder = trigger(page);
   await expect(reminder).toHaveAccessibleDescription("Set reminder");
-  await expect(reminder.getByText("Set reminder")).toHaveCSS("font-family", /Schibsted Grotesk/);
+  await expect(reminder.getByText("Set reminder")).toHaveCSS("font-family", /^"?Geist"?,/);
   await reminder.press("Enter");
   await expect(reminder).toHaveAttribute("aria-expanded", "true");
   const reducedFade = await page.locator("html").evaluate((root) =>

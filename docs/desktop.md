@@ -180,7 +180,7 @@ on top of GPUI** and revisit the question later.
   a separate decision.
 - **It's heavy.** At its own pin it builds about 500 crates and takes about 2.5 minutes for a clean release
   build.
-- **F2 needs its own look anyway.** The design uses round checkboxes, pills only for list chips, Fraunces
+- **F2 needs its own look anyway.** The design uses round checkboxes, pills only for list chips, Geist
   room titles and the painted header landscape. We'd restyle most components rather than use them as they
   are.
 
@@ -569,8 +569,8 @@ Icons are the shared Lucide subset and list glyphs (`todo_design::Icon` and `Gly
 
 The fonts are the shared static instances in `assets/fonts`, embedded in the binary through
 `todo_design::fonts::FACES` (the `embed-fonts` feature) and registered at startup. The app never uses system
-fonts. The families are Fraunces Display and Fraunces Text (room titles, italic eyebrows), Schibsted
-Grotesk (UI) and Geist Mono (numbers and dates), all under the OFL.
+fonts. The families are Geist (titles, eyebrows and interface text) and Geist Mono (counts, times and other
+metadata), both under the OFL.
 
 ## Screenshots
 

@@ -2,65 +2,25 @@
    Regenerate with: TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated */
 
 @font-face {
-  font-family: "Fraunces Display";
-  src: url("fonts/FrauncesDisplay-Book.ttf") format("truetype");
-  font-weight: 360;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Fraunces Display";
-  src: url("fonts/FrauncesDisplay-BookItalic.ttf") format("truetype");
-  font-weight: 360;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Fraunces Text";
-  src: url("fonts/FrauncesText-Italic.ttf") format("truetype");
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("fonts/SchibstedGrotesk-400.ttf") format("truetype");
+  font-family: "Geist";
+  src: url("fonts/Geist-400.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("fonts/SchibstedGrotesk-500.ttf") format("truetype");
+  font-family: "Geist";
+  src: url("fonts/Geist-500.ttf") format("truetype");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("fonts/SchibstedGrotesk-550.ttf") format("truetype");
-  font-weight: 550;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("fonts/SchibstedGrotesk-600.ttf") format("truetype");
+  font-family: "Geist";
+  src: url("fonts/Geist-600.ttf") format("truetype");
   font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("fonts/SchibstedGrotesk-650.ttf") format("truetype");
-  font-weight: 650;
   font-style: normal;
   font-display: swap;
 }
@@ -98,40 +58,38 @@
 }
 
 :root {
-  --font-display: "Fraunces Display", Georgia, serif;
-  --font-display-text: "Fraunces Text", Georgia, serif;
-  --font-ui: "Schibsted Grotesk", system-ui, sans-serif;
+  --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
-  --text-room-title: 360 56px/60px var(--font-display);
-  --text-room-title-tracking: -0.028em;
-  --text-room-title-compact: 360 48px/52px var(--font-display);
-  --text-room-title-compact-tracking: -0.028em;
-  --text-room-title-phone: 360 44px/48px var(--font-display);
-  --text-room-title-phone-tracking: -0.026em;
-  --text-room-title-bar: 360 24px/28px var(--font-display);
-  --text-room-title-bar-tracking: -0.016em;
-  --text-eyebrow-day: italic 400 18px/22px var(--font-display-text);
-  --text-eyebrow-day-phone: italic 400 17px/20px var(--font-display-text);
+  --text-room-title: 600 42px/48px var(--font-ui);
+  --text-room-title-tracking: -0.04em;
+  --text-room-title-compact: 600 36px/40px var(--font-ui);
+  --text-room-title-compact-tracking: -0.04em;
+  --text-room-title-phone: 600 33px/36px var(--font-ui);
+  --text-room-title-phone-tracking: -0.037em;
+  --text-room-title-bar: 600 18px/20px var(--font-ui);
+  --text-room-title-bar-tracking: -0.023em;
+  --text-eyebrow-day: 500 13px/22px var(--font-ui);
+  --text-eyebrow-day-phone: 500 13px/20px var(--font-ui);
   --text-eyebrow-meta: 400 11px/22px var(--font-mono);
   --text-eyebrow-meta-tracking: 0.1em;
   --text-eyebrow-meta-transform: uppercase;
   --text-eyebrow-meta-phone: 400 10.5px/20px var(--font-mono);
   --text-eyebrow-meta-phone-tracking: 0.1em;
   --text-eyebrow-meta-phone-transform: uppercase;
-  --text-empty-line: italic 360 32px/38px var(--font-display);
+  --text-empty-line: 400 24px/32px var(--font-ui);
   --text-empty-line-tracking: -0.02em;
   --text-detail-title: 600 21px/28px var(--font-ui);
   --text-detail-title-tracking: -0.012em;
-  --text-detail-title-phone: 600 23px/30px var(--font-ui);
+  --text-detail-title-phone: 600 23px/32px var(--font-ui);
   --text-detail-title-phone-tracking: -0.012em;
-  --text-next-title: 600 19px/26px var(--font-ui);
+  --text-next-title: 600 19px/28px var(--font-ui);
   --text-next-title-tracking: -0.01em;
   --text-task-title: 500 15px/20px var(--font-ui);
-  --text-task-title-phone: 500 16px/22px var(--font-ui);
+  --text-task-title-phone: 500 16px/24px var(--font-ui);
   --text-body: 400 14px/20px var(--font-ui);
-  --text-notes: 400 14px/22px var(--font-ui);
+  --text-notes: 400 14px/24px var(--font-ui);
   --text-quick-add: 400 14.5px/20px var(--font-ui);
-  --text-composer: 400 15.5px/22px var(--font-ui);
+  --text-composer: 400 15.5px/24px var(--font-ui);
   --text-nav: 500 14px/20px var(--font-ui);
   --text-nav-sub: 400 13.5px/20px var(--font-ui);
   --text-nav-collection: 600 13px/16px var(--font-ui);
@@ -140,11 +98,11 @@
   --text-meta-phone: 400 12.5px/16px var(--font-ui);
   --text-summary: 400 12.5px/16px var(--font-ui);
   --text-summary-figures: 400 12px/16px var(--font-mono);
-  --text-chip: 550 12px/20px var(--font-ui);
-  --text-room-pill: 550 13.5px/20px var(--font-ui);
+  --text-chip: 500 12px/20px var(--font-ui);
+  --text-room-pill: 500 13.5px/20px var(--font-ui);
   --text-overdue-badge: 600 12px/20px var(--font-mono);
-  --text-toast: 550 13.5px/20px var(--font-ui);
-  --text-toast-action: 650 13.5px/20px var(--font-ui);
+  --text-toast: 500 13.5px/20px var(--font-ui);
+  --text-toast-action: 600 13.5px/20px var(--font-ui);
   --text-button: 600 14px/20px var(--font-ui);
   --text-button-small: 600 12.5px/16px var(--font-ui);
   --text-caps-label: 600 10.5px/16px var(--font-mono);

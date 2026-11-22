@@ -144,13 +144,13 @@ private fun EyebrowLine(e: Eyebrow) {
     ) {
         when (e) {
             is Eyebrow.Day -> {
-                Label(e.weekday, Tokens.Type.EYEBROW_DAY_PHONE, r.ink2)
+                Label(e.weekday, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
                 Label(e.date, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
                 Box(Modifier.size(Tokens.Elevation.HAIRLINE.dp, Micro.eyebrowBar).background(r.lineStrong))
                 Label(e.week, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
             }
             is Eyebrow.Kind -> {
-                Label(e.kind, Tokens.Type.EYEBROW_DAY_PHONE, r.ink2)
+                Label(e.kind, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
                 Label(e.detail, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
             }
         }

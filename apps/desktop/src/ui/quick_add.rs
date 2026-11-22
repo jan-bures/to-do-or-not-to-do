@@ -182,7 +182,7 @@ impl Render for QuickAddView {
                                     .child(
                                         div()
                                             .style(ty::EYEBROW_DAY)
-                                            .text_color(p.ink_2)
+                                            .text_color(p.accent_strong)
                                             .child("Quick add"),
                                     )
                                     .child(bar())

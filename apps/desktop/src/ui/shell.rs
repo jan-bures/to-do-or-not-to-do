@@ -1728,7 +1728,7 @@ impl ShellView {
                     ))
                     .child(
                         div()
-                            .style(ty::NAV_COLLECTION.with_weight(650))
+                            .style(ty::NAV_COLLECTION)
                             .text_color(p.ink)
                             .child("To-do"),
                     ),
@@ -1784,7 +1784,12 @@ impl ShellView {
     }
 
     fn eyebrow(&self, eyebrow: &Eyebrow) -> Div {
-        let (ink_2, ink_3, line) = self.header_inks();
+        let (_, ink_3, line) = self.header_inks();
+        let accent = if self.motion.dusk(self.frame).night_ink() {
+            self.dusk_accent()
+        } else {
+            self.palette.accent_strong
+        };
         let bar = || {
             div()
                 .w(px(elevation::HAIRLINE))
@@ -1800,13 +1805,13 @@ impl ShellView {
                 .text_color(ink_3)
                 .child(s.to_uppercase())
         };
-        let dow = |s: SharedString| {
+        let lead = |s: SharedString| {
             div()
                 .min_w_0()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .style(ty::EYEBROW_DAY)
-                .text_color(ink_2)
+                .text_color(accent)
                 .child(s)
         };
         let row = div()
@@ -1820,13 +1825,13 @@ impl ShellView {
                 date,
                 week,
             } => row
-                .child(dow(weekday.clone()))
+                .child(lead(weekday.clone()))
                 .child(bar())
                 .child(mono(date))
                 .child(bar())
                 .child(mono(week)),
             Eyebrow::Kind { kind, detail } => row
-                .child(dow(kind.clone()))
+                .child(lead(kind.clone()))
                 .child(bar())
                 .child(mono(detail)),
         }
@@ -1987,9 +1992,7 @@ impl ShellView {
             sun_alpha: self.motion.sun_alpha(self.frame),
         };
         let (_, ink_3, _) = self.header_inks();
-        // Long titles end in an ellipsis from text layout, with no clipping: the display face's
-        // descenders (the y in "My Day") hang below its tight line box, and GPUI clips both axes even
-        // for `overflow_x_hidden`.
+        // Ellipsize in text layout rather than clipping both axes with `overflow_x_hidden`.
         let title_text = |text: SharedString| {
             div()
                 .min_w_0()
@@ -2723,7 +2726,7 @@ impl ShellView {
             .child(
                 div()
                     .style(ty::EMPTY_LINE)
-                    .text_color(self.palette.ink)
+                    .text_color(self.palette.ink_2)
                     .child(line.clone()),
             )
             .child(

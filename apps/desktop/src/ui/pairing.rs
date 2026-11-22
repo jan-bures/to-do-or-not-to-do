@@ -644,7 +644,7 @@ impl Render for PairingView {
                             ))
                             .child(
                                 div()
-                                    .style(ty::NAV_COLLECTION.with_weight(650))
+                                    .style(ty::NAV_COLLECTION)
                                     .text_color(p.ink)
                                     .child("To-do"),
                             ),
@@ -670,7 +670,7 @@ impl Render for PairingView {
                                     .child(
                                         div()
                                             .style(ty::EYEBROW_DAY)
-                                            .text_color(p.ink_2)
+                                            .text_color(p.accent_strong)
                                             .child("Welcome"),
                                     )
                                     .child(bar())

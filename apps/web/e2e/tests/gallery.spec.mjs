@@ -367,8 +367,11 @@ for (const scheme of ["light", "dark"]) {
       await page.setViewportSize(DESKTOP);
       await open(page);
       await page.locator(".sidebar").getByRole("link", { name: /^Garden/ }).click();
-      await page.locator(".empty-line").waitFor();
+      await expect(page.locator(".empty-line")).toHaveCSS("font-weight", "400");
+      await expect(page.locator(".empty-line")).toHaveCSS("font-style", "normal");
       await shot(page, `empty-list-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await shot(page, `phone-empty-list-${scheme}`);
       await w.check();
     });
 

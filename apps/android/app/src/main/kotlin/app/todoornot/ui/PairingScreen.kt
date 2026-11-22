@@ -120,7 +120,7 @@ private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
         Column(Modifier.fillMaxSize().background(r.pane)) {
             Column(Modifier.fillMaxWidth().background(r.sky).statusBarsPadding()) {
                 Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, top = S.S8.dp, bottom = S.S1.dp)) {
-                    Label(eyebrow, Tokens.Type.EYEBROW_DAY_PHONE, r.ink2)
+                    Label(eyebrow, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
                     Label(title, Tokens.Type.ROOM_TITLE_PHONE, r.ink)
                 }
                 Landscape(scene, Tokens.Landscape.HEIGHT_COVER.dp)
@@ -191,7 +191,7 @@ private fun Waiting(state: PairingState.Waiting, actions: PairingActions) {
         verticalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
         Label("Code", Tokens.Type.CAPS_LABEL, r.ink3)
-        Label(state.userCode, Tokens.Type.ROOM_TITLE_PHONE.copy(role = app.todoornot.design.FontRole.MONO, weight = Tokens.Type.DUE.weight), r.ink)
+        Label(state.userCode, Tokens.Type.PAIRING_CODE, r.ink)
         Spacer(Modifier.height(S.S1.dp))
         Label("Link", Tokens.Type.CAPS_LABEL, r.ink3)
         Label(state.approvalUrl, Tokens.Type.DUE, r.accentStrong, maxLines = 3)

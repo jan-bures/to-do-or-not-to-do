@@ -45,7 +45,16 @@ fn json_is_valid_and_complete() {
     assert_eq!(v["colors"]["light"]["rooms"]["my-day"]["pane"], "#fefbf9");
     assert_eq!(v["colors"]["dark"]["rooms"]["lagoon"]["sky"], "#0c2220");
     assert_eq!(v["colors"]["dusk"]["my-day"]["top"], "#0f1727");
-    assert_eq!(v["type"]["room-title"]["family"], "Fraunces Display");
+    let title = &v["type"]["room-title"];
+    assert_eq!(title["family"], "Geist");
+    assert_eq!(title["weight"], 600);
+    assert_eq!(title["size"], 42.0);
+    assert_eq!(title["lineHeight"], 48.0);
+    let eyebrow = &v["type"]["eyebrow-day"];
+    assert_eq!(eyebrow["family"], "Geist");
+    assert_eq!(eyebrow["weight"], 500);
+    assert_eq!(eyebrow["italic"], false);
+    assert_eq!(v["type"]["eyebrow-meta"]["family"], "Geist Mono");
     assert_eq!(v["metrics"]["desktop"]["row"], 56.0);
     // The round checkbox is part of both exports, so no client hard-codes its shape.
     assert_eq!(v["radius"]["checkbox"], "circle");

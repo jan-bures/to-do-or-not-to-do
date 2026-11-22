@@ -375,7 +375,7 @@ private fun LazyItemScope.MovingRow(
 private fun Empty(line: String) {
     val r = LocalDesign.current.room
     Column(Modifier.fillMaxWidth().padding(horizontal = S.S5.dp, vertical = S.S8.dp)) {
-        Label(line, Tokens.Type.EMPTY_LINE, r.ink3, maxLines = 3)
+        Label(line, Tokens.Type.EMPTY_LINE, r.ink2, maxLines = 3)
     }
 }
 

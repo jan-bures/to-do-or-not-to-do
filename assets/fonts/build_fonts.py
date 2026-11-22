@@ -4,8 +4,8 @@
 Usage:
     python build_fonts.py <upstream-dir> [<out-dir>]
 
-<upstream-dir> must contain the files listed in UPSTREAM, downloaded from the google/fonts commits recorded in
-README.md. <out-dir> defaults to the directory this script lives in. Requires fontTools (tested with 4.65).
+<upstream-dir> must contain the files listed in UPSTREAM, downloaded from the sources recorded in README.md.
+<out-dir> defaults to the directory this script lives in. Requires fontTools (tested with 4.65).
 
 Each instance pins every variation axis, so GPUI, Compose and browsers all render exactly the same outlines
 without needing variable-font support. Each one is then subset to Latin, Latin Extended (full Czech coverage)
@@ -19,24 +19,14 @@ from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 
 UPSTREAM = {
-    'fraunces': 'Fraunces[SOFT,WONK,opsz,wght].ttf',
-    'fraunces-italic': 'Fraunces-Italic[SOFT,WONK,opsz,wght].ttf',
-    'schibsted': 'SchibstedGrotesk[wght].ttf',
+    'geist': 'Geist[wght].ttf',
     'geist-mono': 'GeistMono[wght].ttf',
 }
 
 # (output file, upstream key, family, style name, weight, italic, axis location)
 INSTANCES = [
-    ('FrauncesDisplay-Book.ttf', 'fraunces', 'Fraunces Display', 'Book', 360, False,
-     dict(opsz=144, wght=360, SOFT=100, WONK=0)),
-    ('FrauncesDisplay-BookItalic.ttf', 'fraunces-italic', 'Fraunces Display', 'Book Italic', 360, True,
-     dict(opsz=144, wght=360, SOFT=100, WONK=0)),
-    ('FrauncesText-Italic.ttf', 'fraunces-italic', 'Fraunces Text', 'Italic', 400, True,
-     dict(opsz=36, wght=400, SOFT=100, WONK=0)),
-]
-INSTANCES += [
-    (f'SchibstedGrotesk-{w}.ttf', 'schibsted', 'Schibsted Grotesk', name, w, False, dict(wght=w))
-    for w, name in ((400, 'Regular'), (500, 'Medium'), (550, '550'), (600, 'SemiBold'), (650, '650'))
+    (f'Geist-{w}.ttf', 'geist', 'Geist', name, w, False, dict(wght=w))
+    for w, name in ((400, 'Regular'), (500, 'Medium'), (600, 'SemiBold'))
 ]
 INSTANCES += [
     (f'GeistMono-{w}.ttf', 'geist-mono', 'Geist Mono', name, w, False, dict(wght=w))

@@ -1001,7 +1001,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 .eyebrow-lead {
   font: var(--text-eyebrow-day);
-  color: var(--color-ink-2);
+  color: var(--color-accent-strong);
 }
 
 .eyebrow-meta {
@@ -1166,11 +1166,6 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 .finished .ls-hill-near {
   fill: var(--dusk-silhouette-near);
-}
-
-.finished .eyebrow-lead,
-.finished .room-title {
-  color: var(--color-ink);
 }
 
 .finished .summary .finished-clear {
