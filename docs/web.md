@@ -8,7 +8,8 @@ there is no token in the browser.
 
 This first version covers sign-in, the smart lists and every collection and list, the task list, the task
 detail, adding, completing (with the F2 check animation), editing titles, steps and notes, My Day, and live
-updates. It has the desktop layout on wide windows and the phone layout on narrow ones, in both themes.
+updates. Lists and collections can be renamed, moved up or down, and deleted. Undo compensates the exact
+change. It has the desktop layout on wide windows and the phone layout on narrow ones, in both themes.
 
 ## Building and running
 
@@ -58,8 +59,9 @@ browsers that accept gzip (the wasm module is about 4.5 MB, 0.7 MB gzipped).
 | `src/model.rs` | The view-model: sidebar counts, a room's header and rows, the detail pane, tomorrow's plan. Pure Rust over `todo_core::State`, unit-tested on the host. |
 | `src/landscape.rs` | The header landscape as SVG markup, from `todo_design::landscape`. Shapes carry classes; `app.css` colours them from the room's tokens. |
 | `src/app.rs` | The Leptos components. They set classes and `data-*` hue keys only. |
-| `src/backend.rs` | The live backend (the sync engine) or the fixtures backend. |
-| `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, CSRF token, downloads. |
+| `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
+| `src/app/room_actions.rs` | List and collection menus, rename and delete dialogs, and the Not synced list. |
+| `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
 | `src/fixtures.rs` | Invented gallery data with a fixed clock (Saturday 21 November 2026, 10:35). |
 | `static/app.css` | The layout. Every colour, size, radius, font and duration is a `tokens.css` variable. |
 | `crates/todo-client/src/web.rs` | The browser platform for the sync engine (behind the `web` feature). |
@@ -275,8 +277,20 @@ visible row uses them. List chip labels and trailing tags ellipsise; steps and m
 
 The filter narrows open and completed rows in the current room using the shared smart-list query language
 (e.g. `tag:docs`), including accent-insensitive text. Room totals are unchanged. Sidebar chevrons show or
-hide a collection's lists without changing rooms. **New list** creates a sibling of the current list, a
-child of the current collection, or a top-level list from a smart room. Each new list gets a swatch.
+hide a collection's lists without changing rooms. The browser remembers folded collection IDs in
+`localStorage`; if it is unavailable or the data is invalid, folding still works for this visit.
+**New list** creates a sibling of the current list, a child of the current collection, or a top-level
+list from a smart room. Each new list gets a swatch.
+
+Right-click a list or collection in the sidebar, press **Shift+F10** on its link, or use its **…** button.
+A list or collection header has a **Room menu** too. Use Arrow Up/Down to navigate, Enter to act, or
+Escape to close the menu. **Move up** and **Move down** stay within the item's siblings. **Delete**
+asks before hiding the item and its contents; the scrim blocks other controls and focus starts on
+**Cancel**. Undo brings back the deleted item and makes its surviving contents visible again.
+
+When the sidebar's sync line says **n not synced**, open it to see the refused changes and plain-language
+reasons. **Dismiss** clears one; **Dismiss all** clears only the entries shown during this opening. A refusal
+that arrives while the list is open stays for the next opening. Dismissing doesn't retry a change.
 
 Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
 and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
@@ -293,11 +307,12 @@ Completing a task runs the F2 choreography: the fill pops (`--duration-check-fil
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
-running out; Ctrl+Z works while it's shown. Undo reopens the task, which is exact for an ordinary task. A
-recurring task with a due date is different: completing it also creates the next occurrence, and reopening
-would leave that behind. Undoing both needs the server's undo of the whole command, which needs the confirmed
-event, so for now completing a recurring task on the web offers no Undo; the toast says the next
-one is scheduled. Reduced motion turns movement into instant changes.
+running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
+Completion, reorders and deletion of a list, collection or step use `SyncClient::undo_tracked`: it cancels an
+unsent change when possible, or queues the compensation for the whole original event batch. For recurring
+tasks that means reopening the original and removing the next occurrence it created. If undo fails, the app
+shows a plain-language explanation, never the server's raw message. Reduced motion turns movement into instant
+changes.
 
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
@@ -317,7 +332,7 @@ While the detail is modal, Undo and other toast feedback appear in its own botto
 Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
 **Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.
 Click a hand-over task's title, or use **J/K**, to open its detail. Its checkbox or **Space** on a selected
-row completes it in place and offers the usual Undo for non-recurring tasks. The My Day count stays put:
+row completes it in place and offers the usual Undo. The My Day count stays put:
 these tasks belong to tomorrow or later. The list scrolls separately from its toast strip and phone composer.
 
 **The app icon** is Daybreak, from `assets/brand` (see its README); the build copies it into `dist/brand/`.
@@ -329,7 +344,8 @@ of scope for now, and the generated 192 and 512 px and maskable icons are ready 
 Keyboard: **J/K** or the arrows move the selection, **Space** toggles a selected task from the list, **E**
 edits the detail title, **D** edits its due date, **P** cycles priority (**Shift+P** focuses the picker),
 **Alt+Up/Down** reorders in a list, and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
-the active editor, overlay or filter. The status bar shows shortcuts only when their actions are available.
+the active editor, overlay or filter. App shortcuts don't run while typing and held keys don't repeat actions.
+The status bar shows shortcuts only when their actions are available.
 
 ## Tests
 
@@ -341,7 +357,8 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, due-date editor, step controls and delete Undo, a collapsed collection, an active query filter, the finished
+  the detail, due-date editor, step controls and delete Undo, a collapsed collection, sidebar and room menus,
+  rename and delete dialogs, a delete Undo toast, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
@@ -352,7 +369,10 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
-  header being refused. Then: two tabs queueing edits offline, both closed, and every edit sent exactly once
+  header being refused. Then: exact Undo of a confirmed recurring completion (including removal of its
+  next occurrence); a live sidebar change leaving the highlighted menu action on the same list;
+  Dismiss all preserving a refusal that arrived after opening Not synced;
+  two tabs queueing edits offline, both closed, and every edit sent exactly once
   on the next start; a tab whose session was replaced by a sign-in elsewhere still sending its queued edit,
   once; a note being typed surviving a rename that arrives over the event stream, then saving; a rename in a
   stalled sender tab and a later one from a second tab landing in that order, and the lock passing on when
@@ -391,8 +411,8 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
-- **Editing more fields.** Due dates, reminders, repeat rules and tags are shown but not editable yet; there is
-  no moving tasks between lists, reordering, or creating collections.
+- **Editing more fields.** Reminders, repeat rules and tags are shown but not editable yet. Moving tasks
+  between lists and creating collections aren't available.
 - **Attachments** are download links (fetched with the session, saved as a blob); there is no upload.
 - **The wasm size.** About 4.5 MB (0.7 MB gzipped). `wasm-opt` and Leptos's `erase_components` haven't been
   tried in the release build yet.

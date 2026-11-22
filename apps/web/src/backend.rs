@@ -17,6 +17,7 @@
 // The fixtures build never opens the live backend.
 #![cfg_attr(feature = "fixtures", allow(dead_code))]
 
+use crate::changes::{self, Failure};
 #[cfg(feature = "fixtures")]
 use crate::model::Now;
 use std::cell::{Cell, RefCell};
@@ -29,7 +30,9 @@ use todo_client::web::{
     BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks, SenderLock,
     elect_sender, open_channel, open_storage, sleep,
 };
-use todo_client::{ClientConfig, Connection, ErrorKind, SyncClient};
+use todo_client::{
+    ClientConfig, CommandId, Connection, ErrorKind, SyncClient, TrackedCommand, TrackedUndo,
+};
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
 
@@ -57,6 +60,7 @@ struct Local {
     read_only: bool,
     started_ms: f64,
     counter: u64,
+    failures: Vec<Failure>,
 }
 
 thread_local! {
@@ -323,14 +327,32 @@ pub async fn reset_local_data() -> Result<(), String> {
 /// The fixtures backend with this state.
 #[cfg(feature = "fixtures")]
 pub fn open_fixtures(state: State, now: Now) {
+    let query = crate::platform::query();
+    let failures = if query.contains("fixture=not-synced") {
+        vec![
+            Failure {
+                id: Uuid::from_u128(1),
+                what: "Rename list to “Museum visits”".into(),
+                why: "The item or where it belongs no longer exists.",
+            },
+            Failure {
+                id: Uuid::from_u128(2),
+                what: "Undo a change".into(),
+                why: changes::undo_failure("undo_conflict"),
+            },
+        ]
+    } else {
+        Vec::new()
+    };
     BACKEND.with(|b| {
         *b.borrow_mut() = Some(Backend::Local(Local {
             state: Arc::new(state),
             now,
-            storage_error: crate::platform::query().contains("storage-error"),
-            read_only: crate::platform::query().contains("read-only"),
+            storage_error: query.contains("storage-error"),
+            read_only: query.contains("read-only"),
             started_ms: js_sys::Date::now(),
             counter: 0,
+            failures,
         }));
     });
 }
@@ -426,6 +448,7 @@ pub fn status() -> Sync {
         Some(Backend::Local(l)) => Sync {
             connection: Connection::Online,
             offline_demo: true,
+            failed: l.failures.len(),
             local_error: l
                 .storage_error
                 .then(|| "QuotaExceededError: the quota has been exceeded".to_owned()),
@@ -461,35 +484,126 @@ pub const READ_ONLY: &str = "a newer version is open in another tab";
 /// and refuses every command (with [`READ_ONLY`], applying nothing) once another tab upgrades the
 /// database: this tab's connection is closing, so an edit made now would be shown but never stored.
 pub fn submit(command: Command) -> Result<(), String> {
+    submit_inner(command, false).map(drop)
+}
+
+pub enum UndoTarget {
+    Live(TrackedCommand),
+    #[cfg(feature = "fixtures")]
+    Local(Vec<todo_core::Event>),
+}
+
+/// Retain the command's exact batch, rather than issuing a new command that approximates its inverse.
+pub fn submit_tracked(command: Command) -> Result<UndoTarget, String> {
+    submit_inner(command, true)?.ok_or_else(|| "no undo target".into())
+}
+
+fn submit_inner(command: Command, tracked: bool) -> Result<Option<UndoTarget>, String> {
     if UPGRADING.with(Cell::get) {
         return Err(READ_ONLY.to_owned());
     }
     BACKEND.with(|b| match &mut *b.borrow_mut() {
-        Some(Backend::Live(c)) => c.submit(command).map(|_| ()).map_err(|e| e.to_string()),
+        Some(Backend::Live(c)) => if tracked {
+            c.submit_tracked(command).map(|t| Some(UndoTarget::Live(t)))
+        } else {
+            c.submit(command).map(|_| None)
+        }
+        .map_err(|e| e.to_string()),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) if l.read_only => Err(READ_ONLY.to_owned()),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => {
-            // Event times move on with the real clock so repeated commands get distinct IDs.
-            #[allow(clippy::cast_possible_truncation)]
-            let elapsed = (js_sys::Date::now() - l.started_ms).max(0.0) as i64;
-            l.counter += 1;
-            let at = l
-                .now
-                .at
-                .checked_add(jiff::SignedDuration::from_millis(
-                    elapsed + i64::try_from(l.counter).unwrap_or(0),
-                ))
-                .unwrap_or(l.now.at);
+            let at = l.event_time();
             let events =
                 todo_core::decide(&l.state, &owner(), &command, at).map_err(|e| e.to_string())?;
-            let mut next = (*l.state).clone();
-            for e in &events {
-                todo_core::apply(&mut next, e).map_err(|e| e.to_string())?;
-            }
-            l.state = Arc::new(next);
-            Ok(())
+            l.state = Arc::new(changes::fixture::apply_batch(&l.state, &events)?);
+            Ok(tracked.then_some(UndoTarget::Local(events)))
         }
         None => Err("not started".to_owned()),
+    })
+}
+
+#[cfg(feature = "fixtures")]
+impl Local {
+    fn event_time(&mut self) -> todo_core::time::Timestamp {
+        // Event times move on with the real clock so repeated commands get distinct IDs.
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed = (js_sys::Date::now() - self.started_ms).max(0.0) as i64;
+        self.counter += 1;
+        self.now
+            .at
+            .checked_add(jiff::SignedDuration::from_millis(
+                elapsed + i64::try_from(self.counter).unwrap_or(0),
+            ))
+            .unwrap_or(self.now.at)
+    }
+}
+
+pub fn undo(target: &UndoTarget) -> Result<TrackedUndo, String> {
+    if status().read_only {
+        return Err(READ_ONLY.to_owned());
+    }
+    BACKEND.with(|b| match (&mut *b.borrow_mut(), target) {
+        (Some(Backend::Live(c)), UndoTarget::Live(t)) => c
+            .undo_tracked(t)
+            .map_err(|_| changes::undo_failure("").into()),
+        #[cfg(feature = "fixtures")]
+        (Some(Backend::Local(l)), UndoTarget::Local(events)) => {
+            let at = l.event_time();
+            l.state = Arc::new(changes::fixture::undo(&l.state, events, &owner(), at)?);
+            Ok(TrackedUndo::Cancelled)
+        }
+        _ => Ok(TrackedUndo::Unavailable),
+    })
+}
+
+/// None while the compensation is still queued. Durable refusals also remain in Not synced.
+pub fn undo_result(id: CommandId) -> Option<Result<(), &'static str>> {
+    let c = live()?;
+    if c.pending().iter().any(|entry| entry.command_id == id) {
+        return None;
+    }
+    Some(
+        c.failed()
+            .iter()
+            .find(|f| f.entry.command_id == id)
+            .map_or(Ok(()), |f| Err(changes::undo_failure(&f.rejection.code))),
+    )
+}
+
+pub fn failures() -> Vec<Failure> {
+    BACKEND.with(|b| match &*b.borrow() {
+        Some(Backend::Live(c)) => {
+            let failed = c.failed();
+            let state = c.view();
+            failed
+                .iter()
+                .map(|f| Failure::from_entry(f, &state))
+                .collect()
+        }
+        #[cfg(feature = "fixtures")]
+        Some(Backend::Local(l)) => l.failures.clone(),
+        None => Vec::new(),
+    })
+}
+
+/// Dismiss only the entries the user saw, never re-read the failure list to choose what to remove.
+pub fn dismiss_failures(ids: &[CommandId]) -> Result<(), String> {
+    if status().read_only {
+        return Err(READ_ONLY.to_owned());
+    }
+    BACKEND.with(|b| match &mut *b.borrow_mut() {
+        Some(Backend::Live(c)) => {
+            for &id in ids {
+                c.dismiss(id).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        #[cfg(feature = "fixtures")]
+        Some(Backend::Local(l)) => {
+            l.failures.retain(|f| !ids.contains(&f.id));
+            Ok(())
+        }
+        None => Ok(()),
     })
 }

@@ -6,6 +6,7 @@
 // On the host only the tests use the view-model.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+mod changes;
 #[cfg(any(test, feature = "fixtures"))]
 mod fixtures;
 mod landscape;

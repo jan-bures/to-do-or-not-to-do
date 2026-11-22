@@ -1,7 +1,10 @@
 //! The Leptos components. Layout and look are in `static/app.css`, which takes every value from
 //! `tokens.css`; this file only sets classes and `data-*` hue keys.
 
-use crate::backend::{self, Sync};
+mod room_actions;
+
+use crate::backend::{self, Sync, UndoTarget};
+use crate::changes::{self, Failure};
 use crate::landscape::{self, Sky};
 use crate::model::{
     self, AgentMark, Detail, DueTone, Now, Room, RoomId, Row, Sidebar, Source, Tomorrow,
@@ -12,7 +15,7 @@ use leptos::prelude::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use todo_client::{Connection, intent};
+use todo_client::{CommandId, Connection, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
 use todo_core::{Command, State};
@@ -46,10 +49,9 @@ pub struct Shown {
     phase: Option<Phase>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Undo {
-    Reopen(TaskId),
-    RestoreStep(StepId),
+struct Undo {
+    target: UndoTarget,
+    completing: Option<TaskId>,
 }
 
 /// The toast at the bottom of the list.
@@ -57,7 +59,7 @@ enum Undo {
 pub struct Toast {
     id: u64,
     text: String,
-    undo: Option<Undo>,
+    undo: bool,
 }
 
 /// Shared UI state and whether it follows the real clock (`false` for fixtures).
@@ -73,6 +75,10 @@ pub struct Ctx {
     lingering: RwSignal<Vec<Linger>>,
     toast: RwSignal<Option<Toast>>,
     toast_seq: RwSignal<u64>,
+    undo: RwSignal<Option<Undo>>,
+    waiting_undo: RwSignal<BTreeSet<CommandId>>,
+    room_actions: room_actions::Controls,
+    failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
     drawer: RwSignal<bool>,
     narrow: RwSignal<bool>,
@@ -112,6 +118,15 @@ impl Ctx {
             platform::sign_in(&platform::path());
         }
         self.sync.set(s);
+        self.failures.set(backend::failures());
+        for id in self.waiting_undo.get_untracked() {
+            if let Some(outcome) = backend::undo_result(id) {
+                self.waiting_undo.update(|ids| {
+                    ids.remove(&id);
+                });
+                self.show_toast(outcome.err().unwrap_or("Change undone.").into(), false);
+            }
+        }
     }
 
     /// A newer version took the database over: no more edits here (see `backend::submit`).
@@ -120,20 +135,23 @@ impl Ctx {
     }
 
     fn submit(self, cmd: Command) -> bool {
-        match backend::submit(cmd) {
-            Ok(()) => {
+        self.submission(backend::submit(cmd)).is_some()
+    }
+
+    fn submission<T>(self, result: Result<T, String>) -> Option<T> {
+        match result {
+            Ok(value) => {
                 self.refresh();
-                true
+                Some(value)
             }
             // Nothing was applied; the persistent alert says why and offers a reload.
             Err(_) if backend::status().read_only => {
                 self.refresh();
-                false
+                None
             }
-            Err(e) => {
-                tracing::warn!("command refused: {e}");
-                self.show_toast(format!("Couldn’t save that: {e}"), None);
-                false
+            Err(_) => {
+                self.show_toast("Couldn’t save that change.".into(), false);
+                None
             }
         }
     }
@@ -143,17 +161,47 @@ impl Ctx {
         command.is_some_and(|command| self.submit(command))
     }
 
-    fn undo(self, action: Undo) {
-        self.toast.set(None);
-        match action {
-            Undo::Reopen(id) => self.uncomplete(id),
-            Undo::RestoreStep(id) => {
-                self.submit(intent::restore_step(id));
-            }
-        }
+    fn submit_undoable(self, cmd: Command, label: String, completing: Option<TaskId>) -> bool {
+        let Some(target) = self.submission(backend::submit_tracked(cmd)) else {
+            return false;
+        };
+        self.undo.set(Some(Undo { target, completing }));
+        self.show_toast(label, true);
+        true
     }
 
-    fn show_toast(self, text: String, undo: Option<Undo>) {
+    fn undo(self) {
+        let Some(action) = self.undo.try_update(Option::take).flatten() else {
+            return;
+        };
+        self.toast.set(None);
+        let result = backend::undo(&action.target);
+        if matches!(result, Ok(TrackedUndo::Cancelled | TrackedUndo::Queued(_)))
+            && let Some(id) = action.completing
+        {
+            self.lingering.update(|l| l.retain(|x| x.row.id != id));
+        }
+        match result {
+            Ok(TrackedUndo::Cancelled) => self.show_toast("Change undone.".into(), false),
+            Ok(TrackedUndo::Queued(id)) => {
+                self.waiting_undo.update(|ids| {
+                    ids.insert(id);
+                });
+            }
+            Ok(TrackedUndo::Unavailable) => {
+                self.show_toast(changes::undo_failure("undo_no_event").into(), false)
+            }
+            Err(message) => self.show_toast(message, false),
+        }
+        self.refresh();
+    }
+
+    fn fold(self, update: impl FnOnce(&mut BTreeSet<CollectionId>)) {
+        self.collapsed.update(update);
+        self.collapsed.with_untracked(platform::save_folded);
+    }
+
+    fn show_toast(self, text: String, undo: bool) {
         let id = self.toast_seq.get_untracked() + 1;
         self.toast_seq.set(id);
         self.toast.set(Some(Toast { id, text, undo }));
@@ -168,6 +216,7 @@ impl Ctx {
     }
 
     fn reset_room_controls(self) {
+        self.room_actions.close_menu(false);
         self.drawer.set(false);
         self.new_list.set(false);
         self.filter_open.set(false);
@@ -217,9 +266,6 @@ impl Ctx {
     /// when it has gone.
     fn complete(self, row: &Row) {
         let room = self.room.get_untracked();
-        let undoable = self
-            .state
-            .with_untracked(|s| model::reopen_undoes_completion(s, row.id));
         let handover = self.tomorrow.with_untracked(|plan| {
             plan.as_ref()
                 .is_some_and(|plan| plan.rows().any(|r| r.id == row.id))
@@ -230,12 +276,15 @@ impl Ctx {
             .iter()
             .position(|s| s.row.id == row.id)
             .unwrap_or(0);
-        if !self.submit_intent(|state| intent::set_done(state, row.id, true)) {
+        let id = row.id;
+        let Some(cmd) = self.state.with_untracked(|s| intent::set_done(s, id, true)) else {
+            return;
+        };
+        if !self.submit_undoable(cmd, format!("Completed “{}”", row.title), Some(id)) {
             return;
         }
-        let id = row.id;
         // A rapid Undo followed by another completion starts a fresh timer for the same task.
-        let token = self.toast_seq.get_untracked() + 1;
+        let token = self.toast_seq.get_untracked();
         let mut done = row.clone();
         done.done = true;
         self.lingering.update(|l| {
@@ -267,16 +316,6 @@ impl Ctx {
             },
             Duration::from_millis(u64::from(hold)),
         );
-        if undoable {
-            self.show_toast(format!("Completed “{}”", row.title), Some(Undo::Reopen(id)));
-        } else {
-            // A recurring task: the next occurrence is already in the list, and reopening this one
-            // would not remove it, so there is no Undo.
-            self.show_toast(
-                format!("Completed “{}”. The next one is scheduled", row.title),
-                None,
-            );
-        }
     }
 
     fn uncomplete(self, id: TaskId) {
@@ -418,11 +457,15 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         lingering,
         toast: RwSignal::new(None),
         toast_seq: RwSignal::new(0),
+        undo: RwSignal::new(None),
+        waiting_undo: RwSignal::new(BTreeSet::new()),
+        room_actions: room_actions::Controls::new(),
+        failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
         narrow,
         detail_modal,
-        collapsed: RwSignal::new(BTreeSet::new()),
+        collapsed: RwSignal::new(platform::load_folded()),
         new_list: RwSignal::new(false),
         filter_open: RwSignal::new(false),
         filter_text,
@@ -440,7 +483,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     provide_context(c);
     c.refresh();
     if let Some(n) = notice {
-        c.show_toast(n, None);
+        c.show_toast(n, false);
     }
 
     // Theme and room hue live on <html>, where tokens.css looks for them.
@@ -508,6 +551,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             <DetailPane/>
             <StatusBar/>
         </div>
+        <room_actions::Overlays/>
     }
 }
 
@@ -553,16 +597,37 @@ fn typing(ev: &leptos::ev::KeyboardEvent) -> bool {
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
         .is_some_and(|el| {
             matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
-                || el.has_attribute("contenteditable")
+                || el
+                    .closest("[contenteditable]:not([contenteditable=false])")
+                    .ok()
+                    .flatten()
+                    .is_some()
         })
 }
 
 fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     use wasm_bindgen::JsCast;
-    if ev.is_composing() || ev.default_prevented() {
+    if ev.is_composing() || ev.default_prevented() || c.room_actions.dialog_open() {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
+    let typing = typing(ev);
+    if ev.repeat() {
+        // Leave typing alone, but prevent a held Enter from activating a button or submitting a form.
+        let single_line = ev
+            .target()
+            .is_some_and(|t| t.is_instance_of::<web_sys::HtmlInputElement>());
+        if (!typing
+            && matches!(
+                key.as_str(),
+                "enter" | "escape" | " " | "arrowup" | "arrowdown"
+            ))
+            || (single_line && key == "enter")
+        {
+            ev.prevent_default();
+        }
+        return;
+    }
     let drawer = c.drawer.get_untracked();
     let modal = c.detail_modal.get_untracked();
     if key == "tab" && (drawer || modal) {
@@ -584,23 +649,37 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
-    let typing = typing(ev);
-    if !drawer
+    if !typing
+        && !drawer
         && !modal
         && !ev.alt_key()
         && !ev.meta_key()
-        && ((ev.ctrl_key() && key == "k") || (!typing && !ev.ctrl_key() && key == "/"))
+        && ((ev.ctrl_key() && key == "k") || (!ev.ctrl_key() && key == "/"))
     {
         ev.prevent_default();
         c.open_filter();
         return;
     }
-    if typing || drawer || ev.meta_key() {
+    if typing || ev.meta_key() {
+        return;
+    }
+    if ev.ctrl_key() {
+        if key == "z"
+            && !ev.shift_key()
+            && !ev.alt_key()
+            && !c.read_only()
+            && c.undo.with_untracked(Option::is_some)
+        {
+            ev.prevent_default();
+            c.undo();
+        }
+        return;
+    }
+    if drawer {
         return;
     }
     if ev.alt_key() {
-        if !ev.ctrl_key()
-            && !ev.shift_key()
+        if !ev.shift_key()
             && !c.read_only()
             && matches!(key.as_str(), "arrowup" | "arrowdown")
             && let (Some(id), room @ RoomId::List(_)) =
@@ -613,7 +692,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 .with_untracked(|s| model::reorder_task(s, &room, id, by))
             {
                 let positions = platform::row_positions();
-                if c.submit(cmd) {
+                if c.submit_undoable(cmd, "Task moved.".into(), None) {
                     request_animation_frame(move || {
                         if c.room.get_untracked() == room {
                             platform::animate_reorder(positions);
@@ -624,15 +703,6 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                     });
                 }
             }
-        }
-        return;
-    }
-    if ev.ctrl_key() {
-        if key == "z"
-            && let Some(action) = c.toast.get_untracked().and_then(|t| t.undo)
-        {
-            ev.prevent_default();
-            c.undo(action);
         }
         return;
     }
@@ -664,9 +734,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 .find(|r| Some(r.id) == selected)
             {
                 ev.prevent_default();
-                if !ev.repeat() {
-                    c.toggle(&row);
-                }
+                c.toggle(&row);
             }
         }
         "e" => {
@@ -689,7 +757,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 }
             } else if ev.shift_key() {
                 platform::focus_select("task-priority");
-            } else if !ev.repeat() && c.submit_intent(|s| intent::cycle_priority(s, id)) && !modal {
+            } else if c.submit_intent(|s| intent::cycle_priority(s, id)) && !modal {
                 request_animation_frame(move || {
                     platform::refocus_row(&format!("row-{id}"));
                 });
@@ -814,14 +882,18 @@ fn SidebarPane() -> impl IntoView {
             _ => false,
         };
         let href = room.path();
+        let origin = room_actions::Subject::of(&room)
+            .map(|s| room_actions::Origin(s, room_actions::Anchor::Link));
         let lead = match (&n.room, n.glyph) {
             (RoomId::Smart(id), _) => icon(model::smart_icon(id)).into_any(),
             (_, Some(g)) => glyph(g).into_any(),
             _ => ().into_any(),
         };
-        view! {
+        let link = view! {
             <a
+                id=origin.map(room_actions::Origin::dom_id)
                 class="nav-item"
+                class:menu-anchor=move || origin.is_some_and(|o| c.room_actions.anchored(o))
                 class:sub=sub
                 class:active=active.clone()
                 class:contains-active=contains_active
@@ -829,11 +901,34 @@ fn SidebarPane() -> impl IntoView {
                 href=href
                 data-list-hue=n.hue
                 on:click=link_room(c, room)
+                on:contextmenu=move |ev| {
+                    if let Some(origin) = origin.filter(|_| !c.read_only()) {
+                        ev.prevent_default();
+                        c.room_actions.open_menu(c, origin);
+                    }
+                }
+                on:keydown=move |ev| {
+                    if let Some(origin) = origin.filter(|_| room_actions::context_key(&ev) && !c.read_only()) {
+                        ev.prevent_default();
+                        if !ev.repeat() { c.room_actions.open_menu(c, origin); }
+                    }
+                }
             >
                 {lead}
                 <span class="nav-name">{n.name.clone()}</span>
                 <span class="count">{(n.count > 0).then(|| n.count.to_string())}</span>
             </a>
+        };
+        if let Some(room_actions::Origin(subject, _)) = origin {
+            view! {
+                <div class="nav-entry">
+                    {link}
+                    <room_actions::MenuButton origin=room_actions::Origin(subject, room_actions::Anchor::Sidebar)
+                        label=format!("Menu for {}", n.name)/>
+                </div>
+            }.into_any()
+        } else {
+            link.into_any()
         }
     };
     view! {
@@ -869,7 +964,7 @@ fn SidebarPane() -> impl IntoView {
                                                 aria-expanded=move || (!folded()).to_string()
                                                 aria-controls=control.clone()
                                                 aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
-                                                on:click=move |_| c.collapsed.update(|ids| { if !ids.remove(&id) { ids.insert(id); } })
+                                                on:click=move |_| c.fold(|ids| { if !ids.remove(&id) { ids.insert(id); } })
                                             >{icon(Icon::ChevronRight)}</button>
                                             {item(g.head, false, children)}
                                         </div>
@@ -905,7 +1000,7 @@ fn SidebarPane() -> impl IntoView {
             <NewList/>
             <div class="side-foot">
                 <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>
-                <span class="sync-text">{move || sync_text(&c.sync.get(), c.synced_at.get())}</span>
+                <room_actions::SyncLine/>
                 <SignOut/>
             </div>
         </aside>
@@ -943,7 +1038,7 @@ fn NewList() -> impl IntoView {
                     let id = ListId::from_uuid(backend::new_uuid());
                     if c.submit(intent::create_list(id, collection, &name)) {
                         if let Some(group) = collection {
-                            c.collapsed.update(|ids| { ids.remove(&group); });
+                            c.fold(|ids| { ids.remove(&group); });
                         }
                         c.go(RoomId::List(id));
                         request_animation_frame(|| { platform::focus("room-title"); });
@@ -1021,7 +1116,7 @@ fn AppBar() -> impl IntoView {
                             if ev.key() == "Escape" && !ev.is_composing() {
                                 ev.prevent_default();
                                 ev.stop_propagation();
-                                c.close_filter();
+                                if !ev.repeat() { c.close_filter(); }
                             }
                         }
                     />
@@ -1138,7 +1233,7 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
                     }}
                 </div>
                 <div class="title-row">
-                    <RoomTitle/>
+                    <div class="room-title-group"><RoomTitle/><room_actions::RoomMenuButton/></div>
                     <p class="summary">
                         {move || {
                             let (done, total) = counts.get();
@@ -1545,7 +1640,7 @@ fn ToastView() -> impl IntoView {
                         <div class="toast">
                             <span class="toast-text">{t.text}</span>
                             {undo
-                                .map(|action| {
+                                .then(|| {
                                     view! {
                                         <button
                                             class="toast-undo"
@@ -1553,7 +1648,7 @@ fn ToastView() -> impl IntoView {
                                                 if c.detail_modal.get_untracked() {
                                                     platform::focus("task-detail");
                                                 }
-                                                c.undo(action);
+                                                c.undo();
                                             }
                                         >
                                             {icon(Icon::UndoTwo)}
@@ -1964,7 +2059,9 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
     });
     let arrow_id = move |by| format!("step-move-{id}-{by}");
     let move_step = move |by| {
-        if c.submit_intent(|s| intent::nudge(s, id.into(), by)) {
+        if let Some(cmd) = c.state.with_untracked(|s| intent::nudge(s, id.into(), by))
+            && c.submit_undoable(cmd, "Step moved.".into(), None)
+        {
             request_animation_frame(move || platform::refocus_row(&arrow_id(by)));
         }
     };
@@ -1988,8 +2085,10 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
                         if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
                             ev.prevent_default();
                             ev.stop_propagation();
-                            finish(ev.key() == "Enter");
-                            request_animation_frame(focus_title);
+                            if !ev.repeat() {
+                                finish(ev.key() == "Enter");
+                                request_animation_frame(focus_title);
+                            }
                         }
                     }/>
             </Show>
@@ -2012,8 +2111,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
                         disabled=move || c.read_only()
                         on:click=move |_| {
                             let label = title.get_untracked();
-                            if c.submit(intent::delete(id)) {
-                                c.show_toast(format!("Deleted step “{label}”"), Some(Undo::RestoreStep(id)));
+                            if c.submit_undoable(intent::delete(id), format!("Deleted step “{label}”"), None) {
                                 request_animation_frame(|| platform::refocus_row("add-step"));
                             }
                         }>{icon(Icon::TrashTwo)}</button>
@@ -2092,7 +2190,9 @@ fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                             if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
                                 ev.prevent_default();
                                 ev.stop_propagation();
-                                if ev.key() == "Enter" { save(); } else { close(); }
+                                if !ev.repeat() {
+                                    if ev.key() == "Enter" { save(); } else { close(); }
+                                }
                             }
                         }/>
                     <Show when=move || invalid.get()>
@@ -2133,7 +2233,10 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                         }
                     }
                     on:keydown=move |ev| {
-                        if ev.key() == "Escape" {
+                        if ev.repeat() && matches!(ev.key().as_str(), "Enter" | "Escape" | "ArrowUp" | "ArrowDown" | " ") {
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                        } else if ev.key() == "Escape" {
                             ev.stop_propagation();
                             return_focus();
                         }
@@ -2341,6 +2444,12 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                         prop:value=move || draft.text.get()
                         on:input=move |ev| draft.input(event_target_value(&ev))
                         on:keydown=move |ev| {
+                            if ev.is_composing() { return; }
+                            if ev.repeat() && matches!(ev.key().as_str(), "Enter" | "Escape") {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                return;
+                            }
                             match ev.key().as_str() {
                                 "Enter" => {
                                     ev.prevent_default();
@@ -2453,6 +2562,9 @@ fn StatusBar() -> impl IntoView {
                 </Show>
                 <Show when=move || !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add_placeholder.is_some())>
                     <span><kbd class="keycap">"N"</kbd>" add task"</span>
+                </Show>
+                <Show when=move || !c.read_only() && c.undo.with(Option::is_some)>
+                    <span><kbd class="keycap">"Ctrl Z"</kbd>" undo"</span>
                 </Show>
                 <Show when=move || c.detail.with(Option::is_some)>
                     <span><kbd class="keycap">"Esc"</kbd>" close detail"</span>

@@ -104,23 +104,51 @@ test("completing a task holds, collapses, moves the sun, and can be undone", asy
   await w.check();
 });
 
-test("completing a recurring task offers no Undo, so no extra occurrence can be left behind", async ({ page }) => {
+test("exact undo restores a recurring task and removes its next occurrence", async ({ page }) => {
   const w = watch(page);
   await open(page);
-  // Weekly, with a due date: completing it schedules the next one, which reopening would not remove.
+  await page.locator(".sidebar").getByRole("link", { name: /^Planning/ }).click();
   const title = "Prepare the November board update";
-  await expect(row(page, title)).toHaveCount(1);
+  const original = await row(page, title).locator(".row-title").getAttribute("id");
   await row(page, title).locator(".check").click();
   await expect(page.locator(".toast")).toContainText(title);
-  await expect(page.locator(".toast")).toContainText("next one is scheduled");
-  await expect(page.locator(".toast-undo")).toHaveCount(0);
-  // Ctrl+Z does nothing either: the task leaves My Day completed.
+  await expect(page.locator(".toast-undo")).toBeVisible();
+  await expect(row(page, title)).toHaveCount(1, { timeout: 3000 });
+  await expect(row(page, title).locator(".row-title")).not.toHaveAttribute("id", original);
+  // The toast can close without losing the exact target. Ctrl+Z in an input is left to the browser.
+  await page.locator(".toast-close").click();
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  await add.fill("draft");
+  await add.press("Control+z");
+  await expect(row(page, title).locator(".row-title")).not.toHaveAttribute("id", original);
+  await page.locator(".room-title").focus();
   await page.keyboard.press("Control+z");
-  await expect(row(page, title)).toHaveCount(0, { timeout: 3000 });
-  await expect(page.locator(".summary")).toContainText("4 of 12 done");
-  // Its list has exactly one open copy: the next occurrence.
-  await page.locator(".sidebar").getByRole("link", { name: /^Planning/ }).click();
   await expect(row(page, title)).toHaveCount(1);
+  await expect(row(page, title).locator(".row-title")).toHaveAttribute("id", original);
+  await expect(row(page, title).getByRole("checkbox")).not.toBeChecked();
+  await w.check();
+});
+
+test("a conflicting exact undo gives a plain-language explanation", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await page.locator(".sidebar").getByRole("link", { name: /^Planning/ }).click();
+  const title = "Prepare the November board update";
+  const original = await row(page, title).locator(".row-title").getAttribute("id");
+  await row(page, title).getByRole("checkbox").click();
+  await expect(row(page, title)).toHaveCount(1, { timeout: 3000 });
+  await expect(row(page, title).locator(".row-title")).not.toHaveAttribute("id", original);
+  await row(page, title).locator(".row-title").click();
+  await page.keyboard.press("e");
+  const editor = page.getByRole("textbox", { name: "Title", exact: true });
+  await editor.fill("Work on the next board meeting");
+  await editor.press("Enter");
+  await expect(row(page, "Work on the next board meeting")).toHaveCount(1);
+  await page.locator(".room-title").focus();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator(".toast")).toContainText("Couldn't undo: the item was changed again.");
+  await expect(row(page, "Work on the next board meeting")).toHaveCount(1);
+  await expect(row(page, title)).toHaveCount(0);
   await w.check();
 });
 
@@ -341,9 +369,16 @@ test("Alt+Up and Alt+Down reorder in a concrete list, not in My Day", async ({ p
   await titles.first().click();
   await page.keyboard.press("Alt+ArrowUp");
   await expect(titles).toHaveText(order);
-  await page.keyboard.press("Alt+ArrowDown");
+  await page.keyboard.down("Alt");
+  await page.keyboard.down("ArrowDown");
+  await page.keyboard.down("ArrowDown"); // held key, not a second move
+  await page.keyboard.up("ArrowDown");
+  await page.keyboard.up("Alt");
   await expect(titles).toHaveText([agenda, latency, ...order.slice(2)]);
   await expect(row(page, latency)).toHaveClass(/selected/);
+  await page.locator(".toast-undo").click();
+  await expect(titles).toHaveText(order);
+  await page.keyboard.press("Alt+ArrowDown");
   await page.keyboard.press("Alt+ArrowUp");
   await expect(titles).toHaveText(order);
   await w.check();
@@ -446,7 +481,8 @@ test("the completed-task toast stays announced and usable in medium detail", asy
   await expect(undo).toBeFocused();
   await undo.click();
   await expect(task.locator(".check")).toHaveAttribute("aria-checked", "false");
-  await expect(toast).toHaveCount(0);
+  await expect(detail.getByRole("status")).toContainText("Change undone.");
+  await expect(undo).toHaveCount(0);
   await expect(detail).toBeFocused();
 
   // Completing a task from inside the modal uses the already-mounted live region.
@@ -577,7 +613,7 @@ test("hand-over rows select, complete with choreography, and can be undone", asy
   await w.check();
 });
 
-test("double-clicking a recurring hand-over checkbox leaves one open copy and no Undo", async ({ page }) => {
+test("double-clicking a recurring hand-over checkbox spawns one occurrence, then exact Undo restores the original", async ({ page }) => {
   const w = watch(page);
   await open(page, "/app?fixture=finished");
   const handover = page.locator(".tomorrow");
@@ -585,14 +621,16 @@ test("double-clicking a recurring hand-over checkbox leaves one open copy and no
   await handover.getByRole("checkbox", { name: `Complete “${title}”` }).dblclick();
   await expect(handover.getByRole("checkbox", { name: `Reopen “${title}”` })).toBeDisabled();
   const toast = page.locator(".toast");
-  await expect(toast).toContainText("The next one is scheduled");
-  await expect(toast.getByRole("button", { name: /Undo/ })).toHaveCount(0);
-  await page.keyboard.press("Control+z");
+  await expect(toast).toContainText(`Completed “${title}”`);
+  await expect(toast.getByRole("button", { name: /Undo/ })).toBeVisible();
   await expect(handover.getByRole("button", { name: title })).toHaveCount(0);
   await page.locator(".sidebar").getByRole("link", { name: /^All/ }).click();
   await expect(row(page, title)).toHaveCount(1);
   await expect(row(page, title).getByRole("checkbox")).not.toBeChecked();
   await expect(row(page, title).locator(".col-due")).toHaveText("Mon 30 Nov");
+  await page.keyboard.press("Control+z");
+  await expect(row(page, title)).toHaveCount(1);
+  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 23 Nov");
   await w.check();
 });
 

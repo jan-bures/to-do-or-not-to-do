@@ -64,7 +64,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Sync status line | client `status()` | shown `D/model/derive.rs:628` (sidebar footer) | shown `W/app.rs:791` | shown `A/ui/Drawer.kt:165`, chip `A/ui/RoomPane.kt:215` |
 | Sync now | client `nudge()` | wired: the account menu (`D/ui/shell/menu.rs:452`) | missing (runs automatically on wake, `W/app.rs:424`) | wired `A/ui/Drawer.kt:196`; the chip, `A/ui/RoomPane.kt:231` |
 | Offline outbox, replay on reconnect | `todo-client` | wired (SQLite) | wired (IndexedDB, `MirrorStorage`) | wired (SQLite) |
-| "Couldn't sync" list: see and dismiss | client `failed()`, `dismiss()` and `dismiss_many()`; plain words in `T/failure.rs` | wired: "N couldn't sync" in the sidebar footer opens the refused changes, each with what it was about and why (never the server's text), with Dismiss and Dismiss all (only what the list shows; one refused since stays) (`D/ui/shell/sidebar.rs:259`, `D/model/menus.rs:671`, `D/ui/shell/menu.rs:513`) | shown as a count only (`W/app.rs:672`); missing list and dismiss | wired banner and dismiss, in the shared plain words, never the server's text (`A/ui/RoomPane.kt:145`, `F/engine.rs` `failed`) |
+| "Couldn't sync" list: see and dismiss | client `failed()`, `dismiss()` and `dismiss_many()`; plain words in `T/failure.rs` | wired: "N couldn't sync" in the sidebar footer opens the refused changes, each with what it was about and why (never the server's text), with Dismiss and Dismiss all (only what the list shows; one refused since stays) (`D/ui/shell/sidebar.rs:259`, `D/model/menus.rs:671`, `D/ui/shell/menu.rs:513`) | wired: Not synced, Dismiss and Dismiss all for the shown IDs (`W/app/room_actions.rs`, `W/backend.rs`) | wired banner and dismiss, in the shared plain words, never the server's text (`A/ui/RoomPane.kt:145`, `F/engine.rs` `failed`) |
 | Recover a damaged cache, start fresh | client `salvage_all` | wired `D/ui/failed.rs:105` | wired `W/main.rs:111` (Reset local data) | wired `F/recovery.rs`, `A/ui/PairingScreen.kt:106` |
 | Settings: server, admin pages link | admin pages at `/admin` | wired: the account menu shows the server and opens `<server>/admin`, built from the paired address (`D/model/menus.rs:379`, `:463`, `D/ui/shell/menu.rs:407`) | missing | partial: the drawer menu shows the server (`A/ui/Drawer.kt:186`); missing the admin link |
 
@@ -74,7 +74,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Six built-in smart lists with counts (My Day, Important, Planned, All, Completed, Agent activity) | `C/query/mod.rs:54` | wired `D/ui/shell/sidebar.rs:330` | wired `W/app.rs:716` | wired `A/ui/Drawer.kt:85`, `F/view.rs:57` |
 | Collections and lists with open counts | read model | wired `D/ui/shell/sidebar.rs:266`, `:417` | wired `W/app.rs:716` | wired `A/ui/Drawer.kt:94`, `:102` |
-| Fold a collection | client-only | wired `D/ui/shell/sidebar.rs:383`; kept in `ui.json` (`D/config.rs:120`) | wired `W/app.rs:757`; forgotten on reload | wired `A/ui/Drawer.kt:95` |
+| Fold a collection | client-only | wired `D/ui/shell/sidebar.rs:383`; kept in `ui.json` (`D/config.rs:120`) | wired: remembered in `localStorage` (`W/app.rs`, `W/platform.rs`) | wired `A/ui/Drawer.kt:95` |
 | Room pills, drawer (phone) | n/a | n/a | wired `W/app.rs:953`, `:888` | wired `A/ui/Pills.kt:65`, `:81`, `A/ui/Header.kt:109` |
 | Filter by query or words (Ctrl+K, `/`) | `C/query` | wired `D/ui/shell.rs:271`, clear `:1150` | wired `W/app.rs:899`, `:907` | wired `A/ui/RoomPane.kt:136`, `:182` |
 | Keyboard: J/K, arrows, Space, E, Esc | n/a | wired `D/ui/shell.rs:66`–`78`, `:2089` | wired `W/app.rs:492` | n/a |
@@ -88,15 +88,15 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | New top-level list | `CreateList` `C/command.rs:156` | wired `D/ui/shell/sidebar.rs:472` (then renames in place) | wired `W/app.rs` (`NewList`) | wired `A/model/TodoModel.kt` (`createList`) |
 | New list in a collection | `CreateList` | wired: the collection menu's "New list here" (`D/ui/shell/menu.rs:407`) | wired: **New list** in a collection or one of its lists (`W/app.rs`) | wired: **New list** in a collection or one of its lists (`A/model/TodoModel.kt`, `F/engine.rs`) |
-| Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:241`, `D/ui/shell/menu.rs:385`) | missing | wired: its drawer menu (long press) or the room menu, then a dialog (`A/ui/MainScreen.kt`, `A/model/Menus.kt`, `F/engine.rs::rename_list`) |
-| Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | wired: Move up and down in its drawer menu or the room menu (`A/model/Menus.kt`, `F/engine.rs::move_room`) |
-| Delete a list | `Delete` `C/command.rs:365` | wired from its context menu or the room menu, after a confirmation, with undo (`D/ui/shell/menu.rs:401`, `D/ui/shell/undo.rs:35`) | missing | wired from its drawer menu or the room menu, after a confirmation checked again on confirm, with undo (`A/ui/Editing.kt` `DeleteListCard`, `F/engine.rs::delete_list`, `undo_deletion`) |
+| Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:241`, `D/ui/shell/menu.rs:385`) | wired: sidebar and room menus (`W/app/room_actions.rs`) | wired: its drawer menu (long press) or the room menu, then a dialog (`A/ui/MainScreen.kt`, `A/model/Menus.kt`, `F/engine.rs::rename_list`) |
+| Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | wired: Move up and down, with undo (`W/app/room_actions.rs`) | wired: Move up and down in its drawer menu or the room menu (`A/model/Menus.kt`, `F/engine.rs::move_room`) |
+| Delete a list | `Delete` `C/command.rs:365` | wired from its context menu or the room menu, after a confirmation, with undo (`D/ui/shell/menu.rs:401`, `D/ui/shell/undo.rs:35`) | wired: both menus, with confirmation and undo (`W/app/room_actions.rs`) | wired from its drawer menu or the room menu, after a confirmation checked again on confirm, with undo (`A/ui/Editing.kt` `DeleteListCard`, `F/engine.rs::delete_list`, `undo_deletion`) |
 | Move a list to another collection | `MoveList` `C/command.rs:187` | missing | missing | missing |
 | List colour | `UpdateList.color` | missing (a swatch is set at creation only) | missing | missing |
 | New collection | `CreateCollection` `C/command.rs:128` | missing | missing | missing |
-| Rename a collection | `UpdateCollection` `C/command.rs:141` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:384`, `D/ui/shell/menu.rs:386`) | missing | wired: its drawer menu (long press) or the room menu, then a dialog (`F/engine.rs::rename_collection`) |
-| Reorder collections | `Reorder` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | missing | wired: Move up and down in its drawer menu or the room menu (`F/engine.rs::move_room`) |
-| Delete a collection | `Delete` | missing | missing | missing |
+| Rename a collection | `UpdateCollection` `C/command.rs:141` | wired: double-click, its context menu or the room menu (`D/ui/shell/sidebar.rs:384`, `D/ui/shell/menu.rs:386`) | wired: sidebar and room menus (`W/app/room_actions.rs`) | wired: its drawer menu (long press) or the room menu, then a dialog (`F/engine.rs::rename_collection`) |
+| Reorder collections | `Reorder` | wired: menu Move up and down (`D/ui/shell/menu.rs:405`) | wired: Move up and down, with undo (`W/app/room_actions.rs`) | wired: Move up and down in its drawer menu or the room menu (`F/engine.rs::move_room`) |
+| Delete a collection | `Delete` | missing | wired: both menus, with confirmation and undo (`W/app/room_actions.rs`) | missing |
 | Collection colour | `UpdateCollection.color` | missing | missing | missing |
 
 ### Task list
@@ -111,14 +111,14 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
 | Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | wired: the detail pane's Priority field, Shift+P and P (`W/app.rs`) | wired: the detail pane's Priority row picks any level (`A/ui/Detail.kt` `Fields`, `F/engine.rs::set_priority`, `T/intent/mod.rs` `pick_priority`); the star sets high or none |
-| Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list (`W/app.rs`, `W/model.rs`) | missing |
+| Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list, with undo (`W/app.rs`, `W/model.rs`) | missing |
 | Move a task to another list | `MoveTask` `C/command.rs:206`; the event records the position too, so undoing it after a reorder in the new list conflicts | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | missing | missing |
 | Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
 | Trash and restore | `Restore` `C/command.rs:370` | missing | missing | missing |
 | Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:533`) | missing | missing |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
-| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | missing | wired: the ⋯ button opens the room menu with what applies: rename, move, show or hide completed, delete list (`A/ui/RoomPane.kt`, `A/model/Menus.kt` `roomMenu`); no sliders |
+| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, move, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ button opens the room menu with what applies: rename, move, show or hide completed, delete list (`A/ui/RoomPane.kt`, `A/model/Menus.kt` `roomMenu`); no sliders |
 | Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | wired: click or J/K selects (`W/app.rs`, `Handover`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
 | Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | wired: completes in place, with the usual completion undo (`W/app.rs`, `HandoverCheck`) | wired `A/ui/RoomPane.kt:465` |
 | Plan <weekday> (opens Planned) | n/a | wired `D/ui/shell.rs:2160` | wired `W/app.rs:1538` | wired `A/ui/RoomPane.kt:398`, `:438` |
@@ -159,9 +159,9 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
-| Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
-| Undo a reorder | same | wired | missing | n/a |
-| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step (`W/app.rs`) | partial: deleting a step or a list can be undone, through `undo_tracked` (`F/engine.rs::undo_deletion`); renames and edits can't |
+| Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | wired: compensates the whole completion, including the next occurrence (`W/backend.rs`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
+| Undo a reorder | same | wired | wired: tasks, steps, lists and collections (`W/app.rs`, `W/app/room_actions.rs`) | n/a |
+| Undo anything else (rename, edits, deletes) | `Restore` or event undo | partial: deleting a task, a list or a step, and moving a task to another list, can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | partial: restores a deleted step, list or collection (`W/app.rs`, `W/app/room_actions.rs`) | partial: deleting a step or a list can be undone, through `undo_tracked` (`F/engine.rs::undo_deletion`); renames and edits can't |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list; drawer summary per agent, not clickable (`A/ui/Drawer.kt` `Agents`, `F/view.rs::agents`) |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
@@ -186,7 +186,7 @@ Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), 
 - **Tasks.** Restore from the trash, `Restore` (only the desktop's Undo restores a task it just
   deleted). Merge, `MergeTasks` (MCP `merge_tasks`). Deleting and moving a task to another list are on
   the desktop only.
-- **Collections.** Create (`CreateCollection`), delete and recolour.
+- **Collections.** Create (`CreateCollection`) and recolour.
 - **Lists.** Move into another collection (`MoveList`) and recolour.
 - **Tags.** Create, rename and recolour (`CreateTag`, `UpdateTag`; MCP `create_tag`). Attach and detach
   them on a task (`AddTag`, `RemoveTag`; MCP `tag_task`, `untag_task`).
@@ -243,12 +243,12 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.2 | **Done.** Edit or clear the due date from detail or with D. | S–M |
 | 3.3 | **Done.** Choose from four priority levels in detail or cycle with P. | S |
 | 3.4 | **Done.** Steps can be renamed, reordered and deleted. | S–M |
-| 3.5 | Lists and collections: rename, reorder, delete, with a context menu or a room menu. | M |
+| 3.5 | **Done.** Rename, reorder and delete lists and collections from their sidebar or room menus. | M |
 | 3.6 | **Done.** Reorder tasks in a list with Alt+Up/Down. | S |
-| 3.7 | Exact undo through `SyncClient::undo_tracked`, including undo for a recurring task and for reorders. | M |
+| 3.7 | **Done.** Exact undo through `SyncClient::undo_tracked`, including recurring completion and reorders. | M |
 | 3.8 | **Done.** Hand-over rows select the task and can complete it from the checkbox. | S |
-| 3.9 | "Not synced" list with dismiss. `todo_client::failure` words each refused change, as the desktop shows it. | S |
-| 3.10 | Remember folded collections across reloads (in `localStorage`, say). | S |
+| 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
+| 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |
 | 3.11 | Upload attachments. The server must also accept the session (cookie and CSRF) on the upload route, which is bearer-only today. | M |
 | 3.12 | Everything in section 2 that isn't desktop-only (2.1–2.7, 2.12), once the desktop has it. | — |
 

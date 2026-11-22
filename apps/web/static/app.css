@@ -324,6 +324,33 @@ a {
   align-items: center;
 }
 
+.nav-collection-row .nav-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-entry { position: relative; }
+
+.nav-entry .room-menu-trigger {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+}
+
+.nav-entry:has(.room-menu-trigger:not(:disabled)):is(:hover, :focus-within, :has(.menu-anchor)) .nav-item {
+  padding-inline-end: var(--component-icon-button);
+}
+
+.nav-entry:is(:hover, :focus-within, :has(.menu-anchor)) .room-menu-trigger:not(:disabled) {
+  opacity: 1;
+}
+
+.nav-entry:has(.room-menu-trigger:not(:disabled)):is(:hover, :focus-within, :has(.menu-anchor)) .count {
+  display: none;
+}
+
 .nav-collection-row .nav-item {
   flex: 1;
   min-width: 0;
@@ -472,6 +499,185 @@ a {
   margin: 0;
 }
 
+/* ---- room actions and not-synced changes --------------------------------------------------------- */
+
+.menu-anchor { anchor-name: --room-action-anchor; }
+
+.room-action-menu,
+.room-dialog {
+  max-inline-size: calc(100% - var(--space-8));
+  max-block-size: calc(100% - var(--space-8));
+  padding: var(--space-2);
+  overflow: auto;
+  color: var(--color-ink);
+  background: var(--color-pane);
+  border: var(--hairline) solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  opacity: 0;
+  transition: opacity var(--duration-overlay-out) var(--ease-exit),
+    transform var(--duration-overlay-out) var(--ease-exit),
+    display var(--duration-overlay-out) allow-discrete,
+    overlay var(--duration-overlay-out) allow-discrete;
+}
+
+.room-action-menu {
+  position: fixed;
+  position-anchor: --room-action-anchor;
+  inset: auto;
+  top: var(--space-4);
+  left: var(--space-4);
+  top: anchor(bottom, var(--space-4));
+  left: anchor(left, var(--space-4));
+  position-try-fallbacks: flip-inline, flip-block, flip-inline flip-block;
+  inline-size: var(--desktop-menu);
+  margin: 0;
+  transform-origin: top left;
+  transform: scale(.98);
+}
+
+.room-action-menu:popover-open,
+.room-dialog[open] {
+  opacity: 1;
+  transform: none;
+  transition-duration: var(--duration-overlay-in);
+  transition-timing-function: var(--ease-enter);
+}
+
+.room-action-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--component-icon-button);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-button);
+  font: var(--text-button);
+  text-align: start;
+}
+
+.room-action-menu button[aria-disabled="true"] {
+  color: var(--color-ink-4);
+  cursor: default;
+}
+
+.room-action-menu button:is(:hover, :focus):not([aria-disabled="true"]),
+.room-dialog .button:not(.primary, .danger):hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.room-action-menu button.danger {
+  margin-block-start: var(--space-1);
+  color: var(--color-danger-ink);
+}
+
+.room-dialog {
+  inline-size: var(--desktop-confirm);
+  margin: auto;
+  padding: var(--space-4);
+  transform: translateY(var(--space-1));
+}
+
+.room-dialog::backdrop {
+  background: var(--overlay-scrim);
+  opacity: 0;
+  transition: opacity var(--duration-overlay-out) var(--ease-exit),
+    display var(--duration-overlay-out) allow-discrete,
+    overlay var(--duration-overlay-out) allow-discrete;
+}
+
+.room-dialog[open]::backdrop {
+  opacity: 1;
+  transition-duration: var(--duration-overlay-in);
+  transition-timing-function: var(--ease-enter);
+}
+
+@starting-style {
+  .room-action-menu:popover-open { opacity: 0; transform: translateY(var(--space-1)) scale(.97); }
+  .room-dialog[open] { opacity: 0; transform: translateY(calc(var(--space-3) / 2)) scale(.97); }
+  .room-dialog[open]::backdrop { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-action-menu, .room-dialog, .room-dialog::backdrop {
+    transition-duration: var(--duration-reduced-fade);
+    transform: none;
+  }
+
+  @starting-style {
+    .room-action-menu:popover-open, .room-dialog[open] { transform: none; }
+  }
+}
+
+.room-dialog h2 {
+  margin: 0 0 var(--space-2);
+  font: var(--text-detail-title);
+  letter-spacing: var(--text-detail-title-tracking);
+}
+
+.room-dialog p {
+  margin: 0 0 var(--space-2);
+  font: var(--text-body);
+  color: var(--color-ink-2);
+  overflow-wrap: anywhere;
+}
+
+.room-dialog .action-error { color: var(--color-danger-ink); }
+
+.room-name-input {
+  width: 100%;
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--color-line-strong);
+  border-radius: var(--radius-button);
+  background: var(--color-raised);
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-block-start: var(--space-3);
+}
+
+.room-dialog .button { border: var(--hairline) solid var(--color-line); }
+
+.room-dialog .button.danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-ink);
+  border-color: var(--color-danger);
+}
+
+.room-dialog .button:disabled { color: var(--color-ink-3); cursor: default; }
+
+.sync-failures-trigger {
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: var(--hairline);
+  border-radius: var(--radius-button);
+}
+
+.failure-dialog { inline-size: var(--desktop-detail); }
+
+.failure-list { padding: 0; margin: 0; list-style: none; }
+
+.failure-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-block-start: var(--hairline) solid var(--color-line);
+  overflow-wrap: anywhere;
+}
+
+.failure-list p { margin: var(--space-1) 0 0; }
+
+.failure-list .button {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* ---- room header --------------------------------------------------------------------------------- */
 
 .room {
@@ -517,6 +723,15 @@ a {
   justify-content: space-between;
   gap: var(--space-4);
 }
+
+.room-title-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.room-menu-trigger { flex: none; }
 
 .room-title {
   font: var(--text-room-title);
@@ -1990,6 +2205,18 @@ a.source:hover {
   .nav-item.sub {
     height: var(--phone-room-row);
   }
+
+  .nav-entry:has(.room-menu-trigger:not(:disabled)) .nav-item {
+    padding-inline-end: var(--phone-touch);
+  }
+
+  .nav-entry .room-menu-trigger:not(:disabled) { opacity: 1; }
+
+  .room-menu-trigger, .room-action-menu button, .room-dialog .button, .sync-failures-trigger {
+    min-block-size: var(--phone-touch);
+  }
+
+  .room-menu-trigger { inline-size: var(--phone-touch); }
 
   .app-bar {
     min-height: var(--phone-app-bar);

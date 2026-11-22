@@ -68,6 +68,50 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`room menu, delete confirmation and undo (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      const work = page.locator(".sidebar").getByRole("link", { name: /^Work/ });
+      await work.click({ button: "right" });
+      await expect(page.getByRole("menuitem", { name: "Rename collection" })).toBeFocused();
+      await shot(page, `sidebar-context-menu-${scheme}`);
+      await page.keyboard.press("Escape");
+      await page.locator(".sidebar").getByRole("link", { name: /^Planning/ }).click();
+      const more = page.getByRole("button", { name: "Room menu" });
+      await more.press("Enter");
+      await expect(page.getByRole("menuitem", { name: "Rename list" })).toBeFocused();
+      await shot(page, `room-menu-${scheme}`);
+      await page.keyboard.press("Enter");
+      const name = page.getByRole("textbox", { name: "list name" });
+      await expect(name).toBeFocused();
+      await shot(page, `rename-list-${scheme}`);
+      await page.keyboard.press("Escape");
+      await expect(more).toBeFocused();
+      await more.press("Enter");
+      await expect(page.getByRole("menuitem", { name: "Rename list" })).toBeFocused();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Enter");
+      const dialog = page.getByRole("dialog", { name: "Delete list" });
+      await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+      await shot(page, `delete-list-confirm-${scheme}`);
+      await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(page.getByRole("button", { name: /^Undo/ })).toBeVisible();
+      await shot(page, `delete-list-undo-${scheme}`);
+      await w.check();
+    });
+
+    test(`not synced changes (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(PHONE);
+      await open(page, "/app?fixture=not-synced");
+      await page.getByRole("button", { name: "Lists", exact: true }).click();
+      await page.getByRole("button", { name: /2 not synced/ }).click();
+      await expect(page.getByRole("dialog", { name: "Not synced" })).toBeVisible();
+      await shot(page, `phone-not-synced-${scheme}`);
+      await w.check();
+    });
+
     test(`finished day (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

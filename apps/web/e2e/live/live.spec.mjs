@@ -218,6 +218,142 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+test("tracked undo of a confirmed recurring completion restores only the original", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  const list = "0193b2c0-0000-7000-8000-000000000001";
+  const id = "0193b2c0-0000-7000-8000-0000000000b1";
+  const title = "Water the balcony planters";
+  const due = "2027-06-01";
+  const created = await page.evaluate(async ({ list, id, title, due }) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    const res = await fetch("/api/v1/commands", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf, "content-type": "application/json" },
+      body: JSON.stringify({
+        command_id: "0193b2c0-0000-7000-8000-0000000000b2",
+        command: { cmd: "create_task", id, list, title, due, recurrence: { rule: { freq: "daily", interval: 1 }, until: null } },
+      }),
+    });
+    return { status: res.status, body: await res.text() };
+  }, { list, id, title, due });
+  expect(created.status, created.body).toBe(200);
+  const occurrencesInList = () => page.evaluate(async ({ list, title }) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    const res = await fetch(`/api/v1/lists/${list}/tasks`, { headers: { "X-CSRF-Token": csrf } });
+    if (!res.ok) throw new Error(`Read list: ${res.status}`);
+    return (await res.json()).items.filter((t) => t.title === title);
+  }, { list, title });
+
+  await page.locator(".sidebar").getByRole("link", { name: /^Inbox/ }).click();
+  await expect(row(page, title).locator(".row-title")).toHaveAttribute("id", `row-${id}`);
+  await row(page, title).getByRole("checkbox").click();
+  await expect.poll(occurrencesInList).toHaveLength(2);
+  const completed = await occurrencesInList();
+  expect(completed.find((t) => t.id === id).completed_at).toBeTruthy();
+  expect(completed.find((t) => t.id !== id).due).not.toBe(due);
+  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+
+  const compensation = page.waitForResponse((r) => /\/api\/v1\/events\/\d+\/undo$/.test(r.url()));
+  // Focus outside the input: Ctrl+Z still works even if the toast has already elapsed.
+  await page.locator(".room-title").focus();
+  await page.keyboard.press("Control+z");
+  expect((await compensation).ok()).toBe(true);
+  await expect.poll(occurrencesInList).toEqual([expect.objectContaining({ id, due, completed_at: null })]);
+  await expect(row(page, title)).toHaveCount(1);
+  await expect(row(page, title).locator(".row-title")).toHaveAttribute("id", `row-${id}`);
+  expect(problems).toEqual([]);
+  await page.close();
+});
+
+test("a live sidebar update cannot retarget a highlighted room action", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  const id = (n) => `0193b2c0-0000-7000-8000-0000000000c${n}`;
+  const send = async (command_id, command) => {
+    const res = await page.evaluate(async ({ command_id, command }) => {
+      const csrf = document.querySelector('meta[name="csrf-token"]').content;
+      const res = await fetch("/api/v1/commands", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({ command_id, command }),
+      });
+      return { status: res.status, body: await res.text() };
+    }, { command_id, command });
+    expect(res.status, res.body).toBe(200);
+  };
+  await send(id(1), { cmd: "create_list", id: id(2), name: "Menu target" });
+  const sidebar = page.locator(".sidebar");
+  const target = sidebar.getByRole("link", { name: /^Menu target/ });
+  await target.press("Shift+F10");
+  await expect(page.getByRole("menuitem", { name: "Rename list" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  const up = page.getByRole("menuitem", { name: "Move up" });
+  await expect(up).toBeFocused();
+
+  await send(id(3), { cmd: "create_list", id: id(4), name: "New sibling", placement: { at: "before", sibling: { kind: "list", id: id(2) } } });
+  const order = sidebar.locator('.nav-item[href^="/app/list/"] .nav-name');
+  await expect(order).toHaveText(["Inbox", "New sibling", "Menu target"]);
+  await expect(up).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(order).toHaveText(["Inbox", "Menu target", "New sibling"]);
+  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  await page.keyboard.press("Control+z");
+  await expect(order).toHaveText(["Inbox", "New sibling", "Menu target"]);
+  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  for (const [cmd, list] of [[5, 2], [6, 4]]) {
+    await send(id(cmd), { cmd: "delete", id: { kind: "list", id: id(list) } });
+  }
+  await expect(order).toHaveText(["Inbox"]);
+  expect(problems).toEqual([]);
+  await page.close();
+});
+
+test("Dismiss all does not drop a refusal that arrived after opening Not synced", async () => {
+  const page = await openApp();
+  let release;
+  const waitForDialog = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/v1/commands", async (route) => {
+    if (route.request().postDataJSON().command.title === "Late refusal") await waitForDialog;
+    await route.fulfill({ status: 409, json: { error: { code: "deleted", message: "Raw response details" } } });
+  });
+  const input = page.getByRole("textbox", { name: "Add a task" });
+  for (const title of ["First refusal", "Late refusal"]) {
+    await input.fill(title);
+    await input.press("Enter");
+  }
+  const dialog = page.getByRole("dialog", { name: "Not synced" });
+  try {
+    await page.getByRole("button", { name: /1 not synced/ }).click();
+    await expect(dialog.getByRole("listitem")).toHaveCount(1);
+    await expect(dialog).toContainText("First refusal");
+    await expect(dialog).not.toContainText("Raw response details");
+  } finally {
+    release();
+  }
+  await expect(page.locator(".sync-text")).toContainText("2 not synced");
+  await dialog.getByRole("button", { name: "Dismiss all" }).click();
+  await expect(dialog).toContainText("No more changes to dismiss.");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: /1 not synced/ }).click();
+  await expect(dialog.getByRole("listitem")).toHaveCount(1);
+  await expect(dialog).toContainText("Late refusal");
+  await dialog.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(page.locator(".sync-text")).not.toContainText("not synced");
+  // Let the deletion persist before closing this tab.
+  await expect.poll(() => page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open("todo-replica");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const req = db.transaction("failed").objectStore("failed").count();
+      req.onsuccess = () => { db.close(); resolve(req.result); };
+      req.onerror = () => { db.close(); reject(req.error); };
+    };
+  }))).toBe(0);
+  await page.close();
+});
+
 test("two tabs queue edits offline: both survive closing every tab, and each is sent once", async () => {
   const a = await openApp();
   const b = await openApp();

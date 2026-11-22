@@ -40,7 +40,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = "0.3.77"
 web-sys = { version = "0.3.77", features = [
     "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlTextAreaElement", "HtmlMetaElement",
-    "HtmlAnchorElement", "Window", "Location", "History", "MediaQueryList", "MediaQueryListEvent",
+    "HtmlAnchorElement", "HtmlDialogElement", "Window", "Location", "History", "MediaQueryList", "MediaQueryListEvent",
     "KeyboardEvent", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
     "VisibilityState", "Storage", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
     "DomRectReadOnly", "Headers", "RequestInit", "RequestCredentials", "Response", "Animation",

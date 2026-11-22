@@ -1,6 +1,8 @@
 //! Small browser helpers: the clock, the theme, the address bar, the CSRF token and downloads.
 
 use crate::model::Now;
+use std::collections::BTreeSet;
+use todo_core::ids::CollectionId;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -10,6 +12,25 @@ fn window() -> Option<web_sys::Window> {
 
 fn document() -> Option<web_sys::Document> {
     window().and_then(|w| w.document())
+}
+
+const FOLDED_COLLECTIONS: &str = "todo-folded-collections";
+
+/// A browser may throw even when merely accessing localStorage. Folding still works in memory.
+pub fn load_folded() -> BTreeSet<CollectionId> {
+    window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(FOLDED_COLLECTIONS).ok().flatten())
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_folded(ids: &BTreeSet<CollectionId>) {
+    if let Some(storage) = window().and_then(|w| w.local_storage().ok().flatten())
+        && let Ok(value) = serde_json::to_string(ids)
+    {
+        let _ = storage.set_item(FOLDED_COLLECTIONS, &value);
+    }
 }
 
 /// The real "now": the instant and the browser's current UTC offset.
@@ -91,6 +112,17 @@ pub fn focus(id: &str) -> bool {
             let _ = el.focus();
             document().and_then(|d| d.active_element()).as_ref() == Some(el.as_ref())
         })
+}
+
+/// Focus and select the existing name in a rename dialog.
+pub fn focus_select_text(id: &str) {
+    if focus(id)
+        && let Some(input) = document()
+            .and_then(|d| d.get_element_by_id(id))
+            .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+    {
+        input.select();
+    }
 }
 
 /// Restores focus after an optimistic update replaced a row, but not if focus has moved elsewhere.
