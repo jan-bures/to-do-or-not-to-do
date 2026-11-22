@@ -41,7 +41,8 @@ js-sys = "0.3.77"
 web-sys = { version = "0.3.77", features = [
     "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlTextAreaElement", "HtmlMetaElement",
     "HtmlAnchorElement", "HtmlDialogElement", "Window", "Location", "History", "MediaQueryList", "MediaQueryListEvent",
-    "KeyboardEvent", "DragEvent", "DataTransfer", "File", "FileList", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
+    "KeyboardEvent", "DragEvent", "DataTransfer", "DataTransferItem", "DataTransferItemList", "FileSystemEntry",
+    "File", "FileList", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
     "VisibilityState", "Storage", "StorageEvent", "CssStyleDeclaration", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
     "DomRectReadOnly", "Headers", "RequestInit", "RequestCredentials", "Response", "Animation",
 ] }

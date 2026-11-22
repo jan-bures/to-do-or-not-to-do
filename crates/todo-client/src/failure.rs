@@ -2,14 +2,34 @@
 //! refused change was, what it was about, and why the server refused it. Never the server's own message,
 //! which can be technical or quote task content. Pure, so every client words it the same way.
 
+use std::borrow::Cow;
 use todo_core::State;
 use todo_core::command::Command;
 use todo_core::ids::EntityId;
 
 use crate::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
 
-/// Plain wording for a file upload failure, without echoing the server's response.
-pub const UPLOAD_ATTACHMENT_FAILED: &str = "Couldn’t upload the selected files.";
+/// Plain wording for a file upload failure. The only detail shown is a numeric size limit.
+#[must_use]
+pub fn attachment_upload(status: Option<u16>, max_bytes: Option<u64>) -> Cow<'static, str> {
+    match status {
+        Some(413) => {
+            const MIB: u64 = 1024 * 1024;
+            let Some(max) = max_bytes.filter(|&n| n > 0) else {
+                return "That file is too large.".into();
+            };
+            let limit = if max.is_multiple_of(MIB) {
+                format!("{} MiB", max / MIB)
+            } else {
+                format!("{max} bytes")
+            };
+            format!("That file is too large. The limit is {limit}.").into()
+        }
+        Some(507) => "Attachment storage is full.".into(),
+        Some(429) => "Couldn’t upload right now. Try again later.".into(),
+        _ => "Couldn’t upload the selected files.".into(),
+    }
+}
 
 fn delete(id: EntityId) -> &'static str {
     match id {
@@ -202,6 +222,34 @@ mod tests {
                 message: "raw: seq 41 conflicts with \u{201c}Secret title\u{201d}".into(),
             },
         }
+    }
+
+    #[test]
+    fn upload_refusals_use_fixed_words_and_an_optional_size_limit() {
+        assert_eq!(
+            attachment_upload(Some(413), None),
+            "That file is too large."
+        );
+        assert_eq!(
+            attachment_upload(Some(413), Some(7)),
+            "That file is too large. The limit is 7 bytes."
+        );
+        assert_eq!(
+            attachment_upload(Some(413), Some(25 * 1024 * 1024)),
+            "That file is too large. The limit is 25 MiB."
+        );
+        assert_eq!(
+            attachment_upload(Some(507), None),
+            "Attachment storage is full."
+        );
+        assert_eq!(
+            attachment_upload(Some(429), None),
+            "Couldn’t upload right now. Try again later."
+        );
+        assert_eq!(
+            attachment_upload(Some(502), None),
+            attachment_upload(None, None)
+        );
     }
 
     #[test]

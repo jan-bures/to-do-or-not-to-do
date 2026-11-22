@@ -73,6 +73,12 @@ for (const scheme of ["light", "dark"]) {
       await shot(page, `attachments-failed-${scheme}`);
       await page.clock.resume();
 
+      await page.locator(".detail").getByRole("button", { name: "Close", exact: true }).click();
+      await expect(section).toBeHidden();
+      await page.getByRole("button", { name: "Review the API latency report", exact: true }).click();
+      await expect(add).toBeEnabled();
+      await expect(section.getByRole("alert")).toHaveCount(0);
+
       await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
       const remove = section.getByRole("button", { name: "Remove “board-pack-draft.pdf”" });
       await expect(remove).toBeVisible();

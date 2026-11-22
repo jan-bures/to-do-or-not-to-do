@@ -218,28 +218,84 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
-test("the web session uploads, downloads and removes a task attachment", async () => {
-  const page = await openApp();
+test("attachments wait for task creation and event delivery; the web session can then download and remove them", async () => {
+  const page = await context.newPage();
   const problems = watch(page);
   const title = "Draft a letter";
   const name = "Příloha + notes & plan.txt";
   const buffer = Buffer.from("Example attachment\n");
-  await add(page, title);
-  await expect.poll(() => occurrences(page, title)).toBe(1);
-  await row(page, title).click();
+  // Pause delivery inside the page without changing what the real server sends or stores.
+  await page.addInitScript(() => {
+    const fetch = window.fetch.bind(window);
+    let gate;
+    let release;
+    window.holdReplicaEvents = () => { gate = new Promise((resolve) => { release = resolve; }); };
+    window.releaseReplicaEvents = () => { gate = undefined; release?.(); };
+    window.fetch = async (request, init) => {
+      const response = await fetch(request, init);
+      if (!(request instanceof Request) || new URL(request.url).pathname !== "/api/v1/events" || !response.ok) {
+        return response;
+      }
+      const stream = response.body.pipeThrough(new TransformStream({
+        async transform(chunk, controller) { await gate; controller.enqueue(chunk); },
+      }));
+      return new Response(stream, { status: response.status, headers: response.headers });
+    };
+  });
+  await page.goto("/app");
+  await expect(page.locator(".sync-text")).toHaveText(/^Synced/);
+  let allowCreate, allowUpload;
+  const createGate = new Promise((resolve) => { allowCreate = resolve; });
+  const uploadGate = new Promise((resolve) => { allowUpload = resolve; });
+  const uploadPath = /\/api\/v1\/tasks\/[^/]+\/attachments\?/;
+  let uploads = 0;
+  await page.route("**/api/v1/commands", async (route) => {
+    if (route.request().postDataJSON()?.command?.title === title) await createGate;
+    await route.continue();
+  });
+  await page.route(uploadPath, async (route) => {
+    uploads++;
+    await uploadGate;
+    await route.continue();
+  });
   const section = page.getByRole("region", { name: "Attachments" });
-  const upload = page.waitForResponse((r) => r.request().method() === "POST" &&
-    new URL(r.url()).pathname.endsWith("/attachments"));
-  const picker = page.waitForEvent("filechooser");
-  await section.getByRole("button", { name: "Add file" }).click();
-  await (await picker).setFiles({ name, mimeType: "text/plain", buffer });
-  const response = await upload;
-  expect(response.status()).toBe(201);
+  const addFile = section.getByRole("button", { name: "Add file" });
+  const status = section.getByRole("status");
+  const file = section.getByRole("button", { name: `Download “${name}”` });
+  let response;
+  try {
+    await add(page, title);
+    await row(page, title).click();
+    const picker = page.waitForEvent("filechooser");
+    await addFile.click();
+    await (await picker).setFiles({ name, mimeType: "text/plain", buffer });
+    await expect(status).toHaveText("Waiting to sync…");
+    await expect(addFile).toBeDisabled();
+    expect(await occurrences(page, title)).toBe(0);
+    expect(uploads).toBe(0);
+
+    allowCreate();
+    await expect.poll(() => uploads).toBe(1);
+    await expect(status).toHaveText("Uploading…");
+    await page.evaluate(() => window.holdReplicaEvents());
+    const upload = page.waitForResponse((r) => r.request().method() === "POST" && uploadPath.test(r.url()));
+    allowUpload();
+    response = await upload;
+    expect(response.status()).toBe(201);
+    await expect(status).toHaveText("Waiting to sync…");
+    await expect(file).toHaveCount(0);
+    await expect(addFile).toBeDisabled();
+  } finally {
+    allowCreate();
+    allowUpload();
+    await page.evaluate(() => window.releaseReplicaEvents());
+  }
   const { attachment } = await response.json();
   expect(attachment).toMatchObject({ file_name: name, media_type: "text/plain", size_bytes: buffer.length });
 
-  const file = section.getByRole("button", { name: `Download “${name}”` });
   await expect(file).toBeVisible(); // Arrived through the event stream, not from a local placeholder.
+  await expect(addFile).toBeEnabled();
+  expect(uploads).toBe(1);
   const downloading = page.waitForEvent("download");
   await file.click();
   const download = await downloading;
@@ -253,6 +309,31 @@ test("the web session uploads, downloads and removes a task attachment", async (
     const csrf = document.querySelector('meta[name="csrf-token"]').content;
     return (await fetch(`/api/v1/attachments/${id}`, { method: "HEAD", headers: { "X-CSRF-Token": csrf } })).status;
   }, attachment.id)).toBe(404);
+  expect(problems).toEqual([]);
+  await page.close();
+});
+
+test("upload refusals show fixed wording, not the server message", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  await row(page, "Draft a letter").click();
+  const section = page.getByRole("region", { name: "Attachments" });
+  const uploadPath = /\/api\/v1\/tasks\/[^/]+\/attachments\?/;
+  for (const [status, max, message] of [
+    [413, 25 * 1024 * 1024, "That file is too large. The limit is 25 MiB."],
+    [413, "untrusted data", "That file is too large."],
+    [507, null, "Attachment storage is full."],
+    [429, null, "Couldn’t upload right now. Try again later."],
+  ]) {
+    await page.route(uploadPath, (route) => route.fulfill({
+      status,
+      json: { error: { code: "refused", message: "untrusted data", details: { max_bytes: max } } },
+    }), { times: 1 });
+    await section.locator('input[type="file"]').setInputFiles({
+      name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Notes"),
+    });
+    await expect(section.getByRole("alert")).toHaveText(message);
+  }
   expect(problems).toEqual([]);
   await page.close();
 });

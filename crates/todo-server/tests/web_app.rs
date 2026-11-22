@@ -377,6 +377,9 @@ async fn uploads_require_csrf_and_same_origin_for_a_session() {
     for req in [
         upload_request(&b, &url).header(ORIGIN, SITE),
         upload_request(&b, &url)
+            .header(ORIGIN, SITE)
+            .header("x-csrf-token", "wrong"),
+        upload_request(&b, &url)
             .header(ORIGIN, "https://other.example.com")
             .header("x-csrf-token", b.csrf.as_ref().unwrap()),
     ] {
@@ -390,11 +393,33 @@ async fn uploads_require_csrf_and_same_origin_for_a_session() {
 }
 
 #[tokio::test]
-async fn session_uploads_keep_the_attachment_size_limit() {
+async fn an_expired_session_cannot_upload() {
+    let env = Env::start().await;
+    let b = env.owner().await;
+    let url = upload_url(&env).await;
+    env.advance(Duration::from_secs(61 * 60));
+    let res = upload_request(&b, &url)
+        .header(ORIGIN, SITE)
+        .header("x-csrf-token", b.csrf.as_ref().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert!(env.t.server.engine.state().attachments.is_empty());
+}
+
+#[tokio::test]
+async fn session_uploads_keep_the_streaming_attachment_size_limit() {
     let env = Env::start_with(|c| c.attachments.max_upload_bytes = 7).await;
     let b = env.owner().await;
     let url = upload_url(&env).await;
+    // No Content-Length: this must pass session auth and hit the streaming cap in the handler.
+    let body = reqwest::Body::wrap_stream(futures_util::stream::iter([
+        Ok::<_, std::io::Error>("A let"),
+        Ok("ter"),
+    ]));
     let res = upload_request(&b, &url)
+        .body(body)
         .header(ORIGIN, SITE)
         .header("x-csrf-token", b.csrf.as_ref().unwrap())
         .send()

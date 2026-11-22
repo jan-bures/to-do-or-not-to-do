@@ -20,6 +20,7 @@
 use crate::changes::{self, Failure};
 #[cfg(feature = "fixtures")]
 use crate::model::Now;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use todo_client::web::{
 };
 use todo_client::{
     ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
-    TrackedUndo,
+    TrackedUndo, failure, protocol,
 };
 use todo_core::ids::{AttachmentId, TaskId};
 use todo_core::{Actor, Command, State};
@@ -484,14 +485,65 @@ pub const READ_ONLY: &str = "a newer version is open in another tab";
 
 #[derive(Debug)]
 pub enum UploadError {
-    Failed,
+    Failed(Cow<'static, str>),
     SignedOut,
 }
 
+impl UploadError {
+    fn failed() -> Self {
+        Self::Failed(failure::attachment_upload(None, None))
+    }
+}
+
+pub fn task_confirmed(task: TaskId) -> bool {
+    live().map_or_else(
+        || view().is_live(task.into()),
+        |c| c.with_confirmed(|s| s.is_live(task.into())),
+    )
+}
+
+/// The file cannot go ahead of the task's own create command. The optimistic task stays visible
+/// (even offline) while queued, but disappears if its create is refused or the task is deleted.
+pub async fn wait_for_task(task: TaskId) -> Result<(), UploadError> {
+    loop {
+        let status = status();
+        if status.signed_out {
+            return Err(UploadError::SignedOut);
+        }
+        if status.read_only || !view().is_live(task.into()) {
+            return Err(UploadError::failed());
+        }
+        if task_confirmed(task) {
+            return Ok(());
+        }
+        next_change().await;
+    }
+}
+
+/// Wait for the files the server already accepted to appear in the confirmed replica. A tombstone
+/// counts as observed: another tab can remove an attachment while this tab is catching up.
+pub async fn wait_for_attachments(ids: &[AttachmentId]) -> bool {
+    use futures_util::future::{Either, select};
+    use std::pin::pin;
+    let Some(c) = live() else { return true };
+    let observed = async {
+        while !c.with_confirmed(|s| ids.iter().all(|id| s.attachments.contains_key(id))) {
+            next_change().await;
+        }
+    };
+    matches!(
+        select(pin!(observed), pin!(sleep(Duration::from_secs(30)))).await,
+        Either::Left(_)
+    )
+}
+
 /// Uploads directly; the file is not an offline edit. The live replica sees the result through SSE.
-pub async fn upload_attachment(task: TaskId, file: web_sys::File) -> Result<(), UploadError> {
+pub async fn upload_attachment(
+    task: TaskId,
+    file: web_sys::File,
+) -> Result<AttachmentId, UploadError> {
     if status().read_only {
-        return Err(UploadError::Failed);
+        return Err(UploadError::failed());
     }
     let id = AttachmentId::from_uuid(new_uuid());
     let csrf = CSRF.with(|c| c.borrow().clone());
@@ -499,11 +551,29 @@ pub async fn upload_attachment(task: TaskId, file: web_sys::File) -> Result<(), 
         let result = FetchTransport::new(csrf)
             .upload_attachment(task, id, &file)
             .await
-            .map_err(|_| UploadError::Failed)?;
+            .map_err(|_| UploadError::failed())?;
         return match result.status {
-            200 | 201 => Ok(()),
+            200 | 201 => {
+                #[derive(serde::Deserialize)]
+                struct Receipt {
+                    attachment: todo_core::model::AttachmentRef,
+                }
+                // This endpoint uses the client-supplied ID, even for a replay. If the receipt
+                // isn't readable, use that ID rather than suggesting the upload failed.
+                Ok(serde_json::from_slice::<Receipt>(&result.body).map_or(id, |r| r.attachment.id))
+            }
             401 => Err(UploadError::SignedOut),
-            _ => Err(UploadError::Failed),
+            status => {
+                let max = (status == 413)
+                    .then(|| protocol::error_detail(&result))
+                    .flatten()
+                    .and_then(|error| error.details)
+                    .and_then(|details| details.get("max_bytes")?.as_u64());
+                Err(UploadError::Failed(failure::attachment_upload(
+                    Some(status),
+                    max,
+                )))
+            }
         };
     }
 
@@ -512,7 +582,7 @@ pub async fn upload_attachment(task: TaskId, file: web_sys::File) -> Result<(), 
         // Simulate network latency for the gallery; this is not a UI animation or timer.
         sleep(Duration::from_secs(2)).await;
         if crate::platform::query().contains("fixture=upload-fails") {
-            return Err(UploadError::Failed);
+            return Err(UploadError::failed());
         }
         let media_type = file.type_();
         // File.size is a non-negative byte count (limited to JS precision).
@@ -530,10 +600,11 @@ pub async fn upload_attachment(task: TaskId, file: web_sys::File) -> Result<(), 
             size_bytes,
             storage_key: format!("fixture-upload/{id}"),
         })
-        .map_err(|_| UploadError::Failed)
+        .map(|()| id)
+        .map_err(|_| UploadError::failed())
     }
     #[cfg(not(feature = "fixtures"))]
-    Err(UploadError::Failed)
+    Err(UploadError::failed())
 }
 
 /// Queues a command; the view reflects it at once. Fails if the command is invalid against the view,

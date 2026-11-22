@@ -1906,7 +1906,7 @@ fn DetailPane() -> impl IntoView {
         c.detail.get().or_else(|| prev.cloned().flatten())
     });
     let id = Memo::new(move |_| rendered.with(|d| d.as_ref().map(|d| d.id)));
-    let uploads = attachments::Uploads::new();
+    let uploads = attachments::Uploads::new(c);
     view! {
         <section class="detail" id="task-detail" tabindex="-1" aria-label="Task detail"
             role=move || c.detail_modal.get().then_some("dialog")

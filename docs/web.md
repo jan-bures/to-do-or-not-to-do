@@ -337,10 +337,13 @@ scrim, use Close, or press Esc to dismiss it and return focus to the selected ro
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
 While the detail is modal, Undo and other toast feedback appear in its own bottom strip, above the scrim.
 
-In **Attachments**, choose **Add file** or drop files anywhere on the task's detail pane. Files are sent
-one at a time; **Uploading…** stays visible while they are being sent. Uploads need a connection and
-aren't queued for later. If an upload fails, the pane shows a plain message without quoting the server.
-Click a file to download it. **Remove** hides the attachment at once, and **Undo** restores it.
+In **Attachments**, choose **Add file** or drop files anywhere on the task's detail pane. Dropped text
+and folders are ignored. A file selected on a new task waits in the open tab for the task to sync;
+it isn't stored in the offline outbox. Files are sent one at a time (**Uploading…**). After the server
+accepts them, **Waiting to sync…** stays visible until they reach this tab's replica. If that takes
+more than 30 seconds, the app says the files uploaded but haven't appeared here yet. Upload failures
+use plain wording without quoting the server. Reopening the detail clears an old alert. Click a file
+to download it. **Remove** hides the attachment at once, and **Undo** restores it.
 
 Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
 **Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.

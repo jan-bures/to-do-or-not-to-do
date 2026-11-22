@@ -13,6 +13,10 @@ async function dropOnDetail(page, names) {
     }
     return data;
   }, names);
+  await dispatchDrop(page, dataTransfer);
+}
+
+async function dispatchDrop(page, dataTransfer) {
   // Drops work anywhere in the pane, not just on the Add file button.
   const top = page.locator(".detail-top");
   await top.dispatchEvent("dragover", { dataTransfer });
@@ -35,6 +39,37 @@ test("a drop of several files belongs to the task it started on", async ({ page 
   await latency(page).click();
   await expect(section.locator(".file-name")).toHaveText(["report.txt", "notes.txt"], { timeout: 10_000 });
   await expect(section.getByRole("button", { name: "Add file" })).toBeEnabled();
+  await w.check();
+});
+
+test("dropping plain text or a directory uploads nothing", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await board(page).click();
+  const section = attachments(page);
+  const text = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "Some text");
+    return data;
+  });
+  await dispatchDrop(page, text);
+  await expect(section.getByRole("button", { name: "Add file" })).toBeEnabled();
+
+  const directory = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    // Simulate the directory placeholder a desktop browser supplies. It need not look empty.
+    data.items.add(new File(["placeholder"], "Photos"));
+    const getEntry = DataTransferItem.prototype.webkitGetAsEntry;
+    // Chromium can hand out a new wrapper each time an item is read, so intercept the method.
+    DataTransferItem.prototype.webkitGetAsEntry = function () {
+      return this.getAsFile()?.name === "Photos" ? { isDirectory: true } : getEntry.call(this);
+    };
+    return data;
+  });
+  await dispatchDrop(page, directory);
+  await expect(section.getByRole("button", { name: "Add file" })).toBeEnabled();
+  await expect(section.getByRole("alert")).toHaveCount(0);
+  await expect(section.locator(".file-name")).toHaveText(["board-pack-draft.pdf"]);
   await w.check();
 });
 

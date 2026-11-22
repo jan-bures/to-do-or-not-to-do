@@ -7,68 +7,119 @@ use crate::model::{AttachmentView, Detail};
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-use todo_client::{failure, intent};
+use todo_client::intent;
 use todo_core::ids::TaskId;
 use todo_design::Icon;
-use web_sys::{DragEvent, FileList};
+use web_sys::{DataTransfer, DragEvent, File, FileList};
 
 const ADD_FILE: &str = "add-attachment";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum UploadState {
-    Pending,
-    Failed,
+    Waiting,
+    Uploading,
+    Notice(Cow<'static, str>),
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct Uploads(RwSignal<BTreeMap<TaskId, UploadState>>);
 
 impl Uploads {
-    pub(super) fn new() -> Self {
-        Self(RwSignal::new(BTreeMap::new()))
+    pub(super) fn new(c: Ctx) -> Self {
+        let uploads = Self(RwSignal::new(BTreeMap::new()));
+        let open = Memo::new(move |_| c.detail.with(|d| d.as_ref().map(|d| d.id)));
+        Effect::new(move |_| {
+            let id = open.get();
+            // Keep background transfers, but don't carry an old alert into a reopened detail.
+            uploads.0.update(|states| {
+                states.retain(|task, state| {
+                    Some(*task) == id || !matches!(state, UploadState::Notice(_))
+                })
+            });
+        });
+        uploads
     }
 
     fn busy(self, task: TaskId) -> bool {
-        self.0
-            .with(|states| states.get(&task) == Some(&UploadState::Pending))
+        self.0.with(|states| {
+            matches!(
+                states.get(&task),
+                Some(UploadState::Waiting | UploadState::Uploading)
+            )
+        })
     }
 
-    fn start(self, c: Ctx, task: TaskId, files: Option<FileList>) {
-        let Some(files) = files else { return };
-        if c.read_only() || self.busy(task) || files.length() == 0 {
+    fn set(self, task: TaskId, state: UploadState) {
+        self.0.update(|states| {
+            states.insert(task, state);
+        });
+    }
+
+    fn start(self, c: Ctx, task: TaskId, files: Vec<File>) {
+        if c.read_only() || self.busy(task) || files.is_empty() {
             return;
         }
-        // Take the Files before the input is cleared or the drop event's data store closes.
-        let files: Vec<_> = (0..files.length()).filter_map(|i| files.get(i)).collect();
-        self.0.update(|states| {
-            states.insert(task, UploadState::Pending);
-        });
+        let state = if backend::task_confirmed(task) {
+            UploadState::Uploading
+        } else {
+            UploadState::Waiting
+        };
+        self.set(task, state);
         leptos::task::spawn_local(async move {
-            let mut failed = false;
-            // A drop can contain several files. Send them in order without competing for upload slots.
-            for file in files {
-                match backend::upload_attachment(task, file).await {
-                    Ok(()) => {}
-                    Err(UploadError::Failed) => failed = true,
-                    Err(UploadError::SignedOut) => {
-                        platform::sign_in(&platform::path());
-                        failed = true;
-                        break;
-                    }
+            let notice = match self.transfer(task, files).await {
+                Ok(notice) => notice,
+                Err(UploadError::Failed(message)) => Some(message),
+                Err(UploadError::SignedOut) => {
+                    platform::sign_in(&platform::path());
+                    None
                 }
-            }
-            if !c.live {
-                c.refresh();
-            }
-            self.0.update(|states| {
-                if failed {
-                    states.insert(task, UploadState::Failed);
-                } else {
+            };
+            // Show the observed attachments in the same update that releases the Add file button.
+            c.refresh();
+            let open = c
+                .detail
+                .with_untracked(|d| d.as_ref().is_some_and(|d| d.id == task));
+            if let Some(message) = notice.filter(|_| open) {
+                self.set(task, UploadState::Notice(message));
+            } else {
+                self.0.update(|states| {
                     states.remove(&task);
-                }
-            });
+                });
+            }
         });
+    }
+
+    async fn transfer(
+        self,
+        task: TaskId,
+        files: Vec<File>,
+    ) -> Result<Option<Cow<'static, str>>, UploadError> {
+        backend::wait_for_task(task).await?;
+        self.set(task, UploadState::Uploading);
+        let mut accepted = Vec::new();
+        let mut notice = None;
+        // A drop can contain several files. Send them in order without competing for upload slots.
+        for file in files {
+            match backend::upload_attachment(task, file).await {
+                Ok(id) => accepted.push(id),
+                Err(UploadError::Failed(message)) => {
+                    notice.get_or_insert(message);
+                }
+                Err(error @ UploadError::SignedOut) => return Err(error),
+            }
+        }
+        if !accepted.is_empty() {
+            self.set(task, UploadState::Waiting);
+            if !backend::wait_for_attachments(&accepted).await {
+                let lag = "The uploaded files haven’t synced to this view yet.";
+                notice = Some(
+                    notice.map_or_else(|| lag.into(), |message| format!("{message} {lag}").into()),
+                );
+            }
+        }
+        Ok(notice)
     }
 
     pub(super) fn drag_over(self, c: Ctx, ev: DragEvent) {
@@ -86,17 +137,45 @@ impl Uploads {
     }
 
     pub(super) fn drop_files(self, c: Ctx, ev: DragEvent) {
-        if let Some(files) = ev
+        if let Some(data) = ev
             .data_transfer()
-            .and_then(|data| data.files())
-            .filter(|f| f.length() > 0)
+            .filter(|data| data.types().includes(&"Files".into(), 0))
         {
             ev.prevent_default();
             if let Some(task) = c.detail.with_untracked(|d| d.as_ref().map(|d| d.id)) {
-                self.start(c, task, Some(files));
+                self.start(c, task, dropped_files(&data));
             }
         }
     }
+}
+
+fn files_from_list(files: Option<FileList>) -> Vec<File> {
+    files.map_or_else(Vec::new, |files| {
+        (0..files.length()).filter_map(|i| files.get(i)).collect()
+    })
+}
+
+fn dropped_files(data: &DataTransfer) -> Vec<File> {
+    let items = data.items();
+    let looks_like_file = |file: &File| file.size() > 0.0 || !file.type_().is_empty();
+    if items.length() == 0 {
+        return files_from_list(data.files())
+            .into_iter()
+            .filter(looks_like_file)
+            .collect();
+    }
+    (0..items.length())
+        .filter_map(|i| {
+            let item = items.get(i).filter(|item| item.kind() == "file")?;
+            // On browsers without the entry API, skip the empty, typeless placeholders for folders.
+            let entry = item.webkit_get_as_entry().ok().flatten();
+            let file = item.get_as_file().ok().flatten()?;
+            entry
+                .as_ref()
+                .map_or_else(|| looks_like_file(&file), |entry| !entry.is_directory())
+                .then_some(file)
+        })
+        .collect()
 }
 
 #[component]
@@ -127,7 +206,7 @@ pub(super) fn Section(
                 <input type="file" hidden multiple node_ref=input disabled=move || c.read_only() || busy()
                     on:change=move |_| {
                         if let Some(input) = input.get_untracked() {
-                            uploads.start(c, task, input.files());
+                            uploads.start(c, task, files_from_list(input.files()));
                             input.set_value("");
                         }
                     }/>
@@ -141,12 +220,18 @@ pub(super) fn Section(
                     {icon(Icon::Plus)}"Add file"
                 </button>
                 <span class="file-hint" role="status">
-                    {move || if busy() { "Uploading…" } else if !c.read_only() { "or drop files on this task" } else { "" }}
+                    {move || uploads.0.with(|states| match states.get(&task) {
+                        Some(UploadState::Waiting) => "Waiting to sync…",
+                        Some(UploadState::Uploading) => "Uploading…",
+                        _ if !c.read_only() => "or drop files on this task",
+                        _ => "",
+                    })}
                 </span>
             </div>
-            <Show when=move || uploads.0.with(|states| states.get(&task) == Some(&UploadState::Failed))>
-                <p class="prop-error" role="alert">{failure::UPLOAD_ATTACHMENT_FAILED}</p>
-            </Show>
+            {move || uploads.0.with(|states| match states.get(&task) {
+                Some(UploadState::Notice(message)) => Some(view! { <p class="prop-error" role="alert">{message.clone()}</p> }),
+                _ => None,
+            })}
         </section>
     }
 }
