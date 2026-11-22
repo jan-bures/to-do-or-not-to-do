@@ -10,7 +10,14 @@
 //! After at least one title word, read at most one trailing date and one priority, in either order.
 //! Dates are `today` / `dnes`, `tomorrow` / `zítra`, `+Nd`, `YYYY-MM-DD` (today or later), and English
 //! or Czech weekday names (today or the next occurrence). `on` or `by` is optional before a full
-//! weekday name and required before an abbreviation. Case is ignored; Czech words also work without accents.
+//! weekday name and required before an abbreviation. Whole phrases also work:
+//! - `in 2 days`, `in 3 weeks` / `za 2 dny`, `za 3 týdny`;
+//! - `next week` / `příští týden` (Monday), or a full weekday in the next Monday–Sunday week;
+//! - `this weekend` / `o víkendu` (Saturday, or today during the weekend);
+//! - `end of month` / `konec měsíce` (the last day of this month);
+//! - `1 Dec`, `1. 12.`, `1.12.` or `1. prosince` (next occurrence, including today).
+//!
+//! Case is ignored; Czech words also work without accents. Incomplete phrases stay literal.
 //! Only standalone `!!` (normal) and `!!!` (high) are priority markers; `!` and `Wow!` stay literal.
 //! A leading backslash on the final title token stops parsing there and is removed: `Plan \today !!`
 //! keeps `Plan today` as the title but still sets priority.
@@ -82,40 +89,119 @@ fn priority_word(word: &str) -> Option<Priority> {
     }
 }
 
-/// A due date typed on its own ("tomorrow", "fri", "+3d", "2026-12-01", "zítra"). `None` when it isn't
-/// one.
+/// A due date typed on its own. Unlike quick-add, the explicit field also accepts past dates and
+/// unprefixed weekday abbreviations.
 pub fn due_text(text: &str, ctx: &EvalContext) -> Option<Date> {
-    let word = text.trim();
-    if word.is_empty() || word.contains(char::is_whitespace) {
-        return None;
+    let words: Vec<_> = text.split_whitespace().collect();
+    if let [word] = words.as_slice()
+        && let Some(date) =
+            calendar_date(word, ctx).or_else(|| next_weekday(weekday(&fold(word), true)?, ctx))
+    {
+        return Some(date);
     }
-    calendar_date(word, ctx).or_else(|| next_weekday(weekday(&fold(word), true)?, ctx))
+    let (date, count) = date_suffix(&words, ctx)?;
+    (count == words.len()).then_some(date)
 }
 
 fn date_suffix(words: &[&str], ctx: &EvalContext) -> Option<(Date, usize)> {
     let (last, before) = words.split_last()?;
-    let folded = fold(last);
-    if let Some(prefix) = before.last()
-        && (prefix.eq_ignore_ascii_case("on") || prefix.eq_ignore_ascii_case("by"))
-        && let Some(day) = weekday(&folded, true)
-    {
-        // A prefix and weekday are one suffix; neither is stripped from a title like "On Sunday".
-        return if words.len() > 2 {
-            next_weekday(day, ctx).map(|date| (date, 2))
-        } else {
-            None
-        };
-    }
-    let date = if let Some(day) = weekday(&folded, false) {
-        next_weekday(day, ctx)?
-    } else {
-        // Even `-0d` isn't quick-add syntax. The dedicated due-date field still accepts past dates.
-        if last.starts_with('-') {
-            return None;
-        }
-        calendar_date(last, ctx)?
+    let last = fold(last);
+    let (prefix, before_prefix) = before.split_last().unwrap_or((&"", &[]));
+    let prefix = fold(prefix);
+    let first = before_prefix.last().map_or(String::new(), |s| fold(s));
+    let today = ctx.today;
+    let offset = Weekday::of(today).offset() as i64;
+    let scale = match (first.as_str(), last.as_str()) {
+        ("in", "day" | "days") | ("za", "den" | "dny" | "dni" | "dnu") => Some(1),
+        ("in", "week" | "weeks") | ("za", "tyden" | "tydny" | "tydnu") => Some(7),
+        _ => None,
     };
-    (date >= ctx.today).then_some((date, 1))
+    if let Some(scale) = scale
+        && prefix.bytes().all(|b| b.is_ascii_digit())
+    {
+        let days = prefix.parse::<i64>().ok()?.checked_mul(scale)?;
+        return Some((add_days(today, days)?, 3));
+    }
+    if matches!(prefix.as_str(), "next" | "pristi") {
+        let day = match last.as_str() {
+            "stredu" => Some(Weekday::Wed),
+            "sobotu" => Some(Weekday::Sat),
+            "nedeli" => Some(Weekday::Sun),
+            day => weekday(day, false),
+        };
+        if let Some(day) = day {
+            return Some((add_days(today, 7 - offset + day.offset() as i64)?, 2));
+        }
+    }
+    if matches!(prefix.as_str(), "on" | "by")
+        && let Some(day) = weekday(&last, true)
+    {
+        return Some((next_weekday(day, ctx)?, 2));
+    }
+    match (prefix.as_str(), last.as_str()) {
+        ("of", "month") if first == "end" => Some((today.last_of_month(), 3)),
+        ("konec", "mesice") => Some((today.last_of_month(), 2)),
+        ("this", "weekend") | ("o", "vikendu") => Some((add_days(today, (5 - offset).max(0))?, 2)),
+        ("next", "week") | ("pristi", "tyden") => Some((add_days(today, 7 - offset)?, 2)),
+        _ => {
+            if let Some(date) = day_month(&prefix, &last, today) {
+                return Some((date, 2));
+            }
+            let date = if let Some((day, month)) = last.split_once('.') {
+                numeric_day_month(day, month, today)?
+            } else if let Some(day) = weekday(&last, false) {
+                next_weekday(day, ctx)?
+            } else {
+                // Even `-0d` isn't quick-add syntax.
+                if last.starts_with('-') {
+                    return None;
+                }
+                calendar_date(&last, ctx)?
+            };
+            (date >= today).then_some((date, 1))
+        }
+    }
+}
+
+fn part(s: &str) -> Option<i8> {
+    (s.len() <= 2 && s.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| s.parse().ok())
+        .flatten()
+}
+
+fn occurrence(day: i8, month: i8, today: Date) -> Option<Date> {
+    // Reject impossible dates immediately; a leap day can be eight years away across a century.
+    Date::new(2000, month, day).ok()?;
+    (today.year()..=today.year() + 8)
+        .find_map(|year| Date::new(year, month, day).ok().filter(|d| *d >= today))
+}
+
+fn numeric_day_month(day: &str, month: &str, today: Date) -> Option<Date> {
+    occurrence(part(day)?, part(month.strip_suffix('.')?)?, today)
+}
+
+fn day_month(day: &str, month: &str, today: Date) -> Option<Date> {
+    if let Some(day) = day.strip_suffix('.')
+        && month.ends_with('.')
+    {
+        return numeric_day_month(day, month, today);
+    }
+    let month = match month {
+        "jan" | "january" | "ledna" => 1,
+        "feb" | "february" | "unora" => 2,
+        "mar" | "march" | "brezna" => 3,
+        "apr" | "april" | "dubna" => 4,
+        "may" | "kvetna" => 5,
+        "jun" | "june" | "cervna" => 6,
+        "jul" | "july" | "cervence" => 7,
+        "aug" | "august" | "srpna" => 8,
+        "sep" | "september" | "zari" => 9,
+        "oct" | "october" | "rijna" => 10,
+        "nov" | "november" | "listopadu" => 11,
+        "dec" | "december" | "prosince" => 12,
+        _ => return None,
+    };
+    occurrence(part(day.strip_suffix('.').unwrap_or(day))?, month, today)
 }
 
 /// Parses quick-add text. The title is trimmed; it is empty only if the text was.
@@ -140,6 +226,10 @@ pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
         } else if due.is_none()
             && let Some((d, count)) = date_suffix(&words[..end], ctx)
         {
+            // Never take only part of a phrase to save a title word.
+            if count == end {
+                break;
+            }
             due = Some(d);
             end -= count;
         } else {
@@ -201,7 +291,7 @@ mod tests {
             prop_assert_eq!(parsed.title.is_empty(), words.is_empty());
             prop_assert!(title_words <= words.len());
             prop_assert_eq!(parsed.title, literal_title(&words[..title_words]));
-            prop_assert!(words.len() - title_words <= 3);
+            prop_assert!(words.len() - title_words <= 4);
             let _ = due_text(&text, &ctx());
         }
 
@@ -212,50 +302,40 @@ mod tests {
                 "Wow!", "!", "!!", "!!!", "!!!!", "on", "BY", "today", "tomorrow", "yesterday",
                 "dnes", "zítra", "včera", "Monday", "Saturday", "sunday", "úterý", "pátek",
                 "+0d", "+3d", "-1d", "-0d", "2026-11-20", "2026-11-21", "2026-12-01",
+                "next", "week", "příští týden", "in", "2", "days", "za 3 týdny", "end of month",
+                "this weekend", "o víkendu", "konec měsíce", "1. prosince", "1.12.", r"\week",
             ]), 1..16),
         ) {
-            let parsed = parse(&words.join(" "), &ctx());
+            let input = words.join("\t");
+            let words: Vec<_> = input.split_whitespace().collect();
+            let parsed = parse(&input, &ctx());
             let title_words = parsed.title.split_whitespace().count();
             prop_assert!(title_words > 0 && title_words <= words.len());
-            prop_assert_eq!(parsed.title, words[..title_words].join(" "));
+            prop_assert_eq!(parsed.title, literal_title(&words[..title_words]));
             let mut suffix = &words[title_words..];
-            let mut priorities = Vec::new();
-            let mut dates = Vec::new();
-            while let [word, rest @ ..] = suffix {
+            let priority = if let [p, rest @ ..] = suffix && priority_word(p).is_some() {
                 suffix = rest;
-                match *word {
-                    "!!" => priorities.push(Priority::Normal),
-                    "!!!" => priorities.push(Priority::High),
-                    other => {
-                        let date = if other.eq_ignore_ascii_case("on") || other.eq_ignore_ascii_case("by") {
-                            let Some((day, remaining)) = rest.split_first() else {
-                                prop_assert!(false, "prefix removed without weekday");
-                                break;
-                            };
-                            suffix = remaining;
-                            prop_assert!(["sat", "sun", "wed", "mon", "fri", "ne", "pá", "Monday",
-                                "Saturday", "sunday", "úterý", "pátek"].contains(day));
-                            due_text(day, &ctx())
-                        } else {
-                            prop_assert!(["today", "tomorrow", "dnes", "zítra", "Monday", "Saturday",
-                                "sunday", "úterý", "pátek", "+0d", "+3d", "2026-11-21", "2026-12-01"]
-                                .contains(&other));
-                            due_text(other, &ctx())
-                        };
-                        prop_assert!(date.is_some_and(|date| date >= ctx().today));
-                        dates.extend(date);
-                    }
-                }
+                priority_word(p)
+            } else if let [rest @ .., p] = suffix && priority_word(p).is_some() {
+                suffix = rest;
+                priority_word(p)
+            } else { None };
+            prop_assert_eq!(priority, parsed.priority);
+            prop_assert_eq!(parsed.due.is_some(), !suffix.is_empty());
+            if !suffix.is_empty() {
+                prop_assert!(suffix.len() <= 3);
+                prop_assert!(!matches!(suffix, [w] if weekday(&fold(w), true).is_some() && weekday(&fold(w), false).is_none()));
+                prop_assert!(!suffix.iter().any(|w| w.starts_with('-')));
+                prop_assert_eq!(parsed.due, due_text(&suffix.join(" "), &ctx()));
+                prop_assert!(parsed.due.is_some_and(|d| d >= ctx().today));
             }
-            prop_assert_eq!(priorities.as_slice(), parsed.priority.as_slice());
-            prop_assert_eq!(dates.as_slice(), parsed.due.as_slice());
         }
 
         #[test]
         fn arbitrary_title_accepts_trailing_date_and_priority(text in any::<String>(), reverse in any::<bool>()) {
             let title = format!("Task {text}");
             let normalized = literal_title(&title.split_whitespace().collect::<Vec<_>>());
-            let suffix = if reverse { "!! zítra" } else { "zítra !!" };
+            let suffix = if reverse { "!! za 1 den" } else { "in 1 day !!" };
             prop_assert_eq!(parse(&format!("{title} {suffix}"), &ctx()), Parsed {
                 title: normalized,
                 due: d("2026-11-22"),
@@ -278,7 +358,7 @@ mod tests {
         assert_eq!(due_text("2026-12-01", &ctx()), d("2026-12-01"));
         assert_eq!(due_text("zítra", &ctx()), d("2026-11-22"));
         assert_eq!(due_text("", &ctx()), None);
-        assert_eq!(due_text("next week", &ctx()), None);
+        assert_eq!(due_text("next week", &ctx()), d("2026-11-23"));
         assert_eq!(due_text("soonish", &ctx()), None);
     }
 
@@ -321,6 +401,23 @@ mod tests {
             "Report -3d",
             "Report -0d",
             "Report 2026-11-20",
+            "Meeting in 2",
+            "Read 1984",
+            "Version 1.12",
+            "Issue 1 12",
+            "Next Sunday",
+            "Plan next fri",
+            "Plan in -2 days",
+            "Plan in 1.5 weeks",
+            "Plan za dva dny",
+            "Plan in 9999999999999999999 weeks",
+            "Plan in 2 days time",
+            "Plan end month",
+            "Plan weekend",
+            "Plan 31 Apr",
+            "Plan 1.13.",
+            "Plan 1. 12",
+            "Plan 001 Dec",
             "On Sunday",
             "by fri",
             "!!!",
@@ -332,6 +429,64 @@ mod tests {
                     ..Parsed::default()
                 }
             );
+        }
+    }
+
+    #[test]
+    fn phrases_are_whole_suffixes_in_either_priority_order() {
+        for (phrase, date) in [
+            ("in 2 days", "2026-11-23"),
+            ("ZA 2 DNY", "2026-11-23"),
+            ("za 5 dní", "2026-11-26"),
+            ("in 3 weeks", "2026-12-12"),
+            ("za 3 tydny", "2026-12-12"),
+            ("za 5 týdnů", "2026-12-26"),
+            ("NEXT WEEK", "2026-11-23"),
+            ("pristi tyden", "2026-11-23"),
+            ("next Sunday", "2026-11-29"),
+            ("příští neděli", "2026-11-29"),
+            ("příští středu", "2026-11-25"),
+            ("this weekend", "2026-11-21"),
+            ("o VÍKENDU", "2026-11-21"),
+            ("end of month", "2026-11-30"),
+            ("konec mesice", "2026-11-30"),
+            ("1 Dec", "2026-12-01"),
+            ("1. 12.", "2026-12-01"),
+            ("1.12.", "2026-12-01"),
+            ("1. prosince", "2026-12-01"),
+            ("21 November", "2026-11-21"),
+            ("1 Jan", "2027-01-01"),
+            ("29. února", "2028-02-29"),
+        ] {
+            for suffix in [format!("{phrase} !!"), format!("!! {phrase}")] {
+                assert_eq!(
+                    parse(&format!("Task {suffix}"), &ctx()),
+                    Parsed {
+                        title: "Task".into(),
+                        due: d(date),
+                        priority: Some(Priority::Normal),
+                    },
+                    "{suffix}"
+                );
+            }
+            assert_eq!(parse(phrase, &ctx()).title, phrase);
+            assert_eq!(parse(phrase, &ctx()).due, None);
+            assert_eq!(due_text(phrase, &ctx()), d(date));
+        }
+    }
+
+    #[test]
+    fn weekends_and_next_week_are_anchored_to_the_local_week() {
+        for (today, weekend, next_week) in [
+            ("2026-11-22", "2026-11-22", "2026-11-23"),
+            ("2026-11-23", "2026-11-28", "2026-11-30"),
+        ] {
+            let ctx = EvalContext {
+                today: today.parse().unwrap(),
+                ..ctx()
+            };
+            assert_eq!(due_text("this weekend", &ctx), d(weekend));
+            assert_eq!(due_text("next Monday", &ctx), d(next_week));
         }
     }
 
@@ -364,6 +519,12 @@ mod tests {
             (r"See you \tomorrow", "See you tomorrow", None, None),
             (r"Meet on \fri", "Meet on fri", None, None),
             (r"Wow \!!", "Wow !!", None, None),
+            (
+                r"Plan next \Monday !!",
+                "Plan next Monday",
+                None,
+                Some(Priority::Normal),
+            ),
             (
                 r"Review \pátek !!",
                 "Review pátek",

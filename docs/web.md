@@ -281,7 +281,8 @@ child of the current collection, or a top-level list from a smart room. Each new
 Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
 and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
 `Sun 22 Nov`. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
-`by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
+`by fri`). Whole phrases work too: `in 2 days`, `za 3 týdny`, `příští týden`, `next Friday`, `o víkendu`,
+`end of month`, or a day and month such as `1. prosince` or `1. 12.`. Past ISO dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
 `See you tomorrow` as the title. The room supplies defaults: My Day adds today's My Day stamp,
 Important defaults to high priority and Planned defaults to due today. New tasks go first in their
 list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside the

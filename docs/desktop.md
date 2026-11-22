@@ -297,6 +297,13 @@ After at least one title word, all clients accept one trailing date and one prio
 - Weekdays use today or the next occurrence. English and Czech full names work on their own (`Sunday`,
   `pátek`); abbreviations need `on` or `by` (`on sun`, `by fri`, `by pá`). Both words are removed from
   the title. Dates are case-insensitive, and Czech words also work without accents.
+- Relative dates: `in 2 days`, `in 3 weeks`, `za 2 dny`, `za 5 dní`, `za 2 týdny`, `za 5 týdnů`.
+- `next week` / `příští týden` means next Monday. `next Sunday` / `příští neděli` means Sunday of
+  the **next** Monday–Sunday week, even when this week's Sunday hasn't happened yet.
+- `this weekend` / `o víkendu` means Saturday, or today on Saturday or Sunday. `end of month` /
+  `konec měsíce` means the last day of the current month.
+- `1 Dec`, `1. 12.`, `1.12.` and `1. prosince` mean the next December 1, including today. The year
+  rolls forward if needed. Incomplete phrases like `Meeting in 2` and bare numbers stay in the title.
 - A separate `!!` sets normal priority; `!!!` sets high priority. `Wow !` and `Wow!` keep their punctuation.
 - Put `\` before the final title token to keep it literal: `Enjoy the \sun` becomes `Enjoy the sun`,
   and `See you \tomorrow !!` becomes `See you tomorrow` with normal priority and no parsed date.

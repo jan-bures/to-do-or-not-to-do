@@ -31,7 +31,9 @@ What the first version does:
   text only, with no arrow.
 - **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) while typing and on
   submit. A calendar chip previews a recognized date (for example, **Sun 22 Nov**) without changing the text. A trailing date can be
-  `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
+  `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`).
+  Whole phrases work too: `in 2 weeks`, `za 3 dny`, `next week`, `příští pátek`, `this weekend`,
+  `konec měsíce`, or a day and month such as `1 Dec` or `1.12.`. Past ISO dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
   keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
   priority and Planned defaults to due today. New tasks go first in their list's manual order. If no
   destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.

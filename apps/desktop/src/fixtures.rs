@@ -1040,7 +1040,7 @@ pub fn work() -> Fixture {
         "2026-11-21T14:10:00Z",
     );
     f.sync = online("2026-11-21T14:09:00Z");
-    f.quick_add_text = Some("Draft the changelog for 0.4 tomorrow");
+    f.quick_add_text = Some("Draft the changelog for 0.4 next week");
     f
 }
 
