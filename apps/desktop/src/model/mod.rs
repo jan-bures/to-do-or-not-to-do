@@ -571,6 +571,17 @@ pub struct Sidebar {
     pub tone: Tone,
 }
 
+impl Sidebar {
+    /// Where Activity and its agents go among the smart rows: right after Agent activity, as on every
+    /// client (`docs/design-language.md`, *Sidebar order*), or last if Agent activity isn't there.
+    pub fn activity_at(&self) -> usize {
+        self.smart
+            .iter()
+            .position(|item| item.smart == Smart::AgentActivity)
+            .map_or(self.smart.len(), |i| i + 1)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepRow {
     pub id: StepId,

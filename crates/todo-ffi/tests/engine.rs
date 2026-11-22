@@ -1242,7 +1242,7 @@ fn the_drawer_lists_the_agents_seen_this_week() {
         .collect();
     assert_eq!(names, [("Claude", "C"), ("Codex", "X"), ("Pi", "π")]);
     assert!(
-        agents.iter().all(|a| a.today.ends_with(" edited")),
+        agents.iter().all(|a| a.today.ends_with(" edited today")),
         "{agents:?}"
     );
     let blank = TodoEngine::fixture("blank".into(), now()).unwrap();

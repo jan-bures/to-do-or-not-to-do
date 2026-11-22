@@ -34,7 +34,8 @@ use crate::{fixtures, fonts, ui};
 const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAIL, 900.);
 
 /// The logical window size a fixture renders at: the reference window, except the quick-add window, the
-/// narrowest main window (`long-names-narrow`, `narrow-detail`) and a short one (`finished-short`).
+/// narrowest main window (`long-names-narrow`, `narrow-detail`), a short one (`finished-short`) and the
+/// smallest (`short-sidebar`).
 pub fn window_size(fixture: &str) -> (f32, f32) {
     match fixture {
         "quick-add" => (
@@ -45,6 +46,7 @@ pub fn window_size(fixture: &str) -> (f32, f32) {
             (crate::app::MIN_WINDOW.0, MAIN_SIZE.1)
         }
         "finished-short" => (MAIN_SIZE.0, 700.),
+        "short-sidebar" => crate::app::MIN_WINDOW,
         _ => MAIN_SIZE,
     }
 }
@@ -335,6 +337,7 @@ mod tests {
         assert_eq!(window_size("narrow-detail"), (960., 900.));
         assert_eq!(window_size("narrow-undo-toast"), (960., 900.));
         assert_eq!(window_size("finished-short"), (1440., 700.));
+        assert_eq!(window_size("short-sidebar"), (960., 600.));
     }
 
     #[test]

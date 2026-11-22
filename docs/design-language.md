@@ -167,6 +167,20 @@ whole logical pixels; the bar fades out over the same duration when neither hove
   focus, not on every repeat. Saved values are clamped to the current tokens on load. Web and phone layouts
   are unchanged.
 
+**Sidebar order.** The desktop and web sidebars and the Android drawer list the rooms in one order, top to
+bottom:
+
+1. the smart lists: **My Day**, **Important**, **Planned**, **All**, **Completed**, **Agent activity**;
+2. **Activity**, a row like the smart lists' (Clock icon in the `agent-activity` hue; the desktop adds its
+   **Ctrl H** hint), and under it, as indented sub-rows, the agents seen this week, only when there are any.
+   There is no "Agents" or "Today" heading: each agent's status says it ("2 added today", "idle");
+3. the collections, each with its lists;
+4. the lists outside any collection;
+5. **New list** and **New collection**, pinned under the scrolled rooms on the desktop and the web (a hairline
+   above them), so they stay in view however long the sidebar grows. The sync line and settings close the pane.
+
+A client never reorders these, and keyboard order (Tab stops, arrows) follows the order on screen.
+
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.
 
@@ -774,8 +788,8 @@ Agents are shown as **round letter marks**: **C** (Claude), **X** (Codex) and **
 
 - **The mark.** It is 20 px. The letter is in Geist Mono 600 at half the mark's size, on the agent's tinted
   background, with a 1 px inset ring.
-- **Where it appears.** The same mark appears everywhere: in rows (in the agent column), in the sidebar's Agents
-  panel, in the activity feed and in toasts.
+- **Where it appears.** The same mark appears everywhere: in rows (in the agent column), in the sidebar's agent rows
+  under Activity, in the activity feed and in toasts.
 - **The name.** It is in the hover tooltip, in the accessible name ("Agent: Codex") and in the detail activity.
 - **You.** Your own entries use a neutral `Y` mark.
 - **No faces, avatars or mascots anywhere.** Attribution must be precise, not cute.

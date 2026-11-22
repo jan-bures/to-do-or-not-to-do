@@ -588,7 +588,8 @@ fn sidebar(
         .map(|l| nav(l))
         .collect();
 
-    // Agents seen this week, with what they did today.
+    // Agents seen this week, with what they did today: the sidebar has no "Today" heading, so the
+    // status says it.
     let week_ago = add_days(today, -7).unwrap_or(today);
     let mut agents: BTreeMap<String, (Actor, u32, u32)> = BTreeMap::new();
     for t in state.tasks.values().filter(|t| t.deleted.is_none()) {
@@ -617,9 +618,9 @@ fn sidebar(
         .filter_map(|(actor, added, edited)| {
             let status = match (added, edited) {
                 (0, 0) => "idle".to_string(),
-                (a, 0) => format!("{a} added"),
-                (0, e) => format!("{e} edited"),
-                (a, e) => format!("{a} added, {e} edited"),
+                (a, 0) => format!("{a} added today"),
+                (0, e) => format!("{e} edited today"),
+                (a, e) => format!("{a} added, {e} edited today"),
             };
             Some(AgentRow {
                 key: AgentKey::of(actor.agent_id()?)?,

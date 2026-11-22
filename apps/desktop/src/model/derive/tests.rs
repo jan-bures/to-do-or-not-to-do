@@ -399,8 +399,22 @@ fn smart_list_counts_and_agent_rows() {
         .collect();
     assert_eq!(
         agents,
-        [("Claude", "3 added"), ("Codex", "3 edited"), ("Pi", "idle")]
+        [
+            ("Claude", "3 added today"),
+            ("Codex", "3 edited today"),
+            ("Pi", "idle")
+        ]
     );
+    // Activity and its agents follow Agent activity, the last smart list.
+    assert_eq!(shell.sidebar.smart[5].smart, Smart::AgentActivity);
+    assert_eq!(shell.sidebar.activity_at(), 6);
+    let mut moved = shell.sidebar.clone();
+    moved.smart.swap(4, 5);
+    assert_eq!(moved.activity_at(), 5);
+    moved
+        .smart
+        .retain(|item| item.smart != Smart::AgentActivity);
+    assert_eq!(moved.activity_at(), moved.smart.len());
 }
 
 #[test]

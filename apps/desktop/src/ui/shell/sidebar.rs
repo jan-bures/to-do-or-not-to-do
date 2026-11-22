@@ -1,7 +1,8 @@
-//! The sidebar: smart lists, collections and lists with their counts, New list and New collection, the
-//! agents seen today and the sync line, and inline renaming (lists, collections, and the steps and tags
-//! of the detail pane). Its menus (a list's or collection's context menu, the account menu) are drawn by
-//! `menu.rs`.
+//! The sidebar: smart lists with Activity and the agents seen this week after Agent activity,
+//! collections and lists with their counts, New list and New collection pinned below them, the sync
+//! line, and inline renaming (lists, collections, and the steps and tags of the detail pane). Its menus
+//! (a list's or collection's context menu, the account menu) are drawn by `menu.rs`. The order is the one
+//! every client follows (`docs/design-language.md`, *Sidebar order*).
 
 use gpui::{
     ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -18,6 +19,9 @@ use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
+
+/// How far a sub-row (a collection's list, an agent under Activity) is indented.
+const SUB_INDENT: f32 = space::S6 + space::S1;
 
 /// What an inline rename edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +306,74 @@ impl ShellView {
         )
     }
 
+    /// Activity (**Ctrl+H**), a nav row like the smart lists, and under it a sub-row for each agent seen
+    /// this week, saying what it did today: each opens Activity filtered to that agent.
+    fn activity_rows(&self, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
+        let p = self.palette;
+        let t = self.theme;
+        let sb = &self.shell.sidebar;
+        let on = sb.selected == RoomKey::Activity(None);
+        let row = div()
+            .h(px(desktop::NAV_ROW))
+            .flex()
+            .items_center()
+            .gap(px(desktop::NAV_GAP))
+            .pl(px(space::S2))
+            .pr(px(desktop::NAV_GAP))
+            .rounded(px(radius::MD))
+            .style(ty::NAV)
+            .text_color(p.ink_2)
+            .child(kit::icon(
+                Icon::Clock,
+                component::ICON,
+                theme::list_colors(t, theme::hues::AGENT_ACTIVITY).glyph,
+            ))
+            .child(div().flex_1().child("Activity"))
+            .child(kit::kbd(&p, "Ctrl H"));
+        let activity = self.clickable(
+            self.nav_row(RoomKey::Activity(None), on, row),
+            "nav-activity",
+            on,
+            cx,
+            |this, _, _, cx| this.select_room(RoomKey::Activity(None), cx),
+        );
+        let agents = sb.agents.iter().map(|a| {
+            let key = RoomKey::Activity(Some(a.key));
+            let on = sb.selected == key;
+            let row = div()
+                .h(px(desktop::NAV_SUB_ROW))
+                .flex()
+                .items_center()
+                .gap(px(desktop::NAV_GAP))
+                .pl(px(SUB_INDENT))
+                .pr(px(desktop::NAV_GAP))
+                .rounded(px(radius::MD))
+                .style(ty::NAV_SUB)
+                .text_color(p.ink_2)
+                .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
+                // In a narrow sidebar the name and the status both give way, in step with their widths;
+                // the tooltip has both in full.
+                .child(div().flex_auto().min_w_0().truncate().child(a.name.clone()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .style(ty::COUNT)
+                        .text_color(p.ink_3)
+                        .child(a.status.clone()),
+                );
+            self.clickable(
+                self.nav_row(key, on, row),
+                SharedString::from(format!("agent-{}", a.key.as_str())),
+                on,
+                cx,
+                move |this, _, _, cx| this.select_room(key, cx),
+            )
+            .tooltip(kit::tooltip(p, format!("{}: {}", a.name, a.status)))
+        });
+        std::iter::once(activity).chain(agents).collect()
+    }
+
     /// The sync line in the sidebar's footer. While something couldn't sync, it's a button: it opens the
     /// list of refused changes, upwards, to see and dismiss them. Tab reaches it (`Stop::SyncFailures`).
     fn sync_line(&self, dot: gpui::Hsla, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -348,7 +420,7 @@ impl ShellView {
                 .child(n.to_string())
         };
 
-        let smart: Vec<_> = sb
+        let mut smart: Vec<_> = sb
             .smart
             .iter()
             .map(|item| {
@@ -395,6 +467,11 @@ impl ShellView {
                 )
             })
             .collect();
+        // Activity right after Agent activity, and under it the agents seen this week: each opens
+        // Activity filtered to it.
+        let after = sb.activity_at();
+        let activity = self.activity_rows(cx);
+        smart.splice(after..after, activity);
 
         let mut collections = Vec::new();
         for (i, c) in sb.collections.iter().enumerate() {
@@ -493,19 +570,20 @@ impl ShellView {
                 .closing_groups
                 .get(&cid)
                 .map_or(c.lists.as_slice(), Vec::as_slice);
-            let group =
-                (shown > 0. && !lists.is_empty()).then(|| {
-                    div()
-                        .flex_none()
-                        .overflow_hidden()
-                        .h(px(desktop::NAV_SUB_ROW * lists.len() as f32 * shown))
-                        .opacity(shown)
-                        .child(
-                            div().flex().flex_col().children(lists.iter().map(|l| {
-                                self.list_row(l, space::S6 + space::S1, !c.collapsed, cx)
-                            })),
-                        )
-                });
+            let group = (shown > 0. && !lists.is_empty()).then(|| {
+                div()
+                    .flex_none()
+                    .overflow_hidden()
+                    .h(px(desktop::NAV_SUB_ROW * lists.len() as f32 * shown))
+                    .opacity(shown)
+                    .child(
+                        div().flex().flex_col().children(
+                            lists
+                                .iter()
+                                .map(|l| self.list_row(l, SUB_INDENT, !c.collapsed, cx)),
+                        ),
+                    )
+            });
             collections.push(
                 div()
                     .flex_none()
@@ -539,7 +617,6 @@ impl ShellView {
                 .hover(|s| s.bg(p.hover))
                 .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
                 .child(label)
-                .child(self.probe(id))
                 .on_click(cx.listener(move |this, _, window, cx| add(this, window, cx)))
                 .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                     this.control_key(e, window, cx);
@@ -560,88 +637,19 @@ impl ShellView {
             Stop::NewCollection,
             |this, window, cx| this.new_collection(window, cx),
         );
+        // Pinned between the scrolled rooms and the footer, so they never scroll out of view. The
+        // insets match the scrolled column's, so the rows line up with the lists above them.
         let adds = div()
-            .mt(px(space::S2))
+            .flex_none()
             .flex()
             .flex_col()
-            .child(new_list)
-            .child(new_collection);
-
-        // Activity, and under it the agents seen this week: each opens Activity filtered to it.
-        let activity_on = sb.selected == RoomKey::Activity(None);
-        let activity_row = div()
-            .h(px(desktop::NAV_ROW))
-            .flex()
-            .items_center()
-            .gap(px(desktop::NAV_GAP))
+            .py(px(space::S2))
             .pl(px(space::S2))
-            .pr(px(space::S2))
-            .rounded(px(radius::MD))
-            .style(ty::NAV)
-            .text_color(p.ink_2)
-            .child(kit::icon(
-                Icon::Clock,
-                component::ICON,
-                theme::list_colors(t, theme::hues::AGENT_ACTIVITY).glyph,
-            ))
-            .child(div().flex_1().child("Activity"))
-            .child(kit::kbd(&p, "Ctrl H"));
-        let activity_row = self.clickable(
-            self.nav_row(RoomKey::Activity(None), activity_on, activity_row),
-            "nav-activity",
-            activity_on,
-            cx,
-            |this, _, _, cx| this.select_room(RoomKey::Activity(None), cx),
-        );
-        let agent_rows = sb.agents.iter().map(|a| {
-            let key = RoomKey::Activity(Some(a.key));
-            let on = sb.selected == key;
-            let row = div()
-                .h(px(desktop::NAV_ROW))
-                .flex()
-                .items_center()
-                .gap(px(desktop::NAV_GAP))
-                .px(px(space::S2))
-                .rounded(px(radius::MD))
-                .style(ty::NAV_SUB.with_weight(500))
-                .text_color(p.ink_2)
-                .child(kit::agent_mark(t, a.agent, component::AGENT_MARK))
-                .child(div().flex_1().min_w_0().truncate().child(a.name.clone()))
-                .child(
-                    div()
-                        .style(ty::COUNT)
-                        .text_color(p.ink_3)
-                        .child(a.status.clone()),
-                );
-            self.clickable(
-                self.nav_row(key, on, row),
-                SharedString::from(format!("agent-{}", a.key.as_str())),
-                on,
-                cx,
-                move |this, _, _, cx| this.select_room(key, cx),
-            )
-        });
-        let agents = div()
+            .pr(px(space::S3))
             .border_t_1()
             .border_color(p.line)
-            .pt(px(space::S2))
-            .pb(px(space::S2))
-            .flex()
-            .flex_col()
-            .child(activity_row)
-            .when(!sb.agents.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .px(px(space::S2))
-                        .pt(px(space::S2))
-                        .mb(px(space::S1))
-                        .child(kit::label(&p, "Agents"))
-                        .child(kit::label(&p, "Today")),
-                )
-                .children(agent_rows)
-            });
+            .child(new_list)
+            .child(new_collection);
 
         let dot = match sb.tone {
             Tone::Ok => p.success,
@@ -710,9 +718,7 @@ impl ShellView {
                                     .when(!top.is_empty(), |d| {
                                         d.child(div().h(px(space::S3))).children(top)
                                     })
-                                    .child(adds)
-                                    .child(div().flex_1().min_h(px(space::S3)))
-                                    .child(agents),
+                                    .child(div().flex_none().h(px(space::S3))),
                             ),
                     )
                     .child(
@@ -720,6 +726,7 @@ impl ShellView {
                             .overlay(&self.sidebar_scroll, &p, self.animate),
                     ),
             )
+            .child(adds)
             .child(
                 div()
                     .h(px(desktop::SIDEBAR_FOOTER))

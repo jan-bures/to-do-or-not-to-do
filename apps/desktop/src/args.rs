@@ -23,7 +23,8 @@ Options:
                     task-context-menu, move-to-picker, sync-failures, delete-list-confirm,
                     new-collection, tab-new-collection, collection-menu, list-context-menu,
                     delete-collection-confirm, move-list-picker, list-colour, tag-picker, tag-create, tag-edit, tag-colour,
-                    tag-rename, task-links, add-link, collapsed-collection, long-sidebar, long-names,
+                    tag-rename, task-links, add-link, collapsed-collection, long-sidebar, short-sidebar
+                    (960 x 600, the smallest window), long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, resize-handle-hover, caption-hover,
                     caption-close-hover, empty, finished, finished-short (700 px
@@ -78,6 +79,7 @@ pub const FIXTURES: &[&str] = &[
     "add-link",
     "collapsed-collection",
     "long-sidebar",
+    "short-sidebar",
     "long-names",
     "long-names-narrow",
     "narrow-detail",

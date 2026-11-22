@@ -169,18 +169,19 @@ pub struct NavGroup {
     pub lists: Vec<NavItem>,
 }
 
-/// An agent seen in the last week, and what it did today (the drawer's Agents panel).
+/// An agent seen in the last week, and what it did today (its row under the drawer's Activity).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AgentSummary {
     /// Exact filter key, not the display name.
     pub id: String,
     /// Its letter mark and name.
     pub mark: AgentMark,
-    /// "2 added, 1 edited", "3 edited" or "idle".
+    /// "2 added, 1 edited today", "3 edited today" or "idle": the drawer has no "Today" heading.
     pub today: String,
 }
 
-/// The navigation: smart lists, then collections and lists, then the agents seen this week.
+/// The navigation: smart lists, then collections and lists, and the agents seen this week (drawn under
+/// Activity, after Agent activity).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Home {
     /// Smart lists.
@@ -1085,9 +1086,9 @@ pub fn agents(state: &State, now: &Now) -> Vec<AgentSummary> {
         .filter_map(|&(actor, added, edited)| {
             let today = match (added, edited) {
                 (0, 0) => "idle".to_owned(),
-                (a, 0) => format!("{a} added"),
-                (0, e) => format!("{e} edited"),
-                (a, e) => format!("{a} added, {e} edited"),
+                (a, 0) => format!("{a} added today"),
+                (0, e) => format!("{e} edited today"),
+                (a, e) => format!("{a} added, {e} edited today"),
             };
             Some(AgentSummary {
                 id: actor.agent_id()?.as_str().into(),

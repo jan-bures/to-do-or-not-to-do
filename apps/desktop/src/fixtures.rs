@@ -167,6 +167,13 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             ..long_sidebar()
         }),
         "long-sidebar" => Some(long_sidebar()),
+        // The worst case for the pinned New list and New collection: the smallest window, the
+        // narrowest sidebar.
+        "short-sidebar" => {
+            let mut f = long_sidebar();
+            f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MIN);
+            Some(f)
+        }
         "sidebar-wide" => {
             let mut f = long_sidebar();
             f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MAX);

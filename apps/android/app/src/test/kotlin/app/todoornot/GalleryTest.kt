@@ -48,6 +48,7 @@ import app.todoornot.model.roomMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.model.taskMenu
 import app.todoornot.ui.ActivityRoom
+import app.todoornot.ui.AgentRow
 import app.todoornot.core.ActivityDay
 import app.todoornot.core.ActivityFooter
 import app.todoornot.core.ActivityView
@@ -379,11 +380,12 @@ class GalleryTest {
                 Column(Modifier.fillMaxSize().background(LocalDesign.current.room.canvas)) {
                     Box(Modifier.onSizeChanged { sizes["nav"] = it }) { NavRow(home.smart.first(), on = true, indent = false, onOpen = {}) }
                     Box(Modifier.onSizeChanged { sizes["sub"] = it }) { NavRow(home.groups.first().lists.first(), on = false, indent = true, onOpen = {}) }
+                    Box(Modifier.onSizeChanged { sizes["agent"] = it }) { AgentRow(home.agents.first(), on = false) {} }
                     Box(Modifier.onSizeChanged { sizes["pill"] = it }) { RoomPill(home.smart.first(), on = false) {} }
                 }
             }
         }
-        assertEquals(3, sizes.size)
+        assertEquals(4, sizes.size)
         sizes.forEach { (what, size) -> assertTrue("$what is ${size.height} px, under $touch", size.height >= touch) }
     }
 
@@ -701,7 +703,7 @@ class GalleryTest {
         }
     }
 
-    /** The drawer's agent summary under the lists (collections folded, so it's in view). */
+    /** The drawer with every collection folded: Activity and its agents after Agent activity, then New list. */
     @Test
     fun agent_summary() {
         for (dark in listOf(false, true)) {

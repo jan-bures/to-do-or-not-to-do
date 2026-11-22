@@ -1,11 +1,11 @@
 package app.todoornot.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
+import app.todoornot.core.SmartList
 import app.todoornot.design.Glyph
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
@@ -63,8 +64,10 @@ private val S = Tokens.Space
 private val P = Tokens.Metrics.Phone
 
 /**
- * The rooms: smart lists, then the top-level lists and each collection with its lists (glyphs in each
- * list's hue), then "+ New list", then the agents seen this week. A collection folds with its chevron. A
+ * The rooms, in the order every client keeps (docs/design-language.md, *Sidebar order*): the smart lists,
+ * with Activity and under it the agents seen this week right after Agent activity, then the top-level
+ * lists and each collection with its lists (glyphs in each list's hue), then "+ New list" and "New
+ * collection". A collection folds with its chevron. A
  * long press on a list or a collection opens its menu (rename, move, and for a list, delete), whose
  * choice goes to [onMenu]; the rows in [moving] glide to their new places. The footer says how syncing is
  * going, and its settings button holds the pairing, Sync now and Unpair.
@@ -105,7 +108,13 @@ fun RoomDrawer(
             .navigationBarsPadding(),
     ) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = S.S3.dp, vertical = S.S3.dp)) {
-            state.home.smart.forEach { NavRow(it, it.key == current, indent = false, onOpen) }
+            val smart = state.home.smart
+            val activityAt = activityAt(smart)
+            smart.forEachIndexed { i, item ->
+                NavRow(item, item.key == current, indent = false, onOpen)
+                if (i + 1 == activityAt) ActivityRows(state, onActivity)
+            }
+            if (activityAt == 0) ActivityRows(state, onActivity)
             state.home.groups.forEach { g ->
                 val c = g.collection
                 key(c?.key ?: "top") {
@@ -137,8 +146,6 @@ fun RoomDrawer(
             Spacer(Modifier.height(S.S2.dp))
             NewList(onNewList)
             Choice("New collection", onClick = onNewCollection)
-            Choice("Activity", state.activity == "") { onActivity(null) }
-            if (state.home.agents.isNotEmpty()) Agents(state.home.agents) { onActivity(it) }
         }
         if (state.toast != null) ToastStrip(state.toast, actions)
         Footer(state, server, actions)
@@ -243,36 +250,78 @@ private fun Footer(state: UiState, server: String?, actions: Actions) {
 }
 
 /**
- * The agents seen in the last week, each with its letter mark and what it did today ("2 added, 1
- * edited", "idle"), as the desktop's sidebar shows them. Tap to filter the Activity room.
+ * Where Activity goes among the smart lists: right after Agent activity, or last if it isn't there (or
+ * first, at 0, with no smart lists at all).
+ */
+internal fun activityAt(smart: List<NavItem>): Int {
+    val agentActivity = smart.indexOfFirst { (it.key as? RoomKey.Smart)?.list == SmartList.AGENT_ACTIVITY }
+    return if (agentActivity >= 0) agentActivity + 1 else smart.size
+}
+
+/**
+ * Activity, a row like the smart lists', and under it, indented, the agents seen in the last week, each
+ * with its letter mark and what it did today ("2 added, 1 edited today", "idle"), as the desktop's
+ * sidebar shows them. Tap one to open Activity filtered to it.
  */
 @Composable
-internal fun Agents(agents: List<AgentSummary>, onActivity: (String) -> Unit = {}) {
+private fun ActivityRows(state: UiState, onActivity: (String?) -> Unit) {
+    val d = LocalDesign.current
+    DrawerRow(on = state.activity == "", indent = false, onClick = { onActivity(null) }) {
+        Icon("clock", d.list("agent-activity").glyph)
+        Label("Activity", Tokens.Type.NAV, d.room.ink, Modifier.weight(1f))
+    }
+    state.home.agents.forEach { a -> AgentRow(a, state.activity == a.id) { onActivity(a.id) } }
+}
+
+/** An agent's row under Activity: its letter mark, its name and what it did today. */
+@Composable
+internal fun AgentRow(agent: AgentSummary, on: Boolean, onClick: () -> Unit) {
     val r = LocalDesign.current.room
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(top = S.S4.dp)
-            .hairline(r.line, top = true)
-            .padding(start = S.S2.dp, end = S.S3.dp, top = S.S3.dp, bottom = S.S2.dp),
+    DrawerRow(
+        on = on,
+        indent = true,
+        onClick = onClick,
+        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "Agent: ${agent.mark.name}, ${agent.today}" },
     ) {
-        Row(Modifier.fillMaxWidth().padding(bottom = S.S1.dp)) {
-            Label("Agents", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.weight(1f))
-            Label("Today", Tokens.Type.CAPS_LABEL, r.ink3)
-        }
-        agents.forEach { a ->
-            Row(
-                Modifier.fillMaxWidth().height(P.TOUCH.dp).clickable { onActivity(a.id) }.semantics(mergeDescendants = true) {
-                    contentDescription = "Agent: ${a.mark.name}, today ${a.today}"
-                },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-            ) {
-                AgentBadge(a.mark)
-                Label(a.mark.name, Tokens.Type.NAV_SUB, r.ink2, Modifier.weight(1f), weight = Tokens.Type.NAV.weight)
-                Label(a.today, Tokens.Type.COUNT, r.ink3)
-            }
-        }
+        AgentBadge(agent.mark)
+        Label(agent.mark.name, Tokens.Type.NAV_SUB, r.ink, Modifier.weight(1f))
+        Label(agent.today, Tokens.Type.COUNT, r.ink3)
+    }
+}
+
+/**
+ * A drawer row: a compact highlight, raised while [on], inside a full touch target. Indented rows sit
+ * under a collection or under Activity.
+ */
+@Composable
+private fun DrawerRow(
+    on: Boolean,
+    indent: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongPress: (() -> Unit)? = null,
+    longClickLabel: String? = null,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val r = LocalDesign.current.room
+    TouchTarget(
+        onClick,
+        modifier.fillMaxWidth().semantics { selected = on },
+        onLongClick = onLongPress,
+        longClickLabel = longClickLabel,
+    ) { press ->
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(P.NAV_ROW.dp)
+                .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
+                .background(if (on) r.raised else r.canvas)
+                .then(press)
+                .padding(start = if (indent) S.S8.dp else S.S2.dp, end = S.S3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+            content = content,
+        )
     }
 }
 
@@ -288,35 +337,24 @@ internal fun NavRow(
     val d = LocalDesign.current
     val r = d.room
     val l = d.list(item.hue)
-    TouchTarget(
-        { onOpen(item.key) },
-        Modifier.fillMaxWidth().semantics { selected = on },
-        onLongClick = onLongPress,
+    DrawerRow(
+        on = on,
+        indent = indent,
+        onClick = { onOpen(item.key) },
+        onLongPress = onLongPress,
         longClickLabel = if (onLongPress != null) "Options for ${item.name}" else null,
-    ) { press ->
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(P.NAV_ROW.dp)
-                .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
-                .background(if (on) r.raised else r.canvas)
-                .then(press)
-                .padding(start = if (indent) S.S8.dp else S.S2.dp, end = S.S3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-        ) {
-            when {
-                item.glyph != null -> Glyph(item.glyph!!, l.glyph)
-                item.icon != null -> Icon(item.icon!!, l.glyph)
-                else -> Box(Modifier.size(Tokens.Metrics.Component.GLYPH.dp))
-            }
-            val token = when {
-                heading -> Tokens.Type.NAV_COLLECTION
-                indent -> Tokens.Type.NAV_SUB
-                else -> Tokens.Type.NAV
-            }
-            Label(item.name, token, r.ink, Modifier.weight(1f))
-            if (item.open > 0u) Label("${item.open}", Tokens.Type.COUNT, r.ink3)
+    ) {
+        when {
+            item.glyph != null -> Glyph(item.glyph!!, l.glyph)
+            item.icon != null -> Icon(item.icon!!, l.glyph)
+            else -> Box(Modifier.size(Tokens.Metrics.Component.GLYPH.dp))
         }
+        val token = when {
+            heading -> Tokens.Type.NAV_COLLECTION
+            indent -> Tokens.Type.NAV_SUB
+            else -> Tokens.Type.NAV
+        }
+        Label(item.name, token, r.ink, Modifier.weight(1f))
+        if (item.open > 0u) Label("${item.open}", Tokens.Type.COUNT, r.ink3)
     }
 }

@@ -113,7 +113,6 @@ pub const TAB_ORDER: [Stop; 13] = [
 /// A scrolled pane a Tab stop can sit in, below its fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollPane {
-    Sidebar,
     Detail,
     /// The Activity room's feed.
     Feed,
@@ -125,8 +124,6 @@ pub enum ScrollPane {
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
         Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
-        Stop::NewList => Some((ScrollPane::Sidebar, "new-list")),
-        Stop::NewCollection => Some((ScrollPane::Sidebar, "new-collection")),
         // Load older activity (or Try again) ends the feed, below the last change read.
         Stop::ActivityMore => Some((ScrollPane::Feed, "activity-more")),
         Stop::SidebarSplitter
@@ -136,6 +133,9 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
         | Stop::DetailSplitter
+        // New list and New collection are pinned below the sidebar's scrolled rooms.
+        | Stop::NewList
+        | Stop::NewCollection
         | Stop::SyncFailures
         | Stop::Account => None,
     }
@@ -752,20 +752,15 @@ mod tests {
             Some((ScrollPane::Feed, "activity-more"))
         );
         assert_eq!(
-            reveal(Stop::NewList),
-            Some((ScrollPane::Sidebar, "new-list"))
-        );
-        assert_eq!(
-            reveal(Stop::NewCollection),
-            Some((ScrollPane::Sidebar, "new-collection"))
-        );
-        assert_eq!(
             reveal(Stop::Repeat),
             Some((ScrollPane::Detail, "repeat-row"))
         );
         // The toolbar's buttons sit above the feed and never scroll away.
         assert_eq!(reveal(Stop::ActivityRefresh), None);
         assert_eq!(reveal(Stop::ActivityFilter), None);
+        // New list and New collection are pinned under the sidebar's scrolled rooms, always in view.
+        assert_eq!(reveal(Stop::NewList), None);
+        assert_eq!(reveal(Stop::NewCollection), None);
     }
 
     #[test]

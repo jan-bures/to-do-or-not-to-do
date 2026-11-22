@@ -1013,22 +1013,13 @@ impl ShellView {
                 }
                 return;
             }
-            // Tab onto New collection, below the fold of a long sidebar: scrolled into view, with its ring.
             "repeat-focus" => {
                 self.preview_focus = Some(self.repeat_focus.clone());
                 return;
             }
+            // Tab onto New collection in a long sidebar: pinned under the scrolled rooms, with its ring.
             "tab-new-collection" => {
                 self.preview_focus = Some(self.new_collection_focus.clone());
-                let view = cx.entity().downgrade();
-                window.on_next_frame(move |_, cx| {
-                    view.update(cx, |this, cx| {
-                        if this.scroll_into_view(&this.sidebar_scroll, "new-collection") {
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                });
                 return;
             }
             "tag-rename" => {
@@ -3428,7 +3419,6 @@ impl ShellView {
         // A stop below its pane's fold (a long sidebar, the end of the feed) is scrolled into view.
         if let Some((pane, key)) = hints::reveal(stop) {
             let handle = match pane {
-                hints::ScrollPane::Sidebar => &self.sidebar_scroll,
                 hints::ScrollPane::Detail => &self.detail_scroll,
                 hints::ScrollPane::Feed => &self.activity_scroll,
             };

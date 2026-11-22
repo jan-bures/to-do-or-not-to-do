@@ -27,9 +27,11 @@ What the first version does:
   or tasks synced into it or out of it while the question was open, nothing is deleted and the new
   question is asked, saying it changed. Deleting the open list goes to My Day, and the drawer closes so the
   toast's **Undo** is in view; it brings the list and its tasks back either way.
-- **Agents.** Under the lists, the drawer shows the agents seen in the last seven days (at most four), each
-  with its letter mark and what it did today ("2 added, 1 edited", "3 edited", "idle"), worded as the
-  desktop's sidebar words it (`view::agents` in `todo-ffi`). Tap one to open Activity filtered to its ID.
+- **Agents.** The drawer's **Activity** row sits right after Agent activity, and under it, indented, the
+  agents seen in the last seven days (at most four), each with its letter mark and what it did today ("2
+  added, 1 edited today", "3 edited today", "idle"), worded as the desktop's sidebar words it
+  (`view::agents` in `todo-ffi`). Tap one to open Activity filtered to its ID. The order of the drawer is
+  the one every client keeps (`docs/design-language.md`, *Sidebar order*).
 - **Activity.** The drawer's Activity room reads the confirmed event log, newest first. Events are grouped
   by local calendar day and show the actor and relative time. Scrolling reads older pages. New events mark
   **Refresh activity •** without moving the reader. Switching agent or log epoch starts a new feed. If a
@@ -290,7 +292,7 @@ menu (`step_actions`, with the toast after deleting one), a list's drawer menu, 
 rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
 Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
-agent summary. The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
+drawer with every collection folded, Activity and its agents after Agent activity (`agent_summary`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon
