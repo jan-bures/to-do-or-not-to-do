@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.window.core.layout.WindowSizeClass
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -48,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -79,6 +78,8 @@ import app.todoornot.design.style
 import app.todoornot.model.Actions
 import app.todoornot.model.DuskLook
 import app.todoornot.model.MotionFrame
+import app.todoornot.model.Section
+import app.todoornot.model.countdown
 import app.todoornot.model.rowIn
 import app.todoornot.model.Toast
 import app.todoornot.model.UiState
@@ -270,7 +271,8 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actio
         if (showsEmptyLine(room)) {
             item("empty") { Empty(room.emptyLine) }
         }
-        items(room.tasks, key = { it.id }) { t -> MovingRow(t, inCompleted = false, selected, actions, motion) }
+        // The rows; the Completed and Agent activity smart lists show their done tasks here too.
+        items(room.tasks, key = { it.id }) { t -> MovingRow(t, Section.ROWS, selected, actions, motion) }
         room.tomorrow?.let { tomorrow(it, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
         if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
@@ -292,20 +294,20 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actio
                 }
             }
             if (showDone) {
-                items(room.completed, key = { "done-" + it.id }) { t -> MovingRow(t, inCompleted = true, selected, actions, motion) }
+                items(room.completed, key = { "done-" + it.id }) { t -> MovingRow(t, Section.COMPLETED, selected, actions, motion) }
             }
         }
     }
 }
 
 /**
- * A task row with its choreography: only a row that moves recomposes as the frames go by. A row at
- * rest that the list just gained (a new task, another room) fades in; one arriving from its
- * choreography enters as that says.
+ * A task row in [section] of the list, with its choreography: only a row that moves recomposes as the
+ * frames go by. A row at rest that the list just gained (a new task, another room) fades in; one arriving
+ * from its choreography enters as that says.
  */
 @Composable
-private fun LazyItemScope.MovingRow(t: TaskRow, inCompleted: Boolean, selected: String?, actions: Actions, motion: MotionFrame) {
-    val look by remember(t.id, inCompleted, motion) { derivedStateOf { motion.rowIn(t.id, inCompleted) } }
+private fun LazyItemScope.MovingRow(t: TaskRow, section: Section, selected: String?, actions: Actions, motion: MotionFrame) {
+    val look by remember(t.id, section, motion) { derivedStateOf { motion.rowIn(t.id, section) } }
     val checked by remember(t.id, motion) { derivedStateOf { motion.checked(t.id) } }
     val l = look
     TaskRowView(
@@ -461,9 +463,10 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
         exit = fadeOut(tween(M.TOAST_OUT)) + slideOutVertically(tween(M.TOAST_OUT)) { it / 2 },
     ) {
         val t = remember(toast?.serial) { toast } ?: return@AnimatedVisibility
-        val left = remember(t.serial) { Animatable(1f) }
+        // A functional timer: its full length whatever the animation scale (even 0), the bar following it.
+        var left by remember(t.serial) { mutableFloatStateOf(1f) }
         LaunchedEffect(t.serial) {
-            left.animateTo(0f, tween(M.UNDO_WINDOW, easing = LinearEasing))
+            countdown(M.UNDO_WINDOW.toLong()) { left = it }
             actions.dismissToast(t)
         }
         Box(
@@ -502,7 +505,7 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
                     Modifier
                         .align(Alignment.BottomStart)
                         .padding(start = S.S3.dp, bottom = Tokens.Elevation.SELECTION_BAR.dp)
-                        .fillMaxWidth(0.6f * left.value)
+                        .fillMaxWidth(0.6f * left)
                         .height(Tokens.Elevation.HAIRLINE.dp * 2)
                         .background(r.toastInk2.copy(alpha = 0.55f), RoundedCornerShape(Tokens.Elevation.HAIRLINE.dp)),
                 )

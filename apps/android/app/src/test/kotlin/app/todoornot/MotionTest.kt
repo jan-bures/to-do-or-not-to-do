@@ -9,6 +9,7 @@ import app.todoornot.model.Motion
 import app.todoornot.model.Pace
 import app.todoornot.model.Release
 import app.todoornot.model.RowLook
+import app.todoornot.model.Section
 import app.todoornot.model.Wake
 import app.todoornot.model.ease
 import org.junit.Assert.assertEquals
@@ -53,7 +54,7 @@ class MotionTest {
         val mo = Motion()
         assertEquals(Keep.HOLDING, mo.complete("a", 0, Pace.FULL))
         assertEquals(setOf("a"), mo.holding())
-        assertEquals(false, mo.placedDone("a"))
+        assertEquals(Section.ROWS, mo.placedIn("a"))
 
         // The disc starts small and empty, and pops past its size before it settles.
         val start = mo.look("a", 0)
@@ -85,7 +86,7 @@ class MotionTest {
         // Released once it has gone; then it enters Completed (if that shows it) and comes to rest.
         assertEquals(listOf(Release.Completed("a")), mo.advance(RELEASE_AT))
         assertTrue(mo.holding().isEmpty())
-        assertEquals(true, mo.placedDone("a"))
+        assertEquals(Section.COMPLETED, mo.placedIn("a"))
         assertEquals(0f, mo.look("a", RELEASE_AT).height)
         assertTrue(mo.advance(RELEASE_AT + M.ROW_ENTER).isEmpty())
         assertNull(mo.row("a", RELEASE_AT + M.ROW_ENTER))
@@ -134,7 +135,7 @@ class MotionTest {
         assertEquals(Keep.IN_PLACE, mo.reopen("a", at, Pace.FULL))
         assertEquals(before, mo.look("a", at))
         assertTrue(mo.holding().isEmpty() && mo.reopening().isEmpty())
-        assertEquals("it stays in the open rows", false, mo.placedDone("a"))
+        assertEquals("it stays in the open rows", Section.ROWS, mo.placedIn("a"))
         // The disc clears, the strike draws back, and it's never released.
         val mid = mo.look("a", at + M.OVERLAY_OUT / 2)
         assertTrue(mid.fill < 1f && mid.fill > 0f && mid.strike < 1f)
@@ -162,7 +163,7 @@ class MotionTest {
         val mo = Motion()
         assertEquals(Keep.REOPENING, mo.reopen("a", 0, Pace.FULL))
         assertEquals(setOf("a"), mo.reopening())
-        assertEquals(true, mo.placedDone("a"))
+        assertEquals(Section.COMPLETED, mo.placedIn("a"))
         assertEquals(RowLook.rest(true), mo.look("a", 0))
         // The disc clears first; the row stays full height until then.
         val cleared = mo.look("a", M.OVERLAY_OUT.toLong())
@@ -170,7 +171,7 @@ class MotionTest {
         val release = (M.OVERLAY_OUT + M.ROW_COLLAPSE).toLong()
         assertTrue(mo.advance(release - 1).isEmpty())
         assertEquals(listOf(Release.Reopened("a")), mo.advance(release))
-        assertEquals(false, mo.placedDone("a"))
+        assertEquals(Section.ROWS, mo.placedIn("a"))
         val entering = mo.look("a", release + M.ROW_ENTER / 2)
         assertEquals(0f to 0f, entering.fill to entering.strike)
         assertTrue(entering.height > 0f && entering.height < 1f)
@@ -182,9 +183,32 @@ class MotionTest {
         mo.reopen("a", 0, Pace.FULL)
         assertEquals(Keep.IN_PLACE, mo.complete("a", 60, Pace.FULL))
         assertTrue(mo.reopening().isEmpty())
-        assertEquals(true, mo.placedDone("a"))
+        assertEquals(Section.COMPLETED, mo.placedIn("a"))
         assertTrue(mo.advance(5_000).isEmpty())
         assertNull(mo.row("a", 5_000))
+    }
+
+    /**
+     * The Completed and Agent activity smart lists show done tasks among their rows: a row is drawn in the
+     * section it was toggled in, whatever its task's state, and enters where it's sent.
+     */
+    @Test
+    fun a_row_moves_in_the_section_it_was_toggled_in_and_enters_where_it_is_sent() {
+        val mo = Motion()
+        assertEquals(Keep.REOPENING, mo.reopen("done-row", 0, Pace.FULL, from = Section.ROWS, to = Section.ROWS))
+        assertEquals(Section.ROWS, mo.placedIn("done-row"))
+        assertEquals(false, mo.expectedDone("done-row"))
+        assertEquals(RowLook.rest(true), mo.look("done-row", 0))
+        mo.complete("agent", 0, Pace.FULL, from = Section.ROWS, to = Section.ROWS)
+        assertEquals(Section.ROWS, mo.placedIn("agent"))
+        // Reversing keeps the row where it is.
+        mo.complete("done-row", 60, Pace.FULL, from = Section.COMPLETED)
+        assertEquals(Section.ROWS, mo.placedIn("done-row"))
+        assertEquals(true, mo.expectedDone("done-row"))
+        // Released: it enters among the rows, done.
+        assertEquals(listOf(Release.Completed("agent")), mo.advance(RELEASE_AT))
+        assertEquals(Section.ROWS, mo.placedIn("agent"))
+        assertEquals(true, mo.expectedDone("agent"))
     }
 
     @Test

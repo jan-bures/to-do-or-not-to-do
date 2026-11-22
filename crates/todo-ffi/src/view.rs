@@ -231,9 +231,10 @@ pub struct TaskRow {
     pub tags: Vec<String>,
     /// Created from an email.
     pub from_mail: bool,
-    /// When it was completed, in Unix milliseconds (none while open). Reopening a task passes it back in
-    /// [`Reopening`], so the row keeps its completed place while it leaves it.
-    pub completed_at_ms: Option<i64>,
+    /// When it was completed (none while open), exactly: an RFC 3339 timestamp to nanoseconds, opaque to
+    /// the app. Reopening a task passes it back in [`Reopening`], so the row keeps its completed place (done
+    /// tasks sort by it to the nanosecond) while it leaves it.
+    pub completed_at: Option<String>,
 }
 
 /// What the finished day hands over to: tomorrow's first task and the rest of the week.
@@ -302,13 +303,13 @@ pub struct RowPlacement {
     pub reopening: Vec<Reopening>,
 }
 
-/// A task being reopened, with when it had been completed ([`TaskRow::completed_at_ms`]).
+/// A task being reopened, with when it had been completed ([`TaskRow::completed_at`]).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Reopening {
     /// Task ID.
     pub id: String,
-    /// When it had been completed, in Unix milliseconds.
-    pub completed_at_ms: i64,
+    /// When it had been completed, exactly as [`TaskRow::completed_at`] gave it.
+    pub completed_at: String,
 }
 
 impl RowPlacement {
@@ -319,8 +320,8 @@ impl RowPlacement {
 }
 
 /// The state as the rows place it while a choreography plays: each held task still open, and each task
-/// being reopened still done, as it was. IDs that don't parse or name no task are ignored. Only the list
-/// and its counts read this; the detail pane always shows the truth.
+/// being reopened still done, as it was. IDs or times that don't parse, and IDs that name no task, are
+/// ignored. Only the list and its counts read this; the detail pane always shows the truth.
 pub fn placed(state: &State, placement: &RowPlacement) -> State {
     let mut placed = state.clone();
     for id in &placement.holding {
@@ -332,7 +333,7 @@ pub fn placed(state: &State, placement: &RowPlacement) -> State {
         if let Some(t) = task_id(&r.id).and_then(|id| placed.tasks.get_mut(&id))
             && t.completed_at.is_none()
         {
-            t.completed_at = Timestamp::from_millisecond(r.completed_at_ms).ok();
+            t.completed_at = r.completed_at.parse::<Timestamp>().ok();
         }
     }
     placed
@@ -522,7 +523,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .map(|t| format!("#{}", t.name))
             .collect(),
         from_mail: ix.mail.contains(&task.id),
-        completed_at_ms: task.completed_at.map(|c| c.as_millisecond()),
+        completed_at: task.completed_at.map(|c| c.to_string()),
     }
 }
 

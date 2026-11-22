@@ -148,7 +148,25 @@ private sealed interface Phase {
     data class Enter(val done: Boolean) : Phase
 }
 
-private class RowMotion(val phase: Phase, val start: Long, val from: RowLook, val pace: Pace) {
+/**
+ * Where a row is drawn in a room's list: among its rows, or under its Completed section. The Completed
+ * and Agent activity smart lists show done tasks among their rows, so a row's section isn't its task's
+ * done state.
+ */
+enum class Section { ROWS, COMPLETED }
+
+/**
+ * A row's choreography: drawn in [section] (where it was toggled; for [Phase.Enter], where it entered),
+ * and released into [next].
+ */
+private class RowMotion(
+    val phase: Phase,
+    val start: Long,
+    val from: RowLook,
+    val pace: Pace,
+    val section: Section,
+    val next: Section = section,
+) {
     private val tickAt: Long get() = pace.movement(M.CHECK_TICK_DELAY)
 
     /** When the fill, the tick, the title and any restored height have all landed. */
@@ -377,16 +395,10 @@ class Motion {
     fun row(id: String, now: Long): RowLook? = rows[id]?.look(now)
 
     /**
-     * Where the row of task [id] belongs while it moves: in Completed (true), in the open rows (false), or
-     * null when it's at rest (wherever its task is).
+     * The section of the list the row of task [id] is drawn in while it moves (where it was toggled, or
+     * where it entered after its release), or null when it's at rest (wherever its task is).
      */
-    fun placedDone(id: String): Boolean? = when (val p = rows[id]?.phase) {
-        null -> null
-        Phase.Complete -> false
-        Phase.Reopen -> true
-        is Phase.Settle -> p.done
-        is Phase.Enter -> p.done
-    }
+    fun placedIn(id: String): Section? = rows[id]?.section
 
     /**
      * Whether task [id] is done, as its choreography assumes (completing: done; reopening: open), or null
@@ -400,33 +412,39 @@ class Motion {
         is Phase.Enter -> p.done
     }
 
-    private fun start(id: String, phase: Phase, now: Long, pace: Pace, rest: Boolean) {
+    private fun start(id: String, phase: Phase, now: Long, pace: Pace, rest: Boolean, section: Section, next: Section = section) {
         val from = row(id, now) ?: RowLook.rest(rest)
-        rows[id] = RowMotion(phase, now, from, pace)
+        rows[id] = RowMotion(phase, now, from, pace, section, next)
     }
 
     /**
-     * Task [id] was just completed. A task that was being reopened settles back where it was; any other
-     * starts the completion in the open rows.
+     * Task [id] was just completed, its row in section [from]; once released it enters [to]. A task that
+     * was being reopened settles back where it is; any other starts the completion where it is.
      */
-    fun complete(id: String, now: Long, pace: Pace): Keep = if (rows[id]?.phase == Phase.Reopen) {
-        start(id, Phase.Settle(done = true), now, pace, rest = true)
-        Keep.IN_PLACE
-    } else {
-        start(id, Phase.Complete, now, pace, rest = false)
-        Keep.HOLDING
+    fun complete(id: String, now: Long, pace: Pace, from: Section = Section.ROWS, to: Section = Section.COMPLETED): Keep {
+        val r = rows[id]
+        return if (r?.phase == Phase.Reopen) {
+            start(id, Phase.Settle(done = true), now, pace, rest = true, section = r.section)
+            Keep.IN_PLACE
+        } else {
+            start(id, Phase.Complete, now, pace, rest = false, section = from, next = to)
+            Keep.HOLDING
+        }
     }
 
     /**
-     * Task [id] was just reopened. A task that was being completed settles back where it was; any other
-     * starts leaving its completed place.
+     * Task [id] was just reopened, its row in section [from]; once released it enters [to]. A task that
+     * was being completed settles back where it is; any other starts leaving its completed place.
      */
-    fun reopen(id: String, now: Long, pace: Pace): Keep = if (rows[id]?.phase == Phase.Complete) {
-        start(id, Phase.Settle(done = false), now, pace, rest = false)
-        Keep.IN_PLACE
-    } else {
-        start(id, Phase.Reopen, now, pace, rest = true)
-        Keep.REOPENING
+    fun reopen(id: String, now: Long, pace: Pace, from: Section = Section.COMPLETED, to: Section = Section.ROWS): Keep {
+        val r = rows[id]
+        return if (r?.phase == Phase.Complete) {
+            start(id, Phase.Settle(done = false), now, pace, rest = false, section = r.section)
+            Keep.IN_PLACE
+        } else {
+            start(id, Phase.Reopen, now, pace, rest = true, section = from, next = to)
+            Keep.REOPENING
+        }
     }
 
     /** Tasks completing in the open rows: they count as open until they're released. */
@@ -455,7 +473,7 @@ class Motion {
             when {
                 d == null -> it.remove()
                 (d == false && r.phase == Phase.Complete) || (d == true && r.phase == Phase.Reopen) ->
-                    entry.setValue(RowMotion(Phase.Settle(done = r.phase == Phase.Reopen), now, r.look(now), pace))
+                    entry.setValue(RowMotion(Phase.Settle(done = r.phase == Phase.Reopen), now, r.look(now), pace, r.section))
                 r.phase is Phase.Settle && r.phase.done != d -> it.remove()
                 r.phase is Phase.Enter && r.phase.done != d -> it.remove()
             }
@@ -484,7 +502,7 @@ class Motion {
                 }
             }
             released += if (done) Release.Completed(id) else Release.Reopened(id)
-            val entering = RowMotion(Phase.Enter(done), end, RowLook.hidden(done), r.pace)
+            val entering = RowMotion(Phase.Enter(done), end, RowLook.hidden(done), r.pace, r.next)
             if (now < entering.end()) entry.setValue(entering) else it.remove()
         }
         return released
@@ -511,7 +529,7 @@ class Motion {
                 }
                 Phase.Reopen -> {
                     letGo = true
-                    entry.setValue(RowMotion(Phase.Enter(false), now, RowLook.hidden(false), r.pace))
+                    entry.setValue(RowMotion(Phase.Enter(false), now, RowLook.hidden(false), r.pace, r.next))
                 }
                 is Phase.Settle, is Phase.Enter -> it.remove()
             }
@@ -543,8 +561,8 @@ class Motion {
     }
 
     /**
-     * Puts the sun at [to] at once, without travelling: the finished day's dusk scene sets it behind the
-     * hills itself. Leaving that scene, the sun then glides back from the end of the arc.
+     * Puts the sun at [to] at once, without travelling (as [aimSun] does in a new room). The finished day
+     * doesn't use it: its sun travels to the end of the arc while the strip fades under the dusk scene.
      */
     fun placeSun(room: RoomKey, to: Float, now: Long) {
         sun = Travel(room, to, to, now, 0L)

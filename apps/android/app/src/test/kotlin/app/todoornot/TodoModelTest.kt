@@ -7,13 +7,18 @@ import app.todoornot.core.SyncStatus
 import app.todoornot.core.TodoEngine
 import app.todoornot.design.Tokens
 import app.todoornot.model.DuskLook
+import app.todoornot.model.Pace
 import app.todoornot.model.TodoModel
 import app.todoornot.model.Wake
 import app.todoornot.model.rowIn
+import app.todoornot.model.Section
 import app.todoornot.model.UnpairQuestion
 import app.todoornot.model.unsentCount
 import app.todoornot.ui.unpairWording
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -29,6 +34,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.CoroutineContext
 
 private val M = Tokens.Motion
 private val MY_DAY: RoomKey = RoomKey.Smart(SmartList.MY_DAY)
@@ -46,8 +52,8 @@ class TodoModelTest {
     /** The motion's clock: a test moves it and draws frames by hand ([frame]). */
     private var time = 0L
 
-    private fun TestScope.model(name: String = "world", engine: TodoEngine = fixtureEngine(name)) =
-        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time })
+    private fun TestScope.model(name: String = "world", engine: TodoEngine = fixtureEngine(name), pace: Pace = Pace.FULL) =
+        TodoModel(engine, eager(), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, clock = { time }, pace = { pace })
 
     /** Moves the clock to [t] and draws a frame there. */
     private fun TodoModel.frame(t: Long) {
@@ -154,7 +160,7 @@ class TodoModelTest {
         assertTrue(m.ui.value.room.tasks.any { it.id == done.id })
         assertEquals(2u, m.ui.value.room.done)
         // It enters the open rows.
-        assertEquals(0f, m.motion.rowIn(done.id, false)!!.height)
+        assertEquals(0f, m.motion.rowIn(done.id, Section.ROWS)!!.height)
     }
 
     @Test
@@ -211,6 +217,10 @@ class TodoModelTest {
         m.frame(RELEASE_AT)
         advanceUntilIdle()
         assertTrue(m.ui.value.room.finished)
+        // The sun sets off from where it was for the end of its arc, under the fading strip: no jump.
+        assertEquals(11f / 12f, m.motion.sun(MY_DAY)!!, 1e-6f)
+        assertEquals(11.5f / 12f, m.motion.motion.sun(MY_DAY, RELEASE_AT + M.SUN_TRAVEL / 2)!!, 1e-3f)
+        assertEquals(1f, m.motion.motion.sun(MY_DAY, RELEASE_AT + M.SUN_TRAVEL))
         // Dusk falls from here; the hand-over takes taps only once it has begun to appear.
         assertEquals(0f, m.motion.dusk(MY_DAY)!!.scene)
         assertFalse(m.motion.dusk(MY_DAY)!!.handoverShown(0))
@@ -230,6 +240,155 @@ class TodoModelTest {
         val lifting = time
         m.frame(lifting + M.ROOM_HUE)
         assertEquals(DuskLook.rest(false), m.motion.dusk(MY_DAY))
+    }
+
+    @Test
+    fun with_reduced_motion_the_finished_days_sun_is_set_at_once() = runTest {
+        val engine = fixtureEngine("finished")
+        val last = engine.room(MY_DAY, FIXTURE_NOW).completed.first().id
+        engine.setDone(last, false)
+        val m = model(engine = engine, pace = Pace.REDUCED)
+        m.setDone(last, true)
+        advanceUntilIdle()
+        m.frame(10_000)
+        advanceUntilIdle()
+        assertTrue(m.ui.value.room.finished)
+        assertEquals(1f, m.motion.sun(MY_DAY))
+    }
+
+    @Test
+    fun reopening_in_the_completed_room_keeps_its_row_in_place_until_it_leaves() = runTest {
+        val engine = fixtureEngine()
+        val m = model(engine = engine)
+        m.open(RoomKey.Smart(SmartList.COMPLETED))
+        advanceUntilIdle()
+        // The Completed smart list shows its done tasks among its rows, with no Completed section.
+        val before = m.ui.value.room.tasks.map { it.id }
+        assertTrue(before.size >= 2)
+        assertTrue(m.ui.value.room.completed.isEmpty())
+        val id = before[1]
+        m.setDone(id, false)
+        advanceUntilIdle()
+        assertEquals(false, engine.taskDone(id))
+        // Still in its place, and shown there, while its disc clears.
+        assertEquals(before, m.ui.value.room.tasks.map { it.id })
+        val look = m.motion.rowIn(id, Section.ROWS)!!
+        assertEquals(1f to 1f, look.opacity to look.height)
+        m.frame(M.OVERLAY_OUT / 2L)
+        val clearing = m.motion.rowIn(id, Section.ROWS)!!
+        assertTrue(clearing.fill > 0f && clearing.fill < 1f && clearing.opacity == 1f)
+        // Then it collapses out and leaves the room, and the motion comes to rest.
+        m.frame((M.OVERLAY_OUT + M.ROW_COLLAPSE).toLong())
+        advanceUntilIdle()
+        assertEquals(before - id, m.ui.value.room.tasks.map { it.id })
+        m.frame(time + 5_000)
+        assertNull(m.motion.row(id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /** A dispatcher whose tasks wait until the test runs them, one at a time, first or last. */
+    private class Steps : CoroutineDispatcher() {
+        private val queue = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            queue.addLast(block)
+        }
+
+        fun next(): Boolean = queue.removeFirstOrNull()?.let { it.run(); true } ?: false
+
+        fun last(): Boolean = queue.removeLastOrNull()?.let { it.run(); true } ?: false
+    }
+
+    /** A model whose own coroutines ([main]) and engine calls ([io]) run only when the test steps them. */
+    private class Stepped(engine: TodoEngine, clock: () -> Long) {
+        val main = Steps()
+        val io = Steps()
+        val scope = CoroutineScope(SupervisorJob() + main)
+        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock)
+
+        /** Runs every waiting task, checking [each] after every one. */
+        fun drain(each: () -> Unit = {}) {
+            while (main.next() || io.next()) each()
+        }
+
+        /** A refresh on its way, as a change from the engine starts one. */
+        fun refreshLater() {
+            scope.launch { model.refresh() }
+        }
+    }
+
+    @Test
+    fun a_second_tap_keeps_the_row_and_the_counts_until_its_write_lands() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        s.drain()
+        assertEquals(true, engine.taskDone(id))
+        m.frame(EXIT_AT - 100)
+        // A read already on its way (the engine said something changed), then the tap that reverses the
+        // completion: the read runs while the reversal is still to be written.
+        s.refreshLater()
+        m.setDone(id, false)
+        s.drain {
+            val room = m.ui.value.room
+            assertEquals(id, room.tasks.first().id)
+            assertFalse(room.completed.any { it.id == id })
+            assertEquals(3u, room.done)
+            assertFalse(room.finished)
+        }
+        assertEquals(false, engine.taskDone(id))
+        m.frame(time + 5_000)
+        s.drain()
+        assertEquals(id, m.ui.value.room.tasks.first().id)
+        assertTrue(m.motion.motion.holding().isEmpty())
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun a_read_with_a_superseded_placement_is_never_published() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        s.drain()
+        m.frame(RELEASE_AT - 10)
+        // Two reads start; the second reads the engine first, while the row is still held.
+        s.refreshLater()
+        s.refreshLater()
+        s.main.next()
+        s.main.next()
+        s.io.last()
+        // The row is released, and the first read follows it.
+        m.frame(RELEASE_AT)
+        s.io.next()
+        s.main.last()
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
+        assertEquals(4u, m.ui.value.room.done)
+        // The second read, held with the old placement, arrives last: it would put the row back.
+        s.drain {
+            assertFalse(m.ui.value.room.tasks.any { it.id == id })
+            assertEquals(4u, m.ui.value.room.done)
+        }
+    }
+
+    @Test
+    fun a_read_from_before_the_completed_toggle_never_undoes_it() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        // A read takes the engine's state, then Completed opens before it's published.
+        s.refreshLater()
+        s.main.next()
+        s.io.next()
+        m.setShowCompleted(true)
+        assertTrue(m.ui.value.showCompleted)
+        s.drain { assertTrue(m.ui.value.showCompleted) }
+        assertTrue(m.ui.value.showCompleted)
     }
 
     @Test

@@ -637,7 +637,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
     let before = engine.room(my_day(), now());
     let home_before = engine.home(now());
     let first = before.tasks[0].id.clone();
-    assert_eq!(before.tasks[0].completed_at_ms, None);
+    assert_eq!(before.tasks[0].completed_at, None);
     engine.set_done(first.clone(), true).unwrap();
     assert_eq!(engine.task_done(first.clone()), Some(true));
 
@@ -670,7 +670,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
         .iter()
         .find(|t| t.id == first)
         .expect("completed");
-    let at = done.completed_at_ms.expect("a completion time");
+    let at = done.completed_at.clone().expect("a completion time");
 
     // Reopened: it keeps its completed place until released, and counts as done.
     engine.set_done(first.clone(), false).unwrap();
@@ -678,7 +678,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
         holding: vec![],
         reopening: vec![Reopening {
             id: first.clone(),
-            completed_at_ms: at,
+            completed_at: at,
         }],
     };
     let kept = engine.room_placed(my_day(), String::new(), reopening, now());

@@ -50,26 +50,33 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   model counts it as open: each read passes the rows in their choreography (`RowPlacement`) to
   `TodoEngine.roomPlaced` and `homePlaced`.
 - **Reopening** a completed task mirrors it: the disc clears (`OVERLAY_OUT`), the row collapses out of its
-  completed place (it counts as done until then) and enters the open rows. Undo is a reopening.
+  completed place (it counts as done until then) and enters the open rows. Undo is a reopening. The
+  Completed and Agent activity lists show done tasks among their rows: there a row plays its choreography
+  where it is, and enters there too.
 - **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
-  released. A change from elsewhere (another device, an agent, a refused command) settles a choreography
+  released. Until the engine has the reversal written, the reads still place the task as its row has it, so
+  a read in between never moves the row or changes the counts; a read taken with a placement the motion
+  has since changed is never published. A change from elsewhere (another device, an agent, a refused command) settles a choreography
   the same way; a deleted task, or one the list stops showing, stops at once; switching rooms puts
   everything at rest. A row that has gone (or hasn't arrived) takes no taps.
 - **The sun** eases from where it is to wherever the count puts it, whatever changed it (a sync too),
   retargeting mid-travel. A new room places it without travel.
 - **Dusk.** Once My Day's last row has left, the header grows into the dusk scene over `DUSK` (`SUN`): the
-  dusk sky and scene fade in over the strip, the text switches to the night's ink and the moon and stars
+  dusk sky and scene fade in over the strip (whose sun travels on from where it is to the end of its arc), the text switches to the night's ink and the moon and stars
   come out (in batches, `STAGGER` apart) from `DUSK_NIGHT_AT`, and tomorrow's hand-over enters from
   `DUSK_HANDOVER_AT`, its first items `STAGGER` apart. A hand-over item takes taps only once it has begun
   to appear. Reopening or adding a task lifts the dusk again over `ROOM_HUE`.
 - **Reduced motion and the animation scale.** The system's animator duration scale
   (`Settings.Global.ANIMATOR_DURATION_SCALE`, read whenever a transition starts) stretches or shrinks every
-  animation, as it does everywhere else on the phone; the hold keeps its length. At 0 (*Remove
+  animation, as it does everywhere else on the phone; the hold and the undo window (and its countdown
+  line) keep their length. At 0 (*Remove
   animations*) the reduced variants apply (`motion::reduced`): the checkbox and the strike switch at once,
   the title dims and the row fades in `REDUCED_FADE` but never slides, the sun jumps, and dusk crossfades
   while the header takes its new height at once.
 - **Idle is idle.** At rest no frame callback is pending: the driver waits for the next change; a row
-  holding still waits on one timer. The landscape's geometry is built once per size and scene, never per
+  holding still waits on one timer, which asks for a frame when it runs out. The driver decides from the
+  time the last frame sampled, not the clock, so the last frame drawn is always the end (a frame that
+  samples just before dusk ends is followed by one more). The landscape's geometry is built once per size and scene, never per
   frame.
 
 The gallery draws everything at rest, and freezes the motion at chosen moments (`GalleryTest.motion_frames`:

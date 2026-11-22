@@ -20,8 +20,8 @@ interface MotionFrame {
     /** How task [id]'s row looks now, or null at rest. */
     fun row(id: String): RowLook?
 
-    /** Where task [id]'s row belongs while it moves (see [Motion.placedDone]), or null at rest. */
-    fun placedDone(id: String): Boolean?
+    /** The section task [id]'s row is drawn in while it moves (see [Motion.placedIn]), or null at rest. */
+    fun placedIn(id: String): Section?
 
     /** Whether task [id] is done as its choreography has it (see [Motion.expectedDone]), or null at rest. */
     fun checked(id: String): Boolean?
@@ -38,7 +38,7 @@ interface MotionFrame {
     /** Nothing moves: the screen draws its data at rest. */
     object Rest : MotionFrame {
         override fun row(id: String): RowLook? = null
-        override fun placedDone(id: String): Boolean? = null
+        override fun placedIn(id: String): Section? = null
         override fun checked(id: String): Boolean? = null
         override fun sun(room: RoomKey): Float? = null
         override fun dusk(room: RoomKey): DuskLook? = null
@@ -46,13 +46,12 @@ interface MotionFrame {
 }
 
 /**
- * How task [id]'s row looks in a section of the list (Completed when [done], else the open rows), or null
- * at rest. A row in the section it's leaving or hasn't reached yet (the screen's data is a moment behind
- * the motion) takes no room and shows nothing.
+ * How task [id]'s row looks in [section] of the list, or null at rest. A row in the section it's leaving or
+ * hasn't reached yet (the screen's data is a moment behind the motion) takes no room and shows nothing.
  */
-fun MotionFrame.rowIn(id: String, done: Boolean): RowLook? {
-    val placed = placedDone(id) ?: return null
-    return if (placed != done) RowLook.hidden(done) else row(id)
+fun MotionFrame.rowIn(id: String, section: Section): RowLook? {
+    val placed = placedIn(id) ?: return null
+    return if (placed != section) RowLook.hidden(checked(id) ?: (section == Section.COMPLETED)) else row(id)
 }
 
 /**
@@ -115,7 +114,7 @@ class MotionHost(private val clock: () -> Long) : MotionFrame {
 
     override fun row(id: String): RowLook? = sample { motion.row(id, it) }
 
-    override fun placedDone(id: String): Boolean? = sample { motion.placedDone(id) }
+    override fun placedIn(id: String): Section? = sample { motion.placedIn(id) }
 
     override fun checked(id: String): Boolean? = sample { motion.expectedDone(id) }
 
@@ -126,16 +125,40 @@ class MotionHost(private val clock: () -> Long) : MotionFrame {
     /**
      * Asks for exactly the frames the motion needs: every frame while something moves, a single timer
      * while rows only hold still, and nothing at rest (it waits for [touched]).
+     *
+     * It decides from the time the screen last sampled, not the clock: a frame drawn just before the
+     * dusk ends (or the tick lands) is followed by one more, even if drawing it ran past the end, so the
+     * last thing on screen is the end. When a hold's timer runs out it asks for a frame, which samples
+     * past the hold.
      */
     override suspend fun drive() {
         if (frozen) return
         while (true) {
-            val now = now()
-            when (val w = synchronized(this) { motion.wake(now) }) {
+            when (val w = synchronized(this) { motion.wake(time) }) {
                 Wake.Idle -> kick.receive()
-                is Wake.At -> withTimeoutOrNull(max(1L, w.time - now)) { kick.receive() }
+                is Wake.At -> {
+                    val left = w.time - clock()
+                    // A change while holding (a toggle, a new count) decides again; else the timer ran out.
+                    val changed = left > 0L && withTimeoutOrNull(left) { kick.receive() } != null
+                    if (!changed) withFrameMillis { frame(it) }
+                }
                 Wake.Frame -> withFrameMillis { frame(it) }
             }
         }
+    }
+}
+
+/**
+ * Counts down a functional timer of [ms] (the undo window) on the frame clock, reporting what's left (1 to
+ * 0) on each frame, and returns once it has run out. Frame times are real time, so unlike an animation it
+ * keeps its length whatever the system's animation scale, even 0 (`docs/design-language.md`: timers keep
+ * their full duration).
+ */
+suspend fun countdown(ms: Long, onLeft: (Float) -> Unit) {
+    val start = withFrameMillis { it }
+    while (true) {
+        val elapsed = withFrameMillis { it } - start
+        onLeft(if (ms <= 0L) 0f else (1f - elapsed.toFloat() / ms).coerceIn(0f, 1f))
+        if (elapsed >= ms) return
     }
 }

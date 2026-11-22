@@ -573,6 +573,41 @@ mod tests {
     }
 
     #[test]
+    fn a_reopening_keeps_its_completed_place_to_the_nanosecond() {
+        let n = now();
+        let mut s = build(Fixture::World, &n);
+        let done: Vec<TaskId> = view::room(&s, &my_day(), &n)
+            .completed
+            .iter()
+            .map(|t| t.id.parse().unwrap())
+            .collect();
+        assert!(done.len() >= 2);
+        // Two tasks finished in the same millisecond, 800 ns apart: the later one sorts first.
+        let ms = n.at.as_nanosecond() / 1_000_000 * 1_000_000;
+        for (id, ns) in [(done[0], 100), (done[1], 900)] {
+            let t = s.tasks.get_mut(&id).unwrap();
+            t.completed_at = Some(Timestamp::from_nanosecond(ms + ns).unwrap());
+        }
+        let before = view::room(&s, &my_day(), &n).completed;
+        assert_eq!(before[0].id, done[1].to_string());
+        assert_eq!(before[1].id, done[0].to_string());
+
+        // The later one is reopened: while its row leaves, the placement puts it back exactly.
+        let row = &before[0];
+        let at = row.completed_at.clone().unwrap();
+        s.tasks.get_mut(&done[1]).unwrap().completed_at = None;
+        let placement = view::RowPlacement {
+            holding: vec![],
+            reopening: vec![view::Reopening {
+                id: row.id.clone(),
+                completed_at: at,
+            }],
+        };
+        let kept = view::room(&view::placed(&s, &placement), &my_day(), &n).completed;
+        assert_eq!(kept, before);
+    }
+
+    #[test]
     fn fixtures_are_deterministic() {
         let n = now();
         assert_eq!(build(Fixture::World, &n), build(Fixture::World, &n));

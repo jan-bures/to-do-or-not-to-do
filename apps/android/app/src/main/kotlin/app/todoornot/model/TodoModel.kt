@@ -99,6 +99,13 @@ fun clock(t: LocalNow): String {
 fun sunAt(done: UInt, total: UInt): Float? =
     if (total == 0u) null else done.coerceAtMost(total).toFloat() / total.toFloat()
 
+/**
+ * Whether [room] lists its done tasks among its rows (the Completed and Agent activity smart lists, as the
+ * engine derives them) rather than under a Completed section.
+ */
+fun listsDoneAmongRows(room: RoomKey): Boolean =
+    room is RoomKey.Smart && (room.list == SmartList.COMPLETED || room.list == SmartList.AGENT_ACTIVITY)
+
 /** Unsent changes, from one status snapshot (the engine reads both counts under one lock). */
 fun unsentCount(status: SyncStatus): Int = (status.pending + status.failed).toInt()
 
@@ -145,8 +152,9 @@ class TodoModel(
     private var published = 0L
 
     /**
-     * Bumped (under [publishing]) whenever what a read depends on changes: the room, the filter text, or
-     * whether the filter field is open. A read taken before the bump is stale and is never published.
+     * Bumped (under [publishing]) whenever what a read depends on changes: the room, the filter text,
+     * whether the filter field is open, or whether Completed is open. A read taken before the bump is
+     * stale and is never published.
      */
     private var inputs = 0L
 
@@ -178,8 +186,11 @@ class TodoModel(
     /** The tasks in motion, whose state each read reports so the motion can follow the data. */
     @Volatile private var moving: Set<String> = emptySet()
 
-    /** When each task being reopened had been completed, so it keeps its place in Completed. */
-    private val reopenedAt = HashMap<String, Long>()
+    /**
+     * When each task being reopened had been completed (exactly, as the engine gave it), so it keeps its
+     * place among the done tasks.
+     */
+    private val reopenedAt = HashMap<String, String>()
 
     /** Toggles made, and the latest one of each task in motion. */
     private var toggles = 0L
@@ -225,13 +236,16 @@ class TodoModel(
     /** A read: the [inputs] it was read for, the screen, and the state of the tasks in motion. */
     private class Snapshot(val epoch: Long, val state: UiState, val truth: Truth)
 
+    /** The [inputs] a read belongs to, taken together. */
+    private data class Inputs(val epoch: Long, val filter: String, val searching: Boolean, val showCompleted: Boolean)
+
     /** Reads the whole screen state synchronously (the screenshot tests use this directly). */
     fun read(): UiState = snapshot().state
 
     /** Reads the screen, with the [inputs] it was read for. */
     private fun snapshot(): Snapshot {
         // The inputs first, together: the state read belongs to them, whatever changes while reading.
-        val (epoch, f, open) = synchronized(publishing) { Triple(inputs, filter, searching) }
+        val (epoch, f, open, showDone) = synchronized(publishing) { Inputs(inputs, filter, searching, showCompleted) }
         // Toggles applied before the read are in it; the placement and the tasks in motion go with it.
         val seen = written
         val place = placement
@@ -255,24 +269,26 @@ class TodoModel(
             filter = f,
             collapsed = collapsed,
             syncedAt = syncedAt,
-            showCompleted = showCompleted,
+            showCompleted = showDone,
         )
         return Snapshot(epoch, state, Truth(ids.associateWith { engine.taskDone(it) }, seen, place.version))
     }
 
     /**
      * Re-reads the screen. Reads can finish out of order (a slow read for "m" after the read for
-     * "milk"), so only the newest read so far is published, and only while the room, the filter and the
-     * field's open state it was read for are still the current ones: the rows always belong to the
-     * filter on screen, and a closed field is never reopened by an old read. Every change to those
-     * inputs starts a refresh of its own, so the newer read follows.
+     * "milk"), so only the newest read so far is published, and only while the room, the filter, the
+     * field's open state and Completed's it was read for are still the current ones: the rows always
+     * belong to the filter on screen, and a closed field is never reopened by an old read. A read taken
+     * with a placement the motion has since changed is dropped too, so rows never step back to where a
+     * choreography no longer keeps them. Every change to those inputs, and to the placement, starts a
+     * refresh of its own, so the newer read follows.
      */
     suspend fun refresh() {
         val generation = refreshes.incrementAndGet()
         val read = withContext(io) { snapshot() }
         val again = synchronized(motion) {
             val fresh = synchronized(publishing) {
-                (generation > published && read.epoch == inputs).also {
+                (generation > published && read.epoch == inputs && read.truth.placed == placement.version).also {
                     if (it) {
                         published = generation
                         _ui.value = read.state
@@ -305,7 +321,9 @@ class TodoModel(
         m.reconcile(now, p) { id -> if (id in truth.done && !ahead(id)) truth.done[id] else m.expectedDone(id) }
         val room = state.room
         m.aimDusk(room.key, room.finished, now, p)
-        if (room.finished) m.placeSun(room.key, 1f, now) else m.aimSun(room.key, sunAt(room.done, room.total), now, p)
+        // The finished day's sun travels from where it is to the end of its arc while the strip it's
+        // drawn on fades under the dusk scene (with reduced motion it's there at once).
+        m.aimSun(room.key, if (room.finished) 1f else sunAt(room.done, room.total), now, p)
         // Only a read with the current placement says what the list shows; an older one is followed by a
         // newer read.
         val listed = HashSet<String>()
@@ -321,17 +339,28 @@ class TodoModel(
     /** Follows the screen on show at once (after a toggle), without a new read. Under the [motion] lock. */
     private fun followNow(): Boolean = follow(_ui.value, Truth(emptyMap(), shown.written, shown.placed))
 
-    /** Keeps the reads' [placement] in step with the motion. Returns whether it changed. Under the [motion] lock. */
+    /**
+     * Keeps the reads' [placement] in step with the motion. Returns whether it changed. Under the [motion] lock.
+     *
+     * A task completing counts as open and one being reopened as done, until released. A toggle not yet
+     * written (a second tap that reverses a choreography, say) keeps its task as its row has it, open or
+     * done, until the engine has it too: a read in between never moves the row or changes the counts.
+     */
     private fun placeRows(): Boolean {
         val m = motion.motion
-        val reopening = m.reopening()
+        val ids = m.ids()
+        toggledAt.keys.retainAll(ids)
+        val held = m.holding()
+        val back = m.reopening()
+        val unwritten = ids.filter { (toggledAt[it] ?: 0L) > written && it !in held && it !in back }
+        val holding = held + unwritten.filter { m.expectedDone(it) == false }
+        val reopening = back + unwritten.filter { m.expectedDone(it) == true }
         reopenedAt.keys.retainAll(reopening)
-        toggledAt.keys.retainAll(m.ids())
         val next = RowPlacement(
-            m.holding().sorted(),
+            holding.sorted(),
             reopening.sorted().mapNotNull { id -> reopenedAt[id]?.let { Reopening(id, it) } },
         )
-        moving = m.ids()
+        moving = ids
         if (next == placement.rows) return false
         placement = Placed(placement.version + 1, next)
         return true
@@ -381,8 +410,11 @@ class TodoModel(
 
     override fun setShowCompleted(on: Boolean) {
         synchronized(motion) {
-            showCompleted = on
-            _ui.value = _ui.value.copy(showCompleted = on)
+            synchronized(publishing) {
+                showCompleted = on
+                inputs++
+                _ui.value = _ui.value.copy(showCompleted = on)
+            }
             followNow()
         }
         scope.launch { refresh() }
@@ -450,14 +482,29 @@ class TodoModel(
         val (toggle, again) = synchronized(motion) {
             val m = motion.motion
             val at = motion.now()
-            if (done) {
-                m.complete(id, at, pace())
-            } else {
-                m.reopen(id, at, pace())
-                _ui.value.room.completed.firstOrNull { it.id == id }?.completedAtMs?.let { reopenedAt[id] = it }
+            val room = _ui.value.room
+            // The row as the screen shows it: its section, and (reopening) when it had been completed.
+            val row = room.tasks.firstOrNull { it.id == id }
+            val doneRow = room.completed.firstOrNull { it.id == id }
+            val from = when {
+                row != null -> Section.ROWS
+                doneRow != null -> Section.COMPLETED
+                done -> Section.ROWS
+                else -> Section.COMPLETED
+            }
+            val to = when {
+                listsDoneAmongRows(room.key) -> Section.ROWS
+                done -> Section.COMPLETED
+                else -> Section.ROWS
             }
             val toggle = ++toggles
             toggledAt[id] = toggle
+            if (done) {
+                m.complete(id, at, pace(), from, to)
+            } else {
+                m.reopen(id, at, pace(), from, to)
+                (row ?: doneRow)?.completedAt?.let { reopenedAt[id] = it }
+            }
             toggle to followNow()
         }
         if (again) scope.launch { refresh() }
@@ -467,7 +514,12 @@ class TodoModel(
                 engine.setDone(id, done)
                 if (done && title != null) show(Toast(++serial, "Completed “$title”", reopen = id))
             } finally {
-                if (toggle > written) written = toggle
+                // Written (or refused): the engine has the task as it is now, so the placement lets it go
+                // before the read that follows.
+                synchronized(motion) {
+                    if (toggle > written) written = toggle
+                    placeRows()
+                }
             }
         }
     }

@@ -363,7 +363,9 @@ Completing a task is the one choreographed moment in the app.
     cached `Scene::Slim` and `Scene::Finished` layers (plus lerped hill/sky fills) without rebuilding geometry per
     frame once settled.
   - *Compose:* The motion model's dusk phase drives the header's height (in layout) and the strip and dusk
-    scenes' opacities (in the `Canvas`'s draw), with geometry built once per scene.
+    scenes' opacities (in the `Canvas`'s draw), with geometry built once per scene. The strip's sun travels
+    from where it is to the end of its arc (`SUN_TRAVEL`, `SUN`) as the strip fades; with reduced motion
+    it's there at once.
   - *Web:* Transition header height and layered sky/SVG opacity (avoid repaints on body text by keeping the
     tomorrow handoff below the header).
 
