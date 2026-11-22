@@ -93,9 +93,12 @@ fun MainScreen(
     drawerOpen: Boolean = false,
     collapsed: Boolean = false,
     motion: MotionFrame = MotionFrame.Rest,
+    composerFocus: (() -> Unit)? = null,
 ) {
     LaunchedEffect(motion) { motion.drive() }
-    CompositionLocalProvider(LocalMotion provides motion) { Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed) }
+    CompositionLocalProvider(LocalMotion provides motion) {
+        Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus)
+    }
 }
 
 @Composable
@@ -108,6 +111,7 @@ private fun Screen(
     draft: String,
     drawerOpen: Boolean,
     collapsed: Boolean,
+    composerFocus: (() -> Unit)?,
 ) {
     TodoTheme(dark, state.room.hue) {
         val r = LocalDesign.current.room
@@ -245,6 +249,7 @@ private fun Screen(
                 Row(Modifier.fillMaxSize().background(r.pane)) {
                     RoomPane(
                         paneSurface, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
+                        composerFocus = composerFocus,
                         onRoomMenu = onRoomMenu,
                     )
                     Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
@@ -256,7 +261,8 @@ private fun Screen(
                 }
             } else {
                 Box(Modifier.fillMaxSize().background(r.pane)) {
-                    RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed, onRoomMenu = onRoomMenu)
+                    RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed,
+                        onRoomMenu = onRoomMenu, composerFocus = composerFocus)
                     if (detail != null) {
                         BackHandler { actions.select(null) }
                         DetailPane(paneSurface, actions, standalone = true)

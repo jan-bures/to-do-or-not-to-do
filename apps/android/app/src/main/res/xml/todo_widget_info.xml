@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="app.todoornot.widget.WidgetConfigActivity"
+    android:description="@string/todo_widget_description"
+    android:initialLayout="@layout/todo_widget_initial"
+    android:minWidth="@dimen/todo_widget_min_width"
+    android:minHeight="@dimen/todo_widget_min_height"
+    android:minResizeWidth="@dimen/todo_widget_min_width"
+    android:minResizeHeight="@dimen/todo_widget_min_height"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="3600000"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

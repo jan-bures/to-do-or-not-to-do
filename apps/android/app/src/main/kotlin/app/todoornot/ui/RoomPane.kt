@@ -120,6 +120,7 @@ fun RoomPane(
     draft: String = "",
     collapsed: Boolean = false,
     onRoomMenu: (MenuAction) -> Unit = {},
+    composerFocus: (() -> Unit)? = null,
 ) {
     val r = LocalDesign.current.room
     val room = state.room
@@ -168,7 +169,7 @@ fun RoomPane(
                 TaskList(state, actions)
             }
             ToastStrip(state.toast, actions)
-            Composer(room.addPlaceholder, draft, keyboard, actions)
+            Composer(room.addPlaceholder, draft, keyboard, actions, composerFocus)
         }
     }
 }
@@ -578,8 +579,15 @@ internal fun ToastStrip(toast: Toast?, actions: Actions) {
 
 /** The single 48 dp composer at the bottom, docked above the keyboard. Enter adds the task to this room. */
 @Composable
-private fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions) {
+private fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?) {
     val r = LocalDesign.current.room
+    val requester = remember { FocusRequester() }
+    LaunchedEffect(focus != null) {
+        if (focus != null) {
+            requester.requestFocus()
+            focus()
+        }
+    }
     var text by rememberSaveable(draft) { mutableStateOf(draft) }
     // Recompute only when the text changes; submit parses again against now(), not this preview.
     val date = remember(text) { if (text.isBlank()) null else actions.previewDate(text) }
@@ -613,7 +621,7 @@ private fun Composer(placeholder: String, draft: String, keyboard: Boolean, acti
             BasicTextField(
                 value = text,
                 onValueChange = { text = it },
-                modifier = Modifier.weight(1f).semantics { contentDescription = placeholder },
+                modifier = Modifier.weight(1f).focusRequester(requester).semantics { contentDescription = placeholder },
                 textStyle = Tokens.Type.COMPOSER.style(r.ink),
                 singleLine = true,
                 cursorBrush = SolidColor(r.accent),

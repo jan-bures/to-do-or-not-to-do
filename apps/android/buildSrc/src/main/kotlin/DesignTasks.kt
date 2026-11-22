@@ -340,7 +340,8 @@ abstract class GenerateDesignResources : DefaultTask() {
 
     @TaskAction
     fun generate() {
-        val colors = Json.parse(tokens.get().asFile.readText()).obj()["colors"].obj()
+        val root = Json.parse(tokens.get().asFile.readText()).obj()
+        val colors = root["colors"].obj()
         fun room(theme: String) = colors[theme].obj()["rooms"].obj()["my-day"].obj()
         fun write(dir: String, theme: String) {
             val r = room(theme)
@@ -349,6 +350,13 @@ abstract class GenerateDesignResources : DefaultTask() {
             out.appendLine("<!-- Generated from crates/todo-design/generated/tokens.json by GenerateDesignResources. -->")
             out.appendLine("<resources>")
             out.appendLine("    <color name=\"window_background\">${r["pane"]}</color>")
+            if (theme == "light") {
+                val touch = (root["metrics"].obj()["phone"].obj()["touch"] as Number).toDouble()
+                val footer = (root["space"].obj()["6"] as Number).toDouble()
+                out.appendLine("    <dimen name=\"todo_widget_radius\">${root["radius"].obj()["lg"]}dp</dimen>")
+                out.appendLine("    <dimen name=\"todo_widget_min_width\">${4 * touch}dp</dimen>")
+                out.appendLine("    <dimen name=\"todo_widget_min_height\">${2 * touch + footer}dp</dimen>")
+            }
             out.appendLine("</resources>")
             val d = File(outputDir.get().asFile, dir)
             d.mkdirs()

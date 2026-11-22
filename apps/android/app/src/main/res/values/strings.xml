@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">To-do</string>
+    <string name="todo_widget_name">To-do list</string>
+    <string name="todo_widget_description">Show a smart list, list, or collection on your home screen.</string>
 </resources>

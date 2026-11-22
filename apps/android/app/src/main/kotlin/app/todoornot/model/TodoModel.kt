@@ -982,12 +982,17 @@ class TodoModel(
      * now. Returns whether the completion was saved.
      */
     suspend fun completeFromNotification(id: String, syncFor: Long = NOTIFICATION_SYNC_MS, saved: () -> Unit = {}): Boolean {
-        val error = writeEdit { engine.setDone(id, true) }
-        scope.launch { refresh() }
-        if (error != null) return false
+        if (!applyExternalTaskEdit { it.setDone(id, true) }) return false
         saved()
         syncInBackground(syncFor) { it.pending == 0u }
         return true
+    }
+
+    /** A system surface's edit uses the same write lock and on-disk outbox as the app. */
+    internal suspend fun applyExternalTaskEdit(edit: (TodoEngine) -> Unit): Boolean {
+        val error = writeEdit { edit(engine) }
+        scope.launch { refresh() }
+        return error == null
     }
 
     /**
@@ -1001,7 +1006,8 @@ class TodoModel(
             withContext(io) {
                 lifecycle.withLock {
                     if (!foreground) {
-                        engine.start()
+                        if (backgroundSyncs == 0) engine.start()
+                        backgroundSyncs++
                         started = true
                     }
                 }
@@ -1011,7 +1017,12 @@ class TodoModel(
                 do delay(SYNC_POLL_MS) while (!done(withContext(io) { engine.status() }))
             }
         } finally {
-            if (started) withContext(NonCancellable + io) { lifecycle.withLock { if (!foreground) engine.stop() } }
+            if (started) withContext(NonCancellable + io) {
+                lifecycle.withLock {
+                    backgroundSyncs--
+                    if (!foreground && backgroundSyncs == 0) engine.stop()
+                }
+            }
         }
     }
 
@@ -1143,6 +1154,8 @@ class TodoModel(
     @Volatile private var foreground = false
 
     private val lifecycle = Mutex()
+    // Protected by lifecycle: a reminder and a widget may catch up at the same time.
+    private var backgroundSyncs = 0
 
     /** The app came to the foreground: sync and follow live changes. */
     fun resume() {
@@ -1168,7 +1181,7 @@ class TodoModel(
             withContext(io) {
                 lifecycle.withLock {
                     try {
-                        if (foreground) engine.start() else engine.stop()
+                        if (foreground || backgroundSyncs > 0) engine.start() else engine.stop()
                     } catch (e: FfiException) {
                         show(Toast(++serial, PairingModel.describe(e)))
                     }

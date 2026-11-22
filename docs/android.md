@@ -138,13 +138,37 @@ What the first version does:
   list and the detail side by side, like the F2 inner-screen mockup. The header collapses while scrolling
   and while the keyboard is open. Light and dark follow the system.
 
+## Home-screen widget
+
+Long-press an empty spot on the home screen, open **Widgets**, and add **To-do list**. Pick **My Day**,
+**Important**, **Planned**, **All**, a list, or a collection (a group of lists). Each widget remembers its
+own selection. Tap the name or chevron to pick again; on wider widgets **Widget settings** does the same.
+A deleted list or collection offers to pick another. A signed-out widget says **Open the app to sign in**.
+
+The widget shows open tasks in the app's order. Collection rows name their source list. Resize to show
+more rows; **+N more** counts those that don't fit. Tap the title to open its task, the round checkbox to
+complete it, or the star to change importance (gold and filled when on). **+** opens the app's composer
+in the selected room, with that room's usual defaults. Widget edits use the same offline outbox as the
+app. Glance hands the completed row straight back to the launcher without the in-app exit animation.
+
+**Refresh** redraws from the local cache and requests a short sync. The widget also follows engine changes,
+including syncs triggered by reminders. While widgets are installed, the launcher requests a refresh about
+once an hour (Android may defer it); a single network-constrained WorkManager job catches up for at most
+four seconds once the engine is ready. No push or continuously running background service is added.
+
+The rounded card follows the system's light/dark theme and the room's `todo-design` palette, not wallpaper
+colours. Glance renders text in the system's corresponding font families at the token sizes. The launcher
+can see the titles and visible metadata; the app stores only the selected room key per widget, not a copy
+of the tasks or pairing credentials. `WidgetGalleryTest` renders the real Glance RemoteViews to Paparazzi
+snapshots (`app/src/test/snapshots/images/app.todoornot_WidgetGalleryTest_*.png`).
+
 ## Reminder notifications
 
 The phone alerts for the synced reminders with local alarms. Nothing comes from the server: whatever
 device sets a reminder, the phone sees it after a sync and sets its alarm.
 
-**The alarms come from the last synced state.** There is no push, and the app syncs only in the
-foreground. A reminder added, moved or removed elsewhere (or its task completed there) while the app is in
+**The alarms come from the last synced state.** There is no push. The app syncs in the foreground;
+a widget can also request a brief background sync. A reminder added, moved or removed elsewhere (or its task completed there) while the app is in
 the background is seen only at the next sync: until then an alarm can be missing, at an old time, or
 for a reminder that has gone. To narrow that, when an alarm goes off with the app in the background, the
 app first syncs for up to four seconds (until it's caught up, or the network is found to be down), shows

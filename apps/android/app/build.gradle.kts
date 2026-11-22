@@ -195,6 +195,8 @@ dependencies {
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.process)
     implementation(libs.adaptive)
+    implementation(libs.glance.appwidget)
+    implementation(libs.work.runtime)
     implementation(libs.kotlinx.coroutines.android)
     implementation("${libs.jna.get().module}:${libs.versions.jna.get()}@aar")
     implementation(libs.rustls.platform.verifier)

@@ -28,6 +28,7 @@ import app.todoornot.session.PairingFiles
 import app.todoornot.session.PrefsKeyValues
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
+import app.todoornot.widget.WidgetRefresh
 import android.os.SystemClock
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.SyncState
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -77,6 +79,10 @@ class AppGraph(private val app: Context) {
 
     private val _model = MutableStateFlow<TodoModel?>(null)
     val model: StateFlow<TodoModel?> = _model.asStateFlow()
+    private val _loaded = MutableStateFlow(false)
+    internal val loaded = _loaded.asStateFlow()
+
+    internal val widgets = WidgetRefresh(app)
 
     /** The reminders' alarms and notifications, kept in line with the synced reminders. */
     val reminders = Reminders(PrefsKeyValues(app, "reminders"), AndroidAlarms(app), debug = { Log.d("Reminders", it) })
@@ -96,12 +102,15 @@ class AppGraph(private val app: Context) {
         NativeInit.ensure(app)
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
         scope.launch {
+            withContext(Dispatchers.IO) { host.load() }
             host.state.collectLatest { h ->
                 transferCleanup.join()
-                if (h === host.state.value) follow(h)
+                if (h === host.state.value) {
+                    follow(h)
+                    _loaded.value = true
+                }
             }
         }
-        host.load()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
@@ -123,7 +132,8 @@ class AppGraph(private val app: Context) {
     }
 
     /** Builds the model when an engine opens, and drops it otherwise. */
-    private fun follow(h: Host) {
+    private suspend fun follow(h: Host) {
+        widgets.invalidate()
         val engine = (h as? Host.Ready)?.engine
         if (_model.value?.engine === engine) return
         modelScope?.cancel()
@@ -131,17 +141,20 @@ class AppGraph(private val app: Context) {
         _model.value = engine?.let { e ->
             val ms = CoroutineScope(SupervisorJob() + Dispatchers.Main)
             modelScope = ms
-            // One listener per engine: the model's, which also tells the reminders.
+            // One listener per engine: also let the reminders and home-screen widgets follow.
             val listen = { onChange: () -> Unit ->
                 e.setListener(object : ChangeListener {
                     override fun onChange() {
                         onChange()
                         reminderChanges.tryEmit(Unit)
+                        widgets.invalidate()
                     }
                 })
             }
-            TodoModel(e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() }).also { m ->
-                EngineHost.recoveredNotice((h as Host.Ready).recovered)?.let(m::notice)
+            withContext(Dispatchers.IO) {
+                TodoModel(e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair, pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() })
+            }.also { m ->
+                EngineHost.recoveredNotice(h.recovered)?.let(m::notice)
                 if (foreground) m.resume()
                 reminderChanges.tryEmit(Unit)
             }
@@ -227,7 +240,10 @@ class AppGraph(private val app: Context) {
         reminderScope.launch {
             try {
                 val deadline = Deadline()
-                withTimeoutOrNull(RECEIVER_BUDGET_MS) { work(deadline) }
+                withTimeoutOrNull(RECEIVER_BUDGET_MS) {
+                    loaded.first { it }
+                    work(deadline)
+                }
             } catch (e: FfiException) {
                 Log.d("Reminders", "a reminder action failed: ${e::class.simpleName}")
             } catch (e: IllegalStateException) {
