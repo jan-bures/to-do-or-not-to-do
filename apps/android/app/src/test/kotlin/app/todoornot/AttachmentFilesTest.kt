@@ -1,5 +1,6 @@
 package app.todoornot
 
+import app.todoornot.core.safeAttachmentName
 import app.todoornot.files.AttachmentFiles
 import java.io.ByteArrayOutputStream
 import org.junit.Assert.*
@@ -7,9 +8,10 @@ import org.junit.Test
 
 class AttachmentFilesTest {
     @Test fun picker_names_are_safe_leaf_names_bounded_in_utf8_and_keep_the_extension() {
-        assertEquals("sample.pdf", AttachmentFiles.safeName("../sa\u202emp\nle.pdf"))
-        assertEquals("attachment", AttachmentFiles.safeName(".."))
-        val name = AttachmentFiles.safeName("ř🍵".repeat(200) + ".txt")
+        val tag = String(Character.toChars(0xe0061))
+        assertEquals("sample.pdf", safeAttachmentName("..\\sa\u202emp\nle\u2028\u2029\u2060\u206f\u061c\u00ad$tag.pdf"))
+        assertEquals("attachment", safeAttachmentName(".."))
+        val name = safeAttachmentName("ř🍵".repeat(200) + ".txt")
         assertTrue(name.endsWith(".txt"))
         assertTrue(name.toByteArray().size in 250..255)
         assertEquals(name, name.toByteArray().toString(Charsets.UTF_8))

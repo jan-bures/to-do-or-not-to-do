@@ -32,10 +32,10 @@ pub enum FileError {
 }
 
 fn transfer_error(e: reqwest::Error) -> FileError {
-    if e.is_timeout() {
-        FileError::Timeout
-    } else if e.is_connect() {
+    if e.is_connect() {
         FileError::Connect
+    } else if e.is_timeout() {
+        FileError::Timeout
     } else {
         FileError::Interrupted
     }
@@ -58,12 +58,20 @@ impl FileError {
         match self {
             Self::Connect => failure::ATTACHMENT_OFFLINE.into(),
             Self::Timeout => "The upload timed out. Check the task before trying again.".into(),
-            Self::Interrupted => "Couldn’t upload the selected file. It may be too large for the server, or the connection dropped.".into(),
-            Self::Refused { status: 401, .. } => "This device is signed out. Pair again to upload attachments.".into(),
-            Self::Refused { status: 404, .. } => "Couldn’t upload the file. The task is no longer available.".into(),
-            Self::Refused { status: status @ (413 | 429 | 507), max_bytes, .. } => {
-                failure::attachment_upload(Some(*status), *max_bytes)
+            Self::Interrupted => {
+                "Couldn’t upload the file. The connection dropped, or the server refused it.".into()
             }
+            Self::Refused { status: 401, .. } => {
+                "This device is signed out. Pair again to upload attachments.".into()
+            }
+            Self::Refused { status: 404, .. } => {
+                "Couldn’t upload the file. The task is no longer available.".into()
+            }
+            Self::Refused {
+                status: status @ (413 | 429 | 507),
+                max_bytes,
+                ..
+            } => failure::attachment_upload(Some(*status), *max_bytes),
             _ => "Couldn’t upload the selected file.".into(),
         }
     }
@@ -111,9 +119,9 @@ pub trait FileTransport {
     ) -> impl Future<Output = Result<(), FileError>> + Send;
 }
 
-impl FileTransport for HttpTransport {
-    async fn download_to(&self, id: AttachmentId, size: u64, path: &Path) -> Result<(), FileError> {
-        let mut res = self
+impl HttpTransport {
+    async fn attachment_response(&self, id: AttachmentId) -> Result<reqwest::Response, FileError> {
+        let res = self
             .authenticated(Method::Get, &format!("/api/v1/attachments/{id}"))?
             .timeout(Duration::from_secs(300))
             .send()
@@ -122,6 +130,23 @@ impl FileTransport for HttpTransport {
         if res.status().as_u16() != 200 {
             return Err(refused(res).await);
         }
+        Ok(res)
+    }
+
+    /// Desktop buffers the download before writing and marking it in a single filesystem operation.
+    pub async fn download_attachment_bytes(&self, id: AttachmentId) -> Result<Vec<u8>, FileError> {
+        self.attachment_response(id)
+            .await?
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(transfer_error)
+    }
+}
+
+impl FileTransport for HttpTransport {
+    async fn download_to(&self, id: AttachmentId, size: u64, path: &Path) -> Result<(), FileError> {
+        let mut res = self.attachment_response(id).await?;
         if res.content_length().is_some_and(|n| n != size) {
             return Err(FileError::WrongSize);
         }
@@ -176,5 +201,40 @@ impl FileTransport for HttpTransport {
             return Ok(());
         }
         Err(refused(res).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_timeout_words_the_failure_as_offline() {
+        // Accept TCP, but never answer the TLS handshake. The connector times out on loopback
+        // without relying on how the host network handles unroutable addresses.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .tls_backend_rustls()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(500))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let error = client
+            .get(format!("https://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        server.abort();
+        assert!(error.is_connect() && error.is_timeout(), "{error:?}");
+        let error = transfer_error(error);
+        assert_eq!(error.upload_message(), failure::ATTACHMENT_OFFLINE);
+        assert_eq!(error.download_message(), failure::ATTACHMENT_OFFLINE);
     }
 }

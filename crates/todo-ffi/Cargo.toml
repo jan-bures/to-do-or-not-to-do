@@ -31,6 +31,7 @@ todo-design.workspace = true
 # Durable renames for the damaged-cache recovery.
 todo-fs.workspace = true
 uniffi.workspace = true
+unicode-general-category.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true

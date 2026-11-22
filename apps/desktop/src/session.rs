@@ -9,25 +9,19 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
-use todo_client::platform::Request;
-use todo_client::protocol::error_detail;
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::StorageOp;
-use todo_client::{ClientConfig, Storage as _, StorageError, SyncClient, Transport};
+use todo_client::{ClientConfig, Storage as _, StorageError, SyncClient};
 use todo_core::Actor;
 use todo_core::ids::AttachmentId;
 
 use crate::config::{self, DataDir, Pairing, Paths};
 use crate::model::files;
-
-/// How long one attachment download may take, start to finish.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Why a session couldn't be opened. Only [`OpenError::Corrupt`] leads to rebuilding the cache, and even
 /// then the old file is kept aside; nothing is ever deleted because opening failed.
@@ -409,28 +403,12 @@ impl Session {
     }
 
     fn fetch(&self, id: AttachmentId) -> impl Future<Output = anyhow::Result<Vec<u8>>> + use<> {
-        let transport = self
-            .transport
-            .clone()
-            .with_request_timeout(DOWNLOAD_TIMEOUT);
+        let transport = self.transport.clone();
         async move {
-            let res = transport
-                .send(Request::get(format!("/api/v1/attachments/{id}")))
+            transport
+                .download_attachment_bytes(id)
                 .await
-                .map_err(|e| match e {
-                    todo_client::platform::TransportError::Timeout => {
-                        anyhow::anyhow!(todo_client::failure::DOWNLOAD_TIMEOUT)
-                    }
-                    error => error.into(),
-                })?;
-            if res.status != 200 {
-                let error = error_detail(&res);
-                anyhow::bail!(todo_client::failure::attachment_download(
-                    res.status,
-                    error.as_ref().map(|e| e.code.as_str())
-                ));
-            }
-            Ok(res.body)
+                .map_err(|error| anyhow::anyhow!(error.download_message()))
         }
     }
 }

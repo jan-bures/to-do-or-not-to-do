@@ -4273,6 +4273,7 @@ dependencies = [
  "todo-server",
  "tokio",
  "tracing",
+ "unicode-general-category",
  "uniffi",
  "url",
  "uuid",

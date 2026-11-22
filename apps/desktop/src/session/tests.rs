@@ -4,9 +4,10 @@
 
 use std::time::{Duration, Instant};
 
-use todo_client::Connection;
 use todo_client::native::HttpTransport;
 use todo_client::pairing::{self, Polled};
+use todo_client::platform::Request;
+use todo_client::{Connection, Transport};
 use todo_core::State;
 use todo_core::ids::{AttachmentId, ListId, TaskId};
 use todo_server::{Config as ServerConfig, Options, RunningServer, Server};
@@ -1936,6 +1937,31 @@ fn a_leftover_sign_out_temp_file_is_replaced_only_if_it_is_a_plain_file() {
     assert_eq!(result.expect("signed out"), SignedOut::Clean);
     assert!(!tmp.exists() && !data.path().exists());
     assert_eq!(std::fs::read(&outside).expect("outside"), b"keep");
+    drop(server);
+    shut_down(net);
+}
+
+#[test]
+fn connecting_to_an_unavailable_server_uses_the_shared_offline_wording() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let mut pairing = server.pair(&net, &paths);
+
+    // Reserve a port without listening, so the connection fails before a request can be sent.
+    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+    socket
+        .bind("127.0.0.1:0".parse().expect("loopback"))
+        .expect("bind");
+    pairing.config.server = format!("http://{}", socket.local_addr().expect("address"));
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    let id = AttachmentId::from_uuid(session.client().new_uuid());
+    let error = net
+        .block_on(session.download_to_open(id, "report.pdf"))
+        .unwrap_err();
+    assert_eq!(error.to_string(), todo_client::failure::ATTACHMENT_OFFLINE);
+    drop(session);
     drop(server);
     shut_down(net);
 }

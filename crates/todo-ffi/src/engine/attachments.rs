@@ -10,6 +10,7 @@ use todo_client::{
     native::attachments::{FileTransport, MAX_BYTES},
 };
 use todo_core::{ids::AttachmentId, model::AttachmentRef};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 #[uniffi::export]
 pub fn attachment_limit_bytes() -> u64 {
@@ -19,6 +20,51 @@ pub fn attachment_limit_bytes() -> u64 {
 #[uniffi::export]
 pub fn attachment_too_large() -> String {
     failure::attachment_upload(Some(413), Some(MAX_BYTES)).into_owned()
+}
+
+/// One leaf-name rule for the replica and the Android picker. Strip Unicode Cc, Cf, Zl and Zp
+/// per scalar value, and keep a short extension when cutting to the server's UTF-8 byte limit.
+#[uniffi::export]
+pub fn safe_attachment_name(raw: String) -> String {
+    safe_name(&raw)
+}
+
+fn safe_name(raw: &str) -> String {
+    const LIMIT: usize = 255;
+    let leaf: String = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|&c| {
+            !matches!(
+                get_general_category(c),
+                GeneralCategory::Control
+                    | GeneralCategory::Format
+                    | GeneralCategory::LineSeparator
+                    | GeneralCategory::ParagraphSeparator
+            )
+        })
+        .collect();
+    let trailing = |c: char| c == '.' || c.is_whitespace();
+    let name = leaf.trim_start().trim_end_matches(trailing);
+    if name.is_empty() {
+        return "attachment".into();
+    }
+    if name.len() <= LIMIT {
+        return name.into();
+    }
+    let (stem, suffix) = name
+        .rfind('.')
+        .filter(|&dot| dot > 0 && name.len() - dot < LIMIT)
+        .map_or((name, ""), |dot| name.split_at(dot));
+    let head = &stem[..stem.floor_char_boundary(LIMIT - suffix.len())];
+    let head = if suffix.is_empty() {
+        head.trim_end_matches(trailing)
+    } else {
+        head
+    };
+    format!("{}{suffix}", if head.is_empty() { "_" } else { head })
 }
 
 /// Display and intent metadata only: neither a server address nor a storage key crosses the FFI.
@@ -34,15 +80,7 @@ pub struct AttachmentRow {
 
 impl From<&AttachmentRef> for AttachmentRow {
     fn from(file: &AttachmentRef) -> Self {
-        let base = file
-            .file_name
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or_default();
-        let name: String = base.chars().filter(|c| !c.is_control() && !matches!(*c,
-            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')).collect();
-        let name = name.trim().trim_end_matches(['.', ' ']);
-        let name = if name.is_empty() { "attachment" } else { name };
+        let name = safe_name(&file.file_name);
         let ext = name
             .rsplit_once('.')
             .filter(|(stem, _)| !stem.is_empty())
@@ -86,7 +124,7 @@ impl From<&AttachmentRef> for AttachmentRow {
         };
         Self {
             id: file.id.to_string(),
-            name: name.into(),
+            name,
             icon: icon.into(),
             size,
             open_type: media.map(str::to_owned),

@@ -633,8 +633,8 @@ impl TodoEngine {
     /// Stops syncing (the app went to the background). In-flight requests are abandoned; the server is
     /// idempotent by command ID, so a resend after [`start`](Self::start) is safe. The outbox stays.
     /// [`status`](Self::status) reports `Paused` from now on; the listener isn't called for that.
+    /// Direct attachment transfers are cancelled separately by the caller.
     pub fn stop(&self) {
-        self.cancel_attachment_transfers();
         if let Some(h) = locked(&self.run).take() {
             h.abort();
         }

@@ -38,22 +38,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             .is_some_and(|v| v == "Bearer fixture-only")
     };
     let payload = data.clone();
-    let other = state
-        .tasks
-        .keys()
-        .copied()
-        .find(|&id| id != file.task)
-        .unwrap();
     let app = Router::new()
-        .route(
-            &format!("/api/v1/tasks/{other}/attachments"),
-            post(|| async {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    r#"{"error":{"code":"payload_too_large","details":{"max_bytes":2}}}"#,
-                )
-            }),
-        )
         .route(
             &format!("/api/v1/attachments/{}", file.id),
             get(move |headers: HeaderMap| async move {
@@ -141,18 +126,6 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
         refused.to_string(),
         "That file is too large. The limit is 2 bytes."
     );
-    tmp.as_file().set_len(8 * 1024 * 1024).unwrap();
-    let early = engine
-        .upload_attachment(
-            other.to_string(),
-            "early.bin".into(),
-            "application/octet-stream".into(),
-            path.clone(),
-            0,
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(early.contains("too large"), "{early}");
     tmp.as_file().set_len(MAX_BYTES + 1).unwrap();
     let err = engine
         .upload_attachment(
@@ -167,7 +140,11 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
         err.to_string(),
         "That file is too large. The limit is 25 MiB."
     );
-    // A stop interrupts a blocked wait and prevents staging work from starting a late request.
+    // Stopping sync doesn't invalidate a current or newly staged transfer.
+    engine.stop();
+    assert_eq!(engine.attachment_epoch(), 0);
+    engine.transfer(0, async { Ok(()) }).unwrap();
+    // Explicit cancellation interrupts a blocked wait and rejects its stale epoch.
     std::thread::scope(|s| {
         let (tx, rx) = std::sync::mpsc::channel();
         let client = &engine;
@@ -178,15 +155,103 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
             })
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        engine.stop();
+        engine.cancel_attachment_transfers();
         assert_eq!(
             worker.join().unwrap().unwrap_err().to_string(),
             "Transfer cancelled."
         );
         assert!(engine.transfer(0, async { Ok(()) }).is_err());
+        let fresh = engine.attachment_epoch();
+        engine.stop();
+        engine.transfer(fresh, async { Ok(()) }).unwrap();
     });
     assert_eq!(engine.status().pending, 0);
     server.abort();
+}
+
+#[tokio::test]
+async fn early_upload_refusals_keep_the_http_status_if_readable() {
+    use std::time::Duration;
+    use todo_client::native::attachments::FileError;
+    use todo_core::ids::TaskId;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let data = tempfile::NamedTempFile::new().unwrap();
+    data.as_file().set_len(8 * 1024 * 1024).unwrap();
+    for (status, body, message) in [
+        (
+            413,
+            r#"{"error":{"code":"payload_too_large","details":{"max_bytes":2}}}"#,
+            "That file is too large. The limit is 2 bytes.",
+        ),
+        (429, "", "Couldn’t upload right now. Try again later."),
+        (507, "", "Attachment storage is full."),
+        (
+            0,
+            "",
+            "Couldn’t upload the file. The connection dropped, or the server refused it.",
+        ),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut request = BufReader::new(socket);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert_ne!(request.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            if status == 0 {
+                // Reset *after* the request reached the server: this isn't a connect error.
+                request.get_ref().set_zero_linger().unwrap();
+                return;
+            }
+            let response = format!(
+                "HTTP/1.1 {status} Refused\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            request
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .unwrap();
+            // Don't close over unread request bytes. That can reset the connection before the
+            // client gets to read the early reply. Drain until the client closes its write side.
+            tokio::io::copy(&mut request, &mut tokio::io::sink())
+                .await
+                .unwrap();
+        });
+        let transport = HttpTransport::new(&url, "fixture-only").unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.upload_from(
+                TaskId::from_uuid(uuid::Uuid::nil()),
+                AttachmentId::from_uuid(uuid::Uuid::nil()),
+                "sample.bin",
+                "application/octet-stream",
+                data.path(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        if status == 0 {
+            assert!(matches!(error, FileError::Interrupted));
+            assert_ne!(error.upload_message(), failure::ATTACHMENT_OFFLINE);
+        } else {
+            assert!(matches!(error, FileError::Refused { status: s, .. } if s == status));
+        }
+        assert_eq!(error.upload_message(), message);
+        drop(transport);
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -265,10 +330,17 @@ fn open_uses_a_safe_leaf_and_never_dispatches_a_supplied_mime_type() {
         assert_eq!(row.name, if name == ".pdf" { name } else { "attachment" });
         assert_eq!(row.open_type, None);
     }
-    file.file_name = "../../x\u{202e}.apk".into();
+    file.file_name =
+        "../../x\u{202e}\u{2028}\u{2029}\u{2060}\u{206f}\u{061c}\u{ad}\u{e0001}\u{e007f}\u{7f}.apk"
+            .into();
     file.media_type = "application/pdf".into();
     let row = AttachmentRow::from(&file);
     assert_eq!(row.name, "x.apk");
+    assert_eq!(safe_attachment_name(file.file_name.clone()), row.name);
+    let long = format!("{}.pdf", "ř🍵".repeat(100));
+    let safe = safe_name(&long);
+    assert!(safe.len() <= 255 && safe.ends_with(".pdf"));
+    assert_eq!(safe_name(&safe), safe);
     assert_eq!(row.open_type, None);
     file.file_name = "../Guide.PDF".into();
     file.media_type = "application/vnd.android.package-archive".into();

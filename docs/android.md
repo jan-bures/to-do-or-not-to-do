@@ -80,8 +80,9 @@ What the first version does:
   a file after this app’s process has restarted may need you to open it from task detail again.
   Transfers stay with their task across rotation and navigation, but stop when the app goes into the
   background or is unpaired. If a Save fails or is cancelled, the app asks the document provider to
-  delete the unfinished file. Add file waits for a new task to sync; after an upload, the status shows
-  whether it has reached the replica. **Remove** works offline and offers **Undo**.
+  delete the destination only if the provider reports it is empty. A completed Save is kept. Add file
+  waits for a new task to sync; once the server accepts an upload, cancelling the sync wait does not
+  cancel the upload. **Remove** works offline and offers **Undo**.
 - **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
   behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.

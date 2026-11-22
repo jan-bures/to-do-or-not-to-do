@@ -9,6 +9,7 @@ import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import app.todoornot.core.AttachmentRow
 import app.todoornot.core.attachmentLimitBytes
+import app.todoornot.core.safeAttachmentName
 import app.todoornot.model.Documents
 import java.io.File
 import java.io.IOException
@@ -19,7 +20,10 @@ import java.util.UUID
 class AttachmentProvider : FileProvider()
 
 /** Application context only: a transfer may outlive the Activity that opened the picker. */
-class AttachmentFiles(private val app: Context) : Documents {
+internal class AttachmentFiles(
+    private val app: Context,
+    private val uriForFile: (Context, String, File, String) -> Uri = FileProvider::getUriForFile,
+) : Documents {
     override fun temporary(): File = File.createTempFile("transfer-", null, staging(app.cacheDir).apply { mkdirs() })
 
     override fun copyPicked(uri: String, file: File, check: () -> Unit): Documents.Picked {
@@ -32,7 +36,7 @@ class AttachmentFiles(private val app: Context) : Documents {
             if (size >= 0 && !row.isNull(size) && row.getLong(size) > limit) throw Documents.TooLarge()
             row.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let(row::getString)
         }
-        val picked = Documents.Picked(safeName(name.orEmpty()), safeMedia(resolver.getType(source)))
+        val picked = Documents.Picked(safeAttachmentName(name.orEmpty()), safeMedia(resolver.getType(source)))
         (resolver.openInputStream(source) ?: throw IOException()).use { input ->
             file.outputStream().use { output -> copyBounded(input, output, limit, check) }
         }
@@ -46,19 +50,26 @@ class AttachmentFiles(private val app: Context) : Documents {
         }
     }
 
-    // ACTION_CREATE_DOCUMENT has already created a file. Best effort: a remote provider may be gone.
-    override fun discard(uri: String) { runCatching {
-        DocumentsContract.deleteDocument(app.contentResolver, checkPickerUri(app, Uri.parse(uri)))
+    // SAF discloses no proof of ownership. Never delete a non-empty or unknown-size document.
+    override fun discardEmpty(uri: String) { runCatching {
+        val destination = checkPickerUri(app, Uri.parse(uri))
+        val resolver = app.contentResolver
+        val empty = resolver.query(destination, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { row ->
+            val size = row.getColumnIndex(OpenableColumns.SIZE)
+            size >= 0 && row.moveToFirst() && !row.isNull(size) && row.getLong(size) == 0L
+        }
+        if (empty == true) DocumentsContract.deleteDocument(resolver, destination)
     } }
 
-    override fun open(file: File, row: AttachmentRow) {
+    override fun prepareOpen(file: File, row: AttachmentRow): () -> Unit {
         val media = requireNotNull(row.openType)
         // Atomic replacement, one copy per immutable reference; the display name is never a path.
         val ready = File(opened(app.cacheDir).apply { mkdirs() }, "${UUID.fromString(row.id)}.${row.name.substringAfterLast('.')}")
         if (!file.renameTo(ready)) throw IOException()
-        val uri = FileProvider.getUriForFile(app, "${app.packageName}.attachments", ready, row.name)
-        app.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, media)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+        val uri = uriForFile(app, "${app.packageName}.attachments", ready, row.name)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, media)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        return { app.startActivity(view) }
     }
 
     companion object {
@@ -79,30 +90,6 @@ class AttachmentFiles(private val app: Context) : Documents {
 
         private val mime = Regex("[A-Za-z0-9!#$%&'+.^_`|~-]+/[A-Za-z0-9!#$%&'+.^_`|~-]+")
         internal fun safeMedia(raw: String?) = raw?.takeIf { it.length <= 255 && mime.matches(it) } ?: "application/octet-stream"
-        internal fun safeName(raw: String): String {
-            val leaf = raw.substringAfterLast('/').substringAfterLast('\\').filterNot {
-                it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() || it == '\u2028' || it == '\u2029'
-            }.trim().trimEnd('.', ' ').ifEmpty { "attachment" }
-            if (leaf.toByteArray().size <= 255) return leaf
-            val dot = leaf.lastIndexOf('.')
-            val suffix = if (dot > 0 && leaf.substring(dot).toByteArray().size < 255) leaf.substring(dot) else ""
-            val budget = 255 - suffix.toByteArray().size
-            val stem = leaf.removeSuffix(suffix)
-            return buildString {
-                var n = 0
-                var i = 0
-                while (i < stem.length) {
-                    val cp = stem.codePointAt(i)
-                    n += when { cp <= 0x7f -> 1; cp <= 0x7ff -> 2; cp <= 0xffff -> 3; else -> 4 }
-                    if (n > budget) break
-                    appendCodePoint(cp)
-                    i += Character.charCount(cp)
-                }
-                if (isEmpty()) append('_')
-                append(suffix)
-            }
-        }
-
         /** The provider's size is optional/untrusted. Check cancellation and the bound before each write. */
         internal fun copyBounded(input: InputStream, output: OutputStream, limit: Long, check: () -> Unit = {}) {
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

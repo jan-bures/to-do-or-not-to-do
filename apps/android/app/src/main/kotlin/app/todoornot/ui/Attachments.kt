@@ -25,6 +25,10 @@ import app.todoornot.model.*
 private class Pickers(val add: (String) -> Unit, val save: (String, AttachmentRow) -> Unit)
 private val LocalPickers = staticCompositionLocalOf { Pickers({}, { _, _ -> }) }
 
+// The viewer MIME is not a filename hint: text/plain would cause DocumentsUI to append .txt to .md.
+internal fun saveAttachmentIntent(name: String): Intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+    .addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name)
+
 /** Register once above both pane layouts. A result belongs to the original pairing, task and file,
  * not to the detail (if any) on screen after the picker or a configuration change. */
 @Composable
@@ -55,8 +59,7 @@ internal fun AttachmentPickers(actions: Actions?, pairing: String?, discard: (St
     }, save = { task, row ->
         if (pairing != null) {
             destination = arrayOf(pairing, task, row.id, row.name)
-            try { create.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType(row.openType ?: "application/octet-stream").putExtra(Intent.EXTRA_TITLE, row.name)) }
+            try { create.launch(saveAttachmentIntent(row.name)) }
             catch (_: ActivityNotFoundException) { destination = null; actions?.attachmentNotice(task, "Couldn’t save ${row.name}.") }
         }
     })

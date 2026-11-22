@@ -344,7 +344,7 @@ class TodoModel(
      */
     private val writes = Mutex()
 
-    private val transfers: AttachmentTransfers = AttachmentTransfers(engine, documents, scope, io, ::publishTransfer)
+    private val transfers = AttachmentTransfers(AttachmentTransferCore(engine), documents, scope, io, { selected }, ::publishTransfer)
     private val _ui = MutableStateFlow(read())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 

@@ -43,8 +43,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -63,7 +65,6 @@ class AppGraph(private val app: Context) {
         SessionStore(PrefsKeyValues(app), cipher),
         PairingFiles(app.noBackupFilesDir),
         forgetKey = cipher::destroy,
-        clearTransferCache = { AttachmentFiles.clear(app.cacheDir) },
         debug = { Log.d("EngineHost", it) },
     ) { s, db ->
         TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, Cleartext.allowLoopbackHttp))
@@ -88,10 +89,18 @@ class AppGraph(private val app: Context) {
 
     val pairing = PairingModel(CorePairing(Cleartext.allowLoopbackHttp), scope, Dispatchers.IO, deviceName(), host::paired)
 
+    // Don't expose a model until stale staging and viewer files have been cleared off Main.
+    private var transferCleanup = scope.launch(Dispatchers.IO) { AttachmentFiles.clear(app.cacheDir) }
+
     init {
         NativeInit.ensure(app)
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
-        scope.launch { host.state.collect(::follow) }
+        scope.launch {
+            host.state.collectLatest { h ->
+                transferCleanup.join()
+                if (h === host.state.value) follow(h)
+            }
+        }
         host.load()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
@@ -230,7 +239,7 @@ class AppGraph(private val app: Context) {
     }
 
     /** A create-document result returned after its pairing went away. */
-    fun discardDocument(uri: String) { scope.launch(Dispatchers.IO) { AttachmentFiles(app).discard(uri) } }
+    fun discardDocument(uri: String) { scope.launch(Dispatchers.IO) { AttachmentFiles(app).discardEmpty(uri) } }
 
     /** Opens the cache again after it couldn't be opened. */
     fun retry() = host.retry()
@@ -242,10 +251,12 @@ class AppGraph(private val app: Context) {
      */
     fun unpair() {
         val m = _model.value
+        val oldModel = modelScope?.coroutineContext?.job
         val result = host.unpair { engine ->
             _model.value = null
             modelScope?.cancel()
             modelScope = null
+            engine.cancelAttachmentTransfers()
             engine.stop()
             engine.close()
         }
@@ -256,6 +267,12 @@ class AppGraph(private val app: Context) {
                 m?.notice(text)
             }
             Unpaired.Clean, Unpaired.DataLeft -> {
+                val previousCleanup = transferCleanup
+                transferCleanup = scope.launch(Dispatchers.IO) {
+                    previousCleanup.join()
+                    oldModel?.join()
+                    AttachmentFiles.clear(app.cacheDir)
+                }
                 reminderScope.launch { reminders.clear() }
                 _unpairProblem.value = null
                 pairing.cancel()

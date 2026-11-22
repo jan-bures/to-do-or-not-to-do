@@ -587,9 +587,9 @@ class TodoModelTest {
                 copies++
                 return Documents.Picked("sample.txt", "text/plain")
             }
-            override fun open(file: java.io.File, row: app.todoornot.core.AttachmentRow) = error("offline")
+            override fun prepareOpen(file: java.io.File, row: app.todoornot.core.AttachmentRow) = error("offline")
             override fun save(file: java.io.File, uri: String, check: () -> Unit) = error("offline")
-            override fun discard(uri: String) { discarded += uri }
+            override fun discardEmpty(uri: String) { discarded += uri }
         }
         val s = Stepped(e, documents = docs) { time }
         val id = e.taskId(RoomKey.Smart(SmartList.MY_DAY), "Call the dentist to reschedule")

@@ -53,8 +53,7 @@ class EngineHostTest {
             db.writeText("cache")
             fixtureEngine()
         },
-    ) = EngineHost(sessions, files, forgetKey = { keysForgotten++ }, newPairingId = ::nextId,
-        clearTransferCache = { app.todoornot.files.AttachmentFiles.clear(root) }) { s, db ->
+    ) = EngineHost(sessions, files, forgetKey = { keysForgotten++ }, newPairingId = ::nextId) { s, db ->
         opened += db
         open(s, db)
     }
@@ -101,12 +100,8 @@ class EngineHostTest {
         host.paired(approved)
         val db = opened.single()
         assertTrue(db.exists())
-        val files = listOf("opened-attachments", "attachment-staging").map {
-            File(File(root, it).apply { mkdirs() }, "sample").apply { writeText("file") }
-        }
         var closed = 0
         assertEquals(Unpaired.Clean, host.unpair { closed++ })
-        assertTrue(files.none { it.exists() })
         assertEquals(1, closed)
         assertEquals(Host.SignedOut, host.state.value)
         assertNull(sessions.load())
