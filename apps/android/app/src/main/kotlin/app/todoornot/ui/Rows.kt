@@ -29,7 +29,8 @@ private val S = Tokens.Space
 
 /**
  * A task row on the phone: 64 dp, columns `22 | 1fr | 20 | 24` (check, title and metadata, agent,
- * priority). On a dated row the date sits in a 100 dp slot so list chips line up down the list; an
+ * priority). Empty agent and priority columns to the left of every filled one are left out, so the title
+ * uses their room. On a dated row the date sits in a 100 dp slot so list chips line up down the list; an
  * undated row's chips start flush with the title. The row is
  * at least 64 dp and grows with the font scale: its bottom inset is what's left of 64 dp under the
  * title and a chip-high metadata line, so nothing in the second line is ever clipped.
@@ -72,14 +73,27 @@ fun TaskRowView(
             Spacer(Modifier.height(S.S1.dp))
             MetaLine(task)
         }
-        Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {
-            task.agent?.let { AgentBadge(it) }
+        // The trailing columns keep their places from the right edge, but empty ones to the left of every
+        // filled one are left out, so the title runs on into their room (as on the desktop).
+        val agentColumn = showsAgent(task)
+        if (agentColumn) {
+            Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {
+                task.agent?.let { AgentBadge(it) }
+            }
         }
-        Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
-            Priority(task.priority.toInt())
+        if (showsPriority(task)) {
+            Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
+                Priority(task.priority.toInt())
+            }
         }
     }
 }
+
+/** The agent column is there only for an agent's mark. */
+fun showsAgent(task: TaskRow): Boolean = task.agent != null
+
+/** The priority column is there for `!` marks, or to keep an agent's mark in its place. */
+fun showsPriority(task: TaskRow): Boolean = showsAgent(task) || task.priority > 0u
 
 /** The metadata line fits a chip or the overdue badge, whichever is taller than the due text. */
 private val metaLine = maxOf(Tokens.Type.DUE.lineHeight, Tokens.Metrics.Component.CHIP).dp

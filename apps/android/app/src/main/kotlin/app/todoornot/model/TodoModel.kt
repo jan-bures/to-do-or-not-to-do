@@ -9,6 +9,7 @@ import app.todoornot.core.ProblemKind
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
 import app.todoornot.core.SmartList
+import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
@@ -43,6 +44,12 @@ data class UiState(
     val toast: Toast?,
     /** Set while the unpair confirmation is showing. */
     val unpairing: UnpairQuestion? = null,
+    /** The filter typed into the bar: query language or words; empty when not filtering. */
+    val filter: String = "",
+    /** Collections folded in the drawer, by ID. */
+    val collapsed: Set<String> = emptySet(),
+    /** When the engine was last seen online and caught up, for "Synced 10:35". */
+    val syncedAt: LocalNow? = null,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -53,6 +60,32 @@ data class UiState(
  * [changed] is set when the owner confirmed a number that was out of date: they are asked again.
  */
 data class UnpairQuestion(val unsent: Int, val changed: Boolean = false)
+
+/** How the drawer's sync line reads: fine, busy, or a problem (its dot's colour). */
+enum class Tone { OK, BUSY, PROBLEM, IDLE }
+
+/**
+ * The drawer footer's sync line, worded as on the desktop: "Synced 10:35", "Syncing…", "Offline, 3
+ * waiting", "2 couldn't sync", "Signed out by the server". Paused (the app isn't syncing, as in the
+ * screenshots) says how much is waiting, if anything.
+ */
+fun syncLine(status: SyncStatus, syncedAt: LocalNow?): Pair<String, Tone> = when {
+    status.problem == ProblemKind.UNAUTHORIZED -> "Signed out by the server" to Tone.PROBLEM
+    status.failed > 0u -> "${status.failed} couldn’t sync" to Tone.PROBLEM
+    status.state == SyncState.OFFLINE && status.pending > 0u -> "Offline, ${status.pending} waiting" to Tone.PROBLEM
+    status.state == SyncState.OFFLINE -> "Offline" to Tone.PROBLEM
+    status.state == SyncState.SYNCING -> "Syncing…" to Tone.BUSY
+    status.state == SyncState.ONLINE -> (syncedAt?.let { "Synced ${clock(it)}" } ?: "Synced") to Tone.OK
+    status.pending > 0u -> "Not syncing, ${status.pending} waiting" to Tone.IDLE
+    else -> "Not syncing" to Tone.IDLE
+}
+
+/** "09:05", in the time's own UTC offset. */
+fun clock(t: LocalNow): String {
+    val minutes = Math.floorDiv(t.epochMs + t.utcOffsetSecs * 1000L, 60_000L)
+    val day = Math.floorMod(minutes, 24L * 60L)
+    return "%02d:%02d".format(day / 60, day % 60)
+}
 
 /** Unsent changes, from one status snapshot (the engine reads both counts under one lock). */
 fun unsentCount(status: SyncStatus): Int = (status.pending + status.failed).toInt()
@@ -82,6 +115,12 @@ class TodoModel(
 
     @Volatile private var unpairChanged = false
 
+    @Volatile private var filter = ""
+
+    @Volatile private var collapsed: Set<String> = emptySet()
+
+    @Volatile private var syncedAt: LocalNow? = null
+
     /**
      * Local writes run one at a time, in the order they were made (the mutex is first come, first served).
      * Confirming an unpair takes its count behind them, so an edit already on its way is counted.
@@ -108,14 +147,19 @@ class TodoModel(
         val detail = selected?.let { engine.task(it, n) }
         if (detail == null) selected = null
         val status = engine.status()
+        if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
+        val f = filter
         return UiState(
             home = engine.home(n),
-            room = engine.room(key, n),
+            room = if (f.isBlank()) engine.room(key, n) else engine.roomMatching(key, f, n),
             detail = detail,
             status = status,
             failed = engine.failed(),
             toast = toast,
             unpairing = if (askingUnpair) UnpairQuestion(unsentCount(status), unpairChanged) else null,
+            filter = f,
+            collapsed = collapsed,
+            syncedAt = syncedAt,
         )
     }
 
@@ -142,10 +186,30 @@ class TodoModel(
         toast = t
     }
 
+    /** Opens a room. A filter belongs to the room it was typed in, so it is cleared. */
     override fun open(room: RoomKey) {
         key = room
         selected = null
+        filter = ""
         scope.launch { refresh() }
+    }
+
+    override fun setFilter(text: String) {
+        filter = text
+        scope.launch { refresh() }
+    }
+
+    override fun toggleCollection(id: String) {
+        collapsed = if (id in collapsed) collapsed - id else collapsed + id
+        scope.launch { refresh() }
+    }
+
+    /** Adds a list and opens it. */
+    override fun createList(name: String) = act {
+        val room = engine.createList(name)
+        key = room
+        selected = null
+        filter = ""
     }
 
     override fun select(id: String?) {
@@ -181,6 +245,12 @@ class TodoModel(
     override fun rename(id: String, title: String) = act { engine.rename(id, title) }
 
     override fun setMyDay(id: String, on: Boolean) = act { engine.setMyDay(id, on, now()) }
+
+    override fun setImportant(id: String, on: Boolean) = act { engine.setImportant(id, on) }
+
+    override fun addStep(task: String, title: String) = act { engine.addStep(task, title) }
+
+    override fun setStepDone(id: String, done: Boolean) = act { engine.setStepDone(id, done) }
 
     override fun dismissFailed(id: String) = act { engine.dismissFailed(id) }
 

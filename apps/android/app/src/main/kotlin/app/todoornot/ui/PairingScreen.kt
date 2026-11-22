@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -38,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.todoornot.design.Landscape
 import app.todoornot.design.LocalDesign
+import app.todoornot.design.RoomColors
 import app.todoornot.design.Scene
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
@@ -68,8 +70,8 @@ interface PairingActions {
  */
 @Composable
 fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean) {
-    val waiting = state is PairingState.Waiting
-    Welcome("Welcome", "Pair this phone", Scene(if (waiting) 1 else 0, 2, finished = false), dark) {
+    // No tasks yet, so nothing to measure: the hills only, no sun (`docs/design-language.md`).
+    Welcome("Welcome", "Pair this phone", Scene(0, 0, finished = false), dark) {
         when (state) {
             is PairingState.Entering -> Entering(state, actions)
             is PairingState.Starting -> {
@@ -104,7 +106,7 @@ fun CantOpenScreen(
         Button("Try again", primary = true, onClick = onRetry)
         Spacer(Modifier.height(S.S2.dp))
         unpairProblem?.let { Label(it, Tokens.Type.META_PHONE, r.dangerInk, maxLines = 4) }
-        Button("Unpair this phone", primary = false) { confirm = true }
+        Button("Unpair this phone", primary = false, danger = true) { confirm = true }
         // The cache can't be read, so how much is unsent can't be told.
         if (confirm) UnpairDialog(unsent = null, onCancel = { confirm = false }, onConfirm = { confirm = false; onUnpair() })
     }
@@ -219,26 +221,29 @@ fun Button(
 ) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.BUTTON.dp)
-    val bg = when {
-        primary -> r.accentFill
-        danger -> r.dangerBg
-        else -> r.raised
-    }
-    val ink = when {
-        primary -> r.onAccent
-        danger -> r.dangerInk
-        else -> r.ink
-    }
+    // Disabled, every button is the same quiet one: `wash` with `ink-3` text (guarded to 4.5:1) and a
+    // `line-strong` edge, never a faded colour that drops below the text minimum.
+    val colors = buttonColors(r, primary, danger, enabled)
     Box(
         modifier
             .fillMaxWidth()
             .height(P.TOUCH.dp)
             .clip(shape)
-            .background(if (enabled) bg else bg.copy(alpha = 0.5f))
-            .then(if (primary) Modifier else Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, shape))
+            .background(colors.bg)
+            .then(colors.edge?.let { Modifier.border(Tokens.Elevation.HAIRLINE.dp, it, shape) } ?: Modifier)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Label(text, Tokens.Type.BUTTON, if (enabled) ink else ink.copy(alpha = 0.7f))
+        Label(text, Tokens.Type.BUTTON, colors.ink)
     }
+}
+
+/** A button's background, text and edge (null: none). */
+data class ButtonColors(val bg: Color, val ink: Color, val edge: Color?)
+
+fun buttonColors(r: RoomColors, primary: Boolean, danger: Boolean, enabled: Boolean): ButtonColors = when {
+    !enabled -> ButtonColors(r.wash, r.ink3, r.lineStrong)
+    primary -> ButtonColors(r.accentFill, r.onAccent, null)
+    danger -> ButtonColors(r.dangerBg, r.dangerInk, r.lineStrong)
+    else -> ButtonColors(r.raised, r.ink, r.lineStrong)
 }

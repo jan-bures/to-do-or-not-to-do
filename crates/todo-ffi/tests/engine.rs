@@ -526,3 +526,86 @@ fn a_release_engine_refuses_plain_http_even_to_loopback() {
         Err(FfiError::BadAddress { .. })
     ));
 }
+
+/// The detail's star, steps and a new list, offline: each lands in the view at once and waits in the
+/// outbox.
+#[test]
+fn important_steps_and_new_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(offline_config(&dir.path().join("todo.sqlite"))).unwrap();
+    let id = engine
+        .add_task(my_day(), "Renew the passport".into(), now())
+        .unwrap();
+
+    engine.set_important(id.clone(), true).unwrap();
+    assert_eq!(engine.task(id.clone(), now()).unwrap().priority, 3);
+    let important = RoomKey::Smart {
+        list: SmartList::Important,
+    };
+    assert_eq!(engine.room(important.clone(), now()).tasks.len(), 1);
+    engine.set_important(id.clone(), false).unwrap();
+    assert_eq!(engine.task(id.clone(), now()).unwrap().priority, 0);
+    assert!(engine.room(important, now()).tasks.is_empty());
+
+    let step = engine
+        .add_step(id.clone(), "  Find the old one ".into())
+        .unwrap();
+    engine.add_step(id.clone(), "Book a photo".into()).unwrap();
+    assert!(matches!(
+        engine.add_step(id.clone(), "   ".into()),
+        Err(FfiError::Invalid { .. })
+    ));
+    engine.set_step_done(step.clone(), true).unwrap();
+    let steps = engine.task(id.clone(), now()).unwrap().steps;
+    let titles: Vec<_> = steps.iter().map(|s| (s.title.as_str(), s.done)).collect();
+    assert_eq!(
+        titles,
+        [("Find the old one", true), ("Book a photo", false)]
+    );
+    engine.set_step_done(step, false).unwrap();
+    assert!(!engine.task(id, now()).unwrap().steps[0].done);
+
+    let list = engine.create_list(" Garden ".into()).unwrap();
+    let room = engine.room(list.clone(), now());
+    assert_eq!(room.key, list);
+    assert_eq!(room.title, "Garden");
+    assert_eq!(room.empty_line, "Nothing here yet.");
+    assert!(matches!(
+        engine.create_list("".into()),
+        Err(FfiError::Invalid { .. })
+    ));
+    // A Tasks list, the task, its star twice, two steps, a step twice and the new list.
+    assert_eq!(engine.status().pending, 9);
+}
+
+/// The filter takes the query language, else words in the title; the progress stays the room's.
+#[test]
+fn a_room_can_be_filtered_with_the_query_language_or_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(offline_config(&dir.path().join("todo.sqlite"))).unwrap();
+    let milk = engine
+        .add_task(my_day(), "Buy oat milk".into(), now())
+        .unwrap();
+    engine
+        .add_task(my_day(), "Call the bank".into(), now())
+        .unwrap();
+    engine.set_important(milk, true).unwrap();
+
+    let all = engine.room_matching(my_day(), "".into(), now());
+    assert!(!all.filtered);
+    assert_eq!(all.tasks.len(), 2);
+
+    let words = engine.room_matching(my_day(), "OAT".into(), now());
+    assert!(words.filtered);
+    let titles: Vec<_> = words.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Buy oat milk"]);
+    assert_eq!((words.done, words.total, words.open), (0, 2, 2));
+
+    let query = engine.room_matching(my_day(), "priority>=high".into(), now());
+    let titles: Vec<_> = query.tasks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Buy oat milk"]);
+
+    let none = engine.room_matching(my_day(), "dentist".into(), now());
+    assert!(none.tasks.is_empty());
+    assert_eq!(none.empty_line, "Nothing matches the filter.");
+}

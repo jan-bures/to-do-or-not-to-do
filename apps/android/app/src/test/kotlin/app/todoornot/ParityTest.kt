@@ -1,0 +1,181 @@
+package app.todoornot
+
+import app.todoornot.core.LocalNow
+import app.todoornot.core.ProblemKind
+import app.todoornot.core.RoomKey
+import app.todoornot.core.SmartList
+import app.todoornot.core.SyncState
+import app.todoornot.core.SyncStatus
+import app.todoornot.design.Tokens
+import app.todoornot.model.Tone
+import app.todoornot.model.TodoModel
+import app.todoornot.model.clock
+import app.todoornot.model.syncLine
+import app.todoornot.ui.buttonColors
+import app.todoornot.ui.showsAgent
+import app.todoornot.ui.showsPriority
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** What the UX review asked for, matching the desktop: the star, steps, new lists, the filter, the drawer. */
+@OptIn(ExperimentalCoroutinesApi::class)
+class ParityTest {
+    private fun TestScope.model(engine: app.todoornot.core.TodoEngine = fixtureEngine(), start: RoomKey = RoomKey.Smart(SmartList.MY_DAY)) =
+        TodoModel(engine, CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), UnconfinedTestDispatcher(testScheduler), now = { FIXTURE_NOW }, start = start)
+
+    @Test
+    fun the_star_marks_a_task_important_and_back() = runTest {
+        val engine = fixtureEngine()
+        val admin = engine.list("Admin")
+        val m = model(engine, admin)
+        val id = engine.taskId(admin, "Renew passport appointment")
+        m.select(id)
+        m.setImportant(id, true)
+        advanceUntilIdle()
+        assertEquals(3.toUByte(), m.ui.value.detail?.priority)
+        assertTrue(engine.room(RoomKey.Smart(SmartList.IMPORTANT), FIXTURE_NOW).tasks.any { it.id == id })
+        m.setImportant(id, false)
+        advanceUntilIdle()
+        assertEquals(0.toUByte(), m.ui.value.detail?.priority)
+    }
+
+    @Test
+    fun steps_are_added_at_the_end_and_ticked() = runTest {
+        val engine = fixtureEngine()
+        val admin = engine.list("Admin")
+        val m = model(engine, admin)
+        val id = engine.taskId(admin, "Renew passport appointment")
+        m.select(id)
+        val before = m.ui.value.detail!!.steps.size
+        m.addStep(id, "Print the form")
+        advanceUntilIdle()
+        val steps = m.ui.value.detail!!.steps
+        assertEquals(before + 1, steps.size)
+        assertEquals("Print the form", steps.last().title)
+        assertFalse(steps.last().done)
+        m.setStepDone(steps.last().id, true)
+        advanceUntilIdle()
+        assertTrue(m.ui.value.detail!!.steps.last().done)
+    }
+
+    @Test
+    fun a_new_list_is_added_and_opened() = runTest {
+        val m = model()
+        m.createList("Garden")
+        advanceUntilIdle()
+        val room = m.ui.value.room
+        assertEquals("Garden", room.title)
+        assertTrue(room.key is RoomKey.List)
+        assertEquals("Nothing here yet.", room.emptyLine)
+        assertTrue(m.ui.value.home.groups.flatMap { it.lists }.any { it.name == "Garden" })
+    }
+
+    @Test
+    fun the_filter_narrows_the_rows_and_switching_rooms_clears_it() = runTest {
+        val m = model()
+        val all = m.ui.value.room
+        m.setFilter("rohlíky")
+        advanceUntilIdle()
+        val found = m.ui.value.room
+        assertTrue(found.filtered)
+        assertEquals(listOf("Koupit rohlíky a mléko"), found.tasks.map { it.title })
+        assertEquals("the progress is the room's", all.total, found.total)
+
+        m.setFilter("priority>=high")
+        advanceUntilIdle()
+        assertTrue(m.ui.value.room.tasks.isNotEmpty())
+        assertTrue(m.ui.value.room.tasks.all { it.priority >= 3u })
+
+        m.open(RoomKey.Smart(SmartList.ALL))
+        advanceUntilIdle()
+        assertEquals("", m.ui.value.filter)
+        assertFalse(m.ui.value.room.filtered)
+    }
+
+    @Test
+    fun collections_fold_in_the_drawer() = runTest {
+        val engine = fixtureEngine()
+        val id = (engine.collection("Personal") as RoomKey.Collection).id
+        val m = model(engine)
+        m.toggleCollection(id)
+        advanceUntilIdle()
+        assertEquals(setOf(id), m.ui.value.collapsed)
+        m.toggleCollection(id)
+        advanceUntilIdle()
+        assertEquals(emptySet<String>(), m.ui.value.collapsed)
+    }
+
+    @Test
+    fun the_finished_day_keeps_its_completed_tasks_and_hands_over() = runTest {
+        val room = model(fixtureEngine("finished")).ui.value.room
+        assertTrue(room.finished)
+        assertTrue(room.tomorrow != null)
+        assertTrue(room.completed.isNotEmpty())
+    }
+
+    @Test
+    fun the_sync_line_reads_as_on_the_desktop() {
+        fun s(state: SyncState, pending: UInt = 0u, failed: UInt = 0u, problem: ProblemKind? = null) =
+            SyncStatus(state, pending, failed, problem, null)
+        assertEquals("Synced 10:35" to Tone.OK, syncLine(s(SyncState.ONLINE), FIXTURE_NOW))
+        assertEquals("Synced" to Tone.OK, syncLine(s(SyncState.ONLINE), null))
+        assertEquals("Syncing…" to Tone.BUSY, syncLine(s(SyncState.SYNCING, 2u), null))
+        assertEquals("Offline, 3 waiting" to Tone.PROBLEM, syncLine(s(SyncState.OFFLINE, 3u), null))
+        assertEquals("Offline" to Tone.PROBLEM, syncLine(s(SyncState.OFFLINE), null))
+        assertEquals("2 couldn’t sync" to Tone.PROBLEM, syncLine(s(SyncState.ONLINE, failed = 2u), null))
+        assertEquals(
+            "Signed out by the server" to Tone.PROBLEM,
+            syncLine(s(SyncState.OFFLINE, problem = ProblemKind.UNAUTHORIZED), null),
+        )
+        assertEquals("Not syncing, 1 waiting" to Tone.IDLE, syncLine(s(SyncState.PAUSED, 1u), null))
+        assertEquals("09:05", clock(LocalNow(8 * 3_600_000L + 5 * 60_000L, 3600)))
+        assertEquals("23:59", clock(LocalNow(-60_000L, 0)))
+    }
+
+    @Test
+    fun empty_trailing_columns_are_left_out_as_on_the_desktop() {
+        val rows = fixtureEngine().room(RoomKey.Smart(SmartList.MY_DAY), FIXTURE_NOW).tasks
+        val plain = rows.first { it.agent == null && it.priority == 0.toUByte() }
+        assertFalse(showsAgent(plain))
+        assertFalse(showsPriority(plain))
+        val agent = rows.first { it.agent != null }
+        assertTrue(showsAgent(agent))
+        assertTrue("an agent's mark keeps its place from the right edge", showsPriority(agent))
+        rows.filter { it.agent == null && it.priority > 0u }.forEach {
+            assertFalse(showsAgent(it))
+            assertTrue(showsPriority(it))
+        }
+    }
+
+    /** WCAG 2.x contrast from the emitted colours. */
+    private fun contrast(a: Color, b: Color): Double {
+        val (hi, lo) = listOf(a.luminance(), b.luminance()).sortedDescending()
+        return (hi + 0.05) / (lo + 0.05)
+    }
+
+    @Test
+    fun a_disabled_button_keeps_its_text_readable_in_every_room() {
+        for ((theme, rooms) in listOf("light" to Tokens.lightRooms, "dark" to Tokens.darkRooms)) {
+            for ((hue, r) in rooms) {
+                for (primary in listOf(true, false)) {
+                    val c = buttonColors(r, primary, danger = false, enabled = false)
+                    assertTrue("$theme $hue: ${contrast(c.ink, c.bg)}", contrast(c.ink, c.bg) >= 4.5)
+                    assertTrue("$theme $hue has an edge", c.edge != null)
+                }
+            }
+        }
+        assertNull(buttonColors(Tokens.lightRooms.getValue("my-day"), primary = true, danger = false, enabled = true).edge)
+    }
+}

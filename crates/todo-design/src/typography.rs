@@ -119,7 +119,7 @@ pub const EYEBROW_META: TextStyle = TextStyle::new(MONO, 400, 11.0, 22.0).tracki
 /// Phone date and week.
 pub const EYEBROW_META_PHONE: TextStyle =
     TextStyle::new(MONO, 400, 10.5, 20.0).tracking(0.1).caps();
-/// The one italic line of an empty list ("Nothing on the shelf yet.").
+/// The one italic line of an empty list ("Nothing here yet.").
 pub const EMPTY_LINE: TextStyle = TextStyle::new(DISPLAY, 360, 32.0, 38.0)
     .italic()
     .tracking(-0.02);

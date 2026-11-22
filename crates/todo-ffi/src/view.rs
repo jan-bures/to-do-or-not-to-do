@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{LinkKind, List, Priority, Task};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, Query};
+use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::time::{Date, Timestamp, add_days, days_between};
 
 /// A built-in smart list.
@@ -94,10 +94,10 @@ impl SmartList {
 
     fn empty_line(self) -> &'static str {
         match self {
-            Self::MyDay => "Nothing planned for today yet.",
-            Self::Important => "Nothing marked important.",
-            Self::Planned => "Nothing has a date yet.",
-            Self::All => "Nothing open. Enjoy it.",
+            Self::MyDay => "Nothing planned yet.",
+            Self::Important => "Nothing pressing.",
+            Self::Planned => "Nothing on the calendar.",
+            Self::All => "Nothing open.",
             Self::Completed => "Nothing finished yet.",
             Self::AgentActivity => "No agent changes this week.",
         }
@@ -279,8 +279,10 @@ pub struct RoomView {
     pub empty_line: String,
     /// The composer's placeholder.
     pub add_placeholder: String,
-    /// The finished day's hand-over.
+    /// The finished day's hand-over (never while filtered).
     pub tomorrow: Option<Tomorrow>,
+    /// A filter is applied: the rows (not the progress) are only the matching ones.
+    pub filtered: bool,
 }
 
 /// A step in the detail pane.
@@ -567,6 +569,39 @@ fn resolve(state: &State, key: &RoomKey) -> RoomKey {
 
 /// Derives a room.
 pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
+    room_filtered(state, key, "", now)
+}
+
+/// The filter, as on the desktop: the query language when it parses (`tag:docs`, `due<=friday`), else
+/// every word must appear in the title (case and accents folded).
+fn filter<'a>(state: &State, text: &str, ctx: &EvalContext, tasks: Vec<&'a Task>) -> Vec<&'a Task> {
+    let text = text.trim();
+    if text.is_empty() {
+        return tasks;
+    }
+    if let Ok(q) = Query::parse(text) {
+        return tasks
+            .into_iter()
+            .filter(|t| q.matches(state, t, ctx))
+            .collect();
+    }
+    let folded = fold(text);
+    let words: Vec<&str> = folded
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    tasks
+        .into_iter()
+        .filter(|t| {
+            let title = fold(&t.title);
+            words.iter().all(|w| title.contains(w))
+        })
+        .collect()
+}
+
+/// Derives a room showing only the tasks that match `filter` (see [`filter`]). The progress (sun and
+/// counts) is the whole room's; the finished day's hand-over is left out while filtering.
+pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now) -> RoomView {
     let key = resolve(state, key);
     let ix = Index::new(state, now);
     let today = now.today();
@@ -595,6 +630,12 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
             })
         })
         .count();
+
+    let open_all = open.len();
+    let filtered = !filter_text.trim().is_empty();
+    let ctx = now.eval();
+    let open = filter(state, filter_text, &ctx, open);
+    let done = filter(state, filter_text, &ctx, done);
 
     let (title, eyebrow, hue, chips, empty_line, placeholder) = match &key {
         RoomKey::Smart { list } => (
@@ -643,14 +684,14 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
                 name.clone(),
                 Eyebrow::Kind {
                     kind,
-                    detail: format!("{} open", open.len()),
+                    detail: format!("{open_all} open"),
                 },
                 list.map_or("lagoon", |l| {
                     lists::swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
                 })
                 .to_owned(),
                 false,
-                "Nothing on the shelf yet.".to_owned(),
+                "Nothing here yet.".to_owned(),
                 format!("Add to {name}…"),
             )
         }
@@ -663,7 +704,7 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
         }
     ) && progress_total > 0
         && progress_done >= progress_total;
-    let tomorrow = if finished {
+    let tomorrow = if finished && !filtered {
         tomorrow(state, &ix, now)
     } else {
         None
@@ -674,7 +715,7 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
         hue,
         done: count(progress_done),
         total: count(progress_total),
-        open: count(open.len()),
+        open: count(open_all),
         finished,
         tasks: open
             .iter()
@@ -685,9 +726,14 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
             .map(|t| row(state, &ix, t, now, chips))
             .collect(),
         finished_this_month: count(finished_this_month),
-        empty_line,
+        empty_line: if filtered {
+            "Nothing matches the filter.".to_owned()
+        } else {
+            empty_line
+        },
         add_placeholder: placeholder,
         tomorrow,
+        filtered,
         key,
     }
 }

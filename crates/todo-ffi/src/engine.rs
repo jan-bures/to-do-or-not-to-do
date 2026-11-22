@@ -20,7 +20,7 @@ use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
 use todo_client::{ClientConfig, Connection, ErrorKind, MemoryStorage, SyncClient};
 use todo_core::command::{NewTask, Placement, TaskPatch};
-use todo_core::ids::{CollectionId, ListId, TaskId};
+use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
@@ -150,6 +150,9 @@ fn describe(entry: &OutboxEntry) -> &'static str {
         Some(Command::UncompleteTask { .. }) => "Reopen a task",
         Some(Command::SetMyDay { .. }) => "Change My Day",
         Some(Command::CreateList { .. }) => "Add a list",
+        Some(Command::CreateStep { .. }) => "Add a step",
+        Some(Command::CompleteStep { .. }) => "Complete a step",
+        Some(Command::UncompleteStep { .. }) => "Reopen a step",
         Some(_) => "A change",
         None => "Undo",
     }
@@ -367,6 +370,12 @@ impl TodoEngine {
         view::room(&self.client.view(), &key, &Now::new(now))
     }
 
+    /// A room showing only the tasks matching `filter`: the query language when it parses
+    /// (`tag:docs`, `due<=friday`), else words in the title. The progress stays the whole room's.
+    pub fn room_matching(&self, key: RoomKey, filter: String, now: LocalNow) -> RoomView {
+        view::room_filtered(&self.client.view(), &key, &filter, &Now::new(now))
+    }
+
     /// A task's detail, or `None` if it is gone.
     pub fn task(&self, id: String, now: LocalNow) -> Option<TaskDetail> {
         view::detail(&self.client.view(), &id, &Now::new(now))
@@ -466,6 +475,84 @@ impl TodoEngine {
             date: on.then_some(today),
         })?;
         Ok(())
+    }
+
+    /// Marks a task important (high priority), or takes its priority away, as the desktop's star does.
+    pub fn set_important(&self, id: String, on: bool) -> Result<(), FfiError> {
+        let id = task_id(&id)?;
+        let priority = if on { Priority::High } else { Priority::None };
+        if self
+            .client
+            .view()
+            .tasks
+            .get(&id)
+            .is_some_and(|t| (t.priority == Priority::High) == on)
+        {
+            return Ok(());
+        }
+        self.client.submit(Command::UpdateTask {
+            id,
+            patch: TaskPatch {
+                priority: Some(priority),
+                ..TaskPatch::default()
+            },
+        })?;
+        Ok(())
+    }
+
+    /// Adds a step at the end of a task's steps and returns its ID.
+    pub fn add_step(&self, task: String, title: String) -> Result<String, FfiError> {
+        let task = task_id(&task)?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(invalid("A step needs a title."));
+        }
+        let id = StepId::from_uuid(self.client.new_uuid());
+        self.client.submit(Command::CreateStep {
+            id,
+            task,
+            title: title.to_owned(),
+            placement: Placement::Last,
+        })?;
+        Ok(id.to_string())
+    }
+
+    /// Completes or reopens a step.
+    pub fn set_step_done(&self, id: String, done: bool) -> Result<(), FfiError> {
+        let id: StepId = id.parse().map_err(|_| invalid("no such step"))?;
+        let already = self
+            .client
+            .view()
+            .steps
+            .get(&id)
+            .is_some_and(|s| s.completed_at.is_some() == done);
+        if already {
+            return Ok(());
+        }
+        self.client.submit(if done {
+            Command::CompleteStep { id }
+        } else {
+            Command::UncompleteStep { id }
+        })?;
+        Ok(())
+    }
+
+    /// Adds a top-level list at the end, with a swatch picked from its ID, and returns its room.
+    pub fn create_list(&self, name: String) -> Result<RoomKey, FfiError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(invalid("A list needs a name."));
+        }
+        let id = ListId::from_uuid(self.client.new_uuid());
+        let swatch = crate::lists::swatch(None, id.as_uuid().as_bytes());
+        self.client.submit(Command::CreateList {
+            id,
+            collection: None,
+            name: name.to_owned(),
+            color: Some(swatch.to_owned()),
+            placement: Placement::Last,
+        })?;
+        Ok(RoomKey::List { id: id.to_string() })
     }
 
     /// Changes the server refused, oldest first.

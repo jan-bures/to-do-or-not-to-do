@@ -51,7 +51,12 @@ fun MainScreen(
         ModalNavigationDrawer(
             drawerState = drawer,
             scrimColor = r.toast.copy(alpha = 0.32f),
-            drawerContent = { RoomDrawer(state.home, state.room.key, state.status, server, ::open) },
+            drawerContent = {
+                RoomDrawer(state, server, actions, ::open) { name ->
+                    actions.createList(name)
+                    scope.launch { drawer.close() }
+                }
+            },
         ) {
             val detail = state.detail
             if (wide) {

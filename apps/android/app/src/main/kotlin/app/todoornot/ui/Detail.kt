@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +39,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DetailField
@@ -54,9 +56,13 @@ private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
 private val C = Tokens.Metrics.Component
 
+/** Important is high priority (`!!!`), as the desktop's star sets it. */
+private const val IMPORTANT: UByte = 3u
+
 /**
- * A task's detail: breadcrumb, title (editable), My Day, steps, notes, fields and sources. Beside the
- * list on the unfolded phone; on its own, with a back arrow, on the cover screen.
+ * A task's detail: breadcrumb, title (editable), steps (tick them, or add one), notes, fields and
+ * sources. The bar's actions are in the desktop's order: My Day (sun), Important (star), then close.
+ * Beside the list on the unfolded phone; on its own, with a back arrow, on the cover screen.
  */
 @Composable
 fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, modifier: Modifier = Modifier) {
@@ -83,6 +89,12 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, modifi
                 if (detail.myDay) "Remove from My Day" else "Add to My Day",
                 tint = if (detail.myDay) r.accentStrong else r.ink3,
             ) { actions.setMyDay(detail.id, !detail.myDay) }
+            val important = detail.priority >= IMPORTANT
+            IconButton(
+                "star",
+                if (important) "Not important" else "Mark important",
+                tint = if (important) r.accentStrong else r.ink3,
+            ) { actions.setImportant(detail.id, !important) }
             if (!standalone) IconButton("x", "Close") { actions.select(null) }
         }
         Column(
@@ -104,34 +116,33 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, modifi
                 r.ink3,
                 Modifier.padding(start = P.COL_CHECK.dp + S.S3.dp, top = S.S1.dp, bottom = S.S4.dp),
             )
-            MyDayButton(detail.myDay) { actions.setMyDay(detail.id, !detail.myDay) }
-            if (detail.steps.isNotEmpty()) {
-                val done = detail.steps.count { it.done }
-                Row(
-                    Modifier.fillMaxWidth().padding(top = S.S5.dp).height(S.S6.dp).hairline(r.line),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Label("Steps", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.weight(1f))
-                    StepMeter(StepCount(done.toUInt(), detail.steps.size.toUInt()))
-                }
-                detail.steps.forEachIndexed { i, step ->
-                    Row(
-                        Modifier.fillMaxWidth().height(P.TOUCH.dp - S.S2.dp).hairline(r.line),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-                    ) {
-                        StepMark(step.done)
-                        Label(
-                            step.title,
-                            Tokens.Type.STEP,
-                            if (step.done) r.ink3 else r.ink,
-                            Modifier.weight(1f),
-                            decoration = if (step.done) TextDecoration.LineThrough else null,
-                        )
-                        Label("%02d".format(i + 1), Tokens.Type.COUNT, r.ink3)
-                    }
+            Row(
+                Modifier.fillMaxWidth().padding(top = S.S1.dp).height(S.S6.dp).hairline(r.line),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Label("Steps", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.weight(1f))
+                if (detail.steps.isNotEmpty()) {
+                    StepMeter(StepCount(detail.steps.count { it.done }.toUInt(), detail.steps.size.toUInt()))
                 }
             }
+            detail.steps.forEachIndexed { i, step ->
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).hairline(r.line),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+                ) {
+                    StepMark(step.done, step.title) { actions.setStepDone(step.id, it) }
+                    Label(
+                        step.title,
+                        Tokens.Type.STEP,
+                        if (step.done) r.ink3 else r.ink,
+                        Modifier.weight(1f),
+                        decoration = if (step.done) TextDecoration.LineThrough else null,
+                    )
+                    Label("%02d".format(i + 1), Tokens.Type.COUNT, r.ink3)
+                }
+            }
+            AddStep(detail.id, actions)
             if (detail.notes.isNotBlank()) {
                 Caps("Notes")
                 Label(detail.notes, Tokens.Type.NOTES, r.ink2, maxLines = Int.MAX_VALUE)
@@ -194,31 +205,48 @@ private fun TitleField(detail: TaskDetail, actions: Actions, modifier: Modifier)
     )
 }
 
+/** A step's box: ticking it completes the step. */
 @Composable
-private fun MyDayButton(on: Boolean, onClick: () -> Unit) {
-    val r = LocalDesign.current.room
-    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
-    Row(
-        Modifier
-            .height(C.BUTTON_SMALL.dp)
-            .clip(shape)
-            .background(if (on) r.tint else r.raised)
-            .border(Tokens.Elevation.HAIRLINE.dp, if (on) r.tint else r.lineStrong, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = S.S2.dp + S.S1.dp / 2),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
-    ) {
-        Icon("sun", r.accentStrong, size = C.ICON_SMALL.dp)
-        Label(if (on) "In My Day" else "Add to My Day", Tokens.Type.BUTTON_SMALL, if (on) r.accentStrong else r.ink2)
+private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) {
+    Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
+        Check(done, onToggle, title, size = C.CHECKBOX.dp - S.S1.dp / 2)
     }
 }
 
-/** A step's mark (steps are read-only on the phone for now). */
+/** "+ Add step" at the end of the steps. Done adds it and keeps the field open for the next one. */
 @Composable
-private fun StepMark(done: Boolean) {
-    Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
-        Check(done, {}, "Step", size = C.CHECKBOX.dp - S.S1.dp / 2, enabled = false)
+private fun AddStep(task: String, actions: Actions) {
+    val r = LocalDesign.current.room
+    var text by remember(task) { mutableStateOf("") }
+    fun submit() {
+        val t = text.trim()
+        if (t.isNotEmpty()) actions.addStep(task, t)
+        text = ""
+    }
+    Row(
+        Modifier.fillMaxWidth().height(P.TOUCH.dp).hairline(r.line),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+    ) {
+        Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
+            Icon("plus", r.accentStrong, size = C.ICON_SMALL.dp)
+        }
+        BasicTextField(
+            value = text,
+            onValueChange = { text = it.replace("\n", "") },
+            modifier = Modifier.weight(1f).semantics { contentDescription = "Add step" },
+            textStyle = Tokens.Type.STEP.style(r.ink),
+            singleLine = true,
+            cursorBrush = SolidColor(r.accent),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { submit() }),
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (text.isEmpty()) Label("Add step", Tokens.Type.STEP, r.ink3)
+                    inner()
+                }
+            },
+        )
     }
 }
 

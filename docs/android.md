@@ -9,8 +9,16 @@ What the first version does:
 
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
   on any device. The device token is sealed with a key in the Android Keystore.
-- **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer.
-- **Tasks.** Add, complete (with the check animation and undo), rename, and add to or remove from My Day.
+- **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer. In the
+  drawer, collections fold with their chevron, **+ New list** adds a list, and the footer shows the sync
+  state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired server, Sync now, Unpair).
+- **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
+  language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
+  the sun and the counts still measure the whole room. Switching rooms clears it.
+- **Tasks.** Add, complete (with the check animation and undo), rename, add to or remove from My Day, mark
+  important (the star, as on the desktop: high priority), and add and tick steps.
+- **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
+  Completed section.
 - **Offline.** The core keeps a local SQLite cache and an outbox, so everything works offline and syncs
   when the network comes back. A chip in the bar shows how many changes are waiting.
 - **Live updates.** While the app is in the foreground it holds the server's event stream open.
@@ -81,8 +89,8 @@ because the Keystore key goes with it.
    variant's network security config says the same for the platform's network stack.
 2. The app shows a code and a link. Open the link on a device where you can sign in with your passkey (or
    tap *Open link* to use the phone's browser), check that the code matches, and approve it.
-3. The app moves on by itself. **Unpair this phone** in the overflow menu forgets the token, the Keystore
-   key and the local cache.
+3. The app moves on by itself. **Unpair this phone**, under the settings button in the drawer's footer,
+   forgets the token, the Keystore key and the local cache.
 
 **Unpairing always asks first.** The question says how many changes haven't reached the server; with any,
 the button reads **Unpair and discard**, and Cancel is the default. The same question guards **Pair again**

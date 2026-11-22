@@ -41,8 +41,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -61,7 +61,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
+import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.core.TaskRow
@@ -118,11 +120,20 @@ fun RoomPane(
                 collapse.forced = v
             }
         }
+        // The filter field is open while there's a filter, or once the search button is tapped.
+        var searching by rememberSaveable(room.key.toString()) { mutableStateOf(state.filter.isNotEmpty()) }
         Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
-            RoomHeader(room, landscape, collapse, onMenu, bar) { BarActions(state.status, actions) }
+            RoomHeader(room, landscape, collapse, onMenu, bar) {
+                SyncChip(state.status, actions::nudge)
+                IconButton("search", "Filter", tint = if (searching) LocalDesign.current.room.accentStrong else null) {
+                    if (searching) actions.setFilter("")
+                    searching = !searching
+                }
+            }
             Box(Modifier.collapsing(collapse, HeaderCollapse.Part.Pills)) {
                 RoomPills(state.home, room.key, actions::open, onMenu)
             }
+            if (searching) FilterField(state.filter, room.key.toString(), actions::setFilter) { searching = false; actions.setFilter("") }
             state.failed.firstOrNull()?.let { f ->
                 Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
             }
@@ -136,25 +147,47 @@ fun RoomPane(
     }
 }
 
-/** The bar's actions: the sync chip when there's something to say, and the overflow menu. */
+/**
+ * The filter, under the room pills: the same query language as the desktop's (`tag:docs`, `due<=friday`,
+ * `priority>=high`), or plain words to find in titles. The rows narrow as you type; the progress doesn't.
+ */
 @Composable
-private fun BarActions(status: SyncStatus, actions: Actions) {
+private fun FilterField(filter: String, room: String, onChange: (String) -> Unit, onClose: () -> Unit) {
     val r = LocalDesign.current.room
-    SyncChip(status, actions::nudge)
-    var menu by remember { mutableStateOf(false) }
-    Box {
-        IconButton("ellipsis", "More") { menu = true }
-        DropdownMenu(menu, { menu = false }, containerColor = r.raised) {
-            DropdownMenuItem(
-                text = { Label("Sync now", Tokens.Type.BODY, r.ink) },
-                leadingIcon = { Icon("refresh-cw", r.ink2) },
-                onClick = { menu = false; actions.nudge() },
+    var text by rememberSaveable(room) { mutableStateOf(filter) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(room) { if (text.isEmpty()) runCatching { focus.requestFocus() } }
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Box(Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S4.dp, vertical = S.S2.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(Tokens.Metrics.Component.BUTTON.dp + S.S2.dp)
+                .clip(shape)
+                .background(r.raised)
+                .border(Tokens.Elevation.HAIRLINE.dp, if (text.isEmpty()) r.control else r.accent, shape)
+                .padding(start = S.S3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+        ) {
+            Icon("search", if (text.isEmpty()) r.ink3 else r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it.replace("\n", ""); onChange(text) },
+                modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "Filter" },
+                textStyle = Tokens.Type.SUMMARY.style(r.ink),
+                singleLine = true,
+                cursorBrush = SolidColor(r.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false),
+                keyboardActions = KeyboardActions(onSearch = { }),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (text.isEmpty()) Label("Filter: words, or tag:docs", Tokens.Type.SUMMARY, r.ink3)
+                        inner()
+                    }
+                },
             )
-            DropdownMenuItem(
-                text = { Label("Unpair this phone", Tokens.Type.BODY, r.danger) },
-                leadingIcon = { Icon("log-out", r.danger) },
-                onClick = { menu = false; actions.unpair() },
-            )
+            IconButton("x", "Clear the filter", onClick = onClose)
         }
     }
 }
@@ -244,7 +277,7 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
         }
     }
     LazyColumn(Modifier.fillMaxSize()) {
-        if (room.tasks.isEmpty() && room.completed.isEmpty() && room.tomorrow == null) {
+        if (room.tasks.isEmpty() && room.tomorrow == null && (room.completed.isEmpty() || room.filtered)) {
             item("empty") { Empty(room.emptyLine) }
         }
         items(room.tasks, key = { it.id }) { t ->
@@ -262,7 +295,8 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
             )
         }
         room.tomorrow?.let { tomorrow(it, actions) }
-        if (room.completed.isNotEmpty() && room.tomorrow == null) {
+        // The finished day keeps today's Completed section under the hand-over, as on the desktop.
+        if (room.completed.isNotEmpty()) {
             item("completed-header") {
                 Row(
                     Modifier
@@ -329,6 +363,9 @@ private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions) {
                     }
                 }
             }
+            Spacer(Modifier.height(S.S4.dp))
+            // Planning the next day happens in Planned, where tomorrow's tasks are (as on the desktop).
+            Button("Plan ${t.weekday}", primary = true) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
         }
     }
     if (t.also.isNotEmpty()) {
@@ -406,7 +443,6 @@ private fun ToastStrip(toast: Toast?, actions: Actions) {
                     horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
                 ) {
                     Label(t.text, Tokens.Type.TOAST, r.toastInk, Modifier.weight(1f))
-                    Label("now", Tokens.Type.COUNT, r.toastInk2)
                     if (t.reopen != null) {
                         Row(
                             Modifier

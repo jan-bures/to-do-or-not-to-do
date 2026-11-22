@@ -31,8 +31,9 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   There is no congratulation copy and no stats recap. The scene is the reward. The dusk scene is a night scene in
   both themes, so the header block uses dark-theme text over it.
 - **An empty list shows the hills only.** With no tasks there is nothing to measure, so there is no sun and no arc.
-  Below the quick-add sits one italic Fraunces line ("Nothing on the shelf yet.") and, if an agent has any,
-  suggestions.
+  Below the quick-add sits one italic Fraunces line ("Nothing here yet."; a smart list has its own, such as
+  "Nothing planned yet.", and a filter that matches nothing says "Nothing matches the filter.") and, if an
+  agent has any, suggestions.
 - **Restraint keeps it from being clip art.** There are no faces, no characters and no idle animation. Whimsy rests
   on three things only: the sun, the hand-drawn list glyphs and the round checkboxes.
 
@@ -134,7 +135,9 @@ are 4, 8, 12, 16, 20, 24, 32 and 40.
 **Desktop rows** are 56 px tall, on a fixed grid: `20 | 1fr | 20 | 24 | 104` with 12 px gaps. The columns are
 checkbox, title (with the metadata line under it), agent mark, priority and due date.
 
-- The agent, priority and due columns are always there, even when they're empty, so every row lines up.
+- The agent, priority and due columns keep their places from the right edge, so filled ones line up down the
+  list. Empty columns to the left of every filled one are left out, so the title runs on into their room
+  instead of stopping short. A row without a date keeps only the dash.
 - A long title truncates with an ellipsis before the agent column. Test this with a long Czech title, for example
   *Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení*.
 - The metadata line reads list chip, steps, source mark (mail), then tags, so the compact indicators are never the
@@ -143,9 +146,11 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
   items give way in order (tags, then the mail mark, then the step meter, then the step count) and the chip narrows
   last, down to its dot and an ellipsis.
 
-**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. On a dated row the due date comes first, in a 100 dp slot, so
-the list chips of dated rows start at the same x. An undated row has no slot: its chips start flush with the
-title. A cover screen fits nine full rows above the composer. A row is at least 64 dp and
+**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. As on the desktop, the agent and priority columns keep their
+places from the right edge, and empty ones to the left of every filled one are left out, so the title uses their
+room. On a dated row the due date comes first, in a 100 dp slot, so the list chips of dated rows start at the
+same x. An undated row has no slot: its chips start flush with the title, because a blank 100 dp gap reads as
+missing content and pushes the chips (and tags) toward the edge. A cover screen fits nine full rows above the composer. A row is at least 64 dp and
 grows with the font scale, so its metadata line is never clipped.
 
 **The phone header gives way to the tasks.** As the list scrolls up, the header (eyebrow, big title, landscape)

@@ -83,9 +83,18 @@ class GalleryTest {
     @After
     fun tearDown() = scope.cancel()
 
-    private fun state(engine: TodoEngine, room: RoomKey = RoomKey.Smart(SmartList.MY_DAY), select: String? = null, toast: Toast? = null): UiState {
+    private fun state(
+        engine: TodoEngine,
+        room: RoomKey = RoomKey.Smart(SmartList.MY_DAY),
+        select: String? = null,
+        toast: Toast? = null,
+        filter: String = "",
+        fold: List<String> = emptyList(),
+    ): UiState {
         val m = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = room)
         if (select != null) m.select(select)
+        if (filter.isNotEmpty()) m.setFilter(filter)
+        fold.forEach(m::toggleCollection)
         return m.read().copy(toast = toast)
     }
 
@@ -169,6 +178,16 @@ class GalleryTest {
     @Test
     fun cover_drawer() {
         main("cover_drawer_light", COVER, state(fixtureEngine()), dark = false, drawer = true)
+        val e = fixtureEngine()
+        val personal = (e.collection("Personal") as RoomKey.Collection).id
+        main("cover_drawer_folded_dark", COVER, state(e, fold = listOf(personal)), dark = true, drawer = true)
+    }
+
+    /** The filter under the pills: the query language narrows the rows, the sun still counts the room. */
+    @Test
+    fun cover_filter() {
+        main("cover_filter_light", COVER, state(fixtureEngine(), filter = "priority>=high"), dark = false)
+        main("cover_filter_nothing_dark", COVER, state(fixtureEngine(), filter = "dentist tomorrow"), dark = true)
     }
 
     @Test

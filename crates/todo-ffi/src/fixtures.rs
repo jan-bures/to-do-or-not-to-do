@@ -569,7 +569,7 @@ mod tests {
         let r = view::room(&s, &reading.key, &n);
         assert!(r.tasks.is_empty());
         assert_eq!(r.total, 0);
-        assert_eq!(r.empty_line, "Nothing on the shelf yet.");
+        assert_eq!(r.empty_line, "Nothing here yet.");
     }
 
     #[test]
