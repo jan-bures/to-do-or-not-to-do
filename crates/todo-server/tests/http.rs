@@ -129,6 +129,47 @@ async fn retrying_a_command_id_returns_the_original_result() {
 }
 
 #[tokio::test]
+async fn guarded_move_conflicts_but_retry_of_a_successful_move_replays() {
+    let t = TestServer::start().await;
+    let source = t.create_list("Source").await;
+    let other = t.create_list("Other").await;
+    let destination = t.create_list("Destination").await;
+    let task = t.create_task(&source, "Move me", json!({})).await;
+    let move_id = id();
+    let move_to_other =
+        json!({ "cmd": "move_task", "id": task, "list": other, "from_list": source });
+    let (s, _, original) = t
+        .command_with_id(TOKEN_B, &move_id, move_to_other.clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{original}");
+
+    let head = t.server.engine.head_seq();
+    let stale = json!({ "cmd": "move_task", "id": task, "list": destination, "from_list": source });
+    let (s, _, body) = t.command_with_id(TOKEN_A, &id(), stale).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "move_source_changed");
+
+    // This same precondition is now stale too, but a retry must return the stored result.
+    let (s, headers, replay) = t
+        .command_with_id(TOKEN_B, &move_id, move_to_other.clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{replay}");
+    assert_eq!(headers["idempotent-replayed"], "true");
+    assert_eq!(replay, original);
+
+    let mut changed = move_to_other;
+    changed["from_list"] = json!(other);
+    let (s, _, body) = t.command_with_id(TOKEN_B, &move_id, changed).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "command_id_reused");
+    assert_eq!(t.server.engine.head_seq(), head);
+    assert_eq!(
+        t.get_ok(&format!("/api/v1/tasks/{task}")).await["task"]["list"],
+        other
+    );
+}
+
+#[tokio::test]
 async fn validation_errors_are_typed_4xx() {
     let t = TestServer::start().await;
     let list = t.create_list("L").await;

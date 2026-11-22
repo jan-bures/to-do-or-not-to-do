@@ -208,7 +208,7 @@ pub enum Command {
         id: TaskId,
         /// Destination list.
         list: ListId,
-        /// If supplied, move only from this list. Older clients omit this precondition.
+        /// If supplied, move only from this list and only if the task has not been merged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_list: Option<ListId>,
         /// Position among the new siblings.

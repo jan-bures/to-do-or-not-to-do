@@ -251,7 +251,9 @@ has, releases the sender lock, closes the database and reloads (to get the newer
 It never closes the database while its journal holds a write: if a write is failing, the tab keeps the
 connection open (which keeps the upgrade waiting), keeps retrying, and says "This tab has changes it couldn’t
 save yet; other tabs will update once they’re saved." (That alert comes before the read-only one: reloading
-then would drop those changes.) Once they are stored, it closes and reloads.
+then would drop those changes.) Once they are stored, it closes and reloads. Version 3 uses the same
+stores as version 2; the bump retires older senders before they can read and drop the `from_list`
+precondition on another tab's queued task move.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 

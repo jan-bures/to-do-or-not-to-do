@@ -111,7 +111,7 @@ A JSON-RPC `result` means it works. `401` means the token is missing, wrong, rev
 | `add_link` | capture | Add a web link to a task |
 | `update_task` | plan | Title, notes, due date, priority, repeat rule |
 | `complete_task` | plan | Complete or reopen (`completed: false`) |
-| `move_task` | plan (both lists) | Move to another list |
+| `move_task` | plan (both lists) | Move to another list. Pass the current list ID as `from_list` to refuse the move if the task changed lists or was merged (`move_source_changed`). Without it, move from the task's current list. |
 | `add_step` | plan | New checklist step |
 | `update_step` | plan | Retitle, tick off or reopen a step (one change per call) |
 | `set_my_day` | plan | Add to or remove from My Day |

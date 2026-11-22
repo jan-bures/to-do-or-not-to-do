@@ -535,9 +535,9 @@ fn MovePicker() -> impl IntoView {
             })
         })
     });
-    // Keep the actual focused option until it moves elsewhere. Keyed lists preserve that node on
-    // edits; if it was removed, wait for the DOM update and return to the filter, not the body.
-    let focused_option = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    // Reordering can drop focus even when the same button is still connected. Remember the list
+    // by its button ID, which also survives moving the list to a different group.
+    let focused_option = StoredValue::new_local(None::<String>);
     Effect::new(move |_| {
         groups.track();
         if let Some(moving) = controls.moving.get()
@@ -545,10 +545,14 @@ fn MovePicker() -> impl IntoView {
         {
             request_animation_frame(move || {
                 if controls.moving.get_untracked() == Some(moving)
-                    && !option.is_connected()
-                    && pickers::focus_unmoved(Some(option.as_ref()))
+                    && focused_option.with_value(|id| id.as_ref() == Some(&option))
+                    && pickers::focus_unmoved(None)
                 {
-                    platform::focus(FILTER);
+                    if document().get_element_by_id(&option).is_some() {
+                        platform::focus(&option);
+                    } else {
+                        platform::focus(FILTER);
+                    }
                 }
             });
         }
@@ -559,7 +563,8 @@ fn MovePicker() -> impl IntoView {
             on:click=move |ev| { if super::room_actions::scrim_click(&ev) { controls.dismiss(c); } }
             on:focusin=move |ev| focused_option.set_value(ev.target()
                 .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
-                .filter(|el| el.has_attribute("data-picker-option")))
+                .filter(|el| el.has_attribute("data-picker-option"))
+                .map(|el| el.id()))
             on:keydown=move |ev| {
                 ev.stop_propagation();
                 if ev.is_composing() { return; }
@@ -624,7 +629,7 @@ fn MoveChoice(id: ListId, group: Memo<Option<Group>>) -> impl IntoView {
     let current = move || choice.with(|c| c.as_ref().is_some_and(|c| c.current));
     let mark = Memo::new(move |_| choice.with(|c| c.as_ref().map(|c| (c.hue, c.glyph))));
     view! {
-        <button type="button" data-picker-option="" class="move-choice" role="option"
+        <button type="button" id=format!("task-move-option-{id}") data-picker-option="" class="move-choice" role="option"
             disabled=current aria-selected=move || current().to_string()
             on:click=move |_| {
                 if let Some(moving) = c.task_actions.moving.get_untracked() {

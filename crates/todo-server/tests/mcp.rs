@@ -318,6 +318,37 @@ async fn a_plan_level_agent_organises_tasks() {
 }
 
 #[tokio::test]
+async fn mcp_move_can_require_the_observed_source_list() {
+    let env = Env::start().await;
+    let source = env.t.create_list("Inbox").await;
+    let other = env.t.create_list("Other").await;
+    let destination = env.t.create_list("Destination").await;
+    let task = env.t.create_task(&source, "Move me", json!({})).await;
+    let (_, token) = env.agent("planner", &Grants::with_default(AccessLevel::Plan), None);
+    let c = env.connect(&token).await;
+    let args =
+        json!({ "task_id": task, "list_id": destination, "from_list": source, "command_id": id() });
+    env.t
+        .ok(json!({ "cmd": "move_task", "id": task, "list": other }))
+        .await;
+    let head = env.t.server.engine.head_seq();
+    let error = fails(&c, "move_task", args.clone()).await;
+    assert_eq!(error["code"], "move_source_changed");
+    assert_eq!(env.t.server.engine.head_seq(), head);
+    let detail = ok(&c, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["task"]["list"], other);
+
+    // Once the agent checks the task again it can move it, then retry the exact write.
+    let mut refreshed = args;
+    refreshed["from_list"] = json!(other);
+    refreshed["command_id"] = json!(id());
+    let moved = ok(&c, "move_task", refreshed.clone()).await;
+    let replay = ok(&c, "move_task", refreshed).await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["events"], moved["events"]);
+}
+
+#[tokio::test]
 async fn a_plan_level_agent_tags_links_reminds_and_repeats() {
     // A zone without daylight saving time, so local reminder times convert the same all year.
     let env = Env::start_with(|c| c.time_zone = "Asia/Tokyo".into()).await;

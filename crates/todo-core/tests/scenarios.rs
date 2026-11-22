@@ -2033,15 +2033,42 @@ fn a_conditional_move_cannot_overwrite_another_devices_move() {
     assert_eq!(serde_json::from_value::<Command>(json).unwrap(), first);
     w.run(first);
     let now = w.now();
-    assert!(matches!(
+    assert_eq!(
         decide(&w.state, &w.owner, &stale, now),
-        Err(DomainError::Invalid {
-            field: "from_list",
-            ..
-        })
-    ));
+        Err(DomainError::MoveSourceChanged)
+    );
     assert_eq!(tasks_in(&w.state, second), [id.into()]);
     assert!(tasks_in(&w.state, third).is_empty());
+}
+
+#[test]
+fn a_conditional_move_distinguishes_merge_from_plain_deletion() {
+    let mut w = World::new();
+    let inbox = w.list(None, "Inbox");
+    let other = w.list(None, "Other");
+    let target = w.task(inbox, "Original");
+    let merged = w.task(inbox, "Duplicate");
+    let deleted = w.task(inbox, "Obsolete");
+    w.run(Command::MergeTasks {
+        source: merged,
+        target,
+    });
+    w.run(Command::Delete { id: deleted.into() });
+    let now = w.now();
+    let move_task = |id| Command::MoveTask {
+        id,
+        list: other,
+        from_list: Some(inbox),
+        placement: Placement::First,
+    };
+    assert_eq!(
+        decide(&w.state, &w.owner, &move_task(merged), now),
+        Err(DomainError::MoveSourceChanged)
+    );
+    assert_eq!(
+        decide(&w.state, &w.owner, &move_task(deleted), now),
+        Err(DomainError::Deleted(deleted.into()))
+    );
 }
 
 /// A move to another list records the position even when its key stays the same, so a later reorder

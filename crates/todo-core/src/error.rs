@@ -47,6 +47,9 @@ pub enum DomainError {
         /// What is wrong.
         reason: String,
     },
+    /// A guarded move's task is no longer in the expected list or has been merged.
+    #[error("the task was moved or merged elsewhere")]
+    MoveSourceChanged,
     /// A tag with this name already exists.
     #[error("a tag named `{0}` already exists")]
     DuplicateName(String),

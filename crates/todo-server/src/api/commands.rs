@@ -43,7 +43,7 @@ fn outcome_response(o: Outcome, epoch: uuid::Uuid) -> Response {
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "Not allowed", body = ErrorBody),
         (status = 404, description = "A referenced entity does not exist", body = ErrorBody),
-        (status = 409, description = "Conflicts with the current state (an agent choosing a taken ID gets `id_unavailable`), or the command ID was reused", body = ErrorBody),
+        (status = 409, description = "Conflicts with the current state (e.g. `move_source_changed` for a stale guarded move, `id_unavailable` when an agent chooses a taken ID), or the command ID was reused", body = ErrorBody),
         (status = 408, description = "The deadline passed before the write began committing; nothing was stored", body = ErrorBody),
         (status = 413, description = "Body too large", body = ErrorBody),
         (status = 422, description = "Invalid command", body = ErrorBody),

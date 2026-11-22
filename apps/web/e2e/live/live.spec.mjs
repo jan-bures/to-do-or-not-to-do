@@ -352,6 +352,22 @@ test("remote picker updates preserve option focus and removals focus the filter"
   await expect(group.getByRole("option", { name: "Option one" })).toBeFocused();
   await a.keyboard.press("ArrowDown");
   await expect(second).toBeFocused();
+  const options = group.getByRole("option");
+  await expect(options).toHaveText(["Option one", "Option two"]);
+
+  await b.getByRole("button", { name: "Room menu" }).click();
+  await b.getByRole("menuitem", { name: "Move up" }).click();
+  await expect(options).toHaveText(["Option two", "Option one"]);
+  await expect(second).toBeFocused();
+
+  // Reordering again must not pull the keyboard back from another control.
+  const cancel = picker.getByRole("button", { name: "Cancel" });
+  await cancel.focus();
+  await b.getByRole("button", { name: "Room menu" }).click();
+  await b.getByRole("menuitem", { name: "Move down" }).click();
+  await expect(options).toHaveText(["Option one", "Option two"]);
+  await expect(cancel).toBeFocused();
+  await second.focus();
 
   await b.getByRole("button", { name: "Room menu" }).click();
   await b.getByRole("menuitem", { name: "Rename list" }).click();
@@ -1465,6 +1481,59 @@ test("an edit this browser can't store is never sent, says so, and goes through 
   await a.close();
 });
 
+test("a version 2 sender retires before a new tab can queue guarded moves", async ({ browser }) => {
+  const mixed = await browser.newContext({ baseURL, storageState: await context.storageState() });
+  try {
+    const old = await mixed.newPage();
+    // Version 2 has the same stores and upgrade protocol. Pin just this tab's open to 2 so it
+    // exercises the real retire handler without building and hosting a second bundle in CI.
+    await old.addInitScript(() => {
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (name, version) {
+        return name === "todo-replica" ? open.call(this, name, 2) : open.call(this, name, version);
+      };
+    });
+    await old.goto("/app");
+    await expect(old.locator(".sync-text")).toHaveText(/^Synced/);
+    await expect.poll(() => old.evaluate(async () =>
+      (await navigator.locks.query()).held.some((lock) => lock.name === "todo-sender")
+    )).toBe(true);
+    const title = "Task from the older tab";
+    await add(old, title);
+    await expect.poll(() => occurrences(old, title)).toBe(1);
+
+    // Leave the old page on screen so opening the new app must retire it, not rely on navigation
+    // releasing its sender lock. It should be read-only even with the reload suppressed.
+    await old.route("**/*", (r) => r.request().isNavigationRequest()
+      ? r.fulfill({ status: 204 }) : r.continue());
+    const current = await mixed.newPage();
+    await current.goto("/app");
+    await expect(old.locator(".toast-read-only")).toBeVisible();
+    await expect(old.locator(".qa-input")).toBeDisabled();
+    await expect(current.locator(".sync-text")).toHaveText(/^Synced/);
+
+    const destination = "Guarded move destination";
+    await createRoom(current, "list", destination);
+    await listLink(current, "Inbox").click();
+    const from = new URL(current.url()).pathname.split("/").at(-1);
+    await taskButton(current, title).press("m");
+    const sent = current.waitForResponse((response) => {
+      const request = response.request();
+      return request.method() === "POST" && request.url().endsWith("/api/v1/commands") &&
+        request.postDataJSON()?.command?.cmd === "move_task";
+    });
+    await movePicker(current).getByRole("option", { name: destination }).click();
+    const response = await sent;
+    expect(response.ok()).toBe(true);
+    expect(response.request().postDataJSON().command.from_list).toBe(from);
+    await listLink(current, destination).click();
+    await expect(taskButton(current, title)).toBeVisible();
+    await deleteRoom(current, "list");
+  } finally {
+    await mixed.close();
+  }
+});
+
 // The last tests replace the database (everything above is synced, so nothing unsent is lost).
 
 test("an upgrade blocked by another tab says so, and goes ahead once that tab lets go", async () => {
@@ -1524,7 +1593,7 @@ test("a tab with changes it couldn't save keeps an upgrade waiting until they're
   await newer.goto("/health");
   await newer.evaluate(() => {
     window.__upgrade = "waiting";
-    const open = indexedDB.open("todo-replica", 3);
+    const open = indexedDB.open("todo-replica", 4);
     open.onblocked = () => {
       window.__blocked = true;
     };
@@ -1594,7 +1663,7 @@ test("once a newer version takes the database over, the tab takes no edits and s
   const opened = await newer.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const open = indexedDB.open("todo-replica", 3);
+        const open = indexedDB.open("todo-replica", 4);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
           open.result.close();
@@ -1657,12 +1726,12 @@ test("a tab lets go of the database when a newer version needs it, and reloads",
   const newer = await context.newPage();
   await newer.goto("/health");
   const reloaded = app.waitForEvent("load", { timeout: 15_000 });
-  // A newer build opens version 3: the app writes what it has, closes its connection (so the
+  // A newer build opens version 4: the app writes what it has, closes its connection (so the
   // upgrade goes ahead), and reloads to get the newer build.
   const opened = await newer.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const open = indexedDB.open("todo-replica", 3);
+        const open = indexedDB.open("todo-replica", 4);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
           open.result.close();

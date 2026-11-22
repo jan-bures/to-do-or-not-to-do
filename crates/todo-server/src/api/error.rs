@@ -345,6 +345,7 @@ pub fn domain_error(e: &DomainError) -> ApiError {
             "already_exists",
             Some(json!({ "entity": id })),
         ),
+        D::MoveSourceChanged => (StatusCode::CONFLICT, "move_source_changed", None),
         D::DuplicateName(_) => (StatusCode::CONFLICT, "duplicate_name", None),
         D::Invalid { field, reason } => (
             StatusCode::UNPROCESSABLE_ENTITY,

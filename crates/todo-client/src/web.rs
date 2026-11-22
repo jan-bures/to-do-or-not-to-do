@@ -528,9 +528,10 @@ impl Entropy for BrowserEntropy {
 
 // ---- IndexedDB -----------------------------------------------------------------------------------
 
-/// The IndexedDB database's version. 2: the outbox and failed list one record per command, and the
-/// damaged area (version 1 kept each list as one array in `kv`; it is split on the first start).
-const DB_VERSION: u32 = 2;
+/// The IndexedDB database's version. 2 split the outbox and failed list into per-command records
+/// and added the damaged area. 3 has the same stores but retires older senders before a tab can
+/// queue a guarded move: older builds deserialize `MoveTask` without `from_list` and drop the guard.
+const DB_VERSION: u32 = 3;
 const KV: &str = "kv";
 const EVENTS: &str = "events";
 const OUTBOX: &str = Area::Outbox.name();

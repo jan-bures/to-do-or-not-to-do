@@ -206,6 +206,7 @@ fn reason(rejection: &Rejection, command: bool) -> &'static str {
         "not_deleted" => "It wasn't deleted.",
         "already_exists" => "It already exists.",
         "duplicate_name" => "That name is already taken.",
+        "move_source_changed" => "The task was moved or merged elsewhere.",
         "forbidden" | "not_own_event" => "This device isn't allowed to do that.",
         "undo_conflict" => "It was changed again since.",
         "undo_no_event" | "event_not_found" => "The original change couldn't be found.",
@@ -361,6 +362,20 @@ mod tests {
             "It was changed again since."
         );
         assert_eq!(why(&failed(undo, "teapot")), "The server couldn't undo it.");
+    }
+
+    #[test]
+    fn a_stale_move_explains_what_changed() {
+        let moved = command(Command::MoveTask {
+            id: TaskId::from_uuid(Uuid::from_u128(5)),
+            list: ListId::from_uuid(Uuid::from_u128(6)),
+            from_list: Some(ListId::from_uuid(Uuid::from_u128(4))),
+            placement: Placement::First,
+        });
+        assert_eq!(
+            why(&failed(moved, "move_source_changed")),
+            "The task was moved or merged elsewhere."
+        );
     }
 
     #[test]

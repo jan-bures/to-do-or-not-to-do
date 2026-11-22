@@ -353,6 +353,9 @@ pub struct MoveTaskArgs {
     pub task_id: Uuid,
     /// The destination list.
     pub list_id: Uuid,
+    /// Expected source list ID. If supplied, refuse the move if the task was moved or merged.
+    #[serde(default)]
+    pub from_list: Option<Uuid>,
     /// Where in the destination list. Default last.
     #[serde(default)]
     pub position: PositionArg,
@@ -1133,7 +1136,7 @@ impl TodoMcp {
             let command_id = a.command_id.unwrap_or_else(Uuid::new_v4);
             let cmd = json!({
                 "cmd": "move_task", "id": a.task_id, "list": a.list_id,
-                "placement": a.position.placement(),
+                "from_list": a.from_list, "placement": a.position.placement(),
             });
             command(&app, auth, cancel, command_id, cmd, json!({})).await
         })

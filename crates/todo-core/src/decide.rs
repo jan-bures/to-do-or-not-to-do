@@ -385,13 +385,16 @@ impl<'a> Decider<'a> {
         from_list: Option<crate::ids::ListId>,
         pl: &Placement,
     ) -> Result<(), DomainError> {
-        let t = self.task(id)?;
+        let t = self
+            .state
+            .tasks
+            .get(&id)
+            .ok_or(DomainError::NotFound(id.into()))?;
+        // A merge also tombstones the task. Report the failed precondition before checking liveness.
         if from_list.is_some_and(|from| from != t.list || t.merged_into.is_some()) {
-            return Err(DomainError::invalid(
-                "from_list",
-                "the task changed lists or was merged",
-            ));
+            return Err(DomainError::MoveSourceChanged);
         }
+        self.require_live(id.into())?;
         self.require_live(list.into())?;
         let pos = self
             .state
