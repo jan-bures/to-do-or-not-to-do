@@ -1,6 +1,7 @@
 //! Small browser helpers: the clock, the theme, the address bar, the CSRF token and downloads.
 
-use crate::model::Now;
+use crate::model::{self, Now};
+use jiff::{Timestamp, civil::DateTime};
 use std::collections::BTreeSet;
 use todo_core::ids::CollectionId;
 use wasm_bindgen::prelude::Closure;
@@ -58,12 +59,42 @@ pub fn is_fold_key(key: Option<&str>) -> bool {
 /// The real "now": the instant and the browser's current UTC offset.
 #[must_use]
 pub fn now() -> Now {
-    #[allow(clippy::cast_possible_truncation)]
-    let offset_s = (-js_sys::Date::new_0().get_timezone_offset() * 60.0) as i32;
+    let at = todo_client::web::now();
     Now {
-        at: todo_client::web::now(),
-        offset_s,
+        at,
+        offset_s: utc_offset(at),
     }
+}
+
+fn utc_offset(at: Timestamp) -> i32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let date = js_sys::Date::new(&JsValue::from_f64(at.as_millisecond() as f64));
+    #[allow(clippy::cast_possible_truncation)]
+    let seconds = (-date.get_timezone_offset() * 60.0) as i32;
+    seconds
+}
+
+/// Use the offset at the reminder's instant, not today's offset. Fixtures have a fixed offset.
+pub fn civil_time(at: Timestamp, now: Now, live: bool) -> DateTime {
+    model::local(at, if live { utc_offset(at) } else { now.offset_s })
+}
+
+/// Resolve an ISO civil date and time in the browser's zone. Date chooses the earlier instant in
+/// a repeated hour; reject times it moves forward through a spring clock change.
+pub fn local_instant(dt: DateTime, now: Now, live: bool) -> Option<Timestamp> {
+    if !live {
+        return jiff::tz::Offset::from_seconds(now.offset_s)
+            .ok()?
+            .to_timestamp(dt)
+            .ok();
+    }
+    let ms = js_sys::Date::new(&JsValue::from_str(&dt.to_string())).get_time();
+    if !ms.is_finite() {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let at = Timestamp::from_millisecond(ms as i64).ok()?;
+    (civil_time(at, now, live) == dt).then_some(at)
 }
 
 /// Milliseconds since the page loaded, for animations.

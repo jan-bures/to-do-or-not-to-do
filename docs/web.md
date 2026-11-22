@@ -8,7 +8,7 @@ there is no token in the browser.
 
 The web app covers sign-in, smart lists, collections, lists, task detail, adding, completing (with the F2
 check animation), and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
-tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
+reminders, tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
 and delete lists and collections, and move lists between collections. Activity shows confirmed changes
 and lets you undo past events.
 Undo compensates the exact change. It has the desktop layout on wide
@@ -69,7 +69,7 @@ browsers that accept gzip.
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
-| `src/app/repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
+| `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
 | `src/fixtures.rs` | Invented gallery data with a fixed clock (Saturday 21 November 2026, 10:35). |
@@ -344,8 +344,8 @@ draws, the row holds in place struck through (`--duration-complete-hold`), then 
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
 running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
-Completion, reorders, list moves, colour changes, repeat changes, tag edits and membership changes, web link edits,
-and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`. It queues undo of
+Completion, reorders, list moves, colour changes, repeat and reminder changes, tag edits and membership
+changes, web link edits, and removal of a list, collection, step or attachment use `SyncClient::compensate_tracked`. It queues undo of
 the whole original event batch, waiting for its authoritative event if necessary. A tab never
 cancels the original locally, because another tab may already be sending it. For recurring tasks, Undo reopens
 the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
@@ -360,7 +360,16 @@ blank field clears both the date and any repeat rule. Choose any of the four lev
 field (also reachable with **Shift+P**), or press **P** to cycle none → low → normal → high → none. The
 Important star still toggles high priority. Click a step's title to rename it, or use the step's up,
 down and delete buttons (visible on hover or keyboard focus on desktop, always visible on phones).
-The Undo toast restores a deleted step. A set reminder is shown but is read-only.
+The Undo toast restores a deleted step.
+
+**Reminder** offers **In 1 hour**, **Tomorrow at 09:00**, **In a week at 09:00**, and **Custom…** for a
+specific date and time. Use the arrows to browse presets, Enter or Space to choose, and Escape to close
+and return focus to the row. In the custom editor, Tab moves through the fields and buttons. Times use the
+browser's time zone; a skipped time at a clock change is refused, and a newly chosen repeated time uses
+the earlier occurrence. **Remove reminder** clears the shown reminder only. If a task has several, the
+shared intent shows the first from local today onward, or the latest if all are older. If the reminder
+changes elsewhere while the picker is open, close and reopen it before editing. Adding, changing and
+removing a reminder all offer Undo. The web app does not deliver reminder alerts.
 
 **Repeat** (or **R**) offers Daily, Weekdays, Weekly, Monthly and Yearly, plus **Custom…** for an
 interval, unit and days of the week. Use the arrows to browse the presets and Enter or Space to choose.
@@ -418,12 +427,14 @@ The status bar shows shortcuts only when their actions are available.
 - **Browser tests** (`e2e/tests`, Playwright, Chromium): the fixtures build served by `e2e/serve.mjs` the way
   the server serves it, with the server's exact CSP (read from `spa.rs`). They add and complete tasks, undo,
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
-  any console error or CSP violation. Set `FIXTURE_PORT` to use a different port from the default 4173.
+  any console error or CSP violation. Reminder tests cover keyboard navigation and focus return, custom time
+  validation, cancelling a draft, and Undo. Set `FIXTURE_PORT` to use a different port from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, due-date editor, step controls and delete Undo, attachments (empty, uploading, failed, listed
   and removed with Undo), a collapsed collection, sidebar and room menus,
   rename and delete dialogs, a delete Undo toast, collection creation, list moves, list and collection swatches,
-  repeat presets and custom repeat, the tag picker and its creation, management, rename, colour and delete views,
+  repeat presets and custom repeat, reminder presets and the phone custom reminder editor, the tag picker
+  and its creation, management, rename, colour and delete views,
   the link field and removal, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
@@ -438,7 +449,9 @@ The status bar shows shortcuts only when their actions are available.
   header being refused. Activity reads confirmed edits from another tab and undoes one through the session.
   The suite also uploads, downloads and removes a file with the web session, sets a repeat rule and sees
   the next occurrence on completion, adds and removes tags and links across tabs, checks tag delete confirmation
-  against a live change in membership, and moves a list between collections. Then:
+  against a live change in membership, and moves a list between collections. It verifies synced reminder
+  edits and Undo, including clock-change validation and a stale editor that cannot overwrite a change
+  from another tab. Then:
   exact Undo of a confirmed recurring completion (including removal of its
   next occurrence), including Undo before the sending tab has a receipt and late feedback preserving a
   newer Undo toast; a live sidebar change leaving the highlighted menu action on the same list;
@@ -483,5 +496,5 @@ The status bar shows shortcuts only when their actions are available.
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.
-- **Editing more fields.** Reminders are shown but are not editable yet. Moving tasks between lists isn't available.
+- **Moving tasks between lists** isn't available.
 - **The wasm size.** `wasm-opt` and Leptos's `erase_components` haven't been tried in the release build yet.

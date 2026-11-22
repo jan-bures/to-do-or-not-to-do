@@ -532,6 +532,70 @@ test("another tab undoes both the repeat and its first due date on a previously 
   await author.close();
 });
 
+test("reminder edits and undo sync across tabs, and a stale picker cannot overwrite another edit", async () => {
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [a, b].map(watch);
+  const title = "Check the greenhouse vents";
+  const reminder = (tab) => tab.getByRole("button", { name: "Reminder", exact: true });
+  const presets = (tab) => tab.getByRole("dialog", { name: "Reminder", exact: true });
+  const custom = async (tab) => {
+    await reminder(tab).click();
+    await presets(tab).getByRole("option", { name: "Custom…" }).click();
+    return tab.getByRole("dialog", { name: "Custom reminder", exact: true });
+  };
+  for (const tab of [a, b]) {
+    const cdp = await context.newCDPSession(tab);
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "Europe/Prague" });
+  }
+  await add(a, title);
+  for (const tab of [a, b]) await row(tab, title).locator(".row-title").click();
+  const task = (await row(a, title).locator(".row-title").getAttribute("id")).replace(/^row-/, "");
+  const reminders = () => b.evaluate(async (task) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    const res = await fetch(`/api/v1/tasks/${task}`, { headers: { "X-CSRF-Token": csrf } });
+    if (!res.ok) throw new Error(`Read task: ${res.status}`);
+    return (await res.json()).reminders;
+  }, task);
+
+  await reminder(a).click();
+  await presets(a).getByRole("option", { name: "Tomorrow at 09:00" }).click();
+  await expect(reminder(b)).toHaveText("Tomorrow, 09:00");
+  await expect.poll(reminders).toHaveLength(1);
+  const [original] = await reminders();
+  const stale = await custom(a);
+  const editor = await custom(b);
+  const save = editor.getByRole("button", { name: "Save reminder" });
+  await editor.getByLabel("Date", { exact: true }).fill("2032-03-28");
+  await editor.getByLabel("Time", { exact: true }).fill("02:30");
+  await expect(editor.getByRole("status")).toContainText("That time doesn’t exist");
+  await expect(save).toBeDisabled();
+  await editor.getByLabel("Time", { exact: true }).fill("03:30");
+  await save.click();
+  await expect(reminder(a)).toContainText("03:30");
+  const updated = expect.objectContaining({ id: original.id, at: "2032-03-28T01:30:00Z" });
+  await expect.poll(reminders).toEqual([updated]);
+
+  await stale.getByLabel("Time", { exact: true }).fill("10:30");
+  await stale.getByRole("button", { name: "Save reminder" }).click();
+  await expect(stale.getByRole("alert")).toContainText("The reminder changed while this picker was open.");
+  await expect(stale.getByLabel("Time", { exact: true })).toHaveValue("10:30");
+  await expect(reminder(a)).toContainText("03:30");
+  await a.keyboard.press("Escape");
+  await expect(reminder(a)).toBeFocused();
+
+  await reminder(b).click();
+  await presets(b).getByRole("button", { name: "Remove reminder" }).click();
+  await expect(reminder(a)).toHaveText("Set reminder");
+  await expect.poll(reminders).toEqual([]);
+  await reminder(b).press("Control+z");
+  await expect(reminder(a)).toContainText("03:30");
+  await expect.poll(reminders).toEqual([updated]);
+  expect(problems.flat()).toEqual([]);
+  await b.close();
+  await a.close();
+});
+
 test("tags and links sync across tabs, and delete rechecks the tag’s impact at confirmation", async () => {
   const page = await openApp();
   const other = await openApp();

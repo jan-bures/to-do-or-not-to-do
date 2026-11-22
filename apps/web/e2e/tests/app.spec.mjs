@@ -705,7 +705,7 @@ test("phone metadata ends in an ellipsis before columns, keeping the email and s
   await w.check();
 });
 
-test("detail actions, read-only fields, sync label and context keyboard hints match their roles", async ({ page }) => {
+test("detail actions, schedule fields, sync label and context keyboard hints match their roles", async ({ page }) => {
   const w = watch(page);
   await open(page);
   const keys = page.locator(".sb-keys");
@@ -719,8 +719,9 @@ test("detail actions, read-only fields, sync label and context keyboard hints ma
   await expect(fields.locator("dt")).toHaveText(["Due", "Priority", "Repeat", "Tags", "Reminder"]);
   await expect(fields.getByRole("button", { name: "Repeat" })).toBeEnabled();
   await expect(fields.getByRole("button", { name: "Tags" })).toBeEnabled();
-  const muted = await page.locator(".detail .notes").evaluate((el) => getComputedStyle(el).color);
-  await expect(fields.locator("[title='Reminder is read only'] dd")).toHaveCSS("color", muted);
+  const reminder = fields.getByRole("button", { name: "Reminder", exact: true });
+  await expect(reminder).toBeEnabled();
+  await expect(reminder).toHaveAccessibleDescription("Today, 15:30");
   await expect(keys).toContainText("Esc");
   await expect(keys).toContainText("Space");
   await page.locator(".sidebar").getByRole("link", { name: "Garden" }).click();

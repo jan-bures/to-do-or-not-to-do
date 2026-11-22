@@ -1177,8 +1177,8 @@ pub struct Detail {
     pub notes: String,
     /// Due date, shown relative to the local clock when appropriate.
     pub due: Option<(Date, String)>,
-    /// The next reminder.
-    pub reminder: Option<String>,
+    /// The reminder shown and edited by the detail row.
+    pub reminder: Option<intent::reminder::Seen>,
     /// The repeat rule.
     pub repeat: String,
     /// Attached tags in display order.
@@ -1249,8 +1249,11 @@ fn when(at: Timestamp, now: &Now) -> String {
 
 /// `Sat 21 Nov, 17:00` or `Today, 15:30`.
 fn long_when(at: Timestamp, now: &Now) -> String {
-    let dt = local(at, now.offset_s);
-    let today = now.today();
+    local_date_time(local(at, now.offset_s), now.today())
+}
+
+/// A civil date and time, relative to today.
+pub(crate) fn local_date_time(dt: DateTime, today: Date) -> String {
     let day = match (dt.date() - today).get_days() {
         0 => "Today".to_owned(),
         1 => "Tomorrow".to_owned(),
@@ -1297,17 +1300,7 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         .filter(|s| s.task == id && s.deleted.is_none())
         .collect();
     steps.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
-    let mut reminders: Vec<_> = state
-        .reminders
-        .values()
-        .filter(|r| r.task == id && r.deleted.is_none())
-        .collect();
-    reminders.sort_by_key(|r| r.at);
-    let reminder = reminders
-        .iter()
-        .find(|r| r.at >= now.at)
-        .or(reminders.last())
-        .map(|r| long_when(r.at, now));
+    let reminder = intent::reminder::Seen::of(state, id, &now.eval());
     let mut tags: Vec<_> = t
         .tags
         .iter()
@@ -1823,6 +1816,25 @@ mod tests {
         assert_eq!(
             d.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(),
             ["ábel", "čaj", "ops", "Zebra"]
+        );
+    }
+
+    #[test]
+    fn detail_shows_the_first_reminder_from_local_today() {
+        let mut s = fixtures::state();
+        let n = now();
+        let task = fixtures::task(1); // Already has an afternoon reminder.
+        let id = todo_core::ids::ReminderId::from_uuid(uuid::Uuid::from_u128(42));
+        let at = "2026-11-20T23:30:00Z".parse().unwrap(); // 00:30 today in the fixture zone.
+        let actor = Actor::owner("web").unwrap();
+        for event in
+            todo_core::decide(&s, &actor, &Command::AddReminder { id, task, at }, n.at).unwrap()
+        {
+            todo_core::apply(&mut s, &event).unwrap();
+        }
+        assert_eq!(
+            detail(&s, &n, task).unwrap().reminder,
+            Some(intent::reminder::Seen { id, at })
         );
     }
 

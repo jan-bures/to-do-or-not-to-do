@@ -266,6 +266,7 @@ pub(super) fn position_detail_pickers() {
     for (id, anchor) in [
         ("repeat-picker", "edit-task-repeat"),
         ("tag-picker", "edit-task-tags"),
+        (super::reminder::PICKER, super::reminder::ANCHOR),
     ] {
         if let Some(el) = document()
             .get_element_by_id(id)

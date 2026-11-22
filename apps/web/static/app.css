@@ -595,7 +595,8 @@ a {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .room-action-menu, .room-dialog, .room-dialog::backdrop {
+  .room-action-menu, .room-dialog, .room-dialog::backdrop,
+  .room-action-menu:popover-open, .room-dialog[open], .room-dialog[open]::backdrop {
     transition-duration: var(--duration-reduced-fade);
     transform: none;
   }
@@ -678,6 +679,15 @@ a {
 }
 
 .picker-field select { font: inherit; color: var(--color-ink); }
+
+.reminder-picker { color-scheme: light; }
+[data-theme="dark"] .reminder-picker { color-scheme: dark; }
+.reminder-picker input {
+  min-inline-size: 0;
+  min-block-size: var(--component-icon-button);
+  border-color: var(--color-control);
+  font: var(--text-due);
+}
 
 .picker-buttons {
   display: flex;
@@ -2118,10 +2128,6 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   font: var(--text-step);
 }
 
-.prop dd.mono {
-  font: var(--text-due);
-}
-
 .source {
   display: flex;
   align-items: center;
@@ -2450,7 +2456,8 @@ a.source:hover {
 
   .nav-entry .room-menu-trigger:not(:disabled) { opacity: 1; }
 
-  .room-menu-trigger, .room-action-menu button, .room-dialog .button, .sync-failures-trigger {
+  .room-menu-trigger, .room-action-menu button, .room-dialog .button, .sync-failures-trigger,
+  .reminder-picker input {
     min-block-size: var(--phone-touch);
   }
 

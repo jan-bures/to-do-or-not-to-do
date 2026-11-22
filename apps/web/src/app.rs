@@ -5,6 +5,7 @@ mod activity;
 mod attachments;
 mod links;
 mod pickers;
+mod reminder;
 mod repeat;
 mod room_actions;
 mod tags;
@@ -2099,12 +2100,7 @@ fn DetailBody(
                     <PriorityEditor id=id detail=d/>
                     <repeat::RepeatEditor id=id detail=d/>
                     <tags::TagEditor task=id detail=d/>
-                    {move || d.with(|d| d.as_ref().and_then(|d| d.reminder.clone())).map(|reminder| view! {
-                        <div class="prop" title="Reminder is read only">
-                            <dt>{icon(Icon::Bell)}"Reminder"</dt>
-                            <dd class="mono">{reminder}</dd>
-                        </div>
-                    })}
+                    <reminder::ReminderEditor id=id detail=d/>
                 </dl>
             </section>
             <links::Links task=id detail=d/>

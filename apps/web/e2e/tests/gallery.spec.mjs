@@ -221,6 +221,28 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`reminder presets and custom time (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+      const reminder = page.getByRole("button", { name: "Reminder", exact: true });
+      const presets = page.getByRole("dialog", { name: "Reminder", exact: true });
+      const custom = presets.getByRole("option", { name: "Custom…", selected: true });
+      await reminder.press("Enter");
+      await expect(custom).toBeFocused();
+      await shot(page, `reminder-presets-${scheme}`);
+      await page.keyboard.press("Escape");
+
+      await page.setViewportSize(PHONE);
+      await reminder.click();
+      await custom.press("Enter");
+      const editor = page.getByRole("dialog", { name: "Custom reminder", exact: true });
+      await expect(editor.getByLabel("Date", { exact: true })).toBeFocused();
+      await shot(page, `phone-reminder-custom-${scheme}`);
+      await w.check();
+    });
+
     test(`desktop collection (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);
