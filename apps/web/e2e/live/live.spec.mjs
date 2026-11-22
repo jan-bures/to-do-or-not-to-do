@@ -1695,7 +1695,7 @@ test("a version 2 sender retires before a new tab can queue guarded moves", asyn
       };
     });
     await old.goto("/app");
-    await expect(old.locator(".sync-text")).toHaveText(/^Synced/);
+    await expect(old.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
     await expect.poll(() => old.evaluate(async () =>
       (await navigator.locks.query()).held.some((lock) => lock.name === "todo-sender")
     )).toBe(true);
@@ -1711,7 +1711,7 @@ test("a version 2 sender retires before a new tab can queue guarded moves", asyn
     await current.goto("/app");
     await expect(old.locator(".toast-read-only")).toBeVisible();
     await expect(old.locator(".qa-input")).toBeDisabled();
-    await expect(current.locator(".sync-text")).toHaveText(/^Synced/);
+    await expect(current.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
 
     const destination = "Guarded move destination";
     await createRoom(current, "list", destination);
@@ -1775,7 +1775,7 @@ test("a tab still reading its replica retires when a newer tab opens", async ({ 
     await current.goto("/app");
     await old.waitForFunction(() => window.__upgradeRequested);
     // The newer tab must finish opening even while the old tab's startup is still paused.
-    await expect(current.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 10_000 });
+    await expect(current.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 10_000 });
     const reload = old.waitForRequest((r) => r.isNavigationRequest());
     await old.evaluate(() => window.__finishReplicaRead());
     await reload;
