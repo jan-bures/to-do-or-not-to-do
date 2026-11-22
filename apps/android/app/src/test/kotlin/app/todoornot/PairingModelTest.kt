@@ -212,16 +212,27 @@ class PairingModelTest {
     }
 
     @Test
-    fun discarding_a_failed_save_reopens_pairing_without_retrying_the_old_credential() = runTest {
+    fun discarding_a_failed_save_revokes_the_unsaved_credential() = runTest { checkDiscard(true) }
+
+    @Test
+    fun failed_self_revocation_still_discards_the_credential() = runTest { checkDiscard(false) }
+
+    private fun TestScope.checkDiscard(revoked: Boolean) {
         val server = "https://todo.example.com"
         val credential = Session(server, "phone", "unused")
         var redemptions = 0
         var canSave = false
         val saves = mutableListOf<Session>()
+        val discards = mutableListOf<Session>()
         val api = object : PairingApi by FakeApi(ArrayDeque()) {
             override suspend fun redeem(server: String, invite: String, deviceName: String): Session {
                 redemptions++
                 return credential.copy(deviceId = invite)
+            }
+
+            override fun discard(session: Session): Boolean {
+                discards.add(session)
+                return revoked
             }
         }
         val m = PairingModel(api, this, StandardTestDispatcher(testScheduler), "Phone", {
@@ -232,7 +243,12 @@ class PairingModelTest {
         testScheduler.runCurrent()
         assertEquals(PairingState.SaveFailed, m.state.value)
         m.discardSave()
-        assertEquals(PairingState.Entering(server, PairingModel.DISCARDED), m.state.value)
+        assertEquals(PairingState.Discarding, m.state.value)
+        m.retrySave()
+        m.discardSave()
+        testScheduler.runCurrent()
+        assertEquals(listOf(credential.copy(deviceId = "old-device")), discards)
+        assertEquals(PairingState.Entering(server, if (revoked) null else PairingModel.DISCARDED), m.state.value)
         assertTrue(PairingModel.DISCARDED.contains("Check Devices"))
         canSave = true
         m.retrySave()

@@ -405,7 +405,7 @@ test("remote picker updates preserve option focus and removals focus the filter"
   await a.close();
 });
 
-test("a signed-in tab invites a new browser without sharing its existing passkey", async ({ browser }) => {
+test("a signed-in tab invites a new browser without sharing its existing passkey", async ({ browser }, testInfo) => {
   const issuer = await openApp();
   const freshBrowser = await browser.newContext({ baseURL });
   try {
@@ -428,7 +428,13 @@ test("a signed-in tab invites a new browser without sharing its existing passkey
     expect((await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials).toHaveLength(1);
     await expect(issuer.getByText("Invited browser signed in.")).toBeVisible({ timeout: 10_000 });
     await fresh.goto("/admin/devices");
-    await expect(fresh.getByText(/Invited browser/)).toBeVisible();
+    const row = (page) => page.getByRole("row").filter({ hasText: "Invited browser" });
+    await expect(row(fresh)).toBeVisible();
+    await expect(row(fresh).getByRole("button", { name: "Revoke" })).toHaveCount(0);
+    await issuer.goto("/admin/devices");
+    await expect(row(issuer).getByRole("button", { name: "Revoke" })).toBeVisible();
+    await expect(row(issuer).getByText("Also removes: 1 browser session.")).toBeVisible();
+    await issuer.screenshot({ path: testInfo.outputPath("passkey-revocation.png") });
     expect(problems).toEqual([]);
   } finally {
     await freshBrowser.close();

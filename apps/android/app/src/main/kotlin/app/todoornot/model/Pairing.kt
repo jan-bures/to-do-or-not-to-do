@@ -6,6 +6,7 @@ import app.todoornot.core.PairPoll
 import app.todoornot.core.PairStarted
 import app.todoornot.core.deviceInviteRedeem
 import app.todoornot.core.deviceInviteTarget
+import app.todoornot.core.discardDevicePairing
 import app.todoornot.core.normalizeServerAddress
 import app.todoornot.core.pairPoll
 import app.todoornot.core.pairStart
@@ -36,6 +37,9 @@ interface PairingApi {
 
     suspend fun redeem(server: String, invite: String, deviceName: String): Session =
         throw FfiException.Invalid("Invites are unavailable.")
+
+    /** Best effort, with a short network deadline. Returns whether the server confirmed removal. */
+    fun discard(session: Session): Boolean = false
 }
 
 /** The real endpoints, in the Rust core. Blocking: call off the main thread. */
@@ -51,6 +55,8 @@ class CorePairing(private val allowLoopbackHttp: Boolean) : PairingApi {
 
     override suspend fun redeem(server: String, invite: String, deviceName: String): Session =
         deviceInviteRedeem(server, invite, deviceName, allowLoopbackHttp).let { Session(it.server, it.deviceId, it.token) }
+
+    override fun discard(session: Session): Boolean = discardDevicePairing(session.server, session.token, allowLoopbackHttp)
 }
 
 sealed interface PairingState {
@@ -68,6 +74,9 @@ sealed interface PairingState {
 
     /** The credential stays in memory; Try again only retries the save. */
     data object SaveFailed : PairingState
+
+    /** Waiting briefly for the server to revoke the unsaved sign-in. */
+    data object Discarding : PairingState
 
     /** Showing the code and link until the owner approves on another device. */
     data class Waiting(
@@ -192,9 +201,19 @@ class PairingModel(
 
     fun discardSave() {
         if (_state.value != PairingState.SaveFailed) return
-        val server = unsavedSession?.server.orEmpty()
-        unsavedSession = null
-        _state.value = PairingState.Entering(server, DISCARDED)
+        val session = unsavedSession ?: return
+        _state.value = PairingState.Discarding
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var revoked = false
+            try {
+                revoked = withContext(io) { api.discard(session) }
+            } catch (_: FfiException) {
+                // Unreachable servers or older servers must not keep the unsaved credential alive.
+            } finally {
+                unsavedSession = null
+                _state.value = PairingState.Entering(session.server, if (revoked) null else DISCARDED)
+            }
+        }
     }
 
     private suspend fun follow(address: String, server: String, started: PairStarted, expiresAt: Long) {
@@ -246,7 +265,7 @@ class PairingModel(
     /** Back to the address field, keeping what was typed. */
     fun cancel() {
         val address = when (val s = _state.value) {
-            is PairingState.Finishing, PairingState.SaveFailed -> return
+            is PairingState.Finishing, PairingState.SaveFailed, PairingState.Discarding -> return
             is PairingState.ConfirmInvite -> awaitingConfirmation?.address.orEmpty()
             is PairingState.Entering -> s.address
             is PairingState.Starting -> s.server

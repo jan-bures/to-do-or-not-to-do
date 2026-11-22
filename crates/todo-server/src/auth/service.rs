@@ -10,8 +10,8 @@ use super::limits::{BurstCounter, FailureTracker, KeyedLimiter, WriteQuotas};
 use super::pairing::Pairings;
 use super::secret::{self, AGENT_TOKEN_PREFIX, DEVICE_TOKEN_PREFIX, RandomError};
 use super::store::{
-    AgentRow, AuthStore, CredentialOrigin, CredentialRoot, NewAudit, RevokeCredentials, SessionRow,
-    ShareRow, ShareTarget,
+    AgentRow, AuthStore, CredentialOrigin, CredentialRoot, NewAudit, RevocationAuthority,
+    RevokeCredentials, SessionRow, ShareRow, ShareTarget,
 };
 use super::{Access, AuthError, Authenticated, Authenticator, OwnerTokens, Principal, bearer};
 use crate::api::error::ApiError;
@@ -49,13 +49,16 @@ pub const TOUCH_INTERVAL_MS: i64 = 60 * 1000;
 /// Wrong pairing codes one session may look up.
 pub const MAX_CODE_LOOKUPS: u32 = 10;
 
-const META_OWNER_READY: &str = "owner_ready";
+pub(super) const META_OWNER_READY: &str = "owner_ready";
+pub(super) const META_RECOVERY_CODE: &str = "recovery_code_sha256";
 const META_OWNER_USER: &str = "owner_user_id";
 
 /// Audit event kinds.
 pub mod audit {
     /// The first passkey was registered.
     pub const SETUP_COMPLETED: &str = "setup_completed";
+    /// Owner sign-ins were cleared offline, to allow setup again.
+    pub const OWNER_RESET: &str = "owner_reset";
     /// A wrong setup code was entered.
     pub const SETUP_CODE_REJECTED: &str = "setup_code_rejected";
     /// The owner signed in.
@@ -177,6 +180,12 @@ struct Snapshot {
     grants: BTreeMap<AgentId, Grants>,
 }
 
+enum Revoker<'a> {
+    Admin,
+    Session(&'a SessionRow),
+    DeviceSelf,
+}
+
 #[derive(Debug)]
 struct SetupCode {
     hash: [u8; 32],
@@ -264,6 +273,12 @@ pub enum AuthInitError {
         /// Why.
         reason: String,
     },
+    /// Owner recovery requires an origin that can serve `/setup`.
+    #[error("set public_origin in the server config before resetting the owner")]
+    MissingOrigin,
+    /// Refuse to create a database if the recovery command was pointed at the wrong directory.
+    #[error("owner recovery requires an existing database at {}", .0.display())]
+    MissingDatabase(std::path::PathBuf),
     /// The setup code file could not be written.
     #[error("cannot write the setup code to {}: {source}", path.display())]
     SetupFile {
@@ -752,18 +767,63 @@ impl AuthService {
     }
 
     /// Writes the code to the setup file, readable only by the account running the server.
-    fn write_setup_file(&self, code: &str, origin: &PublicOrigin) -> std::io::Result<()> {
+    fn write_setup_file(
+        path: &std::path::Path,
+        code: &str,
+        origin: &PublicOrigin,
+    ) -> Result<(), AuthInitError> {
         use std::io::Write as _;
-        self.remove_setup_file();
-        let mut f = todo_fs::create_private_file(&self.setup_file)?;
-        writeln!(
-            f,
-            "{code}\n\nOne-time owner setup code: open {}/setup and enter it within 15 minutes of the \
+        let write = || -> std::io::Result<()> {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            let mut f = todo_fs::create_private_file(path)?;
+            writeln!(
+                f,
+                "{code}\n\nOne-time owner setup code: open {}/setup and enter it within 15 minutes of the \
              server start. It works once; this file is deleted when setup is done. Restart the server \
              for a new code.",
-            origin.as_str()
-        )?;
-        f.sync_all()
+                origin.as_str()
+            )?;
+            f.sync_all()
+        };
+        write().map_err(|source| AuthInitError::SetupFile {
+            path: path.to_owned(),
+            source,
+        })
+    }
+
+    fn fresh_setup_code() -> Result<String, RandomError> {
+        Ok(secret::random_code(SETUP_CODE_LEN)?
+            .as_bytes()
+            .chunks(5)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join("-"))
+    }
+
+    /// Offline recovery. The database ownership lock excludes any running server, so there are no
+    /// live pairings or invites. Leaves the new code in the same owner-only file as first setup.
+    pub fn reset_owner(config: &Config) -> Result<(), AuthInitError> {
+        let origin = config
+            .origin()
+            .map_err(|e| AuthInitError::Webauthn {
+                origin: config.public_origin.clone().unwrap_or_default(),
+                reason: e.to_string(),
+            })?
+            .ok_or(AuthInitError::MissingOrigin)?;
+        let path = config.database_path();
+        let _owner = crate::db::lock_database(&path)?;
+        if !path.is_file() {
+            return Err(AuthInitError::MissingDatabase(path));
+        }
+        let mut conn = crate::db::open_writer(&path)?;
+        let code = Self::fresh_setup_code()?;
+        let hash = secret::digest_hex(&secret::normalize_code(&code));
+        super::store::reset_owner(&mut conn, &hash, jiff::Timestamp::now().as_millisecond())?;
+        Self::write_setup_file(&config.data_dir.join(SETUP_CODE_FILE), &code, &origin)
     }
 
     fn init_setup(&self, sink: Option<SetupCodeSink>) -> Result<(), AuthInitError> {
@@ -777,24 +837,25 @@ impl AuthService {
             );
             return Ok(());
         };
-        let code = secret::random_code(SETUP_CODE_LEN)?;
+        // Use the offline code only on the first start after a reset, and only if the owner-only
+        // file matches the stored hash. If writing the file failed (or it was lost), generate a
+        // fresh code as in normal setup. Another restart always rotates it.
+        let recovered = self.store.take_meta(META_RECOVERY_CODE)?.and_then(|hash| {
+            let contents = todo_fs::read_private_file(&self.setup_file, 4096).ok()?;
+            let shown = std::str::from_utf8(&contents).ok()?.lines().next()?;
+            (secret::digest_hex(&secret::normalize_code(shown)) == hash).then(|| shown.to_owned())
+        });
+        let shown = match recovered {
+            Some(code) => code,
+            None => Self::fresh_setup_code()?,
+        };
+        // Never logged: whoever reads a forwarded log could enrol their own passkey first.
+        Self::write_setup_file(&self.setup_file, &shown, origin)?;
         *lock(&self.setup) = Some(SetupCode {
-            hash: secret::digest(&code),
+            hash: secret::digest(&secret::normalize_code(&shown)),
             expires_at: self.now() + SETUP_CODE_TTL_MS,
             used: false,
         });
-        let shown = code
-            .as_bytes()
-            .chunks(5)
-            .map(|c| String::from_utf8_lossy(c).into_owned())
-            .collect::<Vec<_>>()
-            .join("-");
-        // Never logged: whoever reads a forwarded log could enrol their own passkey first.
-        self.write_setup_file(&shown, origin)
-            .map_err(|source| AuthInitError::SetupFile {
-                path: self.setup_file.clone(),
-                source,
-            })?;
         tracing::warn!(
             path = %self.setup_file.display(),
             "owner setup: a one-time setup code is waiting in this file (readable only by the server's account; valid for 15 minutes); open {}/setup and enter it",
@@ -1160,7 +1221,11 @@ impl AuthService {
         id: i64,
         ip: Option<IpAddr>,
     ) -> Result<(), ApiError> {
-        if !self.revoke_credentials(CredentialRoot::Passkey(id), Some(session), ip.into())? {
+        if !self.revoke_credentials(
+            CredentialRoot::Passkey(id),
+            Revoker::Session(session),
+            ip.into(),
+        )? {
             return Err(ApiError::not_found("no such passkey"));
         }
         Ok(())
@@ -1505,7 +1570,22 @@ impl AuthService {
 
     /// Admin-token revocation is not restricted by passkey ordering. Blocking.
     pub fn revoke_device(&self, id: &str, by: impl Into<Who>) -> Result<bool, ApiError> {
-        self.revoke_credentials(CredentialRoot::Device(id), None, by.into())
+        self.revoke_credentials(CredentialRoot::Device(id), Revoker::Admin, by.into())
+    }
+
+    pub(crate) fn revoke_self(
+        &self,
+        device: &DeviceId,
+        ip: Option<IpAddr>,
+    ) -> Result<bool, ApiError> {
+        self.revoke_credentials(
+            CredentialRoot::Device(device.as_str()),
+            Revoker::DeviceSelf,
+            Who {
+                ip,
+                actor: Some("device self-revoke"),
+            },
+        )
     }
 
     pub(crate) fn revoke_device_from_session(
@@ -1514,32 +1594,38 @@ impl AuthService {
         id: &str,
         ip: Option<IpAddr>,
     ) -> Result<bool, ApiError> {
-        self.revoke_credentials(CredentialRoot::Device(id), Some(session), ip.into())
+        self.revoke_credentials(
+            CredentialRoot::Device(id),
+            Revoker::Session(session),
+            ip.into(),
+        )
     }
 
     fn revoke_credentials(
         &self,
         root: CredentialRoot<'_>,
-        session: Option<&SessionRow>,
+        revoker: Revoker<'_>,
         by: Who,
     ) -> Result<bool, ApiError> {
         let guard = self.begin_mutation();
-        let verified_by = if let Some(session) = session {
-            if !self.session_live(&session.id_hash) {
-                return Err(ApiError::unauthorized());
+        let authority = match revoker {
+            Revoker::Session(session) => {
+                if !self.session_live(&session.id_hash) {
+                    return Err(ApiError::unauthorized());
+                }
+                let row = self
+                    .store
+                    .session(&session.id_hash)?
+                    .ok_or_else(ApiError::unauthorized)?;
+                self.require_step_up(&row)?;
+                RevocationAuthority::Passkey(
+                    self.store
+                        .step_up_passkey(&row.id_hash)?
+                        .ok_or_else(step_up_required)?,
+                )
             }
-            let row = self
-                .store
-                .session(&session.id_hash)?
-                .ok_or_else(ApiError::unauthorized)?;
-            self.require_step_up(&row)?;
-            Some(
-                self.store
-                    .step_up_passkey(&row.id_hash)?
-                    .ok_or_else(step_up_required)?,
-            )
-        } else {
-            None
+            Revoker::DeviceSelf => RevocationAuthority::DeviceSelf,
+            Revoker::Admin => RevocationAuthority::Admin,
         };
         let entry = match root {
             CredentialRoot::Device(id) => {
@@ -1549,7 +1635,7 @@ impl AuthService {
                 self.audit_entry(audit::PASSKEY_REVOKED, by, json!({ "passkey_id": id }))
             }
         };
-        match self.store.revoke_credentials(root, verified_by, &entry)? {
+        match self.store.revoke_credentials(root, authority, &entry)? {
             RevokeCredentials::Revoked => {
                 self.publish(&guard)?;
                 drop(guard);
@@ -1557,6 +1643,16 @@ impl AuthService {
                 Ok(true)
             }
             RevokeCredentials::NotFound => Ok(false),
+            RevokeCredentials::OldestPasskey => Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "oldest_passkey",
+                "This is your first passkey; it can't be removed here. See owner recovery in the device pairing docs.",
+            )),
+            RevokeCredentials::DeviceHasDescendants => Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "device_has_descendants",
+                "This device issued other sign-ins. Revoke it from the Devices page instead.",
+            )),
             RevokeCredentials::LastPasskey => Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "last_passkey",
@@ -1860,6 +1956,9 @@ mod tests {
         std::fs::create_dir_all(&config.data_dir).unwrap();
         let engine = Arc::new(Engine::open(&config.database_path(), system_clock()).unwrap());
         let svc = AuthService::new(&config, engine, None).unwrap();
+        // These tests exercise device changes without a browser; stand in for its root passkey.
+        let conn = rusqlite::Connection::open(svc.engine.path()).unwrap();
+        conn.execute("INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES ('root', 'Root', '{}', 0)", []).unwrap();
         (dir, Arc::new(svc))
     }
 

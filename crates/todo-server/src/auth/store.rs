@@ -228,8 +228,32 @@ pub(crate) enum CredentialRoot<'a> {
 pub(crate) enum RevokeCredentials {
     Revoked,
     NotFound,
+    OldestPasskey,
     OlderPasskeyRequired,
     LastPasskey,
+    DeviceHasDescendants,
+}
+
+pub(crate) enum RevocationAuthority {
+    Admin,
+    Passkey(i64),
+    DeviceSelf,
+}
+
+#[derive(Default)]
+pub(crate) struct RevocationImpact {
+    pub(crate) devices: i64,
+    pub(crate) passkeys: i64,
+    pub(crate) sessions: i64,
+}
+
+impl CredentialRoot<'_> {
+    fn params(&self) -> (Option<&str>, Option<i64>) {
+        match *self {
+            Self::Device(id) => (Some(id), None),
+            Self::Passkey(id) => (None, Some(id)),
+        }
+    }
 }
 
 // Exactly one column identifies each credential. UNION (not UNION ALL) visits every node only
@@ -245,6 +269,54 @@ const DESCENDANTS: &str = "WITH RECURSIVE descendants(device, passkey) AS (
         ON p.issued_via_passkey = a.passkey
         OR p.issued_by = 'Device ' || a.device OR p.issued_via_device = a.device
 )";
+
+fn revocation_impact(conn: &Connection, root: CredentialRoot<'_>) -> Result<RevocationImpact> {
+    let (device, passkey) = root.params();
+    Ok(conn.query_row(
+        &format!("{DESCENDANTS}
+            SELECT (SELECT count(*) FROM devices WHERE id IN (SELECT device FROM descendants)
+                        AND id IS NOT ?1 AND revoked_at IS NULL),
+                   (SELECT count(*) FROM passkeys WHERE id IN (SELECT passkey FROM descendants)
+                        AND id IS NOT ?2),
+                   (SELECT count(*) FROM sessions WHERE passkey_id IN (SELECT passkey FROM descendants)
+                        OR step_up_passkey_id IN (SELECT passkey FROM descendants))"),
+        params![device, passkey],
+        |r| Ok(RevocationImpact { devices: r.get(0)?, passkeys: r.get(1)?, sessions: r.get(2)? }),
+    )?)
+}
+
+/// Clears owner sign-ins, preserving task data and separately managed capabilities. Pending invites
+/// and device pairings are in memory only, so they are already gone when the server is stopped.
+pub(crate) fn reset_owner(conn: &mut Connection, setup_hash: &str, now: i64) -> Result<()> {
+    use super::service::{META_OWNER_READY, META_RECOVERY_CODE, audit};
+
+    let tx = conn.transaction()?;
+    let sessions = tx.execute("DELETE FROM sessions", [])?;
+    let passkeys = tx.execute("DELETE FROM passkeys", [])?;
+    let devices = tx.execute(
+        "UPDATE devices SET revoked_at = ?1 WHERE revoked_at IS NULL",
+        [now],
+    )?;
+    tx.execute("DELETE FROM ceremonies", [])?;
+    tx.execute("DELETE FROM auth_meta WHERE key = ?1", [META_OWNER_READY])?;
+    tx.execute(
+        "INSERT INTO auth_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![META_RECOVERY_CODE, setup_hash],
+    )?;
+    insert_audit(
+        &tx,
+        now,
+        audit::OWNER_RESET,
+        None,
+        &serde_json::json!({
+            "actor": "reset-owner CLI", "devices_revoked": devices, "passkeys_removed": passkeys,
+            "sessions_removed": sessions,
+        })
+        .to_string(),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 
 fn insert_session(conn: &Connection, row: &SessionRow, passkey_id: i64) -> Result<()> {
     conn.execute(
@@ -386,6 +458,17 @@ impl AuthStore {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn take_meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "DELETE FROM auth_meta WHERE key = ?1 RETURNING value",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     // ---- passkeys ---------------------------------------------------------------------------------
@@ -661,15 +744,9 @@ impl AuthStore {
             .collect()
     }
 
-    /// Counts other native and browser sign-ins that would be revoked with this device.
-    pub(crate) fn issued_credential_count(&self, id: &str) -> Result<i64> {
-        Ok(self.conn().query_row(
-            &format!("{DESCENDANTS}
-                SELECT (SELECT count(*) FROM devices WHERE id IN (SELECT device FROM descendants) AND id <> ?1 AND revoked_at IS NULL)
-                     + (SELECT count(*) FROM passkeys WHERE id IN (SELECT passkey FROM descendants))"),
-            params![id, None::<i64>],
-            |row| row.get(0),
-        )?)
+    /// Counts other devices and passkeys, and all sessions, affected by a revocation.
+    pub(crate) fn revocation_impact(&self, root: CredentialRoot<'_>) -> Result<RevocationImpact> {
+        revocation_impact(&self.conn(), root)
     }
 
     /// Revokes a credential, its descendants and their sessions in one audited transaction.
@@ -677,13 +754,10 @@ impl AuthStore {
     pub(crate) fn revoke_credentials(
         &self,
         root: CredentialRoot<'_>,
-        verified_by: Option<i64>,
+        authority: RevocationAuthority,
         audit: &NewAudit,
     ) -> Result<RevokeCredentials> {
-        let (device, passkey) = match root {
-            CredentialRoot::Device(id) => (Some(id), None),
-            CredentialRoot::Passkey(id) => (None, Some(id)),
-        };
+        let (device, passkey) = root.params();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let active: bool = tx.query_row(
@@ -695,12 +769,14 @@ impl AuthStore {
         if !active {
             return Ok(RevokeCredentials::NotFound);
         }
-        if passkey.is_some()
-            && tx.query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))? == 1
+        if let Some(id) = passkey
+            && tx.query_row("SELECT min(id) = ?1 FROM passkeys", [id], |r| {
+                r.get::<_, bool>(0)
+            })?
         {
-            return Ok(RevokeCredentials::LastPasskey);
+            return Ok(RevokeCredentials::OldestPasskey);
         }
-        if let Some(verified_by) = verified_by {
+        if let RevocationAuthority::Passkey(verified_by) = authority {
             let forbidden: bool = tx.query_row(
                 &format!(
                     "{DESCENDANTS} SELECT EXISTS (SELECT 1 FROM descendants WHERE passkey < ?3)
@@ -713,6 +789,19 @@ impl AuthStore {
             if forbidden {
                 return Ok(RevokeCredentials::OlderPasskeyRequired);
             }
+        }
+        let impact = revocation_impact(&tx, root)?;
+        let remaining = tx
+            .query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))?
+            - impact.passkeys
+            - i64::from(passkey.is_some());
+        if remaining == 0 {
+            return Ok(RevokeCredentials::LastPasskey);
+        }
+        if matches!(authority, RevocationAuthority::DeviceSelf)
+            && (impact.devices != 0 || impact.passkeys != 0)
+        {
+            return Ok(RevokeCredentials::DeviceHasDescendants);
         }
         let mut revoked_devices = {
             let mut stmt = tx.prepare(&format!(
@@ -727,16 +816,6 @@ impl AuthStore {
         };
         revoked_devices.retain(|id| Some(id.as_str()) != device);
         revoked_devices.sort_unstable();
-        // Both foreign keys delete sessions; count each affected row only once before deleting.
-        let sessions_removed: i64 = tx.query_row(
-            &format!(
-                "{DESCENDANTS} SELECT count(*) FROM sessions
-                WHERE passkey_id IN (SELECT passkey FROM descendants)
-                   OR step_up_passkey_id IN (SELECT passkey FROM descendants)"
-            ),
-            params![device, passkey],
-            |r| r.get(0),
-        )?;
         let passkeys_removed = tx.execute(
             &format!(
                 "{DESCENDANTS} DELETE FROM passkeys WHERE id IN (SELECT passkey FROM descendants)"
@@ -755,7 +834,7 @@ impl AuthStore {
         );
         detail.insert(
             "sessions_removed".into(),
-            serde_json::json!(sessions_removed),
+            serde_json::json!(impact.sessions),
         );
         insert_audit(
             &tx,
@@ -1061,7 +1140,8 @@ mod tests {
         };
         let root = CredentialRoot::Passkey(4);
         assert!(matches!(
-            s.revoke_credentials(root, Some(3), &audit).unwrap(),
+            s.revoke_credentials(root, RevocationAuthority::Passkey(3), &audit)
+                .unwrap(),
             RevokeCredentials::OlderPasskeyRequired
         ));
         assert!(s.session("both").unwrap().is_some());
@@ -1069,7 +1149,8 @@ mod tests {
         assert!(s.audit_page(10).unwrap().is_empty());
 
         assert!(matches!(
-            s.revoke_credentials(root, Some(1), &audit).unwrap(),
+            s.revoke_credentials(root, RevocationAuthority::Passkey(1), &audit)
+                .unwrap(),
             RevokeCredentials::Revoked
         ));
         assert!(s.session("both").unwrap().is_none());
@@ -1082,6 +1163,41 @@ mod tests {
             serde_json::json!({
                 "passkey_id": 4, "descendant_devices": ["cycle"], "passkeys_removed": 2, "sessions_removed": 2,
             })
+        );
+    }
+
+    #[test]
+    fn even_the_admin_cannot_revoke_a_cascade_that_contains_every_passkey() {
+        let (_d, s) = store();
+        s.conn().execute_batch("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('root', 'Root', 'unused', 0);
+            INSERT INTO passkeys (id, cred_id, name, passkey, created_at, issued_by, issued_via_passkey) VALUES
+            (1, '1', 'First', '{}', 0, 'Device root', NULL),
+            (2, '2', 'Second', '{}', 0, NULL, 1);
+            INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id) VALUES
+            ('session', 'unused', 0, 0, 0, 2);").unwrap();
+        let audit = NewAudit {
+            at: 1,
+            kind: "device_revoked",
+            ip: None,
+            detail: "{}".into(),
+        };
+        assert!(matches!(
+            s.revoke_credentials(
+                CredentialRoot::Device("root"),
+                RevocationAuthority::Admin,
+                &audit
+            )
+            .unwrap(),
+            RevokeCredentials::LastPasskey
+        ));
+        assert!(s.devices().unwrap()[0].revoked_at.is_none());
+        assert!(s.session("session").unwrap().is_some());
+        assert!(s.audit_page(10).unwrap().is_empty());
+        assert_eq!(
+            s.conn()
+                .query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
         );
     }
 

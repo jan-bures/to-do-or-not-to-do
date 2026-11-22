@@ -167,6 +167,20 @@ pub fn device_invite_cancel(
     runtime()?.block_on(pair::cancel(&t, &id)).map_err(refused)
 }
 
+/// Best-effort cleanup of an unsaved pairing. Blocking, with a short network deadline.
+#[uniffi::export]
+pub fn discard_device_pairing(server: String, token: String, allow_http: bool) -> bool {
+    let (Ok(t), Ok(rt)) = (transport(&server, Some(&token), allow_http), runtime()) else {
+        return false;
+    };
+    rt.block_on(async {
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), pair::revoke_self(&t)).await,
+            Ok(Ok(()))
+        )
+    })
+}
+
 /// A new pairing to seal and persist using the normal pairing path.
 #[allow(missing_debug_implementations)]
 #[derive(uniffi::Record)]

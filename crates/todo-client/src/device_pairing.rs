@@ -341,10 +341,19 @@ pub async fn status<T: Transport>(transport: &T, id: &str) -> Result<InviteStatu
 
 /// Cancels an unused invite.
 pub async fn cancel<T: Transport>(transport: &T, id: &str) -> Result<(), PairError> {
+    delete(transport, invite_path(id)?).await
+}
+
+/// Discards the pairing identified by the transport's own device token.
+pub async fn revoke_self<T: Transport>(transport: &T) -> Result<(), PairError> {
+    delete(transport, "/api/v1/pair/device".into()).await
+}
+
+async fn delete<T: Transport>(transport: &T, path: String) -> Result<(), PairError> {
     let res = transport
         .send(Request {
             method: Method::Delete,
-            path: invite_path(id)?,
+            path,
             body: None,
         })
         .await?;

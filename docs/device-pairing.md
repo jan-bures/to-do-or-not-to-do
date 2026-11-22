@@ -13,8 +13,8 @@ live invite. **Cancel invite** makes the code and link unusable unless redemptio
 On Android, the invite code and QR are hidden from screenshots and the recent-apps thumbnail. If
 Android receives a credential but can't save it, **Try saving again** retries the local save without
 using another invite. Keep the app open: the unsaved credential is only in memory. **Discard and
-start over** drops it. Check **Devices** on another signed-in device before pairing again: the phone
-may already be listed there even though it could not save its sign-in.
+start over** asks the server to revoke this phone's new sign-in before dropping it. If the server
+can't confirm revocation, check **Devices** on another signed-in device and revoke the phone there.
 
 The owner can see native devices and browser passkeys under **Devices** in the server's admin
 pages, including the issuing device or session. Share an invite only with a device you're setting
@@ -27,10 +27,8 @@ never be revoked through the UI: there is no earlier passkey to verify with.
 
 If a device cascade is blocked and you cannot verify with the required passkey, revoke the issuing
 device from the server host with the [local admin token](admin-api.md#examples). That path is not
-subject to passkey ordering. Neither the admin token nor `todo-server` can directly revoke the first
-setup passkey. Keep a recoverable copy of that passkey. If it is compromised, the host-side recovery
-option is [restoring a trusted backup](hosting-linux.md#putting-a-backup-into-service) that does not
-contain it, if one is available. A restore rolls back data as well as credentials.
+subject to passkey ordering, but a revocation that would leave no passkeys is refused. Keep a
+recoverable copy of the first passkey. If it is lost or compromised, use [owner recovery](#owner-recovery).
 
 Agent tokens and share links created from a derived session are not removed by the cascade. Review
 and revoke them separately under **Agents** and **Shares**, or through the local admin API.
@@ -39,6 +37,23 @@ If the new app is already showing a pairing request instead, choose **Approve a 
 existing signed-in app. Enter its code (or scan its QR on Android), then check the device name,
 grouped code and source address before confirming. The old browser approval link still works. Android uses an on-device ZXing decoder and
 requests camera permission only when the Scan button is used. Typing works without that permission.
+
+## Owner recovery
+
+If you lose access to your passkeys or need to retire a compromised first passkey, recover on the
+server host. Use the same config, working directory and account as the running server:
+
+1. Stop `todo-server`. For a systemd service, see [the Linux commands](hosting-linux.md#recovering-owner-access).
+2. Run `todo-server --config <config-file> reset-owner --yes`. This requires the server's database
+   lock. It deletes all passkeys and browser sessions, revokes every paired device, and records an
+   `owner_reset` audit entry. Pending invites and pairing requests disappear when the server stops.
+   Tasks and their history are kept.
+3. Start the server. Read `setup-code.txt` in its data directory (the file is readable only by the
+   server account) and enter the code at `/setup` within 15 minutes of startup. A second restart
+   before registration replaces the code. If reset could not write the file, startup creates a new
+   code once the data directory is writable. Register a new passkey and pair your devices again.
+4. Review agent tokens and share links under **Agents** and **Shares**, or through the
+   [local admin API](admin-api.md#routes). These credentials are not changed by recovery.
 
 ## Protocol and security
 
@@ -62,8 +77,8 @@ requests camera permission only when the Scan button is used. Typing works witho
   device polls, before issuing a token. Revoking a device or passkey updates its native descendants,
   removes descendant browser passkeys and their sessions, and records the descendant device IDs and
   removed passkey and session counts in one transaction. Browser-issued descendants preserve their
-  device and passkey ancestry after the issuing session ends. Upgrading does not infer passkey
-  ancestry for credentials that were already issued. Signing out of a browser invalidates its
+  device and passkey ancestry after the issuing session ends. Upgrading backfills passkey ancestry
+  for pre-existing credentials only when the issuing session still exists. Signing out of a browser invalidates its
   outstanding invites and approvals without revoking past joins.
 - The server's logs use route templates, not raw URLs or request bodies. The browser strips the
   fragment from its history entry before starting registration. Audit records include invite creation
@@ -86,6 +101,7 @@ The public OpenAPI document describes the JSON pairing API:
 | `DELETE /api/v1/pair/invites/{id}` | Cancel an unused invite, from its issuing device or session. |
 | `POST /api/v1/pair/redeem` | Send `secret` (typed code or fragment) and `device_name`; store the returned `device_id` and `token` as for normal pairing. |
 | `POST /api/v1/pair/review` | Send `code` to preview the pending device and its `source` address (or `null`); send `code` and its returned `created_at` as `approve_at` to confirm. |
+| `DELETE /api/v1/pair/device` | Revoke the device identified by its own bearer token. Returns 204; if the device issued any still-active devices or passkeys, use the admin page instead (409). |
 
 Browser links open `/pair/invite`; the page submits the fragment secret and device name in the JSON
 body of `POST /auth/invite/start`, then sends the ceremony handle and attestation to

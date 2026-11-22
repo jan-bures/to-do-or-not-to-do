@@ -329,6 +329,21 @@ sudo journalctl -u 'todo-backup@*' --since today
 sudo /usr/local/lib/todo/install-release --status
 ```
 
+### Recovering owner access
+
+If the first passkey is lost or compromised, [reset owner sign-ins](device-pairing.md#owner-recovery)
+without restoring a backup or rolling back tasks. For the standard systemd deployment:
+
+```sh
+sudo systemctl stop todo-server
+sudo -u todo sh -c 'cd /var/lib/todo && exec /usr/local/bin/todo-server --config /etc/todo/server.toml reset-owner --yes'
+sudo systemctl start todo-server
+sudo cat /var/lib/todo/setup-code.txt
+```
+
+Open `/setup` on the server within 15 minutes of startup. Register a new passkey, pair your devices
+again, and review agent tokens and share links. Don't copy the setup code into a log or support message.
+
 ### An interrupted deploy
 
 A deploy that stops halfway (the VM loses power or reboots, the script is killed, or `deploy-linux.ps1`

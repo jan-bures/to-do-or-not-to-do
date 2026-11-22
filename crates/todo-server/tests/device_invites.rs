@@ -321,10 +321,11 @@ async fn expiring_an_invite_also_expires_its_browser_ceremony_and_requires_step_
 async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites() {
     let env = Env::start().await;
     let mut owner = env.owner().await;
-    assert_eq!(
-        owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
-        StatusCode::CONFLICT
-    );
+    let refused = owner.post_form("/auth/passkeys/1/revoke", &[]).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert!(refused.body.contains("This is your first passkey"));
+    assert!(refused.body.contains("owner recovery"));
+    assert!(!refused.body.contains("Verify with an older passkey"));
     let invite = owner.post_json(INVITES, json!({})).await.json();
     let mut invited = join_browser(&env, &invite, "Invited browser").await;
     let revoke = "/auth/passkeys/2/revoke";
@@ -364,13 +365,9 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     );
 
     invited.step_up().await;
-    assert_eq!(
-        invited
-            .post_form("/auth/passkeys/1/revoke", &[])
-            .await
-            .status,
-        StatusCode::FORBIDDEN,
-    );
+    let refused = invited.post_form("/auth/passkeys/1/revoke", &[]).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert!(refused.body.contains("This is your first passkey"));
     let newer_view = invited.get("/admin/devices").await.body;
     assert!(!newer_view.contains("/auth/passkeys/1/revoke"));
     assert!(
@@ -420,6 +417,14 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     assert_eq!(invited.login().await.status, StatusCode::OK);
     let login_session = invited.post_json(INVITES, json!({})).await.json();
     assert_eq!(owner.login().await.status, StatusCode::OK);
+    let body = owner.get("/admin/devices").await.body;
+    let (_, form) = body.split_once(&format!("action=\"{revoke}\"")).unwrap();
+    assert!(
+        form.split_once("</form>")
+            .unwrap()
+            .0
+            .contains("Also removes: 2 devices, 2 passkeys, 4 browser sessions.")
+    );
     // A fresh sign-in with the oldest key can revoke immediately, without a second step-up.
     assert!(owner.post_form(revoke, &[]).await.status.is_redirection());
     for browser in [&invited, &original_session, &child, &grandchild] {
@@ -455,7 +460,7 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     assert!(!devices.contains("Derived browser"));
     assert_eq!(
         owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
-        StatusCode::CONFLICT
+        StatusCode::FORBIDDEN
     );
 }
 
@@ -514,6 +519,98 @@ async fn device_revocation_protects_older_passkeys_but_the_admin_token_is_exempt
         audit_details(&env, "device_revoked"),
         vec![json!({
             "device": id, "actor": "admin API", "descendant_devices": [], "passkeys_removed": 1, "sessions_removed": 1,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn only_a_paired_device_can_discard_its_own_leaf_credential() {
+    const DISCARD: &str = "/api/v1/pair/device";
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let invite = owner.post_json(INVITES, json!({})).await.json();
+    let issuer = env
+        .browser()
+        .post_json(
+            REDEEM,
+            json!({"secret": invite["code"], "device_name": "Issuer"}),
+        )
+        .await
+        .json();
+    let issuer_token = string(&issuer, "token");
+    let invite = env
+        .api(Method::POST, INVITES, issuer_token, None)
+        .await
+        .json;
+    let leaf = env
+        .browser()
+        .post_json(
+            REDEEM,
+            json!({"secret": invite["code"], "device_name": "Leaf"}),
+        )
+        .await
+        .json();
+    let leaf_token = string(&leaf, "token");
+    let pending_invite = env.api(Method::POST, INVITES, leaf_token, None).await.json;
+
+    let (status, _, _) = env.t.request(Method::DELETE, DISCARD, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        env.api(Method::DELETE, DISCARD, common::TOKEN_A, None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        owner
+            .send(Method::DELETE, DISCARD, Some(SITE), Body::Json(json!({})))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let refused = env.api(Method::DELETE, DISCARD, issuer_token, None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.json["error"]["code"], "device_has_descendants");
+    assert!(audit_details(&env, "device_revoked").is_empty());
+
+    // No caller-provided ID can choose another token as the target.
+    assert_eq!(
+        env.api(
+            Method::DELETE,
+            DISCARD,
+            leaf_token,
+            Some(json!({"device_id": issuer["device_id"]}))
+        )
+        .await
+        .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        env.api(Method::GET, "/api/v1/lists", leaf_token, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        env.api(Method::GET, "/api/v1/lists", issuer_token, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        env.browser()
+            .post_json(
+                REDEEM,
+                json!({"secret": pending_invite["code"], "device_name": "Other"})
+            )
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        audit_details(&env, "device_revoked"),
+        vec![json!({
+            "device": leaf["device_id"], "actor": "device self-revoke", "descendant_devices": [], "passkeys_removed": 0, "sessions_removed": 0,
         })]
     );
 }
@@ -643,7 +740,7 @@ async fn revocation_covers_descendants_and_prevents_finishing_approved_pairings(
             .get("/admin/devices")
             .await
             .body
-            .contains("Also signs out 4 devices it added.")
+            .contains("Also removes: 3 devices, 1 passkey, 1 browser session.")
     );
     let root = string(&devices[0], "device_id");
     assert!(

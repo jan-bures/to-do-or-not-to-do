@@ -391,6 +391,13 @@ class GalleryTest {
     }
 
     @Test
+    fun discarding_pairing() {
+        shot("pairing_discarding_light", COVER) {
+            PairingScreen(PairingState.Discarding, PairingActions.None, dark = false)
+        }
+    }
+
+    @Test
     fun pairing() {
         shot("pairing_address_light", COVER) {
             PairingScreen(PairingState.Entering(), PairingActions.None, dark = false)

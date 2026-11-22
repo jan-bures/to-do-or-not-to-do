@@ -371,7 +371,13 @@ async fn requests_and_failures_are_rate_limited() {
 
 #[tokio::test]
 async fn an_admin_change_whose_audit_entry_fails_is_not_made() {
-    let t = server().await;
+    let env = common::web::Env::start_with(|cfg| {
+        ingest::enabled(cfg);
+        admin_on(cfg);
+    })
+    .await;
+    env.owner().await;
+    let t = env.t;
     let svc = t.server.authsvc.clone();
     let list = t.create_list("Mine").await;
     let (id, token) = svc
@@ -919,7 +925,9 @@ async fn agents_are_listed_retuned_and_revoked() {
 
 #[tokio::test]
 async fn devices_and_share_links_are_listed_and_revoked() {
-    let t = server().await;
+    let env = common::web::Env::start_with(common::admin_on).await;
+    env.owner().await;
+    let t = env.t;
     let svc = t.server.authsvc.clone();
     let list = t.create_list("Shared").await;
     let (device, device_token) = svc.create_device("Phone", None).unwrap();

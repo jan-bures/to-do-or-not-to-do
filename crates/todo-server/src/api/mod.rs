@@ -20,7 +20,7 @@ use axum::extract::{FromRequest, FromRequestParts, MatchedPath, Request};
 use axum::http::request::Parts;
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use error::ApiError;
 
 /// JSON body extractor whose rejections are typed [`ApiError`]s (413 for oversized bodies).
@@ -145,6 +145,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(invite::status).delete(invite::cancel),
         )
         .route("/pair/review", post(invite::review))
+        .route("/pair/device", delete(pair::revoke_self))
         .route("/commands", post(commands::post_command))
         .route("/events", get(events::get_events))
         .route("/events/{seq}/undo", post(commands::post_undo))

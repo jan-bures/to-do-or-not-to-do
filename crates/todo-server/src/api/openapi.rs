@@ -55,6 +55,7 @@ impl Modify for ApiAuth {
         attachments::fill_content,
         pair::start,
         pair::poll,
+        pair::revoke_self,
         invite::create,
         invite::status,
         invite::cancel,

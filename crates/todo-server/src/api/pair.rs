@@ -7,15 +7,16 @@
 //! 3. The client polls every `interval` seconds with its `poll_token`. Once approved, the poll returns
 //!    the device token, exactly once. Requests expire after five minutes.
 
-use super::ApiJson;
 use super::error::{ApiError, ErrorBody};
+use super::{ApiJson, no_such_endpoint};
 use crate::app::AppState;
 use crate::auth::pairing::{POLL_INTERVAL_SECS, Poll, StartError};
 use crate::auth::service::no_origin;
 use crate::auth::session::{ClientIp, blocking};
+use crate::auth::{Authenticated, Principal};
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use todo_core::DeviceId;
@@ -184,6 +185,30 @@ pub async fn poll(
         }
     };
     Ok(Json(status).into_response())
+}
+
+/// Discards the bearer token's own pairing, provided it has not issued other active sign-ins.
+#[utoipa::path(delete, path = "/api/v1/pair/device", tag = "pairing",
+    responses((status = 204, description = "Device revoked"),
+        (status = 401, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, description = "Revocation cannot be done by this device", body = ErrorBody)),
+    security(("bearer" = [])))]
+pub async fn revoke_self(
+    State(app): State<AppState>,
+    caller: Authenticated,
+    headers: HeaderMap,
+    ip: ClientIp,
+) -> Result<StatusCode, ApiError> {
+    let Principal::Owner { device } = caller.principal else {
+        return Err(no_such_endpoint());
+    };
+    if !app.authsvc.paired_device(&device, &headers) {
+        return Err(no_such_endpoint());
+    }
+    if !blocking(&app.authsvc, move |svc| svc.revoke_self(&device, ip.0)).await?? {
+        return Err(no_such_endpoint());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) fn gone() -> ApiError {

@@ -13,7 +13,7 @@ use crate::auth::invite::Issuer;
 use crate::auth::pairing::format_code;
 use crate::auth::service::AuthService;
 use crate::auth::session::{MaybeSession, OwnerSession, blocking, check_csrf, clear_cookie};
-use crate::auth::store::{AgentRow, ShareTarget};
+use crate::auth::store::{AgentRow, CredentialRoot, RevocationImpact, ShareTarget};
 use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -392,6 +392,26 @@ pub async fn overview(State(app): State<AppState>, s: OwnerSession) -> PageResul
 
 // ---- devices --------------------------------------------------------------------------------------
 
+fn revoke_warning(impact: RevocationImpact) -> String {
+    let counts = [
+        (impact.devices, "device"),
+        (impact.passkeys, "passkey"),
+        (impact.sessions, "browser session"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, name)| format!("{count} {name}{}", if count == 1 { "" } else { "s" }))
+    .collect::<Vec<_>>();
+    if counts.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<p class="hint">Also removes: {}.</p>"#,
+            counts.join(", ")
+        )
+    }
+}
+
 /// `GET /admin/devices`.
 pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     let rows = blocking(&app.authsvc, |svc| {
@@ -400,9 +420,10 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
             .into_iter()
             .map(|d| {
                 let count = if d.revoked_at.is_none() {
-                    svc.store().issued_credential_count(d.id.as_str())?
+                    svc.store()
+                        .revocation_impact(CredentialRoot::Device(d.id.as_str()))?
                 } else {
-                    0
+                    RevocationImpact::default()
                 };
                 Ok((d, count))
             })
@@ -417,11 +438,7 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
         let action = match d.revoked_at {
             Some(at) => format!("revoked {}", esc(&time(at))),
             None => {
-                let warning = match count {
-                    0 => String::new(),
-                    1 => "<p class=\"hint\">Also signs out 1 device it added.</p>".into(),
-                    n => format!("<p class=\"hint\">Also signs out {n} devices it added.</p>"),
-                };
+                let warning = revoke_warning(count);
                 format!(
                     r#"<form method="post" action="/admin/devices/{id}/revoke">{csrf}<button type="submit" class="danger">Revoke</button>{warning}</form>"#,
                     id = esc(d.id.as_str()),
@@ -440,22 +457,39 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
         );
     }
     body.push_str("</table><h2>Browser passkeys</h2><table><tr><th>Name</th><th>Registered</th><th>Issued by</th><th></th></tr>");
-    let passkeys = blocking(&app.authsvc, |svc| svc.store().passkeys()).await??;
-    let verified_by = if app.authsvc.is_fresh(&s.row) {
-        let hash = s.row.id_hash.clone();
-        blocking(&app.authsvc, move |svc| svc.store().step_up_passkey(&hash)).await??
-    } else {
-        None
-    };
-    for p in &passkeys {
-        let action = if !verified_by.is_some_and(|id| id < p.id) {
-            String::new()
+    let fresh = app.authsvc.is_fresh(&s.row);
+    let hash = s.row.id_hash.clone();
+    let passkeys = blocking(&app.authsvc, move |svc| {
+        let store = svc.store();
+        let verified_by = if fresh {
+            store.step_up_passkey(&hash)?
         } else {
+            None
+        };
+        store
+            .passkeys()?
+            .into_iter()
+            .map(|p| {
+                let impact = if verified_by.is_some_and(|id| id < p.id) {
+                    Some(store.revocation_impact(CredentialRoot::Passkey(p.id))?)
+                } else {
+                    None
+                };
+                Ok((p, impact))
+            })
+            .collect::<Result<Vec<_>, crate::db::StoreError>>()
+    })
+    .await??;
+    for (p, impact) in passkeys {
+        let action = if let Some(impact) = impact {
             format!(
-                r#"<form method="post" action="/auth/passkeys/{}/revoke">{}<button type="submit" class="danger">Revoke</button></form>"#,
+                r#"<form method="post" action="/auth/passkeys/{}/revoke">{}<button type="submit" class="danger">Revoke</button>{}</form>"#,
                 p.id,
-                csrf_field(&s)
+                csrf_field(&s),
+                revoke_warning(impact),
             )
+        } else {
+            String::new()
         };
         let _ = write!(
             body,

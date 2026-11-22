@@ -6,6 +6,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::path::PathBuf;
+use todo_server::auth::service::{AuthService, SETUP_CODE_FILE};
 use todo_server::config::CONFIG_ENV;
 use todo_server::{Config, Engine, Options, Server};
 
@@ -25,6 +26,12 @@ enum Cmd {
     Serve,
     /// Rebuild the projection tables from the event log, then exit. Run while the server is stopped.
     RebuildProjections,
+    /// Clear all owner sign-ins and prepare a new setup code. Run while the server is stopped.
+    ResetOwner {
+        /// Confirm deletion of all passkeys and sessions and revocation of all paired devices.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Give the event log a new epoch, then exit. Run it, with the server stopped, after restoring
     /// the database from a backup: clients that followed the replaced log then resync from scratch
     /// instead of mixing the two histories (see `GET /api/v1/events`).
@@ -91,6 +98,20 @@ fn main() -> anyhow::Result<()> {
             let head = Engine::rebuild_projections(&path)
                 .with_context(|| format!("rebuilding projections in {}", path.display()))?;
             tracing::info!(head, "projections rebuilt");
+            Ok(())
+        }
+        Cmd::ResetOwner { yes } => {
+            anyhow::ensure!(
+                yes,
+                "pass --yes to clear all owner sign-ins; task data is kept"
+            );
+            let config = Config::load(cli.config.as_deref())?;
+            AuthService::reset_owner(&config)?;
+            println!(
+                "Owner sign-ins reset. Start the server and open /setup. The one-time code is in {} (readable only by this account).\n\
+                 Agent tokens and share links are unchanged. Review Agents and Shares after setup, or use the local admin API: GET /api/v1/admin/agents and GET /api/v1/admin/shares.",
+                config.data_dir.join(SETUP_CODE_FILE).display()
+            );
             Ok(())
         }
         Cmd::RotateLogEpoch => {

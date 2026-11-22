@@ -282,12 +282,19 @@ UPDATE devices SET issued_via_device = (
     WHERE devices.issued_by = 'Browser session ' || s.id_hash
 ) WHERE issued_by LIKE 'Browser session %';
 ",
-    // Keep the issuing passkey even after its browser session ends. Existing ancestry is unknown.
+    // Keep the issuing passkey even after its browser session ends.
     r"
 ALTER TABLE passkeys ADD COLUMN issued_via_passkey INTEGER;
 ALTER TABLE devices ADD COLUMN issued_via_passkey INTEGER;
 CREATE INDEX passkeys_issued_via_passkey ON passkeys (issued_via_passkey);
 CREATE INDEX devices_issued_via_passkey ON devices (issued_via_passkey);
+",
+    // Recover browser ancestry when the original issuing session is still available.
+    r"
+UPDATE passkeys SET issued_via_passkey = s.passkey_id FROM sessions s
+    WHERE passkeys.issued_via_passkey IS NULL AND passkeys.issued_by = 'Browser session ' || s.id_hash;
+UPDATE devices SET issued_via_passkey = s.passkey_id FROM sessions s
+    WHERE devices.issued_via_passkey IS NULL AND devices.issued_by = 'Browser session ' || s.id_hash;
 ",
 ];
 
@@ -1480,6 +1487,55 @@ mod lock_tests {
         let again = lock_database(&db).expect("released despite the duplicate");
         drop(duplicate);
         drop(again);
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn backfills_browser_lineage_only_from_surviving_sessions() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute_batch("INSERT INTO passkeys (id, cred_id, name, passkey, created_at, issued_by, issued_via_passkey) VALUES
+            (1, 'p1', 'Issuing key', '{}', 0, NULL, NULL),
+            (2, 'p2', 'Step-up key', '{}', 0, NULL, NULL),
+            (3, 'p3', 'Existing lineage', '{}', 0, 'Browser session live', 2),
+            (4, 'p4', 'Backfilled key', '{}', 0, 'Browser session live', NULL),
+            (5, 'p5', 'Unknown origin', '{}', 0, 'Browser session gone', NULL);
+            INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id, step_up_passkey_id)
+            VALUES ('live', 'unused', 0, 0, 0, 1, 2);
+            INSERT INTO devices (id, name, token_hash, created_at, issued_by, issued_via_passkey) VALUES
+            ('a', 'Backfilled device', 'unused-a', 0, 'Browser session live', NULL),
+            ('b', 'Unknown origin', 'unused-b', 0, 'Browser session gone', NULL),
+            ('c', 'Existing lineage', 'unused-c', 0, 'Browser session live', 2);").unwrap();
+        migrate(&mut conn).unwrap();
+        let lineage = |sql| {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |r| r.get::<_, Option<i64>>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            lineage("SELECT issued_via_passkey FROM passkeys ORDER BY id"),
+            [None, None, Some(2), Some(1), None]
+        );
+        assert_eq!(
+            lineage("SELECT issued_via_passkey FROM devices ORDER BY id"),
+            [Some(1), None, Some(2)]
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }
 

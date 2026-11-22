@@ -92,6 +92,7 @@ fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, f
                 Button("Go back", primary = false, onClick = actions::cancel)
             }
             is PairingState.Finishing -> Body("Finishing pairing with ${state.server}…")
+            PairingState.Discarding -> Body("Removing this phone’s sign-in…")
             PairingState.SaveFailed -> {
                 Body("This phone joined, but couldn’t save its sign-in. Try saving again without using another code.")
                 Button("Try saving again", primary = true, onClick = actions::retrySave)
