@@ -16,6 +16,7 @@ use jiff::tz::{Offset, TimeZone};
 use leptos::prelude::{Get, Memo, RwSignal, With};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
 use todo_client::intent::{
     self, TaskRoom,
     organize::{actionable_task, is_actionable, list_live},
@@ -335,6 +336,7 @@ pub struct Sidebar {
 #[must_use]
 pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) -> Sidebar {
     let ctx = now.eval();
+    let is_today = |at| date_of(at) == ctx.today;
     let smart = BUILTIN_LISTS
         .iter()
         .map(|b| NavItem {
@@ -351,7 +353,7 @@ pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) ->
         if !t.is_done() {
             *open_by_list.entry(t.list).or_default() += 1;
         }
-        if t.updated.by.is_agent() && date_of(t.updated.at) == ctx.today {
+        if t.updated.by.is_agent() && is_today(t.updated.at) {
             agent_updates_today += 1;
         }
     }
@@ -383,47 +385,13 @@ pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) ->
         smart,
         groups,
         loose,
-        agents: agent_summary(state, ctx.today, date_of),
+        agents: select_agent_rows(agent_counts_today(state, is_today))
+            .filter_map(|(actor, added, edited)| {
+                Some((agent_mark(actor)?, agent_status(added, edited)))
+            })
+            .collect(),
         agent_updates_today,
     }
-}
-
-/// Summarize the creation and latest edit stamps, like the desktop sidebar.
-fn agent_summary(
-    state: &State,
-    today: Date,
-    date_of: impl Fn(Timestamp) -> Date,
-) -> Vec<(AgentMark, String)> {
-    let mut agents = BTreeMap::new();
-    for task in state.tasks.values().filter(|t| is_actionable(state, t)) {
-        for (stamp, created) in [(&task.created, true), (&task.updated, false)] {
-            let Some(id) = stamp.by.agent_id() else {
-                continue;
-            };
-            // The creation stamp is also the latest stamp until an edit occurs.
-            if (!created && *stamp == task.created) || date_of(stamp.at) != today {
-                continue;
-            }
-            let entry = agents.entry(id).or_insert((&stamp.by, 0, 0));
-            if created {
-                entry.1 += 1;
-            } else {
-                entry.2 += 1;
-            }
-        }
-    }
-    agents
-        .into_values()
-        .filter_map(|(actor, added, edited)| {
-            let status = match (added, edited) {
-                (a, 0) => format!("{a} added"),
-                (0, e) => format!("{e} edited"),
-                (a, e) => format!("{a} added, {e} edited"),
-            };
-            Some((agent_mark(actor)?, status))
-        })
-        .take(4)
-        .collect()
 }
 
 // ---- rows ------------------------------------------------------------------------------------------------
@@ -1668,7 +1636,7 @@ mod tests {
                 .iter()
                 .map(|(mark, status)| (mark.name.as_str(), status.as_str()))
                 .collect::<Vec<_>>(),
-            [("claude", "1 edited"), ("codex", "1 edited")]
+            [("claude", "1 edited today"), ("codex", "1 edited today")]
         );
     }
 
@@ -1681,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_summary_counts_added_and_edited_but_not_creation_as_an_edit() {
+    fn agent_rows_count_added_and_edited_but_not_creation_as_an_edit() {
         let mut s = fixtures::state();
         s.tasks
             .retain(|id, _| *id == fixtures::task(3) || *id == fixtures::task(4));
@@ -1690,37 +1658,56 @@ mod tests {
             set_stamps(task, "claude", n.at);
         }
         let date_of = |at| local(at, n.offset_s).date();
-        let summary = agent_summary(&s, n.today(), date_of);
-        assert_eq!(summary.len(), 1);
-        assert_eq!((&*summary[0].0.name, &*summary[0].1), ("claude", "2 added"));
+        let rows = sidebar(&s, &n, date_of).agents;
+        assert_eq!(rows.len(), 1);
+        assert_eq!((&*rows[0].0.name, &*rows[0].1), ("claude", "2 added today"));
 
         s.tasks.get_mut(&fixtures::task(4)).unwrap().updated.at =
             n.at.checked_add(jiff::SignedDuration::from_secs(1))
                 .unwrap();
-        let summary = agent_summary(&s, n.today(), date_of);
-        assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].1, "2 added, 1 edited");
+        let rows = sidebar(&s, &n, date_of).agents;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "2 added, 1 edited today");
     }
 
     #[test]
-    fn deleted_tasks_and_tasks_in_deleted_lists_do_not_count_as_agent_activity() {
-        let mut s = fixtures::state();
-        s.tasks
-            .retain(|id, _| *id == fixtures::task(3) || *id == fixtures::task(4));
+    fn agent_rows_skip_quiet_agents_before_the_four_row_cap() {
         let n = now();
-        for task in s.tasks.values_mut() {
-            set_stamps(task, "claude", n.at);
-        }
+        let s = fixtures::agent_rows_state();
+        let sb = sidebar(&s, &n, |at| local(at, n.offset_s).date());
+        assert_eq!(
+            sb.agents
+                .iter()
+                .map(|(mark, _)| mark.name.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "codex", "helper-for-release-notes", "reviewer"],
+        );
+    }
+
+    #[test]
+    fn only_live_tasks_count_as_agent_activity() {
+        let n = now();
+        let mut s = fixtures::state();
+        let id = fixtures::task(3);
+        s.tasks.retain(|task_id, _| *task_id == id);
+        set_stamps(s.tasks.get_mut(&id).unwrap(), "claude", n.at);
+        let list = s.tasks[&id].list;
+        let collection = s.lists[&list].collection.unwrap();
         let deletion = todo_core::model::Tombstone {
             at: n.at,
             by: Actor::owner("web").unwrap(),
         };
-        s.tasks.get_mut(&fixtures::task(3)).unwrap().deleted = Some(deletion.clone());
-        let list = s.tasks[&fixtures::task(4)].list;
-        s.lists.get_mut(&list).unwrap().deleted = Some(deletion);
-        let sb = sidebar(&s, &n, |at| local(at, n.offset_s).date());
-        assert!(sb.agents.is_empty());
-        assert_eq!(sb.agent_updates_today, 0);
+        let build = |state: &State| sidebar(state, &n, |at| local(at, n.offset_s).date());
+        assert_eq!(build(&s).agents.len(), 1);
+        for entity in [id.into(), list.into(), collection.into()] {
+            s.set_tombstone(entity, Some(deletion.clone())).unwrap();
+            let sb = build(&s);
+            assert!(sb.agents.is_empty());
+            assert_eq!(sb.agent_updates_today, 0);
+            s.set_tombstone(entity, None).unwrap();
+        }
+        s.tasks.get_mut(&id).unwrap().merged_into = Some(fixtures::task(4));
+        assert!(build(&s).agents.is_empty());
     }
 
     #[test]
@@ -1760,7 +1747,7 @@ mod tests {
         assert_eq!(sb.agents.len(), 1);
         assert_eq!(
             (&*sb.agents[0].0.name, &*sb.agents[0].1),
-            ("codex", "1 added")
+            ("codex", "1 added today")
         );
     }
 

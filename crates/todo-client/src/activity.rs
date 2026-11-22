@@ -147,18 +147,23 @@ pub fn agent_name(id: &str) -> String {
     })
 }
 
-/// Counts today's task creations and subsequent last edits by agent, in ID order.
+/// Counts today's creations and subsequent last edits of live tasks by agent, in ID order.
 /// `is_today` checks the timestamp against the caller's local calendar day.
 pub fn agent_counts_today(
     state: &State,
     is_today: impl Fn(Timestamp) -> bool,
 ) -> impl Iterator<Item = (&Actor, u32, u32)> {
     let mut counts: BTreeMap<&AgentId, (&Actor, u32, u32)> = BTreeMap::new();
-    for task in state.tasks.values().filter(|t| t.deleted.is_none()) {
+    for task in state
+        .tasks
+        .values()
+        .filter(|t| t.deleted.is_none() && t.merged_into.is_none())
+    {
         for (stamp, added) in [(&task.created, true), (&task.updated, false)] {
             if let Some(id) = stamp.by.agent_id()
                 && (added || task.created.at != task.updated.at)
                 && is_today(stamp.at)
+                && state.is_live(task.list.into())
             {
                 let row = counts.entry(id).or_insert((&stamp.by, 0, 0));
                 if added {

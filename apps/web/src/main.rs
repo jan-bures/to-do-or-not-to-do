@@ -50,6 +50,8 @@ async fn start() {
             fixtures::finished_without_tomorrow()
         } else if query.contains("fixture=finished") {
             fixtures::finished_state()
+        } else if query.contains("fixture=agent-rows") {
+            fixtures::agent_rows_state()
         } else {
             fixtures::state()
         };

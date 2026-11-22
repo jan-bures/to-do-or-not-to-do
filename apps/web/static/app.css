@@ -449,7 +449,15 @@ a {
   margin: 0;
 }
 
+.nav-agent .nav-name {
+  flex: auto;
+  min-inline-size: var(--desktop-nav-agent-name-min);
+}
+
 .nav-agent .count {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

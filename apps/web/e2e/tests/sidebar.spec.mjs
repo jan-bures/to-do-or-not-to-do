@@ -135,7 +135,8 @@ test("Activity sits above today's indented agent filters and omits the group on 
   await expect(agents.getByRole("link")).toHaveCount(2);
   await expect(agents.getByRole("link", { name: /Pi/ })).toHaveCount(0);
   const codex = agents.getByRole("link", { name: /Codex/ });
-  await expect(codex.locator(".count")).toHaveText("1 edited");
+  await expect(codex).toHaveAccessibleName(/Codex.*1 edited today/);
+  await expect(codex.locator(".count")).toHaveText("1 edited today");
   expect((await codex.locator(".mark").boundingBox()).x).toBeGreaterThan((await activity.locator(".icon").boundingBox()).x);
   await codex.click();
   await expect(page).toHaveURL(/\/app\/activity\/agent\/codex$/);
@@ -143,6 +144,28 @@ test("Activity sits above today's indented agent filters and omits the group on 
   await open(page, "/app?fixture=blank");
   await expect(activity).toBeVisible();
   await expect(agents).toHaveCount(0);
+  await w.check();
+});
+
+test("the narrow drawer shows four active agents and clips the status before a short name", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 240, height: 900 });
+  await open(page, "/app?fixture=agent-rows");
+  await page.getByRole("button", { name: "Lists", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  const agents = drawer.getByRole("region", { name: "Agents" });
+  const links = agents.getByRole("link");
+  await expect(links).toHaveCount(4);
+  await expect(links.locator(".nav-name")).toHaveText(["Claude", "Codex", "Helper-for-release-notes", "Reviewer"]);
+  await expect(links.locator(".count")).toHaveText(["1 edited today", "1 added, 1 edited today", "1 added today", "1 added today"]);
+
+  const codex = agents.getByRole("link", { name: /Codex.*1 added, 1 edited today/ });
+  const name = codex.locator(".nav-name");
+  const status = codex.locator(".count");
+  await expect(name).toHaveCSS("min-inline-size", `${desktop["nav-agent-name-min"]}px`);
+  await expect(status).toHaveCSS("text-overflow", "ellipsis");
+  expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  expect(await status.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
   await w.check();
 });
 

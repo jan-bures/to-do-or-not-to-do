@@ -540,6 +540,33 @@ pub fn state() -> State {
     b.state
 }
 
+/// A quiet agent followed in ID order by five active agents, one more than the sidebar can show.
+#[must_use]
+#[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
+pub fn agent_rows_state() -> State {
+    let mut s = state();
+    let yesterday = at("2026-11-20T22:59:59Z");
+    let today = at("2026-11-20T23:00:00Z"); // Midnight at the fixture's UTC+1 offset.
+    let later = at("2026-11-21T09:15:00Z");
+    for (n, agent, created, updated) in [
+        (3, "atlas", yesterday, yesterday),
+        (4, "claude", yesterday, today),
+        (5, "codex", today, later),
+        (6, "helper-for-release-notes", today, today),
+        (7, "reviewer", today, today),
+        (8, "scribe", today, today),
+    ] {
+        if let (Some(task), Ok(by)) = (s.tasks.get_mut(&task(n)), Actor::agent(agent)) {
+            task.created = todo_core::model::Stamp {
+                at: created,
+                by: by.clone(),
+            };
+            task.updated = todo_core::model::Stamp { at: updated, by };
+        }
+    }
+    s
+}
+
 /// The same morning, but everything in My Day is done: the dusk scene.
 #[must_use]
 pub fn finished_state() -> State {

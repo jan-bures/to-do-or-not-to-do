@@ -25,6 +25,17 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`narrow sidebar with four active agents (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize({ width: 240, height: 900 });
+      await open(page, "/app?fixture=agent-rows");
+      await page.getByRole("button", { name: "Lists", exact: true }).click();
+      const sidebar = page.getByRole("dialog", { name: "Lists" });
+      await expect(sidebar.getByRole("region", { name: "Agents" }).getByRole("link")).toHaveCount(4);
+      await sidebar.screenshot({ path: `gallery/sidebar-narrow-${scheme}.png`, animations: "disabled" });
+      await w.check();
+    });
+
     test(`editing due date and steps (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

@@ -327,8 +327,9 @@ that arrives while the list is open stays for the next opening. Dismissing doesn
 
 **Activity** (`/app/activity`) shows confirmed changes from you, agents and email ingest, newest first
 and grouped by local day. Scroll down or choose **Load older activity** for more. Its clock row follows the
-**Agent activity** smart list. Agents seen in today's creation and latest edit stamps appear indented below
-it. Each stamp is dated using the browser's UTC offset at that instant. Choose an agent to open
+**Agent activity** smart list. Up to four agents that created or last edited live tasks today appear indented
+below it. Agents without activity today do not use a slot. Each stamp is dated using the browser's UTC
+offset at that instant, and the row says what the agent added or edited today. Choose an agent to open
 `/app/activity/agent/<agent-id>`. The same links are in the Lists drawer on a phone. Use **Clear filter** to
 see all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
 new events arrive. If an older page is loading, the refresh waits for that request. If refreshing removes
@@ -469,9 +470,9 @@ The status bar shows shortcuts only when their actions are available.
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
-  `apps/web/e2e/gallery/`, including `sidebar-light.png` and `sidebar-dark.png` crops; CI uploads them as
-  `web-gallery`. Compare them with the
-  approved mockups (kept outside this repository) after every UI change.
+  `apps/web/e2e/gallery/`, including `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
+  CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)
+  after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
