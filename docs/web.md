@@ -275,7 +275,13 @@ visible row uses them. List chip labels and trailing tags ellipsise; steps and m
 The filter narrows open and completed rows in the current room using the shared smart-list query language
 (e.g. `tag:docs`), including accent-insensitive text. Room totals are unchanged. Sidebar chevrons show or
 hide a collection's lists without changing rooms. **New list** creates a sibling of the current list, a
-child of the current collection, or a top-level list from a smart room.
+child of the current collection, or a top-level list from a smart room. Each new list gets a swatch.
+
+Quick-add parses the same trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`) and priority
+(`!`, `!!`, `!!!`) as desktop when you submit. The room supplies defaults: My Day adds today's My Day
+stamp, Important defaults to high priority and Planned defaults to due today. New tasks go first in
+their list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside
+the current collection when applicable.
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses

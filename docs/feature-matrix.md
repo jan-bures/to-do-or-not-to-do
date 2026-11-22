@@ -21,6 +21,7 @@ Path prefixes:
 | Prefix | Path |
 |---|---|
 | `C/` | `crates/todo-core/src/` |
+| `T/` | `crates/todo-client/src/` |
 | `S/` | `crates/todo-server/src/` |
 | `F/` | `crates/todo-ffi/src/` (the Android engine) |
 | `D/` | `apps/desktop/src/` |
@@ -83,8 +84,8 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
-| New top-level list | `CreateList` `C/command.rs:156` | wired `D/ui/shell/sidebar.rs:472` (then renames in place) | wired `W/app.rs:832` (no swatch colour) | wired `A/ui/Drawer.kt:118`, `F/engine.rs:618` |
-| New list in a collection | `CreateList` | wired: the collection menu's "New list here" (`D/ui/shell/sidebar.rs:773`) | wired: when the current room is in a collection (`W/app.rs:826`) | missing (always top level) |
+| New top-level list | `CreateList` `C/command.rs:156` | wired `D/ui/shell/sidebar.rs:472` (then renames in place) | wired `W/app.rs` (`NewList`) | wired `A/model/TodoModel.kt` (`createList`) |
+| New list in a collection | `CreateList` | wired: the collection menu's "New list here" (`D/ui/shell/sidebar.rs:773`) | wired: **New list** in a collection or one of its lists (`W/app.rs`) | wired: **New list** in a collection or one of its lists (`A/model/TodoModel.kt`, `F/engine.rs`) |
 | Rename a list | `UpdateList` `C/command.rs:172` | wired: double-click or menu (`D/ui/shell/sidebar.rs:266`, `:706`) | missing | missing |
 | Reorder lists | `Reorder` `C/command.rs:358` | wired: menu Move up and down (`D/ui/shell/sidebar.rs:719`, `:728`) | missing | missing |
 | Delete a list | `Delete` `C/command.rs:365` | wired after a confirmation, no undo (`D/ui/shell/sidebar.rs:695`) | missing | missing |
@@ -101,13 +102,13 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
 | Quick add in a room | `CreateTask` `C/command.rs:197` | wired `D/ui/shell.rs:248`, `:940` | wired `W/app.rs:1146` | wired `A/ui/RoomPane.kt:152`, `F/engine.rs:440` |
-| The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `D/model/commands.rs:61` | wired `W/app.rs:1137` | wired `F/engine.rs:452` |
-| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | client-side parse | wired `D/model/quick_add.rs`, live date chip `D/ui/shell.rs:1450` | missing (the title is taken as typed) | missing |
+| The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` |
+| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired on submit (`W/app.rs`) | wired on submit (`F/engine.rs`) |
 | Quick-add field's calendar and flag icons | n/a | **stub** `D/ui/shell.rs:1474`, `:1475` (icons with no handler) | missing | missing |
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired `D/ui/shell/undo.rs:296` | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
-| Set priority (four levels) | `UpdateTask.priority` | wired: click the mark, or P (`D/ui/shell.rs:1813`, `:2126`, `D/model/commands.rs:140`). Unreachable by mouse while the priority is none and no agent mark shows (the column is left out). | missing (the star only) | missing (the star only) |
+| Set priority (four levels) | `UpdateTask.priority` | wired: click the mark, or P (`D/ui/shell.rs:1813`, `:2126`, `T/intent/mod.rs`). Unreachable by mouse while the priority is none and no agent mark shows (the column is left out). | missing (the star only) | missing (the star only) |
 | Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | missing | missing |
 | Move a task to another list | `MoveTask` `C/command.rs:206` | missing (undo already handles it: `D/ui/shell/undo.rs:31`) | missing | missing |
 | Delete a task | `Delete` | missing (undo already handles it: `D/ui/shell/undo.rs:28`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
@@ -136,7 +137,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Delete a step | `Delete` | wired, without confirmation or undo (`D/ui/shell/detail.rs:473`) | missing | missing |
 | Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | shown "read only" (`W/app.rs:1789`) | shown (`A/ui/Detail.kt:154`) |
 | Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set; styled like the editable Due row but inert (`D/model/derive.rs:706`) | shown "read only" | shown |
-| Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set; inert (`D/model/derive.rs:714`). Clearing the due date also clears the repeat (`D/model/commands.rs:201`). | shown "read only" | shown |
+| Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set; inert (`D/model/derive.rs:714`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown |
 | Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | shown only when set; inert (`D/model/derive.rs:729`) | shown "read only" | shown |
 | Create, rename or recolour a tag | `CreateTag` / `UpdateTag` `C/command.rs:291`, `:301` | missing | missing | missing |
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
@@ -235,7 +236,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 
 | # | Gap | Size |
 |---|---|---|
-| 3.1 | Quick-add syntax: a trailing date and priority, with the date chip. Move the desktop's parser into a shared crate first (see the note below). | S after the move |
+| 3.1 | A live date chip in quick-add. The shared parser already reads the suffix on submit. | S |
 | 3.2 | Edit the due date. The row is labelled "read only" (`W/app.rs:1789`). | S–M |
 | 3.3 | Set the priority to four levels, with P. Only the star exists. | S |
 | 3.4 | Steps: rename, reorder, delete. | S–M |
@@ -258,22 +259,19 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.4 | Exact undo through `undo_tracked`. Reopening leaves a recurring task's next occurrence behind (`A/model/TodoModel.kt:671`). | M |
 | 4.5 | Due date (a date picker), priority (four levels). | M |
 | 4.6 | Steps: rename, reorder, delete. | S–M |
-| 4.7 | Lists: rename, delete, reorder, create inside a collection; collections: rename, reorder. | M |
-| 4.8 | Quick-add syntax (shared parser). | S after the move |
+| 4.7 | Lists: rename, delete, reorder; collections: rename, reorder. | M |
+| 4.8 | A live date chip in quick-add. The shared parser already reads the suffix on submit. | S |
 | 4.9 | Agent summary in the drawer. | S |
 | 4.10 | Reminder notifications (local alarms from synced reminders). | L |
 | 4.11 | Task delete and move, tags, reminders, repeat, once the shared command helpers exist. | — |
 
-### Note: share the gesture-to-command code first
+## Shared gesture-to-command code
 
-`D/model/commands.rs` (what a gesture means as a command) and `D/model/quick_add.rs` (the quick-add
-parser) are pure functions over `todo_core::State`. The web app (`W/app.rs`) and the FFI engine
-(`F/engine.rs`) rebuild the same commands by hand, and they have drifted:
+`todo_client::intent` now builds commands for all three clients without I/O. It owns the quick-add
+parser, task destinations and room defaults, and the builders for lists, tasks and steps. Each client
+maps its own room key to the shared task intent. This resolves the creation drift:
 
-- The web creates lists without a swatch.
-- Android can't create a list inside a collection.
-- New tasks go first on the desktop but last on the web.
-
-Moving both modules into `todo-client`, for example as `todo_client::intent`, lets every client build the
-same commands from one tested place. That module must stay portable: no I/O, and it must build for wasm32 and
-Android. Most of the web and Android gaps above then come down to UI work.
+- Every new list gets a stable swatch from its ID.
+- All three clients can create lists inside collections.
+- New tasks are placed first in their list's manual order. A smart list may display its own sort order.
+- Web and Android parse the same trailing date and priority as desktop. The live date chip remains desktop-only.

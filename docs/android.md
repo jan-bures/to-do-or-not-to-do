@@ -10,8 +10,10 @@ What the first version does:
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
   on any device. The device token is sealed with a key in the Android Keystore.
 - **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer. In the
-  drawer, collections fold with their chevron, **+ New list** adds a list, and the footer shows the sync
-  state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired server, Sync now, Unpair).
+  drawer, collections fold with their chevron. **+ New list** adds a list with a swatch and opens it. It
+  creates a sibling from a list, a child from a collection, or a top-level list from a smart room. The
+  footer shows the sync state ("Synced 10:35", "Offline, 3 waiting") with a settings button (the paired
+  server, Sync now, Unpair).
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
@@ -21,6 +23,11 @@ What the first version does:
   (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
   draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
+- **Quick add.** The composer reads a trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`) and
+  priority (`!`, `!!`, `!!!`) on submit, using the desktop's parser. My Day adds today's My Day stamp,
+  Important defaults to high priority and Planned defaults to due today. New tasks go first in their
+  list's manual order. If no destination list exists, quick-add creates **Tasks**, inside the current
+  collection when applicable.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** The core keeps a local SQLite cache and an outbox, so everything works offline and syncs
