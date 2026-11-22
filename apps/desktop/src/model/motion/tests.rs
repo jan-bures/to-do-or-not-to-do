@@ -539,6 +539,28 @@ fn space_never_reaches_a_selected_hand_over_task_before_it_enters() {
 }
 
 #[test]
+fn space_reopens_the_task_that_finished_the_day() {
+    // Completing the last task with Space leaves it selected; its row has gone and the hand-over
+    // has taken the list, but the status bar still offers "Space reopen".
+    let mut fixture = crate::fixtures::finished();
+    let shell = fixture.shell();
+    let next = shell.room.handover().expect("hands over");
+    let last = fixture
+        .state
+        .tasks
+        .values()
+        .find(|t| t.my_day == Some(fixture.now.today()) && t.is_done())
+        .expect("a finished task")
+        .id;
+    assert!(next.child(last).is_none());
+    fixture.ui.task = Some(last);
+    let shell = fixture.shell();
+    assert!(shell.room.handover().is_some());
+    assert!(!shell.has_row_in(shell.room.key, last));
+    assert!(shell.reachable(last, || false, |_| false));
+}
+
+#[test]
 fn rows_below_a_collapsing_row_rise_by_the_share_that_has_gone() {
     assert_eq!(lifts([1., 0.25, 1., 0.5, 1.]), [0., 0., 0.75, 0.75, 1.25]);
     assert!(lifts([]).is_empty());

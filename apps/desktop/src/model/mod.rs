@@ -618,17 +618,18 @@ impl Shell {
         self.room.key == room && self.rows().any(|row| row.id == id)
     }
 
-    /// Space can reach a visible row or an entering hand-over task once its child is visible.
-    /// In an ordinary list it can also reach the open detail when its task has no row (e.g. after
-    /// completing it with Completed collapsed). A closing detail is only a paint snapshot.
+    /// Space can reach a visible row, or a hand-over task once its child has begun to enter. It can
+    /// also reach the open detail's task when that has no row (after completing it with Completed
+    /// collapsed, including the task that finished the day), so it does what the status bar offers.
+    /// A closing detail is only a paint snapshot.
     pub fn reachable(
         &self,
         id: TaskId,
         row_visible: impl FnOnce() -> bool,
         entered: impl FnOnce(usize) -> bool,
     ) -> bool {
-        if let Some(next) = self.room.handover() {
-            next.child(id).is_some_and(entered) && row_visible()
+        if let Some(child) = self.room.handover().and_then(|next| next.child(id)) {
+            entered(child) && row_visible()
         } else if self.has_row_in(self.room.key, id) {
             row_visible()
         } else {
