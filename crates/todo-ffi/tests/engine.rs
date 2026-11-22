@@ -632,7 +632,7 @@ fn a_finished_day_offers_planning_even_with_nothing_due_tomorrow() {
 
 #[test]
 fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
-    use todo_ffi::view::{Reopening, RowPlacement};
+    use todo_ffi::view::{LastChange, Reopening, RowPlacement};
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let before = engine.room(my_day(), now());
     let home_before = engine.home(now());
@@ -645,6 +645,7 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
     let holding = RowPlacement {
         holding: vec![first.clone()],
         reopening: vec![],
+        last_changes: vec![],
     };
     let held = engine.room_placed(my_day(), String::new(), holding.clone(), now());
     assert_eq!(held.tasks[0].id, first);
@@ -671,14 +672,19 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
         .find(|t| t.id == first)
         .expect("completed");
     let at = done.completed_at.clone().expect("a completion time");
+    let updated = done.updated.clone();
 
-    // Reopened: it keeps its completed place until released, and counts as done.
+    // Reopened: it keeps its completed place, exactly as it was, until released, and counts as done.
     engine.set_done(first.clone(), false).unwrap();
     let reopening = RowPlacement {
         holding: vec![],
         reopening: vec![Reopening {
             id: first.clone(),
             completed_at: at,
+        }],
+        last_changes: vec![LastChange {
+            id: first.clone(),
+            updated,
         }],
     };
     let kept = engine.room_placed(my_day(), String::new(), reopening, now());
@@ -690,10 +696,77 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
     let junk = RowPlacement {
         holding: vec!["not-an-id".into()],
         reopening: vec![],
+        last_changes: vec![LastChange {
+            id: "not-an-id".into(),
+            updated: "not a stamp".into(),
+        }],
     };
     assert_eq!(
         engine.room_placed(my_day(), String::new(), junk, now()),
         engine.room(my_day(), now())
     );
     assert_eq!(engine.task_done("not-an-id".into()), None);
+}
+
+#[test]
+fn a_placement_keeps_a_toggled_agent_task_in_agent_activity_in_order() {
+    use todo_ffi::view::{LastChange, Reopening, RowPlacement};
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let agents = RoomKey::Smart {
+        list: SmartList::AgentActivity,
+    };
+    let before = engine.room(agents.clone(), now());
+    let ids =
+        |r: &todo_ffi::view::RoomView| r.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+    // An open agent task that isn't the most recent change: toggling it would move it to the top too.
+    let row = before
+        .tasks
+        .iter()
+        .skip(1)
+        .find(|t| !t.done)
+        .expect("an open agent task below the first")
+        .clone();
+    let kept = LastChange {
+        id: row.id.clone(),
+        updated: row.updated.clone(),
+    };
+    engine.set_done(row.id.clone(), true).unwrap();
+
+    // The owner's toggle took it out of Agent activity...
+    let truth = engine.room(agents.clone(), now());
+    assert!(truth.tasks.iter().all(|t| t.id != row.id));
+    // ...but held, with its last change as it was, the row stays where it was, open, marked as before.
+    let held = RowPlacement {
+        holding: vec![row.id.clone()],
+        reopening: vec![],
+        last_changes: vec![kept.clone()],
+    };
+    let placed = engine.room_placed(agents.clone(), String::new(), held, now());
+    assert_eq!(placed, before);
+
+    // Released, then reopened from the Completed room: it has a completion time and the owner's stamp.
+    let done = engine
+        .room(
+            RoomKey::Smart {
+                list: SmartList::Completed,
+            },
+            now(),
+        )
+        .tasks
+        .into_iter()
+        .find(|t| t.id == row.id)
+        .expect("completed");
+    engine.set_done(row.id.clone(), false).unwrap();
+    // Reopening, with the agent's last change: back among Agent activity's rows, done, where it was.
+    let reopening = RowPlacement {
+        holding: vec![],
+        reopening: vec![Reopening {
+            id: row.id.clone(),
+            completed_at: done.completed_at.clone().unwrap(),
+        }],
+        last_changes: vec![kept],
+    };
+    let placed = engine.room_placed(agents.clone(), String::new(), reopening, now());
+    assert_eq!(ids(&placed), ids(&before));
+    assert!(placed.tasks.iter().find(|t| t.id == row.id).unwrap().done);
 }

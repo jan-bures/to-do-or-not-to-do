@@ -9,7 +9,7 @@ use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
-use todo_core::model::{LinkKind, List, Priority, Task};
+use todo_core::model::{LinkKind, List, Priority, Stamp, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::time::{Date, Timestamp, add_days, days_between};
 
@@ -235,6 +235,10 @@ pub struct TaskRow {
     /// the app. Reopening a task passes it back in [`Reopening`], so the row keeps its completed place (done
     /// tasks sort by it to the nanosecond) while it leaves it.
     pub completed_at: Option<String>,
+    /// When and by whom it was last changed, exactly: opaque to the app. Toggling a task changes it (to
+    /// the owner, now), so the app passes it back in [`LastChange`] and the row keeps its place in a room
+    /// that selects or sorts by it (Agent activity) while its choreography plays.
+    pub updated: String,
 }
 
 /// What the finished day hands over to: tomorrow's first task and the rest of the week.
@@ -301,6 +305,18 @@ pub struct RowPlacement {
     pub holding: Vec<String>,
     /// Tasks just reopened: they keep their completed place and count as done.
     pub reopening: Vec<Reopening>,
+    /// Tasks toggled on screen, with their last change as it was before: a room that selects or sorts by
+    /// it (Agent activity) keeps their rows, in order, where they were.
+    pub last_changes: Vec<LastChange>,
+}
+
+/// A task's last change as it was before a toggle ([`TaskRow::updated`]).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LastChange {
+    /// Task ID.
+    pub id: String,
+    /// Exactly as [`TaskRow::updated`] gave it.
+    pub updated: String,
 }
 
 /// A task being reopened, with when it had been completed ([`TaskRow::completed_at`]).
@@ -315,8 +331,13 @@ pub struct Reopening {
 impl RowPlacement {
     /// Nothing held back.
     pub fn is_empty(&self) -> bool {
-        self.holding.is_empty() && self.reopening.is_empty()
+        self.holding.is_empty() && self.reopening.is_empty() && self.last_changes.is_empty()
     }
+}
+
+/// [`TaskRow::updated`]: the stamp, as JSON.
+fn stamp_token(s: &Stamp) -> String {
+    serde_json::to_string(s).unwrap_or_default()
 }
 
 /// The state as the rows place it while a choreography plays: each held task still open, and each task
@@ -334,6 +355,13 @@ pub fn placed(state: &State, placement: &RowPlacement) -> State {
             && t.completed_at.is_none()
         {
             t.completed_at = r.completed_at.parse::<Timestamp>().ok();
+        }
+    }
+    for c in &placement.last_changes {
+        if let Some(t) = task_id(&c.id).and_then(|id| placed.tasks.get_mut(&id))
+            && let Ok(s) = serde_json::from_str::<Stamp>(&c.updated)
+        {
+            t.updated = s;
         }
     }
     placed
@@ -524,6 +552,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .collect(),
         from_mail: ix.mail.contains(&task.id),
         completed_at: task.completed_at.map(|c| c.to_string()),
+        updated: stamp_token(&task.updated),
     }
 }
 

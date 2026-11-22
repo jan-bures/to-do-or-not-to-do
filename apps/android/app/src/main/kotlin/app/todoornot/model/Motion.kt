@@ -455,6 +455,9 @@ class Motion {
 
     private fun ids(phase: Phase): Set<String> = rows.filterValues { it.phase == phase }.keys.toSet()
 
+    /** Tasks whose rows still play where they were toggled: everything in motion but the rows entering after a release. */
+    fun inPlace(): Set<String> = rows.filterValues { it.phase !is Phase.Enter }.keys.toSet()
+
     /** The tasks in motion, for following the data ([reconcile]). */
     fun ids(): Set<String> = rows.keys.toSet()
 

@@ -52,10 +52,14 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 - **Reopening** a completed task mirrors it: the disc clears (`OVERLAY_OUT`), the row collapses out of its
   completed place (it counts as done until then) and enters the open rows. Undo is a reopening. The
   Completed and Agent activity lists show done tasks among their rows: there a row plays its choreography
-  where it is, and enters there too.
+  where it is, and enters there too. A toggle makes the owner the task's last editor, so the placement also
+  passes back each toggled row's last change as it was (`TaskRow.updated`): Agent activity keeps the row, in
+  order, until it's released.
 - **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
-  released. Until the engine has the reversal written, the reads still place the task as its row has it, so
-  a read in between never moves the row or changes the counts; a read taken with a placement the motion
+  released. Until the engine has the reversal written, the reads still place the task as the tap asked, even
+  if the write lands after the row has settled, so a read in between never moves the row or changes the
+  counts (the hold goes when the write lands or is refused, when the task is gone, or on switching rooms);
+  a read taken with a placement the motion
   has since changed is never published. A change from elsewhere (another device, an agent, a refused command) settles a choreography
   the same way; a deleted task, or one the list stops showing, stops at once; switching rooms puts
   everything at rest. A row that has gone (or hasn't arrived) takes no taps.

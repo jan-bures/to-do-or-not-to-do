@@ -286,29 +286,48 @@ class TodoModelTest {
         assertEquals(Wake.Idle, m.motion.motion.wake(time))
     }
 
-    /** A dispatcher whose tasks wait until the test runs them, one at a time, first or last. */
+    /**
+     * A dispatcher whose tasks wait until the test runs them, one at a time, first or last. Only the test's
+     * thread queues work here: the [Stepped] model hears of engine changes from the test, not the engine.
+     */
     private class Steps : CoroutineDispatcher() {
         private val queue = ArrayDeque<Runnable>()
+        private val owner = Thread.currentThread()
+
+        /** Work another thread tried to queue: dropped, and the test fails ([Stepped.drain]). */
+        @Volatile var foreign = 0
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
-            queue.addLast(block)
+            if (Thread.currentThread() != owner) foreign++ else queue.addLast(block)
         }
 
         fun next(): Boolean = queue.removeFirstOrNull()?.let { it.run(); true } ?: false
 
         fun last(): Boolean = queue.removeLastOrNull()?.let { it.run(); true } ?: false
+
+        /** Takes the last task out of the queue, to run it later. */
+        fun hold(): Runnable = queue.removeLast()
     }
 
-    /** A model whose own coroutines ([main]) and engine calls ([io]) run only when the test steps them. */
+    /**
+     * A model whose own coroutines ([main]) and engine calls ([io]) run only when the test steps them. The
+     * engine's change notifications are the test's to send ([changed]): its listener, on the engine's own
+     * threads, would queue work in between the steps.
+     */
     private class Stepped(engine: TodoEngine, clock: () -> Long) {
         val main = Steps()
         val io = Steps()
         val scope = CoroutineScope(SupervisorJob() + main)
-        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock)
+        private var onChange: () -> Unit = {}
+        val model = TodoModel(engine, scope, io, now = { FIXTURE_NOW }, clock = clock, listen = { onChange = it })
+
+        /** The engine says something changed, as its listener would. */
+        fun changed() = onChange()
 
         /** Runs every waiting task, checking [each] after every one. */
         fun drain(each: () -> Unit = {}) {
             while (main.next() || io.next()) each()
+            assertEquals("work queued from another thread", 0, main.foreign + io.foreign)
         }
 
         /** A refresh on its way, as a change from the engine starts one. */
@@ -345,6 +364,77 @@ class TodoModelTest {
         assertEquals(id, m.ui.value.room.tasks.first().id)
         assertTrue(m.motion.motion.holding().isEmpty())
         assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun a_reversal_written_after_its_settle_still_keeps_the_row_and_the_day_unfinished() {
+        val engine = fixtureEngine("finished")
+        val last = engine.room(MY_DAY, FIXTURE_NOW).completed.first().id
+        engine.setDone(last, false)
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val done = m.ui.value.room.done
+        assertFalse(m.ui.value.room.finished)
+        // The last task of the day is completed, then the tap is reversed before the row leaves.
+        m.setDone(last, true)
+        s.drain()
+        assertEquals(true, engine.taskDone(last))
+        m.frame(EXIT_AT - 100)
+        m.setDone(last, false)
+        // What the tap started runs up to its write, queued last; the write is held back.
+        while (s.main.next()) Unit
+        val write = s.io.hold()
+        fun unchanged() {
+            val room = m.ui.value.room
+            assertTrue(room.tasks.any { it.id == last })
+            assertFalse(room.completed.any { it.id == last })
+            assertEquals(done, room.done)
+            assertFalse(room.finished)
+            assertEquals(DuskLook.rest(false), m.motion.dusk(MY_DAY))
+        }
+        s.drain { unchanged() }
+        assertEquals("the reversal isn't written yet", true, engine.taskDone(last))
+        // The settle ends long before the write lands; then the engine says something changed.
+        m.frame(time + 5_000)
+        assertNull(m.motion.row(last))
+        s.changed()
+        s.drain { unchanged() }
+        unchanged()
+        assertEquals(true, engine.taskDone(last))
+        // The write lands: nothing moves.
+        write.run()
+        s.drain { unchanged() }
+        assertEquals(false, engine.taskDone(last))
+        unchanged()
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun opening_another_room_lets_go_of_a_row_kept_for_its_write() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        while (s.main.next()) Unit
+        val write = s.io.hold()
+        s.drain()
+        // Not written yet: it's held open, and stays so after its choreography would have released it.
+        m.frame(RELEASE_AT + 5_000)
+        s.drain()
+        assertEquals(false, engine.taskDone(id))
+        assertTrue(m.ui.value.room.tasks.any { it.id == id })
+        // Another room, and back: the rows are the engine's own, and the write lands there.
+        m.open(RoomKey.Smart(SmartList.ALL))
+        m.open(MY_DAY)
+        s.drain()
+        write.run()
+        s.drain()
+        assertEquals(true, engine.taskDone(id))
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
+        assertEquals(4u, m.ui.value.room.done)
     }
 
     @Test
@@ -389,6 +479,57 @@ class TodoModelTest {
         assertTrue(m.ui.value.showCompleted)
         s.drain { assertTrue(m.ui.value.showCompleted) }
         assertTrue(m.ui.value.showCompleted)
+    }
+
+    @Test
+    fun completing_in_agent_activity_keeps_the_agents_row_in_place_until_released() = runTest {
+        val engine = fixtureEngine()
+        val m = model(engine = engine)
+        val agents = RoomKey.Smart(SmartList.AGENT_ACTIVITY)
+        m.open(agents)
+        advanceUntilIdle()
+        val before = m.ui.value.room.tasks.map { it.id }
+        // An open task an agent changed, below the latest change (a toggle makes it the latest).
+        val row = m.ui.value.room.tasks.drop(1).first { !it.done }
+        assertNotNull(row.agent)
+        m.setDone(row.id, true)
+        advanceUntilIdle()
+        // Written, and so the owner's change: the room no longer selects it.
+        assertEquals(true, engine.taskDone(row.id))
+        assertFalse(engine.room(agents, FIXTURE_NOW).tasks.any { it.id == row.id })
+        // But read again while it plays, the row stays where it was, open, with its agent.
+        assertEquals(before, m.ui.value.room.tasks.map { it.id })
+        m.frame(EXIT_AT + M.ROW_COLLAPSE / 2)
+        m.refresh()
+        assertEquals(before, m.ui.value.room.tasks.map { it.id })
+        val kept = m.ui.value.room.tasks.first { it.id == row.id }
+        assertEquals(row.agent, kept.agent)
+        assertFalse(kept.done)
+        val look = m.motion.rowIn(row.id, Section.ROWS)!!
+        assertTrue(look.height > 0f && look.height < 1f)
+        // Released: it leaves, and the motion comes to rest.
+        m.frame(RELEASE_AT)
+        advanceUntilIdle()
+        assertEquals(before - row.id, m.ui.value.room.tasks.map { it.id })
+        m.frame(time + 5_000)
+        assertNull(m.motion.row(row.id))
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /** The engine's own listener, calling back on its own threads, refreshes the screen. */
+    @Test
+    fun a_change_the_engine_announces_reaches_the_screen() = runTest {
+        val engine = fixtureEngine()
+        val m = model(engine = engine)
+        val id = m.ui.value.room.tasks.first().id
+        // Written behind the model's back, as a sync would.
+        engine.setDone(id, true)
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (m.ui.value.room.done != 4u) {
+            assertTrue("the screen never heard of the change", System.nanoTime() < deadline)
+            Thread.sleep(10)
+        }
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
     }
 
     @Test

@@ -4,6 +4,7 @@ import app.todoornot.core.ChangeListener
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.Home
+import app.todoornot.core.LastChange
 import app.todoornot.core.LocalNow
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.Reopening
@@ -118,7 +119,8 @@ fun unsentCount(status: SyncStatus): Int = (status.pending + status.failed).toIn
  * once, but its row stays where it was, and counts as it did, until its choreography releases it. The
  * reads place it there ([RowPlacement]); only the release changes the rows, the counts, the sun and the
  * finished day. [clock] is a monotonic clock in milliseconds; [pace] reads the system's animator
- * duration scale when a transition starts.
+ * duration scale when a transition starts. [listen] registers what to call when the engine says something
+ * changed: by default its listener, which calls back on the engine's own threads.
  */
 class TodoModel(
     val engine: TodoEngine,
@@ -129,6 +131,11 @@ class TodoModel(
     private val onUnpair: () -> Unit = {},
     private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
     private val pace: () -> Pace = { Pace.FULL },
+    listen: (onChange: () -> Unit) -> Unit = { onChange ->
+        engine.setListener(object : ChangeListener {
+            override fun onChange() = onChange()
+        })
+    },
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
@@ -181,9 +188,12 @@ class TodoModel(
     /** Where the reads keep the rows in their choreography, and how often that has changed. */
     private class Placed(val version: Long, val rows: RowPlacement)
 
-    @Volatile private var placement = Placed(0L, RowPlacement(emptyList(), emptyList()))
+    @Volatile private var placement = Placed(0L, RowPlacement(emptyList(), emptyList(), emptyList()))
 
-    /** The tasks in motion, whose state each read reports so the motion can follow the data. */
+    /**
+     * The tasks in motion or with a toggle still to be written, whose state each read reports so the
+     * motion can follow the data.
+     */
     @Volatile private var moving: Set<String> = emptySet()
 
     /**
@@ -192,9 +202,22 @@ class TodoModel(
      */
     private val reopenedAt = HashMap<String, String>()
 
-    /** Toggles made, and the latest one of each task in motion. */
+    /**
+     * Each task's last change before it was toggled, as its row gave it: a room that selects or sorts by
+     * it (Agent activity) keeps the row there until its choreography is over.
+     */
+    private val lastChanges = HashMap<String, String>()
+
+    /** A toggle: its place in the order they were made, and the state it asks for. */
+    private class Toggle(val serial: Long, val done: Boolean)
+
+    /**
+     * Toggles made, and the latest one of each task in motion or still to be written. A toggle still to
+     * be written places its row however long the write takes, past the end of its choreography: it goes
+     * when the write lands or is refused, when its task is gone, or when another room opens.
+     */
     private var toggles = 0L
-    private val toggledAt = HashMap<String, Long>()
+    private val toggled = HashMap<String, Toggle>()
 
     /** The latest toggle the engine has applied: a read that starts after it sees it. */
     @Volatile private var written = 0L
@@ -219,11 +242,7 @@ class TodoModel(
             scope.launch { refresh() }
         }
         synchronized(motion) { followNow() }
-        engine.setListener(object : ChangeListener {
-            override fun onChange() {
-                changes.tryEmit(Unit)
-            }
-        })
+        listen { changes.tryEmit(Unit) }
         scope.launch { changes.collect { refresh() } }
     }
 
@@ -317,8 +336,10 @@ class TodoModel(
         val p = pace()
         // A task toggled after the read began isn't in it: its own state, and its row, stand until the
         // next read.
-        fun ahead(id: String) = (toggledAt[id] ?: 0L) > truth.written
+        fun ahead(id: String) = (toggled[id]?.serial ?: 0L) > truth.written
         m.reconcile(now, p) { id -> if (id in truth.done && !ahead(id)) truth.done[id] else m.expectedDone(id) }
+        // A task that's gone has no row to keep: its toggle (whose write is refused) is let go.
+        toggled.keys.removeAll { id -> id in truth.done && truth.done[id] == null }
         val room = state.room
         m.aimDusk(room.key, room.finished, now, p)
         // The finished day's sun travels from where it is to the end of its arc while the strip it's
@@ -343,24 +364,28 @@ class TodoModel(
      * Keeps the reads' [placement] in step with the motion. Returns whether it changed. Under the [motion] lock.
      *
      * A task completing counts as open and one being reopened as done, until released. A toggle not yet
-     * written (a second tap that reverses a choreography, say) keeps its task as its row has it, open or
-     * done, until the engine has it too: a read in between never moves the row or changes the counts.
+     * written (a second tap that reverses a choreography, say) keeps its task as it asked, open or done,
+     * until the engine has it too, even past the end of its choreography: a read in between never moves
+     * the row or changes the counts. A row still where it was toggled keeps its task's last change as it
+     * was, so a room that selects or sorts by it doesn't drop or move the row early.
      */
     private fun placeRows(): Boolean {
         val m = motion.motion
         val ids = m.ids()
-        toggledAt.keys.retainAll(ids)
+        toggled.entries.removeAll { (id, t) -> t.serial <= written && id !in ids }
         val held = m.holding()
         val back = m.reopening()
-        val unwritten = ids.filter { (toggledAt[it] ?: 0L) > written && it !in held && it !in back }
-        val holding = held + unwritten.filter { m.expectedDone(it) == false }
-        val reopening = back + unwritten.filter { m.expectedDone(it) == true }
+        val unwritten = toggled.filter { (id, t) -> t.serial > written && id !in held && id !in back }
+        val holding = held + unwritten.filterValues { !it.done }.keys
+        val reopening = back + unwritten.filterValues { it.done }.keys
         reopenedAt.keys.retainAll(reopening)
+        lastChanges.keys.retainAll(m.inPlace() + unwritten.keys)
         val next = RowPlacement(
             holding.sorted(),
             reopening.sorted().mapNotNull { id -> reopenedAt[id]?.let { Reopening(id, it) } },
+            lastChanges.entries.sortedBy { it.key }.map { (id, at) -> LastChange(id, at) },
         )
-        moving = ids
+        moving = ids + toggled.keys
         if (next == placement.rows) return false
         placement = Placed(placement.version + 1, next)
         return true
@@ -391,8 +416,10 @@ class TodoModel(
      */
     override fun open(room: RoomKey) {
         synchronized(motion) {
-            // A new room starts at rest: choreographies under way are let go.
+            // A new room starts at rest: choreographies under way, and the rows kept for writes still on
+            // their way, are let go.
             motion.motion.settleAll()
+            toggled.clear()
             placeRows()
             motion.touched()
             synchronized(publishing) {
@@ -498,7 +525,8 @@ class TodoModel(
                 else -> Section.ROWS
             }
             val toggle = ++toggles
-            toggledAt[id] = toggle
+            toggled[id] = Toggle(toggle, done)
+            (row ?: doneRow)?.updated?.let { lastChanges[id] = it }
             if (done) {
                 m.complete(id, at, pace(), from, to)
             } else {
