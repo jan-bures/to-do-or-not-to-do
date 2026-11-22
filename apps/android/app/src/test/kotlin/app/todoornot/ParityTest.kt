@@ -102,7 +102,7 @@ class ParityTest {
         val invoices = m.ui.value.room.key
         assertEquals(group.lists.last().key, invoices)
         m.add("File a receipt")
-        m.add("Pay the invoice fri !!")
+        m.add("Pay the invoice by fri !!")
         advanceUntilIdle()
         val tasks = m.ui.value.room.tasks
         assertEquals(listOf("Pay the invoice", "File a receipt"), tasks.map { it.title })

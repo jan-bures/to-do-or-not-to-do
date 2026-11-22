@@ -218,6 +218,35 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+test("quick-add uses the local date at submit and My Day refreshes on wake", async () => {
+  const page = await context.newPage();
+  try {
+    const localTime = (day, hour) => page.evaluate(([d, h]) => new Date(2026, 10, d, h).getTime(), [day, hour]);
+    await page.clock.setFixedTime(await localTime(20, 23));
+    await page.goto("/app");
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+
+    // Change Date without running the view's 30-second interval or waking the tab.
+    const title = "Check midnight quick-add";
+    await page.locator(".qa-input").fill(`${title} today`);
+    await page.clock.setFixedTime(await localTime(21, 0));
+    const sent = page.waitForRequest((r) =>
+      r.method() === "POST" && r.url().endsWith("/api/v1/commands") &&
+      r.postDataJSON()?.command?.title === title
+    );
+    await page.locator(".qa-input").press("Enter");
+    const { command } = (await sent).postDataJSON();
+    expect(command).toMatchObject({ due: "2026-11-21", my_day: "2026-11-21" });
+    await expect(row(page, title)).toHaveCount(1);
+
+    await page.clock.setFixedTime(await localTime(22, 0));
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect(row(page, title)).toHaveCount(0);
+  } finally {
+    await page.close();
+  }
+});
+
 test("two tabs queue edits offline: both survive closing every tab, and each is sent once", async () => {
   const a = await openApp();
   const b = await openApp();

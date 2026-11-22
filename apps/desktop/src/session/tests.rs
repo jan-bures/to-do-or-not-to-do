@@ -289,7 +289,7 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let room = RoomKey::Smart(Smart::MyDay);
     let before = a.client().view();
     let ids = [a.client().new_uuid(), a.client().new_uuid()];
-    let text = "Pay the invoice fri !!";
+    let text = "Pay the invoice by fri !!";
     let mut actual_ids = ids.into_iter();
     let (milk, cmds) =
         commands::quick_add_task(&before, room, text, &now, || actual_ids.next().expect("ID"));

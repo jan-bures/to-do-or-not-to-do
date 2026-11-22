@@ -189,7 +189,7 @@ impl From<RoomKey> for commands::TaskRoom {
             RoomKey::Smart(Smart::MyDay) => Self::MyDay,
             RoomKey::Smart(Smart::Important) => Self::Important,
             RoomKey::Smart(Smart::Planned) => Self::Planned,
-            RoomKey::Smart(_) => Self::Other,
+            RoomKey::Smart(Smart::All | Smart::Completed | Smart::AgentActivity) => Self::Other,
             RoomKey::Collection(id) => Self::Collection(id),
             RoomKey::List(id) => Self::List(id),
         }
@@ -199,6 +199,33 @@ impl From<RoomKey> for commands::TaskRoom {
 impl Default for RoomKey {
     fn default() -> Self {
         Self::Smart(Smart::MyDay)
+    }
+}
+
+#[cfg(test)]
+mod task_room_tests {
+    use super::*;
+    use commands::TaskRoom;
+
+    #[test]
+    fn desktop_rooms_map_to_shared_task_rooms() {
+        let collection = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        let list = ListId::from_uuid(todo_core::ids::uuid_v7(2, [0; 10]));
+        for (room, expected) in [
+            (RoomKey::Smart(Smart::MyDay), TaskRoom::MyDay),
+            (RoomKey::Smart(Smart::Important), TaskRoom::Important),
+            (RoomKey::Smart(Smart::Planned), TaskRoom::Planned),
+            (RoomKey::Smart(Smart::All), TaskRoom::Other),
+            (RoomKey::Smart(Smart::Completed), TaskRoom::Other),
+            (RoomKey::Smart(Smart::AgentActivity), TaskRoom::Other),
+            (
+                RoomKey::Collection(collection),
+                TaskRoom::Collection(collection),
+            ),
+            (RoomKey::List(list), TaskRoom::List(list)),
+        ] {
+            assert_eq!(TaskRoom::from(room), expected, "{room:?}");
+        }
     }
 }
 

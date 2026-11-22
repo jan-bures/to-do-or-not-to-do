@@ -20,7 +20,7 @@ use todo_client::outbox::OutboxEntry;
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
 use todo_client::{ClientConfig, Connection, ErrorKind, MemoryStorage, SyncClient};
-use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
+use todo_core::ids::{EntityId, ListId, StepId, TaskId};
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
@@ -198,7 +198,7 @@ fn intent_room(room: RoomKey) -> TaskRoom {
             SmartList::MyDay => TaskRoom::MyDay,
             SmartList::Important => TaskRoom::Important,
             SmartList::Planned => TaskRoom::Planned,
-            _ => TaskRoom::Other,
+            SmartList::All | SmartList::Completed | SmartList::AgentActivity => TaskRoom::Other,
         },
     }
 }
@@ -528,21 +528,14 @@ impl TodoEngine {
         Ok(())
     }
 
-    /// Adds a list at the end of the given collection (or at the top level), and returns its room.
-    pub fn create_list(
-        &self,
-        name: String,
-        collection: Option<String>,
-    ) -> Result<RoomKey, FfiError> {
+    /// Adds a list at the end of the room's current collection (or at the top level), and returns
+    /// its room.
+    pub fn create_list(&self, name: String, room: RoomKey) -> Result<RoomKey, FfiError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(invalid("A list needs a name."));
         }
-        let collection = collection
-            .as_deref()
-            .map(str::parse::<CollectionId>)
-            .transpose()
-            .map_err(|_| invalid("No such collection."))?;
+        let collection = intent::list_collection(&self.client.view(), intent_room(room));
         let id = ListId::from_uuid(self.client.new_uuid());
         self.client
             .submit(intent::create_list(id, collection, name))?;
@@ -582,7 +575,50 @@ impl Drop for TodoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use todo_core::ids::CollectionId;
     use todo_core::time::Timestamp;
+    use uuid::Uuid;
+
+    #[test]
+    fn ffi_rooms_map_to_shared_task_rooms() {
+        let collection = CollectionId::from_uuid(Uuid::from_u128(1));
+        let list = ListId::from_uuid(Uuid::from_u128(2));
+        let smart = |list| RoomKey::Smart { list };
+        for (room, expected) in [
+            (smart(SmartList::MyDay), TaskRoom::MyDay),
+            (smart(SmartList::Important), TaskRoom::Important),
+            (smart(SmartList::Planned), TaskRoom::Planned),
+            (smart(SmartList::All), TaskRoom::Other),
+            (smart(SmartList::Completed), TaskRoom::Other),
+            (smart(SmartList::AgentActivity), TaskRoom::Other),
+            (
+                RoomKey::Collection {
+                    id: collection.to_string(),
+                },
+                TaskRoom::Collection(collection),
+            ),
+            (
+                RoomKey::List {
+                    id: list.to_string(),
+                },
+                TaskRoom::List(list),
+            ),
+            (
+                RoomKey::Collection {
+                    id: "bad id".into(),
+                },
+                TaskRoom::Other,
+            ),
+            (
+                RoomKey::List {
+                    id: "bad id".into(),
+                },
+                TaskRoom::Other,
+            ),
+        ] {
+            assert_eq!(intent_room(room.clone()), expected, "{room:?}");
+        }
+    }
 
     #[test]
     fn ffi_submits_shared_intents() {
@@ -593,7 +629,7 @@ mod tests {
         };
         let engine = TodoEngine::fixture("blank".into(), now).expect("fixture");
         let before = engine.state();
-        let text = "Pay the invoice fri !!";
+        let text = "Pay the invoice by fri !!";
         let id: TaskId = engine
             .add_task(RoomKey::default(), text.into(), now)
             .expect("task added")
@@ -622,7 +658,12 @@ mod tests {
         let state = engine.state();
         let &collection = state.collections.keys().next().expect("collection");
         let RoomKey::List { id } = engine
-            .create_list(" Garden ".into(), Some(collection.to_string()))
+            .create_list(
+                " Garden ".into(),
+                RoomKey::Collection {
+                    id: collection.to_string(),
+                },
+            )
             .expect("list added")
         else {
             panic!("expected a list room");
@@ -635,5 +676,32 @@ mod tests {
             Some(&intent::create_list(id, Some(collection), "Garden"))
         );
         assert_eq!(engine.state().lists[&id].collection, Some(collection));
+
+        // Pass only a room key captured before another command moves its list. The new list must
+        // follow the current collection, not the one in the earlier sidebar snapshot.
+        let room = RoomKey::List { id: id.to_string() };
+        let other = *state
+            .collections
+            .keys()
+            .find(|&&c| c != collection)
+            .expect("second collection");
+        engine
+            .client
+            .submit(Command::MoveList {
+                id,
+                collection: Some(other),
+                placement: todo_core::command::Placement::Last,
+            })
+            .expect("move list");
+        let RoomKey::List { id: sibling } = engine
+            .create_list("Sibling".into(), room)
+            .expect("list added")
+        else {
+            panic!("expected a list room");
+        };
+        assert_eq!(
+            engine.state().lists[&sibling.parse().expect("list ID")].collection,
+            Some(other)
+        );
     }
 }

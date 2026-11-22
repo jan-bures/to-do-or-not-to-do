@@ -50,13 +50,14 @@ pub struct Toast {
     undo: Option<TaskId>,
 }
 
-/// Shared UI state. Everything is a signal, so the struct is `Copy`.
+/// Shared UI state and whether it follows the real clock (`false` for fixtures).
 #[derive(Clone, Copy)]
 pub struct Ctx {
     state: RwSignal<Arc<State>>,
     sync: RwSignal<Sync>,
     synced_at: RwSignal<Option<Now>>,
     now: RwSignal<Now>,
+    live: bool,
     room: RwSignal<RoomId>,
     selected: RwSignal<Option<TaskId>>,
     lingering: RwSignal<Vec<Linger>>,
@@ -352,6 +353,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         sync: RwSignal::new(backend::status()),
         synced_at: RwSignal::new(None),
         now,
+        live,
         room,
         selected,
         lingering,
@@ -424,7 +426,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             }
         });
         set_interval(move || c.now.set(platform::now()), Duration::from_secs(30));
-        platform::on_wake(backend::nudge);
+        platform::on_wake(move || {
+            c.now.set(platform::now());
+            backend::nudge();
+        });
     }
 
     track_overlay_focus(c);
@@ -1124,6 +1129,13 @@ fn QuickAdd() -> impl IntoView {
     let c = ctx();
     let value = RwSignal::new(String::new());
     let add = move || {
+        let now = if c.live {
+            let now = platform::now();
+            c.now.set(now);
+            now
+        } else {
+            c.now.get_untracked()
+        };
         let Some(room) = c
             .view_room
             .with_untracked(|r| r.add_placeholder.as_ref().map(|_| r.id.clone()))
@@ -1131,7 +1143,6 @@ fn QuickAdd() -> impl IntoView {
             return;
         };
         let text = value.get_untracked();
-        let now = c.now.get_untracked();
         let (id, commands) = c.state.with_untracked(|state| {
             intent::quick_add_task(state, &room, &text, &now.eval(), backend::new_uuid)
         });

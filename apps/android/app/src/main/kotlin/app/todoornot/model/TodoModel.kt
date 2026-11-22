@@ -587,14 +587,8 @@ class TodoModel(
 
     /** Adds a list in the current collection, or at the top level, and opens it. */
     override fun createList(name: String) {
-        val collection = when (val room = key) {
-            is RoomKey.Collection -> room.id
-            is RoomKey.List -> _ui.value.home.groups
-                .firstOrNull { group -> group.lists.any { it.key == room } }
-                ?.collection?.key.let { (it as? RoomKey.Collection)?.id }
-            is RoomKey.Smart -> null
-        }
-        act { enter(engine.createList(name, collection)) }
+        val room = key
+        act { enter(engine.createList(name, room)) }
     }
 
     override fun select(id: String?) {

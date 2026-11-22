@@ -23,11 +23,12 @@ What the first version does:
   (over 500 characters, say) keeps its draft, and the reason shows under it in the detail pane. A step
   draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
-- **Quick add.** The composer reads a trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`) and
-  priority (`!`, `!!`, `!!!`) on submit, using the desktop's parser. My Day adds today's My Day stamp,
-  Important defaults to high priority and Planned defaults to due today. New tasks go first in their
-  list's manual order. If no destination list exists, quick-add creates **Tasks**, inside the current
-  collection when applicable.
+- **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) on submit, with no
+  preview. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday
+  (`Sunday`, `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
+  keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
+  priority and Planned defaults to due today. New tasks go first in their list's manual order. If no
+  destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** The core keeps a local SQLite cache and an outbox, so everything works offline and syncs

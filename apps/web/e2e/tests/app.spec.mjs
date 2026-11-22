@@ -36,13 +36,30 @@ test("quick-add creates a destination on a fresh account and keeps focus", async
   const w = watch(page);
   await open(page, "/app?fixture=blank");
   const add = page.getByRole("textbox", { name: "Add a task" });
-  await add.fill("Pay the invoice fri !!");
+  await add.fill("Pay the invoice by fri !!");
   await add.press("Enter");
   await expect(page.getByRole("complementary", { name: "Lists" }).getByRole("link", { name: /^Tasks/ })).toBeVisible();
   await expect(row(page, "Pay the invoice").locator(".row-title")).toHaveText("Pay the invoice");
   await expect(add).toHaveValue("");
   await expect(add).toBeFocused();
   await w.check();
+});
+
+test("quick-add keeps ordinary trailing words and escaped syntax in the title", async ({ page }) => {
+  await open(page, "/app?fixture=blank");
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  for (const [input, title] of [
+    ["Enjoy the sun", "Enjoy the sun"],
+    ["Where the dog sat", "Where the dog sat"],
+    ["Notes from the call yesterday", "Notes from the call yesterday"],
+    ["Wow !", "Wow !"],
+    ["Wow!", "Wow!"],
+    [String.raw`See you \tomorrow`, "See you tomorrow"],
+  ]) {
+    await add.fill(input);
+    await add.press("Enter");
+    await expect(rows(page).getByText(title, { exact: true })).toBeVisible();
+  }
 });
 
 test("completing a task holds, collapses, moves the sun, and can be undone", async ({ page }) => {
@@ -281,7 +298,7 @@ test("collection disclosure preserves navigation and new list creates in the cur
   const add = page.getByRole("textbox", { name: "Add a task" });
   await add.fill("File a receipt");
   await add.press("Enter");
-  await add.fill("Pay the invoice fri !!");
+  await add.fill("Pay the invoice by fri !!");
   await add.press("Enter");
   await expect(rows(page).first().locator(".row-title")).toHaveText("Pay the invoice");
   await expect(rows(page).first().locator(".col-priority")).toHaveText("!!");

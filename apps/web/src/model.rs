@@ -21,7 +21,7 @@ use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::recurrence::Rule;
 use todo_core::{Actor, State};
 use todo_design::Glyph;
-use todo_design::hues::SWATCHES;
+use todo_design::hues::{self, SWATCHES};
 
 /// "Now" for the view: the instant, the owner's local date and UTC offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,7 +211,7 @@ fn nearest_swatch(hue: f64) -> &'static str {
 /// The swatch key for an entity's colour: a swatch key as is, a hex colour by nearest hue, otherwise
 /// a stable pick from the ID.
 #[must_use]
-pub fn swatch(color: Option<&str>, id: &str) -> &'static str {
+pub fn swatch(color: Option<&str>, seed: &[u8; 16]) -> &'static str {
     if let Some(c) = color {
         if let Some(s) = SWATCHES.iter().find(|s| s.key == c) {
             return s.key;
@@ -220,10 +220,7 @@ pub fn swatch(color: Option<&str>, id: &str) -> &'static str {
             return nearest_swatch(h);
         }
     }
-    let h = id.bytes().fold(0x811c_9dc5_u32, |h, b| {
-        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
-    });
-    SWATCHES[(h as usize) % SWATCHES.len()].key
+    hues::swatch_for_seed(seed).key
 }
 
 /// The hand-drawn glyph for a list or collection, chosen from words in its name.
@@ -372,7 +369,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         room: RoomId::List(l.id),
         name: l.name.clone(),
         count: open_by_list.get(&l.id).copied().unwrap_or(0),
-        hue: swatch(l.color.as_deref(), &l.id.to_string()),
+        hue: swatch(l.color.as_deref(), l.id.as_uuid().as_bytes()),
         glyph: Some(glyph_for(&l.name)),
     };
     let groups = collections(state)
@@ -384,7 +381,7 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
                     room: RoomId::Collection(c.id),
                     name: c.name.clone(),
                     count: lists.iter().map(|l| l.count).sum(),
-                    hue: swatch(c.color.as_deref(), &c.id.to_string()),
+                    hue: swatch(c.color.as_deref(), c.id.as_uuid().as_bytes()),
                     glyph: Some(glyph_for(&c.name)),
                 },
                 lists,
@@ -619,7 +616,7 @@ enum ChipMode {
 
 fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
     let chip = state.lists.get(&t.list).and_then(|l| {
-        let hue = swatch(l.color.as_deref(), &l.id.to_string());
+        let hue = swatch(l.color.as_deref(), l.id.as_uuid().as_bytes());
         match mode {
             ChipMode::Hidden => None,
             ChipMode::ListOnly => Some(Chip {
@@ -844,7 +841,9 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
                 let n = lists.len();
                 (
                     coll.map_or_else(String::new, |c| c.name.clone()),
-                    coll.map_or("teal", |c| swatch(c.color.as_deref(), &c.id.to_string())),
+                    coll.map_or("teal", |c| {
+                        swatch(c.color.as_deref(), c.id.as_uuid().as_bytes())
+                    }),
                     Eyebrow {
                         lead: "Collection".to_owned(),
                         meta: vec![format!("{n} {}", if n == 1 { "LIST" } else { "LISTS" })],
@@ -873,7 +872,9 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
                 let open = scope.iter().filter(|t| !t.is_done()).count();
                 (
                     list.map_or_else(String::new, |l| l.name.clone()),
-                    list.map_or("teal", |l| swatch(l.color.as_deref(), &l.id.to_string())),
+                    list.map_or("teal", |l| {
+                        swatch(l.color.as_deref(), l.id.as_uuid().as_bytes())
+                    }),
                     Eyebrow {
                         lead: coll.map_or_else(|| "List".to_owned(), |c| c.name.clone()),
                         meta: vec![format!("{open} OPEN")],
@@ -1248,7 +1249,7 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
     let coll = list.collection.and_then(|c| state.collections.get(&c));
     let crumb_chip = coll.map(|c| Chip {
         label: c.name.clone(),
-        hue: swatch(c.color.as_deref(), &c.id.to_string()),
+        hue: swatch(c.color.as_deref(), c.id.as_uuid().as_bytes()),
     });
     let mut steps: Vec<_> = state
         .steps
@@ -1444,6 +1445,29 @@ mod tests {
     }
 
     #[test]
+    fn web_routes_map_to_shared_task_rooms() {
+        let collection = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        let list = ListId::from_uuid(todo_core::ids::uuid_v7(2, [0; 10]));
+        for (path, expected) in [
+            ("/app".into(), TaskRoom::MyDay),
+            ("/app/important".into(), TaskRoom::Important),
+            ("/app/planned".into(), TaskRoom::Planned),
+            ("/app/all".into(), TaskRoom::Other),
+            ("/app/completed".into(), TaskRoom::Other),
+            ("/app/agent-activity".into(), TaskRoom::Other),
+            (
+                format!("/app/collection/{collection}"),
+                TaskRoom::Collection(collection),
+            ),
+            (format!("/app/list/{list}"), TaskRoom::List(list)),
+        ] {
+            let (room, _) = RoomId::from_path(&path);
+            assert_eq!(TaskRoom::from(&room), expected, "{path}");
+        }
+        assert_eq!(TaskRoom::from(&RoomId::Smart("unknown")), TaskRoom::Other);
+    }
+
+    #[test]
     fn quick_add_from_a_web_route_matches_the_shared_intent() {
         use todo_client::intent;
         use todo_core::command::{Command, Placement};
@@ -1458,7 +1482,7 @@ mod tests {
             intent::quick_add_task(
                 &state,
                 target,
-                "Pay the invoice fri !!",
+                "Pay the invoice by fri !!",
                 &clock.eval(),
                 || ids.next().expect("ID"),
             )
@@ -1649,11 +1673,12 @@ mod tests {
 
     #[test]
     fn swatches_come_from_keys_hex_or_the_id() {
-        assert_eq!(swatch(Some("teal"), "x"), "teal");
-        assert_eq!(swatch(Some("#e05a7a"), "x"), "rose");
-        assert_eq!(swatch(Some("#3366ff"), "x"), "cornflower");
-        let a = swatch(None, "a-list");
-        assert_eq!(a, swatch(None, "a-list"));
+        let id = todo_core::ids::uuid_v7(1_790_000_000_000, [7; 10]);
+        let seed = id.as_bytes();
+        assert_eq!(swatch(Some("teal"), seed), "teal");
+        assert_eq!(swatch(Some("#e05a7a"), seed), "rose");
+        assert_eq!(swatch(Some("#3366ff"), seed), "cornflower");
+        assert_eq!(swatch(None, seed), hues::swatch_for_seed(seed).key);
         assert_eq!(glyph_for("Nákupy a pochůzky"), Glyph::Basket);
         assert_eq!(glyph_for("Reading list"), Glyph::Book);
     }

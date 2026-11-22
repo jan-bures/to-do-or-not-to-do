@@ -1,5 +1,9 @@
 //! What the user's gestures mean as `todo_core` commands. Pure: clients pass the state, local clock
 //! values and a source of fresh IDs, and submit the result.
+//!
+//! Submit the returned commands in order. `SyncClient::submit` queues one command at a time, so when
+//! quick-add needs to create a destination list, clients (including desktop) submit the list first
+//! and the task second. This is not atomic: the list can remain if the task is refused.
 
 pub mod quick_add;
 
@@ -481,7 +485,7 @@ mod tests {
         let (id, cmds) = quick_add_task(
             &before,
             TaskRoom::Collection(collection),
-            "Pay the invoice fri !!",
+            "Pay the invoice by fri !!",
             &ctx,
             || w.id(),
         );

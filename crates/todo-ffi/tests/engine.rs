@@ -565,13 +565,15 @@ fn important_steps_and_new_lists() {
     engine.set_step_done(step, false).unwrap();
     assert!(!engine.task(id, now()).unwrap().steps[0].done);
 
-    let list = engine.create_list(" Garden ".into(), None).unwrap();
+    let list = engine
+        .create_list(" Garden ".into(), RoomKey::default())
+        .unwrap();
     let room = engine.room(list.clone(), now());
     assert_eq!(room.key, list);
     assert_eq!(room.title, "Garden");
     assert_eq!(room.empty_line, "Nothing here yet.");
     assert!(matches!(
-        engine.create_list("".into(), None),
+        engine.create_list("".into(), RoomKey::default()),
         Err(FfiError::Invalid { .. })
     ));
     // A Tasks list, the task, its star twice, two steps, a step twice and the new list.

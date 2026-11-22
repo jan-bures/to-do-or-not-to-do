@@ -277,11 +277,13 @@ The filter narrows open and completed rows in the current room using the shared 
 hide a collection's lists without changing rooms. **New list** creates a sibling of the current list, a
 child of the current collection, or a top-level list from a smart room. Each new list gets a swatch.
 
-Quick-add parses the same trailing date (`tomorrow`, `fri`, `+3d`, `2026-12-01`, `zítra`) and priority
-(`!`, `!!`, `!!!`) as desktop when you submit. The room supplies defaults: My Day adds today's My Day
-stamp, Important defaults to high priority and Planned defaults to due today. New tasks go first in
-their list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside
-the current collection when applicable.
+Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) when you submit, with no preview. A
+trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
+`by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
+`See you tomorrow` as the title. The room supplies defaults: My Day adds today's My Day stamp,
+Important defaults to high priority and Planned defaults to due today. New tasks go first in their
+list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside the
+current collection when applicable.
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
