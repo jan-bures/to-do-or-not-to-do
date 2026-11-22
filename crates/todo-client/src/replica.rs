@@ -266,6 +266,10 @@ pub struct Replica {
     /// Command IDs recently confirmed, refused, or acknowledged as changing nothing, oldest first.
     settled: VecDeque<CommandId>,
     settled_set: BTreeSet<CommandId>,
+    /// Authoritative batch starts for recently confirmed commands. An UndoAfter from another tab
+    /// can reach the sender just after the original batch settled there.
+    recent_events: BTreeMap<CommandId, EventRef>,
+    recent_event_order: VecDeque<CommandId>,
     /// Entries this replica has sent (or is sending): [`Replica::adopt`] slots nothing before them.
     sent_here: BTreeSet<CommandId>,
     tracked: BTreeMap<CommandId, CommandLog>,
@@ -294,6 +298,7 @@ struct Restored {
     failed_undos: Vec<FailedEntry>,
     /// The replayed events of the commands an outbox undo names, by command, from the first event.
     undo_logs: BTreeMap<CommandId, StoredLog>,
+    recent_events: Vec<(CommandId, EventRef)>,
 }
 
 /// True if `entry`'s acknowledgement does not belong to the log with `epoch`.
@@ -464,6 +469,11 @@ fn restore(loaded: Loaded, stop_after: Option<u64>) -> Result<Restored, PartialB
         resolved_undos,
         failed_undos,
         undo_logs,
+        recent_events: {
+            let mut first: Vec<_> = first_events.into_iter().collect();
+            first.sort_unstable_by_key(|(_, event)| event.seq);
+            first
+        },
     })
 }
 
@@ -501,6 +511,8 @@ impl Replica {
             needs_snapshot: false,
             settled: VecDeque::new(),
             settled_set: BTreeSet::new(),
+            recent_events: BTreeMap::new(),
+            recent_event_order: VecDeque::new(),
             sent_here: BTreeSet::new(),
             tracked: BTreeMap::new(),
             undo_targets: BTreeMap::new(),
@@ -560,6 +572,9 @@ impl Replica {
         self.view = None;
         self.unsnapshotted = r.replayed;
         self.needs_snapshot = r.needs_snapshot;
+        for (id, event) in r.recent_events {
+            self.remember_event(id, event);
+        }
         self.remember_settled(r.settled.into_iter().chain(failed_ids));
         self.hold_restored_logs(&r.undo_logs);
         Ok(())
@@ -806,6 +821,7 @@ impl Replica {
     pub(crate) fn undo_tracked(
         &mut self,
         target: &TrackedCommand,
+        allow_cancel: bool,
         make_entry: impl FnOnce(Operation) -> OutboxEntry,
     ) -> Result<TrackedUndo, SubmitError> {
         let Some(log) = self.tracked(target) else {
@@ -823,7 +839,8 @@ impl Replica {
             };
             // Don't drop a pending action a later local command might depend on. In that case take
             // the normal core/server conflict path, ordered after the already queued commands.
-            if pos + 1 == self.outbox.len()
+            if allow_cancel
+                && pos + 1 == self.outbox.len()
                 && self.outbox[pos].attempts == 0
                 && self.outbox[pos].acked.is_none()
             {
@@ -1034,6 +1051,17 @@ impl Replica {
         }
     }
 
+    fn remember_event(&mut self, id: CommandId, event: EventRef) {
+        if self.recent_events.insert(id, event).is_none() {
+            self.recent_event_order.push_back(id);
+        }
+        if self.recent_event_order.len() > SETTLED_MEMORY
+            && let Some(old) = self.recent_event_order.pop_front()
+        {
+            self.recent_events.remove(&old);
+        }
+    }
+
     /// True if this replica knows `entry` is done: it is in the "couldn't sync" list, was settled
     /// recently, or its acknowledged events are confirmed.
     fn knows_done(&self, entry: &OutboxEntry) -> bool {
@@ -1055,11 +1083,16 @@ impl Replica {
     /// Adopted commands are not decided again: the tab that submitted them did.
     pub fn adopt(&mut self, entries: Vec<OutboxEntry>) -> Result<usize, StorageError> {
         let mut new: Vec<OutboxEntry> = Vec::new();
-        for e in entries {
+        for mut e in entries {
             if self.position(e.command_id).is_none()
                 && !self.knows_done(&e)
                 && !new.iter().any(|n| n.command_id == e.command_id)
             {
+                if let Operation::UndoAfter { original } = e.op
+                    && let Some((epoch, event)) = self.epoch.zip(self.recent_events.get(&original))
+                {
+                    e = resolved_undo(&e, epoch, *event);
+                }
                 new.push(e);
             }
         }
@@ -1376,6 +1409,17 @@ impl Replica {
         if !applied.is_empty() {
             self.view = None;
             for event in &applied {
+                if event.command_idx == 0
+                    && let Some(seq) = event.event.seq
+                {
+                    self.remember_event(
+                        event.command_id,
+                        EventRef {
+                            seq,
+                            id: event.event.id,
+                        },
+                    );
+                }
                 if let Some(log) = self.tracked.get_mut(&event.command_id) {
                     // Bind to the first log in which this command was seen. On a same-epoch replay,
                     // ignore its duplicate events; on a new epoch, the old target stays unavailable.
@@ -1427,6 +1471,8 @@ impl Replica {
         self.confirmed = State::new();
         self.cursor = 0;
         self.held.clear();
+        self.recent_events.clear();
+        self.recent_event_order.clear();
         self.epoch = None;
         self.unsnapshotted = 0;
         self.needs_snapshot = false;

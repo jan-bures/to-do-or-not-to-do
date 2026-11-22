@@ -14,23 +14,45 @@ fn document() -> Option<web_sys::Document> {
     window().and_then(|w| w.document())
 }
 
-const FOLDED_COLLECTIONS: &str = "todo-folded-collections";
+const FOLD_PREFIX: &str = "todo-folded-collection:";
 
-/// A browser may throw even when merely accessing localStorage. Folding still works in memory.
-pub fn load_folded() -> BTreeSet<CollectionId> {
-    window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(FOLDED_COLLECTIONS).ok().flatten())
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_default()
+fn fold_storage() -> Option<web_sys::Storage> {
+    window()?.local_storage().ok().flatten()
 }
 
-pub fn save_folded(ids: &BTreeSet<CollectionId>) {
-    if let Some(storage) = window().and_then(|w| w.local_storage().ok().flatten())
-        && let Ok(value) = serde_json::to_string(ids)
-    {
-        let _ = storage.set_item(FOLDED_COLLECTIONS, &value);
+/// A browser may throw even when accessing localStorage. Folding still works in memory.
+pub fn load_folded() -> Option<BTreeSet<CollectionId>> {
+    let storage = fold_storage()?;
+    let mut ids = BTreeSet::new();
+    for index in 0..storage.length().ok()? {
+        if let Some(key) = storage
+            .key(index)
+            .ok()?
+            .as_deref()
+            .and_then(|key| key.strip_prefix(FOLD_PREFIX))
+            && let Ok(id) = key.parse()
+        {
+            ids.insert(id);
+        }
     }
+    Some(ids)
+}
+
+/// Each ID has its own key, so changing one collection cannot overwrite another tab's fold.
+pub fn save_folded(id: CollectionId, folded: bool) {
+    if let Some(storage) = fold_storage() {
+        let key = format!("{FOLD_PREFIX}{id}");
+        let _ = if folded {
+            storage.set_item(&key, "1")
+        } else {
+            storage.remove_item(&key)
+        };
+    }
+}
+
+pub fn is_fold_key(key: Option<&str>) -> bool {
+    // A storage clear has no key.
+    key.is_none_or(|key| key.starts_with(FOLD_PREFIX))
 }
 
 /// The real "now": the instant and the browser's current UTC offset.
@@ -123,6 +145,40 @@ pub fn focus_select_text(id: &str) {
     {
         input.select();
     }
+}
+
+/// Place the native popover by its trigger, even without CSS anchor positioning. Only measured
+/// coordinates go through CSSOM; sizing, motion and colors still come from the stylesheets.
+pub fn place_room_menu(menu: &web_sys::HtmlElement, anchor: &str) -> bool {
+    let Some(doc) = document() else { return false };
+    let Some((viewport, trigger)) = doc.document_element().zip(doc.get_element_by_id(anchor))
+    else {
+        return false;
+    };
+    let (vw, vh) = (
+        f64::from(viewport.client_width()),
+        f64::from(viewport.client_height()),
+    );
+    let rect = trigger.get_bounding_client_rect();
+    if rect.width() == 0.0 || rect.bottom() <= 0.0 || rect.top() >= vh {
+        return false;
+    }
+    let (w, h) = (
+        f64::from(menu.offset_width()),
+        f64::from(menu.offset_height()),
+    );
+    let end = rect.left() + w > vw;
+    let above = rect.bottom() + h > vh && rect.top() > vh - rect.bottom();
+    let x = if end { rect.right() - w } else { rect.left() };
+    let y = if above { rect.top() - h } else { rect.bottom() };
+    let x = x.clamp(0.0, (vw - w).max(0.0));
+    let y = y.clamp(0.0, (vh - h).max(0.0));
+    let style = menu.style();
+    let _ = style.set_property("--room-menu-x", &format!("{x}px"));
+    let _ = style.set_property("--room-menu-y", &format!("{y}px"));
+    let _ = menu.class_list().toggle_with_force("above-anchor", above);
+    let _ = menu.class_list().toggle_with_force("end-anchor", end);
+    true
 }
 
 /// Restores focus after an optimistic update replaced a row, but not if focus has moved elsewhere.

@@ -1,8 +1,8 @@
 //! The browser's presentation of refused changes and the fixture's exact local undo.
 
-use todo_client::{CommandId, FailedEntry};
-use todo_core::ids::EntityId;
-use todo_core::{Command, State};
+use todo_client::{CommandId, FailedEntry, SubmitError, failure};
+use todo_core::State;
+use todo_core::error::DomainError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -13,9 +13,13 @@ pub struct Failure {
 
 impl Failure {
     pub fn from_entry(f: &FailedEntry, state: &State) -> Self {
-        let (what, why) = match f.entry.command() {
-            Some(cmd) => (describe(cmd, state), failure_reason(&f.rejection.code)),
-            None => ("Undo a change".into(), undo_failure(&f.rejection.code)),
+        let what = failure::what(&f.entry);
+        let what = failure::name(&f.entry, state)
+            .map_or_else(|| what.to_owned(), |name| format!("{what}: “{name}”"));
+        let why = if f.entry.command().is_none() {
+            undo_failure(&f.rejection.code)
+        } else {
+            failure::why(f)
         };
         Self {
             id: f.entry.command_id,
@@ -28,62 +32,31 @@ impl Failure {
 pub fn undo_failure(code: &str) -> &'static str {
     match code {
         "undo_conflict" => "Couldn't undo: the item was changed again.",
-        "undo_no_event" => "Couldn't undo: the original change couldn't be found.",
+        "undo_no_event" | "event_not_found" => {
+            "Couldn't undo: the original change couldn't be found."
+        }
         "epoch_mismatch" | "event_mismatch" => "Couldn't undo: the server's history changed.",
         "not_found" => "Couldn't undo: the item no longer exists.",
         _ => "Couldn't undo that.",
     }
 }
 
-fn failure_reason(code: &str) -> &'static str {
-    match code {
-        "deleted" | "already_deleted" | "not_found" => {
-            "The item or where it belongs no longer exists."
+/// Validation comes from local `decide`, not from a server response. Storage errors are only logged.
+pub fn submission_error(error: &SubmitError) -> String {
+    let message = match error {
+        SubmitError::Invalid(DomainError::Invalid { field, reason }) => {
+            return format!("Couldn’t save: {field} {reason}.");
         }
-        "forbidden" => "You don't have permission to make this change.",
-        "conflict" => "The item changed elsewhere before this change could be saved.",
-        _ => "The server couldn't apply this change.",
-    }
-}
-
-fn describe(cmd: &Command, state: &State) -> String {
-    let about = |verb, id| {
-        let (kind, name) = match id {
-            EntityId::List(id) => ("list", state.lists.get(&id).map(|l| l.name.as_str())),
-            EntityId::Collection(id) => (
-                "collection",
-                state.collections.get(&id).map(|c| c.name.as_str()),
-            ),
-            EntityId::Task(id) => ("task", state.tasks.get(&id).map(|t| t.title.as_str())),
-            EntityId::Step(id) => ("step", state.steps.get(&id).map(|s| s.title.as_str())),
-            _ => ("item", None),
-        };
-        name.map_or_else(
-            || format!("{verb}: {kind}"),
-            |name| format!("{verb} {kind} “{name}”"),
-        )
+        SubmitError::Invalid(DomainError::DuplicateName(_)) => "That name is already taken.",
+        SubmitError::Invalid(
+            DomainError::Deleted(_) | DomainError::AlreadyDeleted(_) | DomainError::NotFound(_),
+        ) => "The item or where it belongs no longer exists.",
+        SubmitError::Invalid(DomainError::BadPlacement(_)) => {
+            "The items no longer belong to the same list or collection."
+        }
+        _ => "Couldn’t save that change.",
     };
-    match cmd {
-        Command::CreateList { name, .. } => format!("Create list “{name}”"),
-        Command::UpdateList {
-            name: Some(name), ..
-        } => format!("Rename list to “{name}”"),
-        Command::UpdateCollection {
-            name: Some(name), ..
-        } => format!("Rename collection to “{name}”"),
-        Command::CreateTask(task) => format!("Add task “{}”", task.title),
-        Command::UpdateTask { id, .. } => about("Edit", (*id).into()),
-        Command::CompleteTask { id } => about("Complete", (*id).into()),
-        Command::UncompleteTask { id } => about("Reopen", (*id).into()),
-        Command::SetMyDay { id, .. } => about("Change My Day for", (*id).into()),
-        Command::CreateStep { title, .. } => format!("Add step “{title}”"),
-        Command::UpdateStep { title, .. } => format!("Rename step to “{title}”"),
-        Command::CompleteStep { id } => about("Complete", (*id).into()),
-        Command::UncompleteStep { id } => about("Reopen", (*id).into()),
-        Command::Reorder { id, .. } => about("Reorder", *id),
-        Command::Delete { id } => about("Delete", *id),
-        _ => "Save a change".into(),
-    }
+    message.into()
 }
 
 #[cfg(any(test, feature = "fixtures"))]
@@ -174,7 +147,23 @@ mod tests {
         ] {
             assert!(undo_failure(code).starts_with("Couldn't undo"));
             assert!(!undo_failure(code).contains("raw server text"));
-            assert!(!failure_reason(code).contains("raw server text"));
         }
+    }
+
+    #[test]
+    fn submission_keeps_local_validation_but_not_storage_details() {
+        let invalid = DomainError::Invalid {
+            field: "name",
+            reason: "must not be empty".into(),
+        };
+        assert_eq!(
+            submission_error(&invalid.into()),
+            "Couldn’t save: name must not be empty."
+        );
+        let storage = todo_client::StorageError::Backend("internal details".into());
+        assert_eq!(
+            submission_error(&storage.into()),
+            "Couldn’t save that change."
+        );
     }
 }

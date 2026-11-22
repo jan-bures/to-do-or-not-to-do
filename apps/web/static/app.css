@@ -501,8 +501,6 @@ a {
 
 /* ---- room actions and not-synced changes --------------------------------------------------------- */
 
-.menu-anchor { anchor-name: --room-action-anchor; }
-
 .room-action-menu,
 .room-dialog {
   max-inline-size: calc(100% - var(--space-8));
@@ -523,17 +521,20 @@ a {
 
 .room-action-menu {
   position: fixed;
-  position-anchor: --room-action-anchor;
-  inset: auto;
-  top: var(--space-4);
-  left: var(--space-4);
-  top: anchor(bottom, var(--space-4));
-  left: anchor(left, var(--space-4));
-  position-try-fallbacks: flip-inline, flip-block, flip-inline flip-block;
+  inset: var(--room-menu-y, 0) auto auto var(--room-menu-x, 0);
   inline-size: var(--desktop-menu);
   margin: 0;
-  transform-origin: top left;
+  --room-menu-origin-x: left;
+  --room-menu-origin-y: top;
+  --room-menu-enter-offset: var(--space-1);
+  transform-origin: var(--room-menu-origin-x) var(--room-menu-origin-y);
   transform: scale(.98);
+}
+
+.room-action-menu.end-anchor { --room-menu-origin-x: right; }
+.room-action-menu.above-anchor {
+  --room-menu-origin-y: bottom;
+  --room-menu-enter-offset: calc(-1 * var(--space-1));
 }
 
 .room-action-menu:popover-open,
@@ -593,7 +594,7 @@ a {
 }
 
 @starting-style {
-  .room-action-menu:popover-open { opacity: 0; transform: translateY(var(--space-1)) scale(.97); }
+  .room-action-menu:popover-open { opacity: 0; transform: translateY(var(--room-menu-enter-offset)) scale(.97); }
   .room-dialog[open] { opacity: 0; transform: translateY(calc(var(--space-3) / 2)) scale(.97); }
   .room-dialog[open]::backdrop { opacity: 0; }
 }

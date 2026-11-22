@@ -12,10 +12,10 @@ use crate::model::{
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
-use todo_client::{CommandId, Connection, TrackedUndo, intent};
+use todo_client::{CommandId, Connection, SubmitError, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
 use todo_core::{Command, State};
@@ -51,7 +51,14 @@ pub struct Shown {
 
 struct Undo {
     target: UndoTarget,
+    label: String,
     completing: Option<TaskId>,
+}
+
+#[derive(Clone)]
+struct WaitingUndo {
+    toast_seq: u64,
+    label: String,
 }
 
 /// The toast at the bottom of the list.
@@ -76,7 +83,7 @@ pub struct Ctx {
     toast: RwSignal<Option<Toast>>,
     toast_seq: RwSignal<u64>,
     undo: RwSignal<Option<Undo>>,
-    waiting_undo: RwSignal<BTreeSet<CommandId>>,
+    waiting_undo: RwSignal<BTreeMap<CommandId, WaitingUndo>>,
     room_actions: room_actions::Controls,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
@@ -106,8 +113,20 @@ fn ctx() -> Ctx {
 impl Ctx {
     /// Reads the backend's view and status into the signals.
     fn refresh(self) {
-        self.state.set(backend::view());
+        let state = backend::view();
         let s = backend::status();
+        if s.connection == Connection::Online && s.pending == 0 {
+            self.collapsed.update(|ids| {
+                ids.retain(|id| {
+                    let exists = state.is_live((*id).into());
+                    if !exists {
+                        platform::save_folded(*id, false);
+                    }
+                    exists
+                });
+            });
+        }
+        self.state.set(state);
         if s.connection == Connection::Online && !s.offline_demo {
             self.synced_at.set(Some(platform::now()));
         }
@@ -119,12 +138,19 @@ impl Ctx {
         }
         self.sync.set(s);
         self.failures.set(backend::failures());
-        for id in self.waiting_undo.get_untracked() {
+        for (id, undo) in self.waiting_undo.get_untracked() {
             if let Some(outcome) = backend::undo_result(id) {
-                self.waiting_undo.update(|ids| {
-                    ids.remove(&id);
+                self.waiting_undo.update(|pending| {
+                    pending.remove(&id);
                 });
-                self.show_toast(outcome.err().unwrap_or("Change undone.").into(), false);
+                // A late answer must not take the Undo button away from a newer change.
+                if undo.toast_seq == self.toast_seq.get_untracked() {
+                    let label = match outcome {
+                        Ok(()) => format!("Undid: {}", undo.label),
+                        Err(message) => format!("{message} ({})", undo.label),
+                    };
+                    self.show_toast(label, false);
+                }
             }
         }
     }
@@ -138,7 +164,7 @@ impl Ctx {
         self.submission(backend::submit(cmd)).is_some()
     }
 
-    fn submission<T>(self, result: Result<T, String>) -> Option<T> {
+    fn submission<T>(self, result: Result<T, SubmitError>) -> Option<T> {
         match result {
             Ok(value) => {
                 self.refresh();
@@ -149,8 +175,9 @@ impl Ctx {
                 self.refresh();
                 None
             }
-            Err(_) => {
-                self.show_toast("Couldn’t save that change.".into(), false);
+            Err(error) => {
+                tracing::debug!(%error, "could not queue change");
+                self.show_toast(changes::submission_error(&error), false);
                 None
             }
         }
@@ -165,7 +192,11 @@ impl Ctx {
         let Some(target) = self.submission(backend::submit_tracked(cmd)) else {
             return false;
         };
-        self.undo.set(Some(Undo { target, completing }));
+        self.undo.set(Some(Undo {
+            target,
+            completing,
+            label: label.clone(),
+        }));
         self.show_toast(label, true);
         true
     }
@@ -184,8 +215,15 @@ impl Ctx {
         match result {
             Ok(TrackedUndo::Cancelled) => self.show_toast("Change undone.".into(), false),
             Ok(TrackedUndo::Queued(id)) => {
-                self.waiting_undo.update(|ids| {
-                    ids.insert(id);
+                let toast_seq = self.toast_seq.get_untracked();
+                self.waiting_undo.update(|pending| {
+                    pending.insert(
+                        id,
+                        WaitingUndo {
+                            toast_seq,
+                            label: action.label,
+                        },
+                    );
                 });
             }
             Ok(TrackedUndo::Unavailable) => {
@@ -196,9 +234,19 @@ impl Ctx {
         self.refresh();
     }
 
-    fn fold(self, update: impl FnOnce(&mut BTreeSet<CollectionId>)) {
-        self.collapsed.update(update);
-        self.collapsed.with_untracked(platform::save_folded);
+    fn fold(self, id: CollectionId, folded: bool) {
+        self.collapsed.update(|ids| {
+            if folded {
+                ids.insert(id);
+            } else {
+                ids.remove(&id);
+            }
+        });
+        platform::save_folded(id, folded);
+    }
+
+    fn toggle_fold(self, id: CollectionId) {
+        self.fold(id, !self.collapsed.with_untracked(|ids| ids.contains(&id)));
     }
 
     fn show_toast(self, text: String, undo: bool) {
@@ -458,14 +506,14 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         toast: RwSignal::new(None),
         toast_seq: RwSignal::new(0),
         undo: RwSignal::new(None),
-        waiting_undo: RwSignal::new(BTreeSet::new()),
+        waiting_undo: RwSignal::new(BTreeMap::new()),
         room_actions: room_actions::Controls::new(),
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
         narrow,
         detail_modal,
-        collapsed: RwSignal::new(platform::load_folded()),
+        collapsed: RwSignal::new(platform::load_folded().unwrap_or_default()),
         new_list: RwSignal::new(false),
         filter_open: RwSignal::new(false),
         filter_text,
@@ -519,6 +567,13 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     });
 
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
+    let _folds = window_event_listener(leptos::ev::storage, move |ev| {
+        if platform::is_fold_key(ev.key().as_deref())
+            && let Some(ids) = platform::load_folded()
+        {
+            c.collapsed.set(ids);
+        }
+    });
 
     if live {
         // Follow the sync engine, and keep "today" current.
@@ -611,6 +666,12 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
+    let drawer = c.drawer.get_untracked();
+    let modal = c.detail_modal.get_untracked();
+    if key == "tab" && (drawer || modal) {
+        platform::contain_tab(if drawer { "list-drawer" } else { "task-detail" }, ev);
+        return;
+    }
     let typing = typing(ev);
     if ev.repeat() {
         // Leave typing alone, but prevent a held Enter from activating a button or submitting a form.
@@ -626,12 +687,6 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         {
             ev.prevent_default();
         }
-        return;
-    }
-    let drawer = c.drawer.get_untracked();
-    let modal = c.detail_modal.get_untracked();
-    if key == "tab" && (drawer || modal) {
-        platform::contain_tab(if drawer { "list-drawer" } else { "task-detail" }, ev);
         return;
     }
     if key == "escape" {
@@ -941,7 +996,7 @@ fn SidebarPane() -> impl IntoView {
                 <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
                 <span>"To-do"</span>
             </div>
-            <nav class="nav">
+            <nav class="nav" on:scroll=move |_| c.room_actions.position_menu()>
                 {move || {
                     let sb = c.sidebar.get();
                     view! {
@@ -964,7 +1019,7 @@ fn SidebarPane() -> impl IntoView {
                                                 aria-expanded=move || (!folded()).to_string()
                                                 aria-controls=control.clone()
                                                 aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
-                                                on:click=move |_| c.fold(|ids| { if !ids.remove(&id) { ids.insert(id); } })
+                                                on:click=move |_| c.toggle_fold(id)
                                             >{icon(Icon::ChevronRight)}</button>
                                             {item(g.head, false, children)}
                                         </div>
@@ -1038,7 +1093,7 @@ fn NewList() -> impl IntoView {
                     let id = ListId::from_uuid(backend::new_uuid());
                     if c.submit(intent::create_list(id, collection, &name)) {
                         if let Some(group) = collection {
-                            c.fold(|ids| { ids.remove(&group); });
+                            c.fold(group, false);
                         }
                         c.go(RoomId::List(id));
                         request_animation_frame(|| { platform::focus("room-title"); });
@@ -1192,7 +1247,7 @@ fn RoomPane() -> impl IntoView {
         room
     });
     view! {
-        <div class="room" node_ref=node>
+        <div class="room" node_ref=node on:scroll=move |_| c.room_actions.position_menu()>
             <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
                 <FinishedHeader width=width/>
             </Show>

@@ -441,10 +441,16 @@ test("the medium detail dims and disables the room, traps focus, and restores th
   await page.keyboard.press("Tab");
   await expect(sun).toBeFocused();
   const last = detail.getByRole("button", { name: /board-pack-draft/ });
+  await last.focus();
+  // Keydown with repeat=true must still wrap at the last control.
+  await page.keyboard.down("Tab");
+  await expect(sun).toBeFocused();
+  await last.focus();
+  await page.keyboard.down("Tab");
+  await page.keyboard.up("Tab");
+  await expect(sun).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(last).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(sun).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(detail).toBeHidden();
   await expect(title).toBeFocused();

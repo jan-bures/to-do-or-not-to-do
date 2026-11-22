@@ -106,9 +106,10 @@ object-src 'none'
 ```
 
 `'wasm-unsafe-eval'` allows compiling the wasm module and nothing else; there is no `'unsafe-inline'` or
-`'unsafe-eval'`. Styles come from the two stylesheets only. The app never writes a `style` attribute: dynamic
-values are classes and `data-*` attributes, and the landscape's stroke widths and opacities are SVG
-presentation attributes. The browser tests fail on any CSP violation. The rest of the server's headers
+`'unsafe-eval'`. Styles come from the two stylesheets. Dynamic values are chiefly classes and `data-*`
+attributes, and the landscape's stroke widths and opacities are SVG presentation attributes. Room menus set
+only their measured screen coordinates via CSSOM custom properties; they don't need CSS anchor positioning
+or inline style markup. Browser tests fail on any CSP violation. The rest of the server's headers
 (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page.
 
 ## Signing in and the API
@@ -277,8 +278,10 @@ visible row uses them. List chip labels and trailing tags ellipsise; steps and m
 
 The filter narrows open and completed rows in the current room using the shared smart-list query language
 (e.g. `tag:docs`), including accent-insensitive text. Room totals are unchanged. Sidebar chevrons show or
-hide a collection's lists without changing rooms. The browser remembers folded collection IDs in
-`localStorage`; if it is unavailable or the data is invalid, folding still works for this visit.
+hide a collection's lists without changing rooms. The browser remembers folded collections in `localStorage`,
+with one key per ID so changes to different collections in separate tabs don't overwrite each other. Open tabs
+follow storage changes; after sync, the app drops keys for collections that no longer exist. If storage is
+unavailable, folding still works for this visit.
 **New list** creates a sibling of the current list, a child of the current collection, or a top-level
 list from a smart room. Each new list gets a swatch.
 
@@ -308,11 +311,11 @@ draws, the row holds in place struck through (`--duration-complete-hold`), then 
 (`--duration-row-collapse`), and only then does the sun move along its arc (`--duration-sun-travel`, eased
 with `motion::SUN`) and the count change. The toast offers Undo for `--duration-undo-window`, with a thin line
 running out. **Ctrl+Z** outside text fields can still undo the last tracked change after the toast closes.
-Completion, reorders and deletion of a list, collection or step use `SyncClient::undo_tracked`: it cancels an
-unsent change when possible, or queues the compensation for the whole original event batch. For recurring
-tasks that means reopening the original and removing the next occurrence it created. If undo fails, the app
-shows a plain-language explanation, never the server's raw message. Reduced motion turns movement into instant
-changes.
+Completion, reorders and deletion of a list, collection or step use `SyncClient::compensate_tracked`: it
+queues undo of the whole original event batch, waiting for its authoritative event if necessary. A tab never
+cancels the original locally, because another tab may already be sending it. For recurring tasks, Undo reopens
+the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
+refusals are also listed in Not synced, in plain language. Reduced motion turns movement into instant changes.
 
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
@@ -370,7 +373,8 @@ The status bar shows shortcuts only when their actions are available.
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
   header being refused. Then: exact Undo of a confirmed recurring completion (including removal of its
-  next occurrence); a live sidebar change leaving the highlighted menu action on the same list;
+  next occurrence), including Undo before the sending tab has a receipt and late feedback preserving a
+  newer Undo toast; a live sidebar change leaving the highlighted menu action on the same list;
   Dismiss all preserving a refusal that arrived after opening Not synced;
   two tabs queueing edits offline, both closed, and every edit sent exactly once
   on the next start; a tab whose session was replaced by a sign-in elsewhere still sending its queued edit,

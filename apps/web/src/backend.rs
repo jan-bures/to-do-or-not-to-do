@@ -31,7 +31,8 @@ use todo_client::web::{
     elect_sender, open_channel, open_storage, sleep,
 };
 use todo_client::{
-    ClientConfig, CommandId, Connection, ErrorKind, SyncClient, TrackedCommand, TrackedUndo,
+    ClientConfig, CommandId, Connection, ErrorKind, SubmitError, SyncClient, TrackedCommand,
+    TrackedUndo,
 };
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
@@ -483,7 +484,7 @@ pub const READ_ONLY: &str = "a newer version is open in another tab";
 /// Queues a command; the view reflects it at once. Fails if the command is invalid against the view,
 /// and refuses every command (with [`READ_ONLY`], applying nothing) once another tab upgrades the
 /// database: this tab's connection is closing, so an edit made now would be shown but never stored.
-pub fn submit(command: Command) -> Result<(), String> {
+pub fn submit(command: Command) -> Result<(), SubmitError> {
     submit_inner(command, false).map(drop)
 }
 
@@ -494,32 +495,37 @@ pub enum UndoTarget {
 }
 
 /// Retain the command's exact batch, rather than issuing a new command that approximates its inverse.
-pub fn submit_tracked(command: Command) -> Result<UndoTarget, String> {
-    submit_inner(command, true)?.ok_or_else(|| "no undo target".into())
+pub fn submit_tracked(command: Command) -> Result<UndoTarget, SubmitError> {
+    submit_inner(command, true)?.ok_or_else(|| local_error("no undo target"))
 }
 
-fn submit_inner(command: Command, tracked: bool) -> Result<Option<UndoTarget>, String> {
+fn local_error(text: impl Into<String>) -> SubmitError {
+    todo_client::StorageError::Backend(text.into()).into()
+}
+
+fn submit_inner(command: Command, tracked: bool) -> Result<Option<UndoTarget>, SubmitError> {
     if UPGRADING.with(Cell::get) {
-        return Err(READ_ONLY.to_owned());
+        return Err(local_error(READ_ONLY));
     }
     BACKEND.with(|b| match &mut *b.borrow_mut() {
-        Some(Backend::Live(c)) => if tracked {
-            c.submit_tracked(command).map(|t| Some(UndoTarget::Live(t)))
-        } else {
-            c.submit(command).map(|_| None)
+        Some(Backend::Live(c)) => {
+            if tracked {
+                c.submit_tracked(command).map(|t| Some(UndoTarget::Live(t)))
+            } else {
+                c.submit(command).map(|_| None)
+            }
         }
-        .map_err(|e| e.to_string()),
         #[cfg(feature = "fixtures")]
-        Some(Backend::Local(l)) if l.read_only => Err(READ_ONLY.to_owned()),
+        Some(Backend::Local(l)) if l.read_only => Err(local_error(READ_ONLY)),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => {
             let at = l.event_time();
-            let events =
-                todo_core::decide(&l.state, &owner(), &command, at).map_err(|e| e.to_string())?;
-            l.state = Arc::new(changes::fixture::apply_batch(&l.state, &events)?);
+            let events = todo_core::decide(&l.state, &owner(), &command, at)?;
+            l.state =
+                Arc::new(changes::fixture::apply_batch(&l.state, &events).map_err(local_error)?);
             Ok(tracked.then_some(UndoTarget::Local(events)))
         }
-        None => Err("not started".to_owned()),
+        None => Err(local_error("not started")),
     })
 }
 
@@ -544,9 +550,14 @@ pub fn undo(target: &UndoTarget) -> Result<TrackedUndo, String> {
         return Err(READ_ONLY.to_owned());
     }
     BACKEND.with(|b| match (&mut *b.borrow_mut(), target) {
-        (Some(Backend::Live(c)), UndoTarget::Live(t)) => c
-            .undo_tracked(t)
-            .map_err(|_| changes::undo_failure("").into()),
+        (Some(Backend::Live(c)), UndoTarget::Live(t)) => {
+            // Even the sender can lose the lock on reload, and browsers without Web Locks run
+            // several senders. Never infer from this replica alone that a command wasn't sent.
+            c.compensate_tracked(t).map_err(|e| {
+                tracing::debug!(error = %e, "could not queue tracked undo");
+                changes::undo_failure("").into()
+            })
+        }
         #[cfg(feature = "fixtures")]
         (Some(Backend::Local(l)), UndoTarget::Local(events)) => {
             let at = l.event_time();
@@ -593,12 +604,7 @@ pub fn dismiss_failures(ids: &[CommandId]) -> Result<(), String> {
         return Err(READ_ONLY.to_owned());
     }
     BACKEND.with(|b| match &mut *b.borrow_mut() {
-        Some(Backend::Live(c)) => {
-            for &id in ids {
-                c.dismiss(id).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
+        Some(Backend::Live(c)) => c.dismiss_many(ids).map(drop).map_err(|e| e.to_string()),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => {
             l.failures.retain(|f| !ids.contains(&f.id));

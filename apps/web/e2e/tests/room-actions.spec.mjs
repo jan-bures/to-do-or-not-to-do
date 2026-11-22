@@ -26,6 +26,9 @@ test("rename from the sidebar and room menus, with keyboard focus and cancel", a
   const listInput = page.getByRole("textbox", { name: "list name" });
   await expect(listInput).toBeFocused();
   await expect(listInput).toHaveValue("Finance");
+  await listInput.fill("F".repeat(201));
+  await listInput.press("Enter");
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText("name longer than 200 characters");
   await listInput.fill("Budgets");
   await listInput.press("Control+k");
   await expect(listInput).toBeFocused();
@@ -121,6 +124,57 @@ test("the phone can open sidebar actions without right clicking", async ({ page 
   await w.check();
 });
 
+test("held Tab stays in the phone drawer, and a move returns focus to its original menu button", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  await page.getByRole("button", { name: "Lists", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  await expect(drawer).toBeFocused();
+  const first = drawer.getByRole("link", { name: /^My Day/ });
+  const last = drawer.getByRole("button", { name: "Sign out" });
+  await last.focus();
+  await page.keyboard.down("Tab");
+  await expect(first).toBeFocused();
+  await last.focus();
+  await page.keyboard.down("Tab");
+  await page.keyboard.up("Tab");
+  await expect(first).toBeFocused();
+
+  const move = drawer.getByRole("button", { name: "Menu for Work" });
+  const collections = drawer.locator(".nav-collection-row .nav-name");
+  await move.click();
+  await action(page, "Move down").click();
+  await expect(collections).toHaveText(["Osobní", "Work"]);
+  await expect(move).toBeFocused();
+  await page.keyboard.press("Control+z");
+  await expect(collections).toHaveText(["Work", "Osobní"]);
+  await w.check();
+});
+
+test("the menu stays by its trigger and flips its origin when space runs out", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 660 });
+  await open(page);
+  await page.getByRole("button", { name: "Lists", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  await expect(drawer).toHaveCSS("transform", "none");
+  const trigger = drawer.getByRole("button", { name: "Menu for Garden" });
+  await trigger.evaluate((el) => {
+    const nav = el.closest("nav");
+    nav.scrollTop += el.getBoundingClientRect().bottom - nav.getBoundingClientRect().bottom + 8;
+  });
+  await trigger.press("Enter");
+  await expect(menu(page)).toHaveClass(/above-anchor/);
+  await expect(menu(page)).toHaveClass(/end-anchor/);
+  await expect(menu(page)).toHaveCSS("transform", "none");
+  const bounds = await trigger.boundingBox();
+  const pop = await menu(page).boundingBox();
+  expect(Math.abs(pop.y + pop.height - bounds.y)).toBeLessThan(2);
+  expect(Math.abs(pop.x + pop.width - bounds.x - bounds.width)).toBeLessThan(2);
+  await w.check();
+});
+
 test("Not synced lists safe reasons, dismisses one or all, and restores focus", async ({ page }) => {
   const w = watch(page);
   await open(page, "/app?fixture=not-synced");
@@ -157,12 +211,34 @@ test("folded collections alone are remembered across reloads", async ({ page }) 
   await w.check();
 });
 
+test("tabs preserve each other's folds and remove stale collection IDs", async ({ page, context }) => {
+  const missing = "00000000-0000-7000-8000-000000000999";
+  const key = `todo-folded-collection:${missing}`;
+  await page.addInitScript((key) => localStorage.setItem(key, "1"), key);
+  await open(page);
+  const other = await context.newPage();
+  await open(other);
+  await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), key)).toBeNull();
+  await Promise.all([
+    page.getByRole("button", { name: "Collapse Work" }).click(),
+    other.getByRole("button", { name: "Collapse Osobní" }).click(),
+  ]);
+  for (const tab of [page, other]) {
+    await expect(tab.getByRole("button", { name: "Expand Work" })).toBeVisible();
+    await expect(tab.getByRole("button", { name: "Expand Osobní" })).toBeVisible();
+  }
+  await other.reload();
+  await other.getByRole("button", { name: "Expand Osobní" }).click();
+  await expect(page.getByRole("button", { name: "Collapse Osobní" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Expand Work" })).toBeVisible();
+});
+
 test("folding still works when the browser denies localStorage reads and writes", async ({ page }) => {
   const w = watch(page);
   await page.addInitScript(() => {
-    for (const name of ["getItem", "setItem"]) {
-      Storage.prototype[name] = () => { throw new DOMException("Denied", "SecurityError"); };
-    }
+    Object.defineProperty(window, "localStorage", {
+      get() { throw new DOMException("Denied", "SecurityError"); },
+    });
   });
   await open(page);
   await page.getByRole("button", { name: "Collapse Work" }).click();

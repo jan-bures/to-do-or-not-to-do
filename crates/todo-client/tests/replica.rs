@@ -543,6 +543,34 @@ fn an_orphaned_undo_does_not_block_the_next_command() {
 }
 
 #[test]
+fn a_late_adopted_undo_binds_to_the_original_batch_the_sender_already_confirmed() {
+    let (mut sender, mut server, storage) = seeded();
+    let original = entry(31, Command::CompleteTask { id: task_id(1) }, 1);
+    sender.adopt(vec![original.clone()]).unwrap();
+    sender.next_to_send().unwrap().unwrap();
+    let result = server
+        .execute(&owner(), original.command_id, original.command().unwrap())
+        .unwrap();
+    sender.apply_confirmed(EPOCH, &server.log).unwrap();
+    assert!(sender.outbox().is_empty());
+    for (i, r) in [&mut sender, &mut open(&storage)].into_iter().enumerate() {
+        let undo = undo_after(32 + i as u128, &original);
+        r.adopt(vec![undo.clone()]).unwrap();
+        let send = r.next_to_send().unwrap().unwrap();
+        assert_eq!(send.command_id, undo.command_id);
+        assert_eq!(
+            send.op,
+            Operation::Undo {
+                seq: result.events[0].seq,
+                expected_event_id: result.events[0].id,
+                epoch: Some(EPOCH),
+                force: false,
+            }
+        );
+    }
+}
+
+#[test]
 fn undo_after_survives_restart_and_resolves_only_against_its_command() {
     let (mut r, mut server, storage) = seeded();
     let mine = entry(22, Command::CompleteTask { id: task_id(1) }, 1);

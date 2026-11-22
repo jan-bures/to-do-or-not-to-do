@@ -97,6 +97,7 @@ impl Origin {
             if !controls.dialog_open()
                 && controls.menu.with_untracked(Option::is_none)
                 && !platform::focus(&self.dom_id())
+                && !platform::focus("open-drawer")
             {
                 platform::focus("room-title");
             }
@@ -223,6 +224,7 @@ impl Controls {
             self.menu.set(None);
             return;
         }
+        self.position_menu();
         request_animation_frame(move || {
             if self.menu.with_untracked(|m| {
                 m.is_some_and(|m| m.origin == origin && m.highlighted == Item::Rename)
@@ -230,6 +232,14 @@ impl Controls {
                 platform::focus(Item::Rename.id());
             }
         });
+    }
+
+    pub(super) fn position_menu(self) {
+        if let Some((menu, el)) = self.menu.get_untracked().zip(self.popover.get_untracked())
+            && !platform::place_room_menu(&el, &menu.origin.dom_id())
+        {
+            self.close_menu(false);
+        }
     }
 
     pub(super) fn close_menu(self, restore: bool) {
@@ -345,6 +355,15 @@ fn ActionMenu() -> impl IntoView {
     let controls = c.room_actions;
     // Items don't rebuild on sync, and each action keeps both its item ID and its subject's ID.
     let origin = Memo::new(move |_| controls.menu.with(|m| m.map(|m| m.origin)));
+    let _resize = window_event_listener(leptos::ev::resize, move |_| controls.position_menu());
+    Effect::new(move |_| {
+        if origin.get().is_some() {
+            c.sidebar.track();
+            c.view_room.track();
+            c.collapsed.track();
+            request_animation_frame(move || controls.position_menu());
+        }
+    });
     Effect::new(move |_| {
         if let Some(origin) = origin.get()
             && (c.read_only() || c.state.with(|s| origin.0.name(s).is_none()))
@@ -482,21 +501,15 @@ fn activate(c: Ctx, origin: Origin, item: Item) {
                     intent::nudge(s, subject.id(), by)?,
                     format!("Moved “{}”", subject.name(s)?),
                 ))
-            }) && c.submit_undoable(cmd, label, None)
-                && c.drawer.get_untracked()
-            {
-                c.drawer.set(false);
-            } else {
-                origin.restore_focus(controls);
+            }) {
+                c.submit_undoable(cmd, label, None);
             }
+            // Keep the drawer open and return to the very list/collection that moved.
+            origin.restore_focus(controls);
         }
         Item::Fold => {
             if let Subject::Collection(id) = subject {
-                c.fold(|ids| {
-                    if !ids.remove(&id) {
-                        ids.insert(id);
-                    }
-                });
+                c.toggle_fold(id);
             }
             origin.restore_focus(controls);
         }
@@ -537,7 +550,7 @@ fn EditDialog() -> impl IntoView {
     let controls = c.room_actions;
     let close = move || close_dialog(controls.edit_dialog);
     let input = NodeRef::<html::Input>::new();
-    let error = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
     let saving_focus = RwSignal::new(false);
     view! {
         <dialog class="room-dialog" node_ref=controls.edit_dialog aria-labelledby="room-action-heading"
@@ -545,7 +558,7 @@ fn EditDialog() -> impl IntoView {
             on:keydown=move |ev| block_dialog_repeat(&ev)
             on:click=move |ev| { if scrim_click(&ev) { close(); } }
             on:close=move |_| {
-                error.set(false);
+                error.set(None);
                 if let Some(edit) = controls.edit.try_update(Option::take).flatten()
                     && !saving_focus.try_update(|v| std::mem::replace(v, false)).unwrap_or(false)
                 {
@@ -566,14 +579,18 @@ fn EditDialog() -> impl IntoView {
                         if rename {
                             let Some(input) = input.get_untracked() else { return };
                             let name = input.value();
-                            if name.trim().is_empty() { error.set(true); return; }
+                            if name.trim().is_empty() { error.set(Some("Enter a name.".into())); return; }
                             if name.trim() == original { close(); return; }
                             let cmd = c.state.with_untracked(|s| subject.rename(s, &name));
-                            if cmd.is_none_or(|cmd| c.submit(cmd)) { close(); } else { error.set(true); }
+                            if cmd.is_none_or(|cmd| c.submit(cmd)) {
+                                close();
+                            } else {
+                                error.set(c.toast.get_untracked().map(|toast| toast.text));
+                            }
                         } else {
                             let name = c.state.with_untracked(|s| subject.name(s).unwrap_or_default().to_owned());
                             if !c.submit_undoable(intent::delete(subject.id()), format!("Deleted “{name}”"), None) {
-                                error.set(true);
+                                error.set(c.toast.get_untracked().map(|toast| toast.text));
                                 return;
                             }
                             let active = c.room.with_untracked(Subject::of);
@@ -606,11 +623,11 @@ fn EditDialog() -> impl IntoView {
                             <input type="text" value=shown_name node_ref=input id="rename-room-name"
                                 class="room-name-input" aria-label=format!("{} name", subject.kind())
                                 autocomplete="off" required disabled=move || c.read_only() || !available()
-                                on:input=move |_| error.set(false)/>
+                                on:input=move |_| error.set(None)/>
                         })}
-                        <Show when=move || error.get()>
-                            <p role="alert" class="action-error">"Couldn’t save that change."</p>
-                        </Show>
+                        {move || error.get().map(|message| view! {
+                            <p role="alert" class="action-error">{message}</p>
+                        })}
                         <div class="dialog-actions">
                             <button type="button" class="button" id="cancel-room-action" on:click=move |_| close()>"Cancel"</button>
                             <button type="submit" class="button" class:danger=!rename class:primary=rename

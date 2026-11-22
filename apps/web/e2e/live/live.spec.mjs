@@ -266,6 +266,66 @@ test("tracked undo of a confirmed recurring completion restores only the origina
   await page.close();
 });
 
+test("a follower undoes a recurring completion the sender has adopted; its late receipt keeps the newer Undo", async () => {
+  const sender = await openApp();
+  const follower = await openApp();
+  const problems = watch(follower);
+  const title = "Water the balcony planters";
+  const nextTitle = "Check the watering schedule";
+  const original = "0193b2c0-0000-7000-8000-0000000000b1";
+  const sync = follower.locator(".sync-text");
+  await follower.locator(".sidebar").getByRole("link", { name: /^Inbox/ }).click();
+  await add(follower, nextTitle);
+  await expect(sync).toHaveText(/^Synced/);
+
+  let releaseComplete, releaseUndo, sawComplete, sawUndo;
+  const completeGate = new Promise((resolve) => { releaseComplete = resolve; });
+  const undoGate = new Promise((resolve) => { releaseUndo = resolve; });
+  const sendingComplete = new Promise((resolve) => { sawComplete = resolve; });
+  const sendingUndo = new Promise((resolve) => { sawUndo = resolve; });
+  await sender.route("**/api/v1/commands", async (route) => {
+    if (route.request().postDataJSON().command.id === original) {
+      sawComplete();
+      await completeGate;
+    }
+    await route.continue();
+  });
+  await sender.route(/\/api\/v1\/events\/\d+\/undo$/, async (route) => {
+    sawUndo();
+    await undoGate;
+    await route.continue();
+  });
+  try {
+    await row(follower, title).getByRole("checkbox").click();
+    await sendingComplete; // The sender has its own copy; the follower's attempt count is still 0.
+    await follower.getByRole("button", { name: /^Undo/ }).click();
+    await committed(follower, '"op":"undo_after"');
+    await committed(follower, '"cmd":"complete_task"');
+    releaseComplete();
+    await sendingUndo;
+
+    // Leave the first undo in flight while creating a newer undoable toast in the follower.
+    await row(follower, nextTitle).getByRole("checkbox").click();
+    await expect(follower.locator(".toast")).toContainText(nextTitle);
+    releaseUndo();
+    await expect(sync).toHaveText(/^Synced/);
+    await expect(row(follower, title)).toHaveCount(1);
+    await expect(row(follower, title).locator(".row-title")).toHaveAttribute("id", `row-${original}`);
+    await expect(row(follower, title).getByRole("checkbox")).not.toBeChecked();
+    await expect(follower.locator(".toast")).toContainText(nextTitle);
+    await follower.getByRole("button", { name: /^Undo/ }).click();
+    await expect(sync).toHaveText(/^Synced/);
+    await expect(row(follower, nextTitle).getByRole("checkbox")).not.toBeChecked();
+    await expect(follower.locator(".toast")).toContainText(`Undid: Completed “${nextTitle}”`);
+    expect(problems).toEqual([]);
+  } finally {
+    releaseComplete();
+    releaseUndo();
+    await sender.close();
+    await follower.close();
+  }
+});
+
 test("a live sidebar update cannot retarget a highlighted room action", async () => {
   const page = await openApp();
   const problems = watch(page);

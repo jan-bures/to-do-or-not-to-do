@@ -245,7 +245,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.4 | **Done.** Steps can be renamed, reordered and deleted. | S–M |
 | 3.5 | **Done.** Rename, reorder and delete lists and collections from their sidebar or room menus. | M |
 | 3.6 | **Done.** Reorder tasks in a list with Alt+Up/Down. | S |
-| 3.7 | **Done.** Exact undo through `SyncClient::undo_tracked`, including recurring completion and reorders. | M |
+| 3.7 | **Done.** Exact undo through `SyncClient::compensate_tracked`, including recurring completion and reorders across tabs. | M |
 | 3.8 | **Done.** Hand-over rows select the task and can complete it from the checkbox. | S |
 | 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
 | 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |

@@ -421,8 +421,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     }
 
     /// Submits a command for which the UI offers Undo. The returned handle correlates the command
-    /// with the authoritative log, not with similar commands from other devices. Use with a
-    /// standalone outbox, not one jointly owned by multiple browser tabs.
+    /// with the authoritative log, not with similar commands from other devices. For an outbox
+    /// shared by multiple tabs, undo it with [`Self::compensate_tracked`].
     pub fn submit_tracked(&self, command: Command) -> Result<TrackedCommand, SubmitError> {
         self.enqueue(Operation::Command { command }, Replica::track)
     }
@@ -432,18 +432,35 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// The view shows the predicted inverse while the undo waits, also after a restart (see the
     /// replica's module docs for when it can't).
     pub fn undo_tracked(&self, target: &TrackedCommand) -> Result<TrackedUndo, SubmitError> {
+        self.request_tracked_undo(target, true)
+    }
+
+    /// Queues a checked undo of the exact command without ever cancelling it locally. Use this
+    /// for shared outboxes: another tab may have already picked up the original command even when
+    /// this replica hasn't seen a send attempt.
+    pub fn compensate_tracked(&self, target: &TrackedCommand) -> Result<TrackedUndo, SubmitError> {
+        self.request_tracked_undo(target, false)
+    }
+
+    fn request_tracked_undo(
+        &self,
+        target: &TrackedCommand,
+        allow_cancel: bool,
+    ) -> Result<TrackedUndo, SubmitError> {
         let command_id = self.new_uuid();
         let now = self.inner.clock.now();
         let result = self.with(|s| {
             let ms = now.as_millisecond().max(s.last_submitted_ms + 1);
-            let result = s.replica.undo_tracked(target, |op| OutboxEntry {
-                command_id,
-                op,
-                submitted_at: Timestamp::from_millisecond(ms).unwrap_or(now),
-                attempts: 0,
-                acked: None,
-                acked_epoch: None,
-            })?;
+            let result = s
+                .replica
+                .undo_tracked(target, allow_cancel, |op| OutboxEntry {
+                    command_id,
+                    op,
+                    submitted_at: Timestamp::from_millisecond(ms).unwrap_or(now),
+                    attempts: 0,
+                    acked: None,
+                    acked_epoch: None,
+                })?;
             if matches!(result, TrackedUndo::Queued(_)) {
                 s.last_submitted_ms = ms;
             }
