@@ -8,8 +8,8 @@
 //! [`decide()`]/[`apply()`]. Each command is decided with its submission time as `now`, so the view is a
 //! pure function of the confirmed state and the outbox and comes out the same every time it is rebuilt.
 //! A pending command that no longer applies (the server state moved under it) is simply left out of
-//! the view; the server decides its fate. Undos are not applied optimistically (that would need the
-//! undone command's events); their effect shows once confirmed.
+//! the view; the server decides its fate. Checked undos are projected when the original's full
+//! batch is known or can still be decided from the pending command. Otherwise they wait for confirmation.
 //!
 //! # Leaving the outbox
 //!
@@ -198,6 +198,8 @@ pub struct Replica {
     /// Entries this replica has sent (or is sending): [`Replica::adopt`] slots nothing before them.
     sent_here: BTreeSet<CommandId>,
     tracked: BTreeMap<CommandId, CommandLog>,
+    /// A queued undo needs the original's log even if its caller drops the tracking handle.
+    undo_targets: BTreeMap<CommandId, TrackedCommand>,
 }
 
 /// What [`Replica::open`] rebuilt from storage.
@@ -213,6 +215,8 @@ struct Restored {
     settled: Vec<CommandId>,
     /// Outbox entries whose acknowledgement belongs to another epoch, now unacknowledged.
     unbound: Vec<OutboxEntry>,
+    resolved_undos: Vec<OutboxEntry>,
+    failed_undos: Vec<FailedEntry>,
 }
 
 /// True if `entry`'s acknowledgement does not belong to the log with `epoch`.
@@ -226,6 +230,7 @@ fn restore(loaded: Loaded) -> Restored {
     let mut replayed = 0;
     let mut needs_snapshot = false;
     let mut seen_commands = BTreeSet::new();
+    let mut first_events = BTreeMap::new();
     for e in &loaded.events {
         let Some(seq) = e.event.seq else { continue };
         if seq <= cursor {
@@ -242,6 +247,15 @@ fn restore(loaded: Loaded) -> Restored {
             break;
         }
         seen_commands.insert(e.command_id);
+        if e.command_idx == 0 {
+            first_events.insert(
+                e.command_id,
+                EventRef {
+                    seq,
+                    id: e.event.id,
+                },
+            );
+        }
         cursor = seq;
         replayed += 1;
     }
@@ -263,6 +277,26 @@ fn restore(loaded: Loaded) -> Restored {
             }
         }
     }
+    let pending_ids: BTreeSet<_> = outbox.iter().map(|entry| entry.command_id).collect();
+    let mut resolved_undos = Vec::new();
+    let mut failed_undos = Vec::new();
+    outbox.retain_mut(|entry| {
+        let Operation::UndoAfter { original } = entry.op else {
+            return true;
+        };
+        if pending_ids.contains(&original) {
+            return true;
+        }
+        if let Some((epoch, event)) = loaded.epoch.zip(first_events.get(&original)) {
+            *entry = resolved_undo(entry, epoch, *event);
+            resolved_undos.push(entry.clone());
+            true
+        } else {
+            // A snapshot can prove an acknowledged command settled without retaining its seq.
+            failed_undos.push(undo_without_event(entry));
+            false
+        }
+    });
     Restored {
         confirmed,
         cursor,
@@ -273,6 +307,8 @@ fn restore(loaded: Loaded) -> Restored {
         needs_snapshot,
         settled: settled.into_iter().map(|e| e.command_id).collect(),
         unbound,
+        resolved_undos,
+        failed_undos,
     }
 }
 
@@ -312,6 +348,7 @@ impl Replica {
             settled_set: BTreeSet::new(),
             sent_here: BTreeSet::new(),
             tracked: BTreeMap::new(),
+            undo_targets: BTreeMap::new(),
         };
         r.load()?;
         Ok(r)
@@ -320,7 +357,12 @@ impl Replica {
     /// Builds everything from storage.
     fn load(&mut self) -> Result<(), StorageError> {
         let r = restore(self.storage.load()?);
-        if !r.settled.is_empty() || !r.unbound.is_empty() {
+        let failed_ids: Vec<_> = r.failed_undos.iter().map(|f| f.entry.command_id).collect();
+        if !r.settled.is_empty()
+            || !r.unbound.is_empty()
+            || !r.resolved_undos.is_empty()
+            || !failed_ids.is_empty()
+        {
             tracing::info!(
                 settled = r.settled.len(),
                 unbound = r.unbound.len(),
@@ -331,7 +373,14 @@ impl Replica {
                 .iter()
                 .map(|id| StorageOp::RemoveOutbox(*id))
                 .collect();
-            ops.extend(r.unbound.iter().map(StorageOp::PutOutbox));
+            ops.extend(
+                r.unbound
+                    .iter()
+                    .chain(&r.resolved_undos)
+                    .map(StorageOp::PutOutbox),
+            );
+            ops.extend(r.failed_undos.iter().map(StorageOp::PutFailed));
+            ops.extend(failed_ids.iter().copied().map(StorageOp::RemoveOutbox));
             self.storage.write(&ops)?;
         }
         tracing::debug!(
@@ -345,10 +394,11 @@ impl Replica {
         self.epoch = r.epoch;
         self.outbox = r.outbox;
         self.failed = r.failed;
+        self.failed.extend(r.failed_undos);
         self.view = None;
         self.unsnapshotted = r.replayed;
         self.needs_snapshot = r.needs_snapshot;
-        self.remember_settled(r.settled);
+        self.remember_settled(r.settled.into_iter().chain(failed_ids));
         Ok(())
     }
 
@@ -398,19 +448,77 @@ impl Replica {
         if let Some(v) = &self.view {
             return v.clone();
         }
-        let v = Arc::new(self.build_view());
+        let v = Arc::new(self.build_view(false).0);
         self.view = Some(v.clone());
         v
     }
 
-    fn build_view(&self) -> State {
+    fn build_view(&self, preview: bool) -> (State, BTreeMap<CommandId, Vec<Event>>) {
+        let keep_batches = preview || self.outbox.iter().any(|e| e.command().is_none());
         let mut view = self.confirmed.clone();
+        let mut batches = BTreeMap::new();
         for entry in &self.outbox {
             if let Some(command) = entry.command() {
-                overlay(&mut view, &self.actor, entry, command);
+                if let Some(events) = overlay(&mut view, &self.actor, entry, command)
+                    && keep_batches
+                {
+                    batches.insert(entry.command_id, events);
+                }
+            } else if let Some(events) = self.undo_events(&entry.op, &batches) {
+                self.project_undo(&mut view, events, entry.submitted_at);
             }
         }
-        view
+        (view, batches)
+    }
+
+    fn undo_events<'a>(
+        &'a self,
+        op: &Operation,
+        batches: &'a BTreeMap<CommandId, Vec<Event>>,
+    ) -> Option<&'a [Event]> {
+        match *op {
+            Operation::UndoAfter { original } => batches.get(&original).map(Vec::as_slice),
+            Operation::Undo {
+                seq,
+                expected_event_id,
+                epoch: Some(epoch),
+                force: false,
+            } if self.epoch == Some(epoch) => {
+                if seq > self.cursor {
+                    // A response can resolve the undo before its original appears in the stream.
+                    let original = self.outbox.iter().find(|entry| {
+                        entry.acked_epoch == Some(epoch)
+                            && entry.acked.as_ref().and_then(|ids| ids.first())
+                                == Some(&expected_event_id)
+                    })?;
+                    return batches.get(&original.command_id).map(Vec::as_slice);
+                }
+                let event = EventRef {
+                    seq,
+                    id: expected_event_id,
+                };
+                let log = self
+                    .tracked
+                    .values()
+                    .find(|log| log.first == Some((epoch, event)))?;
+                let last = log.events.last()?.seq?;
+                let complete = last <= self.cursor
+                    && (self.cursor > last || log.batch_size == Some((epoch, log.events.len())));
+                complete.then_some(log.events.as_slice())
+            }
+            _ => None,
+        }
+    }
+
+    fn project_undo(&self, view: &mut State, events: &[Event], at: Timestamp) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        let Ok(inverse) = undo_batch(view, events, &self.actor, at, UndoOptions::default()) else {
+            return false;
+        };
+        // undo_batch validates the full compensation against a copy before returning it.
+        inverse.iter().all(|event| apply(view, event).is_ok())
     }
 
     /// Adds an entry to the outbox (durably, before it is accepted).
@@ -424,8 +532,10 @@ impl Replica {
             decided = Some(decide(&view, &self.actor, command, entry.submitted_at)?);
         }
         self.storage.write(&[StorageOp::PutOutbox(&entry)])?;
-        // Extend the cached view instead of rebuilding it: the result is the same.
-        if let (Some(events), Some(view)) = (decided, self.view.as_mut()) {
+        // Commands can extend the cached view; undos need the original's batch.
+        if entry.command().is_none() {
+            self.view = None;
+        } else if let (Some(events), Some(view)) = (decided, self.view.as_mut()) {
             let view = Arc::make_mut(view);
             for e in &events {
                 if let Err(err) = apply(view, e) {
@@ -440,7 +550,7 @@ impl Replica {
     }
 
     pub(crate) fn track(&mut self, id: CommandId) -> TrackedCommand {
-        self.tracked.retain(|_, log| log.handle.strong_count() > 0);
+        self.prune_tracking();
         let id = Arc::new(id);
         self.tracked.insert(
             *id,
@@ -452,6 +562,12 @@ impl Replica {
             },
         );
         TrackedCommand(id)
+    }
+
+    fn prune_tracking(&mut self) {
+        self.undo_targets
+            .retain(|id, _| self.outbox.iter().any(|e| e.command_id == *id));
+        self.tracked.retain(|_, log| log.handle.strong_count() > 0);
     }
 
     fn tracked(&self, target: &TrackedCommand) -> Option<&CommandLog> {
@@ -496,6 +612,7 @@ impl Replica {
         let entry = make_entry(op);
         let id = entry.command_id;
         self.submit(entry)?;
+        self.undo_targets.insert(id, target.clone());
         Ok(TrackedUndo::Queued(id))
     }
 
@@ -507,41 +624,15 @@ impl Replica {
         at: Timestamp,
     ) -> Option<State> {
         let log = self.tracked(target)?;
-        let mut view = self.confirmed.clone();
-        let mut pending_events = Vec::new();
-        let mut found = false;
-        for entry in &self.outbox {
-            let Some(command) = entry.command() else {
-                continue;
-            };
-            if entry.command_id == *target.0 {
-                pending_events = decide(&view, &self.actor, command, entry.submitted_at).ok()?;
-                for event in &pending_events {
-                    apply(&mut view, event).ok()?;
-                }
-                found = true;
-            } else {
-                overlay(&mut view, &self.actor, entry, command);
-            }
-        }
-        let events = if found {
-            &pending_events
-        } else {
-            let (epoch, _) = log.first?;
-            let last = log.events.last()?.seq?;
-            let complete = self.cursor > last || log.batch_size == Some((epoch, log.events.len()));
-            if self.epoch != Some(epoch) || !complete {
-                return None;
-            }
-            &log.events
-        };
-        if events.is_empty() {
-            return None;
-        }
-        for e in undo_batch(&view, events, &self.actor, at, UndoOptions::default()).ok()? {
-            apply(&mut view, &e).ok()?;
-        }
-        Some(view)
+        let (mut view, batches) = self.build_view(true);
+        let op = log.first.map_or(
+            Operation::UndoAfter {
+                original: *target.0,
+            },
+            |(epoch, event)| checked_undo(epoch, event),
+        );
+        let events = self.undo_events(&op, &batches)?;
+        self.project_undo(&mut view, events, at).then_some(view)
     }
 
     /// The oldest entry the server has not acknowledged yet, with its attempt counted (and stored, so
@@ -550,20 +641,28 @@ impl Replica {
     /// `None` also while that entry is not durable yet ([`Storage::is_durable`]) or is an early
     /// undo that still needs the original's receipt. Nothing after it is sent before it.
     pub fn next_to_send(&mut self) -> Result<Option<OutboxEntry>, StorageError> {
-        let Some(entry) = self.outbox.iter_mut().find(|e| e.acked.is_none()) else {
-            return Ok(None);
-        };
-        if !self.storage.is_durable(entry.command_id)
-            || matches!(entry.op, Operation::UndoAfter { .. })
-        {
-            return Ok(None);
+        loop {
+            let Some(pos) = self.outbox.iter().position(|e| e.acked.is_none()) else {
+                return Ok(None);
+            };
+            let entry = &self.outbox[pos];
+            if !self.storage.is_durable(entry.command_id) {
+                return Ok(None);
+            }
+            if let Operation::UndoAfter { original } = entry.op {
+                if self.position(original).is_some() {
+                    return Ok(None);
+                }
+                self.settle(entry.command_id, vec![undo_without_event(entry)])?;
+                continue;
+            }
+            let mut next = entry.clone();
+            next.attempts = next.attempts.saturating_add(1);
+            self.storage.write(&[StorageOp::PutOutbox(&next)])?;
+            self.outbox[pos] = next.clone();
+            self.sent_here.insert(next.command_id);
+            return Ok(Some(next));
         }
-        let mut next = entry.clone();
-        next.attempts = next.attempts.saturating_add(1);
-        self.storage.write(&[StorageOp::PutOutbox(&next)])?;
-        *entry = next.clone();
-        self.sent_here.insert(next.command_id);
-        Ok(Some(next))
     }
 
     /// Records the server's acknowledgement: the entry is not sent again, and leaves the outbox when
@@ -586,10 +685,15 @@ impl Replica {
         command_id: CommandId,
         result: &CommandResult,
     ) -> Result<Ack, StorageError> {
-        if let (Some(log), Some(epoch)) = (self.tracked.get_mut(&command_id), result.epoch) {
-            log.batch_size = Some((epoch, result.events.len()));
-        }
         let Some(pos) = self.position(command_id) else {
+            // A late reply can finish describing a batch whose first event already arrived.
+            if let Some(log) = self.tracked.get_mut(&command_id)
+                && result.epoch.zip(result.events.first().copied()) == log.first
+                && let Some((epoch, _)) = log.first
+            {
+                log.batch_size = Some((epoch, result.events.len()));
+                self.view = None;
+            }
             return Ok(Ack::Recorded);
         };
         if let (Some(theirs), Some(ours)) = (result.epoch, self.epoch)
@@ -642,7 +746,13 @@ impl Replica {
             self.storage.write(&ops)?;
             self.outbox[pos] = next;
         }
-        self.replace_outbox(ready);
+        if let (Some(log), Some(epoch)) = (self.tracked.get_mut(&command_id), result.epoch) {
+            log.batch_size = Some((epoch, result.events.len()));
+        }
+        if !ready.is_empty() {
+            self.replace_outbox(ready);
+            self.view = None;
+        }
         Ok(Ack::Recorded)
     }
 
@@ -673,6 +783,7 @@ impl Replica {
         self.failed.extend(failed);
         self.view = None;
         self.remember_settled(remove);
+        self.prune_tracking();
         Ok(())
     }
 
@@ -764,18 +875,24 @@ impl Replica {
     /// Takes in entries another tab moved to the "couldn't sync" list: they leave this replica's
     /// outbox and join its list. Returns how many were new.
     pub fn adopt_failed(&mut self, failed: Vec<FailedEntry>) -> Result<usize, StorageError> {
-        let new: Vec<FailedEntry> = failed
+        let mut ids: BTreeSet<_> = self.failed.iter().map(|f| f.entry.command_id).collect();
+        let mut new: Vec<_> = failed
             .into_iter()
-            .filter(|f| {
-                !self
-                    .failed
-                    .iter()
-                    .any(|o| o.entry.command_id == f.entry.command_id)
-            })
+            .filter(|f| ids.insert(f.entry.command_id))
             .collect();
-        if new.is_empty() {
+        let adopted = new.len();
+        if adopted == 0 {
             return Ok(0);
         }
+        let originals: BTreeSet<_> = new.iter().map(|f| f.entry.command_id).collect();
+        new.extend(self.outbox.iter().filter_map(|entry| match entry.op {
+            Operation::UndoAfter { original }
+                if originals.contains(&original) && ids.insert(entry.command_id) =>
+            {
+                Some(undo_without_event(entry))
+            }
+            _ => None,
+        }));
         let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(new.len() * 2);
         for f in &new {
             ops.push(StorageOp::PutFailed(f));
@@ -790,8 +907,9 @@ impl Replica {
         self.failed
             .sort_by_key(|f| (f.failed_at.as_millisecond(), f.entry.command_id));
         self.view = None;
-        self.remember_settled(ids.iter().copied());
-        Ok(ids.len())
+        self.remember_settled(ids);
+        self.prune_tracking();
+        Ok(adopted)
     }
 
     /// Removes an entry from the "couldn't sync" list. Returns false if there was none.
@@ -895,14 +1013,16 @@ impl Replica {
             .filter(|id| done.contains(id))
             .collect();
         // Resolve durable early Undo requests before removing their original from the outbox.
-        let ready: Vec<_> = if self
+        let mut ready = Vec::new();
+        let mut failed = Vec::new();
+        if self
             .outbox
             .iter()
             .any(|e| matches!(e.op, Operation::UndoAfter { .. }))
         {
             let first: BTreeMap<_, _> = applied
                 .iter()
-                .rev()
+                .filter(|log| log.command_idx == 0)
                 .filter_map(|log| {
                     Some((
                         log.command_id,
@@ -913,18 +1033,19 @@ impl Replica {
                     ))
                 })
                 .collect();
-            self.outbox
-                .iter()
-                .filter_map(|e| match e.op {
-                    Operation::UndoAfter { original } => {
-                        Some(resolved_undo(e, epoch, *first.get(&original)?))
+            for entry in &self.outbox {
+                if let Operation::UndoAfter { original } = entry.op
+                    && done.contains(&original)
+                {
+                    if let Some(event) = first.get(&original) {
+                        ready.push(resolved_undo(entry, epoch, *event));
+                    } else {
+                        // We only saw the tail of the batch, never bind to a later event.
+                        failed.push(undo_without_event(entry));
                     }
-                    _ => None,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                }
+            }
+        }
         let snapshot = !applied.is_empty()
             && (self.needs_snapshot || self.unsnapshotted + applied.len() >= self.snapshot_every);
         let mut ops: Vec<StorageOp<'_>> = Vec::with_capacity(settled.len() + unbound.len() + 2);
@@ -940,8 +1061,15 @@ impl Replica {
         } else if !applied.is_empty() {
             ops.push(StorageOp::AppendEvents(&applied));
         }
+        let failed_ids: BTreeSet<_> = failed.iter().map(|f| f.entry.command_id).collect();
         ops.extend(ready.iter().map(StorageOp::PutOutbox));
-        ops.extend(settled.iter().map(|id| StorageOp::RemoveOutbox(*id)));
+        ops.extend(failed.iter().map(StorageOp::PutFailed));
+        ops.extend(
+            settled
+                .iter()
+                .chain(&failed_ids)
+                .map(|id| StorageOp::RemoveOutbox(*id)),
+        );
         if let Err(err) = self.storage.write(&ops) {
             tracing::warn!(error = %err, cursor = self.cursor, "cannot store confirmed events");
             return Err(err.into());
@@ -971,7 +1099,6 @@ impl Replica {
         }
         if !applied.is_empty() {
             self.view = None;
-            self.tracked.retain(|_, log| log.handle.strong_count() > 0);
             for event in &applied {
                 if let Some(log) = self.tracked.get_mut(&event.command_id) {
                     // Bind to the first log in which this command was seen. On a same-epoch replay,
@@ -995,8 +1122,11 @@ impl Replica {
                     }
                 }
             }
-            self.outbox.retain(|e| !done.contains(&e.command_id));
-            self.remember_settled(done.iter().copied());
+            self.outbox
+                .retain(|e| !done.contains(&e.command_id) && !failed_ids.contains(&e.command_id));
+            self.failed.extend(failed);
+            self.remember_settled(done.into_iter().chain(failed_ids));
+            self.prune_tracking();
         }
         match failure {
             Some(f) => Err(f),
@@ -1030,8 +1160,7 @@ impl Replica {
     }
 }
 
-/// Decides and applies one pending command on top of the view, leaving the view untouched if it no
-/// longer applies.
+/// Replaces a dependency with a checked undo of the original command's first event.
 fn resolved_undo(entry: &OutboxEntry, epoch: Epoch, event: EventRef) -> OutboxEntry {
     OutboxEntry {
         op: checked_undo(epoch, event),
@@ -1046,24 +1175,32 @@ fn undo_without_event(entry: &OutboxEntry) -> FailedEntry {
         rejection: Rejection {
             status: 0,
             code: "undo_no_event".into(),
-            message: "The original change did not take effect.".into(),
+            message: "No matching event is available for the original change.".into(),
         },
     }
 }
 
-fn overlay(view: &mut State, actor: &Actor, entry: &OutboxEntry, command: &todo_core::Command) {
+/// Decides and applies one pending command and returns its batch for any dependent undo.
+fn overlay(
+    view: &mut State,
+    actor: &Actor,
+    entry: &OutboxEntry,
+    command: &todo_core::Command,
+) -> Option<Vec<Event>> {
     match decide(view, actor, command, entry.submitted_at) {
         Ok(events) => {
             // `decide`'s events always apply to the state they were decided against.
             for e in &events {
                 if let Err(err) = apply(view, e) {
                     tracing::warn!(command_id = %entry.command_id, error = %err, "decided event does not apply");
-                    return;
+                    return None;
                 }
             }
+            Some(events)
         }
         Err(err) => {
             tracing::debug!(command_id = %entry.command_id, error = %err, "pending command no longer applies");
+            None
         }
     }
 }

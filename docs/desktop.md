@@ -231,12 +231,16 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
 - **Undo.** Completing a task or moving it up/down in a list shows one toast in the reserved footer,
   to the right of Completed and outside the rows' viewport and narrow detail overlay. It enters over
   `TOAST_IN`, swaps its message in place over `CONTENT_SWAP`, and leaves over `TOAST_OUT`. The
-  `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. **Ctrl+Z**
-  outside text fields can still undo the last change once the toast has expired or been dismissed.
-  Undo cancels the latest unsent command when nothing follows it in the outbox; otherwise it queues
-  a non-forced undo tied to that command's exact server event. This also undoes a repeat's spawned
-  occurrence. Conflicts appear in the status bar; Undo does not overwrite another device's changes.
-  Undo during a held completion reverses the row in place; other restored rows enter over `ROW_ENTER`.
+  `UNDO_WINDOW` countdown pauses while the toast is hovered or its Undo button is focused. **Tab**
+  and **Shift+Tab** reach Undo from the list. **Ctrl+Z** outside text fields can still undo the last
+  change after the toast closes, with feedback in the status bar. Leaving the room or editing that
+  task clears the old target. Undo cancels the latest unsent command when nothing follows it in the
+  outbox; otherwise it queues a non-forced undo tied to that command's exact server event. The
+  shared view shows the undo before sync when it knows the original batch, including the next
+  occurrence spawned by completing a repeat. Conflicts appear in the status bar; Undo does not
+  overwrite another device's changes. Undo during a held completion reverses the row in place;
+  other restored rows enter over `ROW_ENTER`. Undoing a reorder does not replay row entrance.
+  Narrow detail content can scroll its last row clear of the toast strip.
   Task deletion and cross-list moving have no desktop controls yet.
 - **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`).
   The sun travels from where it is over `SUN_TRAVEL` in both scenes. The scene fades in over the strip,

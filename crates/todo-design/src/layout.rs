@@ -227,6 +227,8 @@ pub mod desktop {
     pub const TOAST_INSET: f32 = 56.0;
     /// Toast height.
     pub const TOAST: f32 = 40.0;
+    /// Maximum width of a desktop toast before its one-line label is truncated.
+    pub const TOAST_MAX: f32 = 392.0;
     /// Height of the undo countdown line along the toast's lower edge.
     pub const TOAST_COUNTDOWN: f32 = 2.0;
     /// Smart-list rows in the sidebar.
@@ -245,7 +247,7 @@ pub mod desktop {
     pub const PROP_ROW: f32 = 34.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 38] = [
+    pub const ALL: [(&str, f32); 39] = [
         ("sidebar", SIDEBAR),
         ("list", LIST),
         ("detail", DETAIL),
@@ -276,6 +278,7 @@ pub mod desktop {
         ("chip-max", CHIP_MAX),
         ("toast-inset", TOAST_INSET),
         ("toast", TOAST),
+        ("toast-max", TOAST_MAX),
         ("toast-countdown", TOAST_COUNTDOWN),
         ("nav-row", NAV_ROW),
         ("nav-sub-row", NAV_SUB_ROW),

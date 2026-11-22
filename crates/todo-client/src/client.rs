@@ -429,6 +429,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// Cancels an unsent command or durably queues a non-forced undo of this exact command.
     /// If its outcome is still unknown, the undo waits in the outbox for an authoritative receipt.
+    /// The shared view applies its predicted inverse when the original's batch is available.
     pub fn undo_tracked(&self, target: &TrackedCommand) -> Result<TrackedUndo, SubmitError> {
         let command_id = self.new_uuid();
         let now = self.inner.clock.now();
@@ -466,7 +467,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// event). `expected_event_id` is the ID of the event at `seq` the user means (from the activity
     /// feed or the confirmed log); with the current log epoch, it lets the server refuse the undo if its
     /// log was replaced meanwhile, and the entry then lands in the "couldn't sync" list instead of
-    /// undoing some other event. It shows in the view once the server confirms it.
+    /// undoing some other event. If the original's batch isn't available locally, the inverse
+    /// shows in the view once the server confirms it.
     pub fn undo(
         &self,
         seq: u64,
@@ -680,7 +682,15 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             let seen = self.inner.outbox_changed.generation();
             let saved_seen = self.inner.saved.as_ref().map(Notify::generation);
             let next = if self.is_sending() {
-                self.with(|s| s.replica.next_to_send())
+                let (next, failed_undo) = self.with(|s| {
+                    let before = s.replica.failed().len();
+                    let next = s.replica.next_to_send();
+                    (next, before != s.replica.failed().len())
+                });
+                if failed_undo {
+                    self.changed();
+                }
+                next
             } else {
                 Ok(None)
             };

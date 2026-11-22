@@ -25,7 +25,7 @@ use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::layout::{self, DetailPane, Width};
 use crate::model::motion::{
-    DetailMotion, Keep, Motion, Pace, RowLook, Toast, Wake, anchored_scroll, lifts,
+    DetailMotion, Keep, Motion, Pace, RowLook, Toast, Track, Wake, anchored_scroll, lifts,
     rows_rising_into,
 };
 use crate::model::{
@@ -194,6 +194,7 @@ pub struct ShellView {
     motion: Motion,
     toast: Toast<SharedString>,
     undo_focus: FocusHandle,
+    undo_ring: Track,
     toast_hover: bool,
     last_undo: Option<undo::Action>,
     pending_undo: Vec<undo::Pending>,
@@ -308,6 +309,7 @@ impl ShellView {
             motion: Motion::default(),
             toast: Toast::default(),
             undo_focus: cx.focus_handle(),
+            undo_ring: Track::rest(0.),
             toast_hover: false,
             last_undo: None,
             pending_undo: Vec::new(),
@@ -373,8 +375,16 @@ impl ShellView {
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
         let state = self.undo_state();
         // Capture the painted rows before releasing the old room's holds and deriving new counts.
-        let room_changed = self.ui.room.resolved(&state) != self.shell.room.key;
+        let room = self.ui.room.resolved(&state);
+        let room_changed = room != self.shell.room.key;
         let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
+        if self
+            .last_undo
+            .as_ref()
+            .is_some_and(|undo| !undo.is_in(room))
+        {
+            self.clear_undo();
+        }
         if room_changed {
             self.motion.settle_all();
             self.row_lifts.clear();
@@ -533,7 +543,23 @@ impl ShellView {
                 window.focus(&self.list_focus, cx);
             }
         }
-        match self.motion.wake(now).or(self.toast.wake(now)) {
+        let show_ring = undo_focused && self.toast.look(now).is_some_and(|t| t.active);
+        self.undo_ring.aim(
+            f32::from(show_ring),
+            now,
+            Duration::from_millis(u64::from(theme::motion::HOVER)),
+            if show_ring {
+                theme::motion::STANDARD
+            } else {
+                theme::motion::EXIT
+            },
+        );
+        let ring = if self.undo_ring.moving(now) {
+            Wake::Frame
+        } else {
+            Wake::Idle
+        };
+        match self.motion.wake(now).or(self.toast.wake(now)).or(ring) {
             Wake::Idle => {}
             Wake::Frame => window.request_animation_frame(),
             Wake::At(at) if self.alarm == Some(at) => {}
@@ -635,12 +661,19 @@ impl ShellView {
                     .aim_dusk(room, false, Duration::ZERO, Pace::FULL);
                 at
             }
-            Moment::UndoToast { at } => {
-                self.toast.show(
-                    "Completed \u{201c}Send venue\u{201d}".into(),
-                    Duration::ZERO,
-                    Pace::FULL,
-                );
+            Moment::UndoToast { task, at } => {
+                if let Some(task) = self.store.view().tasks.get(&task) {
+                    self.toast.show(
+                        undo::EditKind::Complete.label(&task.title),
+                        Duration::ZERO,
+                        Pace::FULL,
+                    );
+                }
+                if self.width == Width::Narrow {
+                    let scroll = self.detail_scroll.clone();
+                    // Once the viewport and content bounds exist, show the attachments at the end.
+                    window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
+                }
                 at
             }
             Moment::RoomSwitch { at, .. }
@@ -825,11 +858,28 @@ impl ShellView {
             let result = if let Some((id, kind)) = undo::EditKind::of(&cmd) {
                 let state = self.store.view();
                 let title = state.tasks.get(&id).map_or("Task", |t| t.title.as_str());
-                self.store
-                    .submit_undoable(cmd)
-                    .map(|target| self.remember_undo(undo::Action { id, kind, target }, title))
+                let room = self.shell.room.key;
+                self.store.submit_undoable(cmd).map(|target| {
+                    self.remember_undo(
+                        undo::Action {
+                            id,
+                            kind,
+                            target,
+                            room,
+                        },
+                        title,
+                    );
+                })
             } else {
-                self.store.submit(cmd)
+                let stale = self
+                    .last_undo
+                    .as_ref()
+                    .is_some_and(|u| undo::touches_task(&cmd, u.id, &self.store.view()));
+                self.store.submit(cmd).map(|()| {
+                    if stale {
+                        self.clear_undo();
+                    }
+                })
             };
             if let Err(e) = result {
                 tracing::warn!("a change was refused: {e}");
@@ -2044,8 +2094,8 @@ impl ShellView {
                     // binding so a held key's repeats can be told apart: only the first press counts,
                     // and holding Space never flips a task back and forth.
                     .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                        if e.keystroke.key == "tab"
-                            && !e.keystroke.modifiers.modified()
+                        if undo::undo_tab(e)
+                            && this.last_undo.is_some()
                             && this.toast.look(this.frame).is_some_and(|t| t.active)
                         {
                             cx.stop_propagation();
@@ -2537,7 +2587,7 @@ impl Render for ShellView {
         let quick_add = self.quick_add_field(window, cx);
         let detail = self.docked().then(|| self.detail_pane(window, cx));
         let overlay = self.detail_overlay(window, cx);
-        let footer = self.list_footer(overlay.is_none(), window, cx);
+        let footer = self.list_footer(overlay.is_none(), cx);
         div()
             .id("shell")
             .key_context("Shell")

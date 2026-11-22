@@ -51,7 +51,9 @@ pub enum Moment {
         from: (u32, u32),
         at: u32,
     },
+    /// The completion toast for this task; its text uses the actual task title.
     UndoToast {
+        task: TaskId,
         at: u32,
     },
     /// Dusk falling over the finished day.
@@ -795,8 +797,9 @@ fn completing(at: u32) -> Fixture {
 
 fn undo_toast(at: u32) -> Fixture {
     let mut f = completing(0);
+    let task = titled(&f.state, COMPLETED);
     f.ui.holding.clear();
-    f.moment = Some(Moment::UndoToast { at });
+    f.moment = Some(Moment::UndoToast { task, at });
     f
 }
 

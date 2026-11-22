@@ -435,10 +435,20 @@ async fn tracked_undo_restores_a_repeat_as_a_unit_but_refuses_a_conflicting_remo
     let preview = a.preview_tracked_undo(&first).unwrap();
     assert!(!preview.tasks[&task].is_done());
     assert_eq!(preview.tasks.len(), 1);
+    a.set_sending(false);
     assert!(matches!(
         a.undo_tracked(&first).unwrap(),
         TrackedUndo::Queued(_)
     ));
+    drop(first);
+    assert!(!a.view().tasks[&task].is_done());
+    assert_eq!(
+        a.view().tasks.len(),
+        1,
+        "the queued inverse includes the spawned repeat"
+    );
+    assert!(server.state().tasks[&task].is_done(), "not yet sent");
+    a.set_sending(true);
     eventually("the exact inverse reached both clients", WAIT, || {
         converged(&a, &server) && converged(&b, &server) && !b.view().tasks[&task].is_done()
     })
@@ -501,7 +511,7 @@ async fn undo_can_cancel_the_latest_unsent_command() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_undo_of_a_possibly_sent_completion_previews_immediately_and_survives_restart() {
+async fn an_undo_of_a_possibly_sent_completion_updates_the_view_and_survives_restart() {
     let server = TestServer::start().await;
     let storage = MemoryStorage::new();
     let transport = Switch::new(server.transport(TOKEN_A));
@@ -524,15 +534,16 @@ async fn an_undo_of_a_possibly_sent_completion_previews_immediately_and_survives
     let TrackedUndo::Queued(id) = a.undo_tracked(&tracked).unwrap() else {
         panic!("an attempted command cannot be cancelled");
     };
-    assert!(
-        a.view().tasks[&task].is_done(),
-        "the replica still needs the server's verdict"
-    );
-    assert!(!a.preview_tracked_undo(&tracked).unwrap().tasks[&task].is_done());
+    assert!(!a.view().tasks[&task].is_done(), "undo is visible offline");
+    drop(tracked);
     stop(&a, ha).await;
     drop(a);
 
     let a = client(server.transport(TOKEN_A), storage, alpha());
+    assert!(
+        !a.view().tasks[&task].is_done(),
+        "unresolved undo survives restart"
+    );
     let ha = spawn(&a);
     eventually("completion and undo both reach the server", WAIT, || {
         server.head() == 4 && converged(&a, &server)

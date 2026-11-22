@@ -11,6 +11,8 @@ use todo_client::replica::{Ack, ConfirmError, SubmitError};
 use todo_client::storage::{Storage, StorageOp};
 use todo_client::{MemoryStorage, Replica};
 use todo_core::Command;
+use todo_core::command::NewTask;
+use todo_core::recurrence::{Recurrence, Rule};
 use uuid::Uuid;
 
 fn entry(n: u128, command: Command, at_ms: i64) -> OutboxEntry {
@@ -123,6 +125,149 @@ fn events_arriving_before_the_acknowledgement_confirm_the_entry_by_its_command_i
     // The late acknowledgement is harmless.
     assert_eq!(r.acknowledge(e.command_id, &result).unwrap(), Ack::Recorded);
     assert!(r.outbox().is_empty());
+}
+
+fn undo_after(n: u128, original: &OutboxEntry) -> OutboxEntry {
+    OutboxEntry {
+        command_id: Uuid::from_u128(n),
+        op: Operation::UndoAfter {
+            original: original.command_id,
+        },
+        ..original.clone()
+    }
+}
+
+#[test]
+fn queued_undo_is_in_the_view_before_and_after_acknowledgement() {
+    let (mut r, mut server, storage) = seeded();
+    let complete = entry(10, Command::CompleteTask { id: task_id(1) }, 1);
+    r.submit(complete.clone()).unwrap();
+    assert!(r.view().tasks[&task_id(1)].is_done());
+    r.next_to_send().unwrap();
+    r.submit(undo_after(11, &complete)).unwrap();
+    assert!(!r.view().tasks[&task_id(1)].is_done());
+    let ack = server
+        .execute(&owner(), complete.command_id, complete.command().unwrap())
+        .unwrap();
+    r.acknowledge(complete.command_id, &ack).unwrap();
+    assert!(!r.view().tasks[&task_id(1)].is_done());
+    let mut reopened = open(&storage);
+    assert!(!reopened.view().tasks[&task_id(1)].is_done());
+    reopened
+        .submit(entry(12, complete.command().unwrap().clone(), 2))
+        .unwrap();
+    assert!(reopened.view().tasks[&task_id(1)].is_done());
+}
+
+#[test]
+fn open_resolves_a_settled_commands_undo_from_the_first_replayed_event() {
+    let (r, mut server, mut storage) = seeded();
+    let original = entry(10, Command::CompleteTask { id: task_id(1) }, 1);
+    let undo = undo_after(11, &original);
+    let ack = server
+        .execute(&owner(), original.command_id, original.command().unwrap())
+        .unwrap();
+    // Repair a cache that contains both the original and its already-confirmed receipt.
+    storage
+        .write(&[
+            StorageOp::AppendEvents(&server.log[r.cursor() as usize..]),
+            StorageOp::PutOutbox(&original),
+            StorageOp::PutOutbox(&undo),
+        ])
+        .unwrap();
+    let mut reopened = open(&storage);
+    assert_eq!(reopened.outbox().len(), 1);
+    let next = reopened.next_to_send().unwrap().unwrap();
+    assert_eq!(next.command_id, undo.command_id);
+    assert_eq!(
+        next.op,
+        Operation::Undo {
+            seq: ack.events[0].seq,
+            expected_event_id: ack.events[0].id,
+            epoch: Some(EPOCH),
+            force: false
+        }
+    );
+    assert_eq!(open(&storage).outbox(), &[next]);
+}
+
+#[test]
+fn open_fails_an_undo_if_only_a_snapshot_proves_the_original_settled() {
+    let (_r, mut server, mut storage) = seeded();
+    let mut original = entry(10, Command::CompleteTask { id: task_id(1) }, 1);
+    let undo = undo_after(11, &original);
+    let ack = server
+        .execute(&owner(), original.command_id, original.command().unwrap())
+        .unwrap();
+    original.acked = Some(ack.events.iter().map(|e| e.id).collect());
+    original.acked_epoch = Some(EPOCH);
+    storage
+        .write(&[
+            StorageOp::Snapshot {
+                state: &server.state,
+                cursor: server.head(),
+            },
+            StorageOp::PutOutbox(&original),
+            StorageOp::PutOutbox(&undo),
+        ])
+        .unwrap();
+    storage.set_fail_writes(true);
+    assert!(Replica::open(owner(), Box::new(storage.clone())).is_err());
+    assert_eq!(storage.load().unwrap().outbox.len(), 2);
+    storage.set_fail_writes(false);
+    let mut reopened = open(&storage);
+    assert!(reopened.outbox().is_empty());
+    assert!(reopened.next_to_send().unwrap().is_none());
+    assert_eq!(reopened.failed()[0].entry, undo);
+    assert_eq!(reopened.failed()[0].rejection.code, "undo_no_event");
+    assert_eq!(open(&storage).failed(), reopened.failed());
+}
+
+#[test]
+fn adopting_a_refusal_fails_the_dependent_undo_atomically() {
+    let (mut r, _, storage) = seeded();
+    let original = entry(10, Command::CompleteTask { id: task_id(1) }, 1);
+    let undo = undo_after(11, &original);
+    r.submit(original.clone()).unwrap();
+    r.submit(undo.clone()).unwrap();
+    let refusal = todo_client::outbox::FailedEntry {
+        entry: original,
+        failed_at: ts(2),
+        rejection: Rejection {
+            status: 409,
+            code: "conflict".into(),
+            message: "conflict".into(),
+        },
+    };
+    storage.set_fail_writes(true);
+    assert!(r.adopt_failed(vec![refusal.clone()]).is_err());
+    assert_eq!(r.outbox().len(), 2);
+    storage.set_fail_writes(false);
+    assert_eq!(r.adopt_failed(vec![refusal]).unwrap(), 1);
+    assert!(r.outbox().is_empty());
+    let reopened = open(&storage);
+    assert!(reopened.outbox().is_empty());
+    assert!(
+        reopened
+            .failed()
+            .iter()
+            .any(|f| f.entry == undo && f.rejection.code == "undo_no_event")
+    );
+}
+
+#[test]
+fn an_orphaned_undo_does_not_block_the_next_command() {
+    let (mut r, _, storage) = seeded();
+    let original = entry(10, Command::CompleteTask { id: task_id(1) }, 1);
+    let undo = undo_after(11, &original);
+    let next = entry(12, add_note(task_id(1), "still sends"), 2);
+    r.adopt(vec![next.clone(), undo.clone()]).unwrap();
+    assert_eq!(
+        r.next_to_send().unwrap().unwrap().command_id,
+        next.command_id
+    );
+    assert_eq!(r.failed()[0].entry, undo);
+    assert_eq!(open(&storage).failed()[0].rejection.code, "undo_no_event");
 }
 
 #[test]
@@ -640,6 +785,114 @@ proptest! {
         failure_persistence: None,
         ..ProptestConfig::default()
     })]
+
+    #[test]
+    fn early_undo_binds_only_to_the_own_batch_first_event(
+        ack_at in 0..4u8,
+        split in any::<bool>(),
+        restart_at in 0..5u8,
+        fail_once in any::<bool>(),
+        outcome in 0..3u8,
+    ) {
+        let (mut r, mut server, storage) = seeded();
+        let task = task_id(2);
+        let mut repeat = NewTask::new(task, list_id(1), "Repeat");
+        repeat.due = Some("2026-11-21".parse().unwrap());
+        repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+        server.execute(&owner(), Uuid::from_u128(9000), &Command::CreateTask(Box::new(repeat))).unwrap();
+        r.apply_confirmed(EPOCH, &server.log).unwrap();
+        let original = entry(100, Command::CompleteTask { id: task }, 1);
+        let undo = undo_after(101, &original);
+        r.submit(original.clone()).unwrap();
+        r.next_to_send().unwrap().unwrap();
+        r.submit(undo.clone()).unwrap();
+
+        // Another session of the same actor performs the exact command first.
+        server.execute(&owner(), Uuid::from_u128(102), original.command().unwrap()).unwrap();
+        r.apply_confirmed(EPOCH, &server.log).unwrap();
+        prop_assert_eq!(&r.outbox()[1], &undo);
+        let before_original = match outcome {
+            0 => Some(Command::UncompleteTask { id: task }), // our command still changes the task
+            1 => None, // our command is a no-op
+            _ => Some(Command::Delete { id: task.into() }), // our command is refused
+        };
+        if let Some(command) = before_original {
+            server.execute(&owner(), Uuid::from_u128(103), &command).unwrap();
+            r.apply_confirmed(EPOCH, &server.log).unwrap();
+        }
+        let first = server.log.len();
+        let result = server.execute(&owner(), original.command_id, original.command().unwrap());
+        let mut fail = fail_once;
+        // Four checkpoints admit an ack before the pages, between them, after them, or lost,
+        // and a restart before, between, or after applying the original's receipts.
+        for stage in 0..=4 {
+            if stage == restart_at {
+                r = open(&storage);
+            }
+            if outcome != 0 {
+                if stage != 2 { continue; }
+                let mut settle = || match &result {
+                    Ok(ack) => r.acknowledge(original.command_id, ack).map(drop),
+                    Err((status, code)) => r.reject(original.command_id, Rejection {
+                        status: *status, code: (*code).into(), message: String::new(),
+                    }, ts(3)),
+                };
+                if fail {
+                    storage.set_fail_writes(true);
+                    prop_assert!(settle().is_err());
+                    storage.set_fail_writes(false);
+                }
+                settle().unwrap();
+                continue;
+            }
+            let receipt = result.as_ref().unwrap();
+            prop_assert!(receipt.events.len() > 1);
+            let cut = if split { first + 1 } else { server.log.len() };
+            let pages = [ &server.log[first..cut], &server.log[cut..] ];
+            let mut steps = Vec::new();
+            if stage == ack_at && ack_at < 3 { steps.push(None); }
+            if matches!(stage, 0 | 1) && !pages[stage as usize].is_empty() {
+                steps.push(Some(pages[stage as usize]));
+            }
+            for page in steps {
+                let before = r.outbox().to_vec();
+                let cursor = r.cursor();
+                let apply_step = |r: &mut Replica| match page {
+                    Some(page) => r.apply_confirmed(EPOCH, page).map(drop).map_err(|e| e.to_string()),
+                    None => r.acknowledge(original.command_id, receipt).map(drop).map_err(|e| e.to_string()),
+                };
+                if fail {
+                    storage.set_fail_writes(true);
+                    prop_assert!(apply_step(&mut r).is_err());
+                    prop_assert_eq!(r.outbox(), &before);
+                    prop_assert_eq!(r.cursor(), cursor);
+                    prop_assert_eq!(storage.clone().load().unwrap().outbox, before);
+                    storage.set_fail_writes(false);
+                    fail = false;
+                }
+                apply_step(&mut r).unwrap();
+                let dependent = r.outbox().iter().find(|e| e.command_id == undo.command_id).unwrap();
+                prop_assert_eq!(&dependent.op, &Operation::Undo {
+                    seq: receipt.events[0].seq,
+                    expected_event_id: receipt.events[0].id,
+                    epoch: Some(EPOCH),
+                    force: false,
+                });
+            }
+        }
+        let reopened = open(&storage);
+        prop_assert!(r.outbox().iter().chain(reopened.outbox()).all(|e|
+            e.command_id != original.command_id && !matches!(e.op, Operation::UndoAfter { .. })
+        ), "no unresolved dependency survives the original" );
+        prop_assert_eq!(r.outbox(), reopened.outbox());
+        prop_assert!(reopened.confirmed().data_eq(&server.state));
+        if outcome != 0 {
+            prop_assert!(r.outbox().is_empty());
+            prop_assert!(reopened.failed().iter().any(|f|
+                f.entry.command_id == undo.command_id && f.rejection.code == "undo_no_event"
+            ));
+        }
+    }
 
     /// However responses get lost and acknowledgements and confirmed events interleave, every command
     /// ends up applied once: the outbox drains, the replica's confirmed state equals the server's, and

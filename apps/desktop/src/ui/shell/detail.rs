@@ -943,6 +943,8 @@ impl ShellView {
                     })
                     .child(
                         self.detail(d, live, window, cx)
+                            // Keep the last row clear of the reserved toast strip when scrolled down.
+                            .when(narrow, |el| el.pb(px(desktop::TOAST_INSET)))
                             .when(!live, |el| el.relative().top(self.detail_scroll.offset().y)),
                     );
                 div()

@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
+use todo_client::outbox::Rejection;
 use todo_client::{CommandId, Connection, ErrorKind, TrackedCommand, TrackedUndo};
 use todo_core::event::Event;
 use todo_core::time::Timestamp;
@@ -149,13 +150,6 @@ impl Store {
         }
     }
 
-    pub fn undo_preview(&self, target: &UndoTarget) -> Option<Arc<State>> {
-        let (Self::Live(s), UndoTarget::Live(t)) = (self, target) else {
-            return None;
-        };
-        s.session.client().preview_tracked_undo(t).map(Arc::new)
-    }
-
     /// None while the compensation is pending, otherwise its outcome.
     pub fn undo_result(&self, id: CommandId) -> Option<Result<(), String>> {
         let client = self.session()?.client();
@@ -167,8 +161,19 @@ impl Store {
                 .failed()
                 .iter()
                 .find(|entry| entry.entry.command_id == id)
-                .map_or(Ok(()), |err| Err(err.rejection.message.clone())),
+                .map_or(Ok(()), |err| Err(undo_failure_message(&err.rejection))),
         )
+    }
+
+    /// The shell has reported this refusal; it isn't an ordinary change to retry.
+    pub fn dismiss_undo_failure(&self, id: CommandId) -> bool {
+        self.session().is_none_or(|s| match s.client().dismiss(id) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, "couldn't dismiss the reported undo failure");
+                false
+            }
+        })
     }
 
     /// A fresh ID for something a command creates.
@@ -223,6 +228,14 @@ impl Store {
             Self::Local(_) => None,
             Self::Live(s) => Some(&s.session),
         }
+    }
+}
+
+fn undo_failure_message(rejection: &Rejection) -> String {
+    match rejection.code.as_str() {
+        "undo_conflict" => "Couldn't undo: the task was changed again.".into(),
+        "undo_no_event" => "Couldn't undo: the original change couldn't be found.".into(),
+        _ => format!("Couldn't undo that: {}", rejection.message),
     }
 }
 

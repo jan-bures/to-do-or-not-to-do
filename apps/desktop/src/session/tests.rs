@@ -130,6 +130,141 @@ fn order(state: &State, list: ListId) -> Vec<TaskId> {
 }
 
 #[test]
+fn space_twice_after_a_held_completion_queues_undo_then_recompletion_offline() {
+    use crate::store::{LiveStore, Store};
+    use todo_client::TrackedUndo;
+    use todo_client::outbox::Operation;
+    use todo_core::Command;
+
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    session.start();
+    let (task, cmds) = commands::add_task(
+        &session.client().view(),
+        RoomKey::Smart(Smart::MyDay),
+        &Parsed {
+            title: "Milk".into(),
+            due: None,
+            priority: None,
+        },
+        today(),
+        || session.client().new_uuid(),
+    );
+    let task = task.expect("new task");
+    submit(&session, cmds);
+    eventually("task confirmed", || session.client().pending().is_empty());
+    net.block_on(session.shutdown());
+    drop(session);
+
+    // Don't start the new session: we can now reproduce the hold and two presses offline.
+    let store = Store::Live(LiveStore::new(
+        Session::open(net.clone(), &paths, &pairing).expect("offline cache"),
+    ));
+    let done = commands::toggle_complete(&store.view(), task).expect("complete command");
+    let target = store.submit_undoable(done).expect("completion");
+    // Another queued change means the completion is no longer the last unsent command.
+    let (another, cmds) = commands::add_task(
+        &store.view(),
+        RoomKey::Smart(Smart::MyDay),
+        &Parsed {
+            title: "Bread".into(),
+            due: None,
+            priority: None,
+        },
+        today(),
+        || store.new_uuid(),
+    );
+    assert!(another.is_some());
+    for cmd in cmds {
+        store.submit(cmd).expect("unrelated edit");
+    }
+    assert!(store.view().tasks[&task].is_done());
+    // Space during the hold calls undo, not UncompleteTask. The second Space reads the store.
+    let TrackedUndo::Queued(undo) = store.undo(&target).expect("queued undo") else {
+        panic!("must not cancel the earlier completion");
+    };
+    assert!(!store.view().tasks[&task].is_done());
+    let again = commands::toggle_complete(&store.view(), task).expect("recompletion");
+    assert_eq!(again, Command::CompleteTask { id: task });
+    store.submit_undoable(again).expect("queued recompletion");
+    assert!(store.view().tasks[&task].is_done());
+    let session = store.session().expect("session");
+    assert!(
+        session
+            .client()
+            .pending()
+            .iter()
+            .any(|e| e.command_id == undo && matches!(e.op, Operation::UndoAfter { .. }))
+    );
+    session.start();
+    eventually("both presses settle", || {
+        session.client().pending().is_empty()
+    });
+    assert!(server.state().tasks[&task].is_done());
+    assert!(session.client().failed().is_empty());
+    net.block_on(session.shutdown());
+}
+
+#[test]
+fn a_reported_undo_failure_does_not_stay_in_the_failed_queue() {
+    use crate::store::{LiveStore, Store};
+    use todo_client::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
+
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let store = Store::Live(LiveStore::new(
+        Session::open(net.clone(), &paths, &pairing).expect("open"),
+    ));
+    let client = store.session().expect("session").client();
+    for (code, notice) in [
+        (
+            "undo_conflict",
+            "Couldn't undo: the task was changed again.",
+        ),
+        (
+            "undo_no_event",
+            "Couldn't undo: the original change couldn't be found.",
+        ),
+    ] {
+        let id = store.new_uuid();
+        let now = store.now().at;
+        client
+            .adopt_failed(vec![FailedEntry {
+                entry: OutboxEntry {
+                    command_id: id,
+                    op: Operation::UndoAfter {
+                        original: store.new_uuid(),
+                    },
+                    submitted_at: now,
+                    attempts: 0,
+                    acked: None,
+                    acked_epoch: None,
+                },
+                failed_at: now,
+                rejection: Rejection {
+                    status: 409,
+                    code: code.into(),
+                    message: "Raw server message".into(),
+                },
+            }])
+            .expect("record refused undo");
+        assert_eq!(store.undo_result(id), Some(Err(notice.into())));
+        assert!(store.dismiss_undo_failure(id));
+        assert!(client.failed().is_empty());
+    }
+    drop(store);
+    let reopened = Session::open(net, &paths, &pairing).expect("reopen");
+    assert!(reopened.client().failed().is_empty());
+}
+
+#[test]
 fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let server = TestServer::start();
     let net = runtime().expect("runtime");
