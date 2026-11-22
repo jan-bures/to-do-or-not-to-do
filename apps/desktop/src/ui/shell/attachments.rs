@@ -5,9 +5,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use accesskit::{Live, Node};
 use gpui::{
-    AsyncApp, Bounds, Context, Div, FocusHandle, PathPromptOptions, Pixels, Role, SharedString,
-    Window, div, prelude::*, px,
+    App, AsyncApp, Bounds, Context, Div, Element, ElementId, FocusHandle, GlobalElementId,
+    InspectorElementId, LayoutId, PathPromptOptions, Pixels, Role, SharedString, Window, div,
+    prelude::*, px,
 };
 use todo_client::{Connection, failure, intent};
 use todo_core::ids::TaskId;
@@ -91,15 +93,16 @@ impl ShellView {
                 let uploads = &mut v.attachment_ui.uploads;
                 match choice {
                     Ok(Ok(Some(paths))) => {
-                        uploads.finish(task, v.ui.task, None);
+                        uploads.finish(task, v.ui.task, None, Vec::new());
                         // A picker result belongs to the original task in this shell/pairing.
                         v.upload_files(task, paths, cx);
                     }
-                    Ok(Ok(None)) => uploads.finish(task, v.ui.task, None),
+                    Ok(Ok(None)) => uploads.finish(task, v.ui.task, None, Vec::new()),
                     Ok(Err(_)) | Err(_) => uploads.finish(
                         task,
                         v.ui.task,
-                        Some(("Couldn’t open the file picker.".into(), true)),
+                        Some("Couldn’t open the file picker.".into()),
+                        Vec::new(),
                     ),
                 }
                 cx.notify();
@@ -123,7 +126,7 @@ impl ShellView {
         if let Some(reason) = self.upload_block(task) {
             self.attachment_ui
                 .uploads
-                .finish(task, self.ui.task, Some((reason.into(), true)));
+                .finish(task, self.ui.task, Some(reason.into()), Vec::new());
             cx.notify();
             return;
         }
@@ -131,24 +134,20 @@ impl ShellView {
         let job = session.upload_attachments(task, paths);
         cx.notify();
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let result = job.await;
-            let notice = match result {
-                Ok(outcome) => {
-                    let lag = "The uploaded files haven’t synced to this view yet.";
-                    match (outcome.error, outcome.synced) {
-                        (Some(error), true) => Some((error.into_owned(), true)),
-                        (Some(error), false) => Some((format!("{error} {lag}"), true)),
-                        (None, false) => Some((lag.into(), false)),
-                        (None, true) => None,
-                    }
-                }
-                Err(_) => Some((
-                    "The upload was stopped. Check the task before trying again.".into(),
-                    true,
-                )),
+            let (error, unobserved) = match job.await {
+                Ok(outcome) => (
+                    outcome.error.map(std::borrow::Cow::into_owned),
+                    outcome.unobserved,
+                ),
+                Err(_) => (
+                    Some("The upload was stopped. Check the task before trying again.".into()),
+                    Vec::new(),
+                ),
             };
             let _ = this.update(cx, |v, cx| {
-                v.attachment_ui.uploads.finish(task, v.ui.task, notice);
+                v.attachment_ui
+                    .uploads
+                    .finish(task, v.ui.task, error, unobserved);
                 // Show any attachments already delivered by sync when releasing the Add button.
                 v.refresh(cx);
             });
@@ -294,10 +293,17 @@ impl ShellView {
         let task = d.task;
         let p = self.palette;
         let blocked = self.upload_block(task);
-        let (status, error) = match self.attachment_ui.uploads.get(task) {
-            Some(Upload::Notice { text, error }) => (text.as_str(), *error),
-            _ => (blocked.unwrap_or("or drop files on this task"), false),
-        };
+        let (status, error) = self
+            .attachment_ui
+            .uploads
+            .get(task)
+            .and_then(Upload::notice)
+            .unwrap_or_else(|| {
+                (
+                    blocked.unwrap_or("or drop files on this task").into(),
+                    false,
+                )
+            });
         let add_ink = if blocked.is_some() {
             p.ink_3
         } else {
@@ -318,7 +324,7 @@ impl ShellView {
                 .child(kit::icon(Icon::Plus, component::ICON_SMALL, add_ink))
                 .child("Add file"),
         };
-        let status: SharedString = status.to_owned().into();
+        let status: SharedString = status.into_owned().into();
         let mut section = div()
             .mx(px(desktop::DETAIL_PAD_X))
             .mt(px(space::S4))
@@ -335,17 +341,15 @@ impl ShellView {
                             .flex_none(),
                     ),
             )
-            .child(
-                div()
-                    .id("attachment-status")
+            .child(UploadStatus {
+                element: div()
                     .style(ty::META)
                     .text_color(if error { p.danger_ink } else { p.ink_3 })
-                    .when(live, |el| {
-                        el.role(if error { Role::Alert } else { Role::Status })
-                            .aria_label(status.clone())
-                    })
-                    .child(status),
-            );
+                    .child(status.clone()),
+                status,
+                live,
+                error,
+            });
         for row in &d.attachments {
             let id = row.id;
             let file_button = |control, verb, icon| FileButton {
@@ -425,9 +429,119 @@ impl ShellView {
     }
 }
 
+/// GPUI's Div doesn't expose AccessKit's live property. Keep its layout and paint, but supply
+/// the live-region node explicitly: the role alone doesn't announce changes on Windows.
+struct UploadStatus {
+    element: Div,
+    status: SharedString,
+    live: bool,
+    error: bool,
+}
+
+impl Element for UploadStatus {
+    type RequestLayoutState = <Div as Element>::RequestLayoutState;
+    type PrepaintState = <Div as Element>::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        Some("attachment-status".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.element.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.element.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.element
+            .prepaint(id, inspector_id, bounds, state, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element
+            .paint(id, inspector_id, bounds, state, prepaint, window, cx);
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        self.live.then_some(if self.error {
+            Role::Alert
+        } else {
+            Role::Status
+        })
+    }
+
+    fn write_a11y_info(&self, node: &mut Node) {
+        node.set_label(self.status.as_ref());
+        node.set_live(if self.error {
+            Live::Assertive
+        } else {
+            Live::Polite
+        });
+    }
+}
+
 struct FileButton {
     control: Control,
     name: SharedString,
     blocked: Option<&'static str>,
     visual: Div,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_feedback_writes_an_explicit_live_setting_to_the_accesskit_node() {
+        for (status, error, role, live) in [
+            ("Uploading…", false, Role::Status, Live::Polite),
+            (
+                "Couldn’t upload the file.",
+                true,
+                Role::Alert,
+                Live::Assertive,
+            ),
+        ] {
+            let mut element = UploadStatus {
+                element: div(),
+                status: status.into(),
+                live: true,
+                error,
+            };
+            // These are the hooks Element uses to generate the real tree node.
+            assert!(element.id().is_some());
+            let mut node = Node::new(element.a11y_role().expect("accessible feedback"));
+            element.write_a11y_info(&mut node);
+            assert_eq!(node.role(), role);
+            assert_eq!(node.live(), Some(live));
+            assert_eq!(node.label(), Some(status));
+            element.live = false;
+            assert_eq!(element.a11y_role(), None, "closing detail is visual only");
+        }
+    }
 }

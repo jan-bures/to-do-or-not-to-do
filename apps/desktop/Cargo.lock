@@ -7336,6 +7336,7 @@ dependencies = [
  "qrcode",
  "reqwest",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
@@ -7374,6 +7375,7 @@ dependencies = [
 name = "todo-desktop"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "anyhow",
  "embed-resource",
  "futures",

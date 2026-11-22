@@ -65,6 +65,7 @@ url = "2"
 qrcode = { version = "0.14", default-features = false }
 zstd = "0.14"
 libc = "0.2"
+rustix = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 # Client-only dependencies (`todo-client` features `native` and `sqlite`).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

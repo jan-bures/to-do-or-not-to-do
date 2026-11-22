@@ -11,7 +11,7 @@ publish.workspace = true
 [features]
 default = []
 # tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
-native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:todo-fs", "dep:unicode-general-category", "uuid/v4"]
+native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "uuid/v4"]
 # A bundled-SQLite `Storage` (native only).
 sqlite = ["native", "dep:rusqlite"]
 # Browser implementations of the platform traits: fetch, IndexedDB, setTimeout, Web Crypto. The module
@@ -50,6 +50,9 @@ web-sys = { workspace = true, optional = true, features = [
     "IdbTransaction", "IdbTransactionMode", "ReadableStream", "ReadableStreamDefaultReader",
     "Request", "RequestCredentials", "RequestInit", "RequestMode", "Response", "Window", "File",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, optional = true, features = ["fs"] }
 
 [dev-dependencies]
 todo-server.workspace = true

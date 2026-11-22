@@ -42,6 +42,51 @@ fn prose_width(window: &Window, style: ty::TextStyle) -> gpui::Pixels {
     px(desktop::DETAIL_TEXT_MEASURE * kit::text_width(window, style, "0"))
 }
 
+fn log_save_failure(error: &anyhow::Error) {
+    tracing::warn!("saving an attachment failed");
+    tracing::debug!("saving an attachment failed: {error:#}");
+}
+
+#[cfg(test)]
+#[test]
+fn save_failure_only_logs_the_private_destination_at_debug() {
+    use tracing::Level;
+
+    let path = "private-destination/report.pdf";
+    let error = anyhow::anyhow!("replacing {path}").context("couldn't save");
+    let capture = |level| {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let output = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(level)
+            .with_writer(move || {
+                // Keep the writer independent of the subscriber's borrow.
+                struct Writer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+                impl std::io::Write for Writer {
+                    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                        self.0.lock().expect("log buffer").extend_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    fn flush(&mut self) -> std::io::Result<()> {
+                        Ok(())
+                    }
+                }
+                Writer(output.clone())
+            })
+            .finish();
+        tracing::subscriber::with_default(subscriber, || log_save_failure(&error));
+        let bytes = buffer.lock().expect("log buffer").clone();
+        String::from_utf8(bytes).expect("UTF-8 log")
+    };
+    let warn = capture(Level::WARN);
+    assert!(warn.contains("saving an attachment failed"));
+    assert!(!warn.contains(path));
+    let debug = capture(Level::DEBUG);
+    assert!(debug.contains("couldn't save: replacing private-destination/report.pdf"));
+}
+
 /// The pane's editors and what they hold.
 pub(super) struct Editors {
     pub title: Entity<TextArea>,
@@ -410,7 +455,7 @@ impl ShellView {
                         saved.path.display()
                     )),
                     Err(e) => {
-                        tracing::warn!("saving an attachment failed: {e:#}");
+                        log_save_failure(&e);
                         Notice::error(format!("Couldn't save {label}: {e}"))
                     }
                 });

@@ -589,6 +589,13 @@ impl ShellView {
         let old_task = self.shell.detail.as_ref().map(|d| d.task);
         let new_task = shell.detail.as_ref().map(|d| d.task);
         self.attachment_ui.uploads.select(new_task);
+        if let (Some(task), Some(session)) = (new_task, self.store.session()) {
+            session.client().with_confirmed(|s| {
+                self.attachment_ui
+                    .uploads
+                    .observe(task, |id| s.attachments.contains_key(&id));
+            });
+        }
         if old_task != new_task {
             if new_task.is_none() {
                 self.closing = self.shell.detail.take();
@@ -987,14 +994,14 @@ impl ShellView {
                 "attachments-error" => self.attachment_ui.uploads.finish(
                     task,
                     Some(task),
-                    Some((
+                    Some(
                         todo_client::failure::attachment_upload(
                             Some(413),
                             Some(todo_core::MAX_ATTACHMENT_BYTES),
                         )
                         .into_owned(),
-                        true,
-                    )),
+                    ),
+                    Vec::new(),
                 ),
                 _ => {}
             }

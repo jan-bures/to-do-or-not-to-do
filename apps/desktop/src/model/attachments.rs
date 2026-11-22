@@ -1,5 +1,6 @@
 //! Task-scoped transfer state and the order of controls in the attachments section.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use todo_core::ids::{AttachmentId, TaskId};
@@ -30,7 +31,26 @@ pub fn file_controls(rows: &[AttachmentRow]) -> impl Iterator<Item = Control> {
 pub enum Upload {
     Picking,
     Transferring,
-    Notice { text: String, error: bool },
+    Notice {
+        error: Option<String>,
+        unobserved: Vec<AttachmentId>,
+    },
+}
+
+const SYNC_LAG: &str = "The uploaded files haven’t synced to this view yet.";
+
+impl Upload {
+    pub fn notice(&self) -> Option<(Cow<'_, str>, bool)> {
+        let Self::Notice { error, unobserved } = self else {
+            return None;
+        };
+        match (error.as_deref(), unobserved.is_empty()) {
+            (Some(error), true) => Some((Cow::Borrowed(error), true)),
+            (Some(error), false) => Some((format!("{error} {SYNC_LAG}").into(), true)),
+            (None, false) => Some((SYNC_LAG.into(), false)),
+            (None, true) => None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -60,12 +80,27 @@ impl Uploads {
         true
     }
 
-    pub fn finish(&mut self, task: TaskId, open: Option<TaskId>, notice: Option<(String, bool)>) {
+    pub fn finish(
+        &mut self,
+        task: TaskId,
+        open: Option<TaskId>,
+        error: Option<String>,
+        unobserved: Vec<AttachmentId>,
+    ) {
         self.0.remove(&task);
-        if open == Some(task)
-            && let Some((text, error)) = notice
-        {
-            self.0.insert(task, Upload::Notice { text, error });
+        if open == Some(task) && (error.is_some() || !unobserved.is_empty()) {
+            self.0.insert(task, Upload::Notice { error, unobserved });
+        }
+    }
+
+    /// An attachment can arrive after the upload job times out waiting for sync. A deletion
+    /// still counts as observed; callers should test presence, not whether the row is live.
+    pub fn observe(&mut self, task: TaskId, mut observed: impl FnMut(AttachmentId) -> bool) {
+        if let Some(Upload::Notice { error, unobserved }) = self.0.get_mut(&task) {
+            unobserved.retain(|id| !observed(*id));
+            if error.is_none() && unobserved.is_empty() {
+                self.0.remove(&task);
+            }
         }
     }
 
@@ -101,17 +136,47 @@ mod tests {
         uploads.select(Some(b));
         assert!(uploads.busy(a));
         assert!(uploads.start(b, false));
-        uploads.finish(a, Some(b), Some(("An error on A".into(), true)));
+        uploads.finish(a, Some(b), Some("An error on A".into()), Vec::new());
         assert_eq!(uploads.get(a), None);
         assert_eq!(uploads.get(b), Some(&Upload::Transferring));
-        uploads.finish(b, Some(b), Some(("An error on B".into(), true)));
-        assert!(matches!(
-            uploads.get(b),
-            Some(Upload::Notice { error: true, .. })
-        ));
+        uploads.finish(b, Some(b), Some("An error on B".into()), Vec::new());
+        assert_eq!(
+            uploads.get(b).and_then(Upload::notice),
+            Some(("An error on B".into(), true))
+        );
         assert!(!uploads.busy(b));
         uploads.select(Some(a));
         assert_eq!(uploads.get(b), None);
+    }
+
+    #[test]
+    fn late_sync_clears_only_the_lag_notice_after_all_ids_arrive() {
+        let task = TaskId::from_uuid(uuid::Uuid::from_u128(1));
+        let first = AttachmentId::from_uuid(uuid::Uuid::from_u128(2));
+        let second = AttachmentId::from_uuid(uuid::Uuid::from_u128(3));
+        for error in [None, Some("A file failed to upload.")] {
+            let mut uploads = Uploads::default();
+            uploads.finish(
+                task,
+                Some(task),
+                error.map(str::to_owned),
+                vec![first, second],
+            );
+            uploads.observe(task, |id| id == first);
+            let (text, is_error) = uploads
+                .get(task)
+                .and_then(Upload::notice)
+                .expect("sync lag");
+            assert!(text.ends_with(SYNC_LAG));
+            assert_eq!(is_error, error.is_some());
+            // The first ID needn't still be in the snapshot by the time the second one arrives.
+            uploads.observe(task, |id| id == second);
+            assert_eq!(
+                uploads.get(task).and_then(Upload::notice),
+                error.map(|e| (e.into(), true))
+            );
+            assert_eq!(uploads.get(task).is_some(), error.is_some());
+        }
     }
 
     #[test]

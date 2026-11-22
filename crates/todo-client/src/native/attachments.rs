@@ -83,12 +83,42 @@ fn sniff_media(prefix: &[u8]) -> &'static str {
     }
 }
 
+#[cfg(unix)]
+async fn open_selected(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    // Follow the chosen link, but don't block opening a FIFO if that's where it leads.
+    let path = path.to_owned();
+    let fd = tokio::task::spawn_blocking(move || {
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+    })
+    .await?
+    .map_err(std::io::Error::from)?;
+    Ok(File::from_std(std::fs::File::from(fd)))
+}
+
+#[cfg(windows)]
+async fn open_selected(path: &Path) -> std::io::Result<File> {
+    // Let Windows open directories too, so we can identify and reject them using handle metadata.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    File::options()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .await
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn open_selected(path: &Path) -> std::io::Result<File> {
+    File::open(path).await
+}
+
 async fn open_upload(path: &Path) -> Result<(File, u64), FileError> {
-    // Reject directories and special files before opening (e.g. opening a FIFO can block).
-    if !tokio::fs::metadata(path).await?.is_file() {
-        return Err(FileError::NotAFile);
-    }
-    let file = File::open(path).await?;
+    let file = open_selected(path).await?;
     let metadata = file.metadata().await?;
     if !metadata.is_file() {
         return Err(FileError::NotAFile);
@@ -361,6 +391,34 @@ mod tests {
         assert_eq!(sniff_media(b"\xff\xd8\xff"), "image/jpeg");
         assert_eq!(sniff_media(b"RIFF\0\0\0\0WAVE"), BINARY);
         assert_eq!(sniff_media(b""), BINARY);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn selected_links_read_their_regular_file_target_but_not_a_fifo() {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("target");
+        let link = dir.path().join("selected-link");
+        std::fs::write(&target, b"target data").expect("regular file");
+        symlink(&target, &link).expect("link to file");
+        let (mut file, size) = open_upload(&link).await.expect("open through the link");
+        assert_eq!(size, 11);
+        std::fs::remove_file(&link).expect("remove link");
+        let fifo = dir.path().join("fifo");
+        mkfifoat(CWD, &fifo, Mode::RUSR | Mode::WUSR).expect("create FIFO");
+        symlink(&fifo, &link).expect("link to FIFO");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .await
+            .expect("read original open handle");
+        assert_eq!(bytes, b"target data");
+        let refused = tokio::time::timeout(Duration::from_secs(2), open_upload(&link))
+            .await
+            .expect("must not block opening the FIFO");
+        assert!(matches!(refused, Err(FileError::NotAFile)));
     }
 
     #[tokio::test]

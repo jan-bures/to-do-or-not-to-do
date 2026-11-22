@@ -6,14 +6,16 @@
 //! write the outbox entry to the local SQLite cache, and it learns about changes from
 //! `SyncClient::changes`, a runtime-agnostic signal it awaits on GPUI's executor.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
 use todo_client::failure;
+use todo_client::native::attachments::FileError;
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::StorageOp;
@@ -97,8 +99,13 @@ pub struct Session {
     data: DataDir,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     transfers: Arc<Transfers>,
+    uncertain_uploads: Arc<Mutex<UncertainUploads>>,
     updates: Box<std::sync::Mutex<Updates>>,
 }
+
+/// Only in memory, scoped to the pairing. A retry of the same path on the same task uses the
+/// original ID until either sync or a successful replay confirms what happened.
+type UncertainUploads = BTreeMap<(TaskId, PathBuf), AttachmentId>;
 
 struct Updates {
     /// Consumed on start so the caller does not keep a second update credential.
@@ -250,6 +257,7 @@ impl Session {
             data,
             task: std::sync::Mutex::new(None),
             transfers: Arc::new(Transfers::new()),
+            uncertain_uploads: Arc::default(),
             updates: Box::new(std::sync::Mutex::new(Updates {
                 token: Some(pairing.token.clone()),
                 worker: None,
@@ -389,9 +397,12 @@ impl Session {
         paths: Vec<PathBuf>,
     ) -> impl Future<Output = anyhow::Result<UploadOutcome>> + use<> {
         let client = self.client.clone();
+        let transport = self.transport.clone();
+        let uncertain = self.uncertain_uploads.clone();
         self.transfers.run(&self.rt, async move {
             let mut accepted = Vec::new();
             let mut error = None;
+            let mut seen = BTreeSet::new();
             for path in paths {
                 if !client.view().is_live(task.into()) {
                     error.get_or_insert_with(|| "The task is no longer available.".into());
@@ -401,10 +412,51 @@ impl Session {
                     error.get_or_insert_with(|| failure::ATTACHMENT_TASK_UNSYNCED.into());
                     break;
                 }
-                let id = AttachmentId::from_uuid(client.new_uuid());
-                match client.transport().upload_path(task, id, &path).await {
-                    Ok(()) => accepted.push(id),
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                let key = (task, path);
+                let prior = uncertain
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&key)
+                    .copied();
+                let id = prior.unwrap_or_else(|| AttachmentId::from_uuid(client.new_uuid()));
+                let observed = || client.with_confirmed(|s| s.attachments.contains_key(&id));
+                let result = if prior.is_some() && observed() {
+                    // Sync already answered the question. Don't post again, even if the file has
+                    // since been moved or the attachment has already been removed.
+                    Ok(())
+                } else {
+                    transport.upload_path(task, id, &key.1).await
+                };
+                match result {
+                    Ok(()) => {
+                        uncertain
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .remove(&key);
+                        accepted.push(id);
+                    }
                     Err(e) => {
+                        if prior.is_some()
+                            || matches!(
+                                e,
+                                FileError::Timeout
+                                    | FileError::Interrupted
+                                    | FileError::Refused {
+                                        status: 500..=599,
+                                        ..
+                                    }
+                            )
+                        {
+                            // A later refusal doesn't prove an earlier attempt didn't commit.
+                            uncertain
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(key, id);
+                            client.nudge();
+                        }
                         error.get_or_insert_with(|| e.upload_message());
                     }
                 }
@@ -412,10 +464,15 @@ impl Session {
             if !accepted.is_empty() {
                 client.nudge();
             }
-            Ok(UploadOutcome {
-                error,
-                synced: client.wait_for_attachments(&accepted).await,
-            })
+            let unobserved = if client.wait_for_attachments(&accepted).await {
+                Vec::new()
+            } else {
+                client.with_confirmed(|s| {
+                    accepted.retain(|id| !s.attachments.contains_key(id));
+                });
+                accepted
+            };
+            Ok(UploadOutcome { error, unobserved })
         })
     }
 
@@ -469,7 +526,7 @@ impl Session {
 #[derive(Debug)]
 pub struct UploadOutcome {
     pub error: Option<std::borrow::Cow<'static, str>>,
-    pub synced: bool,
+    pub unobserved: Vec<AttachmentId>,
 }
 
 /// A saved attachment.

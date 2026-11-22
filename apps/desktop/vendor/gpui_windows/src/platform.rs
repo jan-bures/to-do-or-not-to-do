@@ -1628,8 +1628,7 @@ fn file_open_dialog(
     let mut paths = Vec::with_capacity(file_count as usize);
     for i in 0..file_count {
         let item = unsafe { results.GetItemAt(i)? };
-        let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)?.to_string()? };
-        paths.push(PathBuf::from(path));
+        paths.push(shell_item_path(&item)?); // TO-DO PATCH: release the display name.
     }
 
     Ok(Some(paths))
@@ -1681,13 +1680,37 @@ fn file_save_dialog(
         }
     }
     let shell_item = unsafe { dialog.GetResult()? };
-    let file_path_string = unsafe {
-        let pwstr = shell_item.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let string = pwstr.to_string()?;
-        CoTaskMemFree(Some(pwstr.0 as _));
-        string
-    };
-    Ok(Some(PathBuf::from(file_path_string)))
+    Ok(Some(shell_item_path(&shell_item)?)) // TO-DO PATCH: release even on conversion failure.
+}
+
+// TO-DO PATCH: IShellItem::GetDisplayName transfers ownership of the task-allocator string.
+struct ShellDisplayName(PWSTR);
+
+impl Drop for ShellDisplayName {
+    fn drop(&mut self) {
+        // SAFETY: the pointer is owned by this guard and came from the COM task allocator.
+        unsafe { CoTaskMemFree(Some(self.0.0.cast())) };
+        #[cfg(test)]
+        DISPLAY_NAMES_FREED.with(|count| count.set(count.get() + 1));
+    }
+}
+
+impl ShellDisplayName {
+    fn into_path(self) -> Result<PathBuf> {
+        // SAFETY: the owned name is NUL-terminated and remains valid for the conversion.
+        let path = unsafe { self.0.to_string()? };
+        Ok(PathBuf::from(path))
+    }
+}
+
+fn shell_item_path(item: &IShellItem) -> Result<PathBuf> {
+    let name = ShellDisplayName(unsafe { item.GetDisplayName(SIGDN_FILESYSPATH)? });
+    name.into_path()
+}
+
+#[cfg(test)]
+thread_local! {
+    static DISPLAY_NAMES_FREED: Cell<u32> = const { Cell::new(0) };
 }
 
 fn load_icon() -> Result<HICON> {
@@ -1935,7 +1958,23 @@ mod tests {
     };
     use windows::core::{PCWSTR, PWSTR};
 
-    use super::{encode_restart_arguments, username_and_password};
+    use super::{DISPLAY_NAMES_FREED, ShellDisplayName, encode_restart_arguments, username_and_password};
+
+    #[test]
+    fn shell_display_name_frees_successful_and_invalid_conversions() {
+        use windows::Win32::System::Com::CoTaskMemAlloc;
+
+        DISPLAY_NAMES_FREED.with(|count| count.set(0));
+        for (unit, succeeds) in [(b'x' as u16, true), (0xD800, false)] {
+            let wide = [unit, 0];
+            let ptr = unsafe { CoTaskMemAlloc(std::mem::size_of_val(&wide)) }.cast::<u16>();
+            assert!(!ptr.is_null());
+            unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len()) };
+            let result = ShellDisplayName(PWSTR(ptr)).into_path();
+            assert_eq!(result.is_ok(), succeeds);
+        }
+        DISPLAY_NAMES_FREED.with(|count| assert_eq!(count.get(), 2));
+    }
 
     #[test]
     fn test_read_credential_with_username() {

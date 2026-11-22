@@ -1468,6 +1468,145 @@ fn data_still_in_use_at_sign_out_is_removed_at_the_next_start() {
     shut_down(net);
 }
 
+/// Relay one real upload. Wait for the origin response so we know it committed, then either
+/// close without sending any headers, or return the verified idempotent replay response.
+fn relay_upload(
+    net: &Runtime,
+    session: &mut Session,
+    server: &TestServer,
+    token: &str,
+    lose_response: bool,
+) -> tokio::task::JoinHandle<()> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, copy};
+    use tokio::net::{TcpListener, TcpStream};
+
+    let listener = net
+        .block_on(TcpListener::bind("127.0.0.1:0"))
+        .expect("listen");
+    let url = format!("http://{}", listener.local_addr().expect("address"));
+    session.transport = HttpTransport::new(&url, token).expect("transport");
+    let upstream = server.running().addr;
+    net.spawn(async move {
+        tokio::time::timeout(WAIT, async move {
+            let (mut downstream, _) = listener.accept().await.expect("upload connection");
+            let mut upstream = TcpStream::connect(upstream).await.expect("server connection");
+            let (mut request, mut reply) = downstream.split();
+            let (response, mut upload) = upstream.split();
+            let headers = async {
+                let mut response = BufReader::new(response);
+                let mut headers = String::new();
+                loop {
+                    let len = response.read_line(&mut headers).await.expect("HTTP headers");
+                    assert_ne!(len, 0, "server closed before replying");
+                    if headers.ends_with("\r\n\r\n") {
+                        return headers;
+                    }
+                }
+            };
+            let headers = tokio::select! {
+                headers = headers => headers,
+                result = copy(&mut request, &mut upload) => panic!("upload ended before reply: {result:?}"),
+            };
+            if lose_response {
+                assert!(headers.starts_with("HTTP/1.1 201 "), "{headers}");
+                // Closing now models a dropped connection after the server committed.
+            } else {
+                assert!(headers.starts_with("HTTP/1.1 200 "), "{headers}");
+                assert!(headers.contains("idempotent-replayed: true\r\n"), "{headers}");
+                reply.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.expect("reply");
+            }
+        })
+        .await
+        .expect("relay finished");
+    })
+}
+
+#[test]
+fn a_committed_upload_with_a_lost_response_reuses_the_id_on_retry() {
+    let server = TestServer::start();
+    let net = runtime().expect("runtime");
+    let home = tempfile::tempdir().expect("home");
+    let paths = Paths::in_dir(home.path().to_owned());
+    let pairing = server.pair(&net, &paths);
+    let session = Session::open(net.clone(), &paths, &pairing).expect("open");
+    session.start();
+    let (task, cmds) = commands::add_task(
+        &session.client().view(),
+        RoomKey::Smart(Smart::MyDay),
+        &Parsed {
+            title: "Has a file".into(),
+            ..Parsed::default()
+        },
+        today(),
+        || session.client().new_uuid(),
+    );
+    let task = task.expect("new task");
+    submit(&session, cmds);
+    eventually("task confirmed", || {
+        session.client().with_confirmed(|s| s.is_live(task.into()))
+    });
+    net.block_on(session.shutdown());
+    drop(session);
+
+    // Open the confirmed cache, but don't start sync yet: the retry must actually replay the POST.
+    let mut session = Session::open(net.clone(), &paths, &pairing).expect("reopen");
+    let original = session.transport.clone();
+    let path = home.path().join("report.txt");
+    std::fs::write(&path, b"report").expect("write file");
+    let lost = relay_upload(&net, &mut session, &server, &pairing.token, true);
+    let outcome = net
+        .block_on(session.upload_attachments(task, vec![path.clone()]))
+        .expect("first upload");
+    net.block_on(lost).expect("lost response after commit");
+    assert!(outcome.error.is_some());
+    assert!(
+        session
+            .client()
+            .with_confirmed(|s| s.attachments.is_empty())
+    );
+    let state = server.state();
+    assert_eq!(state.attachments.len(), 1);
+    let id = *state.attachments.keys().next().expect("uploaded file");
+
+    let replay = relay_upload(&net, &mut session, &server, &pairing.token, false);
+    let retry = session.upload_attachments(task, vec![path.clone()]);
+    net.block_on(replay).expect("same ID replayed before sync");
+    session.transport = original.clone();
+    session.start();
+    let outcome = net.block_on(retry).expect("retry");
+    assert!(outcome.error.is_none() && outcome.unobserved.is_empty());
+    assert_eq!(server.state().attachments, state.attachments);
+    assert!(
+        session
+            .client()
+            .with_confirmed(|s| s.attachments.contains_key(&id))
+    );
+
+    // A later uncertain upload can also be resolved by sync alone. Removing the local file proves
+    // the retry does not try to open or POST it once sync shows its ID.
+    let path = home.path().join("second.txt");
+    std::fs::write(&path, b"second report").expect("write file");
+    let lost = relay_upload(&net, &mut session, &server, &pairing.token, true);
+    let outcome = net
+        .block_on(session.upload_attachments(task, vec![path.clone()]))
+        .expect("second upload");
+    net.block_on(lost).expect("lost response after commit");
+    assert!(outcome.error.is_some());
+    eventually("second attachment confirmed", || {
+        session
+            .client()
+            .with_confirmed(|s| s.attachments.len() == 2)
+    });
+    std::fs::remove_file(&path).expect("remove source file");
+    session.transport = original;
+    let outcome = net
+        .block_on(session.upload_attachments(task, vec![path]))
+        .expect("retry after sync");
+    assert!(outcome.error.is_none() && outcome.unobserved.is_empty());
+    assert_eq!(server.state().attachments.len(), 2);
+    net.block_on(session.shutdown());
+}
+
 #[test]
 fn picked_files_upload_and_sync_before_they_can_be_saved_opened_or_removed() {
     let server = TestServer::start();
@@ -1505,7 +1644,7 @@ fn picked_files_upload_and_sync_before_they_can_be_saved_opened_or_removed() {
             session.upload_attachments(task, vec![pdf_path, home.path().to_owned(), exe_path]),
         )
         .expect("upload batch");
-    assert!(uploads.synced);
+    assert!(uploads.unobserved.is_empty());
     assert_eq!(
         uploads.error.as_deref(),
         Some("Choose files, not folders, to attach to a task.")
