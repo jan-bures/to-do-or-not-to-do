@@ -629,3 +629,71 @@ fn a_finished_day_offers_planning_even_with_nothing_due_tomorrow() {
     let filtered = engine.room_matching(my_day(), "plants".into(), now());
     assert_eq!(filtered.plan_weekday, None);
 }
+
+#[test]
+fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
+    use todo_ffi::view::{Reopening, RowPlacement};
+    let engine = TodoEngine::fixture("world".into(), now()).unwrap();
+    let before = engine.room(my_day(), now());
+    let home_before = engine.home(now());
+    let first = before.tasks[0].id.clone();
+    assert_eq!(before.tasks[0].completed_at_ms, None);
+    engine.set_done(first.clone(), true).unwrap();
+    assert_eq!(engine.task_done(first.clone()), Some(true));
+
+    // Held: still the first open row, and the counts and the drawer are as they were.
+    let holding = RowPlacement {
+        holding: vec![first.clone()],
+        reopening: vec![],
+    };
+    let held = engine.room_placed(my_day(), String::new(), holding.clone(), now());
+    assert_eq!(held.tasks[0].id, first);
+    assert_eq!(
+        (held.done, held.total, held.open),
+        (before.done, before.total, before.open)
+    );
+    assert_eq!(engine.home_placed(holding, now()), home_before);
+    // A filter still applies.
+    let filtered = engine.room_placed(
+        my_day(),
+        "zzz-nothing".into(),
+        RowPlacement::default(),
+        now(),
+    );
+    assert!(filtered.tasks.is_empty() && filtered.filtered);
+
+    // Released: it's in Completed, with when it was completed.
+    let released = engine.room_placed(my_day(), String::new(), RowPlacement::default(), now());
+    assert_eq!(released, engine.room(my_day(), now()));
+    let done = released
+        .completed
+        .iter()
+        .find(|t| t.id == first)
+        .expect("completed");
+    let at = done.completed_at_ms.expect("a completion time");
+
+    // Reopened: it keeps its completed place until released, and counts as done.
+    engine.set_done(first.clone(), false).unwrap();
+    let reopening = RowPlacement {
+        holding: vec![],
+        reopening: vec![Reopening {
+            id: first.clone(),
+            completed_at_ms: at,
+        }],
+    };
+    let kept = engine.room_placed(my_day(), String::new(), reopening, now());
+    assert_eq!(kept.completed, released.completed);
+    assert_eq!(kept.done, released.done);
+    assert!(kept.tasks.iter().all(|t| t.id != first));
+
+    // Unknown or malformed IDs are ignored; a task that's gone answers None.
+    let junk = RowPlacement {
+        holding: vec!["not-an-id".into()],
+        reopening: vec![],
+    };
+    assert_eq!(
+        engine.room_placed(my_day(), String::new(), junk, now()),
+        engine.room(my_day(), now())
+    );
+    assert_eq!(engine.task_done("not-an-id".into()), None);
+}

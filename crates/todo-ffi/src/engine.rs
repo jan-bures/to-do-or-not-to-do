@@ -11,7 +11,7 @@ use crate::labels::{LocalNow, Now};
 use crate::recovery::{self, CacheRecovery};
 use crate::runtime::runtime;
 use crate::transport::AppTransport;
-use crate::view::{self, Home, RoomKey, RoomView, SmartList, TaskDetail};
+use crate::view::{self, Home, RoomKey, RoomView, RowPlacement, SmartList, TaskDetail};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use todo_client::native::{Cleartext, HttpTransport, OsEntropy, TokioClock};
@@ -374,6 +374,44 @@ impl TodoEngine {
     /// (`tag:docs`, `due<=friday`), else words in the title. The progress stays the whole room's.
     pub fn room_matching(&self, key: RoomKey, filter: String, now: LocalNow) -> RoomView {
         view::room_filtered(&self.client.view(), &key, &filter, &Now::new(now))
+    }
+
+    /// The navigation, counting the tasks in `placement` as they were (see [`view::placed`]).
+    pub fn home_placed(&self, placement: RowPlacement, now: LocalNow) -> Home {
+        let state = self.client.view();
+        if placement.is_empty() {
+            return view::home(&state, &Now::new(now));
+        }
+        view::home(&view::placed(&state, &placement), &Now::new(now))
+    }
+
+    /// A room, filtered as [`TodoEngine::room_matching`] (an empty filter shows everything), with the tasks
+    /// in `placement` kept where they were while their choreography plays (see [`view::placed`]).
+    pub fn room_placed(
+        &self,
+        key: RoomKey,
+        filter: String,
+        placement: RowPlacement,
+        now: LocalNow,
+    ) -> RoomView {
+        let state = self.client.view();
+        let now = Now::new(now);
+        if placement.is_empty() {
+            return view::room_filtered(&state, &key, &filter, &now);
+        }
+        view::room_filtered(&view::placed(&state, &placement), &key, &filter, &now)
+    }
+
+    /// Whether a task is done now, or `None` when it is gone (deleted, merged, in a deleted list, or unknown): what the app's
+    /// motion follows when the data changes under a choreography.
+    pub fn task_done(&self, id: String) -> Option<bool> {
+        let id: TaskId = id.parse().ok()?;
+        let state = self.client.view();
+        state
+            .tasks
+            .get(&id)
+            .filter(|t| view::task_live(&state, t))
+            .map(|t| t.is_done())
     }
 
     /// A task's detail, or `None` if it is gone.

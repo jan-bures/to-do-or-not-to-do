@@ -231,6 +231,9 @@ pub struct TaskRow {
     pub tags: Vec<String>,
     /// Created from an email.
     pub from_mail: bool,
+    /// When it was completed, in Unix milliseconds (none while open). Reopening a task passes it back in
+    /// [`Reopening`], so the row keeps its completed place while it leaves it.
+    pub completed_at_ms: Option<i64>,
 }
 
 /// What the finished day hands over to: tomorrow's first task and the rest of the week.
@@ -286,6 +289,57 @@ pub struct RoomView {
     /// The finished day (not filtered): the next day's name ("Sunday") for *Plan Sunday*, even when
     /// nothing is due then and there is no hand-over.
     pub plan_weekday: Option<String>,
+}
+
+/// Where the app's completion choreography keeps tasks while it plays (as the desktop's `UiState::holding`
+/// and `reopening`). A row toggled on screen stays where it was, and counts as it did, until its motion
+/// releases it: only then do the rows, the counts, the sun and the finished day change.
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct RowPlacement {
+    /// Tasks just completed: they keep their place in the open rows and count as open.
+    pub holding: Vec<String>,
+    /// Tasks just reopened: they keep their completed place and count as done.
+    pub reopening: Vec<Reopening>,
+}
+
+/// A task being reopened, with when it had been completed ([`TaskRow::completed_at_ms`]).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Reopening {
+    /// Task ID.
+    pub id: String,
+    /// When it had been completed, in Unix milliseconds.
+    pub completed_at_ms: i64,
+}
+
+impl RowPlacement {
+    /// Nothing held back.
+    pub fn is_empty(&self) -> bool {
+        self.holding.is_empty() && self.reopening.is_empty()
+    }
+}
+
+/// The state as the rows place it while a choreography plays: each held task still open, and each task
+/// being reopened still done, as it was. IDs that don't parse or name no task are ignored. Only the list
+/// and its counts read this; the detail pane always shows the truth.
+pub fn placed(state: &State, placement: &RowPlacement) -> State {
+    let mut placed = state.clone();
+    for id in &placement.holding {
+        if let Some(t) = task_id(id).and_then(|id| placed.tasks.get_mut(&id)) {
+            t.completed_at = None;
+        }
+    }
+    for r in &placement.reopening {
+        if let Some(t) = task_id(&r.id).and_then(|id| placed.tasks.get_mut(&id))
+            && t.completed_at.is_none()
+        {
+            t.completed_at = Timestamp::from_millisecond(r.completed_at_ms).ok();
+        }
+    }
+    placed
+}
+
+fn task_id(id: &str) -> Option<TaskId> {
+    id.parse().ok()
 }
 
 /// A step in the detail pane.
@@ -468,6 +522,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .map(|t| format!("#{}", t.name))
             .collect(),
         from_mail: ix.mail.contains(&task.id),
+        completed_at_ms: task.completed_at.map(|c| c.as_millisecond()),
     }
 }
 
