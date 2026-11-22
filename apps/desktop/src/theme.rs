@@ -82,6 +82,7 @@ pub struct Palette {
     pub sun: Hsla,
     pub sun_ink: Hsla,
     pub star: Hsla,
+    pub scrim: Hsla,
 }
 
 impl Palette {
@@ -94,6 +95,7 @@ impl Palette {
 /// The palette of a room with hue `room_hue`.
 pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
     let t = todo_design::palette(theme, room_hue);
+    let scrim = elevation::scrim(theme, t.ink);
     Palette {
         theme,
         canvas: color(t.canvas),
@@ -126,6 +128,7 @@ pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
         sun: color(t.sun),
         sun_ink: color(t.sun_ink),
         star: color(t.star),
+        scrim: with_alpha(color(scrim.rgb), scrim.alpha),
     }
 }
 

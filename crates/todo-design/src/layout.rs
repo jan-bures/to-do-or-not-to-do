@@ -109,8 +109,13 @@ pub mod elevation {
     const LIGHT_SHADOW: Rgb = Rgb::from_u32(0x241c15);
     const DARK_SHADOW: Rgb = Rgb::from_u32(0x000000);
 
-    /// Neutral dimming behind a modal panel, in either theme.
-    pub const SCRIM: Rgba = DARK_SHADOW.with_alpha(0.42);
+    /// Dimming behind a modal panel: a hint of the room's ink by day, deeper black at night.
+    pub const fn scrim(theme: crate::Theme, room_ink: Rgb) -> Rgba {
+        match theme {
+            crate::Theme::Light => room_ink.with_alpha(0.16),
+            crate::Theme::Dark => DARK_SHADOW.with_alpha(0.40),
+        }
+    }
 
     /// The overlay shadow in light mode, two layers.
     pub const OVERLAY_LIGHT: [Shadow; 2] = [

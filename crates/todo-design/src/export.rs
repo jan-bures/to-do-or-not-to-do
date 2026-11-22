@@ -147,7 +147,6 @@ pub fn css() -> String {
     root.push(("radius-checkbox".into(), "50%".into()));
     root.push(("hairline".into(), format!("{}px", elevation::HAIRLINE)));
     root.push(("focus-ring".into(), format!("{}px", elevation::FOCUS_RING)));
-    root.push(("overlay-scrim".into(), elevation::SCRIM.css()));
     root.push((
         "selection-bar".into(),
         format!("{}px", elevation::SELECTION_BAR),
@@ -183,10 +182,16 @@ pub fn css() -> String {
             &[("shadow-overlay".into(), css_shadow(theme))],
         );
         for hue in hues::rooms() {
+            let palette = palette(theme, hue.degrees);
+            let mut vars = color_vars("color", palette.entries());
+            vars.push((
+                "overlay-scrim".into(),
+                elevation::scrim(theme, palette.ink).css(),
+            ));
             css_block(
                 &mut out,
                 &format!("[data-theme=\"{t}\"][data-room-hue=\"{}\"]", hue.key),
-                &color_vars("color", palette(theme, hue.degrees).entries()),
+                &vars,
             );
         }
         for hue in hues::rooms() {
@@ -376,7 +381,12 @@ pub fn json() -> String {
             "focusRing": num(elevation::FOCUS_RING),
             "selectionBar": num(elevation::SELECTION_BAR),
             "overlayShadow": { "light": shadow(Theme::Light), "dark": shadow(Theme::Dark) },
-            "scrim": elevation::SCRIM.css(),
+            "scrim": Theme::ALL.into_iter().map(|theme| {
+                let rooms = hues::rooms().map(|hue| {
+                    (hue.key.to_owned(), rgba_json(elevation::scrim(theme, palette(theme, hue.degrees).ink)))
+                }).collect::<Map<_, _>>();
+                (theme.key().to_owned(), Value::Object(rooms))
+            }).collect::<Map<_, _>>(),
         },
         "motion": {
             "durationsMs": Value::Object(motion::DURATIONS.iter().map(|(k, v)| ((*k).to_owned(), json!(v))).collect()),

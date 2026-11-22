@@ -1260,11 +1260,7 @@ impl ShellView {
             self.closing.clone(),
         )?;
         let live = phase.interactive();
-        let scrim_color = if p.night() {
-            theme::with_alpha(theme::color(chrome::SCRIM_DARK_BASE), chrome::SCRIM_DARK)
-        } else {
-            theme::with_alpha(p.ink, chrome::SCRIM_LIGHT)
-        };
+        let scrim_color = p.scrim;
         let scrim = div()
             .id(if live { "scrim" } else { "scrim-closing" })
             .absolute()

@@ -135,7 +135,7 @@ are 4, 8, 12, 16, 20, 24, 32 and 40.
 
 **A narrow desktop window** (below `desktop::THREE_PANE_MIN`, **1200**, as on the web) keeps the list at its full
 width. The detail pane opens over the right part of the list, with the overlay shadow and a scrim over the rest
-of it (the room's `ink` at `chrome::SCRIM_LIGHT` in light mode, black at `chrome::SCRIM_DARK` in dark mode).
+of it (the shared `elevation::scrim`: room ink at 16% in light mode, black at 40% in dark mode).
 Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
 move to a line of their own under it, so the title never gives way to them.
 
