@@ -613,12 +613,34 @@ impl Shell {
         }
     }
 
-    /// Whether Space may complete or reopen `id`: not while it is a hand-over task that hasn't begun to
-    /// enter (a selection kept across a refresh can point at one before its row is there).
-    pub fn reachable(&self, id: TaskId, entered: impl Fn(usize) -> bool) -> bool {
-        match self.room.handover() {
-            Some(next) => next.child(id).is_some_and(entered),
-            None => self.rows().any(|row| row.id == id),
+    /// Whether a row action still targets a row in the live room, not a snapshot or stale hitbox.
+    pub fn has_row_in(&self, room: RoomKey, id: TaskId) -> bool {
+        self.room.key == room && self.rows().any(|row| row.id == id)
+    }
+
+    /// Space can reach a visible row or an entering hand-over task once its child is visible.
+    /// In an ordinary list it can also reach the open detail when its task has no row (e.g. after
+    /// completing it with Completed collapsed). A closing detail is only a paint snapshot.
+    pub fn reachable(
+        &self,
+        id: TaskId,
+        row_visible: impl FnOnce() -> bool,
+        entered: impl FnOnce(usize) -> bool,
+    ) -> bool {
+        if let Some(next) = self.room.handover() {
+            next.child(id).is_some_and(entered) && row_visible()
+        } else if self.has_row_in(self.room.key, id) {
+            row_visible()
+        } else {
+            self.detail.as_ref().is_some_and(|d| d.task == id)
+        }
+    }
+
+    /// The detail to paint and whether it may receive input. An outgoing detail never does.
+    pub fn detail_layer<'a>(&'a self, closing: Option<&'a Detail>) -> Option<(&'a Detail, bool)> {
+        match self.detail.as_ref() {
+            Some(detail) => Some((detail, true)),
+            None => closing.map(|detail| (detail, false)),
         }
     }
 }

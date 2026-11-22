@@ -117,6 +117,18 @@ pub mod elevation {
         }
     }
 
+    #[cfg(test)]
+    #[test]
+    fn scrim_tints_with_the_room_ink_only_in_light_mode() {
+        use crate::Theme::{Dark, Light};
+
+        let black = Rgb::from_u32(0x000000);
+        for ink in [Rgb::from_u32(0x241c15), Rgb::from_u32(0x19352e)] {
+            assert_eq!(scrim(Light, ink), ink.with_alpha(0.16));
+            assert_eq!(scrim(Dark, ink), black.with_alpha(0.40));
+        }
+    }
+
     /// The overlay shadow in light mode, two layers.
     pub const OVERLAY_LIGHT: [Shadow; 2] = [
         Shadow {

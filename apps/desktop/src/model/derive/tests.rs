@@ -105,6 +105,73 @@ fn a_task_being_completed_keeps_its_place_until_released() {
 }
 
 #[test]
+fn space_can_reach_the_open_detail_after_its_row_leaves() {
+    let mut f = fixtures::my_day();
+    let task = f.shell().room.tasks[0].id;
+    f.ui.task = Some(task);
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::CompleteTask { id: task },
+    );
+    let completed = f.shell();
+    assert!(!f.ui.show_completed);
+    assert_eq!(completed.selected_task, None);
+    assert_eq!(completed.detail.as_ref().map(|d| d.task), Some(task));
+    assert!(completed.reachable(task, || false, |_| false));
+    assert!(!completed.has_row_in(completed.room.key, task));
+
+    let open = completed.room.tasks[0].id;
+    f.ui.task = Some(open);
+    f.ui.filter = "nonexistent task title".into();
+    let filtered = f.shell();
+    assert_eq!(filtered.selected_task, None);
+    assert!(filtered.reachable(open, || false, |_| false));
+    assert!(!filtered.reachable(task, || true, |_| true));
+}
+
+#[test]
+fn navigation_does_not_act_on_outgoing_rows_or_closing_detail() {
+    use super::motion::{Motion, Pace};
+    use std::time::Duration;
+
+    let mut f = fixtures::my_day();
+    let previous = f.ui.room;
+    let id = f.shell().room.tasks[0].id;
+    f.ui.task = Some(id);
+    let outgoing = f.shell();
+    let old_detail = outgoing.detail.as_ref().expect("selected task");
+    assert_eq!(outgoing.detail_layer(None), Some((old_detail, true)));
+    assert!(outgoing.has_row_in(previous, id));
+
+    // All still has that row, but the old room's row cannot act and the old detail is paint-only.
+    let room = RoomKey::Smart(Smart::All);
+    f.ui.select_room(&f.state, room);
+    assert_eq!(f.ui.task, None);
+    let incoming = f.shell();
+    assert!(!incoming.has_row_in(previous, id));
+    assert!(incoming.has_row_in(room, id));
+    assert_eq!(
+        incoming.detail_layer(Some(old_detail)),
+        Some((old_detail, false))
+    );
+
+    // Even with a task selected, Space cannot reach a row before the incoming frame is visible.
+    f.ui.task = Some(id);
+    let selected = f.shell();
+    let mut motion = Motion::default();
+    motion.navigation.switch(
+        outgoing.room.hue,
+        incoming.room.hue,
+        Duration::ZERO,
+        Pace::FULL,
+    );
+    let reachable = |at| selected.reachable(id, || motion.row_is_visible(id, at), |_| true);
+    assert!(!reachable(Duration::ZERO));
+    assert!(reachable(Duration::from_secs(1)));
+}
+
+#[test]
 fn a_task_being_reopened_keeps_its_completed_place_until_released() {
     let mut f = fixtures::my_day();
     f.ui.show_completed = true;
@@ -277,6 +344,24 @@ fn navigating_to_a_list_reveals_only_its_own_collection() {
     assert_eq!(f.shell().sidebar.selected, target);
     assert!(f.ui.select_room(&f.state, target));
     assert!(!f.shell().sidebar.collections[0].collapsed);
+}
+
+#[test]
+fn room_resolution_keeps_live_rooms_and_defaults_for_deleted_or_unknown_ones() {
+    let mut f = fixtures::my_day();
+    let list = list_named(&f.state, "Office");
+    let collection = f.shell().sidebar.collections[0].id;
+    let smart = RoomKey::Smart(Smart::Planned);
+    assert_eq!(smart.resolved(&State::default()), smart);
+    for (room, entity) in [
+        (RoomKey::List(list), list.into()),
+        (RoomKey::Collection(collection), collection.into()),
+    ] {
+        assert_eq!(room.resolved(&State::default()), RoomKey::default());
+        assert_eq!(room.resolved(&f.state), room);
+        run(&mut f.state, fixtures_now(), Command::Delete { id: entity });
+        assert_eq!(room.resolved(&f.state), RoomKey::default());
+    }
 }
 
 #[test]

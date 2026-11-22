@@ -30,6 +30,18 @@ struct Fade {
     alarm: Option<(Duration, Task<()>)>,
 }
 
+impl Fade {
+    fn alarm_fired(&mut self, at: Duration) -> bool {
+        if let Some((_, task)) = self.alarm.take_if(|(due, _)| *due == at) {
+            // The alarm may be a little early; clear its slot before a refresh can re-arm it.
+            task.detach();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Thumb {
     top: Pixels,
@@ -72,6 +84,13 @@ impl Thumb {
 }
 
 impl Scrollbar {
+    /// A new pane starts at the top, not with an apparent scroll from the old content's offset.
+    pub fn reset_to_top(&self, handle: &ScrollHandle) {
+        handle.set_offset(point(px(0.), px(0.)));
+        self.grab.set(None);
+        *self.fade.borrow_mut() = Fade::default();
+    }
+
     /// Snapshot the ordinary scroll/hold/fade path, without reading the OS preference or a clock.
     pub fn freeze_fade(&mut self, at: u32) {
         let mut motion = ScrollbarMotion::default();
@@ -108,7 +127,7 @@ impl Scrollbar {
     ) -> impl IntoElement + use<> {
         let handle = handle.clone();
         let grab = self.grab.clone();
-        let fade = self.fade.clone();
+        let fade_state = self.fade.clone();
         let frozen_alpha = self.frozen_alpha.unwrap_or(1.);
         let ink = p.ink;
         let inset = px(desktop::SCROLLBAR_INSET);
@@ -138,7 +157,7 @@ impl Scrollbar {
             move |_, state, window, cx| {
                 let Some((handle, grab, hitbox, thumb, viewport)) = state else {
                     if animate {
-                        *fade.borrow_mut() = Fade::default();
+                        *fade_state.borrow_mut() = Fade::default();
                     }
                     return;
                 };
@@ -151,7 +170,7 @@ impl Scrollbar {
                     px(desktop::SCROLLBAR_WIDTH)
                 };
                 let (visible, emphasis) = if animate {
-                    let mut fade = fade.borrow_mut();
+                    let mut fade = fade_state.borrow_mut();
                     let now = fade.epoch.get_or_insert_with(Instant::now).elapsed();
                     let pace = if win::reduced_motion() {
                         Pace::REDUCED
@@ -172,11 +191,17 @@ impl Scrollbar {
                         }
                         Wake::At(at) if fade.alarm.as_ref().is_none_or(|(old, _)| *old != at) => {
                             let timer = cx.background_executor().timer(at.saturating_sub(now));
+                            let fade_handle = Rc::downgrade(&fade_state);
                             fade.alarm = Some((
                                 at,
                                 window.spawn(cx, async move |cx| {
                                     timer.await;
-                                    let _ = cx.update(|window, _| window.refresh());
+                                    if fade_handle
+                                        .upgrade()
+                                        .is_some_and(|fade| fade.borrow_mut().alarm_fired(at))
+                                    {
+                                        let _ = cx.update(|window, _| window.refresh());
+                                    }
                                 }),
                             ));
                         }
@@ -264,6 +289,72 @@ impl Scrollbar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_early_alarm_can_rearm_for_the_same_deadline() {
+        let mut fade = Fade::default();
+        let pace = Pace::FULL;
+        fade.motion.sample(Duration::ZERO, 10., false, false, pace);
+        let Wake::At(due) = fade
+            .motion
+            .sample(Duration::from_millis(200), 10., false, false, pace)
+            .wake
+        else {
+            panic!("expected a hold deadline");
+        };
+        fade.alarm = Some((due, Task::ready(())));
+        let early = due - Duration::from_millis(1);
+        assert!(!fade.alarm_fired(early)); // A stale alarm must not clear this one.
+        assert!(fade.alarm_fired(due));
+        assert!(fade.alarm.is_none());
+        assert_eq!(
+            fade.motion.sample(early, 10., false, false, pace).wake,
+            Wake::At(due)
+        );
+        assert_eq!(
+            fade.motion.sample(due, 10., false, false, pace).wake,
+            Wake::Frame
+        );
+        let settled = fade
+            .motion
+            .sample(due + Duration::from_secs(1), 10., false, false, pace);
+        assert_eq!((settled.alpha, settled.wake), (0., Wake::Idle));
+    }
+
+    #[test]
+    fn resetting_to_top_does_not_reveal_the_thumb() {
+        let bar = Scrollbar::default();
+        let handle = ScrollHandle::new();
+        let pace = Pace::FULL;
+        let now = Duration::from_secs(2);
+        handle.set_offset(point(px(0.), px(-10.)));
+        bar.fade
+            .borrow_mut()
+            .motion
+            .sample(Duration::ZERO, -10., false, false, pace);
+        assert_eq!(
+            bar.fade
+                .borrow_mut()
+                .motion
+                .sample(now, -10., false, false, pace)
+                .alpha,
+            0.
+        );
+        bar.grab.set(Some(px(3.)));
+        bar.reset_to_top(&handle);
+        let offset = f32::from(handle.offset().y);
+        assert_eq!(offset, 0.);
+        assert_eq!(bar.grab.get(), None);
+        let fade = &mut *bar.fade.borrow_mut();
+        let reset = fade
+            .motion
+            .sample(Duration::ZERO, offset, false, false, pace);
+        assert_eq!((reset.alpha, reset.wake), (0., Wake::Idle));
+        assert_eq!(
+            fade.motion.sample(now, -10., false, false, pace).wake,
+            Wake::Frame
+        );
+    }
 
     #[test]
     fn thumb_is_only_present_on_overflow() {

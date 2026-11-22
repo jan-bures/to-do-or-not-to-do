@@ -186,11 +186,11 @@ impl ShellView {
         );
     }
 
-    /// The existing inset ring and the wash transfer to the new active row, not the label geometry.
+    /// The existing inset ring and raised fill transfer to the new active row, not the label geometry.
     fn nav_row(&self, key: RoomKey, on: bool, el: Div) -> Div {
         let p = &self.palette;
         let alpha = self.motion.sidebar.ring(key, on, self.frame);
-        el.bg(theme::with_alpha(p.wash, alpha))
+        el.bg(theme::with_alpha(p.raised, alpha))
             .border(px(elevation::HAIRLINE))
             .border_color(theme::with_alpha(p.line, alpha))
             .when(on, |el| {

@@ -215,15 +215,18 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   mid-travel. Switching between populated rooms carries it along the arc; at an empty endpoint it fades in or out.
 - **Room switches.** The palette follows the shortest hue arc over `ROOM_HUE`. The title and eyebrow overlap
   briefly as they trade places; the list crossfades and resets to the top. Outgoing layers are paint-only.
-  Switching again keeps the stronger title and list layers independently, without stacking old rooms.
+  Switching again keeps the stronger title and list layers independently. The weaker layers are dropped
+  immediately (which can be visible near the midpoint of a crossfade), so repeated switches never stack
+  old rooms. Outgoing rows keep the collapse, opacity and lift of their last painted frame.
 - **Wide detail.** The placeholder fades into the selected task, which enters from the right by 8 px. The
   column stays at full width until its exit finishes, including when dusk removes the empty column. Switching
   between tasks fades the body in place; rapid J/K selection switches immediately. Resize across the narrow
   breakpoint settles the pane instead of replaying the entrance.
-- **Sidebar.** The selection ring and wash crossfade. A collection clips and fades its child rows while its
+- **Sidebar.** The selection ring and raised fill crossfade. A collection clips and fades its child rows while its
   chevron turns; clicking again reverses from the displayed height. Reduced motion snaps the disclosure.
 - **Scrollbars.** Scrolling or hovering reveals the thumb. When neither hovered nor dragged, it holds for
-  `SCROLLBAR_HOLD` without requesting frames, then fades out. Windows’ *Always show scrollbars* keeps
+  `SCROLLBAR_HOLD` without requesting frames, then fades out. A room or detail scroll reset doesn't
+  reveal the thumb. Windows’ *Always show scrollbars* keeps
   overflowing thumbs visible. At rest, gallery fixtures show them regardless of OS preference.
 - **Dusk.** Once My Day's last row has left, the header grows to the dusk scene over `DUSK` (`SUN`): the scene
   fades in over the strip, the text switches to the dark theme's ink and the moon and stars fade in at

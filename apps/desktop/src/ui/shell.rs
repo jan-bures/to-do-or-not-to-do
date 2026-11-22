@@ -129,7 +129,7 @@ struct OutgoingRoom {
 #[derive(Debug)]
 enum OutgoingBody {
     Rows {
-        rows: Vec<(TaskRow, bool)>,
+        rows: Vec<OutgoingRow>,
         cut: f32,
         chips: Chips,
     },
@@ -142,6 +142,14 @@ enum OutgoingBody {
         top: gpui::Pixels,
     },
     Plan(SharedString),
+}
+
+#[derive(Debug)]
+struct OutgoingRow {
+    task: TaskRow,
+    selected: bool,
+    look: Option<RowLook>,
+    lift: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -346,9 +354,12 @@ impl ShellView {
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
         let state = self.store.view();
-        // Release the old room's row holds *before* deriving the new counts and sidebar.
-        if self.ui.room.resolved(&state) != self.shell.room.key {
+        // Capture the painted rows before releasing the old room's holds and deriving new counts.
+        let room_changed = self.ui.room.resolved(&state) != self.shell.room.key;
+        let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
+        if room_changed {
             self.motion.settle_all();
+            self.row_lifts.clear();
         }
         self.follow_data(&state);
         let session = self.store.session();
@@ -374,7 +385,7 @@ impl ShellView {
             self.ui.task = None;
         }
         if shell.room.key != self.shell.room.key {
-            self.start_room_switch(&shell);
+            self.start_room_switch(&shell, outgoing_body);
         } else if self.animate && shell.room.hue != self.shell.room.hue {
             let (now, pace) = (self.now(), self.pace());
             self.motion
@@ -395,7 +406,7 @@ impl ShellView {
                 self.closing = self.shell.detail.take();
             } else {
                 self.closing = None;
-                self.detail_scroll.set_offset(gpui::point(px(0.), px(0.)));
+                self.detail_bar.reset_to_top(&self.detail_scroll);
             }
         }
         if self.animate {
@@ -612,7 +623,8 @@ impl ShellView {
                 let next = std::mem::replace(&mut self.shell, old);
                 self.motion = Motion::default();
                 let _ = self.follow_shell();
-                self.begin_navigation(&next, f32::from(window.viewport_size().height));
+                let body = self.capture_body(f32::from(window.viewport_size().height));
+                self.begin_navigation(&next, body);
                 self.aim_sidebar(&next);
                 self.shell = next;
                 self.settle_detail();
@@ -703,20 +715,17 @@ impl ShellView {
         }
     }
 
-    fn start_room_switch(&mut self, next: &Shell) {
-        if self.animate {
-            self.begin_navigation(next, 0.);
+    fn start_room_switch(&mut self, next: &Shell, body: Option<OutgoingBody>) {
+        if let Some(body) = body {
+            self.begin_navigation(next, body);
         }
-        self.rows
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(gpui::point(px(0.), px(0.)));
+        self.rows_bar
+            .reset_to_top(&self.rows.0.borrow().base_handle);
         self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
-        self.handover_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        self.handover_bar.reset_to_top(&self.handover_scroll);
     }
 
-    fn begin_navigation(&mut self, next: &Shell, capture_height: f32) {
+    fn begin_navigation(&mut self, next: &Shell, body: OutgoingBody) {
         let now = self.now();
         let pace = self.pace();
         let keep = self
@@ -732,9 +741,7 @@ impl ShellView {
                 self.shell.room.eyebrow.clone(),
             ),
         };
-        let body = old
-            .filter(|_| keep.list)
-            .map_or_else(|| self.capture_body(capture_height), |old| old.body);
+        let body = old.filter(|_| keep.list).map_or(body, |old| old.body);
         self.outgoing = Some(OutgoingRoom {
             title,
             eyebrow,
@@ -1411,7 +1418,10 @@ impl ShellView {
             chips: self.shell.room.chips,
             look,
         };
-        let row = self.row(task, style, window, cx);
+        Self::row_slot(self.row(task, style, window, cx), look, lift)
+    }
+
+    fn row_slot(row: Stateful<Div>, look: Option<RowLook>, lift: f32) -> AnyElement {
         if look.is_none() && lift == 0. {
             return row.into_any_element();
         }
@@ -1648,7 +1658,7 @@ impl ShellView {
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    if this.shell.room.key == room && this.task_is_visible(id) {
+                    if this.row_can_act(room, id) {
                         this.toggle_complete(id, cx);
                     }
                 }))
@@ -1697,7 +1707,7 @@ impl ShellView {
                         .when_some(room, |el, room| {
                             el.on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                if this.shell.room.key == room && this.task_is_visible(id) {
+                                if this.row_can_act(room, id) {
                                     this.cycle_priority(id, cx);
                                 }
                             }))
@@ -1714,7 +1724,7 @@ impl ShellView {
             )
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, _, window, cx| {
-                    if this.shell.room.key == room && this.row_is_visible(id) {
+                    if this.row_can_act(room, id) {
                         window.focus(&this.list_focus, cx);
                         this.select_task(Some(id), cx);
                     }
@@ -1800,13 +1810,18 @@ impl ShellView {
             let first = (scroll / desktop::ROW).floor() as usize;
             let cut = scroll - first as f32 * desktop::ROW;
             let visible = ((viewport + cut) / desktop::ROW).ceil() as usize;
-            let rows = self
-                .shell
-                .rows()
-                .enumerate()
-                .skip(first)
-                .take(visible)
-                .map(|(i, row)| (row.clone(), self.shell.selected_task == Some(i)))
+            let end = first + visible;
+            let rows = (first..end)
+                .chain(rows_rising_into(&self.row_lifts, end))
+                .map_while(|i| {
+                    let task = self.shell.row(i)?;
+                    Some(OutgoingRow {
+                        task: task.clone(),
+                        selected: self.shell.selected_task == Some(i),
+                        look: self.motion.row(task.id, self.frame),
+                        lift: self.row_lifts.get(i).copied().unwrap_or(0.),
+                    })
+                })
                 .collect();
             OutgoingBody::Rows {
                 rows,
@@ -1841,18 +1856,19 @@ impl ShellView {
             OutgoingBody::Rows { rows, cut, chips } => div()
                 .relative()
                 .top(px(-cut))
-                .children(rows.iter().map(|(row, selected)| {
-                    self.row(
-                        row,
+                .children(rows.iter().map(|row| {
+                    let content = self.row(
+                        &row.task,
                         RowStyle {
                             room: None,
-                            selected: *selected,
+                            selected: row.selected,
                             chips: *chips,
-                            look: None,
+                            look: row.look,
                         },
                         window,
                         cx,
-                    )
+                    );
+                    Self::row_slot(content, row.look, row.lift)
                 }))
                 .into_any_element(),
             OutgoingBody::Empty { line, hint } => self.empty_list(line, hint).into_any_element(),
@@ -2133,15 +2149,16 @@ impl ShellView {
     }
 
     fn row_is_visible(&self, id: TaskId) -> bool {
-        self.list_is_visible()
-            && self
-                .motion
-                .row(id, self.frame)
-                .is_none_or(|look| look.height > 0. && look.opacity > 0.)
+        self.motion.row_is_visible(id, self.frame)
+    }
+
+    fn row_can_act(&self, room: RoomKey, id: TaskId) -> bool {
+        self.shell.has_row_in(room, id) && self.row_is_visible(id)
     }
 
     fn task_is_visible(&self, id: TaskId) -> bool {
-        self.row_is_visible(id) && self.shell.reachable(id, |c| self.handover_entered(c))
+        self.shell
+            .reachable(id, || self.row_is_visible(id), |c| self.handover_entered(c))
     }
 
     /// The tasks J and K walk, and Space can reach: only ones that can be seen (`Shell::nav_tasks_shown`).

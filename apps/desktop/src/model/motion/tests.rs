@@ -13,6 +13,7 @@ fn task(n: u8) -> TaskId {
 }
 
 const MY_DAY: RoomKey = RoomKey::Smart(crate::model::Smart::MyDay);
+const ALL: RoomKey = RoomKey::Smart(crate::model::Smart::All);
 
 /// Where a full-pace completion starts to leave, and where it's released.
 const EXIT_AT: u32 = m::CHECK_TICK_DELAY + m::CHECK_TICK + m::COMPLETE_HOLD;
@@ -251,6 +252,60 @@ fn the_sun_snaps_in_a_new_room_with_reduced_motion_and_when_it_appears() {
 }
 
 #[test]
+fn navigation_glides_between_populated_rooms_then_retargets_mid_fade() {
+    let mut mo = Motion::default();
+    mo.place_sun(MY_DAY, 0.25, ms(0));
+    mo.navigate_sun(ALL, Some(0.75), ms(0), Pace::FULL);
+    assert_eq!(mo.sun(ms(0)), Some(0.25));
+    let halfway = ms(m::SUN_TRAVEL / 2);
+    assert!(close(mo.sun(halfway).expect("gliding sun"), 0.5));
+    assert_eq!(mo.sun_alpha(halfway), 1.);
+    let arrived = ms(m::SUN_TRAVEL);
+    assert_eq!(mo.sun(arrived), Some(0.75));
+
+    mo.navigate_sun(MY_DAY, None, arrived, Pace::FULL);
+    let end = arrived + ms(m::OVERLAY_OUT);
+    let mid = arrived + ms(m::OVERLAY_OUT / 2);
+    let alpha = mo.sun_alpha(mid);
+    assert!((0. ..1.).contains(&alpha) && alpha > 0.);
+    assert_eq!(mo.sun(mid), Some(0.75));
+    assert_eq!(mo.sun(end), None);
+    assert_eq!(mo.wake(end), Wake::Idle);
+
+    mo.navigate_sun(ALL, Some(0.25), mid, Pace::FULL);
+    assert_eq!(mo.sun(mid), Some(0.75));
+    assert_eq!(mo.sun_alpha(mid), alpha);
+    assert_eq!(mo.sun_alpha(mid + ms(m::ROW_ENTER)), 1.);
+    assert_eq!(mo.sun(mid + ms(m::SUN_TRAVEL)), Some(0.25));
+}
+
+#[test]
+fn a_refresh_keeps_the_suns_presence_track_during_room_navigation() {
+    let mut mo = Motion::default();
+    let (start, pace) = (ms(0), Pace::FULL);
+    mo.place_sun(MY_DAY, 0.25, start);
+    mo.navigate_sun(ALL, None, start, pace);
+    let fade_out = ms(m::OVERLAY_OUT / 2);
+    let alpha = mo.sun_alpha(fade_out);
+    mo.aim_sun(ALL, None, fade_out, pace);
+    assert!(alpha > 0. && alpha < 1.);
+    assert_eq!(mo.sun_alpha(fade_out), alpha);
+    let empty = ms(m::OVERLAY_OUT);
+    assert_eq!(mo.sun(empty), None);
+
+    mo.navigate_sun(MY_DAY, Some(0.5), empty, pace);
+    assert_eq!(mo.sun_alpha(empty), 0.);
+    let fade_in = empty + ms(m::ROW_ENTER / 2);
+    let alpha = mo.sun_alpha(fade_in);
+    assert!(alpha > 0. && alpha < 1.);
+    mo.aim_sun(MY_DAY, Some(0.75), fade_in, pace);
+    assert_eq!(mo.sun(fade_in), Some(0.5));
+    assert_eq!(mo.sun_alpha(fade_in), alpha);
+    assert_eq!(mo.sun_alpha(empty + ms(m::ROW_ENTER)), 1.);
+    assert_eq!(mo.sun(fade_in + ms(m::SUN_TRAVEL)), Some(0.75));
+}
+
+#[test]
 fn a_placed_sun_glides_back_from_where_it_was_put() {
     let mut mo = Motion::default();
     mo.aim_sun(MY_DAY, Some(11. / 12.), ms(0), Pace::FULL);
@@ -298,6 +353,41 @@ fn dusk_falls_with_its_cues_and_lifts_briskly() {
     assert_eq!(mo.dusk(back).scene(), 1.);
     assert!(mo.dusk(back + ms(m::ROOM_HUE)).settled());
     assert_eq!(mo.dusk(back + ms(m::ROOM_HUE)).scene(), 0.);
+}
+
+#[test]
+fn navigation_leaves_and_retargets_dusk_over_the_room_transition() {
+    let mut mo = Motion::default();
+    let pace = Pace::FULL;
+    mo.aim_dusk(MY_DAY, true, ms(0), pace);
+    mo.navigate_dusk(ALL, false, ms(0), pace);
+    assert_eq!(mo.dusk(ms(0)).scene(), 1.);
+    let mid = ms(m::ROOM_HUE / 2);
+    let look = mo.dusk(mid);
+    assert!(close(look.scene(), 0.5) && close(look.height(), 0.5));
+    assert_eq!(mo.dusk(ms(m::ROOM_HUE)).scene(), 0.);
+    mo.navigate_dusk(MY_DAY, true, mid, pace);
+    mo.aim_dusk(MY_DAY, true, mid, pace); // The next refresh must not snap the scene.
+    assert_eq!(mo.dusk(mid).scene(), look.scene());
+    let end = mid + ms(m::ROOM_HUE);
+    assert_eq!(mo.dusk(end).scene(), 1.);
+    assert_eq!(mo.wake(end), Wake::Idle);
+}
+
+#[test]
+fn navigation_snaps_dusk_height_but_crossfades_the_scene_with_reduced_motion() {
+    let mut mo = Motion::default();
+    let pace = Pace::REDUCED;
+    mo.navigate_dusk(MY_DAY, true, ms(0), pace);
+    assert_eq!((mo.dusk(ms(0)).height(), mo.dusk(ms(0)).scene()), (1., 0.));
+    let mid = ms(m::REDUCED_FADE / 2);
+    let scene = mo.dusk(mid).scene();
+    assert!(scene > 0. && scene < 1.);
+    mo.navigate_dusk(ALL, false, mid, pace);
+    assert_eq!((mo.dusk(mid).height(), mo.dusk(mid).scene()), (0., scene));
+    let end = mid + ms(m::REDUCED_FADE);
+    assert_eq!(mo.dusk(end).scene(), 0.);
+    assert_eq!(mo.wake(end), Wake::Idle);
 }
 
 #[test]
@@ -416,28 +506,36 @@ fn j_and_k_reach_only_the_hand_over_tasks_that_have_begun_to_enter() {
 #[test]
 fn space_never_reaches_a_selected_hand_over_task_before_it_enters() {
     // A selection kept across a refresh can point at a hand-over task while dusk falls again.
-    let shell = crate::fixtures::finished().shell();
+    let mut fixture = crate::fixtures::finished();
+    let first = fixture
+        .shell()
+        .room
+        .handover()
+        .expect("hands over")
+        .first
+        .id;
+    fixture.ui.task = Some(first);
+    let shell = fixture.shell();
+    assert_eq!(shell.detail.as_ref().map(|detail| detail.task), Some(first));
     let next = shell.room.handover().expect("hands over");
-    let first = next.tasks().next().expect("a task").id;
     let mut mo = Motion::default();
     mo.aim_dusk(MY_DAY, false, ms(0), Pace::FULL);
     mo.aim_dusk(MY_DAY, true, ms(0), Pace::FULL);
     let reachable = |t: u32| {
         let dusk = mo.dusk(ms(t));
-        shell.reachable(first, |c| dusk.handover(c).0 > 0.)
+        shell.reachable(
+            first,
+            || mo.row_is_visible(first, ms(t)),
+            |c| dusk.handover(c).0 > 0.,
+        )
     };
     assert!(!reachable(m::DUSK / 2));
     assert!(reachable(m::DUSK));
     // A stale selection from the outgoing room must never resolve against hidden content.
     let other = TaskId::new_v7(1, [7; 10]);
     assert!(next.child(other).is_none());
-    assert!(!shell.reachable(other, |_| true));
-    let ordinary = crate::fixtures::by_name("work")
-        .expect("work fixture")
-        .shell();
-    let row = ordinary.rows().next().expect("work row");
-    assert!(ordinary.reachable(row.id, |_| false));
-    assert!(!ordinary.reachable(other, |_| true));
+    assert!(!shell.reachable(other, || true, |_| true));
+    assert!(!shell.reachable(first, || false, |_| true));
 }
 
 #[test]

@@ -646,6 +646,14 @@ impl Motion {
         self.rows.clear();
     }
 
+    /// Whether the incoming list and the given row have appeared in the sampled frame.
+    pub fn row_is_visible(&self, id: TaskId, frame: Duration) -> bool {
+        self.navigation.list(frame).incoming > 0.
+            && self
+                .row(id, frame)
+                .is_none_or(|look| look.height > 0. && look.opacity > 0.)
+    }
+
     /// Points the sun at `target` (its place on the arc, or `None` when the room has no sun). In the same
     /// room it glides there from wherever it is now; a new room, or a sun that appears or goes, snaps.
     pub fn aim_sun(&mut self, room: RoomKey, target: Option<f32>, now: Duration, pace: Pace) {

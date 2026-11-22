@@ -410,7 +410,7 @@ Completing a task is the one choreographed moment in the app.
     edge.
   - **Task list (`CONTENT_SWAP` 120 ms, `ENTER`):** Crisp opacity crossfade of the list body; scroll resets
     immediately to top (`0 ms`). Never cascade individual rows on room switch.
-  - **Active sidebar item / phone room pill:** Sidebar active ring and `wash` crossfade over `HOVER` (`90 ms`,
+  - **Active sidebar item / phone room pill:** Sidebar active ring and `raised` fill crossfade over `HOVER` (`90 ms`,
     `STANDARD`). On phones, the active room pill crossfades colour (`ROOM_HUE` 360 ms, `SUN`) while the pill
     strip scrolls smoothly to keep it visible.
 - **Stagger:** None.
@@ -462,7 +462,7 @@ Completing a task is the one choreographed moment in the app.
   - **Child list group:** Height animates `0 ↔ natural height` with clipping (`overflow: hidden`) and
     `opacity: 0 ↔ 1` over `PANEL` (`200 ms`, `ENTER` on expand, `EXIT` on collapse).
   - **Hidden active list indicator:** When collapsing a collection that contains the active list, the collection
-    header takes on the selected `1 px` ring and `wash` fill over `HOVER` (`90 ms`, `STANDARD`).
+    header takes on the selected `1 px` ring and `raised` fill over `HOVER` (`90 ms`, `STANDARD`).
 - **Stagger:** When expanding a collection of ≤ `STAGGER_MAX_ITEMS` (5) lists, child rows may stagger opacity by
   `STAGGER` (`25 ms`); collapse always uses `0 ms` stagger so closing feels immediate.
 - **Reduced motion:** Chevron snaps (`0 ms`); child rows snap in/out of layout (`0 ms` height, `0 ms` stagger,

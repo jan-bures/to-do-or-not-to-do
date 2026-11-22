@@ -905,7 +905,6 @@ impl ShellView {
         } else {
             look.task.max(look.placeholder)
         };
-        let live = self.shell.detail.is_some();
         let placeholder = (look.placeholder > 0.).then(|| {
             div()
                 .absolute()
@@ -931,11 +930,9 @@ impl ShellView {
         });
         let task = self
             .shell
-            .detail
-            .as_ref()
-            .or(self.closing.as_ref())
+            .detail_layer(self.closing.as_ref())
             .filter(|_| look.task > 0.)
-            .map(|d| {
+            .map(|(d, live)| {
                 let scroll = div()
                     .id("detail-scroll")
                     .size_full()
