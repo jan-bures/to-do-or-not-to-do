@@ -204,17 +204,34 @@ server after a later rename of the same task from another tab, and the older tit
 elect one sender with the Web Locks API: the tab holding the lock `todo-sender` sends; the others only queue
 (`SyncClient::set_sending(false)`). After every committed batch that touched the outbox or the failed list, a
 tab posts on the `BroadcastChannel` `todo-outbox`; the sender then reads the `outbox` store and takes the
-other tabs' entries in (`SyncClient::adopt`), slotted by submission time behind anything it has already sent,
-skipping what it has, refused, or saw confirmed. Every tab still follows the event stream, which confirms its
-own entries; entries the sender refused reach the other tabs' "couldn't sync" lists the same way. When the
-sender's tab closes, the browser hands the lock to the next tab, which takes in whatever is still queued. A
-browser without Web Locks falls back to every tab sending its own outbox: each tab's commands stay in order,
+other tabs' entries in (`SyncClient::adopt`), skipping what it has, refused, or saw confirmed. Every tab still
+follows the event stream, which confirms its own entries; entries the sender refused reach the other tabs'
+"couldn't sync" lists the same way.
+
+- **Taking over.** When the sender's tab closes, the browser hands the lock to the next tab. That tab sends
+  nothing, not even its own new edits, until it has read the whole `outbox` store and taken it in. Its own
+  queue and the adopted entries are then merged by submission time: only commands *this tab* started sending
+  keep their place at the front, and a tab that wasn't the sender has started none. So a rename the old sender
+  left behind still lands before a newer one made in the new sender's tab.
+- **Missed announcements.** A message on the channel can be lost (a tab that was frozen, say), so the sender
+  doesn't rely on it: while it holds the lock it reads the `outbox` store again every 5 seconds, when the page
+  becomes visible, and when the browser comes back online. A read that fails is retried every second; if it
+  keeps failing, the same persistent "Couldn’t save in this browser" alert shows.
+- **Settled commands.** The replica remembers the last 4096 commands it settled, to skip them when another
+  tab's record of one is read late. A command that has aged out of that memory and is sent again is harmless:
+  the server answers with the events it already recorded, which the replica has confirmed, so the entry just
+  leaves the outbox, without a resync.
+
+A browser without Web Locks falls back to every tab sending its own outbox: each tab's commands stay in order,
 and command IDs are idempotent, but two tabs' offline edits to one task may land in either order.
 
 **Upgrades.** Opening the database at a newer version waits until every other tab has closed its connection.
 While it waits, the page says "Close other To-do tabs to finish updating", and goes on by itself when they do.
-Every connection listens for `versionchange`: when another tab needs a newer version, it writes what it still
-has, closes the database and reloads (to get the newer build).
+Every connection listens for `versionchange`: when another tab needs a newer version, the tab stops syncing,
+writes what it still has, releases the sender lock, closes the database and reloads (to get the newer build).
+It never closes the database while its journal holds a write: if a write is failing, the tab keeps the
+connection open (which keeps the upgrade waiting), keeps retrying, and says "This tab has changes it couldn’t
+save yet; other tabs will update once they’re saved." Once they are stored, it closes and reloads.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -297,9 +314,14 @@ quick-add, **Esc** closes the detail.
   on the next start; a tab whose session was replaced by a sign-in elsewhere still sending its queued edit,
   once; a note being typed surviving a rename that arrives over the event stream, then saving; a rename in a
   stalled sender tab and a later one from a second tab landing in that order, and the lock passing on when
-  the sender closes; an IndexedDB write failure (injected) that shows the alert, sends nothing, asks before
-  closing, and sends the edit once after storage recovers; an upgrade blocked by an old connection showing its
-  notice and going ahead; and a connection closing (and the tab reloading) for a newer version. Tests wait for
+  the sender closes; a sender closing with an older rename queued, and the tab taking over with a newer one
+  sending the older one first; an edit whose `BroadcastChannel` message is dropped (injected) being found by
+  the sender's periodic read, and a failing read (injected) showing the alert until it works; an IndexedDB
+  write failure (injected) that shows the alert, sends nothing, asks before closing, and sends the edit once
+  after storage recovers; an upgrade blocked by an old connection showing its notice and going ahead; a tab
+  whose write is failing keeping a newer version's upgrade waiting, with its alert, until the write is stored
+  (the newer database then holds the edit); and a connection closing (and the tab reloading) for a newer
+  version. Tests wait for
   IndexedDB commits by reading the `outbox` store, never for a fixed time. The port is `LIVE_PORT` (default
   47412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as
@@ -312,7 +334,9 @@ quick-add, **Esc** closes the detail.
   entries both survive in any order; an unreadable snapshot, event, outbox or failed record is repaired or set
   aside without losing unsent work; the version 1 arrays are split into records; a batch stays queued until
   committed, and an entry isn't sent before it is durable. `tests/replica.rs`: adopted entries slot in by
-  submission time behind what was sent, and settled or refused ones aren't adopted. `tests/sync.rs`: one
+  submission time behind what was sent, a new sender's own queue merges with what another tab tried by
+  submission time, settled or refused ones aren't adopted, and a replayed command that is already confirmed
+  just leaves the outbox. `tests/sync.rs`: one
   client sending for another, in submission order, against a real server. `src/session.rs`: two concurrent
   `403 csrf` refusals both retry with the new token, and a refusal that persists is retried once, then later.
 

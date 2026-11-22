@@ -47,16 +47,10 @@ async fn start() {
             fail(&backend::StartError::NoCsrf.to_string());
             return;
         };
-        let hooks = todo_client::web::OpenHooks {
-            blocked: std::rc::Rc::new(|waiting| {
-                platform::boot_notice(
-                    waiting.then_some("Close other To-do tabs to finish updating"),
-                );
-            }),
-            // Another tab runs a newer build: reload to get it too.
-            version_change: std::rc::Rc::new(platform::reload),
-        };
-        match backend::open_live(csrf, hooks).await {
+        let blocked: std::rc::Rc<dyn Fn(bool)> = std::rc::Rc::new(|waiting| {
+            platform::boot_notice(waiting.then_some("Close other To-do tabs to finish updating"));
+        });
+        match backend::open_live(csrf, blocked).await {
             Ok(opened) => {
                 wasm_bindgen_futures::spawn_local(opened.flusher.run());
                 platform::on_leave(backend::unsaved, backend::flush_now);

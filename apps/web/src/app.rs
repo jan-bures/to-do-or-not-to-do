@@ -1017,6 +1017,21 @@ fn ToastView() -> impl IntoView {
     let c = ctx();
     view! {
         {move || {
+            // Another tab waits to upgrade until this one's changes are stored.
+            if c.sync.with(|s| s.holding_upgrade) {
+                let e = c.sync.with(|s| s.local_error.clone()).unwrap_or_default();
+                return Some(
+                    view! {
+                        <div class="toast toast-error toast-holding" role="alert" title=format!("The browser said: {e}")>
+                            <span class="toast-text toast-long">
+                                "This tab has changes it couldn’t save yet; other tabs will update once they’re saved."
+                            </span>
+                            <span class="toast-text toast-short">"Saving before other tabs update"</span>
+                        </div>
+                    }
+                    .into_any(),
+                );
+            }
             // A change this browser couldn't store stays on screen until storing works again.
             if let Some(e) = c.sync.with(|s| s.local_error.clone()) {
                 return Some(

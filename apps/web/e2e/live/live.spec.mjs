@@ -389,6 +389,78 @@ test("one tab sends for all: a stalled tab's rename and a later one from another
   await b.close();
 });
 
+test("a new sender reads what the old one left before it sends its own: the newer rename wins", async () => {
+  // Reproduced by review: `a` sends for both, stalls with an older rename, and closes; `b` takes over
+  // holding a newer rename of the same task, and must not send it before the older one.
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [...watch(a), ...watch(b)];
+  await add(a, "Předání původní");
+  await expect(row(b, "Předání původní")).toHaveCount(1, { timeout: 15_000 });
+  await a.route("**/api/v1/commands", (r) => r.abort("internetdisconnected"));
+  await rename(a, "Předání původní", "Předání starší");
+  await committed(a, "Předání starší");
+  await rename(b, "Předání původní", "Předání novější");
+  await committed(b, "Předání novější");
+  await a.close();
+  await expect
+    .poll(
+      async () => {
+        const { body } = await serverLog(b);
+        return body.includes("Předání starší") && body.includes("Předání novější");
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  const { body } = await serverLog(b);
+  expect(body.indexOf("Předání starší"), "the older rename lands first").toBeLessThan(body.indexOf("Předání novější"));
+  await expect(b.locator(".d-title")).toHaveText("Předání novější", { timeout: 15_000 });
+  await expect(b.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  expect(problems).toEqual([]);
+  await b.close();
+});
+
+test("the sender finds an edit whose announcement was missed, and a failing read says so", async () => {
+  await context.addInitScript(() => {
+    const post = BroadcastChannel.prototype.postMessage;
+    BroadcastChannel.prototype.postMessage = function (...args) {
+      if (window.__muteBroadcast) return undefined;
+      return post.apply(this, args);
+    };
+    const getAll = IDBObjectStore.prototype.getAll;
+    IDBObjectStore.prototype.getAll = function (...args) {
+      if (window.__failScan) throw new DOMException("injected read failure", "UnknownError");
+      return getAll.apply(this, args);
+    };
+  });
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [...watch(a), ...watch(b)];
+  await add(a, "Zmeškané oznámení");
+  await expect(row(b, "Zmeškané oznámení")).toHaveCount(1, { timeout: 15_000 });
+  // `b`'s announcement is lost: `a` still finds the edit by reading the outbox store.
+  await b.evaluate(() => {
+    window.__muteBroadcast = true;
+  });
+  await rename(b, "Zmeškané oznámení", "Zmeškané oznámení nalezeno");
+  await committed(b, "Zmeškané oznámení nalezeno");
+  await expect.poll(() => occurrences(a, "Zmeškané oznámení nalezeno"), { timeout: 12_000 }).toBe(1);
+
+  // Reading the store keeps failing in the sender: the alert shows until it works again.
+  await a.evaluate(() => {
+    window.__failScan = true;
+  });
+  const alert = a.locator(".toast-error[role=alert]");
+  await expect(alert).toHaveAttribute("title", /injected read failure/, { timeout: 15_000 });
+  await a.evaluate(() => {
+    window.__failScan = false;
+  });
+  await expect(alert).toHaveCount(0, { timeout: 10_000 });
+  expect(problems).toEqual([]);
+  await a.close();
+  await b.close();
+});
+
 test("an edit this browser can't store is never sent, says so, and goes through once storage works", async () => {
   // Every page of the context can be made to fail IndexedDB writes (as when the quota runs out).
   await context.addInitScript(() => {
@@ -473,6 +545,77 @@ test("an upgrade blocked by another tab says so, and goes ahead once that tab le
   expect(problems).toEqual([]);
   await app.close();
   await old.close();
+});
+
+test("a tab with changes it couldn't save keeps an upgrade waiting until they're stored", async () => {
+  await context.addInitScript(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+      if (window.__failIdb) throw new DOMException("injected write failure", "QuotaExceededError");
+      return put.apply(this, args);
+    };
+  });
+  const app = await openApp();
+  const problems = watch(app);
+  await app.evaluate(() => {
+    window.__failIdb = true;
+  });
+  await add(app, "Čeká na uložení");
+  await expect(app.locator(".toast-error[role=alert]")).toBeVisible({ timeout: 10_000 });
+
+  // A newer version asks for the database: this tab can't let go yet.
+  const newer = await context.newPage();
+  await newer.goto("/health");
+  await newer.evaluate(() => {
+    window.__upgrade = "waiting";
+    const open = indexedDB.open("todo-replica", 3);
+    open.onblocked = () => {
+      window.__blocked = true;
+    };
+    open.onsuccess = () => {
+      open.result.close();
+      window.__upgrade = "opened";
+    };
+    open.onerror = () => {
+      window.__upgrade = String(open.error);
+    };
+  });
+  await expect(app.locator(".toast-holding[role=alert]")).toContainText(
+    "This tab has changes it couldn’t save yet; other tabs will update once they’re saved.",
+    { timeout: 10_000 },
+  );
+  await expect.poll(() => newer.evaluate(() => window.__blocked === true), { timeout: 10_000 }).toBe(true);
+  await app.waitForTimeout(1500);
+  expect(await newer.evaluate(() => window.__upgrade)).toBe("waiting");
+
+  // (The reloaded page meets the newer database and stops; only this build's errors count.)
+  expect([...problems]).toEqual([]);
+
+  // Storage works again: the change is stored, then the tab lets go and reloads.
+  const reloaded = app.waitForEvent("load", { timeout: 15_000 });
+  await app.evaluate(() => {
+    window.__failIdb = false;
+  });
+  await reloaded;
+  await expect.poll(() => newer.evaluate(() => window.__upgrade), { timeout: 10_000 }).toBe("opened");
+  // Nothing was lost: the change is in the database the newer version took over.
+  expect(await stored(newer, "Čeká na uložení")).toBe(1);
+
+  // Clean up: back to this build's database. (The change goes with it; it was never sent, because
+  // this tab stopped syncing when the newer version asked.)
+  await newer.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const del = indexedDB.deleteDatabase("todo-replica");
+        del.onsuccess = () => resolve();
+        del.onerror = () => reject(del.error);
+      }),
+  );
+  expect(await occurrences(app, "Čeká na uložení")).toBe(0);
+  await app.reload();
+  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await app.close();
+  await newer.close();
 });
 
 test("a tab lets go of the database when a newer version needs it, and reloads", async () => {

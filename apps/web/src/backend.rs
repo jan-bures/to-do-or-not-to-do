@@ -19,12 +19,15 @@
 
 #[cfg(feature = "fixtures")]
 use crate::model::Now;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use todo_client::mirror::{MirrorStorage, Recovery};
+use todo_client::notify::Notify;
 use todo_client::web::{
-    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks, elect_sender,
-    open_channel, open_storage,
+    BrowserClock, BrowserEntropy, CsrfToken, FetchTransport, IdbFlusher, OpenHooks, SenderLock,
+    elect_sender, open_channel, open_storage, sleep,
 };
 use todo_client::{ClientConfig, Connection, ErrorKind, SyncClient};
 use todo_core::{Actor, Command, State};
@@ -58,7 +61,27 @@ thread_local! {
     static BACKEND: RefCell<Option<Backend>> = const { RefCell::new(None) };
     static CSRF: RefCell<Option<CsrfToken>> = const { RefCell::new(None) };
     static STORE: RefCell<Option<(MirrorStorage, IdbFlusher)>> = const { RefCell::new(None) };
+    /// The sender lock, while this tab holds or waits for it.
+    static SENDER: RefCell<Option<SenderLock>> = const { RefCell::new(None) };
+    /// Bumped when something only this module knows changed (a scan error, an upgrade waiting).
+    static LOCAL: Notify = Notify::default();
+    /// Bumped to rescan the outbox store now (the tab became visible, or the network came back).
+    static RESCAN: Notify = Notify::default();
+    /// Why reading the other tabs' changes keeps failing.
+    static SCAN_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SCAN_FAILURES: Cell<u32> = const { Cell::new(0) };
+    /// Another tab upgrades the database: this one stopped and closes once its writes landed.
+    static UPGRADING: Cell<bool> = const { Cell::new(false) };
+    /// ... and its writes keep failing, so the other tab waits.
+    static HOLDING: Cell<bool> = const { Cell::new(false) };
 }
+
+/// How often the sending tab reads the outbox store, in case a tab's announcement was missed.
+const RESCAN_EVERY: Duration = Duration::from_secs(5);
+/// How soon a failed read is tried again.
+const SCAN_RETRY: Duration = Duration::from_secs(1);
+/// Consecutive failed reads before the alert shows.
+const SCAN_FAILURES_SHOWN: u32 = 2;
 
 fn store() -> Option<(MirrorStorage, IdbFlusher)> {
     STORE.with(|s| s.borrow().clone())
@@ -90,6 +113,8 @@ pub struct Sync {
     pub local_error: Option<String>,
     /// Something is not in this browser's storage yet: closing the page now could lose it.
     pub unsaved: bool,
+    /// Another tab waits to upgrade the database until this one's unsaved changes are stored.
+    pub holding_upgrade: bool,
 }
 
 impl Default for Sync {
@@ -102,6 +127,7 @@ impl Default for Sync {
             offline_demo: false,
             local_error: None,
             unsaved: false,
+            holding_upgrade: false,
         }
     }
 }
@@ -136,9 +162,29 @@ fn owner() -> Actor {
 /// sent. Unreadable parts are repaired on the way in (see [`Recovery`]); anything worse is a
 /// [`StartError::Storage`], and the page offers [`reset_local_data`].
 ///
-/// `hooks` hear about a database upgrade that waits for other tabs, and about another tab's
-/// upgrade closing this one's connection.
-pub async fn open_live(csrf: String, hooks: OpenHooks) -> Result<Opened, StartError> {
+/// `blocked` hears about a database upgrade that waits for other tabs. When another tab upgrades,
+/// this one stops syncing, closes the database once everything it wrote is stored (saying so while
+/// writes keep failing), gives up the sender lock, and reloads.
+pub async fn open_live(csrf: String, blocked: Rc<dyn Fn(bool)>) -> Result<Opened, StartError> {
+    let hooks = OpenHooks {
+        blocked,
+        version_change: Rc::new(|| {
+            UPGRADING.with(|u| u.set(true));
+            if let Some(c) = live() {
+                c.stop();
+            }
+        }),
+        holding: Rc::new(|holding| {
+            HOLDING.with(|h| h.set(holding));
+            LOCAL.with(Notify::notify);
+        }),
+        closed: Rc::new(|| {
+            if let Some(lock) = SENDER.with(|s| s.borrow_mut().take()) {
+                lock.release();
+            }
+            crate::platform::reload();
+        }),
+    };
     let (storage, flusher, recovery) = open_storage(DB_NAME, hooks)
         .await
         .map_err(|e| StartError::Storage(e.0))?;
@@ -153,46 +199,95 @@ pub async fn open_live(csrf: String, hooks: OpenHooks) -> Result<Opened, StartEr
     .map_err(|e| StartError::Storage(e.to_string()))?;
     CSRF.with(|c| *c.borrow_mut() = Some(token));
     STORE.with(|s| *s.borrow_mut() = Some((storage, flusher.clone())));
-    // One tab sends for all: this one waits for the lock (if the browser has Web Locks).
+    // One tab sends for all: this one waits for the lock (if the browser has Web Locks), and sends
+    // nothing, its own commands included, until it has read what the other tabs queued.
     client.set_sending(false);
-    let elected = elect_sender(|| {
-        if let Some(c) = live() {
-            c.set_sending(true);
-            wasm_bindgen_futures::spawn_local(take_in_queued());
+    match elect_sender(|| wasm_bindgen_futures::spawn_local(become_sender())) {
+        Some(lock) => SENDER.with(|s| *s.borrow_mut() = Some(lock)),
+        None => {
+            tracing::info!("no Web Locks: this tab sends its own commands");
+            client.set_sending(true);
         }
-    });
-    if !elected {
-        tracing::info!("no Web Locks: this tab sends its own commands");
-        client.set_sending(true);
     }
-    if let Some(channel) = open_channel(|| wasm_bindgen_futures::spawn_local(take_in_queued())) {
+    if let Some(channel) = open_channel(|| {
+        wasm_bindgen_futures::spawn_local(async {
+            let sending = live().is_some_and(|c| c.is_sending());
+            let _ = scan(sending).await;
+        });
+    }) {
         flusher.announce_on(channel);
     }
     BACKEND.with(|b| *b.borrow_mut() = Some(Backend::Live(client)));
     Ok(Opened { flusher, recovery })
 }
 
-/// Reads every tab's queued commands from IndexedDB: the sending tab takes them in, and every tab
-/// takes in what another refused.
-async fn take_in_queued() {
-    let (Some(c), Some((_, flusher))) = (live(), store()) else {
-        return;
-    };
-    let (outbox, failed) = match flusher.queued().await {
-        Ok(q) => q,
-        Err(e) => {
-            tracing::warn!("could not read other tabs' changes: {}", e.0);
+/// This tab holds the sender lock: take in every tab's queued commands, and only then send (so they
+/// go out in submission order, whoever queued them). Then keep reading the outbox store every few
+/// seconds and on [`nudge`], in case an announcement was missed.
+async fn become_sender() {
+    while scan(true).await.is_err() {
+        if UPGRADING.with(Cell::get) {
             return;
         }
+        sleep(SCAN_RETRY).await;
+    }
+    if let Some(c) = live() {
+        c.set_sending(true);
+    }
+    let mut delay = RESCAN_EVERY;
+    loop {
+        let rescan = RESCAN.with(Notify::clone);
+        let seen = rescan.generation();
+        futures_util::future::select(
+            std::pin::pin!(sleep(delay)),
+            std::pin::pin!(rescan.changed(seen)),
+        )
+        .await;
+        if UPGRADING.with(Cell::get) {
+            return;
+        }
+        delay = if scan(true).await.is_ok() {
+            RESCAN_EVERY
+        } else {
+            SCAN_RETRY
+        };
+    }
+}
+
+/// Reads every tab's queued commands from IndexedDB: the sending tab (`adopt`) takes them in, and
+/// every tab takes in what another refused. A read that keeps failing shows the storage alert.
+async fn scan(adopt: bool) -> Result<(), ()> {
+    let (Some(c), Some((_, flusher))) = (live(), store()) else {
+        return Err(());
     };
-    if c.is_sending()
-        && let Err(e) = c.adopt(outbox)
-    {
+    let (outbox, failed) = match flusher.queued().await {
+        Ok(q) => {
+            SCAN_FAILURES.with(|f| f.set(0));
+            if SCAN_ERROR.with(|e| e.borrow_mut().take()).is_some() {
+                LOCAL.with(Notify::notify);
+            }
+            q
+        }
+        Err(e) => {
+            tracing::warn!("could not read other tabs' changes: {}", e.0);
+            let n = SCAN_FAILURES.with(|f| {
+                f.set(f.get() + 1);
+                f.get()
+            });
+            if n >= SCAN_FAILURES_SHOWN {
+                SCAN_ERROR.with(|s| *s.borrow_mut() = Some(e.0));
+                LOCAL.with(Notify::notify);
+            }
+            return Err(());
+        }
+    };
+    if adopt && let Err(e) = c.adopt(outbox) {
         tracing::warn!("could not take in other tabs' changes: {e}");
     }
     if let Err(e) = c.adopt_failed(failed) {
         tracing::warn!("could not take in other tabs' refusals: {e}");
     }
+    Ok(())
 }
 
 /// Writes what is not stored yet (the page is being hidden).
@@ -253,27 +348,36 @@ pub async fn run() {
 pub async fn next_change() {
     use futures_util::future::select;
     use std::pin::pin;
-    match (live(), store()) {
-        (Some(c), Some((s, _))) => {
-            let mut changes = c.changes();
-            match todo_client::Storage::saved(&s) {
-                Some(saved) => {
-                    let seen = saved.generation();
-                    select(pin!(changes.next()), pin!(saved.changed(seen))).await;
-                }
-                None => changes.next().await,
+    let Some(c) = live() else {
+        return std::future::pending::<()>().await;
+    };
+    let mut changes = c.changes();
+    let local = LOCAL.with(Notify::clone);
+    let local_seen = local.generation();
+    let saved = store().and_then(|(s, _)| todo_client::Storage::saved(&s));
+    let saved_seen = saved.as_ref().map(Notify::generation).unwrap_or_default();
+    let saved_changed = async {
+        match &saved {
+            Some(n) => {
+                n.changed(saved_seen).await;
             }
+            None => std::future::pending::<()>().await,
         }
-        (Some(c), None) => c.changes().next().await,
-        _ => std::future::pending::<()>().await,
-    }
+    };
+    select(
+        pin!(changes.next()),
+        pin!(select(pin!(local.changed(local_seen)), pin!(saved_changed))),
+    )
+    .await;
 }
 
-/// Asks the engine to retry now (the tab became visible, or the network came back).
+/// Asks the engine to retry now, and the sending tab to read the outbox store (the tab became
+/// visible, or the network came back).
 pub fn nudge() {
     if let Some(c) = live() {
         c.nudge();
     }
+    RESCAN.with(Notify::notify);
 }
 
 /// The view: the confirmed state with pending changes applied.
@@ -301,8 +405,11 @@ pub fn status() -> Sync {
                     .last_error
                     .is_some_and(|e| e.kind == ErrorKind::Unauthorized),
                 offline_demo: false,
-                local_error: store().and_then(|(s, _)| s.flush_error()),
+                local_error: store()
+                    .and_then(|(s, _)| s.flush_error())
+                    .or_else(|| SCAN_ERROR.with(|e| e.borrow().clone())),
                 unsaved: store().is_some_and(|(s, _)| s.unsaved()),
+                holding_upgrade: HOLDING.with(Cell::get),
             }
         }
         #[cfg(feature = "fixtures")]
