@@ -1,158 +1,375 @@
-//! Paged reads use the same wire types, cursor and event identity as web. Network I/O is off the UI thread.
+//! A room owns its pages; the paired engine owns its undo tracker, across rooms and filters.
 use super::*;
-use todo_client::{
-    activity::{self, ActivityError, ActivityQuery},
-    protocol::EventRef,
+use todo_client::Epoch;
+use todo_client::activity::{
+    self, ActivityError, ActivityPage, ActivityQuery, Entry, Feed, Loaded, UndoAction, UndoOutcome,
+    Undos,
 };
 use todo_core::actor::AgentId;
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Record)]
 pub struct ActivityRow {
     pub id: String,
     pub seq: u64,
     pub summary: String,
     pub actor: String,
-    pub at_ms: i64,
     pub relative: String,
-    pub undone: bool,
-    pub can_undo: bool,
-    /// The whole batch is compensated by an undo of any one member.
-    pub group: String,
+    pub note: Option<String>,
+    pub undo_label: Option<String>,
 }
 #[derive(Debug, uniffi::Record)]
-pub struct FeedPage {
+pub struct ActivityDay {
+    pub heading: String,
     pub rows: Vec<ActivityRow>,
-    pub before: Option<u64>,
-    pub problem: Option<String>,
-    pub skip: bool,
 }
 #[derive(Debug, uniffi::Record)]
-pub struct FeedRevision {
+pub struct ActivityView {
+    pub agent: Option<String>,
+    pub days: Vec<ActivityDay>,
     pub epoch: Option<String>,
+    pub refresh_label: String,
+    pub refreshing: bool,
+    pub footer: ActivityFooter,
+}
+
+#[derive(Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ActivityFooter {
+    None,
+    Loading { label: String },
+    Older { cursor: u64 },
+    Error { message: String, action: String },
+    Empty { label: String },
+}
+
+impl ActivityFooter {
+    fn for_feed(feed: &Feed, filtered: bool) -> Self {
+        if feed.pending().is_some() {
+            Self::Loading {
+                label: activity::LOADING.into(),
+            }
+        } else if let Some(error) = feed.error() {
+            Self::Error {
+                message: error.to_string(),
+                action: activity::retry_label(error).into(),
+            }
+        } else if let Some(cursor) = feed.older() {
+            Self::Older { cursor }
+        } else if feed.is_empty_feed() {
+            Self::Empty {
+                label: activity::empty_line(filtered).into(),
+            }
+        } else {
+            Self::None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ActivityLoad {
+    Initial,
+    Refresh,
+    Older,
+    Retry,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct ActivityRequest {
+    pub number: u64,
+    pub before: Option<u64>,
+    /// Confirmed cursor at the start of the read, not when its reply arrived.
     pub cursor: u64,
 }
 
-#[uniffi::export]
-pub fn activity_agent_name(id: String) -> String {
-    activity::agent_name(&id)
+#[derive(Debug, Default)]
+struct Pages {
+    feed: Feed,
+    epoch: Option<Epoch>,
+    read_at: Option<u64>,
 }
-#[uniffi::export]
-impl TodoEngine {
-    pub fn activity_page(
-        &self,
-        agent: Option<String>,
-        before: Option<u64>,
-        now: LocalNow,
-    ) -> Result<FeedPage, FfiError> {
-        let agent = agent
-            .map(AgentId::new)
-            .transpose()
-            .map_err(|_| invalid("No such agent."))?;
-        let query = ActivityQuery {
-            agent,
-            before,
-            limit: None,
+impl Pages {
+    fn observe(&mut self, epoch: Option<Epoch>) {
+        if self.epoch != epoch {
+            self.feed.reset();
+            self.epoch = epoch;
+            self.read_at = None;
+        }
+    }
+    fn begin(&mut self, load: ActivityLoad, cursor: u64) -> Option<ActivityRequest> {
+        let before = match load {
+            ActivityLoad::Initial
+                if self.feed.loaded()
+                    || self.feed.error().is_some()
+                    || self.feed.pending().is_some() =>
+            {
+                return None;
+            }
+            ActivityLoad::Initial | ActivityLoad::Refresh => None,
+            ActivityLoad::Older => Some(self.feed.older()?),
+            ActivityLoad::Retry => self.feed.retry()?,
         };
-        let now = Now::new(now);
-        match runtime()?.block_on(self.client.activity(&query)) {
-            Ok(page) => Ok(FeedPage {
-                before: page.next_before,
-                problem: None,
-                skip: false,
-                rows: page
-                    .items
-                    .into_iter()
-                    .filter_map(|i| {
-                        let event = i.event_ref()?;
-                        let e = &i.event.event;
-                        if self.client.pending_undo(event.id).is_some() {
-                            locked(&self.activity_groups).insert(e.group, event.id);
-                        }
-                        Some(ActivityRow {
-                            id: event.id.to_string(),
-                            seq: event.seq,
-                            group: e.group.to_string(),
-                            summary: i.what_happened().into(),
-                            actor: activity::actor_name(&e.actor),
-                            at_ms: e.at.as_millisecond(),
-                            relative: activity::relative_time(e.at, now.at),
-                            undone: i.undone,
-                            can_undo: i.can_undo,
-                        })
-                    })
-                    .collect(),
-            }),
-            Err(e) => Ok(FeedPage {
-                rows: vec![],
-                before: match e {
-                    ActivityError::TooLarge { next_before } => Some(next_before),
-                    _ => before,
-                },
-                problem: Some(e.to_string()),
-                skip: matches!(e, ActivityError::TooLarge { .. }),
-            }),
-        }
-    }
-    pub fn pending_activity_groups(&self) -> Vec<String> {
-        let mut groups = locked(&self.activity_groups);
-        groups.retain(|_, id| self.client.pending_undo(*id).is_some());
-        groups.keys().map(ToString::to_string).collect()
-    }
-    pub fn undo_activity_event(&self, seq: u64, id: String, group: String) -> Result<(), FfiError> {
-        let id = id.parse().map_err(|_| invalid("Couldn't undo that."))?;
-        let group = group.parse().map_err(|_| invalid("Couldn't undo that."))?;
-        let mut groups = locked(&self.activity_groups);
-        if groups
-            .get(&group)
-            .is_some_and(|id| self.client.pending_undo(*id).is_some())
-            || self
-                .client
-                .with_confirmed(|s| s.journal.has_seen(id) && !s.journal.is_head(id))
-        {
-            return Ok(());
-        }
-        self.client
-            .undo_activity(EventRef { seq, id })
-            .map_err(|_| invalid("Couldn't undo that."))?;
-        groups.insert(group, id);
-        Ok(())
-    }
-    pub fn activity_revision(&self) -> FeedRevision {
-        let (epoch, cursor) = self.client.activity_revision();
-        FeedRevision {
-            epoch: epoch.map(|e| e.to_string()),
+        Some(ActivityRequest {
+            number: self.feed.begin(before)?,
+            before,
             cursor,
-        }
-    }
-    /// Confirmed rows that have left the head of their undo chain, even when the loaded page is older.
-    pub fn activity_retired(&self, ids: Vec<String>) -> HashMap<String, String> {
-        self.client.with_confirmed(|s| {
-            ids.into_iter()
-                .filter_map(|id| {
-                    let event = id.parse().ok()?;
-                    let j = &s.journal;
-                    if !j.has_seen(event) || j.is_head(event) {
-                        return None;
-                    }
-                    let root = j.root_of(event);
-                    Some((
-                        id,
-                        if root != event || j.is_undone(root) {
-                            "Undone"
-                        } else {
-                            "Undo unavailable"
-                        }
-                        .to_owned(),
-                    ))
-                })
-                .collect()
         })
     }
-    pub fn activity_undo_states(&self) -> std::collections::HashMap<String, String> {
-        self.client
-            .activity_undos()
+    fn finish(
+        &mut self,
+        request: ActivityRequest,
+        result: Result<ActivityPage, ActivityError>,
+    ) -> Loaded {
+        // A skip may make an older page the first successful read.
+        let baseline = result.is_ok() && (request.before.is_none() || self.read_at.is_none());
+        let loaded = self.feed.finish(request.number, request.before, result);
+        if baseline && loaded == Loaded::Applied {
+            self.read_at = Some(request.cursor);
+        }
+        loaded
+    }
+}
+
+/// A replacement room has its own pager; a read does not hold its lock during network I/O.
+#[derive(Debug, uniffi::Object)]
+pub struct ActivityPager {
+    agent: Option<String>,
+    pages: Mutex<Pages>,
+}
+#[uniffi::export]
+impl ActivityPager {
+    #[uniffi::constructor]
+    pub fn new(agent: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            agent,
+            pages: Mutex::default(),
+        })
+    }
+}
+
+impl TodoEngine {
+    fn activity_pages<'a>(
+        &self,
+        pager: &'a ActivityPager,
+    ) -> (std::sync::MutexGuard<'a, Pages>, u64) {
+        let mut pages = locked(&pager.pages);
+        let (epoch, cursor) = self.client.activity_revision();
+        pages.observe(epoch);
+        (pages, cursor)
+    }
+
+    fn row_action(&self, e: &Entry, undos: &Undos) -> UndoAction {
+        activity::undo_action(
+            e,
+            self.client.activity_confirmed(e.target.id, e.compensating),
+            self.client.pending_undo(e.target.id).is_some(),
+            undos.group_outcome(e.group),
+        )
+    }
+
+    /// Recover the batch of a durable pending undo when its page is first seen (also after restart).
+    fn observe_undos(&self, feed: &Feed, undos: &mut Undos) {
+        undos.settle(|id| self.client.undo_result(id));
+        let durable = self.client.activity_undos();
+        for e in feed.entries() {
+            let id = e.target.id;
+            match durable.get(&id) {
+                Some(None) => {
+                    if let Some(command) = self.client.pending_undo(id) {
+                        undos.record(id, e.group, UndoOutcome::Pending(command));
+                    }
+                }
+                Some(Some(why)) if undos.outcome(id).is_none() => {
+                    undos.record(id, e.group, UndoOutcome::Refused(why));
+                }
+                _ => (),
+            }
+        }
+    }
+}
+
+#[uniffi::export]
+impl TodoEngine {
+    pub fn begin_activity(
+        &self,
+        pager: &ActivityPager,
+        load: ActivityLoad,
+    ) -> Option<ActivityRequest> {
+        let (mut pages, cursor) = self.activity_pages(pager);
+        pages.begin(load, cursor)
+    }
+
+    /// Completes one read, returning the refresh (if any) queued behind it.
+    pub fn read_activity(
+        &self,
+        pager: &ActivityPager,
+        request: ActivityRequest,
+    ) -> Option<ActivityRequest> {
+        let result = (|| {
+            let agent = pager
+                .agent
+                .clone()
+                .map(AgentId::new)
+                .transpose()
+                .map_err(|_| ActivityError::Unavailable)?;
+            runtime()
+                .map_err(|_| ActivityError::Unavailable)?
+                .block_on(self.client.activity(&ActivityQuery {
+                    agent,
+                    before: request.before,
+                    limit: None,
+                }))
+        })();
+        let (mut pages, cursor) = self.activity_pages(pager);
+        if pages.finish(request, result) == Loaded::Refresh {
+            pages.begin(ActivityLoad::Refresh, cursor)
+        } else {
+            None
+        }
+    }
+
+    pub fn activity_view(&self, pager: &ActivityPager, now: LocalNow) -> ActivityView {
+        let now = Now::new(now);
+        let (pages, cursor) = self.activity_pages(pager);
+        let feed = &pages.feed;
+        let mut undos = locked(&self.activity_undos);
+        self.observe_undos(feed, &mut undos);
+        let days = feed
+            .days(|at| now.date_of(at))
             .into_iter()
-            .map(|(id, refusal)| (id.to_string(), refusal.unwrap_or("Undoing…").to_owned()))
-            .collect()
+            .map(|(day, seqs)| ActivityDay {
+                heading: activity::day_label(day, now.today()),
+                rows: seqs
+                    .into_iter()
+                    .filter_map(|seq| feed.entry(seq))
+                    .map(|e| {
+                        let action = self.row_action(e, &undos);
+                        let note = undos.refusal(e.target.id).or(match action {
+                            UndoAction::Undo => None,
+                            UndoAction::Undoing => Some(activity::UNDOING),
+                            _ => Some(action.label()),
+                        });
+                        ActivityRow {
+                            id: e.target.id.to_string(),
+                            seq: e.target.seq,
+                            summary: e.what.clone(),
+                            actor: activity::actor_name(&e.actor),
+                            relative: activity::relative_time(e.at, now.at),
+                            note: note.map(str::to_owned),
+                            undo_label: (action == UndoAction::Undo).then(|| action.label().into()),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        ActivityView {
+            agent: pager.agent.as_deref().map(activity::agent_name),
+            days,
+            epoch: pages.epoch.map(|e| e.to_string()),
+            refresh_label: if pages.read_at.is_some_and(|at| at != cursor) {
+                format!("{} •", activity::REFRESH)
+            } else {
+                activity::REFRESH.into()
+            },
+            refreshing: feed.refreshing(),
+            footer: ActivityFooter::for_feed(feed, pager.agent.is_some()),
+        }
+    }
+
+    pub fn undo_activity_event(
+        &self,
+        pager: &ActivityPager,
+        seq: u64,
+        id: String,
+    ) -> Result<(), FfiError> {
+        let (pages, _) = self.activity_pages(pager);
+        let Some(e) = pages
+            .feed
+            .entry(seq)
+            .filter(|e| e.target.id.to_string() == id)
+        else {
+            return Ok(());
+        };
+        let mut undos = locked(&self.activity_undos);
+        self.observe_undos(&pages.feed, &mut undos);
+        if self.row_action(e, &undos) == UndoAction::Undo {
+            let outcome = self.client.undo_activity(e.target).map_or_else(
+                |_| UndoOutcome::Refused(todo_client::failure::undo_message("")),
+                UndoOutcome::Pending,
+            );
+            let message = undos.record(e.target.id, e.group, outcome);
+            if matches!(outcome, UndoOutcome::Refused(_)) {
+                return Err(invalid(message));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(seq: u64) -> ActivityPage {
+        let id = uuid::Uuid::from_u128(u128::from(seq));
+        serde_json::from_value(serde_json::json!({"items": [{
+            "event": {"id": id, "seq": seq, "group": uuid::Uuid::nil(), "command_id": uuid::Uuid::nil(),
+                "actor": {"type": "agent", "agent_id": "gardener"}, "at": "2025-11-20T23:30:00Z", "forced": false,
+                "payload": {"op": "updated", "target": {"kind": "task", "id": id}, "changes": []}},
+            "summary": "Edited a task", "undone": false, "can_undo": true
+        }], "next_before": seq})).expect("activity page")
+    }
+
+    #[test]
+    fn replacement_pager_drops_a_late_reply_and_keeps_the_batch_blocked() {
+        let now = LocalNow {
+            epoch_ms: "2025-11-22T01:00:00Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond(),
+            utc_offset_secs: 3600,
+        };
+        let e = TodoEngine::fixture("blank".into(), now).unwrap();
+        let all = ActivityPager::new(None);
+        let first = e.begin_activity(&all, ActivityLoad::Initial).unwrap();
+        locked(&all.pages).finish(first, Ok(page(7)));
+        let view = e.activity_view(&all, now);
+        assert_eq!(
+            view.days[0].heading, "Yesterday",
+            "date at the phone's offset"
+        );
+        let target = &view.days[0].rows[0];
+        e.undo_activity_event(&all, target.seq, target.id.clone())
+            .unwrap();
+        let late = e.begin_activity(&all, ActivityLoad::Older).unwrap();
+        drop(all);
+
+        let filtered = ActivityPager::new(Some("gardener".into()));
+        let current = e.begin_activity(&filtered, ActivityLoad::Initial).unwrap();
+        let mut pages = locked(&filtered.pages);
+        assert_eq!(pages.finish(late, Ok(page(1))), Loaded::Ignore);
+        // Only the sibling is on the replacement page. Looking up its own pending undo would miss.
+        assert_eq!(pages.finish(current, Ok(page(6))), Loaded::Applied);
+        drop(pages);
+        let view = e.activity_view(&filtered, now);
+        assert_eq!(view.days[0].rows.len(), 1);
+        let sibling = &view.days[0].rows[0];
+        assert_eq!(sibling.seq, 6);
+        assert_eq!(sibling.note.as_deref(), Some(activity::UNDOING));
+        assert!(sibling.undo_label.is_none());
+        e.undo_activity_event(&filtered, sibling.seq, sibling.id.clone())
+            .unwrap();
+        assert_eq!(e.status().pending, 1);
+    }
+
+    #[test]
+    fn epoch_change_drops_pages_and_invalidates_an_in_flight_read() {
+        let mut pages = Pages::default();
+        pages.observe(Some(uuid::Uuid::nil()));
+        let first = pages.begin(ActivityLoad::Initial, 7).unwrap();
+        pages.finish(first, Ok(page(7)));
+        let older = pages.begin(ActivityLoad::Older, 8).unwrap();
+        pages.observe(Some(uuid::Uuid::from_u128(42)));
+        assert_eq!(pages.finish(older, Ok(page(1))), Loaded::Ignore);
+        assert!(!pages.feed.loaded());
+        assert!(pages.read_at.is_none());
     }
 }

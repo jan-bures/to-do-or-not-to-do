@@ -35,7 +35,9 @@ What the first version does:
   **Refresh activity •** without moving the reader. Switching agent or log epoch starts a new feed. If a
   change is too large, **Skip this change** continues at the server’s cursor. Undo names the event by
   sequence **and** event ID; “Undoing…” disables Undo for its whole batch. A refusal allows a retry and
-  uses the shared plain wording, never the server message. The Agent activity smart list is still a list of tasks.
+  uses the shared plain wording, never the server message. `todo_client::activity::Feed` owns each room’s pages;
+  the engine keeps `Undos` for the pairing, so switching agents or leaving Activity does not unblock a pending
+  batch. Compose draws the day groups and row actions returned by `todo-ffi`. The Agent activity smart list is still a list of tasks.
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a

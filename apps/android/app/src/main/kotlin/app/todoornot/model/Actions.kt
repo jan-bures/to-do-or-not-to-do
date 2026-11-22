@@ -61,10 +61,8 @@ interface Actions {
     fun previewRepeat(id: String, draft: app.todoornot.core.CustomRepeat): app.todoornot.core.RepeatPreview =
         app.todoornot.core.RepeatPreview("No such task.", null, false)
     fun openActivity(agent: String?) = Unit
-    suspend fun activityPage(source: ActivitySource, before: ULong?): app.todoornot.core.FeedPage? =
-        app.todoornot.core.FeedPage(emptyList(), null, null, false)
-    fun undoEvent(event: app.todoornot.core.ActivityRow) = Unit
-    suspend fun retiredEvents(ids: List<String>): Map<String, String> = emptyMap()
+    fun loadActivity(room: Long, load: app.todoornot.core.ActivityLoad) = Unit
+    fun undoEvent(room: Long, event: app.todoornot.core.ActivityRow) = Unit
 
     /** Renames a list or a collection. */
     fun renameRoom(room: RoomKey, name: String)

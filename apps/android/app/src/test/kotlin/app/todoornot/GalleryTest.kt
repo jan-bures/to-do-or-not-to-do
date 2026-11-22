@@ -47,7 +47,10 @@ import app.todoornot.model.priorityMenu
 import app.todoornot.model.roomMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.model.taskMenu
-import app.todoornot.ui.ActivityContent
+import app.todoornot.ui.ActivityRoom
+import app.todoornot.core.ActivityDay
+import app.todoornot.core.ActivityFooter
+import app.todoornot.core.ActivityView
 import app.todoornot.ui.MoveListCard
 import app.todoornot.ui.RepeatCard
 import app.todoornot.ui.TagsCard
@@ -688,11 +691,13 @@ class GalleryTest {
                 val q = requireNotNull(e.organizeQuestion(t))
                 card("confirm_$noun") { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false) }
             }
-            val at = FIXTURE_NOW.epochMs
-            val rows = listOf(ActivityRow("c", 3u, "Added Water herbs", "You", at, "Just now", false, true, "c"),
-                ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", at - 60_000, "1 min ago", false, true, "b"),
-                ActivityRow("a", 1u, "Added Prepare the beds", "You", at - 86_400_000, "1 day ago", false, true, "a"))
-            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityContent(s.copy(eventStates = mapOf("b" to "Undoing…", "a" to "Couldn't undo: it was changed again.")), null, rows, null, false, true, {}, Actions.None, {}, updates = true) } }
+            val days = listOf(
+                ActivityDay("Today", listOf(ActivityRow("c", 3u, "Added Water herbs", "You", "Just now", null, "Undo"),
+                    ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", "1 min ago", "Undoing…", null))),
+                ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo"))),
+            )
+            val feed = ActivityView(null, days, null, "Refresh activity •", false, ActivityFooter.None)
+            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityRoom(s.copy(feed = feed), Actions.None, {}) } }
         }
     }
 

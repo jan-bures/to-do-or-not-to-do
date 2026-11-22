@@ -3,12 +3,6 @@ package app.todoornot.model
 import app.todoornot.core.ColorTarget
 import app.todoornot.core.RepeatChoice
 
-/** A cursor belongs to this filter and log epoch, not to a particular revision within it. */
-data class ActivitySource(val agent: String?, val epoch: String?)
-
-val UiState.activitySource: ActivitySource
-    get() = ActivitySource(activity?.ifEmpty { null }, activityRevision?.epoch)
-
 /** Edits from a picker carry the entity that was shown, never the current selection. */
 sealed interface OrganizeEdit {
     data class Repeat(val task: String, val choice: RepeatChoice) : OrganizeEdit

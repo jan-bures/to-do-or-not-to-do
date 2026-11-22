@@ -2,6 +2,9 @@ package app.todoornot.model
 
 import app.todoornot.core.ColorTarget
 import app.todoornot.core.ActivityRow
+import app.todoornot.core.ActivityLoad
+import app.todoornot.core.ActivityPager
+import app.todoornot.core.ActivityView
 import app.todoornot.core.OrganizeChange
 import app.todoornot.core.OrganizeDeletion
 import app.todoornot.core.Completion
@@ -103,10 +106,7 @@ data class UiState(
     val reorder: TaskSwap? = null,
     /** null for a task room, empty for all activity, otherwise the agent's wire ID. */
     val activity: String? = null,
-    val activityRevision: app.todoornot.core.FeedRevision? = null,
-    val utcOffsetSecs: Int = 0,
-    val pendingGroups: Set<String> = emptySet(),
-    val eventStates: Map<String, String> = emptyMap(),
+    val feed: ActivityView? = null,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -229,7 +229,10 @@ class TodoModel(
     @Volatile private var filter = ""
 
     @Volatile private var searching = false
-    @Volatile private var activity: String? = null
+    private class ActivityRoom(val filter: String) {
+        val pager = ActivityPager(filter.ifEmpty { null })
+    }
+    @Volatile private var activity: ActivityRoom? = null
 
     /** Refreshes in the order they started; one that finishes after a newer one is dropped. */
     private val refreshes = AtomicLong()
@@ -391,6 +394,7 @@ class TodoModel(
         if (detail == null) selection.compareAndSet(reading, null)
         val status = engine.status()
         if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
+        val readingActivity = activity
         val state = UiState(
             home = engine.homePlaced(place.rows, n),
             room = roomRead(k, f, place, ids, seen, n),
@@ -406,11 +410,8 @@ class TodoModel(
             showCompleted = showDone,
             generation = gen,
             today = isoDay(n),
-            activity = activity,
-            activityRevision = if (activity == null) null else engine.activityRevision(),
-            utcOffsetSecs = n.utcOffsetSecs,
-            pendingGroups = if (activity == null) emptySet() else engine.pendingActivityGroups().toSet(),
-            eventStates = if (activity == null) emptyMap() else engine.activityUndoStates(),
+            activity = readingActivity?.filter,
+            feed = readingActivity?.let { engine.activityView(it.pager, n) },
             reorder = reorder?.takeIf { it.room == k },
         )
         return Snapshot(epoch, k, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
@@ -634,7 +635,7 @@ class TodoModel(
                 reorder = null
                 key = room
                 if (fresh) {
-                    activity = feed
+                    activity = feed?.let(::ActivityRoom)
                     selectTask(null)
                     filter = ""
                     searching = false
@@ -1043,16 +1044,27 @@ class TodoModel(
         }
     }
 
-    override suspend fun activityPage(source: ActivitySource, before: ULong?): app.todoornot.core.FeedPage? {
-        val page = withContext(io) {
-            try { engine.activityPage(source.agent, before, now()) } catch (_: FfiException) {
-                app.todoornot.core.FeedPage(emptyList(), before, "Couldn’t load activity. Try again.", false)
+    private fun pagerFor(room: Long) = synchronized(publishing) { activity?.pager?.takeIf { room == generation } }
+
+    override fun loadActivity(room: Long, load: ActivityLoad) {
+        val pager = pagerFor(room) ?: return
+        // Belongs to the model, not the composable: rotation doesn't strand a pending read.
+        scope.launch {
+            val started = withContext(io) { engine.beginActivity(pager, load) }
+            refresh() // A refresh queued behind an older read changes the view without starting I/O.
+            var request = started ?: return@launch
+            while (true) {
+                val next = withContext(io) { engine.readActivity(pager, request) }
+                refresh()
+                request = next ?: break
             }
         }
-        return page.takeIf { activity == source.agent.orEmpty() && _ui.value.activitySource == source }
     }
-    override suspend fun retiredEvents(ids: List<String>) = withContext(io) { engine.activityRetired(ids) }
-    override fun undoEvent(event: ActivityRow) = act { engine.undoActivityEvent(event.seq, event.id, event.group) }
+
+    override fun undoEvent(room: Long, event: ActivityRow) {
+        val pager = pagerFor(room) ?: return
+        act { engine.undoActivityEvent(pager, event.seq, event.id) }
+    }
 
     override fun renameRoom(room: RoomKey, name: String) = act {
         when (room) {

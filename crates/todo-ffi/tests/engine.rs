@@ -9,6 +9,7 @@ use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::{ClientConfig, MemoryStorage, SyncClient};
 use todo_core::command::NewTask;
 use todo_core::{Actor, Command, DeviceId};
+use todo_ffi::engine::activity::{ActivityFooter, ActivityLoad, ActivityPager, ActivityView};
 use todo_ffi::engine::{Deletion, ListDeletion};
 use todo_ffi::engine::{EngineConfig, SyncState};
 use todo_ffi::labels::LocalNow;
@@ -1317,6 +1318,21 @@ async fn task_actions_and_move_conflict_on_the_server() {
     e.stop();
 }
 
+async fn load_activity(
+    engine: &Arc<TodoEngine>,
+    pager: &Arc<ActivityPager>,
+    load: ActivityLoad,
+) -> ActivityView {
+    let (engine, pager) = (engine.clone(), pager.clone());
+    tokio::task::spawn_blocking(move || {
+        let request = engine.begin_activity(&pager, load).expect("page to read");
+        assert!(engine.read_activity(&pager, request).is_none());
+        engine.activity_view(&pager, now())
+    })
+    .await
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn organize_and_page_activity_with_exact_event_undo() {
     use todo_ffi::engine::organize::{ColorTarget, OrganizeDeletion, RepeatChoice};
@@ -1386,35 +1402,81 @@ async fn organize_and_page_activity_with_exact_event_undo() {
             .execute(&actor, uuid::Uuid::from_u128(i + 1), &cmd)
             .unwrap();
     }
-    let read = |agent: Option<String>, before| {
-        let e = e.clone();
-        tokio::task::spawn_blocking(move || e.activity_page(agent, before, now()).unwrap())
-    };
-    let first = read(None, None).await.unwrap();
-    assert!(first.problem.is_none());
-    let second = read(None, Some(first.before.unwrap())).await.unwrap();
-    assert!(first.rows.last().unwrap().seq > second.rows.first().unwrap().seq);
-    let filtered = read(Some("gardener".into()), None).await.unwrap();
-    assert_eq!(filtered.rows.len(), 1);
-    let row = &filtered.rows[0];
+    let all = ActivityPager::new(None);
+    let first = load_activity(&e, &all, ActivityLoad::Initial).await;
+    let oldest = first
+        .days
+        .iter()
+        .flat_map(|d| &d.rows)
+        .map(|r| r.seq)
+        .min()
+        .unwrap();
+    let second = load_activity(&e, &all, ActivityLoad::Older).await;
+    assert!(
+        second
+            .days
+            .iter()
+            .flat_map(|d| &d.rows)
+            .any(|r| r.seq < oldest)
+    );
+    // A live change marks Refresh but doesn't replace either page. An explicit refresh reads it.
+    let before = second
+        .days
+        .iter()
+        .flat_map(|d| &d.rows)
+        .map(|r| r.seq)
+        .collect::<Vec<_>>();
+    let title = "Water the seedlings";
+    let update = todo_client::intent::retitle(&remote.state(), task, title).unwrap();
+    remote
+        .execute(
+            &Actor::owner("other").unwrap(),
+            uuid::Uuid::from_u128(55),
+            &update,
+        )
+        .unwrap();
+    eventually("newer event applied", || {
+        e.task(id.clone(), now()).unwrap().title == title
+    })
+    .await;
+    let stale = e.activity_view(&all, now());
+    assert_eq!(stale.refresh_label, "Refresh activity •");
+    assert_eq!(
+        before,
+        stale
+            .days
+            .iter()
+            .flat_map(|d| &d.rows)
+            .map(|r| r.seq)
+            .collect::<Vec<_>>()
+    );
+    let latest = load_activity(&e, &all, ActivityLoad::Refresh).await;
+    assert_eq!(latest.refresh_label, "Refresh activity");
+    assert!(latest.days[0].rows[0].seq > before[0]);
+    let agent = ActivityPager::new(Some("gardener".into()));
+    let filtered = load_activity(&e, &agent, ActivityLoad::Initial).await;
+    assert_eq!(filtered.days.len(), 1);
+    assert_eq!(filtered.days[0].rows.len(), 1);
+    let row = &filtered.days[0].rows[0];
     assert_eq!(row.actor, "Gardener");
     e.stop();
-    e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+    e.undo_activity_event(&agent, row.seq, row.id.clone())
         .unwrap();
-    assert_eq!(
-        e.pending_activity_groups(),
-        std::slice::from_ref(&row.group)
-    );
-    assert_eq!(e.activity_undo_states()[&row.id], "Undoing…");
+    let view = e.activity_view(&agent, now());
+    let pending = &view.days[0].rows[0];
+    assert_eq!(pending.note.as_deref(), Some("Undoing…"));
+    assert!(pending.undo_label.is_none());
     e.start().unwrap();
     eventually("event undo refused", || !e.failed().is_empty()).await;
+    let view = e.activity_view(&agent, now());
+    let refused = &view.days[0].rows[0];
     assert_eq!(
-        e.activity_undo_states()[&row.id],
-        todo_client::failure::undo_message("undo_conflict")
+        refused.note.as_deref(),
+        Some(todo_client::failure::undo_message("undo_conflict"))
     );
+    assert_eq!(refused.undo_label.as_deref(), Some("Undo"));
     e.stop();
-    assert!(e.pending_activity_groups().is_empty());
-    e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+    e.undo_activity_event(&agent, row.seq, row.id.clone())
         .unwrap();
     assert_eq!(e.status().pending, 1, "a refusal is retryable");
 }
@@ -1445,22 +1507,25 @@ async fn skipping_an_oversized_change_does_not_stop_at_an_empty_page() {
         allow_loopback_http: true,
     })
     .unwrap();
-    let read = |before| {
-        let e = e.clone();
-        tokio::task::spawn_blocking(move || e.activity_page(None, before, now()).unwrap())
-    };
-    let blocked = read(None).await.unwrap();
-    assert!(blocked.skip);
-    assert_eq!(blocked.before, Some(15));
+    let pager = ActivityPager::new(None);
+    let blocked = load_activity(&e, &pager, ActivityLoad::Initial).await;
     assert_eq!(
-        blocked.problem.as_deref(),
-        Some("One change was too large to show.")
+        blocked.footer,
+        ActivityFooter::Error {
+            message: "One change was too large to show.".into(),
+            action: "Skip this change".into()
+        }
     );
-    let older = read(blocked.before).await.unwrap();
-    assert!(!older.skip && older.rows.is_empty());
-    assert_eq!(older.before, Some(7));
-    let end = read(older.before).await.unwrap();
-    assert!(end.problem.is_none() && end.before.is_none());
+    let older = load_activity(&e, &pager, ActivityLoad::Retry).await;
+    assert!(older.days.is_empty());
+    assert_eq!(older.footer, ActivityFooter::Older { cursor: 7 });
+    let end = load_activity(&e, &pager, ActivityLoad::Older).await;
+    assert_eq!(
+        end.footer,
+        ActivityFooter::Empty {
+            label: "No activity yet.".into()
+        }
+    );
     server.abort();
 }
 
@@ -1539,19 +1604,21 @@ async fn collection_restore_tag_name_collision_and_batch_undo() {
     e.set_done(id, true).unwrap();
     settle().await;
     e.stop();
-    let reader = e.clone();
-    let page =
-        tokio::task::spawn_blocking(move || reader.activity_page(None, None, now()).unwrap())
-            .await
-            .unwrap();
-    let a = &page.rows[0];
-    let b = &page.rows[1];
-    assert_eq!(a.group, b.group);
-    assert_ne!(a.id, b.id);
-    for row in [a, b] {
-        e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+    let pager = ActivityPager::new(None);
+    let page = load_activity(&e, &pager, ActivityLoad::Initial).await;
+    let rows = &page.days[0].rows;
+    assert_ne!(rows[0].id, rows[1].id);
+    assert!(rows[..2].iter().all(|r| r.undo_label.is_some()));
+    for row in &rows[..2] {
+        e.undo_activity_event(&pager, row.seq, row.id.clone())
             .unwrap();
     }
+    let view = e.activity_view(&pager, now());
+    assert!(
+        view.days[0].rows[..2]
+            .iter()
+            .all(|r| r.note.as_deref() == Some("Undoing…"))
+    );
     assert_eq!(e.status().pending, 1);
 }
 

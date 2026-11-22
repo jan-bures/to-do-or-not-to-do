@@ -263,8 +263,8 @@ pub struct TodoEngine {
     /// What each undo this engine queued reverses (forgotten on restart: a refusal is then worded
     /// generally).
     undos: Mutex<HashMap<CommandId, Undone>>,
-    /// Original batch -> queued event. The outbox remains the authority on whether it is pending.
-    activity_groups: Mutex<HashMap<todo_core::ids::EventId, todo_core::ids::EventId>>,
+    /// Pending batch protection survives replacing the Activity room's pager.
+    activity_undos: Mutex<todo_client::activity::Undos>,
     run: Mutex<Option<JoinHandle<()>>>,
     watch: Mutex<Option<JoinHandle<()>>>,
 }
@@ -399,7 +399,7 @@ impl TodoEngine {
             recovered,
             fixture,
             undos: Mutex::new(HashMap::new()),
-            activity_groups: Mutex::new(HashMap::new()),
+            activity_undos: Mutex::default(),
             run: Mutex::new(None),
             watch: Mutex::new(None),
         })

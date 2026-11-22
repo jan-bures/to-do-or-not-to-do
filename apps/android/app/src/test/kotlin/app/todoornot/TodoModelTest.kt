@@ -1,7 +1,7 @@
 package app.todoornot
 
-import app.todoornot.model.activitySource
-import app.todoornot.core.FeedRevision
+import app.todoornot.core.ActivityLoad
+import app.todoornot.core.ActivityFooter
 import app.todoornot.core.CustomRepeat
 import app.todoornot.core.RepeatUnit
 
@@ -548,14 +548,6 @@ class TodoModelTest {
     }
 
     @Test
-    fun activity_headings_use_the_same_offset_as_today() {
-        val at = java.time.Instant.parse("2025-11-20T23:30:00Z").toEpochMilli()
-        val day = app.todoornot.ui.activityDay(at, FIXTURE_NOW.utcOffsetSecs)
-        assertEquals("21 Nov 2025", app.todoornot.ui.dayHeading(day, java.time.LocalDate.parse("2026-11-21")))
-        assertEquals("Yesterday", app.todoornot.ui.dayHeading(day, java.time.LocalDate.parse("2025-11-22")))
-    }
-
-    @Test
     fun activity_is_a_room_not_the_agent_activity_task_list() {
         val e = fixtureEngine()
         val s = Stepped(e) { time }
@@ -570,32 +562,33 @@ class TodoModelTest {
         assertEquals(agent.id, m.ui.value.activity)
         assertNull(m.ui.value.detail)
         assertEquals("", m.ui.value.filter)
-        var problem: String? = null
-        val source = m.ui.value.activitySource
-        s.scope.launch { problem = m.activityPage(source, null)?.problem }
+        val first = m.ui.value.generation
+        m.loadActivity(first, ActivityLoad.INITIAL)
         s.drain()
-        assertEquals("Couldn’t load activity. Try again.", problem)
-        val same = m.ui.value.copy(activityRevision = FeedRevision(source.epoch, 42u))
-        assertEquals(source, same.activitySource)
-        assertNotEquals(source, same.copy(activityRevision = FeedRevision("new", 0u)).activitySource)
-        // Start the older page, then switch filters while its IO is still queued.
-        var returned = false
-        s.scope.launch { assertNull(m.activityPage(source, 17u)); returned = true }
+        val offline = ActivityFooter.Error("Couldn’t load activity. Try again.", "Try again")
+        assertEquals(offline, m.ui.value.feed?.footer)
+
+        // Publish the pending retry, but hold its network read until the replacement room is visible.
+        m.loadActivity(first, ActivityLoad.RETRY)
+        while (m.ui.value.feed?.footer !is ActivityFooter.Loading) assertTrue(s.main.next() || s.io.next())
         s.runMain()
+        val late = s.io.hold()
         m.openActivity(null)
         s.drain()
         assertEquals("", m.ui.value.activity)
-        assertTrue(returned)
-        // An invalid filter throws FfiException before any request. The UI gets a retryable error.
+        val fresh = m.ui.value.feed
+        assertNotNull(fresh)
+        assertEquals(ActivityFooter.None, fresh?.footer)
+        late.run()
+        m.loadActivity(first, ActivityLoad.REFRESH) // A stale gesture from the old room.
+        s.drain()
+        assertEquals(fresh, m.ui.value.feed)
+
         m.openActivity("not an agent!")
         s.drain()
-        s.scope.launch {
-            val retry = requireNotNull(m.activityPage(m.ui.value.activitySource, 17u))
-            assertEquals("Couldn’t load activity. Try again.", retry.problem)
-            assertEquals(17uL, retry.before)
-            assertFalse(retry.skip)
-        }
+        m.loadActivity(m.ui.value.generation, ActivityLoad.INITIAL)
         s.drain()
+        assertEquals(offline, m.ui.value.feed?.footer)
         m.select(id) // A notification can open a task from Activity.
         s.drain()
         assertNull(m.ui.value.activity)
