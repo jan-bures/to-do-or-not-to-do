@@ -14,9 +14,11 @@ use todo_client::platform::{
 use todo_client::protocol::{CommandResult, EventRef, LogEvent};
 use todo_core::command::{Command, NewTask};
 use todo_core::error::DomainError;
+use todo_core::event::Event;
 use todo_core::ids::{ListId, TaskId};
 use todo_core::time::Timestamp;
-use todo_core::{Actor, State, apply, decide};
+use todo_core::undo::undo_batch;
+use todo_core::{Actor, State, UndoOptions, apply, decide};
 use uuid::Uuid;
 
 pub fn owner() -> Actor {
@@ -104,7 +106,37 @@ impl FakeServer {
             DomainError::Invalid { .. } => (422, "invalid"),
             _ => (409, "conflict"),
         })?;
+        let result = self.append(command_id, events);
+        self.results.insert(command_id, (hash, result.clone()));
+        Ok(result)
+    }
+
+    /// A non-forced undo of the command whose first event is at `seq`, as the server runs it.
+    #[allow(dead_code)]
+    pub fn undo(
+        &mut self,
+        actor: &Actor,
+        command_id: Uuid,
+        seq: u64,
+    ) -> Result<CommandResult, (u16, &'static str)> {
+        let original = self.log[seq as usize - 1].command_id;
+        let batch: Vec<_> = self
+            .log
+            .iter()
+            .filter(|e| e.command_id == original)
+            .map(|e| e.event.clone())
+            .collect();
+        self.clock_ms += 1000;
+        let now = ts(10_000_000 + self.clock_ms);
+        let events = undo_batch(&self.state, &batch, actor, now, UndoOptions::default())
+            .map_err(|_| (409, "undo_conflict"))?;
+        Ok(self.append(command_id, events))
+    }
+
+    /// Stores a command's events and returns its result.
+    fn append(&mut self, command_id: Uuid, events: Vec<Event>) -> CommandResult {
         let mut refs = Vec::new();
+        let len = events.len() as u32;
         for (i, mut e) in events.into_iter().enumerate() {
             let seq = self.log.len() as u64 + 1;
             e.seq = Some(seq);
@@ -114,16 +146,15 @@ impl FakeServer {
                 event: e,
                 command_id,
                 command_idx: i as u32,
+                command_len: Some(len),
             });
         }
-        let result = CommandResult {
+        CommandResult {
             command_id,
             events: refs,
             summary: String::new(),
             epoch: Some(self.epoch),
-        };
-        self.results.insert(command_id, (hash, result.clone()));
-        Ok(result)
+        }
     }
 
     pub fn head(&self) -> u64 {

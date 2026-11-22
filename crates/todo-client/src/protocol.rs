@@ -54,6 +54,20 @@ pub struct LogEvent {
     /// Its index among that command's events.
     #[serde(default)]
     pub command_idx: u32,
+    /// How many events that command produced: the event at `command_len - 1` ends its batch. Absent
+    /// from servers that predate it and for agents (which may not see every event of a command); a
+    /// batch without it counts as complete as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_len: Option<u32>,
+}
+
+impl LogEvent {
+    /// True if more events of this event's command follow it.
+    #[must_use]
+    pub fn batch_continues(&self) -> bool {
+        self.command_len
+            .is_some_and(|len| self.command_idx.saturating_add(1) < len)
+    }
 }
 
 /// Reference to a stored event.

@@ -7,6 +7,16 @@
 //! Every event carries the `command_id` (and `command_idx`, its index among that command's events)
 //! that produced it, so a client recognises its own commands by ID.
 //!
+//! # Whole batches
+//!
+//! A command's events are written in one transaction, consecutively, but a page or a stream can end
+//! between them. So every event also carries `command_len`, how many events its command produced: the
+//! event with `command_idx == command_len - 1` ends the batch. A client applies a batch only once it
+//! has all of it (`todo-client` holds the start until the rest arrives), so it never shows half a
+//! command, or an undo predicted from part of one. The field is optional: older clients ignore it,
+//! and it is left out for agents, which may not see every event of a command (counting the hidden
+//! ones would tell them about events they can't read).
+//!
 //! # Log epoch
 //!
 //! The log has an *epoch*: a random ID created with the database and rotated when a backup is
@@ -239,6 +249,9 @@ pub async fn get_events(
                 let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
                 visibility::event_visible(&state, &gone, &actor, &e.event, scope)
             });
+            for e in &mut page.events {
+                e.command_len = None;
+            }
         }
         Ok::<_, crate::db::StoreError>((page, next_since, scanned))
     })
@@ -556,7 +569,8 @@ impl Pump {
                     self.last = seq;
                     continue;
                 }
-                let data = match serde_json::to_string(ev) {
+                let data = match serde_json::to_string(&visibility::log_event_for(&self.actor, ev))
+                {
                     Ok(d) => d,
                     Err(err) => {
                         tracing::error!(error = %err, seq, "cannot encode event");
@@ -662,7 +676,7 @@ impl Pump {
                             self.last = seq;
                             continue;
                         }
-                        let data = match serde_json::to_string(ev) {
+                        let data = match serde_json::to_string(&visibility::log_event_for(&self.actor, ev)) {
                             Ok(d) => d,
                             Err(err) => {
                                 tracing::error!(error = %err, seq, "cannot encode event");
@@ -991,7 +1005,7 @@ mod tests {
                 continue;
             }
             let check = Some(Box::new((ev.event.clone(), scope.cloned().unwrap())));
-            let data = serde_json::to_string(ev).unwrap();
+            let data = serde_json::to_string(&visibility::log_event_for(&actor, ev)).unwrap();
             tx.send(Queued {
                 frame: frame(seq, data),
                 check,

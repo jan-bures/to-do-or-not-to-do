@@ -17,7 +17,9 @@
 //! where it was last seen ([`Whereabouts`]). An event whose entity has neither, or without a recorded
 //! scope, is hidden from agents.
 
+use crate::db::LogEvent;
 use crate::scope::{EventScope, Whereabouts, current_location, readable};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use todo_core::access::{Target, level_on, undo_requirements};
 use todo_core::event::Event;
@@ -127,6 +129,19 @@ pub fn event_visible(
         && undo_requirements(state, &event.payload)
             .into_iter()
             .all(|(_, t)| can_read(state, actor, t))
+}
+
+/// A visible event as `actor` receives it. An agent may not see every event of a command, so it is
+/// not told how many there are ([`LogEvent::command_len`]).
+#[must_use]
+pub fn log_event_for<'a>(actor: &Actor, event: &'a LogEvent) -> Cow<'a, LogEvent> {
+    if sees_all(actor) || event.command_len.is_none() {
+        return Cow::Borrowed(event);
+    }
+    Cow::Owned(LogEvent {
+        command_len: None,
+        ..event.clone()
+    })
 }
 
 #[cfg(test)]

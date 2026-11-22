@@ -876,7 +876,11 @@ pub async fn activity(
                 let scope = e.event.seq.and_then(|seq| scopes.get(&seq));
                 visibility::event_visible(&s, &gone, &auth.actor, &e.event, scope)
             })
-            .map(|event| {
+            .map(|mut event| {
+                if !visibility::sees_all(&auth.actor) {
+                    // See `visibility::log_event_for`.
+                    event.command_len = None;
+                }
                 let root = j.root_of(event.event.id);
                 let head = j.head_of(root);
                 let undone = if event.event.undoes.is_none() {

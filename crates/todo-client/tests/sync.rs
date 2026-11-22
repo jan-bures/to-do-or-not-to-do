@@ -352,6 +352,50 @@ async fn a_client_far_behind_catches_up_through_pages() {
     server.stop().await;
 }
 
+/// A page can end inside a command's batch: here every page holds one event and every completion of a
+/// repeating task makes two. The client holds the start of a batch and pages on after it, so it never
+/// stalls and never shows half a completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pages_that_end_inside_a_batch_still_catch_up() {
+    let server = TestServer::start_with(|c| c.limits.max_replay_events = 1).await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let ha = spawn(&a);
+    let (list, cmd) = new_list(&a, "Repeats");
+    a.submit(cmd).unwrap();
+    for i in 0..3 {
+        let task = TaskId::from_uuid(a.new_uuid());
+        let mut repeat = NewTask::new(task, list, format!("repeat {i}"));
+        repeat.due = Some("2026-11-21".parse().unwrap());
+        repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+        a.submit(Command::CreateTask(Box::new(repeat))).unwrap();
+        a.submit(Command::CompleteTask { id: task }).unwrap();
+    }
+    eventually("a synced", WAIT, || converged(&a, &server)).await;
+    assert_eq!(
+        server.head(),
+        10,
+        "a list, then per task a creation and two events"
+    );
+
+    let mut cfg = config(beta());
+    cfg.page_limit = 1;
+    let tb = Switch::new(server.transport(TOKEN_B));
+    let b = client_with(tb.clone(), MemoryStorage::new(), cfg);
+    let hb = spawn(&b);
+    eventually("b caught up", WAIT, || converged(&b, &server)).await;
+    let pages = tb
+        .paths
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| p.contains("limit="))
+        .count();
+    assert!(pages >= 10, "one event per page: {pages}");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     let server = TestServer::start().await;

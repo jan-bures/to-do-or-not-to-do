@@ -6,11 +6,12 @@
 mod common;
 
 use common::{TOKEN_A, TestServer, first_seq, id};
-use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use todo_core::{AccessLevel, Grants};
 use todo_server::Engine;
 
 /// Copies a stopped server's database with its WAL sidecar files (removing stale ones at `to`).
@@ -29,6 +30,100 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(suffix);
     PathBuf::from(s)
+}
+
+/// Every event says how many events its command produced, in pages, on the stream and in the
+/// activity feed, so a client knows when it has a whole batch. An agent, which may not see all of a
+/// command's events, is not told.
+#[tokio::test]
+async fn events_say_how_many_events_their_command_produced_except_to_agents() {
+    let t = TestServer::start().await;
+    let list = t.create_list("L").await;
+    let task = id();
+    let (s, _, v) = t
+        .command_with_id(
+            TOKEN_A,
+            &id(),
+            json!({ "cmd": "create_task", "id": task, "list": list, "title": "Repeat",
+                    "due": "2030-01-07",
+                    "recurrence": { "rule": { "freq": "daily", "interval": 1 } } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let head = t.server.engine.head_seq();
+    let mut sse = t.sse(TOKEN_A, Some(head)).await;
+    let cid = id();
+    let (s, _, v) = t
+        .command_with_id(TOKEN_A, &cid, json!({ "cmd": "complete_task", "id": task }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["events"].as_array().unwrap().len(),
+        2,
+        "the completion and the next repeat"
+    );
+
+    let page = t.get_ok(&format!("/api/v1/events?since={head}")).await;
+    for (i, e) in page["events"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(e["command_id"], cid);
+        assert_eq!(
+            (e["command_idx"].clone(), e["command_len"].clone()),
+            (json!(i), json!(2))
+        );
+    }
+    for i in 0..2 {
+        let f = sse.next_event(Duration::from_secs(5)).await.unwrap().json();
+        assert_eq!(
+            (f["command_idx"].clone(), f["command_len"].clone()),
+            (json!(i), json!(2))
+        );
+    }
+    // A stream replayed from the database says the same.
+    let mut replay = t.sse(TOKEN_A, Some(head)).await;
+    let f = replay
+        .next_event(Duration::from_secs(5))
+        .await
+        .unwrap()
+        .json();
+    assert_eq!(f["command_len"], 2);
+    let feed = t.get_ok("/api/v1/activity").await;
+    assert_eq!(feed["items"][0]["event"]["command_len"], 2);
+
+    // An agent that can read the list still isn't told.
+    let (_, token) =
+        common::mcp::agent(&t, "reader", &Grants::with_default(AccessLevel::Read), None);
+    let (s, _, page) = t
+        .request(
+            Method::GET,
+            &format!("/api/v1/events?since={head}"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    let events = page["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(
+        events.iter().all(|e| e.get("command_len").is_none()),
+        "{page}"
+    );
+    let mut agent_sse = t.sse(&token, Some(head)).await;
+    let f = agent_sse
+        .next_event(Duration::from_secs(5))
+        .await
+        .unwrap()
+        .json();
+    assert_eq!(f["command_id"], cid);
+    assert!(f.get("command_len").is_none(), "{f}");
+    let (s, _, feed) = t
+        .request(Method::GET, "/api/v1/activity", Some(&token), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{feed}");
+    assert_eq!(feed["items"][0]["event"]["command_id"], cid);
+    assert!(
+        feed["items"][0]["event"].get("command_len").is_none(),
+        "{feed}"
+    );
 }
 
 async fn epoch(t: &TestServer) -> String {

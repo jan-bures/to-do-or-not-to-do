@@ -503,6 +503,11 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| s.replica.cursor())
     }
 
+    /// Where fetching continues (see [`Replica::received`]).
+    fn received(&self) -> u64 {
+        self.with(|s| s.replica.received())
+    }
+
     /// The current status.
     #[must_use]
     pub fn status(&self) -> Status {
@@ -941,7 +946,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         if self.take_resync_request() {
             return Step::Resync { diverged_at: None };
         }
-        let (since, epoch) = self.with(|s| (s.replica.cursor(), s.replica.epoch()));
+        let (since, epoch) = self.with(|s| (s.replica.received(), s.replica.epoch()));
         let opened = self
             .unless_stopped(timeout(
                 &self.inner.clock,
@@ -969,9 +974,9 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         let detail = error_detail(res);
         let code = detail.as_ref().map_or("", |d| d.code.as_str());
         if (res.status, code) == (409, "catch_up_required") {
-            let before = self.cursor();
+            let before = self.received();
             return match self.catch_up().await {
-                Step::Reconnect if self.cursor() == before => self.fail(
+                Step::Reconnect if self.received() == before => self.fail(
                     ErrorKind::Protocol,
                     "the server asked to catch up, but there was nothing to fetch",
                     false,
@@ -1059,7 +1064,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| s.stream = StreamState::CatchingUp);
         self.changed();
         loop {
-            let (since, epoch) = self.with(|s| (s.replica.cursor(), s.replica.epoch()));
+            let (since, epoch) = self.with(|s| (s.replica.received(), s.replica.epoch()));
             let request = protocol::events_page_request(since, self.inner.config.page_limit, epoch);
             let response = self
                 .unless_stopped(timeout(
@@ -1103,7 +1108,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             if !page.has_more {
                 return Step::Reconnect;
             }
-            if self.cursor() == since {
+            if self.received() == since {
                 return self.fail(
                     ErrorKind::Protocol,
                     "the server reported more events but sent none",
@@ -1156,9 +1161,9 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     // Typically a frame over the size cap. Page past it instead of reconnecting
                     // into it again.
                     tracing::warn!(reason = %message, "the event stream broke the protocol; paging instead");
-                    let before = self.cursor();
+                    let before = self.received();
                     return match self.catch_up().await {
-                        Step::Reconnect if self.cursor() == before => {
+                        Step::Reconnect if self.received() == before => {
                             self.fail(ErrorKind::Protocol, message, false)
                         }
                         step => step,

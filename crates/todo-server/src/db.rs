@@ -407,8 +407,12 @@ fn corrupt<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> StoreE
 }
 
 const EVENT_COLUMNS: &str = "seq, id, group_id, actor, at, undoes, forced, payload";
-const LOG_COLUMNS: &str =
-    "seq, id, group_id, actor, at, undoes, forced, payload, command_id, command_idx";
+/// The event columns, then the command's ID, the event's index in it and how many events it has. A
+/// command's events are written in one transaction, so the count is final once any of them is read.
+const LOG_COLUMNS: &str = concat!(
+    "seq, id, group_id, actor, at, undoes, forced, payload, command_id, command_idx, ",
+    "(SELECT COUNT(*) FROM events AS batch WHERE batch.command_id = events.command_id)",
+);
 
 /// A stored event as the API returns it: the event plus the command (or undo) that produced it.
 ///
@@ -423,6 +427,11 @@ pub struct LogEvent {
     pub command_id: Uuid,
     /// Its position among that command's events (0-based).
     pub command_idx: u32,
+    /// How many events that command produced, so a client knows when it has the whole batch (the
+    /// event with `command_idx == command_len - 1` ends it). Absent where the reader may not see
+    /// every event (agents), and from servers before it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_len: Option<u32>,
 }
 
 type RawEvent = (
@@ -474,15 +483,21 @@ fn query_log_events(
     let mut stmt = conn.prepare_cached(sql)?;
     let raws = stmt
         .query_map(p, |r| {
-            Ok((raw_event(r)?, r.get::<_, String>(8)?, r.get::<_, i64>(9)?))
+            Ok((
+                raw_event(r)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, i64>(10)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     raws.into_iter()
-        .map(|(raw, command_id, idx)| {
+        .map(|(raw, command_id, idx, len)| {
             Ok(LogEvent {
                 event: decode_event(raw)?,
                 command_id: command_id.parse().map_err(corrupt("command id"))?,
                 command_idx: u32::try_from(idx).map_err(corrupt("command index"))?,
+                command_len: Some(u32::try_from(len).map_err(corrupt("command length"))?),
             })
         })
         .collect()
@@ -591,8 +606,9 @@ pub fn events_after(conn: &Connection, after: u64, limit: usize) -> Result<Vec<E
     )
 }
 
-/// Rough JSON size of an event beyond its payload and actor (IDs, times, field names).
-const EVENT_OVERHEAD: u64 = 256;
+/// Rough JSON size of an event beyond its payload and actor (IDs, times, field names, the command's
+/// ID, index and length).
+const EVENT_OVERHEAD: u64 = 320;
 
 /// A page of the log read within a byte budget.
 #[derive(Debug, Clone, Default)]

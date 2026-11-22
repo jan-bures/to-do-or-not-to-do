@@ -11,12 +11,23 @@
 //! the view; the server decides its fate.
 //!
 //! A pending undo is projected from its original's events: the batch the pending original decides
-//! to, and once the original is confirmed, the events of its batch confirmed so far. A page can end
-//! inside a batch; undoing the part received gives the state before the batch, just as undoing all of
-//! it does once the rest arrives. The replica collects those events for every tracked command and for
-//! the original of every early undo. When it opens, it takes them from the stored events for every
-//! undo in the outbox that names a stored first event. Any other undo (its original's events went into
-//! a snapshot, or it came from the activity feed in this session) shows once the server confirms it.
+//! to, and once the original is confirmed, its whole confirmed batch. Never from part of a batch:
+//! undoing a part can succeed where undoing the whole conflicts (a later command touched what the rest
+//! of the batch changed), so the view would show an undo the server refuses. The replica collects
+//! those events for every tracked command and for the original of every early undo. When it opens, it
+//! takes them from the stored events for every undo in the outbox that names a stored first event. Any
+//! other undo (its original's events went into a snapshot, or it came from the activity feed in this
+//! session) shows once the server confirms it.
+//!
+//! # Whole batches
+//!
+//! The confirmed state only ever holds whole batches: all the events of a command or none of them.
+//! A page or a stream can end inside a batch; every event says how many events its command produced
+//! ([`LogEvent::command_len`]), and the events of a batch that isn't complete yet are held in memory,
+//! not applied, stored or counted in the cursor, until the rest arrives. So the view never shows half
+//! a command, a half-applied undo never settles its outbox entry, and a restart in between simply
+//! fetches the batch again. [`Replica::received`] is where fetching continues. An event without a
+//! length (an older server) counts as ending its batch.
 //!
 //! # Leaving the outbox
 //!
@@ -160,6 +171,34 @@ struct CommandLog {
     handle: Weak<CommandId>,
     first: Option<(Epoch, EventRef)>,
     events: Vec<Event>,
+    /// How many events the command produced, if the server said ([`LogEvent::command_len`]).
+    len: Option<usize>,
+}
+
+impl CommandLog {
+    /// The whole batch, once the confirmed state has all of it (`cursor`).
+    fn batch(&self, cursor: u64) -> Option<&[Event]> {
+        let last = self.events.last()?.seq?;
+        let complete = match self.len {
+            Some(len) => self.events.len() == len && last <= cursor,
+            // Without a length, only a later confirmed event proves the batch ended (a command's
+            // events are consecutive in the log).
+            None => last < cursor,
+        };
+        complete.then_some(self.events.as_slice())
+    }
+}
+
+/// The stored events of a command an outbox undo names, from its first event.
+#[derive(Clone, Debug)]
+struct StoredLog {
+    first: EventRef,
+    events: Vec<Event>,
+    len: Option<usize>,
+}
+
+fn batch_len(event: &LogEvent) -> Option<usize> {
+    event.command_len.map(|len| len as usize)
 }
 
 /// What happened when trying to undo a tracked command.
@@ -208,6 +247,9 @@ pub struct Replica {
     /// A queued undo needs the original's log even if its caller drops the tracking handle (or never
     /// had one: the undo was restored from storage or adopted from another tab).
     undo_targets: BTreeMap<CommandId, TrackedCommand>,
+    /// Received events after the cursor that start a batch whose rest hasn't arrived yet (see the
+    /// module docs), consecutive from `cursor + 1`. Memory only.
+    held: Vec<LogEvent>,
 }
 
 /// What [`Replica::open`] rebuilt from storage.
@@ -226,7 +268,7 @@ struct Restored {
     resolved_undos: Vec<OutboxEntry>,
     failed_undos: Vec<FailedEntry>,
     /// The replayed events of the commands an outbox undo names, by command, from the first event.
-    undo_logs: BTreeMap<CommandId, (EventRef, Vec<Event>)>,
+    undo_logs: BTreeMap<CommandId, StoredLog>,
 }
 
 /// True if `entry`'s acknowledgement does not belong to the log with `epoch`.
@@ -261,7 +303,7 @@ fn restore(loaded: Loaded) -> Restored {
             _ => {}
         }
     }
-    let mut undo_logs: BTreeMap<CommandId, (EventRef, Vec<Event>)> = BTreeMap::new();
+    let mut undo_logs: BTreeMap<CommandId, StoredLog> = BTreeMap::new();
     for e in &loaded.events {
         let Some(seq) = e.event.seq else { continue };
         if seq <= cursor {
@@ -286,12 +328,19 @@ fn restore(loaded: Loaded) -> Restored {
             first_events.insert(e.command_id, first);
             if undone_events.contains(&(seq, e.event.id)) || undone_commands.contains(&e.command_id)
             {
-                undo_logs.insert(e.command_id, (first, vec![e.event.clone()]));
+                undo_logs.insert(
+                    e.command_id,
+                    StoredLog {
+                        first,
+                        events: vec![e.event.clone()],
+                        len: batch_len(e),
+                    },
+                );
             }
-        } else if let Some((_, events)) = undo_logs.get_mut(&e.command_id)
-            && events.len() == e.command_idx as usize
+        } else if let Some(log) = undo_logs.get_mut(&e.command_id)
+            && log.events.len() == e.command_idx as usize
         {
-            events.push(e.event.clone());
+            log.events.push(e.event.clone());
         }
         cursor = seq;
         replayed += 1;
@@ -387,6 +436,7 @@ impl Replica {
             sent_here: BTreeSet::new(),
             tracked: BTreeMap::new(),
             undo_targets: BTreeMap::new(),
+            held: Vec::new(),
         };
         r.load()?;
         Ok(r)
@@ -443,7 +493,7 @@ impl Replica {
 
     /// Keeps the original's events for every undo in the restored outbox, so it shows in the view as
     /// it did before the restart.
-    fn hold_restored_logs(&mut self, logs: &BTreeMap<CommandId, (EventRef, Vec<Event>)>) {
+    fn hold_restored_logs(&mut self, logs: &BTreeMap<CommandId, StoredLog>) {
         let mut holds = Vec::new();
         for entry in &self.outbox {
             match entry.op {
@@ -459,14 +509,10 @@ impl Replica {
                         id: expected_event_id,
                     };
                     if seq <= self.cursor {
-                        if let Some((original, (first, events))) =
-                            logs.iter().find(|(_, (first, _))| *first == event)
+                        if let Some((original, log)) =
+                            logs.iter().find(|(_, log)| log.first == event)
                         {
-                            holds.push((
-                                entry.command_id,
-                                *original,
-                                Some(((epoch, *first), events.clone())),
-                            ));
+                            holds.push((entry.command_id, *original, Some((epoch, log.clone()))));
                         }
                     } else if let Some(original) = self.acked_original(epoch, expected_event_id) {
                         // Acknowledged, not confirmed yet: its events are still to come.
@@ -482,23 +528,21 @@ impl Replica {
     }
 
     /// Keeps `original`'s log, collecting its confirmed events, for as long as `undo` is in the outbox.
-    fn hold_log(
-        &mut self,
-        undo: CommandId,
-        original: CommandId,
-        log: Option<((Epoch, EventRef), Vec<Event>)>,
-    ) {
+    fn hold_log(&mut self, undo: CommandId, original: CommandId, log: Option<(Epoch, StoredLog)>) {
         let handle = match self.tracked.get(&original).and_then(|l| l.handle.upgrade()) {
             Some(handle) => handle,
             None => {
                 let handle = Arc::new(original);
-                let (first, events) = log.map_or((None, Vec::new()), |(f, e)| (Some(f), e));
+                let (first, events, len) = log.map_or((None, Vec::new(), None), |(epoch, log)| {
+                    (Some((epoch, log.first)), log.events, log.len)
+                });
                 self.tracked.insert(
                     original,
                     CommandLog {
                         handle: Arc::downgrade(&handle),
                         first,
                         events,
+                        len,
                     },
                 );
                 handle
@@ -530,6 +574,16 @@ impl Replica {
     #[must_use]
     pub fn cursor(&self) -> u64 {
         self.cursor
+    }
+
+    /// The last sequence number received: the cursor, or the last event held from a batch whose rest
+    /// hasn't arrived yet (see the module docs). Fetching continues after it.
+    #[must_use]
+    pub fn received(&self) -> u64 {
+        self.held
+            .last()
+            .and_then(|e| e.event.seq)
+            .unwrap_or(self.cursor)
     }
 
     /// The log epoch the confirmed state belongs to (`None` before the first page or stream).
@@ -606,16 +660,12 @@ impl Replica {
                     seq,
                     id: expected_event_id,
                 };
-                let log = self
-                    .tracked
+                // Only the whole batch, and only while the confirmed state has it (not after a
+                // resync, for example).
+                self.tracked
                     .values()
-                    .find(|log| log.first == Some((epoch, event)))?;
-                // The batch's events up to the cursor: all of them, or the part a page ended in (see
-                // the module docs). Never one the confirmed state doesn't have yet, as in a resync.
-                let confirmed = log
-                    .events
-                    .partition_point(|e| e.seq.is_some_and(|seq| seq <= self.cursor));
-                Some(&log.events[..confirmed])
+                    .find(|log| log.first == Some((epoch, event)))?
+                    .batch(self.cursor)
             }
             _ => None,
         }
@@ -672,6 +722,7 @@ impl Replica {
                 handle: Arc::downgrade(&id),
                 first: None,
                 events: Vec::new(),
+                len: None,
             },
         );
         TrackedCommand(id)
@@ -1019,8 +1070,11 @@ impl Replica {
     }
 
     /// Applies confirmed events from the log with `epoch`, in sequence order, and removes the outbox
-    /// entries they confirm, in one storage write. Events at or below the cursor are skipped. An empty
-    /// slice only checks (or records) the epoch.
+    /// entries they confirm, in one storage write. Events at or below [`Replica::received`] are
+    /// skipped. An empty slice only checks (or records) the epoch.
+    ///
+    /// Only whole batches are applied: if the events end inside a batch, its events are held until
+    /// the rest arrives (see the module docs). Returns how many events were applied.
     ///
     /// The first epoch is adopted while the replica is empty; another one is refused with
     /// [`ConfirmError::EpochChanged`]. Adopting an epoch forgets acknowledgements from other ones. On
@@ -1037,25 +1091,42 @@ impl Replica {
             None if self.cursor == 0 => true,
             _ => return Err(ConfirmError::EpochChanged),
         };
-        let mut applied: Vec<LogEvent> = Vec::new();
+        // The held start of a batch, then what arrived: consecutive from the cursor.
+        let mut received: Vec<&LogEvent> = Vec::new();
         let mut failure = None;
-        let mut cursor = self.cursor;
-        let mut next: Option<State> = None;
-        for e in events {
+        let mut last = self.cursor;
+        for e in self.held.iter().chain(events) {
             let Some(seq) = e.event.seq else {
                 failure = Some(ConfirmError::MissingSeq);
                 break;
             };
-            if seq <= cursor {
+            if seq <= last {
                 continue;
             }
-            if seq != cursor + 1 {
+            if seq != last + 1 {
                 failure = Some(ConfirmError::Gap {
-                    expected: cursor + 1,
+                    expected: last + 1,
                     got: seq,
                 });
                 break;
             }
+            last = seq;
+            received.push(e);
+        }
+        // A batch that goes on past what arrived waits for the rest (a command's events are
+        // consecutive, so only the last one can be incomplete).
+        let whole = match received.last() {
+            Some(e) if e.batch_continues() => received
+                .iter()
+                .rposition(|other| other.command_id != e.command_id)
+                .map_or(0, |i| i + 1),
+            _ => received.len(),
+        };
+        let mut applied: Vec<LogEvent> = Vec::with_capacity(whole);
+        let mut cursor = self.cursor;
+        let mut next: Option<State> = None;
+        for e in &received[..whole] {
+            let Some(seq) = e.event.seq else { break };
             // `apply` leaves the state untouched when it fails.
             let state = next.get_or_insert_with(|| self.confirmed.clone());
             if let Err(error) = apply(state, &e.event) {
@@ -1063,9 +1134,16 @@ impl Replica {
                 break;
             }
             cursor = seq;
-            applied.push(e.clone());
+            applied.push((*e).clone());
         }
+        // Held events must follow on from the cursor; after a divergence there is nothing to hold.
+        let held: Vec<LogEvent> = if applied.len() == whole {
+            received[whole..].iter().map(|e| (*e).clone()).collect()
+        } else {
+            Vec::new()
+        };
         if applied.is_empty() && !adopt {
+            self.held = held;
             return failure.map_or(Ok(0), Err);
         }
         let unbound: Vec<OutboxEntry> = if adopt {
@@ -1147,6 +1225,7 @@ impl Replica {
             return Err(err.into());
         }
         self.replace_outbox(ready);
+        self.held = held;
         if adopt {
             self.epoch = Some(epoch);
             for u in unbound {
@@ -1188,6 +1267,7 @@ impl Replica {
                         && (event.command_idx as usize) == log.events.len()
                     {
                         log.events.push(event.event.clone());
+                        log.len = batch_len(event).or(log.len);
                     }
                 }
             }
@@ -1221,6 +1301,7 @@ impl Replica {
         }
         self.confirmed = State::new();
         self.cursor = 0;
+        self.held.clear();
         self.epoch = None;
         self.unsnapshotted = 0;
         self.needs_snapshot = false;

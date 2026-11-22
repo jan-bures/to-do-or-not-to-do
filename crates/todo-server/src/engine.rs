@@ -1167,12 +1167,14 @@ impl Engine {
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);
         }
+        let command_len = Some(u32::try_from(events.len()).unwrap_or(u32::MAX));
         for (i, (event, scope)) in events.into_iter().zip(scopes).enumerate() {
             // No receivers is fine.
             let event = LogEvent {
                 event,
                 command_id,
                 command_idx: u32::try_from(i).unwrap_or(u32::MAX),
+                command_len,
             };
             let _ = self.live.send(Arc::new(LiveEvent { event, scope }));
         }
