@@ -5,7 +5,7 @@
    from the tokens and are documented in docs/web.md:
    - below 760 px: the phone layout (a drawer, room pills, 64 px rows, a bottom composer);
    - 760-1199 px: sidebar and list, the detail opens over the list;
-   - 1200 px and up: three panes (sidebar 248, list, detail 392). */
+   - 1200 px and up: sidebar, list and resizable docked detail. */
 
 *,
 *::before,
@@ -159,12 +159,57 @@ a {
     "status status";
 }
 
+/* The list's left hairline lives inside .main; the detail's has its own track. */
 .app.has-detail {
-  grid-template-columns: var(--desktop-sidebar) minmax(0, 1fr) var(--desktop-detail);
+  --room-min: calc(var(--desktop-list-min-beside-detail) + var(--hairline));
+  --detail-max: calc(100% - var(--desktop-sidebar) - var(--room-min) - var(--hairline));
+  grid-template-columns: var(--desktop-sidebar) minmax(var(--room-min), 1fr) var(--hairline)
+    clamp(var(--desktop-detail-min), var(--detail-pane-width, var(--desktop-detail)), var(--detail-max));
   grid-template-areas:
-    "side main detail"
-    "status status status";
+    "side main splitter detail"
+    "status status status status";
 }
+
+.detail-splitter {
+  grid-area: splitter;
+  position: relative;
+  z-index: 2;
+  justify-self: start;
+  inline-size: var(--desktop-pane-handle-hit);
+  margin-inline-start: calc(-1 * var(--hairline));
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.detail-splitter::before,
+.detail-splitter::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  pointer-events: none;
+}
+
+.detail-splitter::before {
+  inset-inline-start: var(--hairline);
+  inline-size: var(--hairline);
+  background: var(--color-line);
+}
+
+.detail-splitter::after {
+  inset-inline-start: calc((3 * var(--hairline) - var(--desktop-pane-handle-highlight)) / 2);
+  inline-size: var(--desktop-pane-handle-highlight);
+  background: var(--color-accent);
+  opacity: 0;
+  transition: opacity var(--duration-hover) var(--ease-standard),
+    box-shadow var(--duration-hover) var(--ease-standard);
+}
+
+.detail-splitter:is(:hover, :focus-visible, .grabbing)::after { opacity: 1; }
+.detail-splitter:focus-visible::after { box-shadow: 0 0 0 var(--focus-ring) var(--color-tint); }
+.app:has(.detail-splitter.grabbing) * { cursor: col-resize; }
 
 .sidebar {
   grid-area: side;
@@ -185,7 +230,6 @@ a {
   display: none;
   min-width: 0;
   background: var(--color-pane);
-  border-left: var(--hairline) solid var(--color-line);
   flex-direction: column;
 }
 
@@ -1072,6 +1116,21 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 .room-menu-trigger { flex: none; }
 
+.compact-room .title-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.compact-room .room-title-group { max-inline-size: 100%; }
+.compact-room .eyebrow-lead {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-room .eyebrow-meta { flex: none; }
+
 .room-title {
   font: var(--text-room-title);
   letter-spacing: var(--text-room-title-tracking);
@@ -1351,6 +1410,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   gap: var(--desktop-row-line-gap);
   min-width: 0;
 }
+
+/* Keep the title grid, but let metadata use the empty space under the trailing columns. */
+.compact-room .row { row-gap: var(--desktop-row-line-gap); }
+.compact-room .row-main { display: contents; }
+.compact-room .row > *,
+.compact-room .row-title { grid-row: 1; }
+.compact-room .row-title { grid-column: 2; }
+.compact-room .row .meta { grid-area: 2 / 2 / auto / -1; }
 
 .row-title {
   text-align: left;
@@ -2018,6 +2085,44 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   padding: var(--space-5) var(--desktop-detail-pad-x) var(--space-10);
 }
 
+@media (width >= 1200px) {
+  .detail :is(.d-title, .title-input, .notes, .step-title, .step-input, .add-step input) {
+    max-inline-size: var(--desktop-detail-text-measure);
+  }
+
+  .detail .steps-section {
+    /* Set ch in the step face and leave room for the check, gaps and three actions. */
+    font: var(--text-step);
+    max-inline-size: calc(var(--desktop-detail-text-measure)
+      + var(--component-checkbox) - var(--space-1) + 2 * var(--space-3)
+      + 3 * var(--component-button-small));
+  }
+
+  .detail .step {
+    height: auto;
+    min-height: var(--desktop-step-row);
+  }
+
+  .detail .step-title { container: step-title / inline-size; }
+
+  .detail .step-title > span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* As with media queries, a size query can't use var(): 72ch is the shared text measure. */
+  @container step-title (width >= 72ch) {
+    .detail .step-title > span {
+      padding-block: var(--space-1);
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .detail .step-tail { margin-inline-start: auto; }
+}
+
 .d-head {
   display: grid;
   grid-template-columns: var(--space-6) minmax(0, 1fr);
@@ -2491,7 +2596,9 @@ a.source:hover {
 
 /* ---- medium windows: the detail opens over the list -------------------------------------------------- */
 
-@media (max-width: 1199px) {
+@media (width < 1200px) {
+  .detail-splitter { display: none; }
+
   .app.has-detail {
     grid-template-columns: var(--desktop-sidebar) minmax(0, 1fr);
     grid-template-areas:
@@ -2520,6 +2627,7 @@ a.source:hover {
     right: 0;
     bottom: var(--desktop-statusbar);
     width: min(var(--desktop-detail), 100vw);
+    border-left: var(--hairline) solid var(--color-line);
     z-index: 5;
     box-shadow: var(--shadow-overlay);
     transform: translateX(var(--space-6));

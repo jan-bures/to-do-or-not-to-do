@@ -65,7 +65,8 @@ browsers that accept gzip.
 |---|---|
 | `src/model.rs` | The view-model: sidebar counts, a room's header and rows, the detail pane, tomorrow's plan. Pure Rust over `todo_core::State`, unit-tested on the host. |
 | `src/landscape.rs` | The header landscape as SVG markup, from `todo_design::landscape`. Shapes carry classes; `app.css` colours them from the room's tokens. |
-| `src/app.rs` | The Leptos components. They set classes and `data-*` hue keys only. |
+| `src/app.rs` | The Leptos components, including the frame that applies the preferred detail width. |
+| `src/app/detail_splitter.rs` | Docked detail width, pointer capture, and keyboard resizing. |
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
@@ -119,9 +120,9 @@ object-src 'none'
 `'wasm-unsafe-eval'` allows compiling the wasm module and nothing else; there is no `'unsafe-inline'` or
 `'unsafe-eval'`. Styles come from the two stylesheets. Dynamic values are chiefly classes and `data-*`
 attributes, and the landscape's stroke widths and opacities are SVG presentation attributes. Room menus set
-only their measured screen coordinates via CSSOM custom properties; they don't need CSS anchor positioning
-or inline style markup. Browser tests fail on any CSP violation. The rest of the server's headers
-(`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page.
+only their measured screen coordinates, and the docked grid sets its detail width, via CSSOM custom
+properties. Neither needs inline style markup. Browser tests fail on any CSP violation. The rest of the
+server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page.
 
 ## Signing in and the API
 
@@ -285,12 +286,12 @@ tokens:
 
 | Width | Layout |
 |---|---|
-| ≥ 1200 px | three panes: sidebar (`--desktop-sidebar`), list, detail (`--desktop-detail`) |
+| ≥ 1200 px | sidebar (`--desktop-sidebar`), list and a resizable docked detail pane (when a task is open) |
 | 760–1199 px | sidebar and list; detail opens as a modal pane with a scrim |
 | < 760 px | phone: app bar, room pills, 64 px rows, a bottom composer, a drawer for the sidebar, a full-screen detail |
 
-760 is about the sidebar plus the phone's inner-screen list (`--phone-inner-list`) plus padding; 1200 leaves
-the list at least 560 px next to both side panes (`--desktop-three-pane-min`, which the desktop app uses too). On a phone, dated and undated rows share the same due
+760 is about the sidebar plus the phone's inner-screen list (`--phone-inner-list`) plus padding; 1200 is
+the shared `--desktop-three-pane-min` breakpoint. On a phone, dated and undated rows share the same due
 slot if any displayed row uses it. On every viewport, agent and priority columns are reserved only when a
 visible row uses them. List chip labels and trailing tags ellipsise; steps and mail come before the tags.
 
@@ -379,6 +380,15 @@ cancels the original locally, because another tab may already be sending it. For
 the original and removes the next occurrence it created. A late undo result cannot replace a newer toast;
 refusals are also listed in Not synced, in plain language. Reduced motion turns movement into instant changes.
 
+On a wide viewport, drag the divider to give the docked detail more space, or Tab to it and use **Left**
+or **Right** (8 px, 32 px with Shift). **End** makes it as wide as possible, while **Home**, **Enter** or a
+double-click returns it to the default. **Esc** returns focus to the task list. The detail starts at 392 px,
+can shrink to 320 px, and can grow until the list reaches 400 px. As the list narrows below 556 px, its
+counts move below the room title and row metadata can sit under the trailing columns. The browser
+remembers the preferred width in `localStorage`. A smaller viewport clamps the visible width without
+replacing the preference, so the pane can recover its width later. The docked title, notes and steps
+stay left aligned at no more than the shared 72 ch reading measure.
+
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
 touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
@@ -458,9 +468,13 @@ The status bar shows shortcuts only when their actions are available.
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation. Task action tests cover context and detail menus, keyboard and filter
   navigation, focus after deletion and moves, reduced motion and Undo. Reminder tests cover keyboard
-  navigation and focus return, custom time validation, cancelling a draft, and Undo. Set `FIXTURE_PORT` to use a different port from the default 4173.
+  navigation and focus return, custom time validation, cancelling a draft, and Undo. The docked splitter
+  tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
+  and viewport changes, and wide-detail text and list layout. Set `FIXTURE_PORT` to change the port
+  from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, due-date editor, step controls and delete Undo, attachments (empty, uploading, failed, listed
+  the detail, wide and narrow docked widths (including 1920 × 1080) and the hovered splitter, due-date editor,
+  step controls and delete Undo, attachments (empty, uploading, failed, listed
   and removed with Undo), a collapsed collection, sidebar and room menus,
   rename and delete dialogs, a delete Undo toast, collection creation, the desktop and phone task move picker,
   list moves, list and collection swatches,

@@ -18,13 +18,13 @@ fn document() -> Option<web_sys::Document> {
 
 const FOLD_PREFIX: &str = "todo-folded-collection:";
 
-fn fold_storage() -> Option<web_sys::Storage> {
+fn local_storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok().flatten()
 }
 
 /// A browser may throw even when accessing localStorage. Folding still works in memory.
 pub fn load_folded() -> Option<BTreeSet<CollectionId>> {
-    let storage = fold_storage()?;
+    let storage = local_storage()?;
     let mut ids = BTreeSet::new();
     for index in 0..storage.length().ok()? {
         if let Some(key) = storage
@@ -42,7 +42,7 @@ pub fn load_folded() -> Option<BTreeSet<CollectionId>> {
 
 /// Each ID has its own key, so changing one collection cannot overwrite another tab's fold.
 pub fn save_folded(id: CollectionId, folded: bool) {
-    if let Some(storage) = fold_storage() {
+    if let Some(storage) = local_storage() {
         let key = format!("{FOLD_PREFIX}{id}");
         let _ = if folded {
             storage.set_item(&key, "1")
@@ -138,9 +138,38 @@ pub fn reduced_motion() -> bool {
     media("(prefers-reduced-motion: reduce)").is_some_and(|m| m.matches())
 }
 
-/// Whether the detail overlays the room (see `app.css`).
+/// The detail overlays the room below the shared docking breakpoint (see `app.css`).
+pub fn detail_overlay_query() -> String {
+    format!(
+        "(width < {}px)",
+        todo_design::layout::desktop::THREE_PANE_MIN
+    )
+}
+
 pub fn detail_overlays() -> bool {
-    media("(max-width: 1199px)").is_some_and(|m| m.matches())
+    media(&detail_overlay_query()).is_some_and(|m| m.matches())
+}
+
+pub fn viewport_width() -> i32 {
+    document()
+        .and_then(|doc| doc.document_element())
+        .map_or(0, |el| el.client_width())
+}
+
+const DETAIL_WIDTH_KEY: &str = "todo-detail-width";
+
+pub fn load_detail_width() -> Option<i32> {
+    local_storage()?
+        .get_item(DETAIL_WIDTH_KEY)
+        .ok()??
+        .parse()
+        .ok()
+}
+
+pub fn save_detail_width(width: i32) {
+    if let Some(storage) = local_storage() {
+        let _ = storage.set_item(DETAIL_WIDTH_KEY, &width.to_string());
+    }
 }
 
 /// Calls `f` whenever the media query changes. Lives as long as the page.

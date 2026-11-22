@@ -1,8 +1,9 @@
 //! The Leptos components. Layout and look are in `static/app.css`, which takes every value from
-//! `tokens.css`; this file only sets classes and `data-*` hue keys.
+//! `tokens.css`; the view supplies state, including the user's preferred docked detail width.
 
 mod activity;
 mod attachments;
+mod detail_splitter;
 mod links;
 mod pickers;
 mod reminder;
@@ -599,7 +600,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
 
     // Theme and room hue live on <html>, where tokens.css looks for them.
     platform::on_media_change("(prefers-color-scheme: dark)", move |dark| c.dark.set(dark));
-    platform::on_media_change("(max-width: 1199px)", move |n| c.narrow.set(n));
+    platform::on_media_change(&platform::detail_overlay_query(), move |n| c.narrow.set(n));
     platform::on_media_change("(max-width: 759px)", move |phone| {
         if !phone {
             c.drawer.set(false);
@@ -656,8 +657,28 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     }
 
     track_overlay_focus(c);
+    let detail_layout = detail_splitter::Layout::new();
+    let docked = Memo::new(move |_| !narrow.get() && detail.with(Option::is_some));
+    let app = NodeRef::<html::Div>::new();
+    Effect::new(move |_| {
+        let width = detail_layout.width.get();
+        let overridden = docked.get() && width != detail_splitter::DEFAULT;
+        if let Some(app) = app.get() {
+            let style = web_sys::HtmlElement::style(&app);
+            if overridden {
+                // Set one numeric CSSOM property, without inline style markup (the app's CSP).
+                let _ = style.set_property("--detail-pane-width", &format!("{width}px"));
+            } else {
+                let _ = style.remove_property("--detail-pane-width");
+                if style.length() == 0 {
+                    let _ = app.remove_attribute("style");
+                }
+            }
+        }
+    });
     view! {
-        <div class="app" class:has-detail=move || c.detail.with(Option::is_some)
+        <div class="app" node_ref=app class:has-detail=move || c.detail.with(Option::is_some)
+            class:compact-room=move || docked.get() && detail_layout.compact_room.get()
             class:detail-modal=move || c.detail_modal.get() class:drawer-open=move || c.drawer.get()>
             <SidebarPane/>
             <div class="scrim" aria-hidden="true" on:click=move |_| {
@@ -668,6 +689,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
                 <RoomPane/>
                 <ListFoot/>
             </main>
+            <detail_splitter::DetailSplitter layout=detail_layout docked=docked/>
             <DetailPane/>
             <StatusBar/>
         </div>
@@ -2244,7 +2266,7 @@ fn DetailBody(
             </div>
             {move || d.get().map(|d| view! { <p class="stamps">{d.stamps.clone()}</p> })}
 
-            <section class="d-section">
+            <section class="d-section steps-section">
                 <DetailSteps detail=d/>
                 <AddStep id=id/>
             </section>
@@ -2439,7 +2461,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             </button>
             <Show when=move || editing.get() fallback=move || view! {
                 <button type="button" class="step-title" id=format!("step-title-{id}") title="Rename step"
-                    disabled=move || c.read_only() on:click=move |_| editing.set(true)>{move || title.get()}</button>
+                    disabled=move || c.read_only() on:click=move |_| editing.set(true)><span>{move || title.get()}</span></button>
             }>
                 <input class="step-input" type="text" node_ref=input aria-label="Step title"
                     disabled=move || c.read_only() prop:value=move || draft.text.get()

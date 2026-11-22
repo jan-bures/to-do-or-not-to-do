@@ -195,17 +195,19 @@ of it (the shared `elevation::scrim`: room ink at 16% in light mode, black at 40
 Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
 move to a line of their own under it, so the title never gives way to them.
 
-**Desktop pane dividers.** Drag the sidebar’s right edge or the docked detail’s left edge. The 12 px hit strip
-(`desktop::PANE_HANDLE_HIT`) starts 1 px before the divider and extends into the pane on its right, leaving
-both the sidebar and list scrollbar tracks clear. Only the 1 px hairline is visible at rest. Hover shows a
+**Desktop and web pane dividers.** Drag the docked detail’s left edge, or the sidebar’s right edge on
+desktop. The 12 px hit strip (`desktop::PANE_HANDLE_HIT`) starts 1 px before the divider and extends into
+the pane on its right, leaving both the sidebar and list scrollbar tracks clear. Only the 1 px hairline
+is visible at rest. Hover shows a
 column-resize cursor and fades in a centred **3 px** bar (`desktop::PANE_HANDLE_HIGHLIGHT`) in the room’s
 `accent` over `HOVER` (`90 ms`, `STANDARD`, also in reduced motion). The bar stays visible while grabbed,
 even if the pointer leaves the strip. During a drag the divider follows the pointer without easing, in
 whole logical pixels; the bar fades out over the same duration when neither hovered nor grabbed.
 
-- **Widths (logical px):** sidebar **200–320**, default **248**; docked detail starts at **320**, defaults
-  to **392**, and can grow until the list reaches **400** (`desktop::LIST_MIN_BESIDE_DETAIL`, excluding
-  divider hairlines). Without docked detail the list keeps at least **556** (`desktop::LIST_MIN`). Below
+- **Widths (logical px):** sidebar **200–320** on desktop, default **248** (fixed on web); docked detail
+  starts at **320**, defaults to **392**, and can grow until the list reaches **400**
+  (`desktop::LIST_MIN_BESIDE_DETAIL`, excluding divider hairlines). Without docked detail the desktop
+  list keeps at least **556** (`desktop::LIST_MIN`). Below
   that room width, the header counts move below the title even in a wide window. The **1200** docking
   breakpoint is fixed: a narrow window never docks, and a wide window never switches to an overlay just
   because the chosen panes are wide. If both preferences won’t fit, the docked detail gives up width first
@@ -220,13 +222,14 @@ whole logical pixels; the bar fades out over the same duration when neither hove
   focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade. Esc returns
   focus to the list.
 - **Reset:** Double-click the divider or press Home or Enter while it has focus. The width settles to its
-  default (or as much as fits) in `OVERLAY_IN` (**150 ms**, `STANDARD`); reduced motion snaps. A new grab or
-  width change can interrupt the reset. Idle dividers request no frames.
-- **Remembered locally:** Save the two preferred widths with the desktop pairing’s UI preferences. Passive
-  window resizing never writes them. Save arrow-key changes when a key is released or the divider loses
-  focus, not on every repeat. On load, clamp the sidebar to its limits and the detail to at least its
-  minimum. The live window, not the saved detail preference, sets the maximum. Web and phone layouts
-  are unchanged.
+  default (or as much as fits). On desktop it settles in `OVERLAY_IN` (**150 ms**, `STANDARD`), and snaps
+  with reduced motion; a new grab or width change can interrupt it. On web it snaps, and End makes the
+  detail as wide as possible. Idle dividers request no frames.
+- **Remembered locally:** Save both preferred widths with the desktop pairing’s UI preferences, and the
+  docked detail preference in the browser on web. Passive window resizing never writes them. Save
+  arrow-key changes when a key is released or the divider loses focus, not on every repeat. On load,
+  clamp the sidebar to its limits and the detail to at least its minimum. The live window, not the saved
+  detail preference, sets the maximum. The medium and phone web overlays have no divider.
 
 **Sidebar order.** The desktop and web sidebars and the Android drawer list the rooms in one order, top to
 bottom:

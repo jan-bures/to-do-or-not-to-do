@@ -540,6 +540,39 @@ pub fn state() -> State {
     b.state
 }
 
+/// Crowded row metadata and the same long prose as the desktop wide-detail fixture.
+#[must_use]
+#[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
+pub fn wide_detail_state() -> State {
+    let mut b = Builder {
+        state: state(),
+        at: at("2026-11-21T09:00:00Z"),
+        owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
+    };
+    b.run(Command::UpdateList {
+        id: list(10),
+        name: Some("Planning the quarterly roadmap and every review meeting".into()),
+        color: None,
+    });
+    b.run(Command::UpdateTask {
+        id: task(1),
+        patch: TaskPatch {
+            title: Some("Prepare the quarterly roadmap review and share the proposed milestones with the teams responsible for delivering them".into()),
+            notes: Some("Keep the summary to one page so everyone can read it before the review. Compare the shipped work with the original goals and write down where the dates changed, why they changed, and what we learned. Leave room for questions that need a decision before the next planning round.".into()),
+            ..TaskPatch::default()
+        },
+    });
+    b.run(Command::UpdateStep {
+        id: step(3),
+        title: "Check the proposed milestones with each project lead and record the decisions we still need before the next planning round".into(),
+    });
+    b.run(Command::AddTag {
+        task: task(1),
+        tag: tag(3),
+    });
+    b.state
+}
+
 /// A quiet agent followed in ID order by five active agents, one more than the sidebar can show.
 #[must_use]
 #[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]

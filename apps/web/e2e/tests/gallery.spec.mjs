@@ -25,6 +25,39 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    for (const [fixture, viewport] of [
+      ["detail-wide", DESKTOP],
+      ["detail-wide-1920", { width: 1920, height: 1080 }],
+      ["detail-narrow", DESKTOP],
+      ["resize-handle-hover", DESKTOP],
+    ]) {
+      test(`${fixture} (${scheme})`, async ({ page }) => {
+        const w = watch(page);
+        const wide = fixture.startsWith("detail-wide");
+        await page.setViewportSize(viewport);
+        await open(page, wide ? "/app?fixture=detail-wide" : "/app");
+        const title = wide ? /^Prepare the quarterly roadmap review/ : "Prepare the November board update";
+        await page.getByRole("button", { name: title, exact: !wide }).click();
+        const handle = page.getByRole("separator", { name: "Task detail width" });
+        if (wide) {
+          await handle.press("End");
+          await expect(page.locator(".app")).toHaveClass(/\bcompact-room\b/);
+        } else if (fixture === "detail-narrow") {
+          for (let i = 0; i < 3; i++) await handle.press("Shift+ArrowRight");
+        }
+        if (fixture === "resize-handle-hover") {
+          await handle.hover();
+          await expect.poll(() => handle.evaluate((el) => getComputedStyle(el, "::after").opacity)).toBe("1");
+        } else {
+          // Capture the pane at rest, without keyboard focus or pointer hover.
+          await handle.evaluate((el) => el.blur());
+          await page.mouse.move(0, viewport.height - 1);
+        }
+        await shot(page, `${fixture}-${scheme}`);
+        await w.check();
+      });
+    }
+
     test(`narrow sidebar with four active agents (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize({ width: 240, height: 900 });
