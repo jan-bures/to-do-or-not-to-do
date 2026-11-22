@@ -171,7 +171,7 @@ fn question(s: &State, id: EntityId) -> Option<String> {
     }
 }
 impl TodoEngine {
-    fn track_change(
+    pub(super) fn track_change(
         &self,
         cmd: Option<Command>,
         what: &'static str,

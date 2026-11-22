@@ -14,6 +14,7 @@ import app.todoornot.core.EngineConfig
 import app.todoornot.core.FfiException
 import app.todoornot.core.NativeInit
 import app.todoornot.core.TodoEngine
+import app.todoornot.files.AttachmentFiles
 import app.todoornot.model.CorePairing
 import app.todoornot.model.Pace
 import app.todoornot.model.PairingModel
@@ -87,6 +88,8 @@ class AppGraph(private val app: Context) {
     val pairing = PairingModel(CorePairing(Cleartext.allowLoopbackHttp), scope, Dispatchers.IO, deviceName(), host::paired)
 
     init {
+        // Cached attachment URIs last for this process and pairing only.
+        AttachmentFiles.clear(app)
         NativeInit.ensure(app)
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
         scope.launch { host.state.collect(::follow) }
@@ -251,6 +254,7 @@ class AppGraph(private val app: Context) {
                 m?.notice(text)
             }
             Unpaired.Clean, Unpaired.DataLeft -> {
+                AttachmentFiles.clear(app)
                 reminderScope.launch { reminders.clear() }
                 _unpairProblem.value = null
                 pairing.cancel()

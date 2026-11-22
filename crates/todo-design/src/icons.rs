@@ -109,6 +109,8 @@ svg_set! {
         LogIn => "log-in",
         /// Sign out.
         LogOut => "log-out",
+        /// An image attachment.
+        Image => "image",
         /// From email.
         Mail => "mail",
         /// Menu (phone).

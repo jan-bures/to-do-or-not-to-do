@@ -652,6 +652,11 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| s.replica.received())
     }
 
+    /// The same paired transport for direct transfers that do not go into the outbox.
+    pub fn transport(&self) -> &T {
+        &self.inner.transport
+    }
+
     /// The current status.
     #[must_use]
     pub fn status(&self) -> Status {

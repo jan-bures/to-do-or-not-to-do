@@ -217,13 +217,13 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
 
 /** 48 dp touch target around an 18 dp icon. */
 @Composable
-fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, onClick: () -> Unit) {
+fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, enabled: Boolean = true, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     Box(
-        Modifier.size(P.TOUCH.dp).clip(CircleShape).clickable(onClick = onClick).semantics { contentDescription = label },
+        Modifier.size(P.TOUCH.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, tint ?: r.ink2)
+        Icon(icon, if (enabled) tint ?: r.ink2 else r.ink4)
     }
 }
 

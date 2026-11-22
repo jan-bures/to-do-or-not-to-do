@@ -11,6 +11,7 @@ sealed interface OrganizeEdit {
     data class RenameTag(val id: String, val name: String) : OrganizeEdit
     data class Color(val target: ColorTarget, val hue: String) : OrganizeEdit
     data class AddLink(val task: String, val address: String) : OrganizeEdit
+    data class RemoveAttachment(val id: String) : OrganizeEdit
     data class RemoveLink(val id: String) : OrganizeEdit
     data class NewCollection(val name: String) : OrganizeEdit
     data class MoveList(val id: String, val collection: String?) : OrganizeEdit

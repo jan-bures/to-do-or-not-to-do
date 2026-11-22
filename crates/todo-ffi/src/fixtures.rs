@@ -359,7 +359,7 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
             ..my(false)
         },
     );
-    b.task(
+    let appointment = b.task(
         health,
         "Call the dentist to reschedule",
         Spec { ..my(false) },
@@ -446,6 +446,22 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
             ..Spec::default()
         },
     );
+    for (name, media, bytes) in [
+        ("Appointment.pdf", "application/pdf", 32768),
+        ("Photo.jpg", "image/jpeg", 1459200),
+    ] {
+        let (at, seed) = b.seed("attachment");
+        b.insert(Entity::Attachment(todo_core::model::AttachmentRef {
+            id: todo_core::ids::AttachmentId::derive(at, &seed),
+            task: appointment,
+            file_name: name.into(),
+            media_type: media.into(),
+            size_bytes: bytes,
+            storage_key: format!("fixture/{name}"),
+            created: b.stamp(60, &b.owner),
+            deleted: None,
+        }));
+    }
     b.state
 }
 

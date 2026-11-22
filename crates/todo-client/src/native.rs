@@ -1,6 +1,8 @@
 //! Native platform implementations (feature `native`): a reqwest transport with rustls, a tokio clock
 //! and OS entropy. For the desktop app and tests.
 
+pub mod attachments;
+
 use crate::platform::{
     Clock, Entropy, EventStream, Method, Request, Response, SseFrame, StreamOpen, Transport,
     TransportError,
@@ -233,15 +235,24 @@ impl HttpTransport {
         Ok(url)
     }
 
-    fn builder(&self, request: &Request) -> Result<reqwest::RequestBuilder, TransportError> {
-        let url = self.url_for(&request.path)?;
-        let mut b = match request.method {
+    fn authenticated(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, TransportError> {
+        let url = self.url_for(path)?;
+        let mut b = match method {
             Method::Get => self.client.get(url),
             Method::Post => self.client.post(url),
         };
         if let Some(auth) = &self.auth {
             b = b.header(AUTHORIZATION, auth.clone());
         }
+        Ok(b)
+    }
+
+    fn builder(&self, request: &Request) -> Result<reqwest::RequestBuilder, TransportError> {
+        let mut b = self.authenticated(request.method, &request.path)?;
         if let Some(body) = &request.body {
             b = b
                 .header(CONTENT_TYPE, "application/json")

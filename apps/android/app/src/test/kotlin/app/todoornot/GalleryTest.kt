@@ -216,6 +216,19 @@ class GalleryTest {
     }
 
     @Test
+    fun attachments() {
+        val engine = fixtureEngine()
+        val room = RoomKey.Smart(SmartList.MY_DAY)
+        val id = engine.taskId(room, "Call the dentist to reschedule")
+        val empty = engine.taskId(room, "Review sync-engine pull request")
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            main("attachments_list_$theme", COVER, state(engine, room, select = id), dark)
+            main("attachments_empty_$theme", COVER, state(engine, room, select = empty), dark)
+        }
+    }
+
+    @Test
     fun cover_detail() {
         val e = fixtureEngine()
         val admin = e.list("Admin")

@@ -34,6 +34,7 @@ use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
 pub mod activity;
+pub mod attachments;
 pub mod organize;
 
 type Client = SyncClient<AppTransport, TokioClock>;

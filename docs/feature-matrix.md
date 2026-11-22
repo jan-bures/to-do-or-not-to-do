@@ -146,10 +146,10 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Breadcrumb (collection and list) | n/a | shown | shown | shown |
 | Links: open a web or email link | `Link` | wired, http(s) only (`D/ui/shell/detail.rs:600`) | wired `W/app/links.rs` | wired: `SourceCard` opens an HTTP(S) destination through `ACTION_VIEW`; otherwise text only (`A/ui/Detail.kt`, `F/view.rs`) |
 | Add or remove a link | `AddLink` `C/command.rs:316`; `Delete` | wired: the detail pane's link field (L) adds a web link, checked by the core's rules (a bare `example.com` gets `https://`); a link's remove button or the task's Links… page removes it; both with undo (`D/ui/shell/detail.rs:228`, `:625`, `D/model/menus.rs:1095`, `T/intent/organize.rs:148`) | wired: link field or L, shared URL validation, and removal with Undo (`W/app/links.rs`) | wired: Add link… and each source’s remove button, with tracked Undo |
-| Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired (`W/app/attachments.rs`, `W/platform.rs::download`) | missing (not in `TaskDetail`, `F/view.rs:402`) |
-| Attachments: open | same | wired: documents and images only (`D/ui/shell/detail.rs:656`) | n/a (the browser opens downloads) | missing |
-| Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs`), bearer or owner session with CSRF and matching origin | missing | wired: **Add file** or drop onto task detail (`W/app/attachments.rs`) | missing |
-| Attachments: remove | `Delete` | missing | wired: **Remove** with Undo (`W/app/attachments.rs`) | missing |
+| Attachments: download or save | `GET /attachments/{id}` `S/api/mod.rs:149` | wired: a save dialog (`D/ui/shell/detail.rs:664`, `D/session.rs:360`) | wired (`W/app/attachments.rs`, `W/platform.rs::download`) | wired: replica-backed file list; authenticated download to private cache and Save through the system picker (`A/ui/Attachments.kt`, `F/engine/attachments.rs`) |
+| Attachments: open | same | wired: documents and images only (`D/ui/shell/detail.rs:656`) | n/a (the browser opens downloads) | wired: documents and images only, through a read-only FileProvider grant |
+| Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs`), bearer or owner session with CSRF and matching origin | missing | wired: **Add file** or drop onto task detail (`W/app/attachments.rs`) | wired: **Add file** via system picker, size-limited direct upload |
+| Attachments: remove | `Delete` | missing | wired: **Remove** with Undo (`W/app/attachments.rs`) | wired: **Remove** with tracked Undo, including offline |
 | Created and edited stamps | stamps | shown `D/model/derive.rs:654` | shown `W/app.rs:1625` | shown `A/ui/Detail.kt:115` |
 | Per-task activity (who created, edited, completed it) | stamps | missing (the subtitle only) | shown `W/app.rs:1863` (from stamps, not the event log) | missing (the subtitle only) |
 | Merge two tasks | `MergeTasks` `C/command.rs:248` | missing | missing | missing |
@@ -247,7 +247,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 |---|---|---|
 | 4.1 | **Done.** Editable notes, including **Add notes** when empty. | S |
 | 4.2 | **Done.** Open HTTP(S) sources; other sources have no arrow. | S |
-| 4.3 | Attachments: list, download, open (`TaskDetail` has none). | M |
+| 4.3 | **Done.** Attachments: offline metadata, download, open or save, picker upload, remove with Undo. | M |
 | 4.4 | **Done.** Exact completion undo through `undo_tracked`, including recurring tasks. | M |
 | 4.5 | **Done.** Due date (a date picker), priority (four levels). | M |
 | 4.6 | **Done.** Steps: rename, reorder, delete. | S–M |

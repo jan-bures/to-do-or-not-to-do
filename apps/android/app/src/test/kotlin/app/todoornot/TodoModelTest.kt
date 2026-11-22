@@ -548,6 +548,48 @@ class TodoModelTest {
     }
 
     @Test
+    fun remove_attachment_and_undo_restore_its_exact_reference_offline() {
+        val e = fixtureEngine()
+        val s = Stepped(e) { time }
+        val id = e.taskId(RoomKey.Smart(SmartList.MY_DAY), "Call the dentist to reschedule")
+        s.model.select(id)
+        s.drain()
+        val before = s.model.ui.value.detail!!.attachments
+        val target = before.first { it.name == "Appointment.pdf" }
+        s.model.organize(app.todoornot.model.OrganizeEdit.RemoveAttachment(target.id))
+        s.drain()
+        assertEquals(before - target, s.model.ui.value.detail!!.attachments)
+        val toast = s.model.ui.value.toast!!
+        assertEquals("Removed attachment “Appointment.pdf”", toast.text)
+        s.model.undo(toast)
+        s.drain()
+        assertEquals(before, s.model.ui.value.detail!!.attachments)
+        s.scope.cancel()
+    }
+
+    @Test
+    fun offline_transfers_do_not_enqueue_commands_or_change_attachment_metadata() {
+        val e = fixtureEngine()
+        val s = Stepped(e) { time }
+        val id = e.taskId(RoomKey.Smart(SmartList.MY_DAY), "Call the dentist to reschedule")
+        s.model.select(id)
+        s.drain()
+        val before = s.model.ui.value.detail!!.attachments
+        val tmp = java.io.File.createTempFile("attachment", null)
+        try {
+            val errors = mutableListOf<String>()
+            s.scope.launch {
+                try { s.model.downloadAttachment(before.first().id, tmp) } catch (e: app.todoornot.core.FfiException.Invalid) { errors += e.detail }
+                try { s.model.uploadAttachment(id, "sample.txt", "text/plain", tmp) } catch (e: app.todoornot.core.FfiException.Invalid) { errors += e.detail }
+            }
+            s.drain()
+            assertEquals(listOf("Attachments download when connected to a server.", "Attachments upload when connected to a server."), errors)
+            assertEquals(0u, e.status().pending)
+            assertEquals(before, e.task(id, FIXTURE_NOW)!!.attachments)
+        } finally { tmp.delete(); s.scope.cancel() }
+    }
+
+    @Test
     fun activity_is_a_room_not_the_agent_activity_task_list() {
         val e = fixtureEngine()
         val s = Stepped(e) { time }

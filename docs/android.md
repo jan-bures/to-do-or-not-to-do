@@ -69,6 +69,14 @@ What the first version does:
 - **Tags and links.** Tags is always present. Pick a tag to add or remove it, or type a name to create
   and apply it. The chevron beside a tag offers Rename, Colour… and Delete tag…. Add link… accepts a web
   address through `intent::add_link`; a source opens in the browser, and its remove button offers Undo.
+- **Attachments.** Task detail lists file names, type icons and sizes from the replica, even offline.
+  **Add file** opens the system document picker. An upload goes directly to the paired server, not into
+  the outbox. The app checks the 25 MiB ceiling while reading, even if the picker reports no size;
+  a server with a smaller limit reports its own limit. **Save** downloads the complete file to private
+  cache before copying to a destination you choose in the system file picker. Documents and images also
+  have **Open**, which grants the viewer read-only access to that file through a `FileProvider`. Other
+  extensions are save-only. Neither action requires a storage permission. Cached copies are cleared
+  on unpair and at process startup. **Remove** works offline and offers **Undo**.
 - **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
   behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.

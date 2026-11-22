@@ -103,7 +103,7 @@ use todo_core::{Actor, State};
 use tokio::sync::{Semaphore, watch};
 
 /// The hard ceiling for one file: 25 MiB. `max_upload_bytes` may be lower, never higher.
-pub const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+pub use todo_core::MAX_ATTACHMENT_BYTES as MAX_UPLOAD_BYTES;
 /// Uploads that never completed (a crash between reserving and storing) are cleaned up after this.
 const ABANDONED_AFTER_MS: i64 = 24 * 3600 * 1000;
 const LAST_GC: &str = "last_gc_ms";

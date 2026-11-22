@@ -2,7 +2,7 @@
 
 ## `lucide/`: interface icons
 
-These are 55 icons from [Lucide](https://lucide.dev) **v1.66.0** (npm package `lucide-static@1.66.0`), under the
+These are 56 icons from [Lucide](https://lucide.dev) **v1.66.0** (npm package `lucide-static@1.66.0`), under the
 ISC license. Some icons derive from Feather and are under the MIT license. Both licenses are in
 [`lucide/LICENSE`](lucide/LICENSE).
 

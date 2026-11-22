@@ -186,6 +186,7 @@ fun DetailPane(
                     }, overlay::close, webAddress = true)
                 }
             }
+            key(detail.id) { Attachments(detail, state.status.state, actions) }
             // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
             Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
         }
@@ -391,7 +392,7 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
 }
 
 @Composable
-private fun Caps(text: String) {
+internal fun Caps(text: String) {
     val r = LocalDesign.current.room
     Label(text, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(top = S.S4.dp, bottom = S.S2.dp))
 }

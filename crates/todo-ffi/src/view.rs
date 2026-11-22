@@ -481,6 +481,8 @@ pub struct TaskDetail {
     pub fields: Vec<DetailField>,
     /// Sources.
     pub sources: Vec<SourceLink>,
+    /// Live file references, available even without a connection.
+    pub attachments: Vec<crate::engine::attachments::AttachmentRow>,
 }
 
 pub(crate) fn list_live(state: &State, id: ListId) -> bool {
@@ -1200,6 +1202,14 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         })
         .collect();
 
+    let mut files: Vec<_> = state
+        .attachments
+        .values()
+        .filter(|a| a.task == id && a.deleted.is_none())
+        .collect();
+    files.sort_by_key(|a| (a.created.at, a.id));
+    let attachments = files.into_iter().map(Into::into).collect();
+
     let list = state.lists.get(&task.list);
     let mut breadcrumb = Vec::new();
     if let Some(c) = list
@@ -1248,5 +1258,6 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             .collect(),
         fields,
         sources,
+        attachments,
     })
 }

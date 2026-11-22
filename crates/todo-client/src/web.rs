@@ -152,9 +152,7 @@ impl FetchTransport {
         attachment: AttachmentId,
         file: &web_sys::File,
     ) -> Result<Response, TransportError> {
-        let name = js_sys::encode_uri_component(&file.name());
-        let path =
-            format!("/api/v1/tasks/{task}/attachments?file_name={name}&attachment_id={attachment}");
+        let path = crate::platform::attachment_upload_path(task, attachment, &file.name());
         let media = file.type_();
         let media = if media.is_empty() {
             "application/octet-stream"

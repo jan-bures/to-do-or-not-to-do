@@ -63,6 +63,9 @@ pub use event::Event;
 pub use state::State;
 pub use undo::{UndoOptions, undo, undo_with};
 
+/// Hard upload ceiling on the wire. Deployments may configure a smaller limit.
+pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
 /// Version of the wire format for commands and events. Bump on breaking changes.
 pub const PROTOCOL_VERSION: u32 = 1;
 

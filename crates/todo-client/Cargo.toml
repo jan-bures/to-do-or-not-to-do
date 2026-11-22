@@ -31,7 +31,7 @@ futures-util.workspace = true
 # Parses typed links (`intent::web_address`); pure Rust, builds for wasm32 and Android.
 url.workspace = true
 # `native`
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 rustls = { workspace = true, optional = true }
 # `sqlite`

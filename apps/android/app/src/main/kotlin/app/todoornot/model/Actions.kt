@@ -54,6 +54,9 @@ interface Actions {
     /** Deletes a step; the toast offers Undo. */
     fun deleteStep(id: String)
     fun createList(name: String)
+    /** Direct transfers use private staging files, never the command queue. */
+    suspend fun downloadAttachment(id: String, file: java.io.File)
+    suspend fun uploadAttachment(task: String, name: String, media: String, file: java.io.File)
     fun organize(edit: OrganizeEdit) = Unit
     fun organizeQuestion(target: app.todoornot.core.ColorTarget): String? = null
     fun confirmDelete(target: app.todoornot.core.ColorTarget, asked: String, result: (String?) -> Unit) = Unit
@@ -129,6 +132,8 @@ interface Actions {
         override fun renameStep(id: String, title: String) = Unit
         override fun moveStep(id: String, by: Int) = Unit
         override fun deleteStep(id: String) = Unit
+        override suspend fun downloadAttachment(id: String, file: java.io.File) = Unit
+        override suspend fun uploadAttachment(task: String, name: String, media: String, file: java.io.File) = Unit
         override fun createList(name: String) = Unit
         override fun renameRoom(room: RoomKey, name: String) = Unit
         override fun moveRoom(room: RoomKey, by: Int) = Unit

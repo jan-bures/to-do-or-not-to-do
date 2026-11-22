@@ -33,6 +33,21 @@ mod bounds {
 
 pub use bounds::{MaybeSend, MaybeSync};
 
+/// One upload route for browser files and native streams. Encode the name as a query value,
+/// never as part of the path. A retry with the same attachment ID is idempotent.
+#[must_use]
+pub fn attachment_upload_path(
+    task: todo_core::ids::TaskId,
+    attachment: todo_core::ids::AttachmentId,
+    name: &str,
+) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("file_name", name)
+        .append_pair("attachment_id", &attachment.to_string())
+        .finish();
+    format!("/api/v1/tasks/{task}/attachments?{query}")
+}
+
 /// HTTP method of a [`Request`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {

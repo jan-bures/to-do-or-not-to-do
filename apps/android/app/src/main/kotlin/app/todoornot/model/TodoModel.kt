@@ -1012,6 +1012,15 @@ class TodoModel(
         }
     }
 
+    override suspend fun downloadAttachment(id: String, file: java.io.File) = withContext(io) {
+        engine.downloadAttachment(id, file.absolutePath)
+    }
+
+    override suspend fun uploadAttachment(task: String, name: String, media: String, file: java.io.File) = withContext(io) {
+        engine.uploadAttachment(task, name, media, file.absolutePath)
+        engine.nudge()
+    }
+
     override fun organize(edit: OrganizeEdit) = act {
         fun tracked(change: OrganizeChange?) {
             if (change != null) show(Toast(++serial, change.toastText(), organize = change))
@@ -1023,6 +1032,7 @@ class TodoModel(
             is OrganizeEdit.RenameTag -> engine.renameTag(edit.id, edit.name)
             is OrganizeEdit.Color -> engine.setSwatch(edit.target, edit.hue)
             is OrganizeEdit.AddLink -> tracked(engine.addWebLink(edit.task, edit.address))
+            is OrganizeEdit.RemoveAttachment -> tracked(engine.removeAttachment(edit.id))
             is OrganizeEdit.RemoveLink -> tracked(engine.removeLink(edit.id))
             is OrganizeEdit.NewCollection -> enter(engine.createCollection(edit.name))
             is OrganizeEdit.MoveList -> tracked(engine.moveList(edit.id, edit.collection))
