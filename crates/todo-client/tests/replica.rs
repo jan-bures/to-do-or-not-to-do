@@ -846,6 +846,32 @@ fn a_rejected_command_moves_to_couldnt_sync_until_dismissed() {
 }
 
 #[test]
+fn dismissing_all_empties_couldnt_sync_in_one_write_or_not_at_all() {
+    let (mut r, _server, storage) = seeded();
+    let rejection = Rejection {
+        status: 409,
+        code: "deleted".into(),
+        message: "task is deleted".into(),
+    };
+    for n in 1..=3 {
+        let e = entry(n, add_note(task_id(1), "x"), 1);
+        r.submit(e.clone()).unwrap();
+        r.reject(e.command_id, rejection.clone(), ts(2)).unwrap();
+    }
+    assert_eq!(r.failed().len(), 3);
+    // A write that fails leaves every entry, in memory and on disk.
+    storage.set_fail_writes(true);
+    assert!(r.dismiss_all().is_err());
+    storage.set_fail_writes(false);
+    assert_eq!(r.failed().len(), 3);
+    assert_eq!(open(&storage).failed().len(), 3);
+    assert_eq!(r.dismiss_all().unwrap(), 3);
+    assert!(r.failed().is_empty());
+    assert!(open(&storage).failed().is_empty(), "and it lasts");
+    assert_eq!(r.dismiss_all().unwrap(), 0);
+}
+
+#[test]
 fn a_restart_resumes_from_the_cursor_and_keeps_the_outbox() {
     for snapshot_every in [1, 2, 1000] {
         let storage = MemoryStorage::new();

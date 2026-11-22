@@ -535,6 +535,15 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         Ok(removed)
     }
 
+    /// Empties the "couldn't sync" list. Returns how many entries were removed.
+    pub fn dismiss_all(&self) -> Result<usize, StorageError> {
+        let removed = self.with(|s| s.replica.dismiss_all())?;
+        if removed > 0 {
+            self.changed();
+        }
+        Ok(removed)
+    }
+
     /// A handle that waits for changes of the view or the status.
     #[must_use]
     pub fn changes(&self) -> Changes {

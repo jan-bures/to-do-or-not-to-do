@@ -16,6 +16,7 @@
 //! | [`client`] | [`SyncClient`]: submit, undo, view, status; the send and event loops |
 //! | [`replica`] | [`Replica`]: confirmed state, cursor, log epoch, outbox and the optimistic view (no I/O) |
 //! | [`outbox`] | outbox and "couldn't sync" entries |
+//! | [`failure`] | plain words for a "couldn't sync" entry: what it was, its name, why it was refused |
 //! | [`pairing`] | device pairing: start, poll |
 //! | [`protocol`] | the server API: paths, bodies, response classification |
 //! | [`storage`] | the [`Storage`] trait and [`MemoryStorage`] |
@@ -36,6 +37,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod client;
+pub mod failure;
 pub mod intent;
 pub mod mirror;
 pub mod notify;

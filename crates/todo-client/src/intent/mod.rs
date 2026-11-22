@@ -327,6 +327,51 @@ pub fn restore_step(id: StepId) -> Command {
     Command::Restore { id: id.into() }
 }
 
+/// Deletes a live task (Undo brings it back); `None` when it is already gone.
+pub fn delete_task(state: &State, id: TaskId) -> Option<Command> {
+    state.is_live(id.into()).then(|| delete(id))
+}
+
+/// Moves a live task to another live list, first in that list's manual order, as a new task would be;
+/// `None` when it is already there or either is gone.
+pub fn move_to_list(state: &State, id: TaskId, list: ListId) -> Option<Command> {
+    let task = state.tasks.get(&id)?;
+    (task.list != list && state.is_live(id.into()) && state.is_live(list.into())).then_some(
+        Command::MoveTask {
+            id,
+            list,
+            placement: Placement::First,
+        },
+    )
+}
+
+/// Where a task can be moved, grouped as the sidebar shows them: each live collection in order with
+/// its live lists (empty ones left out), then the lists outside any collection.
+pub fn list_groups(state: &State) -> Vec<(Option<CollectionId>, Vec<ListId>)> {
+    let mut collections: Vec<_> = state
+        .collections
+        .values()
+        .filter(|c| state.is_live(c.id.into()))
+        .collect();
+    collections.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
+    let lists_in = |c: Option<CollectionId>| -> Vec<ListId> {
+        let mut lists: Vec<&List> = state
+            .lists
+            .values()
+            .filter(|l| l.collection == c && state.is_live(l.id.into()))
+            .collect();
+        lists.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
+        lists.iter().map(|l| l.id).collect()
+    };
+    collections
+        .iter()
+        .map(|c| Some(c.id))
+        .chain([None])
+        .map(|c| (c, lists_in(c)))
+        .filter(|(_, lists)| !lists.is_empty())
+        .collect()
+}
+
 /// Moves an item one place up (`-1`) or down (`1`) among its live siblings; `None` at either end.
 pub fn nudge(state: &State, id: EntityId, by: i32) -> Option<Command> {
     let scope = state.scope_of(id)?;
@@ -655,5 +700,90 @@ mod tests {
         assert!(rename_collection(&w.state, work, " Work ").is_none());
         w.run(rename_collection(&w.state, work, "Day job").expect("cmd"));
         assert_eq!(w.state.collections[&work].name, "Day job");
+    }
+
+    #[test]
+    fn a_task_moves_first_into_another_live_list_and_is_deleted_once() {
+        let mut w = World::new();
+        let errands = w.list("Errands");
+        let home = w.list("Home");
+        let add = |w: &mut World, title: &str, list| {
+            let state = w.state.clone();
+            let (id, cmds) = add_task(
+                &state,
+                TaskRoom::List(list),
+                &parsed(title),
+                today(),
+                || w.id(),
+            );
+            for c in cmds {
+                w.run(c);
+            }
+            id.expect("task")
+        };
+        let fix = add(&mut w, "Fix the gate", home);
+        let stamps = add(&mut w, "Stamps", errands);
+        // Already there: nothing to do.
+        assert!(move_to_list(&w.state, stamps, errands).is_none());
+        w.run(move_to_list(&w.state, stamps, home).expect("move"));
+        assert_eq!(w.state.tasks[&stamps].list, home);
+        let mut order: Vec<_> = w.state.tasks.values().filter(|t| t.list == home).collect();
+        order.sort_by(|a, b| a.position.cmp(&b.position));
+        assert_eq!(
+            order.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [stamps, fix],
+            "first, as a new task"
+        );
+        // Never into a deleted list, and a deleted task is neither moved nor deleted again.
+        w.run(delete(errands));
+        assert!(move_to_list(&w.state, stamps, errands).is_none());
+        w.run(delete_task(&w.state, stamps).expect("delete"));
+        assert!(w.state.tasks[&stamps].deleted.is_some());
+        assert!(delete_task(&w.state, stamps).is_none());
+        assert!(move_to_list(&w.state, stamps, home).is_none());
+        assert!(delete_task(&w.state, TaskId::from_uuid(Uuid::nil())).is_none());
+    }
+
+    #[test]
+    fn lists_are_grouped_as_the_sidebar_shows_them() {
+        let mut w = World::new();
+        let loose = w.list("Loose");
+        let collection = |w: &mut World, name: &str| {
+            let id = CollectionId::from_uuid(w.id());
+            w.run(Command::CreateCollection {
+                id,
+                name: name.into(),
+                color: None,
+                placement: Placement::Last,
+            });
+            id
+        };
+        let work = collection(&mut w, "Work");
+        // A collection without lists isn't offered.
+        let _empty = collection(&mut w, "Empty");
+        let home = collection(&mut w, "Home");
+        let in_list = |w: &mut World, c, name: &str| {
+            let id = ListId::from_uuid(w.id());
+            w.run(create_list(id, Some(c), name));
+            id
+        };
+        let office = in_list(&mut w, work, "Office");
+        let travel = in_list(&mut w, work, "Travel");
+        let garden = in_list(&mut w, home, "Garden");
+        assert_eq!(
+            list_groups(&w.state),
+            [
+                (Some(work), vec![office, travel]),
+                (Some(home), vec![garden]),
+                (None, vec![loose]),
+            ]
+        );
+        // Deleted lists and the lists of a deleted collection are not offered.
+        w.run(delete(travel));
+        w.run(delete(home));
+        assert_eq!(
+            list_groups(&w.state),
+            [(Some(work), vec![office]), (None, vec![loose])]
+        );
     }
 }
