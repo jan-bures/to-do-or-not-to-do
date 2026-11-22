@@ -335,6 +335,8 @@ impl RootView {
         let store = Rc::new(Store::Live(LiveStore::new(session)));
         let theme = self.theme;
         let view = cx.new(|cx| ShellView::new(store, ui, theme, None, window, cx));
+        // Reminder toasts, also while the window is hidden in the tray.
+        view.update(cx, |s, cx| s.start_reminders(window, cx));
         let events =
             cx.subscribe_in(
                 &view,
@@ -367,6 +369,8 @@ impl RootView {
             self.signing_out = false;
             return;
         };
+        // The pairing's reminder toasts go with it.
+        shell.update(cx, |s, _| s.stop_reminders());
         let stopped = session.shutdown();
         let server = session.server().to_string();
         let data = session.data().clone();
@@ -427,6 +431,13 @@ impl RootView {
                 }
             }
             Err(e) => self.show_failed(format!("{text} ({e})").into(), None, window, cx),
+        }
+    }
+
+    /// The app is quitting: its reminder toasts go, as nothing would answer their buttons.
+    pub fn before_quit(&mut self, cx: &mut Context<Self>) {
+        if let Screen::Shell(shell) = &self.screen {
+            shell.update(cx, |s, _| s.stop_reminders());
         }
     }
 

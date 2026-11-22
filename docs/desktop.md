@@ -210,6 +210,7 @@ into the app**: it is learnt here and saved in the user's config.
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 | `pairings\<pairing ID>\ui.json` | same | collapsed collections and preferred pane widths (never synced) |
+| `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
 | `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
 | `pairings\<pairing ID>.signed-out` | same | the record that the pairing beside it was signed out and its data is to be removed |
@@ -289,10 +290,10 @@ another tag has, in any case, or one longer than the domain's 200 characters, is
 (`example.com/page`, while `example.com/?next=https://…` stays as typed after it), and the result must
 parse as an `http` or `https` URL with a host (`url`), then pass the core's own check; anything else
 (`javascript:`, `mailto:`, a bare `https://`, spaces) says why in the status bar and stays to be
-corrected. Adding a link can be undone like removing one. A link's remove button shows on hover; the task's menu has **Links…** too (Add a link…, then each link to remove), so the keyboard reaches both. Undo brings a removed link back. Reminders are read-only. The **Repeat** row is always editable (click, Tab then Enter, or **R** from the list). Pick Daily, Weekdays, Weekly on the due weekday, Monthly on the due day, Yearly, or **Don’t repeat**. **Custom…** lets you type an interval from 1 to 999 or use −/+, choose a unit, and toggle weekdays for weeks. The preview describes the schedule before **Apply repeat**. Escape discards the draft. An undated task starts today if the rule includes today, otherwise on the next matching day (for example Monday for Weekdays chosen on Saturday). Custom shows the first due date before Apply. Monthly keeps a rule’s original day even when a shorter month clamped Due to its last day. Edits preserve an existing end date. Clearing Due on a repeating task says **Cleared due date for …**; Undo restores both Due and Repeat. Stopping a repeat keeps Due; Undo reverses the entire schedule change, including a due date it added. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
+corrected. Adding a link can be undone like removing one. A link's remove button shows on hover; the task's menu has **Links…** too (Add a link…, then each link to remove), so the keyboard reaches both. Undo brings a removed link back. The **Reminder** row is always there and editable (click, Tab then Enter, or **Shift+R** from the list); it shows the reminder the shared `intent::reminder::shown` picks (the first from today, else the latest) or *No reminder*. Its picker offers **Later today** (two hours on, rounded up to the hour, while that is still today), **Tomorrow morning** (09:00) and **Next week** (Monday 09:00), each with its time beside it, then **Pick a day and time…** and, when there is one, **Remove reminder**. The current choice is ticked and the keyboard starts on it. The custom page steps the day (−7, −1, +1, +7, never before today) and the time (−1h, −15, +15, +1h); typing digits sets the time (`9` is 09:00, `930` 09:30, `1430` 14:30, Backspace takes one back). It says when it will remind before **Set reminder**: a time that has passed, or typed digits that aren't a time, can't be set; a time the clocks skip saves the one the gap moves it to, and one that happens twice saves the first, and the page says so. Escape discards the draft. An edit is made on the reminder the row showed when the picker opened (`intent::reminder::Seen`): if it changed meanwhile (another device, an agent), nothing is written, the status bar says so and the picker shows it as it is now. Setting, moving and removing a reminder show the undo toast (**Set reminder for …**, **Removed reminder for …**), and Undo is the exact inverse through the same tracked compensation as every other change. The **Repeat** row is always editable (click, Tab then Enter, or **R** from the list). Pick Daily, Weekdays, Weekly on the due weekday, Monthly on the due day, Yearly, or **Don’t repeat**. **Custom…** lets you type an interval from 1 to 999 or use −/+, choose a unit, and toggle weekdays for weeks. The preview describes the schedule before **Apply repeat**. Escape discards the draft. An undated task starts today if the rule includes today, otherwise on the next matching day (for example Monday for Weekdays chosen on Saturday). Custom shows the first due date before Apply. Monthly keeps a rule’s original day even when a shorter month clamped Due to its last day. Edits preserve an existing end date. Clearing Due on a repeating task says **Cleared due date for …**; Undo restores both Due and Repeat. Stopping a repeat keeps Due; Undo reverses the entire schedule change, including a due date it added. A title or notes save that fails keeps the text in the editor, and the task stays selected until it saves. Only `http` and `https` links open, in the browser; anything else (`file:`, UNC paths, other protocols) is shown as text. An attachment is saved where the owner chooses (a save dialog in Downloads): it is written to a temporary file beside the destination, marked, and then moved over it, so a failed save leaves an existing file as it was. Only documents and images (pdf, png, jpg, jpeg, gif, webp, txt, md, csv, docx, xlsx, pptx, eml, msg, decided on the cleaned file name) also offer **Open**, from a new owner-only directory for each open. Every downloaded file gets the Mark of the Web (`Zone.Identifier`, zone 3), so Office uses Protected View and SmartScreen checks it. A drive that can't hold it (FAT, exFAT) still gets a saved file, with a warning that Windows won't warn when it's opened; a file to open is refused without it. |
 | Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). The "more" button opens the room's menu with only what applies there (`model::menus`): in a list, Rename list (in place in the sidebar), Colour…, Move to… (where there is somewhere to go), Show or Hide completed and Delete list (after asking, with Undo); in a collection, Rename collection, Colour…, the Completed toggle and Delete collection (after asking, with Undo); in My Day, Important, Planned and All, the Completed toggle. Completed and Agent activity have no menu, so no button. There is no view options button until there are sort or view options. In a narrow window the counts go on a line of their own under the title, which keeps its full size. My Day all done turns the sky to dusk (once the last row has left) and hands over to tomorrow. Its tasks open in the detail pane, by click or with **J/K**, and their boxes (or Space) complete them with the row's choreography, in place (the first one's card too: it dims, is struck through, fades and closes), and the hand-over scrolls when it's taller than the pane; with none selected, the pane is left out rather than shown empty. With nothing due tomorrow there is no hand-over, but planning is still offered: "Nothing is due on Sunday yet." and **Plan Sunday**, which opens Planned (as on Android). While a filter narrows the finished day, neither shows, and the room says nothing matches. |
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
-| Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
+| Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
 
 ## Quick-add syntax
 
@@ -332,9 +333,49 @@ and unprefixed weekday abbreviations because the field is explicitly for dates.
 | Close hides to tray | `src/app.rs` | Closing the main window hides it. Only "Quit" ends the app. If the tray icon can't be created, the window is shown even with `--background`, and closing it quits, so the process is never left running invisibly. |
 | Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. If the check can't be set up (an elevated copy created the objects, say), the app logs it and runs standalone: visible, and not listening for second launches. |
 | Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to My Day (before pairing, it shows the pairing window instead). Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
+| Reminder toasts | `src/model/reminders.rs`, `src/ui/shell/reminders.rs`, `src/platform/toast.rs` | See [Reminder toasts](#reminder-toasts). |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
 | Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. The panes show quiet scrollbars when they overflow. Drag the sidebar or docked detail divider to resize it, or Tab to a divider and use the arrows. Double-click, Home or Enter resets the divider. The caption buttons keep Windows' native hit testing for Snap Layouts. |
 | Header landscape | `src/ui/landscape.rs` | The sky with two flat hills and the sun on its arc at *done / total*, or the tall dusk scene once My Day is done. The geometry is `todo_design::landscape`; the paths are built once per size and progress, and are cached. |
+
+### Reminder toasts
+
+While the app runs, in the window or hidden in the tray, a reminder shows as a Windows toast (WinRT
+`ToastNotification`, the *reminder* scenario, so it stays up until acted on): the task's title, when and
+its list, with **Open** (shows the window with the task open, in the room the window shows if it's
+there, else in its list), **Snooze 10 min** and **Complete**. Snooze is this computer's own, as on
+Android: nothing is synced. Complete is an ordinary completion (Undo and Ctrl+Z work).
+
+- **What decides.** `model::reminders` is pure and unit-tested, with the toasts behind a `ToastSink`
+  trait (the tests use a fake; nothing in the tests shows a real toast). It plans from
+  `intent::reminder::alarms` (live reminders of open tasks) and what was shown before.
+- **When.** The shell plans again after every change to the data (a sync, an edit, an agent's change,
+  the half-minute tick) and sets a one-shot timer for the next reminder. A reminder removed, moved or
+  whose task was completed or deleted loses its toast.
+- **Missed.** A reminder found due at most five minutes late (`GRACE_MS`) shows as itself. Staler ones
+  (the app was closed, the computer asleep, a reminder synced in late) never fire one by one: they
+  collapse into one summary toast ("3 missed reminders", with the first titles; a single one opens its
+  task). Older than a day, they're not mentioned. Right after starting, a reminder that is due waits up
+  to a minute for the first catch-up, so a task completed elsewhere meanwhile doesn't ring.
+- **Once.** Each occurrence (a reminder at its time, or at its snooze) shows once, also across restarts:
+  `reminders.json` keeps the reminder and task IDs and times only.
+- **Quitting and signing out** take the reminder toasts away (no one would answer their buttons; a toast
+  clicked after the app has quit does nothing). The app only logs counts, at debug level, never a title.
+
+**The app's identity (AUMID).** Windows only shows toasts for an unpackaged app that has an
+AppUserModelID it can name. What we found: `VelopackApp::run` already sets the process's AUMID on an
+installed copy, to `velopack.<packId>` (`velopack.todo-desktop`), but Velopack's Setup writes that AUMID
+onto its Start menu and desktop shortcuts only when the package names one (`vpk pack --aumid`);
+without it the shortcuts carry none. So `scripts/package.ps1` passes `--aumid velopack.todo-desktop`:
+the shortcuts, the installed process and the toasts all agree, and Velopack updates existing shortcuts
+to it on the next update. The app also sets the same AUMID itself at startup
+(`SetCurrentProcessExplicitAppUserModelID`, `platform::toast::set_identity`), for a copy run from the
+repo with no shortcut, and registers it per user under `HKCU\Software\Classes\AppUserModelId\velopack.todo-desktop`
+(`DisplayName` and an `IconUri` written to `%LOCALAPPDATA%\to-do-or-not-to-do\toast-icon.png`), which is
+what Windows shows on a toast when no shortcut names the app. Nothing needs admin rights; uninstalling
+removes the registry key. GPUI has system notifications of its own at our pin, but they are silent, have
+no reminder scenario and can't be taken away by tag across runs, so the app uses WinRT directly through
+the same `windows` crate release as the vendored `gpui_windows`.
 
 ### Motion
 
@@ -386,11 +427,11 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   reveal the thumb. Windows’ *Always show scrollbars* keeps
   overflowing thumbs visible. At rest, gallery fixtures show them regardless of OS preference.
 - **Menus.** The context menus (a list's, a collection's, a task's), the room's menu, the account menu,
-  the priority and repeat pickers, the list picker, the collection picker, the colour swatches, the tag picker and
+  the priority, reminder and repeat pickers, the list picker, the collection picker, the colour swatches, the tag picker and
   the "couldn't sync" list are data (`model::menus`), drawn by `ui/shell/menu.rs`. A menu turns into
   its next page in place (`menus::Page`, `TaskPage`, `TagPage`): a task's into the priority picker, the
   list picker or its links; a list's, a collection's or the room's into the delete confirmation, the
-  collection picker or the colour swatches; the tag picker into a tag's own page, its swatches or its delete confirmation; the repeat picker into the custom editor. The
+  collection picker or the colour swatches; the tag picker into a tag's own page, its swatches or its delete confirmation; the repeat picker into the custom editor; the reminder picker into its custom day and time. The
   menu stays where it is and the new page fades in over `CONTENT_SWAP` (`ENTER`; `REDUCED_FADE` with
   reduced motion, `motion::Overlay::swap_content`). A picker starts with the keyboard on the current
   choice. The swatches sit in rows of six
@@ -423,9 +464,10 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   the stops in `hints::TAB_ORDER` that are there, from one shell-level handler: the sidebar divider, the
   list, Undo (while the toast is up), the room's "more" button, in Activity its Clear filter (while
   filtered), Refresh activity and the button at the end of the feed (while there is one), the detail
-  divider (while the docked detail shows it), New list, New collection, "N couldn't sync" (while something couldn't sync) and the
-  account gear; New list and New collection are pinned under the sidebar's scrolled rooms, so they
-  are always in view. A stop inside a scrolled pane (Repeat below a long detail pane's fold, the button at
+  divider (while the docked detail shows it), the detail pane's Reminder and Repeat rows (while a
+  task is open), New list, New collection, "N couldn't sync" (while something couldn't sync) and the
+  account gear. New list and New collection are pinned under the sidebar's scrolled rooms, so they
+  are always in view. A stop inside a scrolled pane (a detail row below the fold or the button at
   the end of the feed) is scrolled into view when Tab lands on it, as the link field is when **L** puts the keyboard
   there (`layout::reveal_offset`). Held or modified Tab, Tab in a text field, and Tab in an open
   menu (which closes it) are left alone. A focused button shows the focus ring, and **Enter** opens its
@@ -538,7 +580,7 @@ from its room's menu; `move-list-picker` and `list-colour` are a list's room men
 collection picker and the colour swatches, the keyboard on the current choice. Tags: `tag-picker` is
 the tag picker on the detail pane's Tags row, `tag-create` the same with a new name typed (Create
 first), `tag-edit` and `tag-colour` a tag's own page and its swatches, and `tag-rename` a tag being
-renamed in the row. `delete-tag-confirm` shows the task count before deleting a tag. `repeat-menu` shows the undated-task notice; `repeat-custom` shows a fortnightly Mon/Thu draft. `repeat-none`, `repeat-weekly` and `repeat-monthly` show the row at rest; `repeat-focus` shows its keyboard focus ring. Links: `task-links` is a task's menu turned into its links, and `add-link` the
+renamed in the row. `delete-tag-confirm` shows the task count before deleting a tag. Reminders: `reminder-menu` is the picker on the open task's reminder (Today 17:00, so Pick a day and time… is ticked, and Remove is offered), `reminder-custom` its custom page with tomorrow and 08:30 typed, `reminder-none` the row of a task without a reminder, and `reminder-focus` the row's keyboard focus ring. `repeat-menu` shows the undated-task notice; `repeat-custom` shows a fortnightly Mon/Thu draft. `repeat-none`, `repeat-weekly` and `repeat-monthly` show the row at rest; `repeat-focus` shows its keyboard focus ring. Links: `task-links` is a task's menu turned into its links, and `add-link` the
 link field with an address being typed. `caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
 `sidebar-wide` and `detail-narrow` show the resize extremes, and `resize-handle-hover` shows the sidebar
 separator at the end of its hover fade.

@@ -731,22 +731,34 @@ fn a_hand_over_task_completed_from_its_box_keeps_its_place_until_released() {
 }
 
 #[test]
-fn the_detail_offers_due_priority_and_tags_to_edit_and_only_shows_the_rest() {
+fn the_detail_offers_every_field_to_edit() {
     let f = fixtures::my_day();
     let shell = f.shell();
     let detail = shell.detail.expect("a task is open");
     let edits: Vec<(&str, Option<FieldEdit>)> =
         detail.fields.iter().map(|f| (f.label, f.edit)).collect();
-    assert_eq!(edits[0], ("Due", Some(FieldEdit::Due)));
-    assert_eq!(edits[1], ("Priority", Some(FieldEdit::Priority)));
-    assert!(edits.contains(&("Repeat", Some(FieldEdit::Repeat))));
-    // Tags come last, always there to pick from (T).
-    assert_eq!(edits.last(), Some(&("Tags", Some(FieldEdit::Tags))));
-    assert!(
-        edits[2..edits.len() - 2]
-            .iter()
-            .all(|(_, edit)| edit.is_none()),
-        "{edits:?}"
+    assert_eq!(
+        edits,
+        [
+            ("Due", Some(FieldEdit::Due)),
+            ("Priority", Some(FieldEdit::Priority)),
+            ("Reminder", Some(FieldEdit::Reminder)),
+            ("Repeat", Some(FieldEdit::Repeat)),
+            // Tags come last, always there to pick from (T).
+            ("Tags", Some(FieldEdit::Tags)),
+        ]
+    );
+    let reminder = &detail.fields[2];
+    assert_eq!(reminder.value.as_ref(), "Today, 17:00");
+    assert_eq!(reminder.kind, FieldKind::Date);
+    // A task without a reminder still has the row, quietly saying so.
+    let mut bare = fixtures::my_day();
+    let id = bare.ui.task.expect("selected");
+    bare.state.reminders.retain(|_, r| r.task != id);
+    let d = bare.shell().detail.expect("detail");
+    assert_eq!(
+        (d.fields[2].value.as_ref(), d.fields[2].kind),
+        ("No reminder", FieldKind::Empty)
     );
     // The tags, by name, each with its colour.
     let names: Vec<&str> = detail.tags.iter().map(|t| t.name.as_ref()).collect();

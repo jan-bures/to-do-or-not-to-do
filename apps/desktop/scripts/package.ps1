@@ -76,10 +76,13 @@ try {
     New-Item -ItemType Directory -Path $staging | Out-Null
     try {
         # vpk edits its input; never point it at Cargo's build directory.
+        # --aumid gives the Start menu and desktop shortcuts the AppUserModelID that VelopackApp::run
+        # sets on the installed process (`velopack.<packId>`, platform::toast::AUMID): reminder toasts
+        # and the taskbar then name the app the same way the shortcut does.
         Copy-Item -LiteralPath (Join-Path $metadata.target_directory "$target/release/$appId.exe") -Destination $staging
         & $vpk pack --packId $appId --packVersion $version.ToString() --packTitle 'To-do or not to do' `
             --packDir $staging --outputDir $ReleaseDir --mainExe "$appId.exe" --channel $channel `
-            --runtime win-x64 --delta BestSpeed `
+            --runtime win-x64 --delta BestSpeed --aumid "velopack.$appId" `
             --icon (Join-Path $repo 'assets/brand/generated/todo.ico')
         if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)." }
     } finally {

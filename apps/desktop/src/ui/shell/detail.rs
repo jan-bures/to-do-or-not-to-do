@@ -2,8 +2,8 @@
 //!
 //! Title and notes are edited directly in the pane and saved when editing ends (Enter or leaving the
 //! title, Escape or leaving the notes). Steps can be added, completed, renamed (click the title), moved and
-//! deleted. The due date is edited by typing a date, the priority and the tags are picked from menus
-//! anchored to their rows; reminders are shown but edited elsewhere for now. Web links are
+//! deleted. The due date is edited by typing a date; the priority, the reminder, the repeat schedule and
+//! the tags are picked from menus anchored to their rows. Web links are
 //! added by typing or pasting an address, removed (Undo brings one back) and open in the browser
 //! (anything else is shown as text). An attachment is saved where the owner chooses; documents and
 //! images can also be opened, from this pairing's attachments directory and marked as downloaded from
@@ -836,11 +836,15 @@ impl ShellView {
                         .text_color(p.ink)
                         .children(renaming.clone())
                         .into_any_element(),
-                    _ if f.edit == Some(FieldEdit::Repeat) && f.kind == FieldKind::Empty => div()
-                        .style(ty::NAV_COLLECTION.with_weight(400))
-                        .text_color(p.ink_3)
-                        .child(f.value.clone())
-                        .into_any_element(),
+                    _ if matches!(f.edit, Some(FieldEdit::Repeat | FieldEdit::Reminder))
+                        && f.kind == FieldKind::Empty =>
+                    {
+                        div()
+                            .style(ty::NAV_COLLECTION.with_weight(400))
+                            .text_color(p.ink_3)
+                            .child(f.value.clone())
+                            .into_any_element()
+                    }
                     _ if tags && !d.tags.is_empty() => {
                         self.tag_chips(&d.tags, window).into_any_element()
                     }
@@ -928,6 +932,35 @@ impl ShellView {
                                 self.menu_anchor(|k| matches!(k, MenuKind::Repeat { .. }), cx),
                             )
                     })
+                    // The reminder picker (Shift+R from the list): presets, a custom day and time,
+                    // Remove.
+                    .when(f.edit == Some(FieldEdit::Reminder) && live, |el| {
+                        el.track_focus(&self.reminder_focus)
+                            .role(gpui::Role::Button)
+                            .tooltip(kit::tooltip(
+                                p,
+                                SharedString::from(if f.kind == FieldKind::Empty {
+                                    "Remind me about this task".to_string()
+                                } else {
+                                    format!("Reminds you {}", f.value)
+                                }),
+                            ))
+                            .hover(|s| s.bg(p.hover))
+                            .cursor_pointer()
+                            .child(div().flex_1())
+                            .child(kit::kbd(&p, "Shift R"))
+                            .child(self.probe("reminder-row"))
+                            .on_key_down(
+                                cx.listener(|this, e, window, cx| this.control_key(e, window, cx)),
+                            )
+                            .on_click(cx.listener(move |this, e, window, cx| {
+                                let kind = this.reminder_menu(task, None);
+                                this.toggle_menu(kind, Stop::Reminder, e, window, cx)
+                            }))
+                            .children(
+                                self.menu_anchor(|k| matches!(k, MenuKind::Reminder { .. }), cx),
+                            )
+                    })
                     // The tag picker (T from the list): put tags on, take them off, make new ones.
                     .when(tags && live && renaming.is_none(), |el| {
                         el.hover(|s| s.bg(p.hover))
@@ -952,10 +985,15 @@ impl ShellView {
                     .when(f.edit.is_none(), |el| {
                         el.tooltip(kit::tooltip(p, "Shown here; not editable in this app yet"))
                     });
-                if f.edit == Some(FieldEdit::Repeat) {
+                let focus = match f.edit {
+                    Some(FieldEdit::Repeat) => Some(&self.repeat_focus),
+                    Some(FieldEdit::Reminder) => Some(&self.reminder_focus),
+                    _ => None,
+                };
+                if let Some(focus) = focus {
                     super::menu::ring(
                         &p,
-                        live && self.repeat_focus.is_focused(window),
+                        live && focus.is_focused(window),
                         radius::BUTTON,
                         row.bg(p.pane),
                     )

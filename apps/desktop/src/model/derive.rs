@@ -694,25 +694,20 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             edit: Some(FieldEdit::Priority),
         },
     ];
-    let mut reminders: Vec<&todo_core::model::Reminder> = state
-        .reminders
-        .values()
-        .filter(|r| r.task == id && r.deleted.is_none())
-        .collect();
-    reminders.sort_by_key(|r| r.at);
-    let upcoming = reminders
-        .iter()
-        .find(|r| now.date_of(r.at) >= today)
-        .or(reminders.last());
-    if let Some(r) = upcoming {
-        fields.push(Field {
-            icon: Icon::Bell,
-            label: "Reminder",
-            value: labels::when(r.at, now).into(),
-            kind: FieldKind::Date,
-            edit: None,
-        });
-    }
+    // Always there, like Repeat: the picker sets, moves or removes the reminder it shows (the first
+    // from today, else the latest; `intent::reminder::shown`).
+    let reminder = super::commands::reminder::shown(state, id, &now.eval());
+    fields.push(Field {
+        icon: Icon::Bell,
+        label: "Reminder",
+        value: reminder.map_or_else(|| "No reminder".into(), |r| labels::when(r.at, now).into()),
+        kind: if reminder.is_some() {
+            FieldKind::Date
+        } else {
+            FieldKind::Empty
+        },
+        edit: Some(FieldEdit::Reminder),
+    });
     fields.push(Field {
         icon: Icon::Repeat,
         label: "Repeat",

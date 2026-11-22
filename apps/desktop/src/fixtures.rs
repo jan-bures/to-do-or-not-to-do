@@ -106,6 +106,16 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
         "account-menu" | "priority-menu" | "repeat-focus" | "delete-tag-confirm" => Some(my_day()),
+        // The reminder picker on the open task's reminder (Today 17:00): its presets, and its custom
+        // page with a time typed; the row with the keyboard on it.
+        "reminder-menu" | "reminder-custom" | "reminder-focus" => Some(my_day()),
+        // The row of a task without a reminder, at rest.
+        "reminder-none" => {
+            let mut f = my_day();
+            let task = f.ui.task?;
+            f.state.reminders.retain(|_, r| r.task != task);
+            Some(f)
+        }
         "repeat-menu" | "repeat-none" | "repeat-custom" | "repeat-weekly" | "repeat-monthly" => {
             let mut f = my_day();
             let t = f.state.tasks.get_mut(&f.ui.task?)?;

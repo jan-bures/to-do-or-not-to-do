@@ -6,6 +6,7 @@
 //! | `device-token.bin` | same | the device token, encrypted with DPAPI for the current user |
 //! | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 //! | `pairings\<pairing ID>\ui.json` | same | local sidebar and pane-width preferences |
+//! | `pairings\<pairing ID>\reminders.json` | same | reminders shown and snoozed here (IDs and times only) |
 //! | `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
 //!
 //! `TODO_DESKTOP_HOME` puts everything in one directory instead (tests, benchmarks, a second profile).
@@ -38,6 +39,7 @@ const TOKEN_FILE: &str = "device-token.bin";
 const PAIRINGS_DIR: &str = "pairings";
 pub(crate) const CACHE_FILE: &str = "cache.sqlite";
 const UI_FILE: &str = "ui.json";
+const REMINDERS_FILE: &str = "reminders.json";
 const ATTACHMENTS_DIR: &str = "attachments";
 /// `<pairing ID>.signed-out`, beside a pairing's directory once its sign-in is gone: remove it.
 const SIGNED_OUT: &str = ".signed-out";
@@ -145,6 +147,39 @@ impl DataDir {
         tmp.as_file().sync_all()?;
         let tmp = tmp.into_temp_path();
         todo_fs::replace_durably(&tmp, &self.path.join(UI_FILE))?;
+        Ok(())
+    }
+
+    /// What this computer has shown and snoozed (`model::reminders::Schedule`); none if the file is
+    /// missing or unreadable.
+    pub fn load_reminders(&self) -> crate::model::reminders::Schedule {
+        let read = || -> anyhow::Result<Vec<u8>> {
+            self.check()?;
+            let path = self.path.join(REMINDERS_FILE);
+            let meta = std::fs::symlink_metadata(&path)?;
+            anyhow::ensure!(
+                meta.is_file() && todo_fs::is_plain(&meta),
+                "not a plain file"
+            );
+            Ok(std::fs::read(path)?)
+        };
+        read()
+            .map(|bytes| crate::model::reminders::Schedule::from_json(&bytes))
+            .unwrap_or_default()
+    }
+
+    /// Writes the reminders' schedule like [`save_ui`](Self::save_ui): never half written.
+    pub fn save_reminders(
+        &self,
+        schedule: &crate::model::reminders::Schedule,
+    ) -> anyhow::Result<()> {
+        self.check()?;
+        let mut tmp = tempfile::NamedTempFile::new_in(self.path())?;
+        tmp.write_all(&schedule.to_json()?)?;
+        tmp.flush()?;
+        tmp.as_file().sync_all()?;
+        let tmp = tmp.into_temp_path();
+        todo_fs::replace_durably(&tmp, &self.path.join(REMINDERS_FILE))?;
         Ok(())
     }
 
@@ -612,6 +647,31 @@ mod tests {
 
         remove_data(&data).expect("remove pairing data");
         assert!(!data.path().exists());
+    }
+
+    #[test]
+    fn the_reminders_schedule_round_trips_per_pairing() {
+        use crate::model::reminders::{Schedule, Shown};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::in_dir(dir.path().to_owned());
+        let data = paths.data(&PairingId::random());
+        let other = paths.data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        assert_eq!(data.load_reminders(), Schedule::default());
+        let id = todo_core::ids::ReminderId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
+        let schedule = Schedule {
+            records: Default::default(),
+            shown: [Shown {
+                id,
+                at: 1_790_000_000_000,
+            }]
+            .into(),
+        };
+        data.save_reminders(&schedule).expect("save");
+        assert_eq!(data.load_reminders(), schedule);
+        assert_eq!(other.load_reminders(), Schedule::default());
+        std::fs::write(data.path().join(REMINDERS_FILE), "{").expect("corrupt");
+        assert_eq!(data.load_reminders(), Schedule::default());
     }
 
     #[test]

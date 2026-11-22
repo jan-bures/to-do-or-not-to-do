@@ -26,6 +26,9 @@ pub(super) enum EditKind {
     DeleteTag,
     Repeat,
     ClearDue,
+    /// A reminder set or moved (the picker's preset or Set reminder).
+    SetReminder,
+    RemoveReminder,
     AddLink,
     DeleteLink,
     DeleteList,
@@ -45,6 +48,7 @@ impl EditKind {
                 EntityId::Link(_) => (id, Self::DeleteLink),
                 EntityId::List(_) => (id, Self::DeleteList),
                 EntityId::Collection(_) => (id, Self::DeleteCollection),
+                EntityId::Reminder(_) => (id, Self::RemoveReminder),
                 _ => return None,
             },
             Command::UpdateTask { id, ref patch } if patch.recurrence.is_some() => (
@@ -56,6 +60,9 @@ impl EditKind {
                 },
             ),
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
+            Command::AddReminder { id, .. } | Command::UpdateReminder { id, .. } => {
+                (id.into(), Self::SetReminder)
+            }
             Command::MoveList { id, .. } => (id.into(), Self::MoveList),
             // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
             Command::AddLink { id, .. } => (id.into(), Self::AddLink),
@@ -80,6 +87,8 @@ impl EditKind {
             Self::DeleteTag => "Deleted tag",
             Self::Repeat => "Changed schedule for",
             Self::ClearDue => "Cleared due date for",
+            Self::SetReminder => "Set reminder for",
+            Self::RemoveReminder => "Removed reminder for",
             Self::AddLink => "Added link",
             Self::DeleteLink => "Removed link",
             Self::DeleteList => "Deleted list",
@@ -96,6 +105,7 @@ impl EditKind {
                 Self::DeleteStep => "Restored step",
                 Self::DeleteTag => "Restored tag",
                 Self::Repeat | Self::ClearDue => "Restored schedule for",
+                Self::SetReminder | Self::RemoveReminder => "Restored reminder for",
                 Self::AddLink => "Removed link",
                 Self::DeleteLink => "Restored link",
                 Self::DeleteList => "Restored list",
@@ -138,6 +148,16 @@ impl EditKind {
                     old.collection != new.collection || old.position != new.position
                 }),
             (Self::Move | Self::MoveList, _) => false,
+            // Its time back, or the reminder taken away again (undoing one added).
+            (Self::SetReminder, EntityId::Reminder(id)) => {
+                let at = |s: &State| {
+                    s.reminders
+                        .get(&id)
+                        .filter(|_| s.is_live(entity))
+                        .map(|r| r.at)
+                };
+                at(before) != at(after)
+            }
             // Undoing an addition withdraws the link.
             (Self::AddLink, _) => before.is_live(entity) && !after.is_live(entity),
             _ => !self.is_restored(entity, before) && self.is_restored(entity, after),
@@ -217,6 +237,10 @@ pub(super) fn toast_label(
         (Command::AddLink { kind: link, .. }, EditKind::AddLink) => {
             kind.label(&crate::model::menus::link_name(link))
         }
+        // Nor is a new reminder: it is named by its task.
+        (Command::AddReminder { task, .. }, EditKind::SetReminder) => {
+            kind.label(&subject_title(state, (*task).into()))
+        }
         (Command::MoveList { id, collection, .. }, EditKind::MoveList) => {
             let name = |c: &CollectionId| state.collections.get(c).map(|c| one_line(&c.name));
             match (collection, state.lists.get(id).and_then(|l| l.collection)) {
@@ -247,6 +271,10 @@ pub(super) fn subject_title(state: &State, entity: EntityId) -> String {
         }
         EntityId::List(id) => state.lists.get(&id).map(|l| l.name.clone()),
         EntityId::Collection(id) => state.collections.get(&id).map(|c| c.name.clone()),
+        // A reminder is named by its task.
+        EntityId::Reminder(id) => (state.reminders.get(&id))
+            .and_then(|r| state.tasks.get(&r.task))
+            .map(|t| t.title.clone()),
         _ => None,
     }
     .unwrap_or_else(|| "Task".into())
@@ -269,6 +297,7 @@ fn command_target(command: &Command) -> Option<EntityId> {
         Command::UpdateList { id, .. } | Command::MoveList { id, .. } => id.into(),
         Command::UpdateCollection { id, .. } => id.into(),
         Command::UpdateTag { id, .. } => id.into(),
+        Command::UpdateReminder { id, .. } => id.into(),
         Command::Reorder { id, .. } | Command::Delete { id } | Command::Restore { id } => id,
         _ => return None,
     })
@@ -876,6 +905,73 @@ mod tests {
             (back.tasks[&task].due, &back.tasks[&task].recurrence),
             (None, &None)
         );
+        assert!(kind.undo_changed_view(entity, &after, &back));
+    }
+
+    #[test]
+    fn undoing_a_reminder_change_puts_back_exactly_what_was_there() {
+        use crate::store::Store;
+        use todo_client::intent::reminder::{Seen, remove_reminder, set_reminder, shown};
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("task");
+        let title = f.state.tasks[&task].title.clone();
+        let ctx = f.now.eval();
+        let seen = Seen::of(&f.state, task, &ctx).expect("the fixture's task has one");
+        let store = Store::fixture(&f);
+        let at: todo_core::time::Timestamp = "2026-11-22T09:00:00Z".parse().expect("ts");
+        // Moved: the toast names the task, and Undo moves it back.
+        let moved = set_reminder(&store.view(), task, Some(seen), at, || store.new_uuid())
+            .expect("unchanged")
+            .expect("moved");
+        let (entity, kind) = EditKind::of(&moved).expect("undoable");
+        assert_eq!((entity, kind), (seen.id.into(), EditKind::SetReminder));
+        assert_eq!(
+            toast_label(&store.view(), &moved, entity, kind).as_ref(),
+            format!("Set reminder for \u{201c}{title}\u{201d}")
+        );
+        let target = store.submit_undoable(moved).expect("moved");
+        let after = store.view();
+        assert_eq!(after.reminders[&seen.id].at, at);
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert_eq!(back.reminders[&seen.id].at, seen.at);
+        assert!(kind.undo_changed_view(entity, &after, &back));
+        // Removed: Undo brings the same reminder back.
+        let removed = remove_reminder(&back, task, seen).expect("removed");
+        let (entity, kind) = EditKind::of(&removed).expect("undoable");
+        assert_eq!(kind, EditKind::RemoveReminder);
+        assert_eq!(
+            toast_label(&back, &removed, entity, kind).as_ref(),
+            format!("Removed reminder for \u{201c}{title}\u{201d}")
+        );
+        let target = store.submit_undoable(removed).expect("removed");
+        let after = store.view();
+        assert!(shown(&after, task, &ctx).is_none());
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert_eq!(
+            shown(&back, task, &ctx).map(|r| (r.id, r.at)),
+            Some((seen.id, seen.at))
+        );
+        assert!(kind.undo_changed_view(entity, &after, &back));
+        // Added to a task that had none: the toast names the task, and Undo takes it away.
+        let bare = (back.tasks.values())
+            .find(|t| back.is_live(t.id.into()) && shown(&back, t.id, &ctx).is_none())
+            .map(|t| (t.id, t.title.clone()))
+            .expect("a task without a reminder");
+        let added = set_reminder(&back, bare.0, None, at, || store.new_uuid())
+            .expect("unchanged")
+            .expect("added");
+        let (entity, kind) = EditKind::of(&added).expect("undoable");
+        assert_eq!(
+            toast_label(&back, &added, entity, kind).as_ref(),
+            format!("Set reminder for \u{201c}{}\u{201d}", bare.1)
+        );
+        let target = store.submit_undoable(added).expect("added");
+        let after = store.view();
+        store.undo(&target).expect("undone");
+        let back = store.view();
+        assert!(shown(&back, bare.0, &ctx).is_none());
         assert!(kind.undo_changed_view(entity, &after, &back));
     }
 

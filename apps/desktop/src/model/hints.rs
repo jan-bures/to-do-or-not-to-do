@@ -78,6 +78,8 @@ pub enum Stop {
     ActivityMore,
     /// The divider between the list and the docked detail pane, while it shows.
     DetailSplitter,
+    /// Reminder, when a task is open.
+    Reminder,
     /// Repeat, when a task is open.
     Repeat,
     /// The sidebar's New list.
@@ -94,7 +96,7 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 13] = [
+pub const TAB_ORDER: [Stop; 14] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
@@ -103,6 +105,7 @@ pub const TAB_ORDER: [Stop; 13] = [
     Stop::ActivityRefresh,
     Stop::ActivityMore,
     Stop::DetailSplitter,
+    Stop::Reminder,
     Stop::Repeat,
     Stop::NewList,
     Stop::NewCollection,
@@ -123,6 +126,7 @@ pub enum ScrollPane {
 /// always in view.
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
+        Stop::Reminder => Some((ScrollPane::Detail, "reminder-row")),
         Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
         // Load older activity (or Try again) ends the feed, below the last change read.
         Stop::ActivityMore => Some((ScrollPane::Feed, "activity-more")),
@@ -240,6 +244,7 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
                     ("P", "priority"),
                     ("Shift P", "pick priority"),
                     ("M", "move"),
+                    ("Shift R", "remind"),
                     ("R", "repeat"),
                     ("T", "tags"),
                     ("L", "link"),
@@ -291,7 +296,8 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
 /// The hints that give way, in this order, when the status bar is too narrow for all of them: the keys
 /// that have another way in first (the detail pane's Tags, links and Priority rows, the row's context
 /// menu), then the letters. Space, Escape and Ctrl+Z always stay.
-const GIVE_WAY: [&str; 11] = [
+const GIVE_WAY: [&str; 12] = [
+    "Shift R",
     "R",
     "T",
     "L",
@@ -345,6 +351,7 @@ mod tests {
                 "P",
                 "Shift P",
                 "M",
+                "T",
                 "L",
                 "Del",
                 "Alt ↑↓",
@@ -352,11 +359,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            keys(fit(all.clone(), full - 190., 10., width)),
+            keys(fit(all.clone(), full - 250., 10., width)),
             ["J K", "Space", "E", "D", "P", "M", "Del", "Alt ↑↓", "Esc"]
         );
         assert_eq!(
-            keys(fit(all.clone(), full - 310., 10., width)),
+            keys(fit(all.clone(), full - 370., 10., width)),
             ["J K", "Space", "E", "D", "P", "Alt ↑↓", "Esc"]
         );
         // However narrow, moving, Space and Escape stay.
@@ -396,7 +403,8 @@ mod tests {
         assert_eq!(
             keys(list(true, true, false)),
             [
-                "J K", "Space", "E", "D", "P", "Shift P", "M", "R", "T", "L", "Del", "Esc"
+                "J K", "Space", "E", "D", "P", "Shift P", "M", "Shift R", "R", "T", "L", "Del",
+                "Esc"
             ]
         );
     }
@@ -543,6 +551,7 @@ mod tests {
                 ActivityRefresh,
                 ActivityMore,
                 DetailSplitter,
+                Reminder,
                 Repeat,
                 NewList,
                 NewCollection,
@@ -561,6 +570,7 @@ mod tests {
                 NewCollection,
                 NewList,
                 Repeat,
+                Reminder,
                 DetailSplitter,
                 ActivityMore,
                 ActivityRefresh,
@@ -587,6 +597,7 @@ mod tests {
                 s,
                 Undo | RoomMenu
                     | DetailSplitter
+                    | Reminder
                     | Repeat
                     | ActivityFilter
                     | ActivityRefresh
@@ -607,6 +618,7 @@ mod tests {
             !matches!(
                 s,
                 DetailSplitter
+                    | Reminder
                     | Repeat
                     | ActivityFilter
                     | ActivityRefresh
@@ -642,7 +654,13 @@ mod tests {
         let no_menu = |s: Stop| {
             !matches!(
                 s,
-                RoomMenu | Repeat | ActivityFilter | ActivityRefresh | ActivityMore | SyncFailures
+                RoomMenu
+                    | Reminder
+                    | Repeat
+                    | ActivityFilter
+                    | ActivityRefresh
+                    | ActivityMore
+                    | SyncFailures
             )
         };
         assert_eq!(
@@ -673,7 +691,12 @@ mod tests {
         let no_undo = |s: Stop| {
             !matches!(
                 s,
-                Undo | Repeat | ActivityFilter | ActivityRefresh | ActivityMore | SyncFailures
+                Undo | Reminder
+                    | Repeat
+                    | ActivityFilter
+                    | ActivityRefresh
+                    | ActivityMore
+                    | SyncFailures
             )
         };
         assert_eq!(
@@ -712,6 +735,7 @@ mod tests {
                 s,
                 Undo | RoomMenu
                     | DetailSplitter
+                    | Reminder
                     | Repeat
                     | ActivityFilter
                     | ActivityRefresh
@@ -755,6 +779,10 @@ mod tests {
             reveal(Stop::Repeat),
             Some((ScrollPane::Detail, "repeat-row"))
         );
+        assert_eq!(
+            reveal(Stop::Reminder),
+            Some((ScrollPane::Detail, "reminder-row"))
+        );
         // The toolbar's buttons sit above the feed and never scroll away.
         assert_eq!(reveal(Stop::ActivityRefresh), None);
         assert_eq!(reveal(Stop::ActivityFilter), None);
@@ -767,7 +795,8 @@ mod tests {
     fn the_activity_rooms_buttons_come_after_its_menu_button() {
         use Stop::*;
         // Activity filtered to an agent, with older changes to read; no toast, detail or refusals.
-        let activity = |s: Stop| !matches!(s, Undo | DetailSplitter | Repeat | SyncFailures);
+        let activity =
+            |s: Stop| !matches!(s, Undo | DetailSplitter | Reminder | Repeat | SyncFailures);
         assert_eq!(
             round(List, true, activity),
             [

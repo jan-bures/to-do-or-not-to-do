@@ -42,6 +42,7 @@ fn main() -> ExitCode {
         .on_before_uninstall_fast_callback(|_| {
             // Best effort: one registry operation, no UI or other startup work.
             let _ = platform::autostart::Autostart::current_user().disable();
+            platform::toast::unregister();
         })
         .on_restarted(|_| restarted = true)
         .run();

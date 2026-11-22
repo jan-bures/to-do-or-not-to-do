@@ -17,6 +17,7 @@ use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellEvent, ShellView};
+use crate::model::menus::reminder;
 use crate::model::menus::repeat::{self, Draft};
 use crate::model::menus::{self, Asked, Confirmed, MenuAction, MenuEntry, MenuItem, Page, TagPage};
 use crate::model::motion::Overlay;
@@ -97,6 +98,13 @@ pub(super) enum MenuKind {
         task: TaskId,
         draft: Option<Draft>,
     },
+    /// The detail pane's reminder picker: its presets, or (`draft`) its custom page. `seen` is the
+    /// reminder the row showed when it opened, which an edit is made on.
+    Reminder {
+        task: TaskId,
+        seen: Option<todo_client::intent::reminder::Seen>,
+        draft: Option<reminder::Draft>,
+    },
     /// A task's context menu (right-click its row, or Shift+F10), or the list picker (M).
     Task {
         id: TaskId,
@@ -127,7 +135,8 @@ impl MenuKind {
             (Self::Collection { id: a, .. }, Self::Collection { id: b, .. }) => a == b,
             (Self::Task { id: a, .. }, Self::Task { id: b, .. }) => a == b,
             (Self::Tags { task: a, .. }, Self::Tags { task: b, .. })
-            | (Self::Repeat { task: a, .. }, Self::Repeat { task: b, .. }) => a == b,
+            | (Self::Repeat { task: a, .. }, Self::Repeat { task: b, .. })
+            | (Self::Reminder { task: a, .. }, Self::Reminder { task: b, .. }) => a == b,
             _ => self == other,
         }
     }
@@ -213,6 +222,10 @@ impl ShellView {
                 .filter(|_| state.is_live(task.into()))
                 .map(|t| repeat::entries(t, self.store.now().today(), draft))
                 .unwrap_or_default(),
+            MenuKind::Reminder { task, seen, draft } if state.is_live(task.into()) => {
+                reminder::entries(task, seen.map(|s| s.at), draft, &self.store.now())
+            }
+            MenuKind::Reminder { .. } => Vec::new(),
             MenuKind::Tags {
                 page: TagPage::Colour(tag),
                 ..
@@ -472,6 +485,17 @@ impl ShellView {
             cx.notify();
             return;
         }
+        // The custom reminder page: digits type the time.
+        if let Some(Menu {
+            kind: MenuKind::Reminder { draft: Some(d), .. },
+            ..
+        }) = self.menu.as_mut()
+            && !e.is_held
+            && d.type_key(key)
+        {
+            cx.notify();
+            return;
+        }
         if let Some(filter) = picker_edit(&menu, e) {
             if let Some(m) = self.menu.as_mut() {
                 m.filter = filter;
@@ -565,6 +589,9 @@ impl ShellView {
             // The menu turns into the confirmation, the collection picker or the swatches, in place.
             MenuAction::Repeat(task, a) => {
                 return self.repeat_action(task, a, keyboard, window, cx);
+            }
+            MenuAction::Reminder(task, a) => {
+                return self.reminder_action(task, a, keyboard, window, cx);
             }
             MenuAction::AskDeleteList(_)
             | MenuAction::AskDeleteCollection(_)
@@ -808,6 +835,7 @@ impl ShellView {
             | MenuAction::AskSignOut
             | MenuAction::AskDeleteTag(_)
             | MenuAction::Repeat(..)
+            | MenuAction::Reminder(..)
             | MenuAction::AskPriority(_)
             | MenuAction::AskMove(_)
             | MenuAction::AskLinks(_)
@@ -890,6 +918,113 @@ impl ShellView {
                 self.close_menu(keyboard, window, cx);
             }
             Err(error) => self.notice = Some(Notice::error(commands::repeat::error_text(error))),
+        }
+        self.refresh(cx);
+    }
+
+    /// The reminder picker's items: a preset or Set reminder sets the reminder the row showed (or adds
+    /// one), Remove takes it away, Custom turns the picker into its custom page, and the steps change
+    /// that page's draft. A reminder that changed while the picker was open is never edited: the status
+    /// bar says so and the picker shows it as it is now.
+    fn reminder_action(
+        &mut self,
+        task: TaskId,
+        a: reminder::Action,
+        keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Menu {
+            kind:
+                MenuKind::Reminder {
+                    task: id,
+                    seen,
+                    draft,
+                },
+            trigger,
+            ..
+        }) = self.menu.clone()
+        else {
+            return;
+        };
+        if id != task {
+            return;
+        }
+        let state = self.store.view();
+        let now = self.store.now();
+        let Some(t) = state
+            .tasks
+            .get(&task)
+            .filter(|_| state.is_live(task.into()))
+        else {
+            return self.close_menu(false, window, cx);
+        };
+        let at = match a {
+            reminder::Action::Custom => {
+                let draft = reminder::Draft::new(seen.map(|s| s.at), t.due, &now);
+                let kind = MenuKind::Reminder {
+                    task,
+                    seen,
+                    draft: Some(draft),
+                };
+                self.open_menu(kind, None, trigger, window, cx);
+                return;
+            }
+            reminder::Action::Day(_) | reminder::Action::Minutes(_) => {
+                if let Some(Menu {
+                    kind: MenuKind::Reminder { draft: Some(d), .. },
+                    ..
+                }) = self.menu.as_mut()
+                {
+                    d.edit(a, now.today());
+                    cx.notify();
+                }
+                return;
+            }
+            reminder::Action::Preset(p) => p.at(&now),
+            reminder::Action::Apply => {
+                draft.and_then(|d| reminder::preview(d, &now).ok().map(|p| p.0))
+            }
+            reminder::Action::Remove => None,
+        };
+        let cmd = match (a, at) {
+            (reminder::Action::Remove, _) => match seen {
+                Some(seen) => commands::reminder::remove_reminder(&state, task, seen).map(Some),
+                None => Ok(None),
+            },
+            (_, Some(at)) if at > now.at => {
+                let store = self.store.clone();
+                commands::reminder::set_reminder(&state, task, seen, at, || store.new_uuid())
+            }
+            _ => {
+                self.notice = Some(Notice::error(reminder::PAST));
+                return self.refresh(cx);
+            }
+        };
+        match cmd {
+            Ok(cmd) => {
+                if let Some(cmd) = cmd
+                    && !self.submit(vec![cmd])
+                {
+                    return self.refresh(cx);
+                }
+                self.close_menu(keyboard, window, cx);
+            }
+            Err(commands::reminder::Stale::Task) => return self.close_menu(false, window, cx),
+            Err(commands::reminder::Stale::Reminder) => {
+                // Shown again as it is now, so the owner can check it and choose again.
+                self.notice = Some(Notice::error(reminder::CHANGED));
+                let seen = commands::reminder::Seen::of(&state, task, &now.eval());
+                if let Some(Menu {
+                    kind: MenuKind::Reminder { seen: s, draft, .. },
+                    ..
+                }) = self.menu.as_mut()
+                {
+                    *s = seen;
+                    *draft = None;
+                }
+                self.highlight_first();
+            }
         }
         self.refresh(cx);
     }
@@ -986,10 +1121,16 @@ impl ShellView {
         cx.notify();
     }
 
-    /// Keep the repeat row visible while editing: hang the picker on the roomier side of the row.
+    /// Keep the repeat or reminder row visible while editing: hang the picker on the roomier side of
+    /// the row.
     fn menu_opens_up(&self, kind: MenuKind) -> bool {
-        if matches!(kind, MenuKind::Repeat { .. })
-            && let Some(row) = self.probes.borrow().get("repeat-row")
+        let probe = match kind {
+            MenuKind::Repeat { .. } => Some("repeat-row"),
+            MenuKind::Reminder { .. } => Some("reminder-row"),
+            _ => None,
+        };
+        if let Some(probe) = probe
+            && let Some(row) = self.probes.borrow().get(probe)
         {
             let pane = self.detail_scroll.bounds();
             return row.top() - pane.top() > pane.bottom() - row.bottom();
@@ -1015,15 +1156,11 @@ impl ShellView {
         let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
         let rows: Vec<AnyElement> = menus::scrolling(&entries)
             .map(|entry| match entry {
-                MenuEntry::Item(item)
-                    if matches!(item.action, MenuAction::Repeat(_, repeat::Action::Apply)) =>
-                {
-                    div()
-                        .px(px(space::S2))
-                        .pb(px(space::S2))
-                        .child(self.confirm_button(&p, item, on(item), live, cx))
-                        .into_any_element()
-                }
+                MenuEntry::Item(item) if applies(item.action) => div()
+                    .px(px(space::S2))
+                    .pb(px(space::S2))
+                    .child(self.confirm_button(&p, item, on(item), live, cx))
+                    .into_any_element(),
                 MenuEntry::Item(item) => self
                     .menu_item(&p, item, on(item), live, cx)
                     .into_any_element(),
@@ -1134,13 +1271,20 @@ impl ShellView {
                     buttons,
                 } => {
                     let mut row = div().flex().items_center().gap(px(space::S1));
+                    // A stepper's value sits between its halves: − buttons, the value, + buttons.
+                    let middle = buttons.len() / 2;
+                    // With two steps a side, the buttons keep a fixed width and the value takes
+                    // the rest, so a day's name fits.
+                    let compact = value.is_some() && buttons.len() > 2;
                     for (i, b) in buttons.iter().enumerate() {
-                        if i == 1
+                        if i == middle
                             && let Some(n) = value
                         {
                             row = row.child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
                                     .text_center()
                                     .style(ty::DUE)
                                     .text_color(p.ink)
@@ -1151,8 +1295,10 @@ impl ShellView {
                         row = row.child(
                             div()
                                 .id(b.key.clone())
-                                .flex_1()
-                                .min_w_0()
+                                .when(compact, |d| {
+                                    d.flex_none().w(px(desktop::NAV_ROW + space::S2))
+                                })
+                                .when(!compact, |d| d.flex_1().min_w_0())
                                 .h(px(desktop::NAV_ROW))
                                 .flex()
                                 .items_center()
@@ -1552,7 +1698,7 @@ impl ShellView {
                 small(kit::button(p, item.label.clone())).bg(p.danger),
                 p.danger,
             )
-        } else if matches!(item.action, MenuAction::Repeat(_, repeat::Action::Apply)) {
+        } else if applies(item.action) {
             (small(kit::button(p, item.label.clone())), p.accent_fill)
         } else {
             (
@@ -1580,6 +1726,15 @@ impl ShellView {
             .when(highlighted, |d| d.bg(p.tint))
             .child(button)
     }
+}
+
+/// Whether an item applies a picker's draft (Apply repeat, Set reminder): drawn as a filled button.
+fn applies(action: MenuAction) -> bool {
+    matches!(
+        action,
+        MenuAction::Repeat(_, repeat::Action::Apply)
+            | MenuAction::Reminder(_, reminder::Action::Apply)
+    )
 }
 
 /// Whether the keyboard goes back to the task list after a menu was `dropped` because its subject went

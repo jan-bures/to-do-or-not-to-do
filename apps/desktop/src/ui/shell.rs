@@ -6,6 +6,7 @@ mod activity;
 mod detail;
 mod menu;
 mod panes;
+mod reminders;
 mod sidebar;
 mod undo;
 
@@ -64,6 +65,7 @@ actions!(
         TaskMenu,
         PickTags,
         PickRepeat,
+        PickReminder,
         AddLinkKey,
         UndoTask,
         OpenActivity,
@@ -91,6 +93,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("m", MoveTaskTo, list),
         KeyBinding::new("t", PickTags, list),
         KeyBinding::new("r", PickRepeat, list),
+        KeyBinding::new("shift-r", PickReminder, list),
         KeyBinding::new("l", AddLinkKey, list),
         KeyBinding::new("shift-f10", TaskMenu, list),
         KeyBinding::new("j", NextTask, list),
@@ -242,6 +245,7 @@ pub struct ShellView {
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
     repeat_focus: FocusHandle,
+    reminder_focus: FocusHandle,
     account_focus: FocusHandle,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
@@ -283,6 +287,8 @@ pub struct ShellView {
     activity_filter_focus: FocusHandle,
     activity_refresh_focus: FocusHandle,
     activity_more_focus: FocusHandle,
+    /// The live session's reminder toasts (`start_reminders`); none for a fixture.
+    alerts: Option<reminders::Alerts>,
 }
 
 impl EventEmitter<ShellEvent> for ShellView {}
@@ -384,6 +390,7 @@ impl ShellView {
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
             repeat_focus: cx.focus_handle(),
+            reminder_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
             inline: None,
             filter,
@@ -412,6 +419,7 @@ impl ShellView {
             activity_filter_focus: cx.focus_handle(),
             activity_refresh_focus: cx.focus_handle(),
             activity_more_focus: cx.focus_handle(),
+            alerts: None,
         };
         cx.on_focus(&this.undo_focus, window, |_, _, cx| cx.notify())
             .detach();
@@ -491,7 +499,8 @@ impl ShellView {
             MenuKind::Room { .. } | MenuKind::Task { .. } => room_changed,
             MenuKind::Priority { task }
             | MenuKind::Tags { task, .. }
-            | MenuKind::Repeat { task, .. } => self.ui.task != Some(task),
+            | MenuKind::Repeat { task, .. }
+            | MenuKind::Reminder { task, .. } => self.ui.task != Some(task),
             _ => false,
         });
         if stale_menu {
@@ -559,6 +568,9 @@ impl ShellView {
             return self.refresh_with_collapse_change(false, cx);
         }
         self.load_detail(cx);
+        // Every change to the data (a sync, an edit, the half-minute tick) brings the reminder toasts
+        // in line with it.
+        self.reconcile_reminders(cx);
         cx.notify();
     }
 
@@ -885,6 +897,7 @@ impl ShellView {
         if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
             || (menu_focused && !menu_open)
             || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
+            || (self.reminder_focus.is_focused(window) && !self.has_stop(hints::Stop::Reminder))
             || (self.room_menu_focus.is_focused(window) && !self.has_room_menu())
             || [
                 hints::Stop::ActivityFilter,
@@ -1025,6 +1038,10 @@ impl ShellView {
                 self.preview_focus = Some(self.repeat_focus.clone());
                 return;
             }
+            "reminder-focus" => {
+                self.preview_focus = Some(self.reminder_focus.clone());
+                return;
+            }
             // Tab onto New collection in a long sidebar: pinned under the scrolled rooms, with its ring.
             "tab-new-collection" => {
                 self.preview_focus = Some(self.new_collection_focus.clone());
@@ -1076,6 +1093,21 @@ impl ShellView {
                         )),
                     })
             }),
+            "reminder-menu" => task.map(|task| self.reminder_menu(task, None)),
+            "reminder-custom" => task.map(|task| {
+                let now = self.store.now();
+                let state = self.store.view();
+                let seen = crate::model::commands::reminder::Seen::of(&state, task, &now.eval());
+                let due = state.tasks.get(&task).and_then(|t| t.due);
+                let mut draft =
+                    crate::model::menus::reminder::Draft::new(seen.map(|s| s.at), due, &now);
+                // As typing leaves it: tomorrow, 08:30 typed.
+                draft.edit(crate::model::menus::reminder::Action::Day(1), now.today());
+                for key in ["0", "8", "3", "0"] {
+                    draft.type_key(key);
+                }
+                self.reminder_menu(task, Some(draft))
+            }),
             "delete-tag-confirm" => tag.and_then(|tag| tags(TagPage::Confirm(tag))),
             "delete-list-confirm" | "delete-collection-confirm" => Some(MenuKind::Room {
                 page: Page::Confirm,
@@ -1099,7 +1131,7 @@ impl ShellView {
         // A confirmation as the keyboard reaches it (on Cancel); a picker or page on its first choice.
         if !matches!(
             fixture,
-            "room-menu" | "account-menu" | "sync-failures" | "priority-menu"
+            "room-menu" | "account-menu" | "sync-failures" | "priority-menu" | "reminder-custom"
         ) {
             self.highlight_first();
         }
@@ -1121,6 +1153,29 @@ impl ShellView {
             window,
             cx,
         );
+        self.highlight_first();
+    }
+
+    /// The reminder picker for `task`, made on the reminder its row shows now.
+    fn reminder_menu(
+        &self,
+        task: TaskId,
+        draft: Option<model::menus::reminder::Draft>,
+    ) -> MenuKind {
+        let seen =
+            model::commands::reminder::Seen::of(&self.store.view(), task, &self.store.now().eval());
+        MenuKind::Reminder { task, seen, draft }
+    }
+
+    /// Shift+R (or Enter on the row): the reminder picker on the detail pane's Reminder row, the
+    /// keyboard on the current choice.
+    fn pick_reminder(&mut self, trigger: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.repeat_target() else {
+            return;
+        };
+        self.scroll_into_view(&self.detail_scroll, "reminder-row");
+        let kind = self.reminder_menu(task, None);
+        self.open_menu(kind, None, Some(trigger), window, cx);
         self.highlight_first();
     }
 
@@ -2806,6 +2861,11 @@ impl ShellView {
                             this.highlight_first();
                         }
                     }))
+                    .on_action(cx.listener(|this, _: &PickReminder, window, cx| {
+                        if !this.in_activity() {
+                            this.pick_reminder(hints::Stop::List, window, cx);
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &PickTags, window, cx| {
                         this.pick_tags(window, cx);
                     }))
@@ -3199,6 +3259,7 @@ impl ShellView {
             Focus::Button
         } else if on(&self.room_menu_focus)
             || on(&self.repeat_focus)
+            || on(&self.reminder_focus)
             || on(&self.account_focus)
             || on(&self.sync_focus)
             || on(&self.new_list_focus)
@@ -3375,6 +3436,7 @@ impl ShellView {
             Stop::ActivityRefresh => &self.activity_refresh_focus,
             Stop::ActivityMore => &self.activity_more_focus,
             Stop::Repeat => &self.repeat_focus,
+            Stop::Reminder => &self.reminder_focus,
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::NewList => &self.new_list_focus,
             Stop::NewCollection => &self.new_collection_focus,
@@ -3402,7 +3464,7 @@ impl ShellView {
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }
-            Stop::Repeat => self.repeat_target().is_some(),
+            Stop::Repeat | Stop::Reminder => self.repeat_target().is_some(),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter
@@ -3634,7 +3696,8 @@ fn navigation_tab(event: &gpui::KeyDownEvent) -> bool {
         && !key.modifiers.function
 }
 
-/// R and the Repeat Tab stop have the same target. A stale selection behind a hidden pane is inert.
+/// R, Shift+R and the Repeat and Reminder Tab stops have the same target: the open task. A stale
+/// selection behind a hidden pane is inert.
 fn repeat_target(
     pane: DetailPane,
     selected: Option<TaskId>,

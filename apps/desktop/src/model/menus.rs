@@ -5,6 +5,7 @@
 //! [`MenuAction`]; the keyboard walks the same items, so every menu behaves alike. Pure, so what a menu
 //! offers in each room is unit-tested.
 
+pub mod reminder;
 pub mod repeat;
 use gpui::SharedString;
 use todo_client::CommandId;
@@ -106,6 +107,8 @@ pub enum MenuAction {
     AskDeleteTag(TagId),
     DeleteTag(TagId),
     Repeat(TaskId, repeat::Action),
+    /// The reminder picker: a preset, its custom page, a step on it, Set reminder or Remove.
+    Reminder(TaskId, reminder::Action),
     /// Turns a task's menu into its links: add one, or remove one.
     AskLinks(TaskId),
     /// Puts the keyboard in the detail pane's link field, for the task.
@@ -322,15 +325,16 @@ pub fn is_confirmation(entries: &[MenuEntry]) -> bool {
         .any(|e| matches!(e, MenuEntry::Confirm { .. }))
 }
 
-/// Whether the menu is drawn at the confirmation's width: a confirmation, or the "couldn't sync" list,
-/// whose reasons wrap beside their buttons.
+/// Whether the menu is drawn at the confirmation's width: a confirmation, the "couldn't sync" list,
+/// whose reasons wrap beside their buttons, a page of steppers, or the reminder picker, whose presets
+/// say when beside their names.
 pub fn is_wide(entries: &[MenuEntry]) -> bool {
     entries.iter().any(|e| {
         matches!(
             e,
             MenuEntry::Confirm { .. } | MenuEntry::Failure { .. } | MenuEntry::Controls { .. }
         )
-    })
+    }) || items(entries).any(|i| matches!(i.action, MenuAction::Reminder(..)))
 }
 
 /// The key of item `i`, as the keyboard counts them. The keyboard's highlight is kept as the item's key,

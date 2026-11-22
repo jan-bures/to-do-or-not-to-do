@@ -125,6 +125,11 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
     if bench.is_some() {
         metrics.ms("main_entered_ms", win::process_age_ms());
     }
+    // Toasts and the taskbar need the app's identity before any window opens.
+    if bench.is_none() {
+        let icons = crate::config::Paths::for_user().ok().map(|p| p.cache_dir);
+        crate::platform::toast::set_identity(icons.as_deref());
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("todo-desktop.exe"));
     let (tx, mut rx) = unbounded::<ShellEvent>();
     let bench_hidden = bench.as_ref().is_some_and(|b| b.kind == BenchKind::Hotkey);
@@ -362,7 +367,10 @@ fn handle_event(
             }
         }
         ShellEvent::Tray(TrayAction::Quit) => {
-            let _ = main.update(cx, |_, window, _| window.remove_window());
+            let _ = main.update(cx, |root, window, cx| {
+                root.before_quit(cx);
+                window.remove_window();
+            });
             cx.quit();
             return true;
         }

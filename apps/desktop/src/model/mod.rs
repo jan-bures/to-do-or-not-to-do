@@ -18,6 +18,7 @@ pub mod layout;
 pub mod lists;
 pub mod menus;
 pub mod motion;
+pub mod reminders;
 pub use todo_client::intent::{self as commands, quick_add};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -607,6 +608,8 @@ pub enum FieldEdit {
     Due,
     /// Picked from the four levels (the P key cycles them).
     Priority,
+    /// Set, moved or removed in the reminder picker.
+    Reminder,
     Repeat,
     /// Put on and taken off in the tag picker (the T key).
     Tags,
