@@ -21,7 +21,7 @@ use todo_core::ids::{CollectionId, TaskId};
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape};
-use crate::model::layout::{self, DetailPane, OverlayMotion, Width};
+use crate::model::layout::{self, DetailPane, OverlayMotion, OverlayPhase, Width};
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
     quick_add,
@@ -149,8 +149,13 @@ pub struct ShellView {
     notice: Option<Notice>,
     /// The window's width class, as of the last frame.
     width: Width,
-    /// How the narrow window's detail overlay moves, read when it last opened or closed.
+    /// How the narrow window's detail overlay moves, read from Windows each time it mounts or closes.
     overlay_motion: OverlayMotion,
+    /// How the open overlay entered: sliding in, or at rest (see `OverlayPhase::on_mount`).
+    overlay_entry: OverlayPhase,
+    /// Whether the last frame drew the open overlay, and whether it had a task selected.
+    overlay_shown: bool,
+    last_selected: bool,
     /// The detail overlay that was just closed, drawn while it fades out.
     closing: Option<model::Detail>,
     /// Counts overlay closings, so a fade's timer only clears its own.
@@ -249,6 +254,9 @@ impl ShellView {
             notice: None,
             width: Width::of(f32::from(window.viewport_size().width)),
             overlay_motion: OverlayMotion::new(false),
+            overlay_entry: OverlayPhase::Entering,
+            overlay_shown: false,
+            last_selected: false,
             closing: None,
             closings: 0,
             animate: true,
@@ -342,22 +350,20 @@ impl ShellView {
         cx.notify();
     }
 
-    /// In a narrow window, the detail overlay slides in when a task opens and fades out when it closes
-    /// (Esc, the scrim, the close button, or the task going away). The closed pane is kept, drawn, until
-    /// its fade ends; opening a task meanwhile drops it at once.
+    /// In a narrow window, the detail overlay fades out when its task closes (Esc, the scrim, the close
+    /// button, or the task going away). The closed pane is kept, drawn inert, until its fade ends;
+    /// opening a task meanwhile drops it at once. (Opening is handled where the overlay mounts, in
+    /// `mount_overlay`.)
     fn overlay_transition(&mut self, next: &Shell, cx: &mut Context<Self>) {
         let was_open = self.shell.detail.is_some();
         let opens = next.detail.is_some();
         if opens {
             self.closing = None;
         }
-        if was_open == opens || !self.animate || self.width != Width::Narrow {
+        if !was_open || opens || !self.animate || self.width != Width::Narrow {
             return;
         }
         self.overlay_motion = OverlayMotion::new(win::reduced_motion());
-        if opens {
-            return;
-        }
         self.closing = self.shell.detail.clone();
         self.closings += 1;
         let closing = self.closings;
@@ -578,6 +584,25 @@ impl ShellView {
 
     pub fn preview_caption(&mut self, preview: kit::CaptionPreview) {
         self.caption_preview = preview;
+    }
+
+    /// Called each frame with the window's width: when the open overlay appears (a task opened in a narrow
+    /// window, or the window narrowed with one open), reads the reduced-motion setting and decides whether
+    /// it slides in or shows at rest.
+    fn mount_overlay(&mut self, width: Width) {
+        let last_width = self.width;
+        self.width = width;
+        let shown = self.detail_placement() == DetailPane::Overlay;
+        if shown && !self.overlay_shown {
+            self.overlay_entry = if self.animate {
+                self.overlay_motion = OverlayMotion::new(win::reduced_motion());
+                OverlayPhase::on_mount(last_width, self.last_selected)
+            } else {
+                OverlayPhase::Resting
+            };
+        }
+        self.overlay_shown = shown;
+        self.last_selected = self.shell.detail.is_some();
     }
 
     /// Draws every pane at rest, without transitions: for the screenshot fixtures.
@@ -1010,31 +1035,33 @@ impl ShellView {
     }
 
     /// The narrow window's detail: over the right part of the room, with a scrim over the rest of it.
-    /// It slides in from the right and fades in (`OVERLAY_IN`), and fades out when closed
-    /// (`OVERLAY_OUT`); with reduced motion it only fades, briefly. Clicking the scrim closes it and
-    /// leaves the keyboard on the list.
+    /// It slides in from the right and fades in (`OVERLAY_IN`), unless the window narrowed with the task
+    /// already open, and fades out when closed (`OVERLAY_OUT`); with reduced motion it only fades,
+    /// briefly. Clicking the scrim closes it and leaves the keyboard on the list. A pane fading out is
+    /// inert: a shield over it swallows every click and hover, so nothing in it acts on the dismissed
+    /// task, and the scrim still keeps clicks off the rows underneath.
     fn detail_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
         let p = self.palette;
-        let open = self.detail_placement() == DetailPane::Overlay;
-        let detail = if open {
-            self.shell.detail.clone()
-        } else if self.width == Width::Narrow {
-            self.closing.clone()
-        } else {
-            None
-        }?;
+        let (phase, detail) = layout::overlay(
+            self.detail_placement(),
+            self.width,
+            self.shell.detail.clone(),
+            self.overlay_entry,
+            self.closing.clone(),
+        )?;
+        let live = phase.interactive();
         let scrim_color = if p.night() {
             theme::with_alpha(theme::color(chrome::SCRIM_DARK_BASE), chrome::SCRIM_DARK)
         } else {
             theme::with_alpha(p.ink, chrome::SCRIM_LIGHT)
         };
         let scrim = div()
-            .id(if open { "scrim" } else { "scrim-closing" })
+            .id(if live { "scrim" } else { "scrim-closing" })
             .absolute()
             .inset_0()
             .bg(scrim_color)
             .occlude()
-            .when(open, |s| {
+            .when(live, |s| {
                 s.on_click(cx.listener(|this, _, window, cx| {
                     window.focus(&this.list_focus, cx);
                     this.select_task(None, cx);
@@ -1048,46 +1075,60 @@ impl ShellView {
             // Rows under the pane take no clicks or hovers. Blocking them also blocks the shell's own
             // mouse-down, so the pane leaves the keyboard on the list itself, as the shell does.
             .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    if !window.default_prevented() {
-                        window.focus(&this.list_focus, cx);
-                    }
-                }),
-            )
+            .when(live, |d| {
+                d.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        if !window.default_prevented() {
+                            window.focus(&this.list_focus, cx);
+                        }
+                    }),
+                )
+            })
             .shadow(kit::overlay_shadow(&p))
             .child(
                 self.detail_pane(Some(detail), window, cx)
                     .when(p.night(), |d| d.border_color(p.line_strong)),
-            );
-        if !self.animate {
-            return Some(vec![scrim.into_any_element(), pane.into_any_element()]);
-        }
+            )
+            // Painted last, so it blocks every hitbox in the pane: its buttons, checkboxes, steps,
+            // links and scrolling.
+            .when(!live, |d| {
+                d.child(
+                    div()
+                        .id("detail-closing-shield")
+                        .absolute()
+                        .inset_0()
+                        .occlude(),
+                )
+            });
         let m = self.overlay_motion;
         let ms = |n: u32| Duration::from_millis(u64::from(n));
-        Some(if open {
-            let enter = || Animation::new(ms(m.open_ms)).with_easing(|t| motion::ENTER.ease(t));
-            vec![
-                scrim
-                    .with_animation("scrim-in", enter(), |el, t| el.opacity(t))
+        Some(match phase {
+            OverlayPhase::Resting => vec![scrim.into_any_element(), pane.into_any_element()],
+            OverlayPhase::Entering => {
+                let enter = || Animation::new(ms(m.open_ms)).with_easing(|t| motion::ENTER.ease(t));
+                vec![
+                    scrim
+                        .with_animation("scrim-in", enter(), |el, t| el.opacity(t))
+                        .into_any_element(),
+                    pane.with_animation("detail-in", enter(), move |el, t| {
+                        el.opacity(t).right(px(-m.slide * (1. - t)))
+                    })
                     .into_any_element(),
-                pane.with_animation("detail-in", enter(), move |el, t| {
-                    el.opacity(t).right(px(-m.slide * (1. - t)))
-                })
-                .into_any_element(),
-            ]
-        } else {
-            let exit = || Animation::new(ms(m.close_ms)).with_easing(|t| motion::EXIT.ease(t));
-            vec![
-                scrim
-                    .with_animation("scrim-out", exit(), |el, t| el.opacity(1. - t))
+                ]
+            }
+            OverlayPhase::Leaving => {
+                let exit = || Animation::new(ms(m.close_ms)).with_easing(|t| motion::EXIT.ease(t));
+                vec![
+                    scrim
+                        .with_animation("scrim-out", exit(), |el, t| el.opacity(1. - t))
+                        .into_any_element(),
+                    pane.with_animation("detail-out", exit(), move |el, t| {
+                        el.opacity(1. - t).right(px(-m.slide * t))
+                    })
                     .into_any_element(),
-                pane.with_animation("detail-out", exit(), move |el, t| {
-                    el.opacity(1. - t).right(px(-m.slide * t))
-                })
-                .into_any_element(),
-            ]
+                ]
+            }
         })
     }
 
@@ -1799,7 +1840,7 @@ impl Focusable for ShellView {
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        self.width = Width::of(f32::from(window.viewport_size().width));
+        self.mount_overlay(Width::of(f32::from(window.viewport_size().width)));
         let quick_add = self.quick_add_field(window, cx);
         let detail = (self.detail_placement() == DetailPane::Docked).then(|| {
             self.detail_pane(self.shell.detail.clone(), window, cx)

@@ -98,6 +98,56 @@ impl OverlayMotion {
     }
 }
 
+/// How the narrow window's detail overlay is drawn in a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayPhase {
+    /// A task was just opened: the pane slides and fades in.
+    Entering,
+    /// Drawn at rest: a task was already open when the window narrowed past the breakpoint (or the
+    /// screenshot fixtures, which draw everything at rest).
+    Resting,
+    /// The task was closed: its pane fades out, inert, while nothing in it takes input.
+    Leaving,
+}
+
+impl OverlayPhase {
+    /// Whether the pane takes clicks and keys. A pane fading out never does: a click on its fading
+    /// checkbox or step must not change a task that was already dismissed.
+    pub fn interactive(self) -> bool {
+        self != Self::Leaving
+    }
+
+    /// How an overlay that wasn't drawn in the last frame starts: it slides in when a task opened, but
+    /// is drawn at rest when the window was wide with a task already open (a resize crossed the
+    /// breakpoint), so the pane doesn't replay its entrance.
+    pub fn on_mount(last_width: Width, last_selected: bool) -> Self {
+        if last_width == Width::Wide && last_selected {
+            Self::Resting
+        } else {
+            Self::Entering
+        }
+    }
+}
+
+/// What the narrow window draws over the room, and how: the open task's detail (`open`, in `entry`
+/// phase) while the detail pane is an overlay, else the detail just closed (`closing`), fading out and
+/// inert, as long as the window is narrow. Nothing in a wide window.
+pub fn overlay<T>(
+    pane: DetailPane,
+    width: Width,
+    open: Option<T>,
+    entry: OverlayPhase,
+    closing: Option<T>,
+) -> Option<(OverlayPhase, T)> {
+    if pane == DetailPane::Overlay {
+        open.map(|d| (entry, d))
+    } else if width == Width::Narrow {
+        closing.map(|d| (OverlayPhase::Leaving, d))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +235,73 @@ mod tests {
         assert_eq!(reduced.slide, 0.);
         assert!(reduced.open_ms <= motion::REDUCED_FADE && reduced.open_ms > 0);
         assert!(reduced.close_ms <= motion::REDUCED_FADE && reduced.close_ms > 0);
+    }
+
+    #[test]
+    fn a_closing_overlay_is_inert() {
+        let narrow = Width::Narrow;
+        // The task just closed: its pane fades out and takes no input.
+        let (phase, task) = overlay(
+            DetailPane::Hidden,
+            narrow,
+            None,
+            OverlayPhase::Entering,
+            Some("A"),
+        )
+        .expect("fading out");
+        assert_eq!((phase, task), (OverlayPhase::Leaving, "A"));
+        assert!(!phase.interactive());
+        // An open task always wins over one fading out, and takes input.
+        let (phase, task) = overlay(
+            DetailPane::Overlay,
+            narrow,
+            Some("B"),
+            OverlayPhase::Entering,
+            Some("A"),
+        )
+        .expect("open");
+        assert_eq!(task, "B");
+        assert!(phase.interactive());
+        assert!(OverlayPhase::Resting.interactive());
+        // Nothing fades over a wide window, and nothing is drawn once the fade is over.
+        assert_eq!(
+            overlay(
+                DetailPane::Hidden,
+                Width::Wide,
+                None,
+                OverlayPhase::Entering,
+                Some("A")
+            ),
+            None
+        );
+        assert_eq!(
+            overlay::<&str>(
+                DetailPane::Hidden,
+                narrow,
+                None,
+                OverlayPhase::Entering,
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_resize_past_the_breakpoint_shows_an_open_task_at_rest() {
+        // Wide with a task open, then narrowed: no entrance replay.
+        assert_eq!(
+            OverlayPhase::on_mount(Width::Wide, true),
+            OverlayPhase::Resting
+        );
+        // A task opened in a narrow window slides in.
+        assert_eq!(
+            OverlayPhase::on_mount(Width::Narrow, false),
+            OverlayPhase::Entering
+        );
+        // Narrowed and opened in the same frame: it opened, so it slides in.
+        assert_eq!(
+            OverlayPhase::on_mount(Width::Wide, false),
+            OverlayPhase::Entering
+        );
     }
 }
