@@ -305,11 +305,11 @@ test("finished My Day keeps quick-add and makes today's completed tasks availabl
   await completed.click();
   await expect(done).toBeHidden();
   const add = page.getByRole("textbox", { name: "Add a task" });
-  await add.fill("One more thing for today");
+  await add.fill("One more thing today");
   await add.press("Enter");
   await expect(add).toBeFocused();
   await expect(page.locator(".room-head.finished")).toBeHidden();
-  await expect(row(page, "One more thing for today")).toBeVisible();
+  await expect(row(page, "One more thing").locator(".row-title")).toHaveText("One more thing");
   await w.check();
 });
 
