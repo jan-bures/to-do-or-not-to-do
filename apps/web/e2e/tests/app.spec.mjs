@@ -265,6 +265,16 @@ test("collection disclosure preserves navigation and new list creates in the cur
   await expect(page.locator(".eyebrow-lead")).toHaveText("Work");
   await expect(sidebar.getByRole("link", { name: "Reading for the project" })).toHaveAttribute("aria-current", "page");
   await expect(finance).toBeVisible();
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  await add.fill("File a receipt");
+  await add.press("Enter");
+  await add.fill("Pay the invoice fri !!");
+  await add.press("Enter");
+  await expect(rows(page).first().locator(".row-title")).toHaveText("Pay the invoice");
+  await expect(rows(page).first().locator(".col-priority")).toHaveText("!!");
+  await expect(rows(page).nth(1).locator(".row-title")).toHaveText("File a receipt");
+  await rows(page).first().locator(".row-title").click();
+  await expect(page.locator(".props .prop").first()).toContainText("Fri 27 Nov");
   await w.check();
 });
 

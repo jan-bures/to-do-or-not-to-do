@@ -1507,6 +1507,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "todo-core",
+ "todo-design",
  "tracing",
  "uuid",
  "wasm-bindgen",

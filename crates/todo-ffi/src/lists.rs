@@ -62,10 +62,7 @@ pub fn swatch(color: Option<&str>, seed: &[u8]) -> &'static str {
             })
             .map(|s| s.key)
     });
-    named.unwrap_or_else(|| {
-        let i = usize::try_from(fnv(seed) % hues::SWATCHES.len() as u64).unwrap_or(0);
-        hues::SWATCHES[i].key
-    })
+    named.unwrap_or_else(|| hues::swatch_for_seed(seed).key)
 }
 
 /// Words (folded: lowercase, no diacritics) that pick a glyph, checked in order.

@@ -7,7 +7,6 @@
 //!
 //! Nothing here touches GPUI windows, the network or the disk, so it is all unit-tested.
 
-pub mod commands;
 mod derive;
 pub mod draft;
 pub mod files;
@@ -17,7 +16,7 @@ pub mod labels;
 pub mod layout;
 pub mod lists;
 pub mod motion;
-pub mod quick_add;
+pub use todo_client::intent::{self as commands, quick_add};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -180,6 +179,19 @@ impl RoomKey {
             Self::List(l) if !state.is_live(l.into()) => Self::default(),
             Self::Collection(c) if !state.is_live(c.into()) => Self::default(),
             key => key,
+        }
+    }
+}
+
+impl From<RoomKey> for commands::TaskRoom {
+    fn from(room: RoomKey) -> Self {
+        match room {
+            RoomKey::Smart(Smart::MyDay) => Self::MyDay,
+            RoomKey::Smart(Smart::Important) => Self::Important,
+            RoomKey::Smart(Smart::Planned) => Self::Planned,
+            RoomKey::Smart(_) => Self::Other,
+            RoomKey::Collection(id) => Self::Collection(id),
+            RoomKey::List(id) => Self::List(id),
         }
     }
 }

@@ -83,7 +83,31 @@ class ParityTest {
         assertEquals("Garden", room.title)
         assertTrue(room.key is RoomKey.List)
         assertEquals("Nothing here yet.", room.emptyLine)
-        assertTrue(m.ui.value.home.groups.flatMap { it.lists }.any { it.name == "Garden" })
+        assertTrue(m.ui.value.home.groups.single { it.collection == null }.lists.any { it.name == "Garden" })
+    }
+
+    @Test
+    fun new_lists_use_the_current_collection_and_quick_add_goes_first() = runTest {
+        val engine = fixtureEngine()
+        val work = engine.collection("Work")
+        val m = model(engine, work)
+        m.createList("Project")
+        advanceUntilIdle()
+        assertEquals("Project", m.ui.value.room.title)
+        // From a list in the collection, New list creates a sibling.
+        m.createList("Invoices")
+        advanceUntilIdle()
+        val group = m.ui.value.home.groups.single { it.collection?.key == work }
+        assertEquals(listOf("Project", "Invoices"), group.lists.takeLast(2).map { it.name })
+        val invoices = m.ui.value.room.key
+        assertEquals(group.lists.last().key, invoices)
+        m.add("File a receipt")
+        m.add("Pay the invoice fri !!")
+        advanceUntilIdle()
+        val tasks = m.ui.value.room.tasks
+        assertEquals(listOf("Pay the invoice", "File a receipt"), tasks.map { it.title })
+        assertEquals(2.toUByte(), tasks.first().priority)
+        assertTrue(engine.room(RoomKey.Smart(SmartList.PLANNED), FIXTURE_NOW).tasks.any { it.id == tasks.first().id })
     }
 
     @Test

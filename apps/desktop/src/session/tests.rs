@@ -285,21 +285,24 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
     b.start();
 
     // A adds two tasks from My Day's quick-add: the default list is created on the way.
-    let parsed = |t: &str| Parsed {
-        title: t.into(),
-        due: None,
-        priority: None,
-    };
+    let now = crate::model::Now::fixed("2026-11-21T10:35:00Z").eval();
     let room = RoomKey::Smart(Smart::MyDay);
+    let before = a.client().view();
+    let ids = [a.client().new_uuid(), a.client().new_uuid()];
+    let text = "Pay the invoice fri !!";
+    let mut actual_ids = ids.into_iter();
     let (milk, cmds) =
-        commands::add_task(&a.client().view(), room, &parsed("Milk"), today(), || {
-            a.client().new_uuid()
+        commands::quick_add_task(&before, room, text, &now, || actual_ids.next().expect("ID"));
+    let mut expected_ids = ids.into_iter();
+    let (expected_id, expected_cmds) =
+        commands::quick_add_task(&before, commands::TaskRoom::MyDay, text, &now, || {
+            expected_ids.next().expect("ID")
         });
+    assert_eq!((milk, &cmds), (expected_id, &expected_cmds));
     submit(&a, cmds);
-    let (bread, cmds) =
-        commands::add_task(&a.client().view(), room, &parsed("Bread"), today(), || {
-            a.client().new_uuid()
-        });
+    let (bread, cmds) = commands::quick_add_task(&a.client().view(), room, "Bread", &now, || {
+        a.client().new_uuid()
+    });
     submit(&a, cmds);
     let (milk, bread) = (milk.expect("milk"), bread.expect("bread"));
     // Optimistic: A shows both at once, before the server confirms.
@@ -310,7 +313,14 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
         v.tasks.contains_key(&milk) && v.tasks.contains_key(&bread)
     });
     let list = b.client().view().tasks[&milk].list;
-    assert_eq!(b.client().view().lists[&list].name, commands::DEFAULT_LIST);
+    let state = b.client().view();
+    assert_eq!(state.lists[&list].name, commands::DEFAULT_LIST);
+    assert!(state.lists[&list].color.is_some());
+    let task = &state.tasks[&milk];
+    assert_eq!(task.title, "Pay the invoice");
+    assert_eq!(task.my_day, Some(now.today));
+    assert_eq!(task.due, Some("2026-11-27".parse().expect("date")));
+    assert_eq!(task.priority, todo_core::model::Priority::Normal);
     // Both landed at the top: the newer first.
     assert_eq!(order(&b.client().view(), list), vec![bread, milk]);
 

@@ -21,6 +21,7 @@ web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sy
 [dependencies]
 # Default build: pure Rust, no runtime; must build for wasm32-unknown-unknown and aarch64-linux-android.
 todo-core.workspace = true
+todo-design.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true

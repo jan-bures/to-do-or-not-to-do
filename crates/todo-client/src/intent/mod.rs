@@ -1,17 +1,29 @@
-//! What the user's gestures mean as `todo_core` commands. Pure: the caller passes the state, today's date
-//! and a source of fresh IDs (`SyncClient::new_uuid`), and submits the result.
+//! What the user's gestures mean as `todo_core` commands. Pure: clients pass the state, local clock
+//! values and a source of fresh IDs, and submit the result.
+
+pub mod quick_add;
 
 use todo_core::State;
 use todo_core::command::{Command, NewTask, Placement, TaskPatch};
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
 use todo_core::model::{List, Priority};
-use todo_core::query::fold;
+use todo_core::query::{EvalContext, fold};
 use todo_core::time::Date;
 use uuid::Uuid;
 
-use super::lists;
-use super::quick_add::Parsed;
-use super::{RoomKey, Smart};
+use quick_add::Parsed;
+
+/// The room's effect on the destination and defaults of a new task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskRoom {
+    MyDay,
+    Important,
+    Planned,
+    /// A smart list that does not initialize any special fields.
+    Other,
+    Collection(CollectionId),
+    List(ListId),
+}
 
 /// The name of the list tasks land in when the room doesn't pick one.
 pub const DEFAULT_LIST: &str = "Tasks";
@@ -46,21 +58,43 @@ pub fn default_list(state: &State) -> Option<ListId> {
 
 /// A fresh list, with a swatch picked from its ID.
 pub fn create_list(id: ListId, collection: Option<CollectionId>, name: &str) -> Command {
-    let hue = lists::hue(None, id.as_uuid().as_bytes());
+    let swatch = todo_design::hues::swatch_for_seed(id.as_uuid().as_bytes());
     Command::CreateList {
         id,
         collection,
         name: name.trim().to_string(),
-        color: Some(lists::swatch_key(hue).to_string()),
+        color: Some(swatch.key.to_owned()),
         placement: Placement::Last,
     }
 }
 
-/// Commands that add a task typed into a room's quick-add (or the global one, with `RoomKey::Smart(MyDay)`).
-/// Creates the default list first if there is none to put it in. Empty titles add nothing.
+/// The target collection for a contextual New list action. A list gets a sibling; smart rooms
+/// create top-level lists.
+pub fn list_collection(state: &State, room: TaskRoom) -> Option<CollectionId> {
+    match room {
+        TaskRoom::Collection(id) => Some(id),
+        TaskRoom::List(id) if state.is_live(id.into()) => state.lists.get(&id)?.collection,
+        _ => None,
+    }
+    .filter(|id| state.is_live((*id).into()))
+}
+
+/// Parses and builds a quick-add submission using the same local date for syntax and defaults.
+pub fn quick_add_task(
+    state: &State,
+    room: impl Into<TaskRoom>,
+    text: &str,
+    ctx: &EvalContext,
+    new_id: impl FnMut() -> Uuid,
+) -> (Option<TaskId>, Vec<Command>) {
+    add_task(state, room, &quick_add::parse(text, ctx), ctx.today, new_id)
+}
+
+/// Commands that add a task to a room. Creates a list first if there is none to put it in.
+/// Empty titles add nothing.
 pub fn add_task(
     state: &State,
-    room: RoomKey,
+    room: impl Into<TaskRoom>,
     parsed: &Parsed,
     today: Date,
     mut new_id: impl FnMut() -> Uuid,
@@ -68,19 +102,16 @@ pub fn add_task(
     if parsed.title.trim().is_empty() {
         return (None, Vec::new());
     }
+    let room = room.into();
     let mut commands = Vec::new();
     let existing = match room {
-        RoomKey::List(l) if state.is_live(l.into()) => Some(l),
-        RoomKey::Collection(c) => sorted_lists(state, Some(Some(c))).first().map(|l| l.id),
+        TaskRoom::List(l) if state.is_live(l.into()) => Some(l),
+        TaskRoom::Collection(c) => sorted_lists(state, Some(Some(c))).first().map(|l| l.id),
         _ => default_list(state),
     };
     let list = existing.unwrap_or_else(|| {
         let id = ListId::from_uuid(new_id());
-        let collection = match room {
-            RoomKey::Collection(c) if state.is_live(c.into()) => Some(c),
-            _ => None,
-        };
-        commands.push(create_list(id, collection, DEFAULT_LIST));
+        commands.push(create_list(id, list_collection(state, room), DEFAULT_LIST));
         id
     });
     let id = TaskId::from_uuid(new_id());
@@ -89,11 +120,9 @@ pub fn add_task(
     task.due = parsed.due;
     task.priority = parsed.priority.unwrap_or_default();
     match room {
-        RoomKey::Smart(Smart::MyDay) => task.my_day = Some(today),
-        RoomKey::Smart(Smart::Important) if parsed.priority.is_none() => {
-            task.priority = Priority::High;
-        }
-        RoomKey::Smart(Smart::Planned) if parsed.due.is_none() => task.due = Some(today),
+        TaskRoom::MyDay => task.my_day = Some(today),
+        TaskRoom::Important if parsed.priority.is_none() => task.priority = Priority::High,
+        TaskRoom::Planned if parsed.due.is_none() => task.due = Some(today),
         _ => {}
     }
     commands.push(Command::CreateTask(Box::new(task)));
@@ -103,37 +132,43 @@ pub fn add_task(
 /// Completes an open task or reopens a done one.
 pub fn toggle_complete(state: &State, id: TaskId) -> Option<Command> {
     let t = state.tasks.get(&id)?;
-    Some(if t.is_done() {
-        Command::UncompleteTask { id }
-    } else {
+    set_done(state, id, !t.is_done())
+}
+
+/// Requests a specific completion state; a repeated request is a no-op.
+/// Unknown IDs are left for the domain to reject on submission.
+pub fn set_done(state: &State, id: TaskId, done: bool) -> Option<Command> {
+    (!state.tasks.get(&id).is_some_and(|t| t.is_done() == done)).then_some(if done {
         Command::CompleteTask { id }
+    } else {
+        Command::UncompleteTask { id }
     })
+}
+
+/// Sets the task's My Day date, or clears it.
+pub fn set_my_day(id: TaskId, date: Option<Date>) -> Command {
+    Command::SetMyDay { id, date }
 }
 
 /// Adds the task to today's My Day, or takes it out.
 pub fn toggle_my_day(state: &State, id: TaskId, today: Date) -> Option<Command> {
     let t = state.tasks.get(&id)?;
-    Some(Command::SetMyDay {
-        id,
-        date: (t.my_day != Some(today)).then_some(today),
-    })
+    Some(set_my_day(id, (t.my_day != Some(today)).then_some(today)))
 }
 
 /// Marks the task important (high priority), or takes the priority away.
 pub fn toggle_important(state: &State, id: TaskId) -> Option<Command> {
     let t = state.tasks.get(&id)?;
-    let priority = if t.priority == Priority::High {
-        Priority::None
-    } else {
-        Priority::High
-    };
-    Some(update_task(
-        id,
-        TaskPatch {
-            priority: Some(priority),
-            ..TaskPatch::default()
-        },
-    ))
+    set_important(state, id, t.priority != Priority::High)
+}
+
+/// Sets the star state without clearing a lower priority when the star is already off.
+pub fn set_important(state: &State, id: TaskId, on: bool) -> Option<Command> {
+    (!state
+        .tasks
+        .get(&id)
+        .is_some_and(|t| (t.priority == Priority::High) == on))
+    .then(|| set_priority(id, if on { Priority::High } else { Priority::None }))
 }
 
 /// The next priority: none → low → normal → high → none.
@@ -145,13 +180,17 @@ pub fn cycle_priority(state: &State, id: TaskId) -> Option<Command> {
         Priority::Normal => Priority::High,
         Priority::High => Priority::None,
     };
-    Some(update_task(
+    Some(set_priority(id, next))
+}
+
+pub fn set_priority(id: TaskId, priority: Priority) -> Command {
+    update_task(
         id,
         TaskPatch {
-            priority: Some(next),
+            priority: Some(priority),
             ..TaskPatch::default()
         },
-    ))
+    )
 }
 
 pub fn update_task(id: TaskId, patch: TaskPatch) -> Command {
@@ -216,10 +255,19 @@ pub fn add_step(task: TaskId, title: &str, new_id: impl FnOnce() -> Uuid) -> Opt
 
 pub fn toggle_step(state: &State, id: StepId) -> Option<Command> {
     let s = state.steps.get(&id)?;
-    Some(if s.completed_at.is_some() {
-        Command::UncompleteStep { id }
-    } else {
+    set_step_done(state, id, s.completed_at.is_none())
+}
+
+/// Requests a specific step completion state; a repeated request is a no-op.
+pub fn set_step_done(state: &State, id: StepId, done: bool) -> Option<Command> {
+    (!state
+        .steps
+        .get(&id)
+        .is_some_and(|s| s.completed_at.is_some() == done))
+    .then_some(if done {
         Command::CompleteStep { id }
+    } else {
+        Command::UncompleteStep { id }
     })
 }
 
@@ -330,13 +378,7 @@ mod tests {
     fn quick_add_creates_a_default_list_when_there_is_none() {
         let mut w = World::new();
         let state = w.state.clone();
-        let (task, cmds) = add_task(
-            &state,
-            RoomKey::Smart(Smart::MyDay),
-            &parsed("Milk"),
-            today(),
-            || w.id(),
-        );
+        let (task, cmds) = add_task(&state, TaskRoom::MyDay, &parsed("Milk"), today(), || w.id());
         assert_eq!(cmds.len(), 2);
         for c in cmds {
             w.run(c);
@@ -344,27 +386,18 @@ mod tests {
         let t = &w.state.tasks[&task.expect("task")];
         assert_eq!(t.my_day, Some(today()));
         assert_eq!(w.state.lists[&t.list].name, DEFAULT_LIST);
+        assert!(w.state.lists[&t.list].color.is_some());
         // The next one reuses it.
         let state = w.state.clone();
-        let (_, cmds) = add_task(
-            &state,
-            RoomKey::Smart(Smart::All),
-            &parsed("Bread"),
-            today(),
-            || w.id(),
-        );
+        let (_, cmds) = add_task(&state, TaskRoom::Other, &parsed("Bread"), today(), || {
+            w.id()
+        });
         assert_eq!(cmds.len(), 1);
         // Empty titles add nothing.
         assert!(
-            add_task(
-                &w.state,
-                RoomKey::Smart(Smart::All),
-                &parsed("  "),
-                today(),
-                Uuid::nil
-            )
-            .1
-            .is_empty()
+            add_task(&w.state, TaskRoom::Other, &parsed("  "), today(), Uuid::nil)
+                .1
+                .is_empty()
         );
     }
 
@@ -376,7 +409,7 @@ mod tests {
         let state = w.state.clone();
         let (id, cmds) = add_task(
             &state,
-            RoomKey::List(errands),
+            TaskRoom::List(errands),
             &parsed("Stamps"),
             today(),
             || w.id(),
@@ -388,7 +421,7 @@ mod tests {
         let state = w.state.clone();
         let (id, cmds) = add_task(
             &state,
-            RoomKey::Smart(Smart::Important),
+            TaskRoom::Important,
             &parsed("Taxes"),
             today(),
             || w.id(),
@@ -401,7 +434,7 @@ mod tests {
         let state = w.state.clone();
         let (id, cmds) = add_task(
             &state,
-            RoomKey::Smart(Smart::Planned),
+            TaskRoom::Planned,
             &parsed("Dentist"),
             today(),
             || w.id(),
@@ -414,7 +447,7 @@ mod tests {
         let state = w.state.clone();
         let (first, cmds) = add_task(
             &state,
-            RoomKey::List(errands),
+            TaskRoom::List(errands),
             &parsed("Keys"),
             today(),
             || w.id(),
@@ -433,13 +466,58 @@ mod tests {
     }
 
     #[test]
+    fn quick_add_creates_a_list_in_an_empty_collection_and_reuses_it() {
+        let mut w = World::new();
+        let other = w.list("Inbox");
+        let collection = CollectionId::from_uuid(w.id());
+        w.run(Command::CreateCollection {
+            id: collection,
+            name: "Work".into(),
+            color: None,
+            placement: Placement::Last,
+        });
+        let before = w.state.clone();
+        let ctx = EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"));
+        let (id, cmds) = quick_add_task(
+            &before,
+            TaskRoom::Collection(collection),
+            "Pay the invoice fri !!",
+            &ctx,
+            || w.id(),
+        );
+        let [Command::CreateList { id: list, .. }, Command::CreateTask(_)] = cmds.as_slice() else {
+            panic!("expected a list and task");
+        };
+        let list = *list;
+        assert_eq!(cmds[0], create_list(list, Some(collection), DEFAULT_LIST));
+        assert_ne!(list, other);
+        for cmd in cmds {
+            w.run(cmd);
+        }
+        assert_eq!(w.state.tasks[&id.expect("task")].list, list);
+        assert_eq!(
+            list_collection(&w.state, TaskRoom::List(list)),
+            Some(collection)
+        );
+        let before = w.state.clone();
+        let (_, commands) = add_task(
+            &before,
+            TaskRoom::Collection(collection),
+            &parsed("File it"),
+            today(),
+            || w.id(),
+        );
+        assert!(matches!(commands.as_slice(), [Command::CreateTask(t)] if t.list == list));
+    }
+
+    #[test]
     fn toggles_and_edits_round_trip() {
         let mut w = World::new();
         let list = w.list("Errands");
         let state = w.state.clone();
         let (id, cmds) = add_task(
             &state,
-            RoomKey::List(list),
+            TaskRoom::List(list),
             &parsed("Stamps"),
             today(),
             || w.id(),
@@ -497,7 +575,7 @@ mod tests {
         assert_eq!(w.state.lists[&b].name, "Bee");
 
         let state = w.state.clone();
-        let (task, cmds) = add_task(&state, RoomKey::List(b), &parsed("Trip"), today(), || {
+        let (task, cmds) = add_task(&state, TaskRoom::List(b), &parsed("Trip"), today(), || {
             w.id()
         });
         for cmd in cmds {

@@ -936,11 +936,9 @@ impl ShellView {
     /// Adds a task typed into a quick-add, to `room`. Returns whether it was added.
     pub fn add_task(&mut self, text: &str, room: RoomKey, cx: &mut Context<Self>) -> bool {
         let now = self.store.now();
-        let parsed = quick_add::parse(text, &now.eval());
         let store = self.store.clone();
-        let (id, cmds) = commands::add_task(&store.view(), room, &parsed, now.today(), || {
-            store.new_uuid()
-        });
+        let (id, cmds) =
+            commands::quick_add_task(&store.view(), room, text, &now.eval(), || store.new_uuid());
         let ok = id.is_some() && self.submit(cmds);
         self.refresh(cx);
         ok

@@ -10,10 +10,8 @@ use leptos::prelude::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use todo_client::Connection;
-use todo_core::command::{NewTask, Placement, TaskPatch};
-use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
-use todo_core::model::Priority;
+use todo_client::{Connection, intent};
+use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::{Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
 use todo_design::{Glyph, Icon, motion};
@@ -128,6 +126,11 @@ impl Ctx {
         }
     }
 
+    fn submit_intent(self, build: impl FnOnce(&State) -> Option<Command>) -> bool {
+        let command = self.state.with_untracked(|state| build(state));
+        command.is_some_and(|command| self.submit(command))
+    }
+
     fn show_toast(self, text: String, undo: Option<TaskId>) {
         let id = self.toast_seq.get_untracked() + 1;
         self.toast_seq.set(id);
@@ -201,7 +204,7 @@ impl Ctx {
             .iter()
             .position(|s| s.row.id == row.id)
             .unwrap_or(0);
-        if !self.submit(Command::CompleteTask { id: row.id }) {
+        if !self.submit_intent(|state| intent::set_done(state, row.id, true)) {
             return;
         }
         let id = row.id;
@@ -248,7 +251,7 @@ impl Ctx {
 
     fn uncomplete(self, id: TaskId) {
         self.lingering.update(|l| l.retain(|x| x.row.id != id));
-        self.submit(Command::UncompleteTask { id });
+        self.submit_intent(|state| intent::set_done(state, id, false));
     }
 
     fn toggle(self, row: &Row) {
@@ -823,13 +826,10 @@ fn NewList() -> impl IntoView {
                     let Some(i) = input.get_untracked() else { return };
                     let name = i.value().trim().to_owned();
                     if name.is_empty() { return; }
-                    let collection = match c.room.get_untracked() {
-                        RoomId::Collection(id) => Some(id),
-                        RoomId::List(id) => c.state.with_untracked(|s| s.lists.get(&id).and_then(|l| l.collection)),
-                        RoomId::Smart(_) => None,
-                    };
+                    let room = c.room.get_untracked();
+                    let collection = c.state.with_untracked(|state| intent::list_collection(state, (&room).into()));
                     let id = ListId::from_uuid(backend::new_uuid());
-                    if c.submit(Command::CreateList { id, collection, name, color: None, placement: Placement::Last }) {
+                    if c.submit(intent::create_list(id, collection, &name)) {
                         if let Some(group) = collection {
                             c.collapsed.update(|ids| { ids.remove(&group); });
                         }
@@ -1124,33 +1124,25 @@ fn QuickAdd() -> impl IntoView {
     let c = ctx();
     let value = RwSignal::new(String::new());
     let add = move || {
-        let title = value.get_untracked().trim().to_owned();
-        if title.is_empty() {
-            return;
-        }
-        let Some(target) = c.view_room.with_untracked(|r| r.add.clone()) else {
+        let Some(room) = c
+            .view_room
+            .with_untracked(|r| r.add_placeholder.as_ref().map(|_| r.id.clone()))
+        else {
             return;
         };
-        let today = c.now.get_untracked().today();
-        let mut t = NewTask::new(TaskId::from_uuid(backend::new_uuid()), target.list, title);
-        t.placement = Placement::Last;
-        if target.my_day {
-            t.my_day = Some(today);
-        }
-        if target.important {
-            t.priority = Priority::High;
-        }
-        if target.due_today {
-            t.due = Some(today);
-        }
-        if c.submit(Command::CreateTask(Box::new(t))) {
+        let text = value.get_untracked();
+        let now = c.now.get_untracked();
+        let (id, commands) = c.state.with_untracked(|state| {
+            intent::quick_add_task(state, &room, &text, &now.eval(), backend::new_uuid)
+        });
+        if id.is_some() && commands.into_iter().all(|command| c.submit(command)) {
             value.set(String::new());
         }
     };
-    let add_target = Memo::new(move |_| c.view_room.with(|r| r.add.clone()));
+    let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
     view! {
         {move || {
-            add_target.get().map(|target| {
+            add_placeholder.get().map(|placeholder| {
                     view! {
                         <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
                             <span class="qa-plus">{icon(Icon::Plus)}</span>
@@ -1162,7 +1154,7 @@ fn QuickAdd() -> impl IntoView {
                                 autocomplete="off"
                                 enterkeyhint="done"
                                 aria-label="Add a task"
-                                placeholder=target.placeholder
+                                placeholder=placeholder
                                 prop:value=move || value.get()
                                 on:input=move |ev| value.set(event_target_value(&ev))
                             />
@@ -1644,23 +1636,12 @@ fn DetailTop(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
     let important = move || detail.with(|d| d.as_ref().is_some_and(|d| d.important));
     let toggle_important = move |_| {
-        let p = if important() {
-            Priority::None
-        } else {
-            Priority::High
-        };
-        c.submit(Command::UpdateTask {
-            id,
-            patch: TaskPatch {
-                priority: Some(p),
-                ..TaskPatch::default()
-            },
-        });
+        c.submit_intent(|state| intent::toggle_important(state, id));
     };
     let my_day = move || detail.with(|d| d.as_ref().is_some_and(|d| d.my_day));
     let toggle_my_day = move |_| {
-        let date = (!my_day()).then(|| c.now.get_untracked().today());
-        c.submit(Command::SetMyDay { id, date });
+        let today = c.now.get_untracked().today();
+        c.submit_intent(|state| intent::toggle_my_day(state, id, today));
     };
     view! {
         <div class="detail-top">
@@ -1717,7 +1698,7 @@ fn DetailCheck(d: Detail) -> impl IntoView {
         } else if let Some(r) = check_row.clone() {
             c.complete(&r);
         } else {
-            c.submit(Command::CompleteTask { id });
+            c.submit_intent(|state| intent::set_done(state, id, true));
         }
     };
     view! {
@@ -1762,12 +1743,7 @@ fn DetailSteps(d: Detail) -> impl IntoView {
                                 aria-checked=sdone.to_string()
                                 aria-label=format!("Step {}", i + 1)
                                 on:click=move |_| {
-                                    let cmd = if sdone {
-                                        Command::UncompleteStep { id: sid }
-                                    } else {
-                                        Command::CompleteStep { id: sid }
-                                    };
-                                    c.submit(cmd);
+                                    c.submit_intent(|state| intent::set_step_done(state, sid, !sdone));
                                 }
                             >
                                 {tick_svg()}
@@ -1955,18 +1931,9 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
             return;
         }
         c.editing.set(false);
-        let t = draft.text.get_untracked().trim().to_owned();
-        let current = title.get_untracked();
+        let text = draft.text.get_untracked();
         draft.dirty.set(false);
-        if !t.is_empty() && t != current {
-            c.submit(Command::UpdateTask {
-                id,
-                patch: TaskPatch {
-                    title: Some(t),
-                    ..TaskPatch::default()
-                },
-            });
-        }
+        c.submit_intent(|state| intent::retitle(state, id, &text));
         draft.reset(title);
     };
     Effect::new(move |_| {
@@ -2037,17 +2004,9 @@ fn NotesEditor(id: TaskId, notes: Signal<String>) -> impl IntoView {
             prop:value=move || draft.text.get()
             on:input=move |ev| draft.input(event_target_value(&ev))
             on:change=move |_| {
-                let v = draft.text.get_untracked();
+                let text = draft.text.get_untracked();
                 draft.dirty.set(false);
-                if v != notes.get_untracked() {
-                    c.submit(Command::UpdateTask {
-                        id,
-                        patch: TaskPatch {
-                            notes: Some(v),
-                            ..TaskPatch::default()
-                        },
-                    });
-                }
+                c.submit_intent(|state| intent::set_notes(state, id, &text));
             }
         ></textarea>
     }
@@ -2062,17 +2021,10 @@ fn AddStep(id: TaskId) -> impl IntoView {
             class="add-step"
             on:submit=move |ev| {
                 ev.prevent_default();
-                let title = value.get_untracked().trim().to_owned();
-                if title.is_empty() {
-                    return;
-                }
-                let cmd = Command::CreateStep {
-                    id: StepId::from_uuid(backend::new_uuid()),
-                    task: id,
-                    title,
-                    placement: Placement::Last,
-                };
-                if c.submit(cmd) {
+                let title = value.get_untracked();
+                if let Some(cmd) = intent::add_step(id, &title, backend::new_uuid)
+                    && c.submit(cmd)
+                {
                     value.set(String::new());
                 }
             }
@@ -2112,7 +2064,7 @@ fn StatusBar() -> impl IntoView {
                 <Show when=move || !c.read_only() && c.detail.with(Option::is_some)>
                     <span><kbd class="keycap">"E"</kbd>" edit title"</span>
                 </Show>
-                <Show when=move || !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add.is_some())>
+                <Show when=move || !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add_placeholder.is_some())>
                     <span><kbd class="keycap">"N"</kbd>" add task"</span>
                 </Show>
                 <Show when=move || c.detail.with(Option::is_some)>

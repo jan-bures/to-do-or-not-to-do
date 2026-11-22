@@ -14,14 +14,13 @@ use crate::transport::AppTransport;
 use crate::view::{self, Home, RoomKey, RoomView, RowPlacement, SmartList, TaskDetail};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
+use todo_client::intent::{self, TaskRoom};
 use todo_client::native::{Cleartext, HttpTransport, OsEntropy, TokioClock};
 use todo_client::outbox::OutboxEntry;
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::{Storage, StorageError, StorageOp};
 use todo_client::{ClientConfig, Connection, ErrorKind, MemoryStorage, SyncClient};
-use todo_core::command::{NewTask, Placement, TaskPatch};
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
-use todo_core::model::Priority;
 use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
@@ -189,32 +188,18 @@ impl TodoEngine {
     fn is_running(&self) -> bool {
         locked(&self.run).as_ref().is_some_and(|h| !h.is_finished())
     }
+}
 
-    /// Where a new task in `room` goes, and what it starts with: (list, in My Day, priority, due today).
-    fn target(&self, state: &State, room: &RoomKey) -> (Option<ListId>, bool, Priority, bool) {
-        let live = |id: ListId| view::list_live(state, id);
-        let ordered = view::ordered_lists(state);
-        let first_live = ordered.iter().map(|l| l.id).find(|id| live(*id));
-        match room {
-            RoomKey::List { id } => {
-                let list = id.parse().ok().filter(|l| live(*l));
-                (list.or(first_live), false, Priority::None, false)
-            }
-            RoomKey::Collection { id } => {
-                let col: Option<CollectionId> = id.parse().ok();
-                let list = ordered
-                    .iter()
-                    .find(|l| l.collection.is_some() && l.collection == col)
-                    .map(|l| l.id);
-                (list.or(first_live), false, Priority::None, false)
-            }
-            RoomKey::Smart { list } => match list {
-                SmartList::MyDay => (first_live, true, Priority::None, false),
-                SmartList::Important => (first_live, false, Priority::High, false),
-                SmartList::Planned => (first_live, false, Priority::None, true),
-                _ => (first_live, false, Priority::None, false),
-            },
-        }
+fn intent_room(room: RoomKey) -> TaskRoom {
+    match room {
+        RoomKey::List { id } => id.parse().map_or(TaskRoom::Other, TaskRoom::List),
+        RoomKey::Collection { id } => id.parse().map_or(TaskRoom::Other, TaskRoom::Collection),
+        RoomKey::Smart { list } => match list {
+            SmartList::MyDay => TaskRoom::MyDay,
+            SmartList::Important => TaskRoom::Important,
+            SmartList::Planned => TaskRoom::Planned,
+            _ => TaskRoom::Other,
+        },
     }
 }
 
@@ -434,62 +419,34 @@ impl TodoEngine {
         view::detail(&self.client.view(), &id, &Now::new(now))
     }
 
-    /// Adds a task to `room` and returns its ID. In My Day it lands in today's My Day, in Important it is
-    /// high priority, in Planned it is due today; a smart list's task goes to the first list (a "Tasks"
-    /// list is created when there is none).
+    /// Adds a task at the top of its list and returns its ID. The text may have a trailing date and
+    /// priority. The current room picks the list and supplies defaults for My Day, Important and Planned.
     pub fn add_task(
         &self,
         room: RoomKey,
         title: String,
         now: LocalNow,
     ) -> Result<String, FfiError> {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(invalid("A task needs a title."));
+        let (id, commands) = intent::quick_add_task(
+            &self.client.view(),
+            intent_room(room),
+            &title,
+            &Now::new(now).eval(),
+            || self.client.new_uuid(),
+        );
+        let id = id.ok_or_else(|| invalid("A task needs a title."))?;
+        for command in commands {
+            self.client.submit(command)?;
         }
-        let today = Now::new(now).today();
-        let state = self.client.view();
-        let (list, my_day, priority, due_today) = self.target(&state, &room);
-        let list = match list {
-            Some(l) => l,
-            None => {
-                let id = ListId::from_uuid(self.client.new_uuid());
-                self.client.submit(Command::CreateList {
-                    id,
-                    collection: None,
-                    name: "Tasks".into(),
-                    color: None,
-                    placement: Placement::Last,
-                })?;
-                id
-            }
-        };
-        let id = TaskId::from_uuid(self.client.new_uuid());
-        let mut task = NewTask::new(id, list, title);
-        task.my_day = my_day.then_some(today);
-        task.priority = priority;
-        task.due = due_today.then_some(today);
-        self.client.submit(Command::CreateTask(Box::new(task)))?;
         Ok(id.to_string())
     }
 
     /// Completes or reopens a task.
     pub fn set_done(&self, id: String, done: bool) -> Result<(), FfiError> {
         let id = task_id(&id)?;
-        let already = self
-            .client
-            .view()
-            .tasks
-            .get(&id)
-            .is_some_and(|t| t.is_done() == done);
-        if already {
-            return Ok(());
+        if let Some(command) = intent::set_done(&self.client.view(), id, done) {
+            self.client.submit(command)?;
         }
-        self.client.submit(if done {
-            Command::CompleteTask { id }
-        } else {
-            Command::UncompleteTask { id }
-        })?;
         Ok(())
     }
 
@@ -499,9 +456,7 @@ impl TodoEngine {
     pub fn fixture_delete_task(&self, id: String) -> Result<(), FfiError> {
         self.fixture_only()?;
         let id = task_id(&id)?;
-        self.client.submit(Command::Delete {
-            id: EntityId::Task(id),
-        })?;
+        self.client.submit(intent::delete(id))?;
         Ok(())
     }
 
@@ -524,22 +479,13 @@ impl TodoEngine {
         if title.is_empty() {
             return Err(invalid("A task needs a title."));
         }
-        if self
-            .client
-            .view()
-            .tasks
-            .get(&id)
-            .is_some_and(|t| t.title == title)
-        {
-            return Ok(());
+        let state = self.client.view();
+        if !state.tasks.contains_key(&id) {
+            return Err(invalid("No such task."));
         }
-        self.client.submit(Command::UpdateTask {
-            id,
-            patch: TaskPatch {
-                title: Some(title.to_owned()),
-                ..TaskPatch::default()
-            },
-        })?;
+        if let Some(command) = intent::retitle(&state, id, title) {
+            self.client.submit(command)?;
+        }
         Ok(())
     }
 
@@ -547,88 +493,59 @@ impl TodoEngine {
     pub fn set_my_day(&self, id: String, on: bool, now: LocalNow) -> Result<(), FfiError> {
         let id = task_id(&id)?;
         let today = Now::new(now).today();
-        self.client.submit(Command::SetMyDay {
-            id,
-            date: on.then_some(today),
-        })?;
+        self.client
+            .submit(intent::set_my_day(id, on.then_some(today)))?;
         Ok(())
     }
 
     /// Marks a task important (high priority), or takes its priority away, as the desktop's star does.
     pub fn set_important(&self, id: String, on: bool) -> Result<(), FfiError> {
         let id = task_id(&id)?;
-        let priority = if on { Priority::High } else { Priority::None };
-        if self
-            .client
-            .view()
-            .tasks
-            .get(&id)
-            .is_some_and(|t| (t.priority == Priority::High) == on)
-        {
-            return Ok(());
+        if let Some(command) = intent::set_important(&self.client.view(), id, on) {
+            self.client.submit(command)?;
         }
-        self.client.submit(Command::UpdateTask {
-            id,
-            patch: TaskPatch {
-                priority: Some(priority),
-                ..TaskPatch::default()
-            },
-        })?;
         Ok(())
     }
 
     /// Adds a step at the end of a task's steps and returns its ID.
     pub fn add_step(&self, task: String, title: String) -> Result<String, FfiError> {
         let task = task_id(&task)?;
-        let title = title.trim();
-        if title.is_empty() {
+        let Some(command @ Command::CreateStep { id, .. }) =
+            intent::add_step(task, &title, || self.client.new_uuid())
+        else {
             return Err(invalid("A step needs a title."));
-        }
-        let id = StepId::from_uuid(self.client.new_uuid());
-        self.client.submit(Command::CreateStep {
-            id,
-            task,
-            title: title.to_owned(),
-            placement: Placement::Last,
-        })?;
+        };
+        self.client.submit(command)?;
         Ok(id.to_string())
     }
 
     /// Completes or reopens a step.
     pub fn set_step_done(&self, id: String, done: bool) -> Result<(), FfiError> {
         let id: StepId = id.parse().map_err(|_| invalid("no such step"))?;
-        let already = self
-            .client
-            .view()
-            .steps
-            .get(&id)
-            .is_some_and(|s| s.completed_at.is_some() == done);
-        if already {
-            return Ok(());
+        if let Some(command) = intent::set_step_done(&self.client.view(), id, done) {
+            self.client.submit(command)?;
         }
-        self.client.submit(if done {
-            Command::CompleteStep { id }
-        } else {
-            Command::UncompleteStep { id }
-        })?;
         Ok(())
     }
 
-    /// Adds a top-level list at the end, with a swatch picked from its ID, and returns its room.
-    pub fn create_list(&self, name: String) -> Result<RoomKey, FfiError> {
+    /// Adds a list at the end of the given collection (or at the top level), and returns its room.
+    pub fn create_list(
+        &self,
+        name: String,
+        collection: Option<String>,
+    ) -> Result<RoomKey, FfiError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(invalid("A list needs a name."));
         }
+        let collection = collection
+            .as_deref()
+            .map(str::parse::<CollectionId>)
+            .transpose()
+            .map_err(|_| invalid("No such collection."))?;
         let id = ListId::from_uuid(self.client.new_uuid());
-        let swatch = crate::lists::swatch(None, id.as_uuid().as_bytes());
-        self.client.submit(Command::CreateList {
-            id,
-            collection: None,
-            name: name.to_owned(),
-            color: Some(swatch.to_owned()),
-            placement: Placement::Last,
-        })?;
+        self.client
+            .submit(intent::create_list(id, collection, name))?;
         Ok(RoomKey::List { id: id.to_string() })
     }
 
@@ -659,5 +576,64 @@ impl Drop for TodoEngine {
                 h.abort();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use todo_core::time::Timestamp;
+
+    #[test]
+    fn ffi_submits_shared_intents() {
+        let at: Timestamp = "2026-11-21T10:35:00Z".parse().expect("timestamp");
+        let now = LocalNow {
+            epoch_ms: at.as_millisecond(),
+            utc_offset_secs: 0,
+        };
+        let engine = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let before = engine.state();
+        let text = "Pay the invoice fri !!";
+        let id: TaskId = engine
+            .add_task(RoomKey::default(), text.into(), now)
+            .expect("task added")
+            .parse()
+            .expect("task ID");
+        let list = engine.state().tasks[&id].list;
+        let mut ids = [list.as_uuid(), id.as_uuid()].into_iter();
+        let expected = intent::quick_add_task(
+            &before,
+            TaskRoom::MyDay,
+            text,
+            &Now::new(now).eval(),
+            || ids.next().expect("fresh ID"),
+        );
+        let pending = engine.client.pending();
+        assert_eq!(Some(id), expected.0);
+        assert_eq!(
+            pending
+                .iter()
+                .filter_map(OutboxEntry::command)
+                .collect::<Vec<_>>(),
+            expected.1.iter().collect::<Vec<_>>()
+        );
+
+        let engine = TodoEngine::fixture("world".into(), now).expect("fixture");
+        let state = engine.state();
+        let &collection = state.collections.keys().next().expect("collection");
+        let RoomKey::List { id } = engine
+            .create_list(" Garden ".into(), Some(collection.to_string()))
+            .expect("list added")
+        else {
+            panic!("expected a list room");
+        };
+        let id: ListId = id.parse().expect("list ID");
+        let pending = engine.client.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].command(),
+            Some(&intent::create_list(id, Some(collection), "Garden"))
+        );
+        assert_eq!(engine.state().lists[&id].collection, Some(collection));
     }
 }

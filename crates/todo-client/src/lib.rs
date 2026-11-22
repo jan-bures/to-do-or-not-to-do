@@ -36,6 +36,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod client;
+pub mod intent;
 pub mod mirror;
 pub mod notify;
 pub mod outbox;

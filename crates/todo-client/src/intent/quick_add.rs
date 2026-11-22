@@ -117,10 +117,37 @@ pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn ctx() -> EvalContext {
         // Saturday 21 Nov 2026.
-        crate::model::Now::fixed("2026-11-21T10:35:00Z").eval()
+        EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"))
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_text_keeps_a_normalized_title(text in any::<String>()) {
+            let parsed = parse(&text, &ctx());
+            let words = text.split_whitespace().collect::<Vec<_>>();
+            let title_words = parsed.title.split_whitespace().count();
+            let suffixes = usize::from(parsed.due.is_some()) + usize::from(parsed.priority.is_some());
+            prop_assert_eq!(parsed.title.is_empty(), words.is_empty());
+            prop_assert_eq!(title_words + suffixes, words.len());
+            prop_assert_eq!(parsed.title, words[..title_words].join(" "));
+            let _ = due_text(&text, &ctx());
+        }
+
+        #[test]
+        fn arbitrary_title_accepts_trailing_date_and_priority(text in any::<String>(), reverse in any::<bool>()) {
+            let title = format!("Task {text}");
+            let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+            let suffix = if reverse { "!! zítra" } else { "zítra !!" };
+            prop_assert_eq!(parse(&format!("{title} {suffix}"), &ctx()), Parsed {
+                title: normalized,
+                due: d("2026-11-22"),
+                priority: Some(Priority::Normal),
+            });
+        }
     }
 
     fn d(s: &str) -> Option<Date> {

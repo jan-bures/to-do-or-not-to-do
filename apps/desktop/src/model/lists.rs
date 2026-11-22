@@ -22,18 +22,7 @@ pub fn hue(color: Option<&str>, seed: &[u8]) -> Hue {
             .map(|s| s.degrees)
             .or_else(|| hex_hue(c).map(nearest_swatch))
     });
-    named.unwrap_or_else(|| {
-        let i = fnv(seed) as usize % hues::SWATCHES.len();
-        hues::SWATCHES[i].degrees
-    })
-}
-
-/// The swatch key for a hue (for writing a colour back).
-pub fn swatch_key(hue: Hue) -> &'static str {
-    hues::SWATCHES
-        .iter()
-        .min_by(|a, b| hue_distance(a.degrees, hue).total_cmp(&hue_distance(b.degrees, hue)))
-        .map_or("lagoon", |s| s.key)
+    named.unwrap_or_else(|| hues::swatch_for_seed(seed).degrees)
 }
 
 fn nearest_swatch(hue: Hue) -> Hue {
@@ -215,7 +204,6 @@ mod tests {
         let a = hue(Some("#808080"), b"list-1");
         assert_eq!(a, hue(None, b"list-1"));
         assert!(hues::SWATCHES.iter().any(|s| s.degrees == a));
-        assert_eq!(swatch_key(swatch("fern")), "fern");
     }
 
     #[test]

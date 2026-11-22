@@ -57,6 +57,15 @@ pub const SWATCHES: [NamedHue; 12] = [
     named("pink", 352.0),
 ];
 
+/// A stable default swatch from an entity's ID bytes (FNV-1a).
+/// Reduce the 64-bit hash before converting to an index, including on wasm32.
+pub fn swatch_for_seed(seed: &[u8]) -> NamedHue {
+    let hash = seed.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    SWATCHES[(hash % SWATCHES.len() as u64) as usize]
+}
+
 /// Default hues for the agents' letter marks.
 pub const AGENTS: [NamedHue; 3] = [
     named("claude", 38.0),

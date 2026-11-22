@@ -14,6 +14,7 @@ use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::Offset;
 use std::collections::BTreeMap;
+use todo_client::intent::TaskRoom;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
@@ -72,6 +73,19 @@ pub enum RoomId {
 impl Default for RoomId {
     fn default() -> Self {
         RoomId::Smart("my_day")
+    }
+}
+
+impl From<&RoomId> for TaskRoom {
+    fn from(room: &RoomId) -> Self {
+        match *room {
+            RoomId::Smart("my_day") => Self::MyDay,
+            RoomId::Smart("important") => Self::Important,
+            RoomId::Smart("planned") => Self::Planned,
+            RoomId::Smart(_) => Self::Other,
+            RoomId::Collection(id) => Self::Collection(id),
+            RoomId::List(id) => Self::List(id),
+        }
     }
 }
 
@@ -293,31 +307,6 @@ pub fn lists_in(state: &State, collection: Option<CollectionId>) -> Vec<&List> {
         .collect();
     v.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
     v
-}
-
-/// The list new tasks go to from a smart list: one called "Inbox" if there is one, otherwise the
-/// first top-level list, otherwise the first list.
-#[must_use]
-pub fn default_list(state: &State) -> Option<ListId> {
-    let live: Vec<&List> = state
-        .lists
-        .values()
-        .filter(|l| list_live(state, l))
-        .collect();
-    live.iter()
-        .find(|l| l.name.eq_ignore_ascii_case("inbox"))
-        .or_else(|| {
-            lists_in(state, None)
-                .first()
-                .and_then(|f| live.iter().find(|l| l.id == f.id))
-        })
-        .or_else(|| {
-            collections(state)
-                .iter()
-                .find_map(|c| lists_in(state, Some(c.id)).first().copied())
-                .and_then(|f| live.iter().find(|l| l.id == f.id))
-        })
-        .map(|l| l.id)
 }
 
 // ---- sidebar -------------------------------------------------------------------------------------------
@@ -700,21 +689,6 @@ pub struct Eyebrow {
     pub meta: Vec<String>,
 }
 
-/// What quick-add does in a room.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AddTarget {
-    /// The list new tasks go to.
-    pub list: ListId,
-    /// Put it in My Day.
-    pub my_day: bool,
-    /// Mark it important.
-    pub important: bool,
-    /// Due today.
-    pub due_today: bool,
-    /// Placeholder text.
-    pub placeholder: String,
-}
-
 /// A room, ready to render.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Room {
@@ -734,8 +708,8 @@ pub struct Room {
     pub done: usize,
     /// All tasks in the room.
     pub total: usize,
-    /// Where quick-add puts new tasks; `None` if there is no list yet (or in Completed).
-    pub add: Option<AddTarget>,
+    /// The quick-add placeholder, or `None` if the field is hidden in this room.
+    pub add_placeholder: Option<String>,
     /// A query is narrowing the rows, but does not change the room's progress.
     pub filtered: bool,
 }
@@ -817,7 +791,6 @@ fn sort_done(rows: &mut [(&Task, Row)]) {
 pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
     let today = now.today();
     let ctx = now.eval();
-    let fallback = default_list(state);
     let live = |t: &&Task| task_live(state, t);
     let (title, hue, eyebrow, scope, mode, add): (String, &'static str, Eyebrow, Vec<&Task>, _, _) =
         match id {
@@ -849,16 +822,7 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
                         meta: vec![format!("{} tasks", scope.len()).to_uppercase()],
                     }
                 };
-                let add = (*s != "completed")
-                    .then_some(())
-                    .and(fallback)
-                    .map(|list| AddTarget {
-                        list,
-                        my_day: *s == "my_day",
-                        important: *s == "important",
-                        due_today: *s == "planned",
-                        placeholder: "Add a task…".to_owned(),
-                    });
+                let add = (*s != "completed").then(|| "Add a task…".to_owned());
                 (
                     smart_name(s).to_owned(),
                     smart_hue(s),
@@ -887,12 +851,11 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
                     },
                     scope,
                     ChipMode::ListOnly,
-                    lists.first().map(|l| AddTarget {
-                        list: l.id,
-                        my_day: false,
-                        important: false,
-                        due_today: false,
-                        placeholder: format!("Add to {}…", l.name),
+                    coll.filter(|c| c.deleted.is_none()).map(|_| {
+                        lists.first().map_or_else(
+                            || "Add a task…".to_owned(),
+                            |l| format!("Add to {}…", l.name),
+                        )
                     }),
                 )
             }
@@ -917,13 +880,7 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
                     },
                     scope,
                     ChipMode::Hidden,
-                    list.map(|l| AddTarget {
-                        list: l.id,
-                        my_day: false,
-                        important: false,
-                        due_today: false,
-                        placeholder: "Add a task…".to_owned(),
-                    }),
+                    list.map(|_| "Add a task…".to_owned()),
                 )
             }
         };
@@ -988,7 +945,7 @@ pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
         completed,
         done,
         total,
-        add,
+        add_placeholder: add,
         filtered,
     }
 }
@@ -1487,6 +1444,41 @@ mod tests {
     }
 
     #[test]
+    fn quick_add_from_a_web_route_matches_the_shared_intent() {
+        use todo_client::intent;
+        use todo_core::command::{Command, Placement};
+
+        let state = State::new();
+        let route = RoomId::from_path("/app").0;
+        let clock = now();
+        assert!(room(&state, &clock, &route, "").add_placeholder.is_some());
+        let ids = [0, 1].map(|n| todo_core::ids::uuid_v7(1_790_000_000_000 + n, [0; 10]));
+        let build = |target: TaskRoom| {
+            let mut ids = ids.into_iter();
+            intent::quick_add_task(
+                &state,
+                target,
+                "Pay the invoice fri !!",
+                &clock.eval(),
+                || ids.next().expect("ID"),
+            )
+        };
+        let result = build((&route).into());
+        assert_eq!(result, build(TaskRoom::MyDay));
+        let [
+            Command::CreateList { color: Some(_), .. },
+            Command::CreateTask(task),
+        ] = result.1.as_slice()
+        else {
+            panic!("quick add on a fresh account creates a coloured default list then a task");
+        };
+        assert_eq!(task.title, "Pay the invoice");
+        assert_eq!(task.due, Some("2026-11-27".parse().expect("date")));
+        assert_eq!(task.priority, Priority::Normal);
+        assert_eq!(task.placement, Placement::First);
+    }
+
+    #[test]
     fn my_day_counts_match_the_mockup_story() {
         let s = fixtures::state();
         let r = room(&s, &now(), &RoomId::Smart("my_day"), "");
@@ -1496,8 +1488,7 @@ mod tests {
         assert_eq!(r.eyebrow.lead, "Saturday");
         assert_eq!(r.eyebrow.meta, vec!["21 NOV 2026", "W47"]);
         assert!(!r.finished());
-        let add = r.add.unwrap();
-        assert!(add.my_day);
+        assert!(r.add_placeholder.is_some());
     }
 
     #[test]
@@ -1615,7 +1606,7 @@ mod tests {
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_some());
         assert_eq!(r.completed.len(), 12);
-        assert!(r.add.unwrap().my_day);
+        assert!(r.add_placeholder.is_some());
     }
 
     #[test]
