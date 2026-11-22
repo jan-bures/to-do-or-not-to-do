@@ -1406,7 +1406,7 @@ test("an Activity-only 401 asks for the passkey again without persisting sign-ou
     const page = await isolated.newPage();
     const signIn = page.getByRole("button", { name: "Sign in with passkey" });
     await page.goto("/app");
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
 
     // Count attempts, including any navigation that gets cancelled before it commits.
     const cdp = await isolated.newCDPSession(page);
@@ -1433,7 +1433,7 @@ test("an Activity-only 401 asks for the passkey again without persisting sign-ou
     await isolated.addCookies(cookies);
     await page.goto("/app/activity");
     await expect(page).toHaveURL(/\/app\/activity$/);
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
   } finally {
     await isolated.close();
   }
