@@ -217,10 +217,19 @@ pub struct Engine {
     poisoned: AtomicBool,
     /// Test hook: milliseconds to sleep between claiming a commit and committing.
     commit_delay_ms: AtomicU64,
+    /// Test hook: a claimed commit waits for this lock (see [`Engine::hold_commits`]).
+    commit_gate: Mutex<()>,
     /// Writes waiting for the writer (see [`Engine::waiting_writes`]).
     waiting: AtomicUsize,
     /// See [`Engine::set_commit_check`].
     commit_check: RwLock<Option<CommitCheck>>,
+}
+
+/// Keeps claimed commits from committing (see [`Engine::hold_commits`]).
+#[derive(Debug)]
+#[must_use]
+pub struct CommitHold<'a> {
+    _guard: MutexGuard<'a, ()>,
 }
 
 /// Holds the writer lock (see [`Engine::hold_writer`]).
@@ -423,6 +432,7 @@ impl Engine {
             clock,
             poisoned: AtomicBool::new(false),
             commit_delay_ms: AtomicU64::new(0),
+            commit_gate: Mutex::new(()),
             waiting: AtomicUsize::new(0),
             commit_check: RwLock::new(None),
         })
@@ -540,6 +550,16 @@ impl Engine {
             u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );
+    }
+
+    /// Test hook: until the returned guard is dropped, a write that claimed its commit waits (holding
+    /// the writer) before it commits. For tests that need a commit to outlive the request deadline
+    /// without betting on how long a fixed delay takes.
+    #[doc(hidden)]
+    pub fn hold_commits(&self) -> CommitHold<'_> {
+        CommitHold {
+            _guard: lock(&self.commit_gate),
+        }
     }
 
     /// Installs a check that every write (command, undo, unique write) must pass, run inside the
@@ -1093,6 +1113,7 @@ impl Engine {
             if delay > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(delay));
             }
+            drop(lock(&self.commit_gate));
             tx.commit().map_err(StoreError::from)?;
             Ok(result)
         })();

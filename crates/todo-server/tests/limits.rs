@@ -165,20 +165,29 @@ async fn a_commit_in_flight_at_the_deadline_is_awaited_not_reported_as_a_timeout
 
 #[tokio::test]
 async fn a_commit_that_outlives_the_grace_period_is_outcome_unknown_and_a_retry_replays_it() {
-    let t = TestServer::start_with(|c| c.limits.request_timeout_ms = 300).await;
+    // The write only has to claim its commit before the deadline. The commit then waits for the test,
+    // so it outlives the grace period however slowly the machine runs, and lands when released.
+    let t = TestServer::start_with(|c| c.limits.request_timeout_ms = 1000).await;
     let list = t.create_list("L").await;
     let engine = t.server.engine.clone();
     let head = engine.head_seq();
-    engine.set_commit_delay(Duration::from_millis(1000));
     let command_id = id();
     let cmd = json!({ "cmd": "create_task", "id": id(), "list": list, "title": "slower" });
+    let hold = engine.hold_commits();
     let (s, h, v) = t.command_with_id(TOKEN_A, &command_id, cmd.clone()).await;
-    engine.set_commit_delay(Duration::ZERO);
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
     assert_eq!(v["error"]["code"], "outcome_unknown");
     assert_eq!(h.get("retry-after").unwrap(), "1");
+    assert_eq!(engine.head_seq(), head, "the commit is still held");
     // The commit lands; a retry with the same command ID returns it instead of running it again.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    drop(hold);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while engine.head_seq() == head {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the released commit lands");
     assert_eq!(engine.head_seq(), head + 1);
     let (s, h, _) = t.command_with_id(TOKEN_A, &command_id, cmd).await;
     assert_eq!(s, StatusCode::OK);
