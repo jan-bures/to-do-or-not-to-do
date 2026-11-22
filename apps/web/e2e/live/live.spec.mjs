@@ -459,6 +459,56 @@ test("an invite hides its credential while a status response is held past expiry
   }
 });
 
+test("a stalled invite status cannot block a replacement after the grace period", async () => {
+  const page = await openApp();
+  const first = "A".repeat(22);
+  const second = "B".repeat(22);
+  let requests = 0;
+  let release;
+  let polled;
+  let answered;
+  const held = new Promise((resolve) => { release = resolve; });
+  const pollStarted = new Promise((resolve) => { polled = resolve; });
+  const oldReply = new Promise((resolve) => { answered = resolve; });
+  await page.clock.install();
+  await page.route("**/api/v1/pair/invites", (route) => route.fulfill({ json: {
+    id: ++requests === 1 ? first : second, code: "ABCDEF-GHJKMN", expires_in: 2,
+    link: `${baseURL}/pair/invite#${(requests === 1 ? "A" : "B").repeat(43)}`,
+  } }));
+  await page.route(`**/api/v1/pair/invites/${first}`, async (route) => {
+    polled();
+    await held;
+    await route.fulfill({ json: { status: "used", device_name: "Old reply" } }).finally(answered);
+  });
+  await page.route(`**/api/v1/pair/invites/${second}`, (route) => route.fulfill({ json: { status: "pending" } }));
+  const settings = async () => {
+    await page.getByRole("button", { name: "Device settings" }).click();
+    await page.getByRole("button", { name: "Pair a new device" }).click();
+  };
+  const create = page.getByRole("button", { name: "Create invite" });
+  try {
+    await settings();
+    await create.click();
+    await pollStarted;
+    await page.clock.fastForward(2_000);
+    await expect(page.getByText("Checking whether the device joined…")).toBeVisible();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.clock.fastForward(60_000);
+    await settings();
+    await expect(page.getByText("Couldn’t confirm whether the device joined. Check Devices.")).toBeVisible();
+    await create.click();
+    const link = page.getByRole("textbox", { name: "Invite link" });
+    await expect(link).toHaveValue(`${baseURL}/pair/invite#${"B".repeat(43)}`);
+    release();
+    await oldReply;
+    await expect(link).toBeVisible();
+    await expect(page.getByText("Old reply signed in.")).toHaveCount(0);
+  } finally {
+    release();
+    await page.close();
+  }
+});
+
 test("Activity reads confirmed changes and compensates another tab's past edit", async () => {
   const author = await openApp();
   const reader = await openApp();

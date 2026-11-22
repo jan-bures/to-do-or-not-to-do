@@ -40,11 +40,16 @@ async fn an_approved_pairing_yields_a_token_that_syncs() {
 
     // The owner approves in the browser (here: straight on the server).
     let auth = &server.running.authsvc;
-    assert!(
-        auth.pairings
-            .decide(&started.user_code, true, auth.now())
-            .is_some()
-    );
+    let (_, approver_token) = auth.create_device("Approver", None).unwrap();
+    let approver = HttpTransport::new(&server.url(), &approver_token).unwrap();
+    let at = auth
+        .pairings
+        .pending(&started.user_code, auth.now())
+        .unwrap()
+        .created_at;
+    todo_client::device_pairing::review(&approver, &started.user_code, Some(at))
+        .await
+        .unwrap();
     let Polled::Approved { device_id, token } =
         pairing::poll(&anon, &started.poll_token).await.unwrap()
     else {
@@ -91,7 +96,7 @@ async fn a_denied_or_unknown_pairing_gives_no_token() {
     let anon = HttpTransport::anonymous(&server.url()).unwrap();
     let started = pairing::start(&anon, "Test desktop").await.unwrap();
     let auth = &server.running.authsvc;
-    auth.pairings.decide(&started.user_code, false, auth.now());
+    auth.pairings.deny(&started.user_code, auth.now());
     assert_eq!(
         pairing::poll(&anon, &started.poll_token).await,
         Ok(Polled::Denied)

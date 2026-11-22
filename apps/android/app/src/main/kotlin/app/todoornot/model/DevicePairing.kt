@@ -12,6 +12,7 @@ import app.todoornot.core.deviceInviteCancel
 import app.todoornot.core.deviceInviteCreate
 import app.todoornot.core.deviceInvitePollMs
 import app.todoornot.core.deviceInviteStatus
+import app.todoornot.core.deviceInviteStatusMessage
 import app.todoornot.core.devicePairingReview
 import app.todoornot.design.Tokens
 import app.todoornot.session.Session
@@ -107,19 +108,20 @@ internal class DevicePairingModel(
             val remaining = deadline - clock()
             delay(if (remaining > 0) minOf(api.pollMs, remaining) else api.pollMs)
             if (active?.id != id) break
+            deviceInviteStatusMessage(null, false, deadline - clock())?.let {
+                finish(id, it)
+                return@launch
+            }
+            var missing = false
             val result = try {
                 api.status(id)
             } catch (_: FfiException.Expired) {
-                finish(id, if (clock() >= deadline) "Invite expired. Make a new one if needed." else "The invite is no longer available.")
-                break
+                missing = true
+                null
             } catch (_: FfiException) {
                 null
             }
-            when (result) {
-                is DeviceInviteStatus.Used -> finish(id, "${result.deviceName} signed in.")
-                DeviceInviteStatus.Cancelled -> finish(id, "Invite cancelled.")
-                else -> if (clock() >= deadline + STATUS_GRACE_MS) finish(id, "Couldn’t confirm whether the device joined. Check Devices.")
-            }
+            deviceInviteStatusMessage(result, missing, deadline - clock())?.let { finish(id, it) }
         }
     }
 
@@ -160,9 +162,6 @@ internal class DevicePairingModel(
 
     fun cameraDenied() { error = "Camera access was not granted. You can type the code instead." }
 
-    private companion object {
-        const val STATUS_GRACE_MS = 60_000L
-    }
 }
 
 /** One in-memory scanner request, delivered by whichever Activity currently owns the result. */

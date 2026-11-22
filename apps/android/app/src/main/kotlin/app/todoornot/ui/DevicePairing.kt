@@ -3,6 +3,9 @@ package app.todoornot.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.PersistableBundle
+import android.view.Window
+import android.view.WindowManager.LayoutParams.FLAG_SECURE
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -23,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.SecureFlagPolicy
 import app.todoornot.core.DeviceInvitation
 import app.todoornot.core.pairingQr
 import app.todoornot.design.Design
@@ -82,17 +87,31 @@ internal fun DeviceReviewContent(name: String, code: String, source: String?, bu
     Button("Use another code", primary = false, enabled = !busy, onClick = back)
 }
 
+/** Guard the Activity as well as the dialog: task snapshots can use the Activity's window. */
+internal fun protectInviteWindow(window: Window): () -> Unit {
+    val alreadySecure = window.attributes.flags and FLAG_SECURE != 0
+    window.addFlags(FLAG_SECURE)
+    return { if (!alreadySecure) window.clearFlags(FLAG_SECURE) }
+}
+
 @Composable
 internal fun DevicePairingDialog(model: DevicePairingModel, inviting: Boolean, onClose: () -> Unit) {
     val r = LocalDesign.current.room
     val title = if (inviting) "Pair a new device" else "Approve a device"
     val scan = LocalScanPairing.current
-    OverlayDialog(onClose) { overlay ->
+    val current = if (inviting) model.invite else null
+    val activityWindow = LocalActivity.current?.window
+    if (current != null && activityWindow != null) {
+        DisposableEffect(activityWindow) {
+            val restore = protectInviteWindow(activityWindow)
+            onDispose(restore)
+        }
+    }
+    OverlayDialog(onClose, if (current != null) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit) { overlay ->
         DialogCard(title, Modifier.fillMaxWidth()) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.S3.dp)) {
                 Label(title, Tokens.Type.DETAIL_TITLE, r.ink)
                 if (inviting) {
-                    val current = model.invite
                     when {
                         current != null -> DeviceInviteContent(current, model.left, model.busy, model::cancelInvite)
                         model.checking -> Label("Checking whether the device joined…", Tokens.Type.BODY, r.ink)

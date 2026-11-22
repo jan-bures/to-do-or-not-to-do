@@ -10,6 +10,7 @@
 //! poll token is stored as its hash. The device and its token are created when the approved client
 //! polls, so the plain token never sits in memory or on disk waiting to be fetched.
 
+use super::invite::Issuer;
 use super::secret::{self, RandomError};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -53,7 +54,7 @@ pub struct Pairing {
     /// The client address that started it.
     pub source: Option<IpAddr>,
     /// The issuer that approved it, if any.
-    pub issued_by: Option<String>,
+    issuer: Option<Issuer>,
 }
 
 /// A newly started pairing, as returned to the client.
@@ -69,7 +70,7 @@ pub struct Started {
 
 /// What a poll found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Poll {
+pub(crate) enum Poll {
     /// Still waiting.
     Pending,
     /// Approved: the caller now creates the device. The request is gone.
@@ -77,7 +78,7 @@ pub enum Poll {
         /// The device name.
         device_name: String,
         /// The device or session that approved the pairing.
-        issued_by: Option<String>,
+        issuer: Issuer,
     },
     /// Denied. The request is gone.
     Denied,
@@ -215,7 +216,7 @@ impl Pairings {
                 expires_at,
                 status: Status::Pending,
                 source,
-                issued_by: None,
+                issuer: None,
             },
         );
         Ok(Started {
@@ -239,10 +240,9 @@ impl Pairings {
             .cloned()
     }
 
-    /// Approves or denies a pending request. Returns it, or `None` if there is no such pending request.
-    /// A user code can be decided once.
-    pub fn decide(&self, user_code: &str, approve: bool, now: i64) -> Option<Pairing> {
-        self.decide_inner(user_code, approve, None, None, now)
+    /// Denies a pending request. A user code can be decided once.
+    pub fn deny(&self, user_code: &str, now: i64) -> Option<Pairing> {
+        self.decide(user_code, None, None, now)
     }
 
     /// Approves the request matching the code and creation time reviewed by the owner.
@@ -250,18 +250,17 @@ impl Pairings {
         &self,
         code: &str,
         created_at: Option<i64>,
-        issuer: &super::invite::Issuer,
+        issuer: &Issuer,
         now: i64,
     ) -> Option<Pairing> {
-        self.decide_inner(code, true, created_at, Some(issuer), now)
+        self.decide(code, created_at, Some(issuer), now)
     }
 
-    fn decide_inner(
+    fn decide(
         &self,
         user_code: &str,
-        approve: bool,
         created_at: Option<i64>,
-        issuer: Option<&super::invite::Issuer>,
+        issuer: Option<&Issuer>,
         now: i64,
     ) -> Option<Pairing> {
         let code = secret::normalize_code(user_code);
@@ -272,8 +271,8 @@ impl Pairings {
         if p.status != Status::Pending || created_at.is_some_and(|at| p.created_at != at) {
             return None;
         }
-        p.issued_by = issuer.map(super::invite::Issuer::label);
-        p.status = if approve {
+        p.issuer = issuer.cloned();
+        p.status = if issuer.is_some() {
             Status::Approved
         } else {
             Status::Denied
@@ -285,7 +284,7 @@ impl Pairings {
 
     /// Polls with a poll token. A decided request is removed by the poll that reports it, so the
     /// outcome (and the device token) is delivered exactly once.
-    pub fn poll(&self, poll_token: &str, now: i64) -> Poll {
+    pub(crate) fn poll(&self, poll_token: &str, now: i64) -> Poll {
         let hash = secret::digest(poll_token);
         let mut inner = self.lock();
         inner.purge(now);
@@ -303,10 +302,10 @@ impl Pairings {
                 };
                 inner.by_code.remove(&p.user_code);
                 if p.status == Status::Approved {
-                    Poll::Approved {
+                    p.issuer.map_or(Poll::Gone, |issuer| Poll::Approved {
                         device_name: p.device_name,
-                        issued_by: p.issued_by,
-                    }
+                        issuer,
+                    })
                 } else {
                     Poll::Denied
                 }
@@ -341,7 +340,7 @@ mod tests {
         p.start("x", Some(b), 3, 0).unwrap();
         // A decided request no longer counts; an expired one is purged.
         let first = first.unwrap();
-        p.decide(&first.user_code, false, 1).unwrap();
+        p.deny(&first.user_code, 1).unwrap();
         p.start("x", Some(a), 3, 1).unwrap();
         p.start("x", Some(a), 3, PAIRING_TTL_MS + 1).unwrap();
     }
@@ -354,14 +353,18 @@ mod tests {
         assert_eq!(p.poll(&s.poll_token, 1), Poll::Pending);
         let lower = s.user_code.to_lowercase();
         assert_eq!(p.pending(&lower, 1).unwrap().device_name, "Laptop");
-        assert!(p.decide(&s.user_code, true, 2).is_some());
-        assert!(p.decide(&s.user_code, true, 2).is_none(), "single use");
+        let issuer = Issuer::Session("session".into());
+        assert!(p.approve_reviewed(&s.user_code, None, &issuer, 2).is_some());
+        assert!(
+            p.approve_reviewed(&s.user_code, None, &issuer, 2).is_none(),
+            "single use"
+        );
         assert!(p.pending(&s.user_code, 2).is_none());
         assert_eq!(
             p.poll(&s.poll_token, 3),
             Poll::Approved {
                 device_name: "Laptop".into(),
-                issued_by: None,
+                issuer,
             }
         );
         assert_eq!(p.poll(&s.poll_token, 4), Poll::Gone, "delivered once");
@@ -371,10 +374,14 @@ mod tests {
     fn requests_expire() {
         let p = Pairings::default();
         let s = p.start_any("Phone", 0).unwrap();
-        assert!(p.decide(&s.user_code, true, PAIRING_TTL_MS).is_none());
+        let issuer = Issuer::Session("session".into());
+        assert!(
+            p.approve_reviewed(&s.user_code, None, &issuer, PAIRING_TTL_MS)
+                .is_none()
+        );
         assert_eq!(p.poll(&s.poll_token, PAIRING_TTL_MS), Poll::Gone);
         let s = p.start_any("Phone", 0).unwrap();
-        p.decide(&s.user_code, false, 1).unwrap();
+        p.deny(&s.user_code, 1).unwrap();
         assert_eq!(p.poll(&s.poll_token, 2), Poll::Denied);
     }
 

@@ -4,8 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /** [KeyValues] over the app's private SharedPreferences (excluded from backups). */
-class PrefsKeyValues(context: Context, name: String = "session") : KeyValues {
-    private val prefs: SharedPreferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
+class PrefsKeyValues internal constructor(private val prefs: SharedPreferences) : KeyValues {
+    constructor(context: Context, name: String = "session") : this(context.getSharedPreferences(name, Context.MODE_PRIVATE))
 
     override fun get(key: String): String? = prefs.getString(key, null)
 

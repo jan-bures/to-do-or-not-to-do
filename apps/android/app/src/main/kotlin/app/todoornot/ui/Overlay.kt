@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -275,14 +276,18 @@ fun DialogCard(title: String, modifier: Modifier = Modifier, content: @Composabl
  * `choose` runs a button's action only once.
  */
 @Composable
-fun OverlayDialog(onDismiss: () -> Unit, content: @Composable (OverlayState) -> Unit) {
+fun OverlayDialog(
+    onDismiss: () -> Unit,
+    securePolicy: SecureFlagPolicy = SecureFlagPolicy.Inherit,
+    content: @Composable (OverlayState) -> Unit,
+) {
     val overlay = rememberOverlay(onDismiss)
     val density = LocalDensity.current
     val rise = with(density) { M.DIALOG_RISE.dp.roundToPx() }
     val drop = with(density) { M.DIALOG_DROP.dp.roundToPx() }
     Dialog(
         onDismissRequest = overlay::close,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false, securePolicy = securePolicy),
     ) {
         // The scrim is ours (the token's colour, fading with the card), not the window's dim.
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window

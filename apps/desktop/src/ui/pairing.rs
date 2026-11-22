@@ -53,14 +53,17 @@ enum Step {
     /// Contacting the selected origin.
     Starting { server: String, redeeming: bool },
     /// The code is shown; waiting for the owner to approve it.
-    Waiting {
-        server: String,
-        code: SharedString,
-        verify: String,
-        expires: Instant,
-        /// A transient problem, shown under the code while polling continues.
-        note: Option<SharedString>,
-    },
+    Waiting(WaitingStep),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WaitingStep {
+    server: String,
+    code: SharedString,
+    verify: String,
+    expires: Instant,
+    /// A transient problem, shown under the code while polling continues.
+    note: Option<SharedString>,
 }
 
 /// What to do after a poll.
@@ -168,6 +171,7 @@ pub struct PairingView {
     invite: Entity<TextInput>,
     invite_target: Option<device_pairing::RedeemTarget>,
     confirm_focus: FocusHandle,
+    waiting_focus: [FocusHandle; 3],
     step: Step,
     /// The name the owner sees when approving.
     device_name: SharedString,
@@ -212,13 +216,13 @@ impl PairingView {
         let mut this = Self::build(theme, "To-do on WORKSTATION".into(), window, cx);
         let host = server.trim_start_matches("https://").to_string();
         if waiting {
-            this.step = Step::Waiting {
+            this.step = Step::Waiting(WaitingStep {
                 server: server.into(),
                 code: code.to_string().into(),
                 verify: pairing::approval_url(server, code),
                 expires: Instant::now() + Duration::from_secs(600),
                 note: None,
-            };
+            });
         } else {
             this.input.update(cx, |i, cx| i.set_text(host, cx));
         }
@@ -264,6 +268,7 @@ impl PairingView {
             invite,
             invite_target: None,
             confirm_focus: cx.focus_handle(),
+            waiting_focus: std::array::from_fn(|_| cx.focus_handle()),
             step: Step::Enter { error: None },
             device_name,
             attempt: 0,
@@ -412,13 +417,13 @@ impl PairingView {
                 }
                 // Never the server's `verification_uri`: the page comes from the checked origin.
                 let verify = approval_page(&server, &started);
-                v.step = Step::Waiting {
+                v.step = Step::Waiting(WaitingStep {
                     server: server.clone(),
                     code: started.user_code.clone().into(),
                     verify,
                     expires: Instant::now() + Duration::from_secs(u64::from(started.expires_in)),
                     note: None,
-                };
+                });
                 cx.notify();
                 true
             });
@@ -435,8 +440,7 @@ impl PairingView {
                         .await;
                     if !ticker
                         .update(cx, |view, cx| {
-                            if view.attempt == attempt && matches!(view.step, Step::Waiting { .. })
-                            {
+                            if view.attempt == attempt && matches!(view.step, Step::Waiting(_)) {
                                 cx.notify();
                                 true
                             } else {
@@ -498,8 +502,8 @@ impl PairingView {
         }
         let wait = match next {
             Next::Again(wait, note) => {
-                if let Step::Waiting { note: n, .. } = &mut self.step {
-                    *n = note;
+                if let Step::Waiting(waiting) = &mut self.step {
+                    waiting.note = note;
                 }
                 Some(wait)
             }
@@ -621,15 +625,53 @@ impl PairingView {
                     .child(div().id("redeem-invite").child(kit::button_quiet(&p, "Use invite")).on_click(cx.listener(|this, _, _, cx| this.redeem(cx)))))))
     }
 
-    fn waiting(
+    fn waiting_button(
         &self,
-        server: &str,
-        code: &SharedString,
-        verify: &str,
-        expires: Instant,
-        note: Option<&SharedString>,
+        id: &'static str,
+        label: &'static str,
+        index: usize,
+        window: &Window,
+        activate: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> impl IntoElement {
+        let focus = &self.waiting_focus[index];
+        let key_activate = activate.clone();
+        div()
+            .id(id)
+            .track_focus(focus)
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .rounded(px(radius::BUTTON))
+            .border(px(elevation::HAIRLINE))
+            .border_color(if focus.is_focused(window) {
+                self.palette.accent
+            } else {
+                self.palette.pane
+            })
+            .child(kit::button_quiet(&self.palette, label))
+            .on_click(cx.listener(move |this, _, window, cx| activate(this, window, cx)))
+            .on_key_down(
+                cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
+                    if !e.keystroke.modifiers.modified()
+                        && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        cx.stop_propagation();
+                        if !e.is_held {
+                            key_activate(this, window, cx);
+                        }
+                    }
+                }),
+            )
+    }
+
+    fn waiting(&self, waiting: &WaitingStep, window: &Window, cx: &mut Context<Self>) -> Div {
+        let WaitingStep {
+            server,
+            code,
+            verify,
+            expires,
+            note,
+        } = waiting;
         let p = self.palette;
         let host = server
             .trim_start_matches("https://")
@@ -683,19 +725,9 @@ impl PairingView {
                     .flex()
                     .items_center()
                     .gap(px(space::S3))
-                    .child(
-                        div()
-                            .id("open-again")
-                            .child(kit::button_quiet(&p, "Open approval page"))
-                            .on_click(move |_, _, cx| cx.open_url(&verify)),
-                    )
-                    .child(div().id("copy-pairing-link").child(kit::button_quiet(&p, "Copy link")).on_click(move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))
-                    .child(
-                        div()
-                            .id("cancel")
-                            .child(kit::button_quiet(&p, "Use another address"))
-                            .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
-                    ),
+                    .child(self.waiting_button("open-again", "Open approval page", 0, window, move |_, _, cx| cx.open_url(&verify), cx))
+                    .child(self.waiting_button("copy-pairing-link", "Copy link", 1, window, move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())), cx))
+                    .child(self.waiting_button("cancel", "Use another address", 2, window, Self::cancel, cx)),
             )
     }
 }
@@ -761,16 +793,14 @@ impl Render for PairingView {
                     format!("Connecting to {server}…")
                 }),
             ),
-            Step::Waiting {
-                server,
-                code,
-                verify,
-                expires,
-                note,
-            } => (
-                "Approve",
-                self.waiting(&server, &code, &verify, expires, note.as_ref(), cx),
-            ),
+            Step::Waiting(waiting) => {
+                // The address field has unmounted; without a focused child, Tab would not reach us.
+                if self.wiring.is_some() && !self.waiting_focus.iter().any(|f| f.is_focused(window))
+                {
+                    window.focus(&self.waiting_focus[0], cx);
+                }
+                ("Approve", self.waiting(&waiting, window, cx))
+            }
         };
         // While waiting, every poll re-renders, which keeps the expiry line true.
         let bar = || {
@@ -782,20 +812,36 @@ impl Render for PairingView {
         div()
             .id("pairing")
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
-                if e.keystroke.key == "tab" && !e.is_held && matches!(this.step, Step::Enter { .. })
+                let mods = e.keystroke.modifiers;
+                if e.keystroke.key != "tab"
+                    || e.is_held
+                    || mods.control
+                    || mods.alt
+                    || mods.platform
                 {
-                    let server = this.input.read(cx).focus_handle.clone();
-                    let invite = this.invite.read(cx).focus_handle.clone();
-                    window.focus(
-                        if server.is_focused(window) {
-                            &invite
-                        } else {
-                            &server
-                        },
-                        cx,
-                    );
-                    cx.stop_propagation();
+                    return;
                 }
+                let fields;
+                let order = match this.step {
+                    Step::Enter { .. } => {
+                        fields = [
+                            this.input.read(cx).focus_handle.clone(),
+                            this.invite.read(cx).focus_handle.clone(),
+                        ];
+                        fields.as_slice()
+                    }
+                    Step::Waiting(_) => this.waiting_focus.as_slice(),
+                    _ => return,
+                };
+                let current = order.iter().position(|f| f.is_focused(window));
+                let next = if mods.shift {
+                    current.map_or(order.len() - 1, |i| (i + order.len() - 1) % order.len())
+                } else {
+                    current.map_or(0, |i| (i + 1) % order.len())
+                };
+                window.focus(&order[next], cx);
+                cx.stop_propagation();
+                cx.notify();
             }))
             .size_full()
             .flex()
@@ -883,6 +929,36 @@ mod tests {
     use super::*;
 
     const SEC: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn the_waiting_buttons_are_reachable_and_usable_by_keyboard() {
+        let app_url = "https://todo.example.com";
+        let code = "ABCD-EFGH";
+        let link = pairing::approval_url(app_url, code);
+        let mut app = gpui::TestApp::new();
+        let mut window = app.open_window(|window, cx| {
+            let view = PairingView::fixture(Theme::Light, app_url, code, true, window, cx);
+            window.focus(&view.waiting_focus[0], cx);
+            view
+        });
+        window.draw();
+        window.simulate_keystroke("shift-tab");
+        window.update(|view, window, _| assert!(view.waiting_focus[2].is_focused(window)));
+        window.simulate_keystroke("tab");
+        window.update(|view, window, _| assert!(view.waiting_focus[0].is_focused(window)));
+        window.simulate_keystroke("enter");
+        assert_eq!(app.opened_url().as_deref(), Some(link.as_str()));
+        window.simulate_keystrokes("tab space");
+        assert_eq!(
+            app.read_from_clipboard().and_then(|item| item.text()),
+            Some(link)
+        );
+        window.simulate_keystrokes("tab enter");
+        window.update(|view, window, cx| {
+            assert!(matches!(view.step, Step::Enter { .. }));
+            assert!(view.input.read(cx).focus_handle.is_focused(window));
+        });
+    }
 
     #[test]
     fn the_approval_page_ignores_the_servers_link() {

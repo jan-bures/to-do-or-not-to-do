@@ -276,6 +276,7 @@ pub struct ShellView {
     reminder_focus: FocusHandle,
     account_focus: FocusHandle,
     pairing_panel: Option<Entity<device_pairing::Panel>>,
+    invite_panel: Option<Entity<device_pairing::Panel>>,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
     filter: Entity<TextInput>,
@@ -429,6 +430,7 @@ impl ShellView {
             reminder_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
             pairing_panel: None,
+            invite_panel: None,
             inline: None,
             filter,
             edit,
@@ -3795,7 +3797,9 @@ impl Render for ShellView {
         let footer = self.list_footer(overlay.is_none(), cx);
         div()
             .id("shell")
-            .key_context("Shell")
+            .when(self.pairing_panel.is_none(), |shell| {
+                shell.key_context("Shell")
+            })
             .on_key_down(cx.listener(|this, e, window, cx| this.tab_key(e, window, cx)))
             .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
                 let focus = this.focus_now(window, cx);

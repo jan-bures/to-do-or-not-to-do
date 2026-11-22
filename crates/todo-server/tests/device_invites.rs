@@ -201,6 +201,9 @@ async fn browser_registration_is_single_use_and_cancellable_until_finish() {
             StatusCode::NOT_FOUND
         );
     }
+    let audit = owner.get("/admin/audit").await.body;
+    assert!(audit.contains("invite_created"));
+    assert!(audit.contains("invite_cancelled"));
 }
 
 #[tokio::test]
@@ -281,7 +284,8 @@ async fn expiring_an_invite_also_expires_its_browser_ceremony_and_requires_step_
 #[tokio::test]
 async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites() {
     let env = Env::start().await;
-    let owner = env.owner().await;
+    let mut owner = env.owner().await;
+    owner.step_up().await;
     assert_eq!(
         owner.post_form("/auth/passkeys/1/revoke", &[]).await.status,
         StatusCode::CONFLICT
@@ -337,6 +341,16 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     );
 
     invited.step_up().await;
+    assert_eq!(
+        invited
+            .post_form("/auth/passkeys/1/revoke", &[])
+            .await
+            .status,
+        StatusCode::FORBIDDEN,
+    );
+    let newer_view = invited.get("/admin/devices").await.body;
+    assert!(!newer_view.contains("/auth/passkeys/1/revoke"));
+    assert!(newer_view.contains("A newer passkey cannot remove an older one."));
     let joined = invited.post_json(INVITES, json!({})).await.json();
     let redeem_body =
         |invite: &Value| json!({ "secret": string(invite, "code"), "device_name": "Phone" });
@@ -419,6 +433,124 @@ async fn revoked_device_cannot_authorize_redemption() {
             .status,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn revocation_covers_descendants_and_prevents_finishing_approved_pairings() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let installer = env.browser();
+    let mut invite = owner.post_json(INVITES, json!({})).await.json();
+    let mut devices = Vec::new();
+    for name in ["Root device", "Child device", "Grandchild device"] {
+        let paired = installer
+            .post_json(
+                REDEEM,
+                json!({"secret": invite["code"], "device_name": name}),
+            )
+            .await;
+        assert_eq!(paired.status, StatusCode::OK);
+        let device = paired.json();
+        let created = env
+            .api(Method::POST, INVITES, string(&device, "token"), None)
+            .await;
+        assert_eq!(created.status, StatusCode::OK);
+        invite = created.json;
+        devices.push(device);
+    }
+    let mut browser = env.browser();
+    let started = browser.post_json("/auth/invite/start", json!({
+        "secret": string(&invite, "link").split_once('#').unwrap().1, "device_name": "Derived browser"
+    })).await.json();
+    let attestation = browser.register(&started["options"]);
+    let registered = browser
+        .post_json(
+            "/auth/invite/finish",
+            json!({"ceremony": started["ceremony"], "credential": attestation}),
+        )
+        .await;
+    assert_eq!(registered.status, StatusCode::OK);
+    browser.adopt(&registered).await;
+    browser.step_up().await;
+    let browser_invite = browser.post_json(INVITES, json!({})).await.json();
+    let from_browser = installer
+        .post_json(
+            REDEEM,
+            json!({"secret": browser_invite["code"], "device_name": "Browser descendant"}),
+        )
+        .await;
+    assert_eq!(from_browser.status, StatusCode::OK);
+    devices.push(from_browser.json());
+    assert!(
+        browser
+            .post_form("/auth/logout", &[])
+            .await
+            .status
+            .is_redirection()
+    );
+    assert_eq!(browser.login().await.status, StatusCode::OK);
+
+    let pending = installer
+        .post_json(
+            "/api/v1/pair/start",
+            json!({"device_name": "Waiting device"}),
+        )
+        .await
+        .json();
+    let grandchild = string(&devices[2], "token");
+    let seen = env
+        .api(
+            Method::POST,
+            REVIEW,
+            grandchild,
+            Some(json!({"code": pending["user_code"]})),
+        )
+        .await;
+    assert_eq!(seen.status, StatusCode::OK);
+    let approved = env
+        .api(
+            Method::POST,
+            REVIEW,
+            grandchild,
+            Some(json!({"code": pending["user_code"], "approve_at": seen.json["created_at"]})),
+        )
+        .await;
+    assert_eq!(approved.status, StatusCode::OK);
+    assert!(
+        owner
+            .get("/admin/devices")
+            .await
+            .body
+            .contains("Also signs out 4 devices it added.")
+    );
+    let root = string(&devices[0], "device_id");
+    assert!(
+        owner
+            .post_form(&format!("/admin/devices/{root}/revoke"), &[])
+            .await
+            .status
+            .is_redirection()
+    );
+    for device in devices {
+        assert_eq!(
+            env.api(Method::GET, "/api/v1/lists", string(&device, "token"), None)
+                .await
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert!(browser.get("/admin/devices").await.status.is_redirection());
+    let listing = owner.get("/admin/devices").await.body;
+    assert!(!listing.contains("Derived browser"));
+    assert!(listing.contains("First passkey"));
+    let poll = installer
+        .post_json(
+            "/api/v1/pair/poll",
+            json!({"poll_token": pending["poll_token"]}),
+        )
+        .await;
+    assert_eq!(poll.status, StatusCode::NOT_FOUND);
+    assert_eq!(poll.json()["error"]["code"], "pairing_not_found");
 }
 
 #[tokio::test]

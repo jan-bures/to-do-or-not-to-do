@@ -58,6 +58,7 @@ interface PairingActions {
     fun cancel()
     fun redeem(address: String, invite: String) = Unit
     fun confirmInvite() = Unit
+    fun retrySave() = Unit
     fun scanInvite(address: String) = Unit
     fun openLink(url: String)
     fun copyLink(url: String)
@@ -90,6 +91,10 @@ fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, f
                 Button("Go back", primary = false, onClick = actions::cancel)
             }
             is PairingState.Finishing -> Body("Finishing pairing with ${state.server}…")
+            PairingState.SaveFailed -> {
+                Body("This phone joined, but couldn’t save its sign-in. Try saving again without using another code.")
+                Button("Try saving again", primary = true, onClick = actions::retrySave)
+            }
             is PairingState.Waiting -> Waiting(state, actions, fixedRemainingSeconds)
         }
     }

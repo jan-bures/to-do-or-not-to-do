@@ -174,10 +174,10 @@ pub async fn poll(
         Poll::Gone => return Err(gone()),
         Poll::Approved {
             device_name,
-            issued_by,
+            issuer,
         } => {
             let (device_id, token) = blocking(&app.authsvc, move |svc| {
-                svc.create_approved_device(&device_name, ip.0, issued_by.as_deref())
+                svc.create_approved_device(&device_name, ip.0, &issuer)
             })
             .await??;
             PairStatus::Approved { device_id, token }
@@ -186,7 +186,7 @@ pub async fn poll(
     Ok(Json(status).into_response())
 }
 
-pub(super) fn gone() -> ApiError {
+pub(crate) fn gone() -> ApiError {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "pairing_not_found",

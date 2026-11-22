@@ -72,11 +72,16 @@ impl TestServer {
             PairPoll::Pending { .. }
         ));
         let auth = &self.running.authsvc;
-        assert!(
-            auth.pairings
-                .decide(&started.user_code, true, auth.now())
-                .is_some()
-        );
+        let (_, token) = auth.create_device("Approver", None).unwrap();
+        let at = auth
+            .pairings
+            .pending(&started.user_code, auth.now())
+            .unwrap()
+            .created_at;
+        let transport = todo_client::native::HttpTransport::new(&self.url(), &token).unwrap();
+        todo_client::device_pairing::review(&transport, &started.user_code, Some(at))
+            .await
+            .unwrap();
         match pairing::poll(&self.url(), &started.poll_token, LOOPBACK)
             .await
             .unwrap()
@@ -235,9 +240,7 @@ async fn a_denied_or_unknown_pairing_gives_no_token() {
         .await
         .unwrap();
     let auth = &server.running.authsvc;
-    auth.pairings
-        .decide(&started.user_code, false, auth.now())
-        .unwrap();
+    auth.pairings.deny(&started.user_code, auth.now()).unwrap();
     assert_eq!(
         pairing::poll(&server.url(), &started.poll_token, LOOPBACK)
             .await

@@ -212,6 +212,16 @@ impl std::fmt::Debug for AuthStore {
     }
 }
 
+const DESCENDANTS: &str = "WITH RECURSIVE descendants(id) AS (
+    SELECT ?1
+    UNION
+    SELECT d.id FROM devices d JOIN descendants a
+        ON d.issued_by = 'Device ' || a.id OR d.issued_via_device = a.id
+)";
+const ISSUED_PASSKEY: &str = "issued_via_device IN descendants OR EXISTS (
+    SELECT 1 FROM descendants a WHERE passkeys.issued_by = 'Device ' || a.id
+)";
+
 fn insert_session(conn: &Connection, row: &SessionRow, passkey_id: i64) -> Result<()> {
     conn.execute(
         "INSERT INTO sessions (id_hash, csrf, created_at, last_seen_at, verified_at, passkey_id)
@@ -388,28 +398,41 @@ impl AuthStore {
     }
 
     /// Stores a new passkey. Returns its ID unless it was already registered.
-    pub fn add_passkey(&self, name: &str, passkey: &Passkey, now: i64) -> Result<Option<i64>> {
+    pub fn add_passkey(
+        &self,
+        name: &str,
+        passkey: &Passkey,
+        now: i64,
+        issued_via_device: Option<&str>,
+    ) -> Result<Option<i64>> {
         Ok(self
             .conn()
             .query_row(
-                "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (cred_id) DO NOTHING RETURNING id",
                 params![
                     hex::encode(passkey.cred_id()),
                     name,
                     serde_json::to_string(passkey)?,
-                    now
+                    now,
+                    issued_via_device,
                 ],
                 |r| r.get(0),
             )
             .optional()?)
     }
 
-    /// Deletes a passkey and its sessions atomically, but never deletes the last passkey.
-    pub(crate) fn revoke_passkey(&self, id: i64, audit: &NewAudit) -> Result<bool> {
+    /// Deletes a passkey and its sessions atomically, only after an older credential asserted.
+    /// Passkey IDs are monotonically assigned, even for registrations on the same clock tick.
+    pub(crate) fn revoke_passkey(
+        &self,
+        id: i64,
+        verified_by: i64,
+        audit: &NewAudit,
+    ) -> Result<bool> {
         self.update_audited(
-            "DELETE FROM passkeys WHERE id = ?1 AND (SELECT count(*) FROM passkeys) > 1",
-            [id],
+            "DELETE FROM passkeys WHERE id = ?1 AND ?2 < id AND EXISTS (SELECT 1 FROM passkeys WHERE id = ?2)",
+            params![id, verified_by],
             audit,
         )
     }
@@ -421,18 +444,20 @@ impl AuthStore {
         passkey: &Passkey,
         session: &SessionRow,
         issued_by: &str,
+        issued_via_device: Option<&str>,
     ) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let id: Option<i64> = tx.query_row(
-            "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_by) VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at, issued_by, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (cred_id) DO NOTHING RETURNING id",
             params![
                 hex::encode(passkey.cred_id()),
                 name,
                 serde_json::to_string(passkey)?,
                 session.created_at,
-                issued_by
+                issued_by,
+                issued_via_device,
             ],
             |r| r.get(0),
         ).optional()?;
@@ -521,6 +546,29 @@ impl AuthStore {
             .optional()?)
     }
 
+    /// The credential asserted at the session's last explicit step-up, if any.
+    pub(crate) fn step_up_passkey(&self, id_hash: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT step_up_passkey_id FROM sessions WHERE id_hash = ?1",
+                [id_hash],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The nearest device ancestor of the credential through which the session exists.
+    pub(crate) fn session_device_origin(&self, id_hash: &str) -> Result<Option<String>> {
+        Ok(self.conn().query_row(
+            "SELECT COALESCE(p.issued_via_device, CASE WHEN p.issued_by LIKE 'Device %' THEN substr(p.issued_by, 8) END)
+             FROM sessions s JOIN passkeys p ON p.id = s.passkey_id WHERE s.id_hash = ?1",
+            [id_hash],
+            |row| row.get::<_, Option<String>>(0),
+        ).optional()?.flatten())
+    }
+
     /// Records activity on a session.
     pub fn touch_session(&self, id_hash: &str, now: i64) -> Result<()> {
         self.conn().execute(
@@ -565,10 +613,11 @@ impl AuthStore {
         token_hash: &str,
         now: i64,
         issued_by: Option<&str>,
+        issued_via_device: Option<&str>,
     ) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO devices (id, name, token_hash, created_at, issued_by) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id.as_str(), name, token_hash, now, issued_by],
+            "INSERT INTO devices (id, name, token_hash, created_at, issued_by, issued_via_device) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id.as_str(), name, token_hash, now, issued_by, issued_via_device],
         )?;
         Ok(())
     }
@@ -600,13 +649,42 @@ impl AuthStore {
             .collect()
     }
 
-    /// Revokes a device, with its audit entry. Returns false if there is no such active device.
+    /// Counts other native and browser sign-ins that would be revoked with this device.
+    pub(crate) fn issued_credential_count(&self, id: &str) -> Result<i64> {
+        Ok(self.conn().query_row(
+            &format!("{DESCENDANTS}
+                SELECT (SELECT count(*) FROM devices WHERE id IN descendants AND id <> ?1 AND revoked_at IS NULL)
+                     + (SELECT count(*) FROM passkeys WHERE {ISSUED_PASSKEY})"),
+            [id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Revokes a device, all its descendants and their sessions, with one audit entry and transaction.
+    /// Returns false if there is no such active device.
     pub fn revoke_device(&self, id: &str, now: i64, audit: &NewAudit) -> Result<bool> {
-        self.update_audited(
-            "UPDATE devices SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND revoked_at IS NULL)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Ok(false);
+        }
+        tx.execute(
+            &format!("{DESCENDANTS} UPDATE devices SET revoked_at = ?2 WHERE id IN descendants AND revoked_at IS NULL"),
             params![id, now],
-            audit,
-        )
+        )?;
+        // Both the sign-in and step-up foreign keys delete sessions of these passkeys.
+        tx.execute(
+            &format!("{DESCENDANTS} DELETE FROM passkeys WHERE {ISSUED_PASSKEY}"),
+            [id],
+        )?;
+        audit.insert(&tx)?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Records use of a device token.

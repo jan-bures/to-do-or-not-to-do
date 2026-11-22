@@ -2,11 +2,16 @@
 
 use super::*;
 use std::time::Duration;
-use todo_client::device_pairing::{self as pair, Invitation, InviteStatus, PendingDevice, Qr};
+use todo_client::device_pairing::{self as pair, Invitation, PendingDevice, Qr};
 use todo_client::pairing::PairError;
 use todo_client::web::sleep;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen_futures::spawn_local;
+
+#[allow(clippy::cast_possible_truncation)]
+fn until_expiry_ms(deadline: f64) -> i64 {
+    (deadline - js_sys::Date::now()).ceil() as i64
+}
 
 #[component]
 pub(super) fn DeviceSettings() -> impl IntoView {
@@ -22,6 +27,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
     let left = RwSignal::new(0_u32);
     let checking = Memo::new(move |_| left.get() == 0);
     let notice = RwSignal::new(None::<String>);
+    let invite_notice = RwSignal::new(None::<String>);
     let browser_origin = || {
         web_sys::window()
             .and_then(|w| w.location().origin().ok())
@@ -53,7 +59,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
         let transport = backend::pairing_transport();
         busy.set(true);
         error.set(None);
-        notice.set(None);
+        invite_notice.set(None);
         spawn_local(async move {
             let result = if let Some(t) = &transport {
                 pair::create(t, &browser_origin()).await
@@ -90,20 +96,30 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             let current = move |id: &str| {
                 invite.with_untracked(|i| i.as_ref().is_some_and(|(i, _)| i.id == id))
             };
+            let finish = move |id: &str, message: String| {
+                if current(id) {
+                    invite.set(None);
+                    invite_notice.set(Some(message));
+                }
+            };
             let timer_id = id.clone();
             spawn_local(async move {
                 while current(&timer_id) {
-                    let remaining = deadline - js_sys::Date::now();
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    left.set((remaining.max(0.0) / 1000.0).ceil() as u32);
-                    if remaining <= 0.0 {
+                    let remaining = until_expiry_ms(deadline);
+                    if let Some(message) = pair::status_message(None, false, remaining) {
+                        finish(&timer_id, message);
                         break;
                     }
-                    sleep(Duration::from_secs_f64(
-                        (remaining / 1000.0)
-                            .min(f64::from(todo_design::motion::PAIRING_TICK) / 1000.0),
-                    ))
-                    .await;
+                    left.set(u32::try_from((remaining.max(0) + 999) / 1000).unwrap_or(u32::MAX));
+                    let wait = if remaining > 0 {
+                        Duration::from_millis(u64::try_from(remaining).unwrap_or_default()).min(
+                            Duration::from_millis(u64::from(todo_design::motion::PAIRING_TICK)),
+                        )
+                    } else {
+                        pair::STATUS_GRACE
+                            .saturating_sub(Duration::from_millis(remaining.unsigned_abs()))
+                    };
+                    sleep(wait).await;
                 }
             });
             loop {
@@ -118,27 +134,10 @@ pub(super) fn DeviceSettings() -> impl IntoView {
                     break;
                 }
                 let now = js_sys::Date::now();
-                let message = match result {
-                    Ok(InviteStatus::Used { device_name }) => {
-                        Some(format!("{device_name} signed in."))
-                    }
-                    Ok(InviteStatus::Cancelled) => Some("Invite cancelled.".into()),
-                    Err(PairError::Expired | PairError::Refused { status: 404, .. })
-                        if now >= deadline =>
-                    {
-                        Some("Invite expired. Make a new one if needed.".into())
-                    }
-                    Err(PairError::Expired | PairError::Refused { status: 404, .. }) => {
-                        Some("The invite is no longer available.".into())
-                    }
-                    _ if now >= deadline + pair::STATUS_GRACE.as_secs_f64() * 1000.0 => {
-                        Some(pair::UNKNOWN_STATUS.into())
-                    }
-                    _ => None,
-                };
-                if let Some(message) = message {
-                    invite.set(None);
-                    notice.set(Some(message));
+                if let Some(message) =
+                    pair::status_result_message(&result, until_expiry_ms(deadline))
+                {
+                    finish(&id, message);
                     break;
                 }
                 // Wake for a final check at the local deadline, even between regular polls.
@@ -176,7 +175,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             match result {
                 Ok(()) => {
                     invite.set(None);
-                    notice.set(Some("Invite cancelled.".into()));
+                    invite_notice.set(Some("Invite cancelled.".into()));
                 }
                 Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
                 Err(e) => report(e),
@@ -295,7 +294,11 @@ pub(super) fn DeviceSettings() -> impl IntoView {
                     }.into_any(),
                 }}
             </Show>
-            <p role="status">{move || notice.get()}</p>
+            <p role="status">{move || match mode.get() {
+                Some(true) => invite_notice.get(),
+                Some(false) => notice.get(),
+                None => None,
+            }}</p>
             <p role="alert" class="action-error">{move || error.get()}</p>
             <Show when=move || verify.get() && mode.get().is_some()>
                 <a class="button" href="/auth/verify?next=/app">"Verify with passkey"</a>

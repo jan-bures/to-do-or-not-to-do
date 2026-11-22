@@ -1,8 +1,15 @@
 package app.todoornot.session
 
+import java.io.IOException
 import java.util.Base64
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+
+/** The server granted a credential, but the phone couldn't make the sign-in durable. */
+sealed class SessionPersistenceException(message: String, cause: Throwable? = null) : IOException(message, cause) {
+    class Encryption(cause: Throwable) : SessionPersistenceException("Could not encrypt the sign-in", cause)
+    class Write(cause: Throwable? = null) : SessionPersistenceException("Could not save the sign-in", cause)
+}
 
 /** A key-value store for small strings (SharedPreferences in the app, a map in tests). */
 interface KeyValues {
@@ -42,8 +49,17 @@ class SessionStore(private val store: KeyValues, private val cipher: SecretCiphe
 
     @Synchronized
     fun save(session: Session) {
-        val sealed = Base64.getEncoder().encodeToString(cipher.encrypt(session.token.toByteArray(Charsets.UTF_8)))
-        store.put(mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId, REVOKED to null))
+        val sealed = try {
+            Base64.getEncoder().encodeToString(cipher.encrypt(session.token.toByteArray(Charsets.UTF_8)))
+        } catch (e: Exception) {
+            throw SessionPersistenceException.Encryption(e)
+        }
+        val saved = try {
+            store.put(mapOf(SERVER to session.server, DEVICE to session.deviceId, TOKEN to sealed, PAIRING to session.pairingId, REVOKED to null))
+        } catch (e: Exception) {
+            throw SessionPersistenceException.Write(e)
+        }
+        if (!saved) throw SessionPersistenceException.Write()
         _revocationPending.value = null
     }
 

@@ -69,6 +69,10 @@ pub mod audit {
     pub const PASSKEY_ADDED: &str = "passkey_added";
     /// An owner passkey and its sessions were revoked.
     pub const PASSKEY_REVOKED: &str = "passkey_revoked";
+    /// An issuer created a pairing invite.
+    pub const INVITE_CREATED: &str = "invite_created";
+    /// An issuer cancelled a pairing invite.
+    pub const INVITE_CANCELLED: &str = "invite_cancelled";
     /// A client IP was locked out after failed sign-ins.
     pub const LOCKOUT: &str = "lockout";
     /// Many authentication failures in a short time.
@@ -946,7 +950,7 @@ impl AuthService {
         let now = self.now();
         let id = self
             .store
-            .add_passkey("First passkey", &passkey, now)?
+            .add_passkey("First passkey", &passkey, now, None)?
             .ok_or_else(ApiError::internal)?;
         self.store.set_meta(META_OWNER_READY, "1")?;
         self.remove_setup_file();
@@ -1127,9 +1131,10 @@ impl AuthService {
         if !self.session_live(&session.id_hash) {
             return Err(ApiError::unauthorized());
         }
+        let origin = self.store.session_device_origin(&session.id_hash)?;
         if self
             .store
-            .add_passkey(&name, &passkey, self.now())?
+            .add_passkey(&name, &passkey, self.now(), origin.as_deref())?
             .is_none()
         {
             return Err(ApiError::new(
@@ -1163,15 +1168,27 @@ impl AuthService {
             ip.into(),
             json!({ "passkey_id": id }),
         );
-        if !self.store.revoke_passkey(id, &entry)? {
-            if self.store.passkeys()?.iter().any(|p| p.id == id) {
+        let verified_by = self
+            .store
+            .step_up_passkey(&row.id_hash)?
+            .ok_or_else(step_up_required)?;
+        if !self.store.revoke_passkey(id, verified_by, &entry)? {
+            let passkeys = self.store.passkeys()?;
+            if !passkeys.iter().any(|p| p.id == id) {
+                return Err(ApiError::not_found("no such passkey"));
+            }
+            if passkeys.len() == 1 {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "last_passkey",
                     "the last passkey cannot be revoked",
                 ));
             }
-            return Err(ApiError::not_found("no such passkey"));
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "older_passkey_required",
+                "verify with a passkey registered before the one you want to revoke",
+            ));
         }
         drop(guard);
         self.revoked();
@@ -1185,6 +1202,16 @@ impl AuthService {
                 .get(&secret::digest(token))
                 .is_some_and(|entry| matches!(&entry.kind, BearerKind::Device(id) if id == device))
         })
+    }
+
+    fn issuer_device_origin(
+        &self,
+        issuer: &super::invite::Issuer,
+    ) -> Result<Option<String>, StoreError> {
+        match issuer {
+            super::invite::Issuer::Device(_) => Ok(None), // The direct device is already in `issued_by`.
+            super::invite::Issuer::Session(session) => self.store.session_device_origin(session),
+        }
     }
 
     pub(crate) fn invite_issuer_live(&self, issuer: &super::invite::Issuer) -> bool {
@@ -1249,6 +1276,7 @@ impl AuthService {
                 &passkey,
                 &session.row,
                 &claim.issuer.label(),
+                self.issuer_device_origin(&claim.issuer)?.as_deref(),
             )? {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
@@ -1443,16 +1471,16 @@ impl AuthService {
         name: &str,
         ip: Option<IpAddr>,
     ) -> Result<(DeviceId, String), ApiError> {
-        self.create_device_inner(name, ip, None, None)
+        self.create_device_inner(name, ip, None, crate::api::invite::invite_gone)
     }
 
     pub(crate) fn create_approved_device(
         &self,
         name: &str,
         ip: Option<IpAddr>,
-        issued_by: Option<&str>,
+        issuer: &super::invite::Issuer,
     ) -> Result<(DeviceId, String), ApiError> {
-        self.create_device_inner(name, ip, issued_by, None)
+        self.create_device_inner(name, ip, Some(issuer), crate::api::pair::gone)
     }
 
     pub(crate) fn create_invited_device(
@@ -1461,28 +1489,33 @@ impl AuthService {
         ip: Option<IpAddr>,
         issuer: &super::invite::Issuer,
     ) -> Result<(DeviceId, String), ApiError> {
-        self.create_device_inner(name, ip, Some(&issuer.label()), Some(issuer))
+        self.create_device_inner(name, ip, Some(issuer), crate::api::invite::invite_gone)
     }
 
     fn create_device_inner(
         &self,
         name: &str,
         ip: Option<IpAddr>,
-        issued_by: Option<&str>,
         issuer: Option<&super::invite::Issuer>,
+        gone: fn() -> ApiError,
     ) -> Result<(DeviceId, String), ApiError> {
         let id = device_id_for(name)?;
         let token = format!("{DEVICE_TOKEN_PREFIX}{}", secret::random_token::<32>()?);
         let guard = self.begin_mutation();
         if issuer.is_some_and(|issuer| !self.invite_issuer_live(issuer)) {
-            return Err(crate::api::invite::invite_gone());
+            return Err(gone());
         }
+        let origin = issuer
+            .map(|issuer| self.issuer_device_origin(issuer))
+            .transpose()?
+            .flatten();
         self.store.add_device(
             &id,
             name,
             &secret::digest_hex(&token),
             self.now(),
-            issued_by,
+            issuer.map(super::invite::Issuer::label).as_deref(),
+            origin.as_deref(),
         )?;
         self.publish(&guard)?;
         drop(guard);

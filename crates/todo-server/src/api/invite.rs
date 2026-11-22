@@ -135,17 +135,24 @@ pub async fn create(
     let issuer = issuer(&app, caller, &headers, true).await?;
     limited(&app, ip, false)?;
     let origin = app.authsvc.origin().ok_or_else(no_origin)?.as_str();
-    let created = app
-        .authsvc
-        .invites
-        .create(issuer, app.authsvc.now())?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "busy",
-                "too many invites; wait for them to expire",
-            )
-        })?;
+    let created = blocking(&app.authsvc, move |svc| {
+        if !svc.invite_issuer_live(&issuer) {
+            return Err(ApiError::unauthorized());
+        }
+        let created = svc
+            .invites
+            .create(issuer.clone(), svc.now())?
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "busy",
+                    "too many invites; wait for them to expire",
+                )
+            })?;
+        svc.audit(audit::INVITE_CREATED, ip.0, json!({ "issuer": issuer }));
+        Ok::<_, ApiError>(created)
+    })
+    .await??;
     Ok(Json(Invitation {
         id: created.id,
         code: created.code,
@@ -194,10 +201,14 @@ pub async fn cancel(
 ) -> Result<StatusCode, ApiError> {
     let issuer = issuer(&app, caller, &headers, false).await?;
     limited(&app, ip, false)?;
-    if !app.authsvc.invites.cancel(&issuer, &id, app.authsvc.now()) {
-        return Err(invite_gone());
-    }
-    Ok(StatusCode::NO_CONTENT)
+    blocking(&app.authsvc, move |svc| {
+        if !svc.invites.cancel(&issuer, &id, svc.now()) {
+            return Err(invite_gone());
+        }
+        svc.audit(audit::INVITE_CANCELLED, ip.0, json!({ "issuer": issuer }));
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await?
 }
 
 /// Exchanges an invite for a new native device token. Only one redemption can succeed.

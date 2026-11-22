@@ -60,6 +60,62 @@ pub enum InviteStatus {
     Cancelled,
 }
 
+/// Resolve an issuer's observation. `until_expiry_ms` is negative after the local deadline.
+/// Once retention ends, a missing record no longer distinguishes expiry from a successful join.
+#[must_use]
+pub fn status_message(
+    status: Option<&InviteStatus>,
+    missing: bool,
+    until_expiry_ms: i64,
+) -> Option<String> {
+    match status {
+        Some(InviteStatus::Used { device_name }) => Some(format!("{device_name} signed in.")),
+        Some(InviteStatus::Cancelled) => Some("Invite cancelled.".into()),
+        _ if until_expiry_ms <= -i64::try_from(STATUS_GRACE.as_millis()).unwrap_or(i64::MAX) => {
+            Some(UNKNOWN_STATUS.into())
+        }
+        _ if missing && until_expiry_ms <= 0 => {
+            Some("Invite expired. Make a new one if needed.".into())
+        }
+        _ if missing => Some("The invite is no longer available.".into()),
+        _ => None,
+    }
+}
+
+/// Resolve a native Rust caller's status request using the issuer rules.
+#[must_use]
+pub fn status_result_message(
+    result: &Result<InviteStatus, PairError>,
+    until_expiry_ms: i64,
+) -> Option<String> {
+    status_message(
+        result.as_ref().ok(),
+        matches!(
+            result,
+            Err(PairError::Expired | PairError::Refused { status: 404, .. })
+        ),
+        until_expiry_ms,
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn a_missing_result_after_suspend_is_not_known_expiry() {
+    assert_eq!(
+        status_message(None, true, -59_999).as_deref(),
+        Some("Invite expired. Make a new one if needed.")
+    );
+    assert_eq!(
+        status_message(None, true, -60_000).as_deref(),
+        Some(UNKNOWN_STATUS)
+    );
+    assert_eq!(
+        status_message(None, false, -90_000).as_deref(),
+        Some(UNKNOWN_STATUS)
+    );
+    assert_eq!(status_message(None, false, -59_999), None);
+}
+
 /// The credentials received when redeeming a native invite.
 #[derive(Clone, Deserialize)]
 pub struct Credential {

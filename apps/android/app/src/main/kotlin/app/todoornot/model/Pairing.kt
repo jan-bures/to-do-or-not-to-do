@@ -10,6 +10,7 @@ import app.todoornot.core.normalizeServerAddress
 import app.todoornot.core.pairPoll
 import app.todoornot.core.pairStart
 import app.todoornot.session.Session
+import app.todoornot.session.SessionPersistenceException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -65,6 +66,9 @@ sealed interface PairingState {
     /** The one-use invite may already be spent; don't offer Cancel. */
     data class Finishing(val server: String) : PairingState
 
+    /** The credential stays in memory; Try again only retries the save. */
+    data object SaveFailed : PairingState
+
     /** Showing the code and link until the owner approves on another device. */
     data class Waiting(
         val server: String,
@@ -95,6 +99,7 @@ class PairingModel(
     private var job: Job? = null
     private class Invite(val address: String, val server: String, val input: String)
     private var awaitingConfirmation: Invite? = null
+    private var unsavedSession: Session? = null
 
     fun submit(address: String) {
         if (_state.value !is PairingState.Entering) return
@@ -157,8 +162,7 @@ class PairingModel(
             // Wrapping just the IO call would still allow cancellation to discard its reply.
             withContext(NonCancellable) {
                 try {
-                    onPaired(withContext(io) { api.redeem(invite.server, invite.input, deviceName) })
-                    _state.value = PairingState.Entering(invite.server)
+                    save(withContext(io) { api.redeem(invite.server, invite.input, deviceName) })
                 } catch (e: FfiException.Expired) {
                     _state.value = PairingState.Entering(invite.address, "This invite is invalid, expired or already used.")
                 } catch (e: FfiException) {
@@ -166,6 +170,24 @@ class PairingModel(
                 }
             }
         }
+    }
+
+    private fun save(session: Session) {
+        try {
+            onPaired(session)
+            unsavedSession = null
+            _state.value = PairingState.Entering(session.server)
+        } catch (_: SessionPersistenceException) {
+            unsavedSession = session
+            _state.value = PairingState.SaveFailed
+        }
+    }
+
+    fun retrySave() {
+        if (_state.value != PairingState.SaveFailed) return
+        val session = unsavedSession ?: return
+        _state.value = PairingState.Finishing(session.server)
+        save(session)
     }
 
     private suspend fun follow(address: String, server: String, started: PairStarted, expiresAt: Long) {
@@ -198,7 +220,7 @@ class PairingModel(
                     markRetrying(false)
                 }
                 is PairPoll.Approved -> {
-                    onPaired(Session(server, answer.deviceId, answer.token))
+                    save(Session(server, answer.deviceId, answer.token))
                     return
                 }
                 PairPoll.Denied -> {
@@ -217,7 +239,7 @@ class PairingModel(
     /** Back to the address field, keeping what was typed. */
     fun cancel() {
         val address = when (val s = _state.value) {
-            is PairingState.Finishing -> return
+            is PairingState.Finishing, PairingState.SaveFailed -> return
             is PairingState.ConfirmInvite -> awaitingConfirmation?.address.orEmpty()
             is PairingState.Entering -> s.address
             is PairingState.Starting -> s.server

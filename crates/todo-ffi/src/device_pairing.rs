@@ -132,6 +132,22 @@ pub fn device_invite_status(
     )
 }
 
+/// Resolves a status observation using the shared issuer rules. The deadline offset is signed.
+#[uniffi::export]
+#[must_use]
+pub fn device_invite_status_message(
+    status: Option<DeviceInviteStatus>,
+    missing: bool,
+    until_expiry_ms: i64,
+) -> Option<String> {
+    let status = status.map(|status| match status {
+        DeviceInviteStatus::Pending => InviteStatus::Pending,
+        DeviceInviteStatus::Cancelled => InviteStatus::Cancelled,
+        DeviceInviteStatus::Used { device_name } => InviteStatus::Used { device_name },
+    });
+    pair::status_message(status.as_ref(), missing, until_expiry_ms)
+}
+
 /// The protocol's polling interval in milliseconds.
 #[uniffi::export]
 #[must_use]

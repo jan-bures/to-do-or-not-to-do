@@ -1,5 +1,6 @@
 package app.todoornot
 
+import android.content.SharedPreferences
 import app.todoornot.core.DeviceInviteTarget
 import app.todoornot.core.FfiException
 import app.todoornot.core.PairPoll
@@ -7,7 +8,13 @@ import app.todoornot.core.PairStarted
 import app.todoornot.model.PairingApi
 import app.todoornot.model.PairingModel
 import app.todoornot.model.PairingState
+import app.todoornot.session.KeyValues
+import app.todoornot.session.PrefsKeyValues
+import app.todoornot.session.SecretCipher
 import app.todoornot.session.Session
+import app.todoornot.session.SessionStore
+import java.lang.reflect.Proxy
+import java.security.GeneralSecurityException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -141,6 +148,88 @@ class PairingModelTest {
         advanceUntilIdle()
         assertEquals(listOf(credential), persisted)
     }
+
+    @Test
+    fun an_encryption_failure_keeps_the_credential_for_save_only_retry() = runTest {
+        var fail = true
+        val cipher = object : SecretCipher {
+            override fun encrypt(plain: ByteArray): ByteArray {
+                if (fail) throw GeneralSecurityException("Keystore locked")
+                return plain
+            }
+            override fun decrypt(sealed: ByteArray) = sealed
+        }
+        val durableValues = mutableMapOf<String, String?>()
+        val prefs = object : KeyValues {
+            override fun get(key: String) = durableValues[key]
+            override fun put(values: Map<String, String?>): Boolean {
+                durableValues.putAll(values)
+                return true
+            }
+        }
+        checkSaveRetry(SessionStore(prefs, cipher)) { fail = false }
+    }
+
+    @Test
+    fun a_false_preferences_commit_keeps_the_credential_for_save_only_retry() = runTest {
+        var canCommit = false
+        var writes = 0
+        val durable = mutableMapOf<String, String?>()
+        val pending = mutableMapOf<String, String?>()
+        val editor = proxy<SharedPreferences.Editor> { receiver, name, args ->
+            when (name) {
+                "putString" -> receiver.also { pending[args[0] as String] = args[1] as String? }
+                "remove" -> receiver.also { pending[args[0] as String] = null }
+                "commit" -> canCommit.also { if (it) durable.putAll(pending); writes++ }
+                else -> error("Unexpected editor method $name")
+            }
+        }
+        val prefs = proxy<SharedPreferences> { _, name, args ->
+            when (name) {
+                "getString" -> durable[args[0]] ?: args[1]
+                "edit" -> editor
+                else -> error("Unexpected preferences method $name")
+            }
+        }
+        val cipher = object : SecretCipher {
+            override fun encrypt(plain: ByteArray) = plain
+            override fun decrypt(sealed: ByteArray) = sealed
+        }
+        checkSaveRetry(SessionStore(PrefsKeyValues(prefs), cipher)) {
+            assertEquals(1, writes)
+            canCommit = true
+        }
+        assertEquals(2, writes)
+    }
+
+    private fun TestScope.checkSaveRetry(store: SessionStore, repair: () -> Unit) {
+        val server = "https://todo.example.com"
+        val expected = Session(server, "phone", "device-token")
+        var redemptions = 0
+        val api = object : PairingApi by FakeApi(ArrayDeque()) {
+            override suspend fun redeem(server: String, invite: String, deviceName: String): Session {
+                redemptions++
+                return expected
+            }
+        }
+        val m = PairingModel(api, this, StandardTestDispatcher(testScheduler), "Phone", store::save)
+        m.redeem(server, "test-input")
+        testScheduler.runCurrent()
+        assertEquals(PairingState.SaveFailed, m.state.value)
+        assertNull(store.load())
+        m.cancel()
+        m.redeem(server, "other-input")
+        assertEquals(PairingState.SaveFailed, m.state.value)
+        repair()
+        m.retrySave()
+        assertEquals(expected, store.load())
+        assertEquals(1, redemptions)
+    }
+
+    private inline fun <reified T : Any> proxy(crossinline call: (Any, String, Array<out Any?>) -> Any?): T =
+        Proxy.newProxyInstance(T::class.java.classLoader, arrayOf(T::class.java)) { receiver, method, args ->
+            call(receiver, method.name, args ?: emptyArray())
+        } as T
 
     @Test
     fun cancelling_keeps_the_address() = runTest {

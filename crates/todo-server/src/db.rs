@@ -263,6 +263,25 @@ ALTER TABLE devices ADD COLUMN issued_by TEXT;
 CREATE INDEX sessions_passkey ON sessions (passkey_id);
 CREATE INDEX sessions_step_up_passkey ON sessions (step_up_passkey_id);
 ",
+    // Retain a browser credential's device ancestry even after the issuing session ends.
+    r"
+ALTER TABLE passkeys ADD COLUMN issued_via_device TEXT;
+ALTER TABLE devices ADD COLUMN issued_via_device TEXT;
+WITH RECURSIVE lineage(id, device) AS (
+    SELECT id, substr(issued_by, 8) FROM passkeys WHERE issued_by LIKE 'Device %'
+    UNION
+    SELECT p.id, lineage.device FROM passkeys p JOIN sessions s
+        ON p.issued_by = 'Browser session ' || s.id_hash
+        JOIN lineage ON s.passkey_id = lineage.id
+)
+UPDATE passkeys SET issued_via_device = (SELECT device FROM lineage WHERE lineage.id = passkeys.id)
+    WHERE issued_by LIKE 'Browser session %';
+UPDATE devices SET issued_via_device = (
+    SELECT COALESCE(p.issued_via_device, CASE WHEN p.issued_by LIKE 'Device %' THEN substr(p.issued_by, 8) END)
+    FROM sessions s JOIN passkeys p ON p.id = s.passkey_id
+    WHERE devices.issued_by = 'Browser session ' || s.id_hash
+) WHERE issued_by LIKE 'Browser session %';
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

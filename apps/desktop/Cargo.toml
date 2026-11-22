@@ -85,6 +85,8 @@ windows-sys = { version = "0.59", features = [
 embed-resource = "3"
 
 [dev-dependencies]
+# Drives GPUI input through headless test windows (no interactive desktop app).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4", features = ["test-support"] }
 # Integration tests run the session against an in-process server (never a deployed one).
 todo-server = { path = "../../crates/todo-server" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

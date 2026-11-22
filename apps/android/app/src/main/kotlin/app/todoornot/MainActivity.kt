@@ -184,6 +184,7 @@ class MainActivity : ComponentActivity() {
         override fun cancel() = p.cancel()
         override fun redeem(address: String, invite: String) = p.redeem(address, invite)
         override fun confirmInvite() = p.confirmInvite()
+        override fun retrySave() = p.retrySave()
         override fun scanInvite(address: String) {
             val graph = graph
             pairingScanner.launch(

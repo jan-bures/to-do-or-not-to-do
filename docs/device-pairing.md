@@ -8,13 +8,19 @@ If you've entered an address, a link for a different origin is refused rather th
 To type an invite code instead, also enter the server address. In a new browser, open the link, name the
 browser, and register a passkey. No existing passkey is needed on that browser.
 
-Keep the invite card open to see what signed in. **Cancel invite** makes both the code and link
-unusable unless redemption has already won. The owner can see native devices and browser passkeys
-under **Devices** in the server's admin pages, including the issuing device or session. Share an
-invite only with a device you're setting up: anyone with its code or link can sign in as the owner
-while it is valid. You can revoke devices or browser passkeys there after verifying with a passkey.
-Revoking a passkey signs out its sessions; the last passkey cannot be revoked. Revoking an issuer
-invalidates its live invites, but does not revoke the devices or passkeys that already joined.
+**Close** dismisses an invite without cancelling it, even when offline. Reopen the card to see the
+live invite. **Cancel invite** makes the code and link unusable unless redemption has already won.
+On Android, the invite code and QR are hidden from screenshots and the recent-apps thumbnail. If
+Android receives a credential but can't save it, **Try saving again** retries the local save without
+using another invite. Keep the app open: the unsaved credential is only in memory.
+
+The owner can see native devices and browser passkeys under **Devices** in the server's admin
+pages, including the issuing device or session. Share an invite only with a device you're setting
+up: anyone with the code or link can sign in as the owner while it is valid. Revoking a device signs
+out the other devices and browsers it added, including sign-ins added through them. **Devices** shows
+how many other sign-ins this affects. Revoking a passkey ends its sessions. Verify with a passkey
+registered before the one you want to remove; newer passkeys cannot remove older ones, and the last
+passkey cannot be revoked.
 
 If the new app is already showing a pairing request instead, choose **Approve a device** on an
 existing signed-in app. Enter its code (or scan its QR on Android), then check the device name,
@@ -35,11 +41,18 @@ requests camera permission only when the Scan button is used. Typing works witho
   polling rate limit. The issuer must still be signed in or paired when redemption is committed.
   Credentials expire on time; a redemption that began before expiry may still report its terminal
   result to the issuer for up to one minute after the deadline. Clients hide the credentials at the
-  deadline and continue checking the result. Wrong-code lookups share a per-session budget with the
-  old browser page; paired native devices have a per-device budget with a five-minute cooldown.
+  deadline and continue checking the result. If retention ends before the app can confirm the outcome
+  (for example, because it was asleep or a request stalled), check **Devices** rather than assuming
+  the invite expired unused. Wrong-code lookups share a per-session budget with the old browser page;
+  paired native devices have a per-device budget with a five-minute cooldown.
+- Approved pairings retain the approving device or session. The server rechecks it when the new
+  device polls, before issuing a token. Revoking a device updates its native descendants, removes
+  descendant browser passkeys and their sessions, and records the revocation in one transaction.
+  Browser-issued descendants preserve their device ancestry after the issuing session ends. Signing
+  out of a browser invalidates its outstanding invites and approvals without revoking past joins.
 - The server's logs use route templates, not raw URLs or request bodies. The browser strips the
-  fragment from its history entry before starting registration. Audit records identify the issuer
-  (device ID or session row ID) and the new device's name, not the invite, passkey or token.
+  fragment from its history entry before starting registration. Audit records include invite creation
+  and cancellation and identify the issuer (device or session row), not the invite, passkey or token.
 - Browser registration uses the same WebAuthn options and verification as adding a passkey. The
   browser's separate one-time ceremony handle is also stored hashed and can't outlive the invite.
   Starting a ceremony does not consume the invite: cancellation or native redemption can still win.

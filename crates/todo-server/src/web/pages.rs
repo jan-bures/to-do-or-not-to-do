@@ -306,7 +306,7 @@ async fn decide(app: AppState, s: OwnerSession, f: PairForm, approve: bool) -> P
             svc.pairings
                 .approve_reviewed(&f.code, None, &issuer, svc.now())
         } else {
-            svc.pairings.decide(&f.code, false, svc.now())
+            svc.pairings.deny(&f.code, svc.now())
         }
     })?
     else {
@@ -383,19 +383,40 @@ pub async fn overview(State(app): State<AppState>, s: OwnerSession) -> PageResul
 
 /// `GET /admin/devices`.
 pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult {
-    let rows = blocking(&app.authsvc, |svc| svc.store().devices()).await??;
+    let rows = blocking(&app.authsvc, |svc| {
+        svc.store()
+            .devices()?
+            .into_iter()
+            .map(|d| {
+                let count = if d.revoked_at.is_none() {
+                    svc.store().issued_credential_count(d.id.as_str())?
+                } else {
+                    0
+                };
+                Ok((d, count))
+            })
+            .collect::<Result<Vec<_>, crate::db::StoreError>>()
+    })
+    .await??;
     let mut body = String::from(
         r#"<p>Devices sign in by pairing: start pairing in the app, then approve the code on <a href="/pair">the pairing page</a>.</p>
 <table><tr><th>Name</th><th>ID</th><th>Paired</th><th>Last used</th><th>Issued by</th><th></th></tr>"#,
     );
-    for d in &rows {
+    for (d, count) in rows {
         let action = match d.revoked_at {
             Some(at) => format!("revoked {}", esc(&time(at))),
-            None => format!(
-                r#"<form method="post" action="/admin/devices/{id}/revoke">{csrf}<button type="submit" class="danger">Revoke</button></form>"#,
-                id = esc(d.id.as_str()),
-                csrf = csrf_field(&s),
-            ),
+            None => {
+                let warning = match count {
+                    0 => String::new(),
+                    1 => "<p class=\"hint\">Also signs out 1 device it added.</p>".into(),
+                    n => format!("<p class=\"hint\">Also signs out {n} devices it added.</p>"),
+                };
+                format!(
+                    r#"<form method="post" action="/admin/devices/{id}/revoke">{csrf}<button type="submit" class="danger">Revoke</button>{warning}</form>"#,
+                    id = esc(d.id.as_str()),
+                    csrf = csrf_field(&s),
+                )
+            }
         };
         let _ = write!(
             body,
@@ -409,9 +430,14 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
     }
     body.push_str("</table><h2>Browser passkeys</h2><table><tr><th>Name</th><th>Registered</th><th>Issued by</th><th></th></tr>");
     let passkeys = blocking(&app.authsvc, |svc| svc.store().passkeys()).await??;
-    let fresh = app.authsvc.is_fresh(&s.row);
+    let verified_by = if app.authsvc.is_fresh(&s.row) {
+        let hash = s.row.id_hash.clone();
+        blocking(&app.authsvc, move |svc| svc.store().step_up_passkey(&hash)).await??
+    } else {
+        None
+    };
     for p in &passkeys {
-        let action = if passkeys.len() <= 1 || !fresh {
+        let action = if !verified_by.is_some_and(|id| id < p.id) {
             String::new()
         } else {
             format!(
@@ -428,9 +454,11 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
             esc(p.issued_by.as_deref().unwrap_or("—"))
         );
     }
-    body.push_str("</table><p>Revoking a passkey ends its browser sessions. Revoking a device or ending a session invalidates any invites it issued, but does not remove devices or passkeys that already joined.</p>");
-    if passkeys.len() > 1 && !fresh {
-        body.push_str(r#"<p><a href="/auth/verify?next=/admin/devices">Verify with passkey</a> to revoke a passkey.</p>"#);
+    body.push_str("</table><p>Revoking a device signs out the devices and browsers it added, including those added through them. Revoking a passkey ends its browser sessions. Revoking a device or ending a session invalidates any outstanding invites it issued.</p>");
+    if passkeys.len() > 1 {
+        body.push_str(r#"<p>To revoke a passkey, <a href="/auth/verify?next=/admin/devices">verify with a passkey</a> registered before it. A newer passkey cannot remove an older one.</p>"#);
+    } else {
+        body.push_str("<p>The last passkey cannot be revoked.</p>");
     }
     ok_page("Devices", &owner_chrome(&app.authsvc, &s), &body)
 }

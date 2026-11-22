@@ -74,11 +74,19 @@ impl TestServer {
             .block_on(pairing::start(&anon, &config::device_name()))
             .expect("start");
         let auth = &self.running().authsvc;
-        assert!(
-            auth.pairings
-                .decide(&started.user_code, true, auth.now())
-                .is_some()
-        );
+        let (_, approver_token) = auth.create_device("Approver", None).expect("approver");
+        let approver = HttpTransport::new(&self.url(), &approver_token).expect("transport");
+        let review_at = auth
+            .pairings
+            .pending(&started.user_code, auth.now())
+            .expect("pending")
+            .created_at;
+        net.block_on(todo_client::device_pairing::review(
+            &approver,
+            &started.user_code,
+            Some(review_at),
+        ))
+        .expect("approve");
         let Polled::Approved { device_id, token } = net
             .block_on(pairing::poll(&anon, &started.poll_token))
             .expect("poll")

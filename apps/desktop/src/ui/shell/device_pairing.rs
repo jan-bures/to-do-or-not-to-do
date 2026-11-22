@@ -3,8 +3,8 @@
 use super::*;
 use crate::session::{self, Runtime};
 use crate::ui::pairing_qr;
-use std::time::Instant;
-use todo_client::device_pairing::{self as pair, Invitation, InviteStatus, PendingDevice, Qr};
+use std::time::SystemTime;
+use todo_client::device_pairing::{self as pair, Invitation, PendingDevice, Qr};
 use todo_client::native::HttpTransport;
 use todo_client::pairing::PairError;
 
@@ -15,7 +15,8 @@ pub(super) struct Panel {
     focus: FocusHandle,
     buttons: [FocusHandle; 7],
     input: Entity<TextInput>,
-    invite: Option<(Invitation, Qr, Instant)>,
+    // The server's lifetime keeps running while Windows is suspended.
+    invite: Option<(Invitation, Qr, SystemTime)>,
     pending: Option<(String, PendingDevice)>,
     busy: bool,
     message: Option<SharedString>,
@@ -43,6 +44,15 @@ fn tab_index(current: Option<usize>, forward: bool, len: usize) -> usize {
         (Some(i), false) => (i + len - 1) % len,
         (None, true) => 0,
         (None, false) => len - 1,
+    }
+}
+
+fn until_expiry_ms(deadline: SystemTime) -> i64 {
+    let millis = |duration: Duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX);
+    match deadline.duration_since(SystemTime::now()) {
+        Ok(left) if !left.is_zero() => millis(left).max(1),
+        Ok(_) => 0,
+        Err(elapsed) => -millis(elapsed.duration()),
     }
 }
 
@@ -105,7 +115,7 @@ impl Panel {
     }
 
     fn show(&mut self, i: Invitation) {
-        let expires = Instant::now() + Duration::from_secs(u64::from(i.expires_in));
+        let expires = SystemTime::now() + Duration::from_secs(u64::from(i.expires_in));
         self.invite = Qr::encode(&i.link).map(|qr| (i, qr, expires));
     }
 
@@ -168,42 +178,53 @@ impl Panel {
                 let id = id.clone();
                 cx.spawn(async move |this, cx| {
                     loop {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        cx.background_executor()
-                            .timer(left.min(Duration::from_millis(u64::from(
-                                theme::motion::PAIRING_TICK,
-                            ))))
-                            .await;
+                        let now = SystemTime::now();
+                        let message = pair::status_message(None, false, until_expiry_ms(deadline));
                         let current = this
                             .update(cx, |v, cx| {
-                                let current = v.invite.as_ref().is_some_and(|(i, _, _)| i.id == id);
-                                if current {
-                                    cx.notify();
+                                if !v.current(&id) {
+                                    return false;
                                 }
-                                current
+                                if let Some(message) = message {
+                                    v.finish(&id, message, cx);
+                                    return false;
+                                }
+                                cx.notify();
+                                true
                             })
                             .unwrap_or(false);
-                        if !current || Instant::now() >= deadline {
+                        if !current {
                             break;
                         }
+                        let wait = match deadline.duration_since(now) {
+                            Ok(left) if !left.is_zero() => left.min(Duration::from_millis(
+                                u64::from(theme::motion::PAIRING_TICK),
+                            )),
+                            _ => (deadline + pair::STATUS_GRACE)
+                                .duration_since(now)
+                                .unwrap_or_default(),
+                        };
+                        cx.background_executor().timer(wait).await;
                     }
                 })
                 .detach();
             });
             loop {
-                let left = deadline.saturating_duration_since(Instant::now());
+                let left = deadline
+                    .duration_since(SystemTime::now())
+                    .unwrap_or_default();
                 let wait = if left.is_zero() {
                     pair::STATUS_INTERVAL
                 } else {
                     left.min(pair::STATUS_INTERVAL)
                 };
                 cx.background_executor().timer(wait).await;
-                if !this
-                    .update(cx, |v, _| {
-                        v.invite.as_ref().is_some_and(|(i, _, _)| i.id == id)
-                    })
-                    .unwrap_or(false)
+                if !this.update(cx, |v, _| v.current(&id)).unwrap_or(false) {
+                    break;
+                }
+                if let Some(message) = pair::status_message(None, false, until_expiry_ms(deadline))
                 {
+                    let _ = this.update(cx, |v, cx| v.finish(&id, message, cx));
                     break;
                 }
                 let poll = {
@@ -212,53 +233,34 @@ impl Panel {
                     session::spawn(&rt, async move { pair::status(&t, &id).await })
                 };
                 let message = match poll.await {
-                    Ok(Ok(InviteStatus::Used { device_name })) => {
-                        format!("{device_name} signed in.")
-                    }
-                    Ok(Ok(InviteStatus::Cancelled)) => "Invite cancelled.".into(),
-                    Ok(Err(PairError::Refused { status: 404, .. }))
-                        if Instant::now() >= deadline =>
-                    {
-                        "Invite expired. Make a new one if needed.".into()
-                    }
-                    Ok(Err(PairError::Refused { status: 404, .. })) => {
-                        "The invite is no longer available.".into()
-                    }
-                    _ if Instant::now() >= deadline + pair::STATUS_GRACE => {
-                        pair::UNKNOWN_STATUS.into()
-                    }
-                    _ => continue,
+                    Ok(result) => pair::status_result_message(&result, until_expiry_ms(deadline)),
+                    Err(_) => pair::status_message(None, false, until_expiry_ms(deadline)),
                 };
-                let _ = this.update(cx, |v, cx| {
-                    if v.invite.as_ref().is_some_and(|(i, _, _)| i.id == id) {
-                        v.invite = None;
-                        v.message = Some(message.into());
-                        cx.notify();
-                    }
-                });
+                let Some(message) = message else { continue };
+                let _ = this.update(cx, |v, cx| v.finish(&id, message, cx));
                 break;
             }
         })
         .detach();
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        if self.net.is_some()
-            && self
-                .invite
-                .as_ref()
-                .is_some_and(|(_, _, deadline)| Instant::now() < *deadline)
-        {
-            self.cancel(true, cx);
-        } else {
-            cx.emit(Closed);
+    fn current(&self, id: &str) -> bool {
+        self.invite.as_ref().is_some_and(|(i, _, _)| i.id == id)
+    }
+
+    fn finish(&mut self, id: &str, message: String, cx: &mut Context<Self>) {
+        if self.current(id) {
+            self.invite = None;
+            self.message = Some(message.into());
+            cx.notify();
         }
     }
 
-    fn cancel(&mut self, close: bool, cx: &mut Context<Self>) {
+    fn close(&self, cx: &mut Context<Self>) {
+        cx.emit(Closed);
+    }
+
+    fn cancel(&mut self, cx: &mut Context<Self>) {
         let Some((rt, t)) = self.net.clone() else {
             return;
         };
@@ -271,18 +273,22 @@ impl Panel {
         let id = i.id.clone();
         self.busy = true;
         cx.notify();
-        let cancel = session::spawn(&rt, async move { pair::cancel(&t, &id).await });
+        let cancel = session::spawn(&rt, {
+            let id = id.clone();
+            async move { pair::cancel(&t, &id).await }
+        });
         cx.spawn(async move |this, cx| {
             let result = cancel.await.unwrap_or(Err(PairError::Expired));
             let _ = this.update(cx, |v, cx| {
                 v.busy = false;
+                if !v.current(&id) {
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(()) => {
                         v.invite = None;
                         v.message = Some("Invite cancelled.".into());
-                        if close {
-                            cx.emit(Closed);
-                        }
                     }
                     Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
                     Err(e) => v.error(e),
@@ -348,7 +354,7 @@ impl Panel {
     fn live_invite(&self) -> bool {
         self.invite
             .as_ref()
-            .is_some_and(|(_, _, deadline)| Instant::now() < *deadline)
+            .is_some_and(|(_, _, deadline)| SystemTime::now() < *deadline)
     }
 
     fn focus_order(&self, cx: &App) -> Vec<FocusHandle> {
@@ -382,7 +388,7 @@ impl Panel {
                 }
             }
             Control::Copy => {}
-            Control::Cancel => self.cancel(false, cx),
+            Control::Cancel => self.cancel(cx),
             Control::Review => self.review(false, cx),
             Control::Approve => self.review(true, cx),
             Control::Another if !self.busy => {
@@ -469,10 +475,12 @@ impl Render for Panel {
                             cx,
                         );
                         cx.notify();
+                        cx.stop_propagation();
                     } else if e.keystroke.key == "escape" && !e.is_held {
                         this.close(cx);
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
+                    // Windows needs unhandled printable KeyDown events to produce WM_CHAR.
                 }))
                 .w(px(desktop::DETAIL + space::S10))
                 .max_w_full()
@@ -492,7 +500,9 @@ impl Render for Panel {
                 ));
         if self.invite_mode {
             if let Some((invite, qr, expires)) = &self.invite {
-                let left = expires.saturating_duration_since(Instant::now());
+                let left = expires
+                    .duration_since(SystemTime::now())
+                    .unwrap_or_default();
                 if left.is_zero() {
                     body = body.child(pair::CHECKING_STATUS);
                 } else {
@@ -576,17 +586,34 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let net = self
-            .store
-            .session()
-            .map(crate::session::Session::pairing_transport);
-        let panel = cx.new(|cx| Panel::new(invite, net, self.palette, window, cx));
-        cx.subscribe_in(&panel, window, |this, _, _: &Closed, window, cx| {
-            this.pairing_panel = None;
-            window.focus(&this.account_focus, cx);
+        let saved = if invite {
+            self.invite_panel.clone()
+        } else {
+            None
+        };
+        let panel = saved.unwrap_or_else(|| {
+            let net = self
+                .store
+                .session()
+                .map(crate::session::Session::pairing_transport);
+            let panel = cx.new(|cx| Panel::new(invite, net, self.palette, window, cx));
+            cx.subscribe_in(&panel, window, |this, source, _: &Closed, window, cx| {
+                if this.pairing_panel.as_ref() == Some(source) {
+                    this.pairing_panel = None;
+                    window.focus(&this.account_focus, cx);
+                    cx.notify();
+                }
+            })
+            .detach();
+            if invite {
+                self.invite_panel = Some(panel.clone());
+            }
+            panel
+        });
+        panel.update(cx, |p, cx| {
+            p.p = self.palette;
             cx.notify();
-        })
-        .detach();
+        });
         if invite {
             let handle = panel.read(cx).focus.clone();
             window.focus(&handle, cx);
@@ -614,7 +641,128 @@ impl ShellView {
 
 #[cfg(test)]
 mod tests {
-    use super::tab_index;
+    use super::*;
+    use gpui::{TestApp, TestAppWindow};
+    use std::rc::Rc;
+
+    fn shell(app: &mut TestApp) -> TestAppWindow<ShellView> {
+        app.update(|cx| {
+            cx.bind_keys(crate::ui::input::key_bindings());
+            cx.bind_keys(super::super::key_bindings());
+        });
+        app.open_window(|window, cx| {
+            let fixture = crate::fixtures::my_day();
+            let mut shell = ShellView::new(
+                Rc::new(Store::fixture(&fixture)),
+                fixture.ui,
+                Theme::Light,
+                None,
+                window,
+                cx,
+            );
+            shell.still();
+            shell
+        })
+    }
+
+    fn offline_transport() -> (Runtime, HttpTransport) {
+        let rt = session::runtime().expect("runtime");
+        // This server never handles an HTTP request; its listener only reserves the test address.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("local port");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let transport = HttpTransport::new(&url, "unused").expect("transport");
+        drop(listener);
+        (rt, transport)
+    }
+
+    #[test]
+    fn typed_characters_reach_the_approval_input_and_enter_submits() {
+        let mut app = TestApp::new();
+        let mut window = shell(&mut app);
+        let panel = window.update(|shell, window, cx| {
+            shell.open_pairing_panel(false, window, cx);
+            let panel = shell.pairing_panel.clone().expect("panel");
+            panel.update(cx, |p, cx| {
+                p.pending = None;
+                p.net = Some(offline_transport());
+                cx.notify();
+            });
+            panel
+        });
+        window.draw();
+        // GPUI injects each text character only if the corresponding KeyDown propagates,
+        // matching the Windows backend's KeyDown / TranslateMessage split.
+        window.simulate_input("abcdefgh");
+        app.read_entity(&panel, |p, cx| {
+            assert_eq!(p.input.read(cx).content.as_ref(), "abcdefgh")
+        });
+        window.simulate_keystroke("enter");
+        app.read_entity(&panel, |p, _| {
+            assert!(p.busy || p.message.as_deref() == Some("Couldn't reach pairing. Try again."))
+        });
+    }
+
+    #[test]
+    fn pairing_modal_blocks_shell_shortcuts_without_moving_focus() {
+        let mut app = TestApp::new();
+        let mut window = shell(&mut app);
+        let task = window.update(|shell, window, cx| {
+            let id = shell.ui.task.expect("selected task");
+            shell.toggle_complete(id, cx);
+            assert!(shell.last_undo.is_some());
+            shell.open_pairing_panel(true, window, cx);
+            id
+        });
+        window.draw();
+        let before = window.update(|shell, window, cx| {
+            (
+                shell.ui.room,
+                shell.store.view().tasks[&task].is_done(),
+                window.focused(cx),
+            )
+        });
+        window.simulate_keystrokes("ctrl-z ctrl-h ctrl-k ctrl-n");
+        window.update(|shell, window, cx| {
+            assert_eq!(shell.ui.room, before.0);
+            assert_eq!(shell.store.view().tasks[&task].is_done(), before.1);
+            assert_eq!(window.focused(cx), before.2);
+            assert!(shell.last_undo.is_some());
+        });
+    }
+
+    #[test]
+    fn close_and_escape_keep_a_live_invite_even_when_offline() {
+        let mut app = TestApp::new();
+        let mut window = shell(&mut app);
+        let panel = window.update(|shell, window, cx| {
+            shell.open_pairing_panel(true, window, cx);
+            let panel = shell.pairing_panel.clone().expect("panel");
+            panel.update(cx, |p, cx| {
+                p.net = Some(offline_transport());
+                cx.notify();
+            });
+            panel
+        });
+        window.draw();
+        window.simulate_keystroke("escape");
+        window.update(|shell, window, cx| {
+            assert!(shell.pairing_panel.is_none());
+            assert!(shell.account_focus.is_focused(window));
+            shell.open_pairing_panel(true, window, cx);
+            assert_eq!(shell.pairing_panel.as_ref(), Some(&panel));
+        });
+        window.draw();
+        window.update(|_, window, cx| {
+            window.focus(&panel.read(cx).buttons[Control::Close as usize].clone(), cx)
+        });
+        window.draw();
+        window.simulate_keystroke("enter");
+        window.read(|shell, _| assert!(shell.pairing_panel.is_none()));
+        app.read_entity(&panel, |p, _| {
+            assert!(p.live_invite());
+            assert!(!p.busy);
+        });
+    }
 
     #[test]
     fn tab_and_shift_tab_wrap_inside_invite_controls() {
