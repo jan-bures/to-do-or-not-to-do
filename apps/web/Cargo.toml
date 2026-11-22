@@ -62,3 +62,13 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# Development builds stay small: dependencies carry no debug info, our own crates keep line tables for
+# readable backtraces, and there are no incremental caches. Agents build in many short-lived worktrees,
+# where incremental state is rarely reused but multiplies disk use and writes.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
