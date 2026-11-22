@@ -1,7 +1,7 @@
 //! The sync session: `todo-client` against the paired server, on a small tokio runtime of its own.
 //!
 //! Network I/O never runs on the UI thread. The runtime's two worker threads run the client's send and
-//! event loops (`SyncClient::run`), pairing requests and attachment downloads. The UI thread only calls
+//! event loops (`SyncClient::run`), pairing requests and attachment transfers. The UI thread only calls
 //! the client's synchronous methods (`view`, `submit`, `status`), which take a lock and, for `submit`,
 //! write the outbox entry to the local SQLite cache, and it learns about changes from
 //! `SyncClient::changes`, a runtime-agnostic signal it awaits on GPUI's executor.
@@ -13,12 +13,13 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use todo_client::activity::{ActivityError, ActivityPage, ActivityQuery};
+use todo_client::failure;
 use todo_client::native::{HttpTransport, OsEntropy, TokioClock};
 use todo_client::sqlite::SqliteStorage;
 use todo_client::storage::StorageOp;
 use todo_client::{ClientConfig, Revocation, Storage as _, StorageError, SyncClient};
 use todo_core::Actor;
-use todo_core::ids::AttachmentId;
+use todo_core::ids::{AttachmentId, TaskId};
 
 use crate::config::{self, DataDir, Pairing, Paths};
 use crate::model::files;
@@ -95,7 +96,7 @@ pub struct Session {
     rt: Runtime,
     data: DataDir,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    downloads: Arc<Downloads>,
+    transfers: Arc<Transfers>,
     updates: Box<std::sync::Mutex<Updates>>,
 }
 
@@ -105,22 +106,22 @@ struct Updates {
     worker: Option<crate::updates::Worker>,
 }
 
-/// The session's attachment downloads, so signing out can stop them and wait for them before the data
-/// they write to is removed.
+/// The session's attachment transfers, so signing out can stop them and wait for them before the
+/// pairing is removed.
 #[derive(Default)]
-struct Downloads {
-    /// `None` once the session is shutting down: no new downloads.
+struct Transfers {
+    /// `None` once the session is shutting down: no new transfers.
     tasks: std::sync::Mutex<Option<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
-impl Downloads {
+impl Transfers {
     fn new() -> Self {
         Self {
             tasks: std::sync::Mutex::new(Some(Vec::new())),
         }
     }
 
-    /// Runs a download on the runtime, unless the session is shutting down.
+    /// Runs a transfer on the runtime, unless the session is shutting down.
     fn run<T, J>(&self, rt: &Runtime, job: J) -> impl Future<Output = anyhow::Result<T>> + use<T, J>
     where
         T: Send + 'static,
@@ -144,11 +145,11 @@ impl Downloads {
         async move {
             anyhow::ensure!(started, "signing out");
             rx.await
-                .map_err(|_| anyhow::anyhow!("the download was stopped"))?
+                .map_err(|_| anyhow::anyhow!("the transfer was stopped"))?
         }
     }
 
-    /// Stops new downloads and cancels running ones; resolves once none is running.
+    /// Stops new transfers and cancels running ones; resolves once none is running.
     fn shut(&self) -> impl Future<Output = ()> + use<> {
         let tasks = self
             .tasks
@@ -248,7 +249,7 @@ impl Session {
             rt,
             data,
             task: std::sync::Mutex::new(None),
-            downloads: Arc::new(Downloads::new()),
+            transfers: Arc::new(Transfers::new()),
             updates: Box::new(std::sync::Mutex::new(Updates {
                 token: Some(pairing.token.clone()),
                 worker: None,
@@ -325,11 +326,10 @@ impl Session {
         }
     }
 
-    /// Stops syncing and downloading; the returned future resolves once the sync loops have let go of
-    /// the cache and no download is still writing.
+    /// Stops syncing and transferring files; the returned future resolves once none is running.
     pub fn shutdown(&self) -> impl Future<Output = ()> + use<> {
         self.client.stop();
-        let downloads = self.downloads.shut();
+        let transfers = self.transfers.shut();
         let task = self
             .task
             .lock()
@@ -348,7 +348,7 @@ impl Session {
             if let Some(task) = task {
                 let _ = task.await;
             }
-            downloads.await;
+            transfers.await;
         }
     }
 
@@ -380,6 +380,45 @@ impl Session {
         &self.data
     }
 
+    /// Uploads one batch directly, without outbox entries or local staging files. Send in order so
+    /// a selection of several files does not compete for the server's upload slots. Bad files don't
+    /// stop the other files in the batch. The caller shows the first failure, alongside any sync lag.
+    pub fn upload_attachments(
+        &self,
+        task: TaskId,
+        paths: Vec<PathBuf>,
+    ) -> impl Future<Output = anyhow::Result<UploadOutcome>> + use<> {
+        let client = self.client.clone();
+        self.transfers.run(&self.rt, async move {
+            let mut accepted = Vec::new();
+            let mut error = None;
+            for path in paths {
+                if !client.view().is_live(task.into()) {
+                    error.get_or_insert_with(|| "The task is no longer available.".into());
+                    break;
+                }
+                if !client.with_confirmed(|s| s.is_live(task.into())) {
+                    error.get_or_insert_with(|| failure::ATTACHMENT_TASK_UNSYNCED.into());
+                    break;
+                }
+                let id = AttachmentId::from_uuid(client.new_uuid());
+                match client.transport().upload_path(task, id, &path).await {
+                    Ok(()) => accepted.push(id),
+                    Err(e) => {
+                        error.get_or_insert_with(|| e.upload_message());
+                    }
+                }
+            }
+            if !accepted.is_empty() {
+                client.nudge();
+            }
+            Ok(UploadOutcome {
+                error,
+                synced: client.wait_for_attachments(&accepted).await,
+            })
+        })
+    }
+
     /// Downloads an attachment to be opened, into a new owner-only directory of its own under this
     /// pairing's `attachments` (a fresh random name each time, created new, never reused or followed
     /// through a link), with the Mark of the Web. Only for names [`files::can_open`] allows. Runs on the
@@ -393,7 +432,7 @@ impl Session {
         let allowed = files::can_open(&name);
         let data = self.data.clone();
         let fetch = self.fetch(id);
-        self.downloads.run(&self.rt, async move {
+        self.transfers.run(&self.rt, async move {
             anyhow::ensure!(allowed, "this kind of file can only be saved, not opened");
             let bytes = fetch.await?;
             write_to_open(&data, &name, &bytes)
@@ -408,7 +447,7 @@ impl Session {
         path: PathBuf,
     ) -> impl Future<Output = anyhow::Result<Saved>> + use<> {
         let fetch = self.fetch(id);
-        self.downloads.run(&self.rt, async move {
+        self.transfers.run(&self.rt, async move {
             let bytes = fetch.await?;
             let marked = save_replacing(&path, &bytes, mark_of_the_web)?;
             Ok(Saved { path, marked })
@@ -424,6 +463,13 @@ impl Session {
                 .map_err(|error| anyhow::anyhow!(error.download_message()))
         }
     }
+}
+
+/// Direct upload results: accepted files are shown only once sync delivers them.
+#[derive(Debug)]
+pub struct UploadOutcome {
+    pub error: Option<std::borrow::Cow<'static, str>>,
+    pub synced: bool,
 }
 
 /// A saved attachment.
@@ -946,7 +992,7 @@ pub enum SignedOut {
     DataLeft(String),
 }
 
-/// Signs out, in order: waits until syncing and downloads have stopped (`stopped`, from
+/// Signs out, in order: waits until syncing and attachment transfers have stopped (`stopped`, from
 /// [`Session::shutdown`]), records that the pairing's data is to be removed (beside it, so a crash from
 /// here on is finished at the next start), removes the saved sign-in, lets go of the session (`release`
 /// drops the last handles on the cache), then removes the data, retrying while files are still being

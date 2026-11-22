@@ -11,6 +11,8 @@ use crate::outbox::{FailedEntry, Operation, OutboxEntry, Rejection};
 
 /// Transfer status shared across native clients. No server message or URL reaches the UI.
 pub const ATTACHMENT_OFFLINE: &str = "Connect to upload or download attachments.";
+/// Uploads bypass the outbox, so a new task must reach the server first.
+pub const ATTACHMENT_TASK_UNSYNCED: &str = "Wait for this task to sync, then add the file.";
 pub const DOWNLOAD_TIMEOUT: &str = "The download timed out. Try again.";
 #[must_use]
 pub fn attachment_download(status: u16, code: Option<&str>) -> &'static str {

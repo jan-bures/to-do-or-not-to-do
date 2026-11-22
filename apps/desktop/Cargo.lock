@@ -7345,6 +7345,7 @@ dependencies = [
  "todo-fs",
  "tokio",
  "tracing",
+ "unicode-general-category",
  "url",
  "uuid",
 ]

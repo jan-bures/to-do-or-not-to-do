@@ -31,6 +31,7 @@ pub(super) enum EditKind {
     RemoveReminder,
     AddLink,
     DeleteLink,
+    DeleteAttachment,
     DeleteList,
     MoveList,
     DeleteCollection,
@@ -46,10 +47,10 @@ impl EditKind {
                 EntityId::Step(_) => (id, Self::DeleteStep),
                 EntityId::Tag(_) => (id, Self::DeleteTag),
                 EntityId::Link(_) => (id, Self::DeleteLink),
+                EntityId::Attachment(_) => (id, Self::DeleteAttachment),
                 EntityId::List(_) => (id, Self::DeleteList),
                 EntityId::Collection(_) => (id, Self::DeleteCollection),
                 EntityId::Reminder(_) => (id, Self::RemoveReminder),
-                _ => return None,
             },
             Command::UpdateTask { id, ref patch } if patch.recurrence.is_some() => (
                 id.into(),
@@ -91,6 +92,7 @@ impl EditKind {
             Self::RemoveReminder => "Removed reminder for",
             Self::AddLink => "Added link",
             Self::DeleteLink => "Removed link",
+            Self::DeleteAttachment => "Removed attachment",
             Self::DeleteList => "Deleted list",
             Self::DeleteCollection => "Deleted collection",
         }
@@ -108,6 +110,7 @@ impl EditKind {
                 Self::SetReminder | Self::RemoveReminder => "Restored reminder for",
                 Self::AddLink => "Removed link",
                 Self::DeleteLink => "Restored link",
+                Self::DeleteAttachment => "Restored attachment",
                 Self::DeleteList => "Restored list",
                 Self::DeleteCollection => "Restored collection",
             },
@@ -178,7 +181,11 @@ impl EditKind {
 pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) -> Option<String> {
     if !matches!(
         kind,
-        EditKind::Delete | EditKind::DeleteStep | EditKind::DeleteLink | EditKind::DeleteList
+        EditKind::Delete
+            | EditKind::DeleteStep
+            | EditKind::DeleteLink
+            | EditKind::DeleteAttachment
+            | EditKind::DeleteList
     ) || state.tombstone(entity).is_some()
         || state.is_live(entity)
     {
@@ -202,6 +209,7 @@ pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) 
     let subject = match kind {
         EditKind::DeleteStep => "Step",
         EditKind::DeleteLink => "Link",
+        EditKind::DeleteAttachment => "Attachment",
         EditKind::DeleteList => "List",
         _ => "Task",
     };
@@ -269,13 +277,13 @@ pub(super) fn subject_title(state: &State, entity: EntityId) -> String {
         EntityId::Link(id) => {
             (state.links.get(&id)).map(|l| crate::model::menus::link_name(&l.kind))
         }
+        EntityId::Attachment(id) => state.attachments.get(&id).map(|a| a.file_name.clone()),
         EntityId::List(id) => state.lists.get(&id).map(|l| l.name.clone()),
         EntityId::Collection(id) => state.collections.get(&id).map(|c| c.name.clone()),
         // A reminder is named by its task.
         EntityId::Reminder(id) => (state.reminders.get(&id))
             .and_then(|r| state.tasks.get(&r.task))
             .map(|t| t.title.clone()),
-        _ => None,
     }
     .unwrap_or_else(|| "Task".into())
 }
@@ -1160,6 +1168,37 @@ mod tests {
         assert_eq!(
             hidden_by_parent(kind, entity, &state).as_deref(),
             Some("Link restored, but its task was deleted elsewhere.")
+        );
+    }
+
+    #[test]
+    fn removing_an_attachment_uses_the_filename_and_restores_the_same_record() {
+        use crate::store::Store;
+        let f = fixtures::my_day();
+        let task = f.ui.task.expect("selected task");
+        let file = f
+            .state
+            .attachments
+            .values()
+            .find(|a| a.task == task)
+            .expect("attachment");
+        let remove = todo_client::intent::delete(file.id);
+        let (entity, kind) = EditKind::of(&remove).expect("undoable");
+        assert_eq!(kind, EditKind::DeleteAttachment);
+        assert_eq!(
+            toast_label(&f.state, &remove, entity, kind).as_ref(),
+            format!("Removed attachment “{}”", file.file_name)
+        );
+        assert!(touches(&remove, task.into(), &f.state));
+        let store = Store::fixture(&f);
+        let target = store.submit_undoable(remove).expect("removed");
+        let removed = store.view();
+        assert!(!removed.is_live(entity));
+        store.undo(&target).expect("restored");
+        assert!(kind.undo_changed_view(entity, &removed, &store.view()));
+        assert_eq!(
+            store.view().attachments[&file.id].storage_key,
+            file.storage_key
         );
     }
 

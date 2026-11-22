@@ -4,10 +4,123 @@ use crate::failure;
 use crate::platform::{Method, TransportError, attachment_upload_path};
 use std::{future::Future, path::Path, time::Duration};
 use todo_core::ids::{AttachmentId, TaskId};
-use tokio::{fs::File, io::AsyncWriteExt};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 /// Server hard ceiling; a server configured below it returns its actual limit with HTTP 413.
 pub use todo_core::MAX_ATTACHMENT_BYTES as MAX_BYTES;
+
+const BINARY: &str = "application/octet-stream";
+
+/// A single leaf, without invisible separators or controls, limited to 255 UTF-8 bytes. Keep a
+/// short extension when truncating so the name is still useful in a file picker.
+#[must_use]
+pub fn safe_name(raw: &str) -> String {
+    const LIMIT: usize = 255;
+    let leaf: String = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|&c| {
+            !matches!(
+                get_general_category(c),
+                GeneralCategory::Control
+                    | GeneralCategory::Format
+                    | GeneralCategory::LineSeparator
+                    | GeneralCategory::ParagraphSeparator
+            )
+        })
+        .collect();
+    let trailing = |c: char| c == '.' || c.is_whitespace();
+    let name = leaf.trim_start().trim_end_matches(trailing);
+    if name.is_empty() {
+        return "attachment".into();
+    }
+    if name.len() <= LIMIT {
+        return name.into();
+    }
+    let (stem, suffix) = name
+        .rfind('.')
+        .filter(|&dot| dot > 0 && name.len() - dot < LIMIT)
+        .map_or((name, ""), |dot| name.split_at(dot));
+    let head = &stem[..stem.floor_char_boundary(LIMIT - suffix.len())];
+    let head = if suffix.is_empty() {
+        head.trim_end_matches(trailing)
+    } else {
+        head
+    };
+    format!("{}{suffix}", if head.is_empty() { "_" } else { head })
+}
+
+/// Recognize common formats by their bytes, not a picked file's extension. Unknown formats are
+/// still accepted. The server serves all attachments as downloads regardless of their media type.
+fn sniff_media(prefix: &[u8]) -> &'static str {
+    match prefix {
+        [b'%', b'P', b'D', b'F', b'-', ..] => "application/pdf",
+        [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, ..] => "image/png",
+        [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => "image/gif",
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => "image/webp",
+        _ => BINARY,
+    }
+}
+
+async fn open_upload(path: &Path) -> Result<(File, u64), FileError> {
+    // Reject directories and special files before opening (e.g. opening a FIFO can block).
+    if !tokio::fs::metadata(path).await?.is_file() {
+        return Err(FileError::NotAFile);
+    }
+    let file = File::open(path).await?;
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() {
+        return Err(FileError::NotAFile);
+    }
+    let size = metadata.len();
+    if size > MAX_BYTES {
+        return Err(FileError::Refused {
+            status: 413,
+            max_bytes: Some(MAX_BYTES),
+            code: None,
+        });
+    }
+    Ok((file, size))
+}
+
+/// Stream only the announced size, even if the picked file grows during upload. An unexpected EOF
+/// fails the request rather than letting the server accept an incomplete file.
+fn upload_body(file: File, size: u64) -> reqwest::Body {
+    const CHUNK: u64 = 64 * 1024;
+    reqwest::Body::wrap_stream(futures_util::stream::try_unfold(
+        (file, size),
+        |(mut file, remaining)| async move {
+            if remaining == 0 {
+                return Ok::<_, std::io::Error>(None);
+            }
+            let len = remaining.min(CHUNK);
+            let mut bytes = vec![0; len as usize];
+            file.read_exact(&mut bytes).await?;
+            Ok(Some((bytes, (file, remaining - len))))
+        },
+    ))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
@@ -21,6 +134,8 @@ pub enum FileError {
     Interrupted,
     #[error("could not read or write the file")]
     File(#[from] std::io::Error),
+    #[error("the path does not name a regular file")]
+    NotAFile,
     #[error("the file transfer was refused (HTTP {status})")]
     Refused {
         status: u16,
@@ -57,6 +172,7 @@ impl FileError {
     pub fn upload_message(&self) -> std::borrow::Cow<'static, str> {
         match self {
             Self::Connect => failure::ATTACHMENT_OFFLINE.into(),
+            Self::NotAFile => "Choose files, not folders, to attach to a task.".into(),
             Self::Timeout => "The upload timed out. Check the task before trying again.".into(),
             Self::Interrupted => {
                 "Couldn’t upload the file. The connection dropped, or the server refused it.".into()
@@ -72,7 +188,7 @@ impl FileError {
                 max_bytes,
                 ..
             } => failure::attachment_upload(Some(*status), *max_bytes),
-            _ => "Couldn’t upload the selected file.".into(),
+            _ => failure::attachment_upload(None, None),
         }
     }
 }
@@ -136,6 +252,53 @@ impl HttpTransport {
         Ok(res)
     }
 
+    /// Uploads a file chosen in a native picker or dropped on the app. Read only a short prefix to
+    /// determine the media type, then stream from the same open handle.
+    pub async fn upload_path(
+        &self,
+        task: TaskId,
+        id: AttachmentId,
+        path: &Path,
+    ) -> Result<(), FileError> {
+        let name = path
+            .file_name()
+            .ok_or(FileError::NotAFile)?
+            .to_string_lossy();
+        let (mut file, size) = open_upload(path).await?;
+        let mut prefix = [0; 12];
+        let len = size.min(prefix.len() as u64) as usize;
+        file.read_exact(&mut prefix[..len]).await?;
+        file.rewind().await?;
+        self.upload_file(task, id, &name, sniff_media(&prefix[..len]), file, size)
+            .await
+    }
+
+    async fn upload_file(
+        &self,
+        task: TaskId,
+        id: AttachmentId,
+        name: &str,
+        media: &str,
+        file: File,
+        size: u64,
+    ) -> Result<(), FileError> {
+        let path = attachment_upload_path(task, id, &safe_name(name));
+        let res = self
+            .authenticated(Method::Post, &path)?
+            .header(reqwest::header::CONTENT_TYPE, media)
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(upload_body(file, size))
+            .timeout(Duration::from_secs(600))
+            .send()
+            .await
+            .map_err(transfer_error)?;
+        self.observe_response(&res);
+        match res.status().as_u16() {
+            200 | 201 => Ok(()),
+            _ => Err(refused(res).await),
+        }
+    }
+
     /// Desktop buffers the download before writing and marking it in a single filesystem operation.
     pub async fn download_attachment_bytes(&self, id: AttachmentId) -> Result<Vec<u8>, FileError> {
         self.attachment_response(id)
@@ -180,37 +343,25 @@ impl FileTransport for HttpTransport {
         media: &str,
         path: &Path,
     ) -> Result<(), FileError> {
-        let file = File::open(path).await?;
-        let size = file.metadata().await?.len();
-        if size > MAX_BYTES {
-            return Err(FileError::Refused {
-                status: 413,
-                max_bytes: Some(MAX_BYTES),
-                code: None,
-            });
-        }
-        let path = attachment_upload_path(task, id, name);
-        let res = self
-            .authenticated(Method::Post, &path)?
-            .header(reqwest::header::CONTENT_TYPE, media)
-            .header(reqwest::header::CONTENT_LENGTH, size)
-            .body(file)
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(transfer_error)?;
-        self.observe_response(&res);
-        let status = res.status().as_u16();
-        if matches!(status, 200 | 201) {
-            return Ok(());
-        }
-        Err(refused(res).await)
+        let (file, size) = open_upload(path).await?;
+        self.upload_file(task, id, name, media, file, size).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_type_comes_from_the_prefix_or_falls_back_to_binary() {
+        assert_eq!(sniff_media(b"%PDF-1.7\r\n"), "application/pdf");
+        assert_eq!(sniff_media(b"GIF89a"), "image/gif");
+        assert_eq!(sniff_media(b"RIFF\0\0\0\0WEBP"), "image/webp");
+        assert_eq!(sniff_media(b"\x89PNG\r\n\x1a\n"), "image/png");
+        assert_eq!(sniff_media(b"\xff\xd8\xff"), "image/jpeg");
+        assert_eq!(sniff_media(b"RIFF\0\0\0\0WAVE"), BINARY);
+        assert_eq!(sniff_media(b""), BINARY);
+    }
 
     #[tokio::test]
     async fn connect_timeout_words_the_failure_as_offline() {

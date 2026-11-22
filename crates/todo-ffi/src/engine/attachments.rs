@@ -7,10 +7,9 @@ use crate::{FfiError, runtime::runtime, transport::AppTransport};
 use std::{path::Path, sync::Arc};
 use todo_client::{
     failure, intent,
-    native::attachments::{FileTransport, MAX_BYTES},
+    native::attachments::{FileTransport, MAX_BYTES, safe_name},
 };
 use todo_core::{ids::AttachmentId, model::AttachmentRef};
-use unicode_general_category::{GeneralCategory, get_general_category};
 
 #[uniffi::export]
 pub fn attachment_limit_bytes() -> u64 {
@@ -27,44 +26,6 @@ pub fn attachment_too_large() -> String {
 #[uniffi::export]
 pub fn safe_attachment_name(raw: String) -> String {
     safe_name(&raw)
-}
-
-fn safe_name(raw: &str) -> String {
-    const LIMIT: usize = 255;
-    let leaf: String = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .filter(|&c| {
-            !matches!(
-                get_general_category(c),
-                GeneralCategory::Control
-                    | GeneralCategory::Format
-                    | GeneralCategory::LineSeparator
-                    | GeneralCategory::ParagraphSeparator
-            )
-        })
-        .collect();
-    let trailing = |c: char| c == '.' || c.is_whitespace();
-    let name = leaf.trim_start().trim_end_matches(trailing);
-    if name.is_empty() {
-        return "attachment".into();
-    }
-    if name.len() <= LIMIT {
-        return name.into();
-    }
-    let (stem, suffix) = name
-        .rfind('.')
-        .filter(|&dot| dot > 0 && name.len() - dot < LIMIT)
-        .map_or((name, ""), |dot| name.split_at(dot));
-    let head = &stem[..stem.floor_char_boundary(LIMIT - suffix.len())];
-    let head = if suffix.is_empty() {
-        head.trim_end_matches(trailing)
-    } else {
-        head
-    };
-    format!("{}{suffix}", if head.is_empty() { "_" } else { head })
 }
 
 /// Display and intent metadata only: neither a server address nor a storage key crosses the FFI.
@@ -206,7 +167,7 @@ impl TodoEngine {
             return Err(invalid(failure::ATTACHMENT_OFFLINE));
         };
         if !self.client.with_confirmed(|s| s.is_live(task.into())) {
-            return Err(invalid("Wait for this task to sync, then add the file."));
+            return Err(invalid(failure::ATTACHMENT_TASK_UNSYNCED));
         }
         let id = AttachmentId::from_uuid(self.client.new_uuid());
         self.transfer(epoch, async {
@@ -222,20 +183,7 @@ impl TodoEngine {
     pub fn await_attachment(&self, id: String, epoch: u64) -> Result<bool, FfiError> {
         let id: AttachmentId = id.parse().map_err(|_| invalid("No such attachment."))?;
         self.transfer(epoch, async {
-            let mut changes = self.client.changes();
-            let observed = async {
-                while !self
-                    .client
-                    .with_confirmed(|s| s.attachments.contains_key(&id))
-                {
-                    changes.next().await;
-                }
-            };
-            Ok(
-                tokio::time::timeout(std::time::Duration::from_secs(30), observed)
-                    .await
-                    .is_ok(),
-            )
+            Ok(self.client.wait_for_attachments(&[id]).await)
         })
     }
 

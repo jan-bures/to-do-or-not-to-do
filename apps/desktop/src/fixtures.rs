@@ -176,6 +176,13 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "tag-picker" | "tag-create" | "tag-edit" | "tag-colour" | "tag-rename" => Some(my_day()),
         // Links: the task's Links… page, and a link being typed into the detail pane's field.
         "task-links" | "add-link" => Some(with_web_link()),
+        "attachments-list" => Some(my_day()),
+        "attachments-empty" | "attachments-uploading" | "attachments-error" => {
+            let mut f = my_day();
+            let task = f.ui.task?;
+            f.state.attachments.retain(|_, a| a.task != task);
+            Some(f)
+        }
         "collapsed-collection" => Some(collapsed_collection()),
         "collection-collapse-50" => Some(Fixture {
             moment: Some(Moment::CollectionCollapse { at: m::PANEL / 2 }),

@@ -362,7 +362,12 @@ impl ShellView {
 
     /// Saves an attachment where the owner chooses (a save dialog, starting in Downloads). The default
     /// action for every attachment: nothing is run.
-    fn save_attachment(&mut self, id: AttachmentId, name: SharedString, cx: &mut Context<Self>) {
+    pub(super) fn save_attachment(
+        &mut self,
+        id: AttachmentId,
+        name: SharedString,
+        cx: &mut Context<Self>,
+    ) {
         if self.store.session().is_none() {
             self.notice = Some(Notice::info(
                 "Attachments download when connected to a server.",
@@ -417,7 +422,12 @@ impl ShellView {
 
     /// Downloads a document or image (see `files::can_open`) into this pairing's attachments, marked as
     /// from the internet, and opens it with its app. Anything else can only be saved.
-    fn open_attachment(&mut self, id: AttachmentId, name: SharedString, cx: &mut Context<Self>) {
+    pub(super) fn open_attachment(
+        &mut self,
+        id: AttachmentId,
+        name: SharedString,
+        cx: &mut Context<Self>,
+    ) {
         let label = model::labels::one_line(&name);
         if !files::can_open(&name) {
             self.notice = Some(Notice::info(format!(
@@ -829,62 +839,6 @@ impl ShellView {
                     .into_any_element()
             })
             .collect();
-        let attachments: Vec<_> = d
-            .attachments
-            .iter()
-            .enumerate()
-            .map(|(i, a)| {
-                let (id, name) = (a.id, a.name.clone());
-                div()
-                    .id(("attachment", i))
-                    .mx(px(desktop::DETAIL_PAD_X))
-                    .h(px(desktop::PROP_ROW))
-                    .flex()
-                    .items_center()
-                    .gap(px(desktop::PROP_GAP))
-                    .border_b_1()
-                    .border_color(p.line)
-                    .hover(|s| s.bg(p.hover))
-                    .child(kit::icon(Icon::Paperclip, component::ICON_SMALL, p.ink_3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .style(ty::NAV_SUB)
-                            .text_color(p.ink)
-                            .child(a.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .style(ty::TAG)
-                            .text_color(p.ink_3)
-                            .child(a.detail.clone()),
-                    )
-                    .when(files::can_open(&a.name), |row| {
-                        let name = a.name.clone();
-                        row.child(
-                            div()
-                                .id(("open-attachment", i))
-                                .px(px(space::S2))
-                                .rounded(px(radius::MD))
-                                .style(ty::TAG)
-                                .text_color(p.accent_strong)
-                                .hover(|s| s.bg(p.wash))
-                                .child("Open")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.open_attachment(id, name.clone(), cx);
-                                })),
-                        )
-                    })
-                    .child(kit::icon(Icon::Download, component::ICON_SMALL, p.ink_3))
-                    // Saving is the default for every attachment.
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.save_attachment(id, name.clone(), cx);
-                    }))
-            })
-            .collect();
         let fields: Vec<_> = d
             .fields
             .iter()
@@ -1258,9 +1212,7 @@ impl ShellView {
                     .child(section(if has_mail { "Source" } else { "Links" }))
                     .children(links)
                     .child(add_link)
-                    .when(!d.attachments.is_empty(), |el| {
-                        el.child(section("Attachments")).children(attachments)
-                    })
+                    .child(self.attachment_section(d, live, window, cx))
                     .child(div().h(px(space::S6))),
             )
     }
@@ -1317,6 +1269,18 @@ impl ShellView {
                     .flex_col()
                     .when(live, |el| {
                         el.overflow_y_scroll().track_scroll(&self.detail_scroll)
+                    })
+                    .when(live && self.can_add_files(d.task), |el| {
+                        let task = d.task;
+                        let wash = p.wash;
+                        el.drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(wash))
+                            .on_drop(cx.listener(
+                                move |this, paths: &gpui::ExternalPaths, _, cx| {
+                                    if this.can_add_files(task) {
+                                        this.upload_files(task, paths.0.to_vec(), cx);
+                                    }
+                                },
+                            ))
                     })
                     .child(
                         self.detail(d, live, window, cx)

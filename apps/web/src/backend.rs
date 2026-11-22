@@ -561,18 +561,8 @@ pub async fn wait_for_task(task: TaskId) -> Result<(), UploadError> {
 /// Wait for the files the server already accepted to appear in the confirmed replica. A tombstone
 /// counts as observed: another tab can remove an attachment while this tab is catching up.
 pub async fn wait_for_attachments(ids: &[AttachmentId]) -> bool {
-    use futures_util::future::{Either, select};
-    use std::pin::pin;
     let Some(c) = live() else { return true };
-    let observed = async {
-        while !c.with_confirmed(|s| ids.iter().all(|id| s.attachments.contains_key(id))) {
-            next_change().await;
-        }
-    };
-    matches!(
-        select(pin!(observed), pin!(sleep(Duration::from_secs(30)))).await,
-        Either::Left(_)
-    )
+    c.wait_for_attachments(ids).await
 }
 
 /// Authenticated transport for the owner-only pairing settings.

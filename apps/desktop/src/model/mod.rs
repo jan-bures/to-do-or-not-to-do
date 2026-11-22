@@ -8,6 +8,7 @@
 //! Nothing here touches GPUI windows, the network or the disk, so it is all unit-tested.
 
 pub mod activity;
+pub mod attachments;
 mod derive;
 pub mod draft;
 pub mod files;

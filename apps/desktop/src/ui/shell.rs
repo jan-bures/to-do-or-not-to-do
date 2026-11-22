@@ -3,6 +3,7 @@
 //! state changes, and turns clicks and keys into commands for the store.
 
 mod activity;
+mod attachments;
 mod detail;
 mod device_pairing;
 mod menu;
@@ -31,6 +32,7 @@ use super::kit;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::activity::FeedInput;
+use crate::model::attachments::{Control as FileControl, file_controls};
 use crate::model::layout::{DetailPane, Pane, Width};
 use crate::model::menus::{Page, TagPage};
 use crate::model::motion::{
@@ -240,6 +242,7 @@ pub struct ShellView {
     sidebar_bar: kit::Scrollbar,
     splitters: panes::Splitters,
     detail_scroll: ScrollHandle,
+    attachment_ui: attachments::AttachmentUi,
     detail_bar: kit::Scrollbar,
     caption_preview: kit::CaptionPreview,
     menu: Option<Menu>,
@@ -409,6 +412,7 @@ impl ShellView {
             sidebar_bar: kit::Scrollbar::default(),
             splitters: panes::Splitters::new(window, cx),
             detail_scroll: ScrollHandle::new(),
+            attachment_ui: attachments::AttachmentUi::new(cx),
             detail_bar: kit::Scrollbar::default(),
             caption_preview: kit::CaptionPreview::Live,
             menu: None,
@@ -584,6 +588,7 @@ impl ShellView {
         }
         let old_task = self.shell.detail.as_ref().map(|d| d.task);
         let new_task = shell.detail.as_ref().map(|d| d.task);
+        self.attachment_ui.uploads.select(new_task);
         if old_task != new_task {
             if new_task.is_none() {
                 self.closing = self.shell.detail.take();
@@ -970,6 +975,31 @@ impl ShellView {
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(fixture, "device-invite" | "device-approve") {
             self.open_pairing_panel(fixture == "device-invite", window, cx);
+            return;
+        }
+        if fixture.starts_with("attachments-")
+            && let Some(task) = self.ui.task
+        {
+            match fixture {
+                "attachments-uploading" => {
+                    self.attachment_ui.uploads.start(task, false);
+                }
+                "attachments-error" => self.attachment_ui.uploads.finish(
+                    task,
+                    Some(task),
+                    Some((
+                        todo_client::failure::attachment_upload(
+                            Some(413),
+                            Some(todo_core::MAX_ATTACHMENT_BYTES),
+                        )
+                        .into_owned(),
+                        true,
+                    )),
+                ),
+                _ => {}
+            }
+            let scroll = self.detail_scroll.clone();
+            window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
             return;
         }
         // An undo asked for from the keyboard: the change selected, then Enter.
@@ -2746,9 +2776,13 @@ impl ShellView {
     /// Scrolls the pane of `handle` so the control `key` (a `probe`) is in view, a small margin clear of
     /// its edges (`layout::reveal_offset`). Nothing when it's in view, or hasn't been painted yet.
     fn scroll_into_view(&self, handle: &ScrollHandle, key: &'static str) -> bool {
-        let Some(target) = self.probes.borrow().get(key).copied() else {
-            return false;
-        };
+        self.probes
+            .borrow()
+            .get(key)
+            .is_some_and(|&target| self.reveal_bounds(handle, target))
+    }
+
+    fn reveal_bounds(&self, handle: &ScrollHandle, target: Bounds<Pixels>) -> bool {
         let view = handle.bounds();
         let offset = handle.offset();
         let next = model::layout::reveal_offset(
@@ -3490,6 +3524,8 @@ impl ShellView {
         } else if on(&self.activity_filter_focus)
             || on(&self.activity_refresh_focus)
             || on(&self.activity_more_focus)
+            || on(&self.attachment_ui.add)
+            || self.attachment_ui.rows.values().any(on)
         {
             Focus::Button
         } else if on(&self.room_menu_focus)
@@ -3676,6 +3712,12 @@ impl ShellView {
             Stop::Reminder => &self.reminder_focus,
             Stop::DetailMyDay => &self.detail_my_day_focus,
             Stop::DetailImportant => &self.detail_important_focus,
+            Stop::Attachment(FileControl::Add) => &self.attachment_ui.add,
+            Stop::Attachment(control) => self
+                .attachment_ui
+                .rows
+                .get(&control)
+                .unwrap_or(&self.attachment_ui.add),
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::NewList => &self.new_list_focus,
             Stop::NewCollection => &self.new_collection_focus,
@@ -3703,9 +3745,12 @@ impl ShellView {
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }
-            Stop::Repeat | Stop::Reminder | Stop::DetailMyDay | Stop::DetailImportant => {
-                self.repeat_target().is_some()
-            }
+            Stop::Repeat
+            | Stop::Reminder
+            | Stop::DetailMyDay
+            | Stop::DetailImportant
+            | Stop::Attachment(FileControl::Add) => self.repeat_target().is_some(),
+            Stop::Attachment(control) => self.attachment_ui.rows.contains_key(&control),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::SidebarSplitter
@@ -3721,6 +3766,16 @@ impl ShellView {
         hints::TAB_ORDER
             .into_iter()
             .find(|&stop| self.stop_handle(stop).is_focused(window))
+            .or_else(|| {
+                self.attachment_ui
+                    .rows
+                    .iter()
+                    .find_map(|(&control, handle)| {
+                        handle
+                            .is_focused(window)
+                            .then_some(hints::Stop::Attachment(control))
+                    })
+            })
     }
 
     /// Moves the keyboard to a Tab stop.
@@ -3728,7 +3783,9 @@ impl ShellView {
         let handle = self.stop_handle(stop).clone();
         window.focus(&handle, cx);
         // Reveal stops that can scroll out of the detail pane or the Activity feed.
-        if let Some((pane, key)) = hints::reveal(stop) {
+        if let hints::Stop::Attachment(control) = stop {
+            self.reveal_attachment(control);
+        } else if let Some((pane, key)) = hints::reveal(stop) {
             let handle = match pane {
                 hints::ScrollPane::Detail => &self.detail_scroll,
                 hints::ScrollPane::Feed => &self.activity_scroll,
@@ -3746,7 +3803,13 @@ impl ShellView {
             return;
         }
         let forward = !e.keystroke.modifiers.shift;
-        let to = hints::tab_target(self.stop_at(window), forward, |s| self.has_stop(s));
+        let files = self
+            .shell
+            .detail
+            .as_ref()
+            .into_iter()
+            .flat_map(|d| file_controls(&d.attachments));
+        let to = hints::tab_target(self.stop_at(window), forward, |s| self.has_stop(s), files);
         if let Some(to) = to {
             cx.stop_propagation();
             self.focus_stop(to, window, cx);
@@ -3785,6 +3848,7 @@ impl Render for ShellView {
         }
         self.drive_splitters(window, cx);
         self.keep_focus(window, cx);
+        self.sync_attachment_focus(window, cx);
         let p = self.palette;
         // Activity has no tasks to add: its toolbar takes the quick-add's place.
         let quick_add = if self.in_activity() {

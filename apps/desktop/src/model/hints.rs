@@ -1,5 +1,7 @@
 //! The status bar's keyboard hints: only the keys that work where the keyboard is now.
 
+use super::attachments::Control as FileControl;
+
 /// Where the keyboard is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
@@ -86,6 +88,8 @@ pub enum Stop {
     Reminder,
     /// Repeat, when a task is open.
     Repeat,
+    /// The task's Add file button, followed by each file's controls.
+    Attachment(FileControl),
     /// The sidebar's New list.
     NewList,
     /// The sidebar's New collection.
@@ -100,7 +104,7 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 16] = [
+pub const TAB_ORDER: [Stop; 17] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Undo,
@@ -113,6 +117,7 @@ pub const TAB_ORDER: [Stop; 16] = [
     Stop::DetailImportant,
     Stop::Reminder,
     Stop::Repeat,
+    Stop::Attachment(FileControl::Add),
     Stop::NewList,
     Stop::NewCollection,
     Stop::SyncFailures,
@@ -144,6 +149,8 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
         | Stop::DetailSplitter
+        // Attachment controls have row-ID-based probes rather than fixed names.
+        | Stop::Attachment(_)
         // New list and New collection are pinned below the sidebar's scrolled rooms.
         | Stop::NewList
         | Stop::NewCollection
@@ -155,15 +162,20 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
 /// Where Tab (`forward`) or Shift+Tab goes from `from`: the next stop round [`TAB_ORDER`] that is
 /// `present`. The list is always there; from a stop that has just gone, it goes on from that stop's
 /// place in the order.
-pub fn tab_stop(from: Stop, forward: bool, present: impl Fn(Stop) -> bool) -> Stop {
-    let n = TAB_ORDER.len();
-    let at = TAB_ORDER.iter().position(|&s| s == from).unwrap_or(0);
+#[cfg(test)]
+fn tab_stop(from: Stop, forward: bool, present: impl Fn(Stop) -> bool) -> Stop {
+    next_stop(&TAB_ORDER, from, forward, present)
+}
+
+fn next_stop(order: &[Stop], from: Stop, forward: bool, present: impl Fn(Stop) -> bool) -> Stop {
+    let n = order.len();
+    let at = order.iter().position(|&s| s == from).unwrap_or(0);
     (1..n)
         .map(|k| {
             if forward {
-                TAB_ORDER[(at + k) % n]
+                order[(at + k) % n]
             } else {
-                TAB_ORDER[(at + n - k) % n]
+                order[(at + n - k) % n]
             }
         })
         .find(|&s| s == Stop::List || present(s))
@@ -176,8 +188,20 @@ pub fn tab_target(
     focused: Option<Stop>,
     forward: bool,
     present: impl Fn(Stop) -> bool,
+    files: impl IntoIterator<Item = FileControl>,
 ) -> Option<Stop> {
-    focused.map(|from| tab_stop(from, forward, present))
+    let from = focused?;
+    let mut order = Vec::new();
+    let mut files = Some(files);
+    for stop in TAB_ORDER {
+        order.push(stop);
+        if stop == Stop::Attachment(FileControl::Add)
+            && let Some(files) = files.take()
+        {
+            order.extend(files.into_iter().map(Stop::Attachment));
+        }
+    }
+    Some(next_stop(&order, from, forward, present))
 }
 
 /// What the hints depend on besides the focus.
@@ -562,6 +586,7 @@ mod tests {
                 DetailImportant,
                 Reminder,
                 Repeat,
+                Attachment(FileControl::Add),
                 NewList,
                 NewCollection,
                 SyncFailures,
@@ -578,6 +603,7 @@ mod tests {
                 SyncFailures,
                 NewCollection,
                 NewList,
+                Attachment(FileControl::Add),
                 Repeat,
                 Reminder,
                 DetailImportant,
@@ -600,12 +626,12 @@ mod tests {
     #[test]
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
-        let detail_toggle = |s| matches!(s, DetailMyDay | DetailImportant);
+        let extra_detail_control = |s| matches!(s, DetailMyDay | DetailImportant | Attachment(_));
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New list and New collection are always there). (Below, nothing couldn't
         // sync unless said.)
         let fixed = |s: Stop| {
-            !detail_toggle(s)
+            !extra_detail_control(s)
                 && !matches!(
                     s,
                     Undo | RoomMenu
@@ -628,7 +654,7 @@ mod tests {
         );
         // Without the detail divider (narrow window, or no task open), both ways.
         let no_detail = |s: Stop| {
-            !detail_toggle(s)
+            !extra_detail_control(s)
                 && !matches!(
                     s,
                     DetailSplitter
@@ -666,7 +692,7 @@ mod tests {
         );
         // A room without a menu skips its button both ways.
         let no_menu = |s: Stop| {
-            !detail_toggle(s)
+            !extra_detail_control(s)
                 && !matches!(
                     s,
                     RoomMenu
@@ -704,7 +730,7 @@ mod tests {
         );
         // Without the toast, Undo is skipped.
         let no_undo = |s: Stop| {
-            !detail_toggle(s)
+            !extra_detail_control(s)
                 && !matches!(
                     s,
                     Undo | Reminder
@@ -747,7 +773,7 @@ mod tests {
         assert_eq!(tab_stop(DetailSplitter, false, no_detail), RoomMenu);
         // Something couldn't sync: its line comes just before the account gear, both ways.
         let refused = |s: Stop| {
-            !detail_toggle(s)
+            !extra_detail_control(s)
                 && !matches!(
                     s,
                     Undo | RoomMenu
@@ -831,6 +857,7 @@ mod tests {
                     | DetailImportant
                     | Reminder
                     | Repeat
+                    | Attachment(_)
                     | SyncFailures
             )
         };
@@ -906,17 +933,33 @@ mod tests {
     }
 
     #[test]
+    fn attachment_controls_tab_in_row_order_and_back_to_add() {
+        let d = crate::fixtures::my_day().shell().detail.expect("detail");
+        let controls: Vec<_> = super::super::attachments::file_controls(&d.attachments).collect();
+        let add = Stop::Attachment(FileControl::Add);
+        let first = Stop::Attachment(*controls.first().expect("first file control"));
+        let last = Stop::Attachment(*controls.last().expect("last file control"));
+        let tab =
+            |from, forward| tab_target(Some(from), forward, |_| true, controls.iter().copied());
+        assert_eq!(tab(Stop::Repeat, true), Some(add));
+        assert_eq!(tab(add, true), Some(first));
+        assert_eq!(tab(first, false), Some(add));
+        assert_eq!(tab(last, true), Some(Stop::NewList));
+        assert_eq!(tab(Stop::NewList, false), Some(last));
+    }
+
+    #[test]
     fn tab_off_the_stops_is_left_to_the_focused_element() {
         let all = |_: Stop| true;
         // A text field or an open menu: not a stop, so the shell doesn't take Tab.
-        assert_eq!(tab_target(None, true, all), None);
-        assert_eq!(tab_target(None, false, all), None);
+        assert_eq!(tab_target(None, true, all, []), None);
+        assert_eq!(tab_target(None, false, all, []), None);
         assert_eq!(
-            tab_target(Some(Stop::Account), true, all),
+            tab_target(Some(Stop::Account), true, all, []),
             Some(Stop::SidebarSplitter)
         );
         assert_eq!(
-            tab_target(Some(Stop::SidebarSplitter), false, all),
+            tab_target(Some(Stop::SidebarSplitter), false, all, []),
             Some(Stop::Account)
         );
     }

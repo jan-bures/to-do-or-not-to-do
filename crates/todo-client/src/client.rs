@@ -57,7 +57,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-use todo_core::ids::{EventId, uuid_v7};
+use todo_core::ids::{AttachmentId, EventId, uuid_v7};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, Command, State};
 use uuid::Uuid;
@@ -821,6 +821,25 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             notify: notify.clone(),
             seen: notify.generation(),
         }
+    }
+
+    /// Wait briefly for uploads already accepted by the server to arrive through sync. An immediate
+    /// remote deletion counts as observed too; this is not a retry of the upload itself.
+    pub async fn wait_for_attachments(&self, ids: &[AttachmentId]) -> bool {
+        let mut changes = self.changes();
+        let observed = async {
+            while !self.with_confirmed(|s| ids.iter().all(|id| s.attachments.contains_key(id))) {
+                changes.next().await;
+            }
+        };
+        matches!(
+            select(
+                pin!(observed),
+                pin!(self.inner.clock.sleep(Duration::from_secs(30)))
+            )
+            .await,
+            Either::Left(_)
+        )
     }
 
     /// Whether this client sends its outbox (the default). In the browser, only one tab sends for all

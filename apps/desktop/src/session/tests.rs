@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use todo_client::native::HttpTransport;
 use todo_client::pairing::{self, Polled};
-use todo_client::platform::Request;
-use todo_client::{Connection, Transport};
+use todo_client::{Connection, TrackedUndo, intent};
 use todo_core::State;
 use todo_core::ids::{AttachmentId, ListId, TaskId};
 use todo_server::{Config as ServerConfig, Options, RunningServer, Server};
@@ -1470,7 +1469,7 @@ fn data_still_in_use_at_sign_out_is_removed_at_the_next_start() {
 }
 
 #[test]
-fn downloads_carry_the_mark_of_the_web_and_only_documents_open() {
+fn picked_files_upload_and_sync_before_they_can_be_saved_opened_or_removed() {
     let server = TestServer::start();
     let net = runtime().expect("runtime");
     let home = tempfile::tempdir().expect("home");
@@ -1492,28 +1491,59 @@ fn downloads_carry_the_mark_of_the_web_and_only_documents_open() {
     );
     let task = task.expect("a task");
     submit(&session, cmds);
-    eventually("synced", || server.state().tasks.contains_key(&task));
+    eventually("task confirmed", || {
+        session.client().with_confirmed(|s| s.is_live(task.into()))
+    });
 
-    // Upload two files the way email ingest would attach them.
-    let transport = HttpTransport::new(&pairing.config.server, &pairing.token).expect("transport");
-    let upload = |name: &str, body: &[u8]| {
-        let res = net
-            .block_on(transport.send(Request::post(
-                format!("/api/v1/tasks/{task}/attachments?file_name={name}"),
-                body.to_vec(),
-            )))
-            .expect("upload");
-        assert!(
-            res.status == 200 || res.status == 201,
-            "upload: {}",
-            res.status
-        );
-        let v: serde_json::Value = serde_json::from_slice(&res.body).expect("json");
-        let id = v["attachment"]["id"].as_str().expect("id").to_string();
-        AttachmentId::from_uuid(id.parse().expect("uuid"))
+    // A file drop can contain more than one file, and a folder doesn't stop the rest of the batch.
+    let pdf_path = home.path().join("Čtvrtletní report #1.pdf");
+    let exe_path = home.path().join("report.pdf.exe");
+    std::fs::write(&pdf_path, b"%PDF-1.7 test").expect("pdf");
+    std::fs::write(&exe_path, b"MZ test").expect("exe");
+    let uploads = net
+        .block_on(
+            session.upload_attachments(task, vec![pdf_path, home.path().to_owned(), exe_path]),
+        )
+        .expect("upload batch");
+    assert!(uploads.synced);
+    assert_eq!(
+        uploads.error.as_deref(),
+        Some("Choose files, not folders, to attach to a task.")
+    );
+    let state = session.client().view();
+    assert_eq!(state.attachments.len(), 2);
+    assert!(
+        session.client().pending().is_empty(),
+        "file bytes never enter the outbox"
+    );
+    let file = |name| {
+        state
+            .attachments
+            .values()
+            .find(|a| a.file_name == name)
+            .expect("file in replica")
     };
-    let pdf = upload("report.pdf", b"%PDF-1.7 test");
-    let exe = upload("report.pdf.exe", b"MZ test");
+    let pdf = file("Čtvrtletní report #1.pdf");
+    assert_eq!(pdf.media_type, "application/pdf");
+    let pdf = pdf.id;
+    let exe = file("report.pdf.exe");
+    assert_eq!(exe.media_type, "application/octet-stream");
+    let exe = exe.id;
+
+    let oversize = home.path().join("too-big.bin");
+    let limit = todo_client::native::attachments::MAX_BYTES;
+    std::fs::File::create(&oversize)
+        .expect("file")
+        .set_len(limit + 1)
+        .expect("size");
+    let too_big = net
+        .block_on(session.upload_attachments(task, vec![oversize]))
+        .expect("size refusal");
+    assert_eq!(
+        too_big.error,
+        Some(failure::attachment_upload(Some(413), Some(limit)))
+    );
+    assert_eq!(server.state().attachments.len(), 2);
 
     let opened = net
         .block_on(session.download_to_open(pdf, "report.pdf"))
@@ -1573,6 +1603,36 @@ fn downloads_carry_the_mark_of_the_web_and_only_documents_open() {
     todo_fs::verify_private(opened.parent().expect("dir"), todo_fs::Private::Dir)
         .expect("private dir");
     todo_fs::verify_private(&opened, todo_fs::Private::AnyFile).expect("private file");
+
+    let client = session.client();
+    let remove_exe = client
+        .submit_tracked(intent::delete(exe))
+        .expect("remove online");
+    eventually("attachment removal confirmed", || {
+        client.with_confirmed(|s| !s.is_live(exe.into())) && client.pending().is_empty()
+    });
+    let TrackedUndo::Queued(undo) = client.undo_tracked(&remove_exe).expect("undo online") else {
+        panic!("expected a compensating undo");
+    };
+    eventually("attachment undo confirmed", || {
+        client.undo_result(undo) == Some(Ok(()))
+    });
+    assert!(client.with_confirmed(|s| s.is_live(exe.into())));
+
+    net.block_on(session.shutdown());
+    assert_eq!(client.status().connection, Connection::Offline);
+    let remove = client
+        .submit_tracked(intent::delete(pdf))
+        .expect("remove offline");
+    assert!(!client.view().is_live(pdf.into()));
+    assert_eq!(client.pending().len(), 1);
+    assert!(server.state().is_live(pdf.into()), "remove is still queued");
+    assert_eq!(
+        client.undo_tracked(&remove).expect("undo offline"),
+        TrackedUndo::Cancelled
+    );
+    assert!(client.view().is_live(pdf.into()));
+    assert!(client.pending().is_empty());
 
     drop(session);
     drop(server);
