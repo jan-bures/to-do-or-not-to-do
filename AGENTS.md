@@ -31,6 +31,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 |---|---|
 | `crates/todo-core` | Domain model, commands and events, validation, the smart-list query language. **No I/O and no platform dependencies.** |
 | `crates/todo-client` | Sync engine shared by every client. Put platform specifics behind traits. |
+| `crates/todo-ffi` | UniFFI bindings over `todo-client` for the Android app: engine, view model, pairing, fixtures. |
 | `crates/todo-server` | axum server: REST, SSE, MCP, auth, ingest. |
 | `crates/todo-import` | Microsoft To Do importer CLI. |
 | `crates/todo-fs` | Owner-only files and directories (POSIX modes, Windows DACLs), shared by the server and the backup CLI. |
@@ -41,6 +42,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 | `assets/icons` | Lucide icon subset (ISC) and the hand-drawn list glyphs. |
 | `docs/design-language.md` | The design language. Every UI change follows it and passes the screenshot gate. |
 | `apps/desktop` | GPUI desktop app, Windows only for now. Its own Cargo workspace with a vendored, patched `gpui_windows`. See `docs/desktop.md`. |
+| `apps/android` | Android app (Kotlin, Compose, Gradle). The Rust core comes through `todo-ffi` and cargo-ndk. See `docs/android.md`. |
 | `workers/email-ingest` | Cloudflare Email Worker for email to task (plain JS, Node tests). Contract: `docs/ingest-email.md`. |
 | `spikes/` | Throwaway experiments. Not in the workspace and not maintained. Don't build on them. |
 
@@ -60,6 +62,8 @@ cd workers/email-ingest && npm ci && npm test
 # The desktop app (its own workspace, Windows only):
 cd apps/desktop && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
 pwsh apps/desktop/scripts/gallery.ps1   # screenshot gallery; look at it after UI changes
+# The Android app (JDK 21, Android SDK, cargo-ndk; see docs/android.md):
+cd apps/android && ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:verifyPaparazziDebug
 ```
 
 For desktop visual checks, agents must use the gallery or screenshot mode. Never launch the interactive app.

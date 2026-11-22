@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HTTPS only. The Rust core enforces this itself (it refuses plain http in a release build); this config
+  is the same rule for anything on the platform's network stack. The debug build overrides it to allow
+  plain http to loopback only, for the emulator workflow in docs/android.md.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

@@ -21,10 +21,10 @@ jobs:
     name: fmt, clippy, test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
@@ -37,10 +37,10 @@ jobs:
     name: test (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --workspace --locked
       # The runbooks' PowerShell blocks must parse as written, in both editions.
       - name: Parse the PowerShell blocks in the runbooks
@@ -57,10 +57,10 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/desktop
       - run: cargo fmt --all --check
@@ -72,7 +72,7 @@ jobs:
       - name: Render the gallery
         shell: pwsh
         run: ./scripts/gallery.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: desktop-gallery
@@ -83,10 +83,10 @@ jobs:
     name: shared crates build for wasm32 and Android
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target wasm32-unknown-unknown
       - run: cargo check -p todo-core -p todo-client -p todo-design --locked --target aarch64-linux-android
 
@@ -102,7 +102,7 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             systemd shellcheck > /dev/null
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: shellcheck --version
       - run: shellcheck deploy/probe.sh deploy/linux/*.sh
       # `systemd-analyze verify` exits 0 on unknown keys, so any output fails the step. It needs the
@@ -126,10 +126,10 @@ jobs:
     name: Linux release binaries (built, not published)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-release
       # The script deploy-linux.ps1 runs in WSL; here with the workspace target dir, so the cache covers it.
@@ -141,6 +141,57 @@ jobs:
           ./todo-server --version
           ./todo-backup --version
 
+  android:
+    name: Android app (debug APK, unit and screenshot tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install pinned toolchain and the Android targets
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          # Adoptium's exact semver: setup-java compares the build part exactly, so "21.0.11+10" never matches.
+          java-version: 21.0.11+10.0.LTS
+      - uses: gradle/actions/setup-gradle@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+      # Compose needs the android-37.2 platform to compile against. The NDK is pinned (not the runner's
+      # latest), and cargo-ndk is pointed at exactly that one.
+      - name: Android SDK platform and NDK
+        env:
+          NDK_VERSION: 30.0.16248370
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "ndk;$NDK_VERSION"
+          test -f "$ANDROID_HOME/ndk/$NDK_VERSION/source.properties"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      # The build logic's own tests (the launcher icon's SVG conversion).
+      - run: ./gradlew --no-daemon -p buildSrc test
+      # Debug-signed with the SDK's debug key: no signing secrets.
+      # verifyReleaseCleartextPolicy: the release build type must not allow plain http (unit tests only
+      # run against debug).
+      - run: ./gradlew --no-daemon :app:verifyReleaseCleartextPolicy :app:assembleDebug :app:testDebugUnitTest :app:verifyPaparazziDebug
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: android-test-reports
+          path: |
+            apps/android/app/build/reports/tests
+            apps/android/app/build/paparazzi/failures
+          if-no-files-found: ignore
+
   email-worker:
     name: email worker tests (Node)
     runs-on: ubuntu-latest
@@ -148,8 +199,8 @@ jobs:
       run:
         working-directory: workers/email-ingest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # Pinned Node LTS (24.x "Krypton").
           node-version: 24.15.0
@@ -163,8 +214,8 @@ jobs:
       run:
         working-directory: assets/brand
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.15.0
       # Regenerates the icon rasters, the .ico and the flattened monochrome layer in memory and fails when a
@@ -176,9 +227,9 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

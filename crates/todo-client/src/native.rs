@@ -33,17 +33,37 @@ pub enum BuildError {
 /// Event streams have no total limit; the sync engine drops a stream that goes quiet instead.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Whether a transport may speak plain `http`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cleartext {
+    /// `https` only. What a released app uses.
+    #[default]
+    Refuse,
+    /// Also `http` to a loopback host (`localhost`, `127.0.0.1`, `[::1]`): a server on this machine, or
+    /// one reached through `adb reverse`. For development builds and tests only.
+    Loopback,
+}
+
 /// Parses and checks a server base URL, for example `https://todo.example.com`, and returns it without a
 /// trailing slash. Every client validates addresses with this one function, so they agree on the host.
 ///
 /// - The scheme is `https`, or `http` only for a loopback host (`localhost`, `127.0.0.1`, `[::1]`) during
-///   development.
+///   development. [`server_origin_with`] with [`Cleartext::Refuse`] allows `https` only.
 /// - No user name or password, query string or fragment.
 ///
 /// # Errors
 ///
 /// [`BuildError::BadUrl`] or [`BuildError::Insecure`].
 pub fn server_origin(base_url: &str) -> Result<String, BuildError> {
+    server_origin_with(base_url, Cleartext::Loopback)
+}
+
+/// [`server_origin`] with an explicit [`Cleartext`] policy.
+///
+/// # Errors
+///
+/// [`BuildError::BadUrl`] or [`BuildError::Insecure`].
+pub fn server_origin_with(base_url: &str, cleartext: Cleartext) -> Result<String, BuildError> {
     let url = url::Url::parse(base_url.trim())
         .map_err(|_| BuildError::BadUrl("that doesn't look like a server address"))?;
     if !url.username().is_empty() || url.password().is_some() {
@@ -64,7 +84,7 @@ pub fn server_origin(base_url: &str) -> Result<String, BuildError> {
     };
     match url.scheme() {
         "https" => {}
-        "http" if loopback => {}
+        "http" if loopback && cleartext == Cleartext::Loopback => {}
         "http" => return Err(BuildError::Insecure),
         _ => {
             return Err(BuildError::BadUrl(
@@ -116,8 +136,35 @@ impl HttpTransport {
         &self.base
     }
 
+    /// A transport with an explicit [`Cleartext`] policy: `token` for the device's requests, `None` for
+    /// pairing. [`new`](Self::new) and [`anonymous`](Self::anonymous) allow loopback `http`.
+    pub fn with_cleartext(
+        base_url: &str,
+        token: Option<&str>,
+        cleartext: Cleartext,
+    ) -> Result<Self, BuildError> {
+        let auth = match token {
+            Some(token) => {
+                let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+                    .map_err(|_| BuildError::BadToken)?;
+                auth.set_sensitive(true);
+                Some(auth)
+            }
+            None => None,
+        };
+        Self::build_with(base_url, auth, cleartext)
+    }
+
     fn build(base_url: &str, auth: Option<HeaderValue>) -> Result<Self, BuildError> {
-        let base = server_origin(base_url)?;
+        Self::build_with(base_url, auth, Cleartext::Loopback)
+    }
+
+    fn build_with(
+        base_url: &str,
+        auth: Option<HeaderValue>,
+        cleartext: Cleartext,
+    ) -> Result<Self, BuildError> {
+        let base = server_origin_with(base_url, cleartext)?;
         // Ignore the error: another part of the process may have installed a provider already.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()

@@ -5,7 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use todo_client::native::{BuildError, HttpTransport, server_origin};
+use todo_client::native::{
+    BuildError, Cleartext, HttpTransport, server_origin, server_origin_with,
+};
 use todo_client::pairing::{self, PairError};
 use todo_client::platform::{Request, StreamOpen, TransportError};
 use todo_client::{EventStream, Transport};
@@ -303,4 +305,35 @@ async fn a_request_path_can_never_leave_the_server() {
         HttpTransport::new(&format!("{}/todo", server.url()), "s3cret-device-token").unwrap();
     prefixed.send(Request::get("/api/v1/sync")).await.unwrap();
     assert!(server.requests()[1].starts_with("GET /todo/api/v1/sync "));
+}
+
+#[test]
+fn the_strict_policy_refuses_plain_http_even_to_loopback() {
+    for s in [
+        "http://localhost:8080",
+        "http://127.0.0.1",
+        "http://[::1]:9000",
+    ] {
+        assert!(
+            matches!(
+                server_origin_with(s, Cleartext::Refuse),
+                Err(BuildError::Insecure)
+            ),
+            "{s}"
+        );
+        assert!(server_origin_with(s, Cleartext::Loopback).is_ok(), "{s}");
+        assert!(HttpTransport::with_cleartext(s, Some("t"), Cleartext::Refuse).is_err());
+        assert!(HttpTransport::with_cleartext(s, None, Cleartext::Loopback).is_ok());
+    }
+    for s in ["http://todo.example.com", "http://10.0.2.2:47390"] {
+        assert!(matches!(
+            server_origin_with(s, Cleartext::Loopback),
+            Err(BuildError::Insecure)
+        ));
+    }
+    assert_eq!(
+        server_origin_with("https://todo.example.com/", Cleartext::Refuse).unwrap(),
+        "https://todo.example.com"
+    );
+    assert_eq!(Cleartext::default(), Cleartext::Refuse);
 }

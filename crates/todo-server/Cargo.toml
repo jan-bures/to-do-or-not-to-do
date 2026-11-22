@@ -56,6 +56,8 @@ url.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }
 reqwest.workspace = true
+# Only to install the *ring* provider when the workspace build gives reqwest `rustls-no-provider`.
+rustls.workspace = true
 tempfile.workspace = true
 rusqlite.workspace = true
 proptest.workspace = true

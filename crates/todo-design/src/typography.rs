@@ -108,6 +108,8 @@ pub const ROOM_TITLE: TextStyle = TextStyle::new(DISPLAY, 360, 56.0, 60.0).track
 pub const ROOM_TITLE_COMPACT: TextStyle = TextStyle::new(DISPLAY, 360, 48.0, 52.0).tracking(-0.028);
 /// Phone room title.
 pub const ROOM_TITLE_PHONE: TextStyle = TextStyle::new(DISPLAY, 360, 44.0, 48.0).tracking(-0.026);
+/// Phone room title in the collapsed header bar: one line, while scrolling or typing.
+pub const ROOM_TITLE_BAR: TextStyle = TextStyle::new(DISPLAY, 360, 24.0, 28.0).tracking(-0.016);
 /// The italic day name above the title ("Saturday").
 pub const EYEBROW_DAY: TextStyle = TextStyle::new(DISPLAY_TEXT, 400, 18.0, 22.0).italic();
 /// Phone day name.
@@ -189,10 +191,11 @@ pub const AGENT_LETTER: TextStyle = TextStyle::new(MONO, 600, 10.0, 10.0);
 pub const PAIRING_CODE: TextStyle = TextStyle::new(MONO, 500, 40.0, 48.0).tracking(0.06);
 
 /// Every named style, for the exports and for a type specimen.
-pub const ALL: [(&str, TextStyle); 40] = [
+pub const ALL: [(&str, TextStyle); 41] = [
     ("room-title", ROOM_TITLE),
     ("room-title-compact", ROOM_TITLE_COMPACT),
     ("room-title-phone", ROOM_TITLE_PHONE),
+    ("room-title-bar", ROOM_TITLE_BAR),
     ("eyebrow-day", EYEBROW_DAY),
     ("eyebrow-day-phone", EYEBROW_DAY_PHONE),
     ("eyebrow-meta", EYEBROW_META),

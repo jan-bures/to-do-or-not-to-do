@@ -253,6 +253,9 @@ pub mod phone {
     pub const APP_BAR: f32 = 48.0;
     /// Minimum touch target.
     pub const TOUCH: f32 = 48.0;
+    /// A drawer row's highlight. The row itself is [`TOUCH`] tall, so the target stays full size while
+    /// the rows look compact.
+    pub const NAV_ROW: f32 = 40.0;
     /// The room pill row.
     pub const ROOM_ROW: f32 = 48.0;
     /// Room pill height.
@@ -271,7 +274,7 @@ pub mod phone {
     pub const INNER_LIST: f32 = 450.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 18] = [
+    pub const ALL: [(&str, f32); 19] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -279,6 +282,7 @@ pub mod phone {
         ("due-slot", DUE_SLOT),
         ("app-bar", APP_BAR),
         ("touch", TOUCH),
+        ("nav-row", NAV_ROW),
         ("room-row", ROOM_ROW),
         ("room-pill", ROOM_PILL),
         ("composer", COMPOSER),

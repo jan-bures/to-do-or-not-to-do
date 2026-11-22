@@ -242,7 +242,7 @@ pub enum Body {
 impl Browser {
     pub fn new(url: &str) -> Self {
         Self {
-            client: reqwest::Client::builder()
+            client: super::http()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),

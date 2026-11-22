@@ -19,6 +19,14 @@ use todo_server::config::OwnerToken;
 use todo_server::{Config, Options, RunningServer, Server};
 use uuid::Uuid;
 
+/// A reqwest client builder for the tests. In a workspace build reqwest can come with
+/// `rustls-no-provider` (the client crates pick *ring* themselves and install it), and then building
+/// any client without a provider panics, so install *ring* first. It's a no-op otherwise.
+pub fn http() -> reqwest::ClientBuilder {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+}
+
 pub const TOKEN_A: &str = "test-token-alpha-0123456789";
 pub const TOKEN_B: &str = "test-token-beta-9876543210";
 
@@ -109,7 +117,7 @@ impl TestServer {
             dir,
             config,
             options,
-            client: reqwest::Client::new(),
+            client: http().build().unwrap(),
             url,
         }
     }

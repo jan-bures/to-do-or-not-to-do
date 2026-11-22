@@ -20,11 +20,14 @@ A personal to-do app built as a shared interface for one person and their AI age
 |---|---|
 | `crates/todo-core` | Domain model shared by every component. No I/O; builds for Windows, Android and wasm32 |
 | `crates/todo-client` | Client sync engine shared by the desktop, Android and web clients |
+| `crates/todo-ffi` | Kotlin bindings (UniFFI) over the client core, for the Android app |
 | `crates/todo-server` | Self-hosted server: REST, live event stream, MCP |
 | `crates/todo-import` | Microsoft To Do importer |
 | `crates/todo-design` | Design tokens shared by every client (colours, type, spacing, motion, icons), with CSS and JSON exports. No I/O |
 | `crates/todo-backup` | Encrypted SQLite backups to S3-compatible storage (R2), with restore, a restore drill and a monthly operations budget |
 | `assets/fonts`, `assets/icons` | Bundled OFL fonts and the Lucide icon subset, with their licenses |
+| `apps/desktop` | The Windows desktop client (GPUI) |
+| `apps/android` | The Android client (Jetpack Compose), for phones and foldables; see `docs/android.md` |
 | `docs/design-language.md` | The design language: concept, colour, type, grid, motion, icons and the screenshot gate |
 | `docs/agents` | Connecting agents over MCP (Claude Code, Codex, any streamable-HTTP client) and how they should behave |
 | `docs/admin-api.md` | The local admin API: a loopback-only listener and token for routine admin tasks without the passkey |

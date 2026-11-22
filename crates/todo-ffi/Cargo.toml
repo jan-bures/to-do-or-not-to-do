@@ -1,0 +1,59 @@
+[package]
+name = "todo-ffi"
+description = "UniFFI bindings over todo-client for the Android app: pairing, the sync engine, the view model and the header landscape."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# `cdylib` is what the app loads (libtodo_ffi.so); `lib` is for the tests and the bindings generator.
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Generates the Kotlin bindings from the built library: `cargo run -p todo-ffi --features bindgen --bin
+# uniffi-bindgen -- generate --library <lib> --language kotlin --out-dir <dir>`. The Gradle build runs it.
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+default = []
+# The `uniffi-bindgen` binary.
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+todo-core.workspace = true
+todo-client = { workspace = true, features = ["sqlite"] }
+todo-design.workspace = true
+# Durable renames for the damaged-cache recovery.
+todo-fs.workspace = true
+uniffi.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
+# Pairing requests (anonymous, no redirects). The same reqwest and rustls as todo-client's transport.
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls.workspace = true
+url.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+rustls-platform-verifier.workspace = true
+
+[dev-dependencies]
+# Damages a cache in the recovery tests.
+rusqlite.workspace = true
+todo-server.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

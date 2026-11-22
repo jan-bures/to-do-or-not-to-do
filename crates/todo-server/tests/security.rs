@@ -382,7 +382,7 @@ fn refused(a: &Answer) -> bool {
 }
 
 fn no_redirects() -> reqwest::Client {
-    reqwest::Client::builder()
+    common::http()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap()

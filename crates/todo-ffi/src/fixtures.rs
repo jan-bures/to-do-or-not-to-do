@@ -1,0 +1,581 @@
+//! Invented sample data for the screenshot gallery and the tests: made-up tasks, lists and agents, dated
+//! relative to the fixture's "now" so the labels read like the F2 mockups ("2d overdue", "in 1h 25m").
+//! Never real data.
+
+use crate::labels::Now;
+use todo_core::State;
+use todo_core::actor::Actor;
+use todo_core::ids::{CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId};
+use todo_core::model::{
+    Collection, EmailLink, Entity, Link, LinkKind, List, Priority, Reminder, Stamp, Step, Tag, Task,
+};
+use todo_core::ordering::PosKey;
+use todo_core::time::{Date, Timestamp, add_days};
+
+/// Which world to build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fixture {
+    /// Three collections, a dozen tasks in My Day (3 done), agents, steps and a mail source.
+    World,
+    /// The same world with every My Day task done: the dusk scene.
+    Finished,
+    /// Nothing at all: the first start after pairing.
+    Blank,
+}
+
+impl Fixture {
+    /// By name: `world`, `finished` or `blank`.
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "world" => Some(Self::World),
+            "finished" => Some(Self::Finished),
+            "blank" => Some(Self::Blank),
+            _ => None,
+        }
+    }
+}
+
+struct Builder<'a> {
+    state: State,
+    now: &'a Now,
+    today: Date,
+    seq: u64,
+    pos: PosKey,
+    owner: Actor,
+}
+
+/// A task's optional parts.
+#[derive(Default)]
+struct Spec<'a> {
+    due: Option<i64>,
+    /// Minutes from now of a reminder (on the due day).
+    remind_in_min: Option<i64>,
+    priority: Option<Priority>,
+    my_day: bool,
+    done: bool,
+    agent: Option<&'a str>,
+    steps: &'a [(&'a str, bool)],
+    tags: &'a [TagId],
+    notes: &'a str,
+    mail: Option<(&'a str, &'a str, i64)>,
+}
+
+impl<'a> Builder<'a> {
+    fn new(now: &'a Now) -> Self {
+        Self {
+            state: State::new(),
+            now,
+            today: now.today(),
+            seq: 0,
+            pos: PosKey::first(),
+            // A fixed device ID, as the server would issue one.
+            owner: Actor::owner("fixture-phone").unwrap_or(Actor::System),
+        }
+    }
+
+    fn seed(&mut self, kind: &str) -> (Timestamp, Vec<u8>) {
+        self.seq += 1;
+        (
+            self.now.at,
+            format!("fixture/{kind}/{}", self.seq).into_bytes(),
+        )
+    }
+
+    fn stamp(&self, minutes_ago: i64, by: &Actor) -> Stamp {
+        Stamp {
+            at: Timestamp::from_second(self.now.at.as_second() - minutes_ago * 60)
+                .unwrap_or(self.now.at),
+            by: by.clone(),
+        }
+    }
+
+    fn next_pos(&mut self) -> PosKey {
+        let p = self.pos.clone();
+        self.pos = self.pos.after().unwrap_or_else(|_| PosKey::first());
+        p
+    }
+
+    fn insert(&mut self, e: Entity) {
+        // Fresh IDs and existing parents: inserting can't fail.
+        let _ = self.state.insert(e);
+    }
+
+    fn collection(&mut self, name: &str, color: &str) -> CollectionId {
+        let (at, seed) = self.seed("collection");
+        let id = CollectionId::derive(at, &seed);
+        let position = self.next_pos();
+        let created = self.stamp(60 * 24 * 30, &self.owner.clone());
+        self.insert(Entity::Collection(Collection {
+            id,
+            name: name.into(),
+            color: Some(color.into()),
+            position,
+            created,
+            deleted: None,
+        }));
+        id
+    }
+
+    fn list(&mut self, collection: Option<CollectionId>, name: &str, color: &str) -> ListId {
+        let (at, seed) = self.seed("list");
+        let id = ListId::derive(at, &seed);
+        let position = self.next_pos();
+        let created = self.stamp(60 * 24 * 30, &self.owner.clone());
+        self.insert(Entity::List(List {
+            id,
+            collection,
+            name: name.into(),
+            color: Some(color.into()),
+            position,
+            created,
+            deleted: None,
+        }));
+        id
+    }
+
+    fn tag(&mut self, name: &str) -> TagId {
+        let (at, seed) = self.seed("tag");
+        let id = TagId::derive(at, &seed);
+        let created = self.stamp(60 * 24 * 30, &self.owner.clone());
+        self.insert(Entity::Tag(Tag {
+            id,
+            name: name.into(),
+            color: None,
+            created,
+            deleted: None,
+        }));
+        id
+    }
+
+    fn task(&mut self, list: ListId, title: &str, spec: Spec<'_>) -> TaskId {
+        let (at, seed) = self.seed("task");
+        let id = TaskId::derive(at, &seed);
+        let by = spec
+            .agent
+            .and_then(|a| Actor::agent(a).ok())
+            .unwrap_or_else(|| self.owner.clone());
+        let created = self.stamp(60 * 24 * 9 + i64::try_from(self.seq).unwrap_or(0), &by);
+        let updated = self.stamp(45, &by);
+        let due = spec.due.and_then(|d| add_days(self.today, d));
+        let position = self.next_pos();
+        self.insert(Entity::Task(Task {
+            id,
+            list,
+            title: title.into(),
+            notes: spec.notes.into(),
+            due,
+            priority: spec.priority.unwrap_or_default(),
+            my_day: spec.my_day.then_some(self.today),
+            completed_at: spec.done.then(|| self.stamp(30, &by).at),
+            recurrence: None,
+            tags: spec.tags.iter().copied().collect(),
+            position,
+            created,
+            updated,
+            deleted: None,
+            merged_into: None,
+        }));
+        for (title, done) in spec.steps {
+            let (at, seed) = self.seed("step");
+            let position = self.next_pos();
+            let created = self.stamp(60 * 24, &self.owner.clone());
+            self.insert(Entity::Step(Step {
+                id: StepId::derive(at, &seed),
+                task: id,
+                title: (*title).into(),
+                completed_at: done.then_some(self.now.at),
+                position,
+                created,
+                deleted: None,
+            }));
+        }
+        if let Some(m) = spec.remind_in_min {
+            let (at, seed) = self.seed("reminder");
+            let when = Timestamp::from_second(self.now.at.as_second() + m * 60).unwrap_or(at);
+            let created = self.stamp(60, &self.owner.clone());
+            self.insert(Entity::Reminder(Reminder {
+                id: ReminderId::derive(at, &seed),
+                task: id,
+                at: when,
+                created,
+                deleted: None,
+            }));
+        }
+        if let Some((subject, sender, days_ago)) = spec.mail {
+            let (at, seed) = self.seed("link");
+            let received_at =
+                Timestamp::from_second(self.now.at.as_second() - days_ago * 86_400).unwrap_or(at);
+            let created = self.stamp(60 * 24 * days_ago, &Actor::EmailIngest);
+            self.insert(Entity::Link(Link {
+                id: LinkId::derive(at, &seed),
+                task: id,
+                kind: LinkKind::Email(EmailLink {
+                    subject: subject.into(),
+                    sender: sender.into(),
+                    received_at,
+                    message_id: format!("<fixture-{}@example.com>", self.seq),
+                    web_link: None,
+                }),
+                created,
+                deleted: None,
+            }));
+        }
+        id
+    }
+}
+
+/// Builds a fixture world as of `now`.
+pub fn build(fixture: Fixture, now: &Now) -> State {
+    let mut b = Builder::new(now);
+    if fixture == Fixture::Blank {
+        return b.state;
+    }
+    let finished = fixture == Fixture::Finished;
+    let my = |done: bool| Spec {
+        my_day: true,
+        done: done || finished,
+        ..Spec::default()
+    };
+
+    let work = b.collection("Work", "lagoon");
+    let personal = b.collection("Personal", "rose");
+    let projects = b.collection("Projects", "jade");
+
+    let finance = b.list(Some(work), "Finance", "clay");
+    let events = b.list(Some(work), "Events", "fern");
+    let planning = b.list(Some(work), "Planning", "azure");
+    let errands = b.list(Some(personal), "Errands", "coral");
+    let admin = b.list(Some(personal), "Admin", "orchid");
+    let health = b.list(Some(personal), "Health", "pink");
+    let travel = b.list(Some(personal), "Travel", "clay");
+    let app = b.list(Some(projects), "To-do app", "fern");
+    b.list(Some(projects), "Reading list", "jade");
+
+    let home = b.tag("domácnost");
+    let trip = b.tag("trip");
+    let admin_tag = b.tag("admin");
+
+    // My Day: twelve tasks, three of them done (all twelve when finished).
+    b.task(
+        finance,
+        "Pay quarterly VAT filing",
+        Spec {
+            due: Some(-2),
+            priority: Some(Priority::High),
+            ..my(false)
+        },
+    );
+    b.task(
+        events,
+        "Send venue booking confirmation",
+        Spec {
+            due: Some(0),
+            remind_in_min: Some(85),
+            mail: Some(("Venue booking for the offsite", "events@example.com", 2)),
+            ..my(false)
+        },
+    );
+    b.task(
+        planning,
+        "Prepare Q4 roadmap review",
+        Spec {
+            due: Some(0),
+            remind_in_min: Some(385),
+            priority: Some(Priority::Normal),
+            agent: Some("codex"),
+            steps: &[
+                ("Collect the team updates", true),
+                ("Draft the agenda", true),
+                ("Book the room", false),
+                ("Prepare the slides", false),
+                ("Send the pre-read", false),
+            ],
+            ..my(false)
+        },
+    );
+    b.task(
+        errands,
+        "Koupit rohlíky a mléko",
+        Spec {
+            due: Some(0),
+            remind_in_min: Some(475),
+            tags: &[home],
+            ..my(false)
+        },
+    );
+    b.task(
+        app,
+        "Review sync-engine pull request",
+        Spec {
+            due: Some(0),
+            priority: Some(Priority::High),
+            agent: Some("claude"),
+            ..my(false)
+        },
+    );
+    b.task(
+        admin,
+        "Renew passport appointment",
+        Spec {
+            due: Some(1),
+            remind_in_min: Some(445),
+            priority: Some(Priority::Normal),
+            agent: Some("pi"),
+            steps: &[
+                ("Check which documents are required", true),
+                ("Book a slot on the town hall site", false),
+                ("Get a passport photo taken", false),
+                ("Fill in the application form", false),
+            ],
+            tags: &[admin_tag],
+            notes: "Bring the old passport and proof of address. Slots open on Mondays at 08:00.",
+            mail: Some(("Your appointment reminder", "info@example.com", 9)),
+            ..my(false)
+        },
+    );
+    b.task(
+        health,
+        "Vyřídit žádost o přeplatek na zdravotním pojištění",
+        Spec {
+            due: Some(2),
+            priority: Some(Priority::Low),
+            agent: Some("pi"),
+            ..my(false)
+        },
+    );
+    b.task(
+        app,
+        "Write schema migration notes",
+        Spec {
+            due: Some(2),
+            agent: Some("codex"),
+            steps: &[
+                ("List the changed tables", true),
+                ("Describe the backfill", false),
+                ("Note the rollback", false),
+            ],
+            ..my(false)
+        },
+    );
+    b.task(
+        health,
+        "Call the dentist to reschedule",
+        Spec { ..my(false) },
+    );
+    b.task(errands, "Water the balcony plants", my(true));
+    b.task(events, "Book a room for the retro", my(true));
+    b.task(finance, "Reply to the accountant", my(true));
+
+    // Elsewhere.
+    b.task(
+        events,
+        "Call Alex about the venue",
+        Spec {
+            due: Some(1),
+            // Tomorrow at 15:00.
+            remind_in_min: Some(28 * 60 + 25),
+            ..Spec::default()
+        },
+    );
+    b.task(
+        health,
+        "Refill the prescription",
+        Spec {
+            due: Some(-1),
+            priority: Some(Priority::High),
+            ..Spec::default()
+        },
+    );
+    b.task(
+        errands,
+        "Pick up the dry cleaning",
+        Spec {
+            due: Some(3),
+            ..Spec::default()
+        },
+    );
+    b.task(
+        travel,
+        "Pack the weekend bag",
+        Spec {
+            due: Some(6),
+            priority: Some(Priority::Low),
+            steps: &[
+                ("Charger", false),
+                ("Tickets", false),
+                ("Rain jacket", false),
+            ],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        travel,
+        "Book train tickets to Brno",
+        Spec {
+            due: Some(7),
+            priority: Some(Priority::Normal),
+            agent: Some("claude"),
+            tags: &[trip],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        health,
+        "Schedule the annual check-up",
+        Spec {
+            due: Some(11),
+            ..Spec::default()
+        },
+    );
+    b.task(
+        errands,
+        "Return the library books",
+        Spec {
+            done: true,
+            ..Spec::default()
+        },
+    );
+    b.task(
+        planning,
+        "Collect feedback on the offsite",
+        Spec {
+            due: Some(4),
+            agent: Some("claude"),
+            ..Spec::default()
+        },
+    );
+    b.state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::labels::LocalNow;
+    use crate::view::{self, RoomKey, SmartList};
+
+    fn now() -> Now {
+        // Saturday 21 Nov 2026, 10:35 in Prague.
+        let at: Timestamp = "2026-11-21T09:35:00Z".parse().unwrap();
+        Now::new(LocalNow {
+            epoch_ms: at.as_millisecond(),
+            utc_offset_secs: 3600,
+        })
+    }
+
+    fn my_day() -> RoomKey {
+        RoomKey::Smart {
+            list: SmartList::MyDay,
+        }
+    }
+
+    #[test]
+    fn the_world_matches_the_cover_mockup() {
+        let n = now();
+        let s = build(Fixture::World, &n);
+        let r = view::room(&s, &my_day(), &n);
+        assert_eq!((r.done, r.total, r.open), (3, 12, 9));
+        assert!(!r.finished);
+        let first = &r.tasks[0];
+        assert_eq!(first.title, "Pay quarterly VAT filing");
+        assert_eq!(first.due.as_ref().unwrap().text, "2d overdue");
+        assert_eq!(first.priority, 3);
+        assert_eq!(first.chip.as_ref().unwrap().label, "Finance");
+        let venue = r
+            .tasks
+            .iter()
+            .find(|t| t.title.starts_with("Send venue"))
+            .unwrap();
+        assert_eq!(venue.due.as_ref().unwrap().text, "in 1h 25m");
+        assert!(venue.from_mail);
+        let roadmap = r
+            .tasks
+            .iter()
+            .find(|t| t.title.starts_with("Prepare Q4"))
+            .unwrap();
+        assert_eq!(roadmap.due.as_ref().unwrap().text, "Today 17:00");
+        assert_eq!(roadmap.agent.as_ref().unwrap().letter, "X");
+        assert_eq!(roadmap.steps.unwrap().done, 2);
+        if let view::Eyebrow::Day {
+            weekday,
+            date,
+            week,
+        } = &r.eyebrow
+        {
+            assert_eq!(
+                (weekday.as_str(), date.as_str(), week.as_str()),
+                ("Saturday", "21 Nov", "W47")
+            );
+        } else {
+            panic!("a smart list has a day eyebrow");
+        }
+    }
+
+    #[test]
+    fn the_finished_world_hands_over_to_tomorrow() {
+        let n = now();
+        let s = build(Fixture::Finished, &n);
+        let r = view::room(&s, &my_day(), &n);
+        assert!(r.finished);
+        assert_eq!((r.done, r.total, r.open), (12, 12, 0));
+        let t = r.tomorrow.unwrap();
+        assert_eq!(t.weekday, "Sunday");
+        assert!(!t.week.is_empty());
+    }
+
+    #[test]
+    fn rooms_and_detail_for_the_inner_mockup() {
+        let n = now();
+        let s = build(Fixture::World, &n);
+        let home = view::home(&s, &n);
+        let names: Vec<_> = home
+            .groups
+            .iter()
+            .filter_map(|g| g.collection.as_ref().map(|c| c.name.as_str()))
+            .collect();
+        assert_eq!(names, ["Work", "Personal", "Projects"]);
+        let personal = home.groups[1].collection.clone().unwrap();
+        let r = view::room(&s, &personal.key, &n);
+        assert_eq!(r.title, "Personal");
+        assert!(r.tasks.iter().all(|t| t.chip.is_some()));
+        let passport = r
+            .tasks
+            .iter()
+            .find(|t| t.title.starts_with("Renew"))
+            .unwrap();
+        let d = view::detail(&s, &passport.id, &n).unwrap();
+        assert_eq!(d.steps.len(), 4);
+        assert_eq!(
+            d.breadcrumb
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Personal", "Admin"]
+        );
+        assert_eq!(d.sources[0].title, "Your appointment reminder");
+        assert!(d.fields.iter().any(|f| f.label == "Reminder"));
+    }
+
+    #[test]
+    fn the_reading_list_is_empty_with_hills_only() {
+        let n = now();
+        let s = build(Fixture::World, &n);
+        let home = view::home(&s, &n);
+        let reading = home
+            .groups
+            .iter()
+            .flat_map(|g| g.lists.iter())
+            .find(|l| l.name == "Reading list")
+            .unwrap();
+        let r = view::room(&s, &reading.key, &n);
+        assert!(r.tasks.is_empty());
+        assert_eq!(r.total, 0);
+        assert_eq!(r.empty_line, "Nothing on the shelf yet.");
+    }
+
+    #[test]
+    fn fixtures_are_deterministic() {
+        let n = now();
+        assert_eq!(build(Fixture::World, &n), build(Fixture::World, &n));
+        assert!(build(Fixture::Blank, &n).tasks.is_empty());
+    }
+}

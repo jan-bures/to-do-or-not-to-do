@@ -1,0 +1,4 @@
+# Kotlin bindings for the Android app (apps/android).
+[bindings.kotlin]
+package_name = "app.todoornot.core"
+cdylib_name = "todo_ffi"

@@ -1,0 +1,493 @@
+package app.todoornot.ui
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.window.core.layout.WindowSizeClass
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import app.todoornot.core.RoomView
+import app.todoornot.core.SyncState
+import app.todoornot.core.SyncStatus
+import app.todoornot.core.TaskRow
+import app.todoornot.core.Tomorrow
+import app.todoornot.design.Icon
+import app.todoornot.design.LocalDesign
+import app.todoornot.design.Tokens
+import app.todoornot.design.cubic
+import app.todoornot.design.style
+import app.todoornot.model.Actions
+import app.todoornot.model.Toast
+import app.todoornot.model.UiState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private val P = Tokens.Metrics.Phone
+private val S = Tokens.Space
+private val M = Tokens.Motion
+
+/** Rows that stay visible above the composer while typing (`docs/design-language.md`). */
+private const val MIN_ROWS_TYPING = 4
+
+/**
+ * The list pane: header, room pills, the tasks, the toast strip and the composer. The header and the
+ * pills give way to the tasks as the list scrolls, and stay out of the way while the keyboard is open or
+ * the window is short ([collapsed] forces it, for the gallery).
+ */
+@Composable
+fun RoomPane(
+    state: UiState,
+    actions: Actions,
+    landscape: Dp,
+    onMenu: () -> Unit,
+    modifier: Modifier = Modifier,
+    draft: String = "",
+    collapsed: Boolean = false,
+) {
+    val r = LocalDesign.current.room
+    val room = state.room
+    val keyboard = WindowInsets.isImeVisible
+    BoxWithConstraints(modifier.fillMaxHeight().background(r.pane)) {
+        val short = maxHeight < WindowSizeClass.HEIGHT_DP_MEDIUM_LOWER_BOUND.dp
+        // While typing, the bar goes too if the rows left under it would be fewer than four. Worked out
+        // from the window and the keyboard, not from the list, so hiding the bar can't flip it back.
+        val keyboardHeight = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+        val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val composer = Tokens.Elevation.HAIRLINE.dp + S.S3.dp + P.COMPOSER.dp + S.S3.dp
+        val underBar = maxHeight - keyboardHeight - statusBar - P.APP_BAR.dp - composer
+        val bar = !keyboard || underBar >= P.ROW.dp * MIN_ROWS_TYPING
+        val force = if (collapsed || keyboard || short) 1f else 0f
+        val collapse = remember(room.key) { HeaderCollapse().also { it.forced = force } }
+        LaunchedEffect(collapse, force) {
+            animate(collapse.forced, force, animationSpec = tween(M.PANEL, easing = M.EASE_STANDARD.cubic())) { v, _ ->
+                collapse.forced = v
+            }
+        }
+        Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
+            RoomHeader(room, landscape, collapse, onMenu, bar) { BarActions(state.status, actions) }
+            Box(Modifier.collapsing(collapse, HeaderCollapse.Part.Pills)) {
+                RoomPills(state.home, room.key, actions::open, onMenu)
+            }
+            state.failed.firstOrNull()?.let { f ->
+                Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
+            }
+            if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
+            Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true)) {
+                TaskList(room, state.selected, actions)
+            }
+            ToastStrip(state.toast, actions)
+            Composer(room.addPlaceholder, draft, keyboard, actions::add)
+        }
+    }
+}
+
+/** The bar's actions: the sync chip when there's something to say, and the overflow menu. */
+@Composable
+private fun BarActions(status: SyncStatus, actions: Actions) {
+    val r = LocalDesign.current.room
+    SyncChip(status, actions::nudge)
+    var menu by remember { mutableStateOf(false) }
+    Box {
+        IconButton("ellipsis", "More") { menu = true }
+        DropdownMenu(menu, { menu = false }, containerColor = r.raised) {
+            DropdownMenuItem(
+                text = { Label("Sync now", Tokens.Type.BODY, r.ink) },
+                leadingIcon = { Icon("refresh-cw", r.ink2) },
+                onClick = { menu = false; actions.nudge() },
+            )
+            DropdownMenuItem(
+                text = { Label("Unpair this phone", Tokens.Type.BODY, r.danger) },
+                leadingIcon = { Icon("log-out", r.danger) },
+                onClick = { menu = false; actions.unpair() },
+            )
+        }
+    }
+}
+
+/** 48 dp touch target around an 18 dp icon. */
+@Composable
+fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, onClick: () -> Unit) {
+    val r = LocalDesign.current.room
+    Box(
+        Modifier.size(P.TOUCH.dp).clip(CircleShape).clickable(onClick = onClick).semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, tint ?: r.ink2)
+    }
+}
+
+/** Shown only when there's something to say: offline, syncing changes, or a problem. */
+@Composable
+private fun SyncChip(status: SyncStatus, onClick: () -> Unit) {
+    val r = LocalDesign.current.room
+    val (icon, text) = when {
+        status.state == SyncState.OFFLINE || status.problem != null ->
+            "cloud-off" to if (status.pending > 0u) "${status.pending}" else "Offline"
+        status.state == SyncState.SYNCING && status.pending > 0u -> "refresh-cw" to "${status.pending}"
+        else -> return
+    }
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Row(
+        Modifier
+            .padding(end = S.S1.dp)
+            .height(Tokens.Metrics.Component.BUTTON_SMALL.dp)
+            .clip(shape)
+            .background(r.raised)
+            .border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, shape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = "Sync: ${status.state.name.lowercase()}, ${status.pending} waiting" }
+            .padding(horizontal = S.S2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+    ) {
+        Icon(icon, r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+        Label(text, Tokens.Type.SUMMARY_FIGURES, r.ink2)
+    }
+}
+
+@Composable
+private fun Banner(text: String, action: String, onAction: () -> Unit) {
+    val r = LocalDesign.current.room
+    Row(
+        Modifier.fillMaxWidth().background(r.dangerBg).hairline(r.line, top = true).padding(start = S.S5.dp, end = S.S2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Label(text, Tokens.Type.META_PHONE, r.dangerInk, Modifier.weight(1f), maxLines = 2)
+        Box(
+            Modifier.height(P.TOUCH.dp).clickable(onClick = onAction).padding(horizontal = S.S3.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Label(action, Tokens.Type.BUTTON, r.dangerInk)
+        }
+    }
+}
+
+/**
+ * The tasks. Checking a box plays the fill and tick, holds for a moment so the tick reads, and only then
+ * completes the task, which collapses its row.
+ */
+@Composable
+private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
+    val r = LocalDesign.current.room
+    val scope = rememberCoroutineScope()
+    var completing by remember(room.key) { mutableStateOf(emptySet<String>()) }
+    var showDone by rememberSaveable(room.key.toString()) { mutableStateOf(false) }
+    // Forget rows that have finished completing (they left the open list).
+    LaunchedEffect(room.tasks) {
+        val open = room.tasks.mapTo(HashSet()) { it.id }
+        completing = completing.filterTo(HashSet()) { it in open }
+    }
+    fun check(t: TaskRow, on: Boolean) {
+        if (!on || t.done) {
+            actions.setDone(t.id, on)
+            return
+        }
+        completing = completing + t.id
+        scope.launch {
+            delay((M.CHECK_TICK_DELAY + M.CHECK_TICK + M.COMPLETE_HOLD).toLong())
+            actions.setDone(t.id, true)
+        }
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        if (room.tasks.isEmpty() && room.completed.isEmpty() && room.tomorrow == null) {
+            item("empty") { Empty(room.emptyLine) }
+        }
+        items(room.tasks, key = { it.id }) { t ->
+            TaskRowView(
+                t,
+                selected = t.id == selected,
+                checked = t.done || t.id in completing,
+                onCheck = { check(t, it) },
+                onOpen = { actions.select(t.id) },
+                modifier = Modifier.animateItem(
+                    fadeInSpec = tween(M.ROW_COLLAPSE),
+                    placementSpec = tween(M.ROW_COLLAPSE, easing = M.EASE_STANDARD.cubic()),
+                    fadeOutSpec = tween(M.ROW_COLLAPSE),
+                ),
+            )
+        }
+        room.tomorrow?.let { tomorrow(it, actions) }
+        if (room.completed.isNotEmpty() && room.tomorrow == null) {
+            item("completed-header") {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(P.TOUCH.dp)
+                        .clickable { showDone = !showDone }
+                        .padding(horizontal = P.ROW_PAD_LEFT.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+                ) {
+                    Icon(if (showDone) "chevron-down" else "chevron-right", r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                    Label("Completed", Tokens.Type.CAPS_LABEL, r.ink3)
+                    Label("${room.completed.size}", Tokens.Type.COUNT, r.ink3)
+                }
+            }
+            if (showDone) {
+                items(room.completed, key = { "done-" + it.id }) { t ->
+                    TaskRowView(
+                        t,
+                        selected = t.id == selected,
+                        checked = true,
+                        onCheck = { check(t, it) },
+                        onOpen = { actions.select(t.id) },
+                        modifier = Modifier.animateItem(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Empty(line: String) {
+    val r = LocalDesign.current.room
+    Column(Modifier.fillMaxWidth().padding(horizontal = S.S5.dp, vertical = S.S8.dp)) {
+        Label(line, Tokens.Type.EMPTY_LINE, r.ink3, maxLines = 3)
+    }
+}
+
+/** The finished day hands over to tomorrow: the first thing, the rest of tomorrow, then the week. */
+private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions) {
+    item("tomorrow-first") {
+        val d = LocalDesign.current
+        val r = d.room
+        Column(Modifier.fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
+            Label("When the sun comes up", Tokens.Type.CAPS_LABEL, r.ink3)
+            Spacer(Modifier.height(S.S3.dp))
+            Row(
+                Modifier.fillMaxWidth().clickable { actions.select(t.first.id) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(S.S4.dp),
+            ) {
+                Box(
+                    Modifier.size(Tokens.Metrics.Component.BUTTON.dp + S.S3.dp).background(r.tint, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon("sunrise", r.accentStrong)
+                }
+                Column(Modifier.weight(1f)) {
+                    Label(t.first.title, Tokens.Type.NEXT_TITLE, r.ink, maxLines = 2)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+                        Label(t.firstWhen, Tokens.Type.DUE, r.accentStrong, weight = Tokens.Type.OVERDUE_BADGE.weight)
+                        t.first.chip?.let { ListChip(it) }
+                    }
+                }
+            }
+        }
+    }
+    if (t.also.isNotEmpty()) {
+        item("tomorrow-also") { Caps("Also on ${t.weekday}") }
+        items(t.also, key = { "also-" + it.id }) { SmallRow(it, actions) }
+    }
+    if (t.week.isNotEmpty()) {
+        item("tomorrow-week") { Caps("Rest of the week") }
+        items(t.week, key = { "week-" + it.id }) { SmallRow(it, actions) }
+    }
+    if (t.more > 0u) {
+        item("tomorrow-more") {
+            val r = LocalDesign.current.room
+            Label("${t.more} more", Tokens.Type.COUNT, r.ink3, Modifier.padding(start = S.S5.dp + S.S8.dp, top = S.S3.dp, bottom = S.S6.dp))
+        }
+    }
+}
+
+@Composable
+private fun Caps(text: String) {
+    val r = LocalDesign.current.room
+    Label(text, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S5.dp, top = S.S6.dp, bottom = S.S2.dp))
+}
+
+/** A compact row for the hand-over: check, title, chip, and the date on the right. */
+@Composable
+private fun SmallRow(t: TaskRow, actions: Actions) {
+    val r = LocalDesign.current.room
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(P.TOUCH.dp)
+            .hairline(r.line, top = true)
+            .clickable { actions.select(t.id) }
+            .padding(start = S.S3.dp, end = S.S5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+    ) {
+        Check(t.done, { actions.setDone(t.id, it) }, t.title)
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+            Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
+            t.chip?.let { ListChip(it) }
+        }
+        t.due?.let { Label(it.text, Tokens.Type.DUE, r.ink2) }
+    }
+}
+
+/**
+ * The 56 dp strip above the composer that holds the toast, so it never covers the last row. The thin bar
+ * at the bottom counts down the undo window.
+ */
+@Composable
+private fun ToastStrip(toast: Toast?, actions: Actions) {
+    val r = LocalDesign.current.room
+    AnimatedVisibility(
+        visible = toast != null,
+        enter = fadeIn(tween(M.TOAST_IN)) + slideInVertically(tween(M.TOAST_IN)) { it / 2 },
+        exit = fadeOut(tween(M.TOAST_OUT)) + slideOutVertically(tween(M.TOAST_OUT)) { it / 2 },
+    ) {
+        val t = remember(toast?.serial) { toast } ?: return@AnimatedVisibility
+        val left = remember(t.serial) { Animatable(1f) }
+        LaunchedEffect(t.serial) {
+            left.animateTo(0f, tween(M.UNDO_WINDOW, easing = LinearEasing))
+            actions.dismissToast(t)
+        }
+        Box(
+            Modifier.fillMaxWidth().height(P.TOAST_STRIP.dp).background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S3.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            val shape = RoundedCornerShape(Tokens.Radius.TOAST.dp)
+            Box(Modifier.fillMaxWidth().height(P.TOAST.dp).clip(shape).background(r.toast)) {
+                Row(
+                    Modifier.fillMaxSize().padding(start = S.S3.dp, end = S.S1.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+                ) {
+                    Label(t.text, Tokens.Type.TOAST, r.toastInk, Modifier.weight(1f))
+                    Label("now", Tokens.Type.COUNT, r.toastInk2)
+                    if (t.reopen != null) {
+                        Row(
+                            Modifier
+                                .height(P.TOAST.dp)
+                                .clickable { actions.undo(t) }
+                                .padding(horizontal = S.S2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+                        ) {
+                            Icon("undo-2", r.toastAccent, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                            Label("Undo", Tokens.Type.TOAST_ACTION, r.toastAccent)
+                        }
+                    }
+                    Box(
+                        Modifier.size(P.TOAST.dp).clickable { actions.dismissToast(t) }.semantics { contentDescription = "Dismiss" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon("x", r.toastInk2, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                    }
+                }
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = S.S3.dp, bottom = Tokens.Elevation.SELECTION_BAR.dp)
+                        .fillMaxWidth(0.6f * left.value)
+                        .height(Tokens.Elevation.HAIRLINE.dp * 2)
+                        .background(r.toastInk2.copy(alpha = 0.55f), RoundedCornerShape(Tokens.Elevation.HAIRLINE.dp)),
+                )
+            }
+        }
+    }
+}
+
+/** The single 48 dp composer at the bottom, docked above the keyboard. Enter adds the task to this room. */
+@Composable
+private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAdd: (String) -> Unit) {
+    val r = LocalDesign.current.room
+    var text by rememberSaveable(draft) { mutableStateOf(draft) }
+    val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
+    fun submit() {
+        val t = text.trim()
+        if (t.isNotEmpty()) onAdd(t)
+        text = ""
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(r.pane)
+            .hairline(r.line, top = true)
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(start = S.S4.dp, end = S.S4.dp, top = S.S3.dp, bottom = if (keyboard) S.S3.dp else S.S4.dp),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(P.COMPOSER.dp)
+                .clip(shape)
+                .background(r.raised)
+                .border(Tokens.Elevation.HAIRLINE.dp, r.control, shape)
+                .padding(start = S.S3.dp, end = S.S4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+        ) {
+            Icon("plus", r.accentStrong)
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.weight(1f).semantics { contentDescription = placeholder },
+                textStyle = Tokens.Type.COMPOSER.style(r.ink),
+                singleLine = true,
+                cursorBrush = SolidColor(r.accent),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (text.isEmpty()) Label(placeholder, Tokens.Type.COMPOSER, r.ink3)
+                        inner()
+                    }
+                },
+            )
+        }
+    }
+}

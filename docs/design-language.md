@@ -135,8 +135,19 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
 - A long title truncates with an ellipsis before the agent column. Test this with a long Czech title, for example
   *Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení*.
 
-**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. The metadata line reserves a 100 dp due slot, so list chips
-always start at the same x. A cover screen fits nine full rows above the composer.
+**Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. On a dated row the due date comes first, in a 100 dp slot, so
+the list chips of dated rows start at the same x. An undated row has no slot: its chips start flush with the
+title. A cover screen fits nine full rows above the composer. A row is at least 64 dp and
+grows with the font scale, so its metadata line is never clipped.
+
+**The phone header gives way to the tasks.** As the list scrolls up, the header (eyebrow, big title, landscape)
+and the room pills slide away under a 48 dp bar, and the room's name fades into the bar in `room-title-bar`.
+Scrolling back to the top brings them back. While the keyboard is open, or when the window is short (under
+480 dp), the header stays collapsed, so the list keeps room for at least four rows above the composer.
+
+**Every phone target is at least 48 dp** (`touch`), even where the visual is smaller. A drawer row's highlight is
+40 dp (`nav-row`) and a room pill is 32 dp, but each sits in a 48 dp target, and the press ripple stays on the
+visual.
 
 **Undo never covers a row.**
 

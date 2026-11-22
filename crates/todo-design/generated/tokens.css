@@ -108,6 +108,8 @@
   --text-room-title-compact-tracking: -0.028em;
   --text-room-title-phone: 360 44px/48px var(--font-display);
   --text-room-title-phone-tracking: -0.026em;
+  --text-room-title-bar: 360 24px/28px var(--font-display);
+  --text-room-title-bar-tracking: -0.016em;
   --text-eyebrow-day: italic 400 18px/22px var(--font-display-text);
   --text-eyebrow-day-phone: italic 400 17px/20px var(--font-display-text);
   --text-eyebrow-meta: 400 11px/22px var(--font-mono);
@@ -242,6 +244,7 @@
   --phone-due-slot: 100px;
   --phone-app-bar: 48px;
   --phone-touch: 48px;
+  --phone-nav-row: 40px;
   --phone-room-row: 48px;
   --phone-room-pill: 32px;
   --phone-composer: 48px;

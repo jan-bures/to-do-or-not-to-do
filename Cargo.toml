@@ -8,6 +8,7 @@ members = [
     "crates/todo-backup",
     "crates/todo-fs",
     "crates/todo-design",
+    "crates/todo-ffi",
 ]
 # Spikes are standalone throwaway projects. The desktop app is its own workspace (GPUI pins and patches).
 exclude = ["spikes", "apps/desktop"]
@@ -77,6 +78,11 @@ hkdf = "0.12"
 # MCP server at /mcp (server only); the client half is used by the tests.
 rmcp = { version = "3.11", default-features = false }
 schemars = { version = "1", features = ["uuid1"] }
+# todo-ffi: Kotlin bindings for the Android app. `cli` only for its `uniffi-bindgen` binary.
+uniffi = "0.32"
+# todo-ffi on Android: initialises the platform TLS verifier that reqwest uses (versions as in reqwest).
+jni = { version = "0.22", default-features = false }
+rustls-platform-verifier = "0.7"
 # todo-design tests: reads the bundled fonts' cmap and names. Pure Rust, no dependencies.
 ttf-parser = "0.25"
 
