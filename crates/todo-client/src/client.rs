@@ -429,7 +429,8 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
 
     /// Cancels an unsent command or durably queues a non-forced undo of this exact command.
     /// If its outcome is still unknown, the undo waits in the outbox for an authoritative receipt.
-    /// The shared view applies its predicted inverse when the original's batch is available.
+    /// The view shows the predicted inverse while the undo waits, also after a restart (see the
+    /// replica's module docs for when it can't).
     pub fn undo_tracked(&self, target: &TrackedCommand) -> Result<TrackedUndo, SubmitError> {
         let command_id = self.new_uuid();
         let now = self.inner.clock.now();
@@ -453,14 +454,6 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
             self.changed();
         }
         Ok(result)
-    }
-
-    /// Preview available while a requested undo waits for sync, using the core's conflict checks.
-    /// This does not write to the replica or authorize any change; the server still decides.
-    #[must_use]
-    pub fn preview_tracked_undo(&self, target: &TrackedCommand) -> Option<State> {
-        let now = self.inner.clock.now();
-        self.with(|s| s.replica.preview_tracked_undo(target, now))
     }
 
     /// Queues an undo of the command that produced event `seq` (or a redo, if `seq` is a compensating

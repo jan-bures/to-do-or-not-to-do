@@ -159,6 +159,65 @@ fn queued_undo_is_in_the_view_before_and_after_acknowledgement() {
     assert!(reopened.view().tasks[&task_id(1)].is_done());
 }
 
+/// A recurring task that is not done yet.
+fn repeat(task: todo_core::ids::TaskId) -> Command {
+    let mut repeat = NewTask::new(task, list_id(1), "Repeat");
+    repeat.due = Some("2026-11-21".parse().unwrap());
+    repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+    Command::CreateTask(Box::new(repeat))
+}
+
+/// A page can end inside the original's batch. Undoing the part received gives the state before the
+/// batch, as undoing all of it does once the rest arrives, so the undo stays in the view throughout,
+/// before and after a restart.
+#[test]
+fn an_undo_stays_in_the_view_while_a_page_splits_the_originals_batch() {
+    let (mut r, mut server, storage) = seeded();
+    let task = task_id(2);
+    server
+        .execute(&owner(), Uuid::from_u128(9000), &repeat(task))
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    let original = entry(100, Command::CompleteTask { id: task }, 1);
+    r.submit(original.clone()).unwrap();
+    r.next_to_send().unwrap().unwrap();
+    r.submit(undo_after(101, &original)).unwrap();
+    let undone = |r: &mut Replica| {
+        let view = r.view();
+        !view.tasks[&task].is_done() && view.tasks.len() == 2
+    };
+    assert!(undone(&mut r));
+    let first = server.log.len();
+    let receipt = server
+        .execute(&owner(), original.command_id, original.command().unwrap())
+        .unwrap();
+    assert_eq!(
+        receipt.events.len(),
+        2,
+        "the completion and the next repeat"
+    );
+
+    r.apply_confirmed(EPOCH, &server.log[first..=first])
+        .unwrap();
+    assert_eq!(r.cursor(), receipt.events[0].seq);
+    assert!(matches!(r.outbox()[0].op, Operation::Undo { .. }));
+    assert!(
+        undone(&mut r),
+        "undone while the page ends inside the batch"
+    );
+    assert!(undone(&mut open(&storage)), "and after a restart");
+
+    let mut reopened = open(&storage);
+    for r in [&mut r, &mut reopened] {
+        r.apply_confirmed(EPOCH, &server.log[first + 1..]).unwrap();
+        assert!(undone(r), "undone once the rest of the batch arrived");
+        // A late acknowledgement changes nothing.
+        r.acknowledge(original.command_id, &receipt).unwrap();
+        assert!(undone(r));
+    }
+    assert!(undone(&mut open(&storage)));
+}
+
 #[test]
 fn open_resolves_a_settled_commands_undo_from_the_first_replayed_event() {
     let (r, mut server, mut storage) = seeded();
@@ -786,20 +845,21 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
+    /// An undo queued before its original's outcome is known binds to the first event of the
+    /// original's own batch, however the acknowledgement, the stream pages (split anywhere in the
+    /// batch), a restart and a failed write interleave. Throughout, the view is the one a fresh
+    /// replica builds from storage, and it shows the original undone as a whole, never half of it.
     #[test]
     fn early_undo_binds_only_to_the_own_batch_first_event(
         ack_at in 0..4u8,
-        split in any::<bool>(),
+        split in any::<prop::sample::Index>(),
         restart_at in 0..5u8,
         fail_once in any::<bool>(),
         outcome in 0..3u8,
     ) {
         let (mut r, mut server, storage) = seeded();
         let task = task_id(2);
-        let mut repeat = NewTask::new(task, list_id(1), "Repeat");
-        repeat.due = Some("2026-11-21".parse().unwrap());
-        repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
-        server.execute(&owner(), Uuid::from_u128(9000), &Command::CreateTask(Box::new(repeat))).unwrap();
+        server.execute(&owner(), Uuid::from_u128(9000), &repeat(task)).unwrap();
         r.apply_confirmed(EPOCH, &server.log).unwrap();
         let original = entry(100, Command::CompleteTask { id: task }, 1);
         let undo = undo_after(101, &original);
@@ -820,6 +880,19 @@ proptest! {
             server.execute(&owner(), Uuid::from_u128(103), &command).unwrap();
             r.apply_confirmed(EPOCH, &server.log).unwrap();
         }
+        // The view must show the original undone: the state before it, whatever it does.
+        let before = server.state.clone();
+        let check = |r: &mut Replica| -> Result<(), TestCaseError> {
+            let view = r.view();
+            prop_assert!(view.data_eq(&open(&storage).view()), "the view is what storage gives");
+            prop_assert!(view.tasks.keys().eq(before.tasks.keys()), "the whole batch is undone");
+            prop_assert_eq!(
+                view.tasks.get(&task).map(|t| (t.is_done(), t.deleted.is_some())),
+                before.tasks.get(&task).map(|t| (t.is_done(), t.deleted.is_some())),
+            );
+            Ok(())
+        };
+        check(&mut r)?;
         let first = server.log.len();
         let result = server.execute(&owner(), original.command_id, original.command().unwrap());
         let mut fail = fail_once;
@@ -828,6 +901,7 @@ proptest! {
         for stage in 0..=4 {
             if stage == restart_at {
                 r = open(&storage);
+                check(&mut r)?;
             }
             if outcome != 0 {
                 if stage != 2 { continue; }
@@ -843,11 +917,13 @@ proptest! {
                     storage.set_fail_writes(false);
                 }
                 settle().unwrap();
+                check(&mut r)?;
                 continue;
             }
             let receipt = result.as_ref().unwrap();
             prop_assert!(receipt.events.len() > 1);
-            let cut = if split { first + 1 } else { server.log.len() };
+            // The first page ends anywhere in the batch, or after all of it.
+            let cut = first + 1 + split.index(receipt.events.len());
             let pages = [ &server.log[first..cut], &server.log[cut..] ];
             let mut steps = Vec::new();
             if stage == ack_at && ack_at < 3 { steps.push(None); }
@@ -855,7 +931,7 @@ proptest! {
                 steps.push(Some(pages[stage as usize]));
             }
             for page in steps {
-                let before = r.outbox().to_vec();
+                let outbox = r.outbox().to_vec();
                 let cursor = r.cursor();
                 let apply_step = |r: &mut Replica| match page {
                     Some(page) => r.apply_confirmed(EPOCH, page).map(drop).map_err(|e| e.to_string()),
@@ -864,13 +940,15 @@ proptest! {
                 if fail {
                     storage.set_fail_writes(true);
                     prop_assert!(apply_step(&mut r).is_err());
-                    prop_assert_eq!(r.outbox(), &before);
+                    prop_assert_eq!(r.outbox(), &outbox);
                     prop_assert_eq!(r.cursor(), cursor);
-                    prop_assert_eq!(storage.clone().load().unwrap().outbox, before);
+                    prop_assert_eq!(storage.clone().load().unwrap().outbox, outbox);
                     storage.set_fail_writes(false);
                     fail = false;
+                    check(&mut r)?;
                 }
                 apply_step(&mut r).unwrap();
+                check(&mut r)?;
                 let dependent = r.outbox().iter().find(|e| e.command_id == undo.command_id).unwrap();
                 prop_assert_eq!(&dependent.op, &Operation::Undo {
                     seq: receipt.events[0].seq,

@@ -432,9 +432,6 @@ async fn tracked_undo_restores_a_repeat_as_a_unit_but_refuses_a_conflicting_remo
         a.view().tasks[&task].title.ends_with("lunch")
     })
     .await;
-    let preview = a.preview_tracked_undo(&first).unwrap();
-    assert!(!preview.tasks[&task].is_done());
-    assert_eq!(preview.tasks.len(), 1);
     a.set_sending(false);
     assert!(matches!(
         a.undo_tracked(&first).unwrap(),
@@ -471,10 +468,15 @@ async fn tracked_undo_restores_a_repeat_as_a_unit_but_refuses_a_conflicting_remo
         converged(&a, &server) && converged(&b, &server)
     })
     .await;
-    assert!(a.preview_tracked_undo(&second).is_none());
+    a.set_sending(false);
     let TrackedUndo::Queued(undo) = a.undo_tracked(&second).unwrap() else {
         panic!("the undo should be queued")
     };
+    assert!(
+        a.view().tasks[&task].is_done(),
+        "an undo that would conflict is not shown"
+    );
+    a.set_sending(true);
     eventually("server refuses the conflicting undo", WAIT, || {
         a.failed().iter().any(|f| f.entry.command_id == undo)
     })
@@ -555,6 +557,52 @@ async fn an_undo_of_a_possibly_sent_completion_updates_the_view_and_survives_res
             .stored_command_ids()
             .contains(&(id.to_string(), "undo".into()))
     );
+    stop(&a, ha).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undo_of_a_confirmed_completion_shows_after_an_offline_restart() {
+    let server = TestServer::start().await;
+    let storage = MemoryStorage::new();
+    let transport = Switch::new(server.transport(TOKEN_A));
+    let a = client(transport.clone(), storage.clone(), alpha());
+    let ha = spawn(&a);
+    let (list, make_list) = new_list(&a, "Undo after restart");
+    a.submit(make_list).unwrap();
+    let task = TaskId::from_uuid(a.new_uuid());
+    let mut repeat = NewTask::new(task, list, "Water seedlings");
+    repeat.due = Some("2026-11-21".parse().unwrap());
+    repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+    a.submit(Command::CreateTask(Box::new(repeat))).unwrap();
+    let done = a
+        .submit_tracked(Command::CompleteTask { id: task })
+        .unwrap();
+    eventually("the completion and its repeat are confirmed", WAIT, || {
+        converged(&a, &server) && a.view().tasks.len() == 2
+    })
+    .await;
+
+    transport.set_online(false);
+    let TrackedUndo::Queued(_) = a.undo_tracked(&done).unwrap() else {
+        panic!("a confirmed completion is undone through the outbox");
+    };
+    let undone = |view: &todo_core::State| !view.tasks[&task].is_done() && view.tasks.len() == 1;
+    assert!(undone(&a.view()), "the undo shows offline");
+    drop(done);
+    stop(&a, ha).await;
+    drop(a);
+
+    // Restarted, still offline: the original's events come from storage, not from the session.
+    let a = client(server.transport(TOKEN_A), storage, alpha());
+    assert!(undone(&a.view()), "the queued undo survives the restart");
+    let ha = spawn(&a);
+    eventually("the undo reaches the server", WAIT, || {
+        converged(&a, &server) && !server.state().tasks[&task].is_done()
+    })
+    .await;
+    assert!(undone(&a.view()));
+    assert!(a.failed().is_empty());
     stop(&a, ha).await;
     server.stop().await;
 }
