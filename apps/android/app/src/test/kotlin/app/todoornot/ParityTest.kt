@@ -11,6 +11,7 @@ import app.todoornot.model.Tone
 import app.todoornot.model.TodoModel
 import app.todoornot.model.clock
 import app.todoornot.model.syncLine
+import app.todoornot.ui.StepDraft
 import app.todoornot.ui.buttonColors
 import app.todoornot.ui.showsAgent
 import app.todoornot.ui.showsPriority
@@ -19,6 +20,7 @@ import androidx.compose.ui.graphics.luminance
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -175,6 +177,60 @@ class ParityTest {
         advanceUntilIdle()
         assertEquals("rohlíky", m.ui.value.filter)
         assertEquals(listOf("Koupit rohlíky a mléko"), m.ui.value.room.tasks.map { it.title })
+    }
+
+    @Test
+    fun a_read_from_before_the_field_closed_never_reopens_it() = runTest {
+        // The model's own refreshes are queued (not run at once), so a read can be taken with the field
+        // open and finish after the owner has closed it, before the closing refresh has run.
+        lateinit var m: TodoModel
+        var close = false
+        m = TodoModel(
+            fixtureEngine(),
+            CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+            UnconfinedTestDispatcher(testScheduler),
+            now = {
+                if (close) {
+                    close = false
+                    m.setSearching(false)
+                }
+                FIXTURE_NOW
+            },
+        )
+        m.setSearching(true)
+        advanceUntilIdle()
+        assertTrue("an open, empty field", m.ui.value.searching)
+        close = true
+        m.refresh()
+        assertFalse("the old read is dropped", m.ui.value.searching)
+        advanceUntilIdle()
+        assertFalse(m.ui.value.searching)
+        assertEquals("", m.ui.value.filter)
+    }
+
+    @Test
+    fun done_pressed_twice_sends_one_step_and_a_refused_one_can_be_sent_again() {
+        val draft = StepDraft()
+        val sent = mutableListOf<Pair<String, (String?) -> Unit>>()
+        val send: (String, (String?) -> Unit) -> Unit = { title, done -> sent += title to done }
+        draft.edit("Print the form ")
+        draft.submit(send)
+        draft.submit(send)
+        assertEquals("the second Done is ignored while the first is on its way", 1, sent.size)
+        assertTrue(draft.sending)
+
+        sent.last().second("A step title can be at most 500 characters.")
+        assertFalse(draft.sending)
+        assertEquals("refused: the draft stays", "Print the form ", draft.text)
+        assertEquals("A step title can be at most 500 characters.", draft.problem)
+
+        draft.submit(send)
+        assertEquals(2, sent.size)
+        assertEquals("Print the form", sent.last().first)
+        sent.last().second(null)
+        assertEquals("added: the field is cleared for the next one", "", draft.text)
+        assertNull(draft.problem)
+        assertFalse(draft.sending)
     }
 
     @Test

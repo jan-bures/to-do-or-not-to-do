@@ -222,17 +222,8 @@ private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) 
 @Composable
 private fun AddStep(task: String, actions: Actions) {
     val r = LocalDesign.current.room
-    var text by rememberSaveable(task) { mutableStateOf("") }
-    var problem by remember(task) { mutableStateOf<String?>(null) }
-    fun submit() {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        actions.addStep(task, t) { error ->
-            problem = error
-            // Clear only what was sent, so anything typed meanwhile stays.
-            if (error == null && text.trim() == t) text = ""
-        }
-    }
+    val draft = rememberSaveable(task, saver = StepDraft.Saver) { StepDraft() }
+    fun submit() = draft.submit { title, done -> actions.addStep(task, title, done) }
     Column(Modifier.fillMaxWidth().hairline(r.line)) {
         Row(
             Modifier.fillMaxWidth().height(P.TOUCH.dp),
@@ -243,8 +234,8 @@ private fun AddStep(task: String, actions: Actions) {
                 Icon("plus", r.accentStrong, size = C.ICON_SMALL.dp)
             }
             BasicTextField(
-                value = text,
-                onValueChange = { text = it.replace("\n", ""); problem = null },
+                value = draft.text,
+                onValueChange = draft::edit,
                 modifier = Modifier.weight(1f).semantics { contentDescription = "Add step" },
                 textStyle = Tokens.Type.STEP.style(r.ink),
                 singleLine = true,
@@ -253,13 +244,13 @@ private fun AddStep(task: String, actions: Actions) {
                 keyboardActions = KeyboardActions(onDone = { submit() }),
                 decorationBox = { inner ->
                     Box(contentAlignment = Alignment.CenterStart) {
-                        if (text.isEmpty()) Label("Add step", Tokens.Type.STEP, r.ink3)
+                        if (draft.text.isEmpty()) Label("Add step", Tokens.Type.STEP, r.ink3)
                         inner()
                     }
                 },
             )
         }
-        problem?.let {
+        draft.problem?.let {
             Label(it, Tokens.Type.META_PHONE, r.dangerInk, Modifier.padding(start = P.COL_CHECK.dp + S.S3.dp, bottom = S.S2.dp), maxLines = 3)
         }
     }

@@ -127,6 +127,12 @@ class TodoModel(
 
     private var published = 0L
 
+    /**
+     * Bumped (under [publishing]) whenever what a read depends on changes: the room, the filter text, or
+     * whether the filter field is open. A read taken before the bump is stale and is never published.
+     */
+    private var inputs = 0L
+
     private val publishing = Any()
 
     @Volatile private var collapsed: Set<String> = emptySet()
@@ -154,10 +160,13 @@ class TodoModel(
     }
 
     /** Reads the whole screen state synchronously (the screenshot tests use this directly). */
-    fun read(): UiState {
-        // The inputs first: the state read belongs to this filter, whatever changes while reading.
-        val f = filter
-        val open = searching
+    fun read(): UiState = snapshot().second
+
+    /** Reads the screen, with the [inputs] it was read for. */
+    private fun snapshot(): Pair<Long, UiState> {
+        // The inputs first, together: the state read belongs to them, whatever changes while reading.
+        val (epoch, f, open) = synchronized(publishing) { Triple(inputs, filter, searching) }
+        val k = key
         val n = now()
         val detail = selected?.let { engine.task(it, n) }
         if (detail == null) selected = null
@@ -165,7 +174,7 @@ class TodoModel(
         if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
         return UiState(
             home = engine.home(n),
-            room = if (f.isBlank()) engine.room(key, n) else engine.roomMatching(key, f, n),
+            room = if (f.isBlank()) engine.room(k, n) else engine.roomMatching(k, f, n),
             detail = detail,
             status = status,
             failed = engine.failed(),
@@ -175,19 +184,21 @@ class TodoModel(
             filter = f,
             collapsed = collapsed,
             syncedAt = syncedAt,
-        )
+        ).let { epoch to it }
     }
 
     /**
      * Re-reads the screen. Reads can finish out of order (a slow read for "m" after the read for
-     * "milk"), so only the newest read so far is published, and only while its filter is still the
-     * current one: the rows always belong to the filter on screen.
+     * "milk"), so only the newest read so far is published, and only while the room, the filter and the
+     * field's open state it was read for are still the current ones: the rows always belong to the
+     * filter on screen, and a closed field is never reopened by an old read. Every change to those
+     * inputs starts a refresh of its own, so the newer read follows.
      */
     suspend fun refresh() {
         val generation = refreshes.incrementAndGet()
-        val state = withContext(io) { read() }
+        val (epoch, state) = withContext(io) { snapshot() }
         synchronized(publishing) {
-            if (generation > published && state.filter == filter) {
+            if (generation > published && epoch == inputs) {
                 published = generation
                 _ui.value = state
             }
@@ -223,6 +234,7 @@ class TodoModel(
             selected = null
             filter = ""
             searching = false
+            inputs++
             _ui.value = _ui.value.copy(filter = "", searching = false)
         }
         scope.launch { refresh() }
@@ -236,6 +248,7 @@ class TodoModel(
     override fun setFilter(text: String) {
         synchronized(publishing) {
             filter = text
+            inputs++
             _ui.value = _ui.value.copy(filter = text, searching = searching || text.isNotEmpty())
         }
         scope.launch { refresh() }
@@ -246,6 +259,7 @@ class TodoModel(
         synchronized(publishing) {
             searching = on
             if (!on) filter = ""
+            inputs++
             _ui.value = _ui.value.copy(searching = on || filter.isNotEmpty(), filter = filter)
         }
         scope.launch { refresh() }
@@ -259,10 +273,13 @@ class TodoModel(
     /** Adds a list and opens it. */
     override fun createList(name: String) = act {
         val room = engine.createList(name)
-        key = room
-        selected = null
-        filter = ""
-        searching = false
+        synchronized(publishing) {
+            key = room
+            selected = null
+            filter = ""
+            searching = false
+            inputs++
+        }
     }
 
     override fun select(id: String?) {
