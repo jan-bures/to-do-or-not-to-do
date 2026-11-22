@@ -104,7 +104,7 @@ fn claim(result: std::io::Result<Instance>) -> Claim {
 }
 
 /// Runs the app. Returns once the user quits (or immediately, when another copy is already running).
-pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> {
+pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> anyhow::Result<()> {
     let tag = if bench.is_some() {
         format!("bench-{}", std::process::id())
     } else {
@@ -118,6 +118,9 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>) -> anyhow::Result<()> 
         }
     };
     let standalone = primary.is_none();
+    if !standalone && bench.is_none() && !restarted && crate::updates::apply_pending() {
+        return Ok(());
+    }
     let mut metrics = Metrics::default();
     if bench.is_some() {
         metrics.ms("main_entered_ms", win::process_age_ms());

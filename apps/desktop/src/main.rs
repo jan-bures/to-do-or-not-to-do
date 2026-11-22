@@ -25,6 +25,8 @@ mod screenshot;
 mod session;
 #[cfg(windows)]
 mod store;
+#[cfg(windows)]
+mod updates;
 
 use std::process::ExitCode;
 
@@ -32,6 +34,13 @@ use args::Command;
 
 #[cfg(windows)]
 fn main() -> ExitCode {
+    let mut restarted = false;
+    velopack::VelopackApp::build()
+        // A second launch must activate the existing app, not start replacing it. The primary
+        // instance checks for a staged update after claiming the mutex, before setting up GPUI.
+        .set_auto_apply_on_startup(false)
+        .on_restarted(|_| restarted = true)
+        .run();
     platform::win::attach_parent_console();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -60,9 +69,9 @@ fn main() -> ExitCode {
         Command::Screenshot(opts) => screenshot::run(opts),
         Command::Bench(opts) => {
             let run = args::RunOptions { background: false };
-            app::run(run, Some(opts)).map(|()| 0)
+            app::run(run, Some(opts), restarted).map(|()| 0)
         }
-        Command::Run(opts) => app::run(opts, None).map(|()| 0),
+        Command::Run(opts) => app::run(opts, None, restarted).map(|()| 0),
     };
     match result {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),

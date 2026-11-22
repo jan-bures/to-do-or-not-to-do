@@ -101,6 +101,13 @@ pub struct Session {
     data: DataDir,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     downloads: Arc<Downloads>,
+    updates: Box<std::sync::Mutex<Updates>>,
+}
+
+struct Updates {
+    /// Consumed on start so the caller does not keep a second update credential.
+    token: Option<String>,
+    worker: Option<crate::updates::Worker>,
 }
 
 /// The session's attachment downloads, so signing out can stop them and wait for them before the data
@@ -242,6 +249,10 @@ impl Session {
             data,
             task: std::sync::Mutex::new(None),
             downloads: Arc::new(Downloads::new()),
+            updates: Box::new(std::sync::Mutex::new(Updates {
+                token: Some(pairing.token.clone()),
+                worker: None,
+            })),
         })
     }
 
@@ -300,6 +311,13 @@ impl Session {
         if task.is_none() {
             let client = self.client.clone();
             *task = Some(self.rt.spawn(async move { client.run().await }));
+            let mut updates = self
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(token) = updates.token.take() {
+                updates.worker = crate::updates::Worker::start(self.server(), &token);
+            }
         }
     }
 
@@ -313,6 +331,14 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        {
+            let mut updates = self
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            updates.token.take();
+            updates.worker.take(); // Drop cancels the install-wide worker without blocking sign-out.
+        }
         async move {
             // A tokio join handle can be awaited from any executor.
             if let Some(task) = task {

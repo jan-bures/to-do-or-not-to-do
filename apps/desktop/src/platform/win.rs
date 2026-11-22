@@ -8,7 +8,8 @@ use windows_sys::Win32::Foundation::{FILETIME, HWND};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows_sys::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetProcessTimes, SetPriorityClass,
+    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetCurrentThread, GetProcessTimes,
+    SetPriorityClass, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsIconic, IsWindowVisible, PostMessageW, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_RESTORE,
@@ -27,6 +28,15 @@ pub fn hwnd_of(window: &Window) -> isize {
 pub fn lower_process_priority() -> std::io::Result<()> {
     // SAFETY: the pseudo-handle refers to this process, not the owner's interactive instance.
     if unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Lower CPU and I/O priority on a dedicated worker for the rest of its lifetime.
+pub fn background_thread() -> std::io::Result<()> {
+    // SAFETY: background mode can only be set on the calling thread's own pseudo-handle.
+    if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
