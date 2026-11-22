@@ -3,8 +3,8 @@
 // server can't be reached (from one tab or several, sent by one tab in order), storage failures, and
 // database upgrades that other tabs block.
 //
-// The tests share one browser context (one cookie jar, like the owner's browser) and run in order:
-// the first one sets the server up.
+// The sync tests share one browser context (one cookie jar, like the owner's browser) and run in
+// order: the first one sets the server up. The clock test uses a separate replica.
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -216,35 +216,6 @@ test("set up, sign in, and use the app against the server", async () => {
 
   expect(problems).toEqual([]);
   await page.close();
-});
-
-test("quick-add uses the local date at submit and My Day refreshes on wake", async () => {
-  const page = await context.newPage();
-  try {
-    const localTime = (day, hour) => page.evaluate(([d, h]) => new Date(2026, 10, d, h).getTime(), [day, hour]);
-    await page.clock.setFixedTime(await localTime(20, 23));
-    await page.goto("/app");
-    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
-
-    // Change Date without running the view's 30-second interval or waking the tab.
-    const title = "Check midnight quick-add";
-    await page.locator(".qa-input").fill(`${title} today`);
-    await page.clock.setFixedTime(await localTime(21, 0));
-    const sent = page.waitForRequest((r) =>
-      r.method() === "POST" && r.url().endsWith("/api/v1/commands") &&
-      r.postDataJSON()?.command?.title === title
-    );
-    await page.locator(".qa-input").press("Enter");
-    const { command } = (await sent).postDataJSON();
-    expect(command).toMatchObject({ due: "2026-11-21", my_day: "2026-11-21" });
-    await expect(row(page, title)).toHaveCount(1);
-
-    await page.clock.setFixedTime(await localTime(22, 0));
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await expect(row(page, title)).toHaveCount(0);
-  } finally {
-    await page.close();
-  }
 });
 
 test("two tabs queue edits offline: both survive closing every tab, and each is sent once", async () => {
@@ -758,4 +729,34 @@ test("a tab lets go of the database when a newer version needs it, and reloads",
   await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
   await app.close();
   await newer.close();
+});
+
+// Run last with a separate replica so the fake clock and its write cannot affect the shared-tab tests.
+test("quick-add uses the local date at submit and My Day refreshes on wake", async ({ browser }) => {
+  const isolated = await browser.newContext({ baseURL, timezoneId: "UTC", storageState: await context.storageState() });
+  try {
+    const page = await isolated.newPage();
+    await page.clock.setFixedTime(new Date("2026-11-20T23:59:59Z"));
+    await page.goto("/app");
+    await expect(page.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+
+    // Change Date without running the view's 30-second interval or waking the tab.
+    const title = "Check midnight quick-add";
+    await page.locator(".qa-input").fill(`${title} today`);
+    await page.clock.setFixedTime(new Date("2026-11-21T00:00:00Z"));
+    const sent = page.waitForRequest((r) =>
+      r.method() === "POST" && r.url().endsWith("/api/v1/commands") &&
+      r.postDataJSON()?.command?.title === title
+    );
+    await page.locator(".qa-input").press("Enter");
+    const { command } = (await sent).postDataJSON();
+    expect(command).toMatchObject({ due: "2026-11-21", my_day: "2026-11-21" });
+    await expect(row(page, title)).toHaveCount(1);
+
+    await page.clock.setFixedTime(new Date("2026-11-22T00:00:00Z"));
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect(row(page, title)).toHaveCount(0);
+  } finally {
+    await isolated.close();
+  }
 });
