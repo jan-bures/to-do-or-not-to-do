@@ -841,15 +841,24 @@ pub fn my_day_progress(state: &State, now: &Now) -> (u32, u32) {
     (done, total)
 }
 
-/// The state with each task being reopened still done, as it was, so the room keeps it in its completed
-/// place (and counts it done) until it has left. Only the room sees this; the detail pane shows the truth.
-fn still_done(state: &State, reopening: &BTreeMap<TaskId, Timestamp>) -> State {
+/// The state as the list places tasks while their choreography plays (see `UiState::holding` and
+/// `reopening`): each task being reopened still done, as it was, and with `held_open` each task being
+/// completed still open. The room places held tasks itself (it draws them done), so only the sidebar's
+/// counts use `held_open`; the detail pane always shows the truth.
+fn as_placed(state: &State, ui: &UiState, held_open: bool) -> State {
     let mut placed = state.clone();
-    for (id, at) in reopening {
+    for (id, at) in &ui.reopening {
         if let Some(t) = placed.tasks.get_mut(id)
             && t.completed_at.is_none()
         {
             t.completed_at = Some(*at);
+        }
+    }
+    if held_open {
+        for id in &ui.holding {
+            if let Some(t) = placed.tasks.get_mut(id) {
+                t.completed_at = None;
+            }
         }
     }
     placed
@@ -859,15 +868,21 @@ fn still_done(state: &State, reopening: &BTreeMap<TaskId, Timestamp>) -> State {
 pub fn derive(state: &State, ui: &UiState, sync: &SyncInfo, now: &Now) -> Shell {
     let ctx = now.eval();
     let ix = Index::new(state, now);
-    let placed;
+    let (in_room, in_sidebar);
     let room_state = if ui.reopening.is_empty() {
         state
     } else {
-        placed = still_done(state, &ui.reopening);
-        &placed
+        in_room = as_placed(state, ui, false);
+        &in_room
+    };
+    let sidebar_state = if ui.reopening.is_empty() && ui.holding.is_empty() {
+        state
+    } else {
+        in_sidebar = as_placed(state, ui, true);
+        &in_sidebar
     };
     let room = room(room_state, &ix, ui, now, &ctx);
-    let mut sidebar = sidebar(state, &ix, ui, sync, now, &ctx);
+    let mut sidebar = sidebar(sidebar_state, &ix, ui, sync, now, &ctx);
     sidebar.selected = room.key;
     let detail = ui.task.and_then(|id| detail(state, &ix, id, now));
     let mut shell = Shell {

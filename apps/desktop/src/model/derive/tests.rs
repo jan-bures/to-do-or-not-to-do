@@ -100,6 +100,8 @@ fn a_task_being_completed_keeps_its_place_until_released() {
     assert_eq!(held.room.summary(), before.room.summary());
     assert_eq!(held.room.done_today, before.room.done_today);
     assert_eq!(held.room.completed_count, 3);
+    // So does the sidebar's (the next occurrence of this recurring task is already there, though).
+    assert_eq!(held.sidebar.smart[0].count, before.sidebar.smart[0].count);
 }
 
 #[test]
@@ -125,6 +127,7 @@ fn a_task_being_reopened_keeps_its_completed_place_until_released() {
     assert_eq!(reopening.room.completed[0].id, landlord);
     assert!(reopening.room.completed[0].done);
     assert_eq!(reopening.room.summary(), before.room.summary());
+    assert_eq!(reopening.sidebar, before.sidebar);
     // The detail pane tells the truth.
     f.ui.task = Some(landlord);
     assert_eq!(f.shell().detail.map(|d| d.done), Some(false));
