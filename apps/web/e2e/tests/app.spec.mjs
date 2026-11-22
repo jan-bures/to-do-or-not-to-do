@@ -113,7 +113,14 @@ test("keyboard: J/K move the selection, Space completes, Escape closes", async (
   await expect(rows(page).first()).toHaveClass(/selected/);
   await expect(page.locator(".detail .d-title")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".detail .d-title")).toHaveCount(0);
+  await expect(page.locator(".detail .d-title")).toBeHidden();
+  await expect(rows(page).first().locator(".row-title")).toBeFocused();
+  const backup = row(page, "Rotate the backup encryption keys");
+  await backup.locator(".row-title").click();
+  await page.keyboard.press("Space");
+  await expect(backup).toHaveClass(/completing/);
+  await page.keyboard.press("Control+z");
+  await expect(backup).not.toHaveClass(/completing/);
   await w.check();
 });
 
@@ -130,6 +137,205 @@ test("rooms are addressable, and back goes back", async ({ page }) => {
   await expect(page).toHaveURL(/\/app\/important$/);
   await page.reload();
   await expect(page.locator(".room-title")).toHaveText("Important");
+  await w.check();
+});
+
+test("the medium detail dims and disables the room, traps focus, and restores the opener", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page);
+  const title = rows(page).first().locator(".row-title");
+  const scrim = page.locator(".scrim");
+  const detail = page.getByRole("dialog", { name: "Task detail" });
+  await title.click();
+  await expect(detail).toBeFocused();
+  await expect(detail).toHaveAttribute("aria-modal", "true");
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  await expect(scrim).toHaveCSS("opacity", "1");
+  await expect(scrim).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(detail).toHaveCSS("transform", "none");
+  const sun = detail.getByRole("button", { name: "My Day" });
+  await page.keyboard.press("Tab");
+  await expect(sun).toBeFocused();
+  const last = detail.getByRole("button", { name: /board-pack-draft/ });
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(sun).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(detail).toBeHidden();
+  await expect(title).toBeFocused();
+  await expect(page.locator("main")).not.toHaveAttribute("inert");
+  await title.press("Enter");
+  await expect(detail).toBeFocused();
+  await scrim.click({ position: { x: 400, y: 280 } });
+  await expect(detail).toBeHidden();
+  await expect(title).toBeFocused();
+  await w.check();
+});
+
+test("filter: slash and Ctrl+K focus it, with core queries and Czech text in the current room", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await page.keyboard.press("/");
+  const filter = page.getByRole("searchbox", { name: "Filter tasks" });
+  await expect(filter).toBeFocused();
+  await filter.fill("tag:docs");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(row(page, "Prepare the November board update")).toBeVisible();
+  await expect(page.locator(".summary")).toContainText("3 of 12 done");
+  await filter.fill("KVULI STK");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(row(page, "Zavolat do servisu kvůli STK")).toBeVisible();
+  await filter.fill("standing desk");
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator(".empty-line")).toHaveText("Nothing matches the filter.");
+  await filter.press("Escape");
+  await expect(page.getByRole("button", { name: "Filter tasks" })).toBeFocused();
+  await expect(rows(page)).toHaveCount(9);
+  await page.keyboard.press("Control+k");
+  await expect(filter).toBeFocused();
+  await filter.fill("done ondrej");
+  await expect(page.getByRole("button", { name: "Completed 1" })).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "Completed 1" }).click();
+  await expect(page.getByRole("list", { name: "Completed tasks" }).getByRole("button", { name: "Reply to Ondřej about the offsite" })).toBeVisible();
+  await w.check();
+});
+
+test("collection disclosure preserves navigation and new list creates in the current collection", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const sidebar = page.getByRole("complementary", { name: "Lists" });
+  await expect(sidebar.getByRole("region", { name: "Agents" })).toContainText("Codex");
+  const work = sidebar.getByRole("link", { name: /^Work/ });
+  const finance = sidebar.getByRole("link", { name: /^Finance/ });
+  await finance.click();
+  const toggle = sidebar.getByRole("button", { name: "Collapse Work" });
+  await toggle.press("Enter");
+  await expect(finance).toBeHidden();
+  await expect(work).toHaveClass(/contains-active/);
+  await expect(page.locator(".room-title")).toHaveText("Finance");
+  const newList = sidebar.getByRole("button", { name: "New list" });
+  const name = sidebar.getByRole("textbox", { name: "List name" });
+  await newList.click();
+  await expect(name).toBeFocused();
+  await name.press("Escape");
+  await expect(newList).toBeFocused();
+  await newList.click();
+  await expect(name).toBeFocused();
+  await name.fill("Reading for the project");
+  await name.press("Enter");
+  await expect(page.locator(".room-title")).toHaveText("Reading for the project");
+  await expect(page.locator(".eyebrow-lead")).toHaveText("Work");
+  await expect(sidebar.getByRole("link", { name: "Reading for the project" })).toHaveAttribute("aria-current", "page");
+  await expect(finance).toBeVisible();
+  await w.check();
+});
+
+test("finished My Day keeps quick-add and makes today's completed tasks available", async ({ page }) => {
+  const w = watch(page);
+  await open(page, "/app?fixture=finished");
+  await expect(page.locator(".room-head.finished")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Plan Sunday" })).toBeVisible();
+  const completed = page.getByRole("button", { name: "Completed 12" });
+  await expect(completed).toHaveAttribute("aria-expanded", "false");
+  await completed.click();
+  const done = page.getByRole("list", { name: "Completed tasks" });
+  await expect(done.getByRole("listitem")).toHaveCount(12);
+  await completed.click();
+  await expect(done).toBeHidden();
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  await add.fill("One more thing for today");
+  await add.press("Enter");
+  await expect(add).toBeFocused();
+  await expect(page.locator(".room-head.finished")).toBeHidden();
+  await expect(row(page, "One more thing for today")).toBeVisible();
+  await w.check();
+});
+
+test("finished My Day still opens Planned when tomorrow has no tasks", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page, "/app?fixture=finished-no-tomorrow");
+  await expect(page.getByText("Nothing planned for tomorrow.")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Add a task" })).toBeVisible();
+  await page.getByRole("link", { name: "Plan Sunday" }).click();
+  await expect(page).toHaveURL(/\/app\/planned\?/);
+  await expect(page.locator(".room-title")).toHaveText("Planned");
+  await w.check();
+});
+
+test("phone columns align across mixed rows and disappear only when unused in the view", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  const dated = row(page, "Prepare the November board update");
+  const undated = row(page, "Review the API latency report");
+  const left = (row, sel) => row.locator(sel).evaluate((e) => e.getBoundingClientRect().left);
+  await expect(dated.locator(".due-slot")).toHaveCSS("width", "100px");
+  await expect(undated.locator(".due-slot")).toHaveCSS("width", "100px");
+  expect(await left(dated, ".chip")).toBeCloseTo(await left(undated, ".chip"));
+  expect(await left(dated, ".col-agent")).toBeCloseTo(await left(undated, ".col-agent"));
+  expect(await left(dated, ".col-priority")).toBeCloseTo(await left(undated, ".col-priority"));
+  await page.getByRole("button", { name: "Filter tasks" }).click();
+  const filter = page.getByRole("searchbox");
+  await filter.fill("latency report");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(undated.locator(".due-slot")).toBeHidden();
+  await expect(undated.locator(".col-priority")).toBeHidden();
+  await expect(undated.locator(".col-agent")).toBeVisible();
+  expect(await left(undated, ".chip")).toBeCloseTo(await left(undated, ".row-title"));
+  await w.check();
+});
+
+test("phone metadata ends in an ellipsis before columns, keeping the email and step count visible", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 320, height: 720 });
+  await open(page);
+  const board = row(page, "Prepare the November board update");
+  const tags = board.locator(".tag");
+  await expect(tags).toHaveCSS("text-overflow", "ellipsis");
+  const fit = await board.locator(".meta").evaluate((meta) => {
+    const tag = meta.querySelector(".tag");
+    const chip = meta.querySelector(".chip-label");
+    const edge = meta.getBoundingClientRect().right;
+    return {
+      tagsTruncated: tag.scrollWidth > tag.clientWidth,
+      chipTruncated: chip.scrollWidth > chip.clientWidth,
+      tagFits: tag.getBoundingClientRect().right <= edge + 1 && tag.clientWidth > 0,
+      indicatorsFit: [...meta.querySelectorAll(".steps, .meta-icon")].every((el) => el.getBoundingClientRect().right <= edge),
+    };
+  });
+  expect(fit).toEqual({ tagsTruncated: true, chipTruncated: true, tagFits: true, indicatorsFit: true });
+  await expect(board.locator(".meta-icon + .tag")).toBeVisible();
+  // The scrollport ends before the separate toast strip, so the last row can scroll fully into view.
+  const bottom = rows(page).last();
+  await bottom.scrollIntoViewIfNeeded();
+  const y = await bottom.evaluate((el) => el.getBoundingClientRect().bottom);
+  expect(y).toBeLessThanOrEqual(await page.locator(".list-foot").evaluate((el) => el.getBoundingClientRect().top));
+  await w.check();
+});
+
+test("detail actions, read-only fields, sync label and context keyboard hints match their roles", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const keys = page.locator(".sb-keys");
+  await expect(keys).not.toContainText("Space");
+  await expect(page.getByText(/^Synced /)).toHaveCount(1);
+  await expect(page.locator(".sb-counts")).toHaveText("9 open 3 done");
+  await rows(page).first().locator(".row-title").click();
+  const buttons = page.locator(".detail-top button");
+  expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Close"]);
+  const fields = page.getByRole("region", { name: "Read-only task fields" });
+  await expect(fields.locator("dt")).toHaveText(["Due", "Reminder", "Repeat", "Tags"]);
+  const muted = await page.locator(".detail .notes").evaluate((el) => getComputedStyle(el).color);
+  await expect(fields.locator("dd").first()).toHaveCSS("color", muted);
+  await expect(keys).toContainText("Esc");
+  await expect(keys).toContainText("Space");
+  await page.locator(".sidebar").getByRole("link", { name: "Garden" }).click();
+  await expect(page.locator(".empty-line")).toHaveText("Nothing on the shelf yet.");
+  await expect(keys).toHaveText("N add task");
   await w.check();
 });
 

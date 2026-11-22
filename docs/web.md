@@ -267,11 +267,18 @@ tokens:
 | Width | Layout |
 |---|---|
 | ≥ 1200 px | three panes: sidebar (`--desktop-sidebar`), list, detail (`--desktop-detail`) |
-| 760–1199 px | sidebar and list; the detail opens over the list with the overlay shadow |
-| < 760 px | phone: app bar, room pills, 64 px rows with the due slot, a bottom composer, a drawer for the sidebar, a full-screen detail |
+| 760–1199 px | sidebar and list; detail opens as a modal pane with a scrim |
+| < 760 px | phone: app bar, room pills, 64 px rows, a bottom composer, a drawer for the sidebar, a full-screen detail |
 
 760 is about the sidebar plus the phone's inner-screen list (`--phone-inner-list`) plus padding; 1200 leaves
-the list at least 560 px next to both side panes (`--desktop-three-pane-min`, which the desktop app uses too).
+the list at least 560 px next to both side panes (`--desktop-three-pane-min`, which the desktop app uses too). On a phone, dated and undated rows share the same due
+slot if any displayed row uses it. On every viewport, agent and priority columns are reserved only when a
+visible row uses them. List chip labels and trailing tags ellipsise; steps and mail come before the tags.
+
+The filter narrows open and completed rows in the current room using the shared smart-list query language
+(e.g. `tag:docs`), including accent-insensitive text. Room totals are unchanged. Sidebar chevrons show or
+hide a collection's lists without changing rooms. **New list** creates a sibling of the current list, a
+child of the current collection, or a top-level list from a smart room.
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
@@ -286,7 +293,13 @@ one is scheduled. Reduced motion turns movement into instant changes.
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
 touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
-edited follow the update.
+edited follow the update. Due, Reminder, Repeat and Tags are labelled read-only. On a narrower viewport,
+the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
+scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
+The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
+
+Finished My Day keeps quick-add and a **Completed n** disclosure, and links to Planned via **Plan <weekday>**
+even when tomorrow has no tasks. The list scrolls separately from its toast strip and phone composer.
 
 **The app icon** is Daybreak, from `assets/brand` (see its README); the build copies it into `dist/brand/`.
 The favicon is the 16 px drawing (`small-16.svg`, since a tab shows it at 16 CSS px and the master must never be
@@ -294,8 +307,9 @@ scaled down that far) with the generated 16 and 32 px PNGs, plus the 180 px `app
 sidebar's mark is the same 16 px drawing, as shipped. There is no web manifest: installing the app (PWA) is out
 of scope for now, and the generated 192 and 512 px and maskable icons are ready for it.
 
-Keyboard: **J/K** or the arrows move the selection, **Space** completes, **E** edits the title, **N** focuses
-quick-add, **Esc** closes the detail.
+Keyboard: **J/K** or the arrows move the selection, **Space** toggles a selected task from the list, **E**
+edits the detail title, and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
+the active editor, overlay or filter. The status bar shows shortcuts only when their actions are available.
 
 ## Tests
 
@@ -307,9 +321,10 @@ quick-add, **Esc** closes the detail.
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, a collection, the finished day, an empty list, the storage-error alert (desktop and phone,
-  `?fixture=storage-error`), the read-only alert after an upgrade elsewhere (desktop and phone,
-  `?fixture=read-only`), a medium window, and the phone's list, detail and drawer. The PNGs land in `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
+  the detail, a collapsed collection, an active query filter, the finished day with Completed closed and
+  expanded, a finished day with no tasks tomorrow, an empty list, the storage-error and read-only alerts
+  (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
+  `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A

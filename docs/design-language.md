@@ -76,8 +76,9 @@ keys, used in settings, CSS and JSON.
 - **Priority is never colour.** It is `!` / `!!` / `!!!` in Geist Mono. Count, weight and ink step together from
   `ink-3` up to `ink`.
 - **Selection** is a `wash` background plus a 3 px `accent` bar on the left edge.
-- **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings) and in small
-  desktop chrome overlays (caption button tints and scrollbar thumbs). UI surfaces are opaque.
+- **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings), in neutral
+  modal scrims and in small desktop chrome overlays (caption button tints and scrollbar thumbs). UI surfaces
+  are opaque.
 
 ### Contrast
 
@@ -155,9 +156,11 @@ checkbox, title (with the metadata line under it), agent mark, priority and due 
 **Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`. As on the desktop, the agent and priority columns keep their
 places from the right edge, and empty ones to the left of every filled one are left out, so the title uses their
 room. On a dated row the due date comes first, in a 100 dp slot, so the list chips of dated rows start at the
-same x. An undated row has no slot: its chips start flush with the title, because a blank 100 dp gap reads as
-missing content and pushes the chips (and tags) toward the edge. A cover screen fits nine full rows above the composer. A row is at least 64 dp and
-grows with the font scale, so its metadata line is never clipped.
+same x. On Android an undated row has no slot: its chips start flush with the title, because a blank 100 dp gap
+reads as missing content. On the web, if any visible row has a date, undated rows also reserve the slot so the
+chips stay aligned; if none does, chips start flush with the title. Web phone chips cap at 120 px
+(`phone::CHIP_MAX`) and trailing tags can end with an ellipsis. A cover screen fits nine full rows above the
+composer. A row is at least 64 dp and grows with the font scale, so its metadata line is never clipped.
 
 **The phone header gives way to the tasks.** As the list scrolls up, the header (eyebrow, big title, landscape)
 and the room pills slide away under a 48 dp bar, and the room's name fades into the bar in `room-title-bar`.

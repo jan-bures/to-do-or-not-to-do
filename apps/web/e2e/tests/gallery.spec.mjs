@@ -30,6 +30,7 @@ for (const scheme of ["light", "dark"]) {
       await open(page);
       await page.locator(".sidebar").getByRole("link", { name: /^Work/ }).click();
       await page.locator(".room-title", { hasText: "Work" }).waitFor();
+      await page.getByRole("button", { name: "Collapse Work" }).click();
       await shot(page, `desktop-collection-${scheme}`);
       await w.check();
     });
@@ -39,8 +40,30 @@ for (const scheme of ["light", "dark"]) {
       await page.setViewportSize(DESKTOP);
       await open(page, "/app?fixture=finished");
       await page.locator(".room-head.finished").waitFor();
-      await page.waitForTimeout(1300);
       await shot(page, `finished-${scheme}`);
+      await page.getByRole("button", { name: "Completed 12" }).click();
+      await expect(page.locator(".completed-rows .row")).toHaveCount(12);
+      await shot(page, `finished-completed-${scheme}`);
+      await w.check();
+    });
+
+    test(`finished day with nothing tomorrow on phone (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(PHONE);
+      await open(page, "/app?fixture=finished-no-tomorrow");
+      await expect(page.getByRole("link", { name: "Plan Sunday" })).toBeVisible();
+      await shot(page, `phone-finished-no-tomorrow-${scheme}`);
+      await w.check();
+    });
+
+    test(`desktop query filter (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.keyboard.press("Control+k");
+      await page.getByRole("searchbox").fill("tag:docs");
+      await expect(page.locator(".row")).toHaveCount(1);
+      await shot(page, `desktop-filter-${scheme}`);
       await w.check();
     });
 
@@ -84,7 +107,7 @@ for (const scheme of ["light", "dark"]) {
       await open(page);
       await page.getByText("Review the API latency report").first().click();
       await page.locator(".detail .d-title").waitFor();
-      await page.waitForTimeout(250);
+      await expect(page.locator(".scrim")).toHaveCSS("opacity", "1");
       await shot(page, `medium-${scheme}`);
       await w.check();
     });
@@ -93,21 +116,14 @@ for (const scheme of ["light", "dark"]) {
       const w = watch(page);
       await page.setViewportSize(PHONE);
       await open(page);
-      // Without a date the chips start flush with the title; with one, the date comes first.
-      const left = (row, sel) => row.locator(sel).first().evaluate((e) => e.getBoundingClientRect().left);
-      const undated = page.locator(".row").filter({ hasText: "Review the API latency report" });
-      expect(await undated.locator(".due-slot").count()).toBe(0);
-      expect(Math.abs((await left(undated, ".chip")) - (await left(undated, ".row-title")))).toBeLessThan(1);
-      const dated = page.locator(".row").filter({ hasText: "Prepare the November board update" });
-      expect(Math.abs((await left(dated, ".due-slot")) - (await left(dated, ".row-title")))).toBeLessThan(1);
-      expect(await left(dated, ".chip")).toBeGreaterThan(await left(dated, ".due-slot"));
+      await expect(page.locator(".row")).toHaveCount(9);
       await shot(page, `phone-${scheme}`);
       await page.getByText("Prepare the November board update").first().click();
       await page.locator(".detail .d-title").waitFor();
       await shot(page, `phone-detail-${scheme}`);
-      await page.locator(".detail .back").click();
-      await page.locator(".app-bar .icon-button").click();
-      await page.waitForTimeout(250);
+      await page.getByRole("button", { name: "Close", exact: true }).click();
+      await page.getByRole("button", { name: "Lists", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "Lists" })).toBeVisible();
       await shot(page, `phone-drawer-${scheme}`);
       await w.check();
     });

@@ -194,6 +194,7 @@ pub fn state() -> State {
         (3, "ops"),
         (4, "rodina"),
         (5, "auto"),
+        (6, "docs"),
     ] {
         b.run(Command::CreateTag {
             id: tag(n),
@@ -208,7 +209,7 @@ pub fn state() -> State {
             .today()
             .due(21)
             .p(Priority::Normal)
-            .tags(&[1]),
+            .tags(&[1, 6]),
         t(2, 11, "Pay the December supplier invoices")
             .today()
             .due(19)
@@ -406,6 +407,17 @@ pub fn finished_state() -> State {
                 let _ = apply(&mut s, e);
             }
         }
+    }
+    s
+}
+
+/// A finished day with tasks later this week, but none due tomorrow.
+#[must_use]
+#[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
+pub fn finished_without_tomorrow() -> State {
+    let mut s = finished_state();
+    for t in s.tasks.values_mut().filter(|t| t.due == Some(day(22))) {
+        t.due = None;
     }
     s
 }

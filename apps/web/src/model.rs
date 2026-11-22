@@ -16,7 +16,7 @@ use jiff::tz::Offset;
 use std::collections::BTreeMap;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query};
+use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::recurrence::Rule;
 use todo_core::{Actor, State};
 use todo_design::Glyph;
@@ -355,6 +355,8 @@ pub struct Sidebar {
     pub groups: Vec<NavGroup>,
     /// Lists outside any collection.
     pub loose: Vec<NavItem>,
+    /// Agents active this week and what they did today.
+    pub agents: Vec<(AgentMark, String)>,
 }
 
 /// Builds the sidebar.
@@ -405,7 +407,46 @@ pub fn sidebar(state: &State, now: &Now) -> Sidebar {
         smart,
         groups,
         loose,
+        agents: agent_summary(state, now),
     }
+}
+
+/// Summarize the creation and latest edit stamps, like the desktop sidebar.
+fn agent_summary(state: &State, now: &Now) -> Vec<(AgentMark, String)> {
+    let today = now.today();
+    let mut agents = BTreeMap::new();
+    for task in state.tasks.values().filter(|t| task_live(state, t)) {
+        for (stamp, created) in [(&task.created, true), (&task.updated, false)] {
+            let day = local(stamp.at, now.offset_s).date();
+            let Some(id) = stamp.by.agent_id() else {
+                continue;
+            };
+            if !(0..=7).contains(&(today - day).get_days()) {
+                continue;
+            }
+            let (_, added, edited) = agents.entry(id).or_insert((&stamp.by, 0, 0));
+            if day == today {
+                if created {
+                    *added += 1;
+                } else if stamp.at != task.created.at {
+                    *edited += 1;
+                }
+            }
+        }
+    }
+    agents
+        .into_values()
+        .filter_map(|(actor, added, edited)| {
+            let status = match (added, edited) {
+                (0, 0) => "idle".to_owned(),
+                (a, 0) => format!("{a} added"),
+                (0, e) => format!("{e} edited"),
+                (a, e) => format!("{a} added, {e} edited"),
+            };
+            Some((agent_mark(actor)?, status))
+        })
+        .take(4)
+        .collect()
 }
 
 // ---- rows ------------------------------------------------------------------------------------------------
@@ -695,9 +736,25 @@ pub struct Room {
     pub total: usize,
     /// Where quick-add puts new tasks; `None` if there is no list yet (or in Completed).
     pub add: Option<AddTarget>,
+    /// A query is narrowing the rows, but does not change the room's progress.
+    pub filtered: bool,
 }
 
 impl Room {
+    /// The design-language copy for this empty room or filter.
+    pub fn empty_line(&self) -> &'static str {
+        if self.filtered {
+            return "Nothing matches the filter.";
+        }
+        match self.id {
+            RoomId::Smart("planned") => "Nothing planned yet.",
+            RoomId::Smart("important") => "Nothing marked important yet.",
+            RoomId::Smart("completed") => "Nothing done yet.",
+            RoomId::Smart("agent_activity") => "No agent activity yet.",
+            _ => "Nothing on the shelf yet.",
+        }
+    }
+
     /// Open tasks.
     #[must_use]
     pub fn open(&self) -> usize {
@@ -755,7 +812,7 @@ fn sort_done(rows: &mut [(&Task, Row)]) {
 
 /// Builds a room.
 #[must_use]
-pub fn room(state: &State, now: &Now, id: &RoomId) -> Room {
+pub fn room(state: &State, now: &Now, id: &RoomId, filter: &str) -> Room {
     let today = now.today();
     let ctx = now.eval();
     let fallback = default_list(state);
@@ -870,6 +927,13 @@ pub fn room(state: &State, now: &Now, id: &RoomId) -> Room {
         };
     let done = scope.iter().filter(|t| t.is_done()).count();
     let total = scope.len();
+    let filter = filter.trim();
+    let filtered = !filter.is_empty();
+    let scope = if filtered {
+        filter_tasks(state, &ctx, scope, filter)
+    } else {
+        scope
+    };
     // Open rows: smart lists in their query's order, lists and collections in manual order.
     let order: Option<Query> = match id {
         RoomId::Smart(s) => builtin(s).and_then(|b| b.parse().ok()),
@@ -923,7 +987,32 @@ pub fn room(state: &State, now: &Now, id: &RoomId) -> Room {
         done,
         total,
         add,
+        filtered,
     }
+}
+
+/// Like Desktop, keep free-text search useful while entering an incomplete query.
+fn filter_tasks<'a>(
+    state: &State,
+    ctx: &EvalContext,
+    mut tasks: Vec<&'a Task>,
+    text: &str,
+) -> Vec<&'a Task> {
+    if let Ok(query) = Query::parse(text) {
+        let matcher = query.matcher(state, ctx);
+        tasks.retain(|task| matcher.matches(task));
+    } else {
+        let folded = fold(text);
+        let words: Vec<_> = folded
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .collect();
+        tasks.retain(|task| {
+            let title = fold(&task.title);
+            words.iter().all(|word| title.contains(word))
+        });
+    }
+    tasks
 }
 
 // ---- tomorrow (the finished day) ---------------------------------------------------------------------------
@@ -933,7 +1022,7 @@ pub fn room(state: &State, now: &Now, id: &RoomId) -> Room {
 pub struct Tomorrow {
     /// Tomorrow's weekday (`Sunday`).
     pub weekday: String,
-    /// The first task due tomorrow (or the next due task), with its date text.
+    /// The first task due tomorrow, with its date text.
     pub first: Option<(Row, String)>,
     /// Other tasks due tomorrow.
     pub also: Vec<Row>,
@@ -957,18 +1046,17 @@ pub fn tomorrow(state: &State, now: &Now) -> Tomorrow {
     let week_end = today
         .checked_add(jiff::Span::new().days(7))
         .unwrap_or(today);
-    let mut iter = upcoming.into_iter();
-    let first = iter.next().map(|t| {
-        let d = t.due.unwrap_or(tomorrow);
-        (row(state, t, today, ChipMode::Full), short_date(d, today))
+    let mut next = upcoming.iter().filter(|t| t.due == Some(tomorrow));
+    let first = next.next().map(|t| {
+        (
+            row(state, t, today, ChipMode::Full),
+            short_date(tomorrow, today),
+        )
     });
-    let rest: Vec<&Task> = iter.collect();
-    let also = rest
-        .iter()
-        .filter(|t| t.due == Some(tomorrow))
+    let also = next
         .map(|t| row(state, t, today, ChipMode::ListOnly))
         .collect();
-    let week_all: Vec<&&Task> = rest
+    let week_all: Vec<&&Task> = upcoming
         .iter()
         .filter(|t| t.due.is_some_and(|d| d > tomorrow && d <= week_end))
         .collect();
@@ -1399,7 +1487,7 @@ mod tests {
     #[test]
     fn my_day_counts_match_the_mockup_story() {
         let s = fixtures::state();
-        let r = room(&s, &now(), &RoomId::Smart("my_day"));
+        let r = room(&s, &now(), &RoomId::Smart("my_day"), "");
         assert_eq!((r.done, r.total), (3, 12));
         assert_eq!(r.rows.len(), 9);
         assert_eq!(r.summary(), "3 of 12 done · 9 open");
@@ -1408,6 +1496,31 @@ mod tests {
         assert!(!r.finished());
         let add = r.add.unwrap();
         assert!(add.my_day);
+    }
+
+    #[test]
+    fn a_room_filter_uses_queries_and_folded_text_without_changing_progress() {
+        let s = fixtures::state();
+        let filter = |text| room(&s, &now(), &RoomId::default(), text);
+        assert_eq!(filter("tag:docs").rows[0].id, fixtures::task(1));
+        assert_eq!(filter("KVULI STK").rows[0].id, fixtures::task(4));
+        assert_eq!(filter("(kvuli").rows[0].id, fixtures::task(4));
+        let done = filter("done ondrej");
+        assert_eq!(done.completed[0].id, fixtures::task(11));
+        assert!(done.rows.is_empty());
+        assert_eq!((done.done, done.total), (3, 12));
+        let no_match = filter("tag:unknown");
+        assert!(no_match.rows.is_empty() && no_match.completed.is_empty());
+        assert_eq!(no_match.empty_line(), "Nothing matches the filter.");
+        assert_eq!(
+            room(&s, &now(), &RoomId::Smart("planned"), "").empty_line(),
+            "Nothing planned yet."
+        );
+        assert!(!filter("  ").filtered);
+        assert!(
+            filter("standing desk").rows.is_empty(),
+            "other rooms are not searched"
+        );
     }
 
     #[test]
@@ -1434,7 +1547,7 @@ mod tests {
     fn chips_follow_the_room() {
         let s = fixtures::state();
         let n = now();
-        let my_day = room(&s, &n, &RoomId::Smart("my_day"));
+        let my_day = room(&s, &n, &RoomId::Smart("my_day"), "");
         let vat = my_day
             .rows
             .iter()
@@ -1447,7 +1560,7 @@ mod tests {
             .into_iter()
             .find(|c| c.name == "Work")
             .unwrap();
-        let w = room(&s, &n, &RoomId::Collection(work.id));
+        let w = room(&s, &n, &RoomId::Collection(work.id), "");
         let vat = w
             .rows
             .iter()
@@ -1455,7 +1568,7 @@ mod tests {
             .unwrap();
         assert_eq!(vat.chip.as_ref().unwrap().label, "Finance");
         let list = s.lists.values().find(|l| l.name == "Finance").unwrap();
-        let f = room(&s, &n, &RoomId::List(list.id));
+        let f = room(&s, &n, &RoomId::List(list.id), "");
         assert!(f.rows.iter().all(|r| r.chip.is_none()));
     }
 
@@ -1468,17 +1581,35 @@ mod tests {
         for g in &sb.groups {
             assert_eq!(g.head.count, g.lists.iter().map(|l| l.count).sum::<usize>());
         }
+        assert_eq!(
+            sb.agents
+                .iter()
+                .map(|(mark, _)| mark.name.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "codex", "pi"]
+        );
     }
 
     #[test]
     fn a_finished_day_hands_over_to_tomorrow() {
         let s = fixtures::finished_state();
         let n = now();
-        let r = room(&s, &n, &RoomId::Smart("my_day"));
+        let r = room(&s, &n, &RoomId::Smart("my_day"), "");
         assert!(r.finished(), "{} of {}", r.done, r.total);
         let t = tomorrow(&s, &n);
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_some());
+        assert_eq!(r.completed.len(), 12);
+        assert!(r.add.unwrap().my_day);
+    }
+
+    #[test]
+    fn later_tasks_do_not_take_the_place_of_tomorrows_first_task() {
+        let t = tomorrow(&fixtures::finished_without_tomorrow(), &now());
+        assert_eq!(t.weekday, "Sunday");
+        assert!(t.first.is_none() && t.also.is_empty());
+        assert_eq!(t.week[0].title, "Prepare the November board update");
+        assert!(t.week.iter().any(|row| row.id == fixtures::task(21)));
     }
 
     #[test]

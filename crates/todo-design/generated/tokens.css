@@ -181,6 +181,7 @@
   --radius-checkbox: 50%;
   --hairline: 1px;
   --focus-ring: 3px;
+  --overlay-scrim: rgb(0 0 0 / 0.42);
   --selection-bar: 3px;
   --duration-hover: 90ms;
   --duration-content-swap: 120ms;
@@ -251,6 +252,7 @@
   --phone-col-agent: 20px;
   --phone-col-priority: 24px;
   --phone-due-slot: 100px;
+  --phone-chip-max: 120px;
   --phone-app-bar: 48px;
   --phone-touch: 48px;
   --phone-nav-row: 40px;

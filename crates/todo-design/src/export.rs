@@ -147,6 +147,7 @@ pub fn css() -> String {
     root.push(("radius-checkbox".into(), "50%".into()));
     root.push(("hairline".into(), format!("{}px", elevation::HAIRLINE)));
     root.push(("focus-ring".into(), format!("{}px", elevation::FOCUS_RING)));
+    root.push(("overlay-scrim".into(), elevation::SCRIM.css()));
     root.push((
         "selection-bar".into(),
         format!("{}px", elevation::SELECTION_BAR),
@@ -375,6 +376,7 @@ pub fn json() -> String {
             "focusRing": num(elevation::FOCUS_RING),
             "selectionBar": num(elevation::SELECTION_BAR),
             "overlayShadow": { "light": shadow(Theme::Light), "dark": shadow(Theme::Dark) },
+            "scrim": elevation::SCRIM.css(),
         },
         "motion": {
             "durationsMs": Value::Object(motion::DURATIONS.iter().map(|(k, v)| ((*k).to_owned(), json!(v))).collect()),

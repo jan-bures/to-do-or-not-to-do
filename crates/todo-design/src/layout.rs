@@ -109,6 +109,9 @@ pub mod elevation {
     const LIGHT_SHADOW: Rgb = Rgb::from_u32(0x241c15);
     const DARK_SHADOW: Rgb = Rgb::from_u32(0x000000);
 
+    /// Neutral dimming behind a modal panel, in either theme.
+    pub const SCRIM: Rgba = DARK_SHADOW.with_alpha(0.42);
+
     /// The overlay shadow in light mode, two layers.
     pub const OVERLAY_LIGHT: [Shadow; 2] = [
         Shadow {
@@ -279,6 +282,8 @@ pub mod phone {
     pub const COL_PRIORITY: f32 = 24.0;
     /// The reserved due slot at the start of the metadata line, so list chips always start at the same x.
     pub const DUE_SLOT: f32 = 100.0;
+    /// Maximum width of a list chip in a phone task row.
+    pub const CHIP_MAX: f32 = 120.0;
     /// App bar and touch targets.
     pub const APP_BAR: f32 = 48.0;
     /// Minimum touch target.
@@ -304,12 +309,13 @@ pub mod phone {
     pub const INNER_LIST: f32 = 450.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 19] = [
+    pub const ALL: [(&str, f32); 20] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
         ("col-priority", COL_PRIORITY),
         ("due-slot", DUE_SLOT),
+        ("chip-max", CHIP_MAX),
         ("app-bar", APP_BAR),
         ("touch", TOUCH),
         ("nav-row", NAV_ROW),

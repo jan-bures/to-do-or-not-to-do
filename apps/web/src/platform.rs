@@ -63,14 +63,64 @@ pub fn reduced_motion() -> bool {
     media("(prefers-reduced-motion: reduce)").is_some_and(|m| m.matches())
 }
 
-/// Calls `f` whenever the colour scheme preference changes. Lives as long as the page.
-pub fn on_theme_change(f: impl Fn(bool) + 'static) {
-    if let Some(m) = media("(prefers-color-scheme: dark)") {
+/// Whether the detail overlays the room (see `app.css`).
+pub fn detail_overlays() -> bool {
+    media("(max-width: 1199px)").is_some_and(|m| m.matches())
+}
+
+/// Calls `f` whenever the media query changes. Lives as long as the page.
+pub fn on_media_change(query: &str, f: impl Fn(bool) + 'static) {
+    if let Some(m) = media(query) {
         let cb = Closure::<dyn Fn(web_sys::MediaQueryListEvent)>::new(
             move |e: web_sys::MediaQueryListEvent| f(e.matches()),
         );
         let _ = m.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref());
         cb.forget();
+    }
+}
+
+/// Focuses a visible control or a programmatic focus target.
+pub fn focus(id: &str) -> bool {
+    document()
+        .and_then(|d| d.get_element_by_id(id))
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+        .is_some_and(|el| {
+            if el.get_bounding_client_rect().width() == 0.0 {
+                return false;
+            }
+            let _ = el.focus();
+            document().and_then(|d| d.active_element()).as_ref() == Some(el.as_ref())
+        })
+}
+
+/// Wraps Tab within the active overlay. The rest of the shell is inert.
+pub fn contain_tab(id: &str, ev: &web_sys::KeyboardEvent) {
+    let Some(doc) = document() else { return };
+    let Some(panel) = doc.get_element_by_id(id) else {
+        return;
+    };
+    let Ok(nodes) = panel.query_selector_all(
+        "a[href], button:not(:disabled), input:not(:disabled):not([type=hidden]), textarea:not(:disabled)",
+    ) else { return };
+    let mut controls = (0..nodes.length())
+        .filter_map(|i| nodes.item(i)?.dyn_into::<web_sys::HtmlElement>().ok())
+        .filter(|el| el.get_bounding_client_rect().width() > 0.0);
+    let Some(first) = controls.next() else { return };
+    let last = controls.next_back().unwrap_or_else(|| first.clone());
+    let active = doc.active_element();
+    let active = active.as_ref();
+    let at_boundary = if ev.shift_key() {
+        active == Some(first.as_ref()) || active == Some(&panel)
+    } else {
+        active == Some(last.as_ref())
+    };
+    if at_boundary || !panel.contains(active.map(AsRef::as_ref)) {
+        ev.prevent_default();
+        let _ = if ev.shift_key() {
+            last.focus()
+        } else {
+            first.focus()
+        };
     }
 }
 

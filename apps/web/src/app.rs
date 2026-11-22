@@ -7,11 +7,12 @@ use crate::model::{self, AgentMark, Detail, DueTone, Now, Room, RoomId, Row, Sid
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use todo_client::Connection;
 use todo_core::command::{NewTask, Placement, TaskPatch};
-use todo_core::ids::{StepId, TaskId};
+use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::Priority;
 use todo_core::{Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
@@ -65,10 +66,18 @@ pub struct Ctx {
     toast_seq: RwSignal<u64>,
     dark: RwSignal<bool>,
     drawer: RwSignal<bool>,
+    narrow: RwSignal<bool>,
+    detail_modal: Memo<bool>,
+    collapsed: RwSignal<BTreeSet<CollectionId>>,
+    new_list: RwSignal<bool>,
+    filter_open: RwSignal<bool>,
+    filter_text: RwSignal<String>,
     completed_open: RwSignal<bool>,
+    columns: Memo<Columns>,
     editing: RwSignal<bool>,
     quick_add: NodeRef<html::Input>,
     view_room: Memo<Room>,
+    finished: Memo<bool>,
     shown: Memo<Vec<Shown>>,
     detail: Memo<Option<Detail>>,
     sidebar: Memo<Sidebar>,
@@ -133,8 +142,16 @@ impl Ctx {
         );
     }
 
-    fn go(self, room: RoomId) {
+    fn reset_room_controls(self) {
         self.drawer.set(false);
+        self.new_list.set(false);
+        self.filter_open.set(false);
+        self.filter_text.set(String::new());
+        self.completed_open.set(false);
+    }
+
+    fn go(self, room: RoomId) {
+        self.reset_room_controls();
         self.selected.set(None);
         self.editing.set(false);
         platform::push_path(&room.path());
@@ -150,6 +167,25 @@ impl Ctx {
             None => room.path(),
         };
         platform::push_path(&path);
+    }
+
+    fn open_filter(self) {
+        if self.filter_open.get_untracked() {
+            platform::focus("room-filter");
+        } else {
+            self.filter_open.set(true);
+            request_animation_frame(|| {
+                platform::focus("room-filter");
+            });
+        }
+    }
+
+    fn close_filter(self) {
+        self.filter_text.set(String::new());
+        self.filter_open.set(false);
+        request_animation_frame(|| {
+            platform::focus("open-filter");
+        });
     }
 
     /// Completes a task with the F2 choreography: the row holds in place, then collapses; the sun moves
@@ -256,7 +292,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let now = RwSignal::new(now);
     let room = RwSignal::new(room0);
     let lingering = RwSignal::new(Vec::<Linger>::new());
-    let view_room = Memo::new(move |_| state.with(|s| model::room(s, &now.get(), &room.get())));
+    let filter_text = RwSignal::new(String::new());
+    let view_room = Memo::new(move |_| {
+        filter_text.with(|f| state.with(|s| model::room(s, &now.get(), &room.get(), f)))
+    });
     let shown = Memo::new(move |_| {
         let r = view_room.get();
         let mut rows: Vec<Shown> = r
@@ -266,7 +305,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             .map(|row| Shown { row, phase: None })
             .collect();
         if r.id != RoomId::Smart("completed") {
-            for l in lingering.get().iter().filter(|l| l.room == r.id) {
+            for l in lingering.get().iter().filter(|l| {
+                l.room == r.id && (!r.filtered || r.completed.iter().any(|row| row.id == l.row.id))
+            }) {
                 if rows.iter().any(|s| s.row.id == l.row.id) {
                     continue;
                 }
@@ -282,6 +323,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         }
         rows
     });
+    let finished = Memo::new(move |_| {
+        view_room.with(Room::finished)
+            && lingering.with(|l| l.iter().all(|x| x.room != RoomId::default()))
+    });
     let selected = RwSignal::new(task0);
     let detail = Memo::new(move |_| {
         selected
@@ -289,6 +334,16 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             .and_then(|id| state.with(|s| model::detail(s, &now.get(), id)))
     });
     let sidebar = Memo::new(move |_| state.with(|s| model::sidebar(s, &now.get())));
+    let completed_open = RwSignal::new(false);
+    let columns = Memo::new(move |_| {
+        let mut cols = shown.with(|rows| Columns::for_rows(rows.iter().map(|s| &s.row)));
+        if completed_open.get() {
+            view_room.with(|r| cols.include(&r.completed));
+        }
+        cols
+    });
+    let narrow = RwSignal::new(platform::detail_overlays());
+    let detail_modal = Memo::new(move |_| narrow.get() && detail.with(Option::is_some));
     let c = Ctx {
         state,
         sync: RwSignal::new(backend::status()),
@@ -301,10 +356,18 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         toast_seq: RwSignal::new(0),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
-        completed_open: RwSignal::new(false),
+        narrow,
+        detail_modal,
+        collapsed: RwSignal::new(BTreeSet::new()),
+        new_list: RwSignal::new(false),
+        filter_open: RwSignal::new(false),
+        filter_text,
+        completed_open,
+        columns,
         editing: RwSignal::new(false),
         quick_add: NodeRef::new(),
         view_room,
+        finished,
         shown,
         detail,
         sidebar,
@@ -316,7 +379,13 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     }
 
     // Theme and room hue live on <html>, where tokens.css looks for them.
-    platform::on_theme_change(move |dark| c.dark.set(dark));
+    platform::on_media_change("(prefers-color-scheme: dark)", move |dark| c.dark.set(dark));
+    platform::on_media_change("(max-width: 1199px)", move |n| c.narrow.set(n));
+    platform::on_media_change("(max-width: 759px)", move |phone| {
+        if !phone {
+            c.drawer.set(false);
+        }
+    });
     Effect::new(move |_| {
         platform::set_root_attr("data-theme", if c.dark.get() { "dark" } else { "light" });
     });
@@ -333,6 +402,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
 
     platform::on_pop_state(move || {
         let (r, t) = RoomId::from_path(&platform::path());
+        if r != c.room.get_untracked() {
+            c.reset_room_controls();
+        }
         c.room.set(r);
         c.selected.set(t);
         c.editing.set(false);
@@ -352,18 +424,59 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         platform::on_wake(backend::nudge);
     }
 
+    track_overlay_focus(c);
     view! {
-        <div class="app" class:has-detail=move || c.detail.with(Option::is_some) class:drawer-open=move || c.drawer.get()>
+        <div class="app" class:has-detail=move || c.detail.with(Option::is_some)
+            class:detail-modal=move || c.detail_modal.get() class:drawer-open=move || c.drawer.get()>
             <SidebarPane/>
-            <div class="scrim" on:click=move |_| { c.drawer.set(false); c.select(None); }></div>
-            <main class="main">
+            <div class="scrim" aria-hidden="true" on:click=move |_| {
+                if c.drawer.get_untracked() { c.drawer.set(false); } else { c.select(None); }
+            }></div>
+            <main class="main" inert=move || c.drawer.get() || c.detail_modal.get()>
                 <AppBar/>
                 <RoomPane/>
+                <ListFoot/>
             </main>
             <DetailPane/>
             <StatusBar/>
         </div>
     }
+}
+
+fn track_overlay_focus(c: Ctx) {
+    Effect::new(move |prev: Option<(bool, Option<TaskId>, RoomId)>| {
+        let modal = c.detail_modal.get();
+        let id = c.detail.with(|d| d.as_ref().map(|d| d.id));
+        let room = c.room.get();
+        if modal && !prev.as_ref().is_some_and(|(open, _, _)| *open) {
+            request_animation_frame(move || {
+                if c.detail_modal.get_untracked() {
+                    platform::focus("task-detail");
+                }
+            });
+        } else if let Some((_, Some(old), old_room)) = prev
+            && id.is_none()
+            && room == old_room
+        {
+            request_animation_frame(move || {
+                if c.selected.get_untracked().is_none() && !platform::focus(&format!("row-{old}")) {
+                    platform::focus("room-title");
+                }
+            });
+        }
+        (modal, id, room)
+    });
+    Effect::new(move |prev| {
+        let open = c.drawer.get();
+        if open || prev == Some(true) {
+            request_animation_frame(move || {
+                if open == c.drawer.get_untracked() {
+                    platform::focus(if open { "list-drawer" } else { "open-drawer" });
+                }
+            });
+        }
+        open
+    });
 }
 
 fn typing(ev: &leptos::ev::KeyboardEvent) -> bool {
@@ -377,21 +490,48 @@ fn typing(ev: &leptos::ev::KeyboardEvent) -> bool {
 }
 
 fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
-    if ev.key() == "Escape" {
+    use wasm_bindgen::JsCast;
+    if ev.is_composing() || ev.default_prevented() {
+        return;
+    }
+    let key = ev.key().to_ascii_lowercase();
+    let drawer = c.drawer.get_untracked();
+    let modal = c.detail_modal.get_untracked();
+    if key == "tab" && (drawer || modal) {
+        platform::contain_tab(if drawer { "list-drawer" } else { "task-detail" }, ev);
+        return;
+    }
+    if key == "escape" {
         if c.editing.get_untracked() {
             c.editing.set(false);
-        } else if c.drawer.get_untracked() {
+        } else if c.new_list.get_untracked() && !modal {
+            c.new_list.set(false);
+            platform::focus("open-new-list");
+        } else if drawer {
             c.drawer.set(false);
         } else if c.selected.get_untracked().is_some() {
             c.select(None);
+        } else if c.filter_open.get_untracked() {
+            c.close_filter();
         }
         return;
     }
-    if typing(ev) || ev.alt_key() || ev.meta_key() {
+    let typing = typing(ev);
+    if !drawer
+        && !modal
+        && !ev.alt_key()
+        && !ev.meta_key()
+        && ((ev.ctrl_key() && key == "k") || (!typing && !ev.ctrl_key() && key == "/"))
+    {
+        ev.prevent_default();
+        c.open_filter();
+        return;
+    }
+    if typing || drawer || ev.alt_key() || ev.meta_key() {
         return;
     }
     if ev.ctrl_key() {
-        if ev.key() == "z"
+        if key == "z"
             && let Some(id) = c.toast.get_untracked().and_then(|t| t.undo)
         {
             ev.prevent_default();
@@ -400,17 +540,29 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
-    match ev.key().as_str() {
-        "j" | "ArrowDown" => {
+    match key.as_str() {
+        "j" | "arrowdown" => {
             ev.prevent_default();
             c.step_selection(1);
         }
-        "k" | "ArrowUp" => {
+        "k" | "arrowup" => {
             ev.prevent_default();
             c.step_selection(-1);
         }
-        " " => {
-            let row = c.selected.get_untracked().and_then(|id| {
+        " " if !c.read_only() => {
+            let selected = c.selected.get_untracked();
+            // Keep native activation on other controls, including unselected row titles.
+            if ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|el| {
+                    matches!(el.tag_name().as_str(), "BUTTON" | "A")
+                        && !selected.is_some_and(|id| el.id() == format!("row-{id}"))
+                })
+            {
+                return;
+            }
+            let row = selected.and_then(|id| {
                 c.shown
                     .get_untracked()
                     .into_iter()
@@ -423,13 +575,13 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             }
         }
         "e" => {
-            if c.selected.get_untracked().is_some() && !c.read_only() {
+            if c.detail.with_untracked(Option::is_some) && !c.read_only() {
                 ev.prevent_default();
                 c.editing.set(true);
             }
         }
-        "n" => {
-            if let Some(i) = c.quick_add.get_untracked() {
+        "n" if !modal => {
+            if let Some(i) = c.quick_add.get_untracked().filter(|i| !i.disabled()) {
                 ev.prevent_default();
                 let _ = i.focus();
             }
@@ -462,7 +614,12 @@ fn you_mark() -> impl IntoView {
 }
 
 fn chip(label: String, hue: &'static str) -> impl IntoView {
-    view! { <span class="chip" data-list-hue=hue><i class="dot"></i>{label}</span> }
+    let full_label = label.clone();
+    view! {
+        <span class="chip" data-list-hue=hue title=full_label>
+            <i class="dot"></i><span class="chip-label">{label}</span>
+        </span>
+    }
 }
 
 fn bars(done: usize, total: usize) -> impl IntoView {
@@ -530,10 +687,18 @@ fn conn_key(s: &Sync) -> &'static str {
 #[component]
 fn SidebarPane() -> impl IntoView {
     let c = ctx();
-    let item = move |n: model::NavItem, sub: bool| {
+    let item = move |n: model::NavItem, sub: bool, children: Vec<RoomId>| {
         let room = n.room.clone();
         let active_room = n.room.clone();
-        let active = move || c.room.get() == active_room;
+        let active = move || c.room.with(|r| *r == active_room);
+        let group_room = n.room.clone();
+        let contains_active = move || match &group_room {
+            RoomId::Collection(id) if c.collapsed.with(|ids| ids.contains(id)) => {
+                c.room.with(|r| children.contains(r))
+            }
+            _ => false,
+        };
+        let href = room.path();
         let lead = match (&n.room, n.glyph) {
             (RoomId::Smart(id), _) => icon(model::smart_icon(id)).into_any(),
             (_, Some(g)) => glyph(g).into_any(),
@@ -544,8 +709,9 @@ fn SidebarPane() -> impl IntoView {
                 class="nav-item"
                 class:sub=sub
                 class:active=active.clone()
+                class:contains-active=contains_active
                 aria-current=move || active().then_some("page")
-                href=n.room.path()
+                href=href
                 data-list-hue=n.hue
                 on:click=link_room(c, room)
             >
@@ -556,7 +722,11 @@ fn SidebarPane() -> impl IntoView {
         }
     };
     view! {
-        <aside class="sidebar" aria-label="Lists">
+        <aside class="sidebar" id="list-drawer" tabindex="-1" aria-label="Lists"
+            role=move || c.drawer.get().then_some("dialog")
+            aria-modal=move || c.drawer.get().then_some("true")
+            inert=move || c.detail_modal.get()
+        >
             <div class="brand">
                 <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
                 <span>"To-do"</span>
@@ -566,18 +736,33 @@ fn SidebarPane() -> impl IntoView {
                     let sb = c.sidebar.get();
                     view! {
                         <div class="nav-section">
-                            {sb.smart.into_iter().map(|n| item(n, false)).collect_view()}
+                            {sb.smart.into_iter().map(|n| item(n, false, Vec::new())).collect_view()}
                         </div>
                         {sb
                             .groups
                             .into_iter()
-                            .map(|g| {
-                                view! {
+                            .filter_map(|g| {
+                                let RoomId::Collection(id) = g.head.room else { return None };
+                                let label = g.head.name.clone();
+                                let control = format!("collection-{id}");
+                                let children = g.lists.iter().map(|n| n.room.clone()).collect();
+                                let folded = move || c.collapsed.with(|ids| ids.contains(&id));
+                                Some(view! {
                                     <div class="nav-section">
-                                        <div class="nav-collection-row">{item(g.head, false)}</div>
-                                        {g.lists.into_iter().map(|n| item(n, true)).collect_view()}
+                                        <div class="nav-collection-row">
+                                            <button type="button" class="icon-button collection-toggle"
+                                                aria-expanded=move || (!folded()).to_string()
+                                                aria-controls=control.clone()
+                                                aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
+                                                on:click=move |_| c.collapsed.update(|ids| { if !ids.remove(&id) { ids.insert(id); } })
+                                            >{icon(Icon::ChevronRight)}</button>
+                                            {item(g.head, false, children)}
+                                        </div>
+                                        <div id=control hidden=folded>
+                                            {g.lists.into_iter().map(|n| item(n, true, Vec::new())).collect_view()}
+                                        </div>
                                     </div>
-                                }
+                                })
                             })
                             .collect_view()}
                         {(!sb.loose.is_empty())
@@ -585,19 +770,82 @@ fn SidebarPane() -> impl IntoView {
                                 view! {
                                     <div class="nav-section">
                                         <div class="caps nav-caps">"Lists"</div>
-                                        {sb.loose.into_iter().map(|n| item(n, false)).collect_view()}
+                                        {sb.loose.into_iter().map(|n| item(n, false, Vec::new())).collect_view()}
                                     </div>
                                 }
                             })}
+                        {(!sb.agents.is_empty()).then(|| view! {
+                            <section class="nav-section side-agents" aria-label="Agents">
+                                <h2 class="caps nav-caps">"Agents"</h2>
+                                <ul>
+                                    {sb.agents.into_iter().map(|(agent, status)| view! {
+                                        <li>{mark(&agent)}<span>{model::agent_display(&agent.name)}</span><span class="count">{status}</span></li>
+                                    }).collect_view()}
+                                </ul>
+                            </section>
+                        })}
                     }
                 }}
             </nav>
+            <NewList/>
             <div class="side-foot">
                 <span class="conn" data-conn=move || conn_key(&c.sync.get())></span>
                 <span class="sync-text">{move || sync_text(&c.sync.get(), c.synced_at.get())}</span>
                 <SignOut/>
             </div>
         </aside>
+    }
+}
+
+#[component]
+fn NewList() -> impl IntoView {
+    let c = ctx();
+    let close = move || {
+        c.new_list.set(false);
+        platform::focus("open-new-list");
+    };
+    let input = NodeRef::<html::Input>::new();
+    view! {
+        <div class="new-list">
+            <button type="button" id="open-new-list" class="button open-new-list"
+                aria-expanded=move || c.new_list.get().to_string()
+                disabled=move || c.read_only()
+                on:click=move |_| {
+                    if c.new_list.get_untracked() { close(); } else {
+                        c.new_list.set(true);
+                        request_animation_frame(|| { platform::focus("new-list-name"); });
+                    }
+                }
+            >{icon(Icon::Plus)}"New list"</button>
+            <Show when=move || c.new_list.get()>
+                <form on:submit=move |ev| {
+                    ev.prevent_default();
+                    let Some(i) = input.get_untracked() else { return };
+                    let name = i.value().trim().to_owned();
+                    if name.is_empty() { return; }
+                    let collection = match c.room.get_untracked() {
+                        RoomId::Collection(id) => Some(id),
+                        RoomId::List(id) => c.state.with_untracked(|s| s.lists.get(&id).and_then(|l| l.collection)),
+                        RoomId::Smart(_) => None,
+                    };
+                    let id = ListId::from_uuid(backend::new_uuid());
+                    if c.submit(Command::CreateList { id, collection, name, color: None, placement: Placement::Last }) {
+                        if let Some(group) = collection {
+                            c.collapsed.update(|ids| { ids.remove(&group); });
+                        }
+                        c.go(RoomId::List(id));
+                        request_animation_frame(|| { platform::focus("room-title"); });
+                    }
+                }>
+                    <input id="new-list-name" node_ref=input type="text" autocomplete="off" required
+                        aria-label="List name" placeholder="List name…" disabled=move || c.read_only()/>
+                    <button class="icon-button" type="submit" aria-label="Create list" title="Create list"
+                        disabled=move || c.read_only()>{icon(Icon::Plus)}</button>
+                    <button class="icon-button" type="button" aria-label="Cancel new list" title="Cancel"
+                        on:click=move |_| close()>{icon(Icon::X)}</button>
+                </form>
+            </Show>
+        </div>
     }
 }
 
@@ -633,10 +881,11 @@ fn SignOut() -> impl IntoView {
 fn AppBar() -> impl IntoView {
     let c = ctx();
     view! {
-        <div class="app-bar">
-            <button class="icon-button" aria-label="Lists" on:click=move |_| c.drawer.set(true)>
-                {icon(Icon::Menu)}
-            </button>
+        <div class="app-bar" class:filter-open=move || c.filter_open.get()
+            data-theme=move || c.finished.get().then_some("dark")
+            data-room-hue=move || c.finished.get().then_some("my-day")>
+            <button type="button" class="icon-button drawer-button" id="open-drawer" aria-label="Lists"
+                on:click=move |_| c.drawer.set(true)>{icon(Icon::Menu)}</button>
             <span class="app-bar-sync" data-conn=move || conn_key(&c.sync.get())>
                 {move || {
                     let s = c.sync.get();
@@ -644,6 +893,30 @@ fn AppBar() -> impl IntoView {
                         .then(|| sync_text(&s, c.synced_at.get()))
                 }}
             </span>
+            <button type="button" class="filter-trigger" id="open-filter" aria-label="Filter tasks"
+                aria-keyshortcuts="/ Control+K" title="Filter tasks (/ or Ctrl+K)"
+                aria-expanded=move || c.filter_open.get().to_string()
+                on:click=move |_| c.open_filter()
+            >{icon(Icon::Search)}<span>"Filter"</span><kbd class="keycap">"Ctrl K"</kbd></button>
+            <Show when=move || c.filter_open.get()>
+                <div class="filter-field" role="search">
+                    {icon(Icon::Search)}
+                    <input type="search" id="room-filter" aria-label="Filter tasks"
+                        autocomplete="off" placeholder="Filter tasks… e.g. tag:docs"
+                        prop:value=move || c.filter_text.get()
+                        on:input=move |ev| c.filter_text.set(event_target_value(&ev))
+                        on:keydown=move |ev| {
+                            if ev.key() == "Escape" && !ev.is_composing() {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                c.close_filter();
+                            }
+                        }
+                    />
+                    <button type="button" class="icon-button" aria-label="Close filter" title="Close filter (Esc)"
+                        on:click=move |_| c.close_filter()>{icon(Icon::X)}</button>
+                </div>
+            </Show>
         </div>
     }
 }
@@ -695,29 +968,39 @@ fn RoomPills() -> impl IntoView {
 #[component]
 fn RoomPane() -> impl IntoView {
     let c = ctx();
-    let finished =
-        Memo::new(move |_| c.view_room.with(Room::finished) && c.lingering.with(Vec::is_empty));
+    let finished = c.finished;
+    let node = NodeRef::<html::Div>::new();
+    let width = RwSignal::new(0.0_f64);
+    node.on_load(move |el| {
+        width.set(f64::from(el.client_width()));
+        platform::observe_width(&el, move |w| width.set(w));
+    });
+    Effect::new(move |prev: Option<RoomId>| {
+        let room = c.room.get();
+        if prev.is_some_and(|old| old != room)
+            && let Some(el) = node.get_untracked()
+        {
+            el.set_scroll_top(0);
+        }
+        room
+    });
     view! {
-        <div class="room">
-            {move || {
-                if finished.get() {
-                    view! { <FinishedDay/> }.into_any()
-                } else {
-                    view! {
-                        <RoomHeader/>
-                        <RoomPills/>
-                        <QuickAdd/>
-                        <TaskList/>
-                    }
-                        .into_any()
-                }
-            }}
+        <div class="room" node_ref=node>
+            <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
+                <FinishedHeader width=width/>
+            </Show>
+            <RoomPills/>
+            <QuickAdd/>
+            <Show when=move || finished.get() && !c.view_room.with(|r| r.filtered) fallback=|| view! { <TaskList/> }>
+                <Handover/>
+            </Show>
+            <CompletedRows/>
         </div>
     }
 }
 
 #[component]
-fn RoomHeader() -> impl IntoView {
+fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
     // The sun and the count wait for completing rows to leave.
     let leaving = Memo::new(move |_| {
@@ -743,7 +1026,7 @@ fn RoomHeader() -> impl IntoView {
                     }}
                 </div>
                 <div class="title-row">
-                    <h1 class="room-title">{move || c.view_room.with(|r| r.title.clone())}</h1>
+                    <RoomTitle/>
                     <p class="summary">
                         {move || {
                             let (done, total) = counts.get();
@@ -766,27 +1049,21 @@ fn RoomHeader() -> impl IntoView {
                     </p>
                 </div>
             </div>
-            <LandscapeStrip counts=counts/>
+            <LandscapeStrip counts=counts width=width/>
         </header>
     }
 }
 
+#[component]
+fn RoomTitle() -> impl IntoView {
+    let c = ctx();
+    view! { <h1 id="room-title" class="room-title" tabindex="-1">{move || c.view_room.with(|r| r.title.clone())}</h1> }
+}
+
 /// The slim landscape, measured to its width. The sun eases along the arc when the count changes.
 #[component]
-fn LandscapeStrip(counts: Memo<(usize, usize)>) -> impl IntoView {
+fn LandscapeStrip(counts: Memo<(usize, usize)>, width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
-    let node = NodeRef::<html::Div>::new();
-    let width = RwSignal::new(0.0_f64);
-    let phone = RwSignal::new(false);
-    node.on_load(move |el| {
-        let w = f64::from(el.client_width());
-        width.set(w);
-        phone.set(platform::is_phone());
-        platform::observe_width(&el, move |w| {
-            width.set(w);
-            phone.set(platform::is_phone());
-        });
-    });
     let target = Memo::new(move |_| {
         let (d, t) = counts.get();
         Landscape::progress(d, t)
@@ -810,7 +1087,7 @@ fn LandscapeStrip(counts: Memo<(usize, usize)>) -> impl IntoView {
         if w <= 0.0 {
             return String::new();
         }
-        let height = if phone.get() {
+        let height = if platform::is_phone() {
             HEIGHT_COVER
         } else {
             HEIGHT_DESKTOP
@@ -826,7 +1103,7 @@ fn LandscapeStrip(counts: Memo<(usize, usize)>) -> impl IntoView {
             counts.get().1,
         )
     };
-    view! { <div class="landscape" node_ref=node inner_html=markup></div> }
+    view! { <div class="landscape" inner_html=markup></div> }
 }
 
 fn animate_sun(sun: RwSignal<f32>, from: f32, to: f32, start: f64) {
@@ -835,8 +1112,8 @@ fn animate_sun(sun: RwSignal<f32>, from: f32, to: f32, start: f64) {
         let t =
             ((platform::clock_ms() - start) / f64::from(motion::SUN_TRAVEL)).clamp(0.0, 1.0) as f32;
         let e = motion::SUN.ease(t);
-        sun.set(from + (to - from) * e);
-        if t < 1.0 {
+        let next = from + (to - from) * e;
+        if sun.try_update(|value| *value = next).is_some() && t < 1.0 {
             animate_sun(sun, from, to, start);
         }
     });
@@ -870,11 +1147,10 @@ fn QuickAdd() -> impl IntoView {
             value.set(String::new());
         }
     };
+    let add_target = Memo::new(move |_| c.view_room.with(|r| r.add.clone()));
     view! {
         {move || {
-            c.view_room
-                .with(|r| r.add.clone())
-                .map(|target| {
+            add_target.get().map(|target| {
                     view! {
                         <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
                             <span class="qa-plus">{icon(Icon::Plus)}</span>
@@ -890,7 +1166,7 @@ fn QuickAdd() -> impl IntoView {
                                 prop:value=move || value.get()
                                 on:input=move |ev| value.set(event_target_value(&ev))
                             />
-                            <span class="qa-hints" aria-hidden="true">
+                            <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
                                 <span class="keycap">"N"</span>
                             </span>
                         </form>
@@ -903,52 +1179,101 @@ fn QuickAdd() -> impl IntoView {
 #[component]
 fn TaskList() -> impl IntoView {
     let c = ctx();
-    let completed = Memo::new(move |_| c.view_room.with(|r| r.completed.clone()));
-    let empty = Memo::new(move |_| c.shown.with(Vec::is_empty));
+    let empty = Memo::new(move |_| {
+        c.shown.with(Vec::is_empty) && c.view_room.with(|r| !r.filtered || r.completed.is_empty())
+    });
     view! {
         <Show when=move || empty.get()>
-            <p class="empty-line">
-                {move || match c.view_room.with(|r| r.id.clone()) {
-                    RoomId::Smart("my_day") => "A clear day.",
-                    RoomId::Smart("completed") => "Nothing done yet.",
-                    RoomId::Smart(_) => "Nothing here.",
-                    _ => "Nothing on the list yet.",
-                }}
-            </p>
+            <p class="empty-line">{move || c.view_room.with(Room::empty_line)}</p>
         </Show>
         <ul class="rows" role="list">
             <For each=move || c.shown.get() key=|s| s.clone() let:s>
                 <TaskRow row=s.row phase=s.phase/>
             </For>
         </ul>
-        <Show when=move || c.completed_open.get() && !completed.with(Vec::is_empty)>
-            <ul class="rows completed-rows" role="list">
-                <For each=move || completed.get() key=|r| r.clone() let:row>
-                    <TaskRow row=row phase=None/>
-                </For>
-            </ul>
-        </Show>
+    }
+}
+
+#[component]
+fn CompletedRows() -> impl IntoView {
+    let c = ctx();
+    let completed = Memo::new(move |_| {
+        c.view_room.with(|r| {
+            r.completed
+                .iter()
+                .filter(|row| {
+                    !c.lingering
+                        .with(|l| l.iter().any(|x| x.room == r.id && x.row.id == row.id))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
+    view! {
+        <ul id="completed-rows" class="rows completed-rows" role="list" aria-label="Completed tasks"
+            hidden=move || !c.completed_open.get() || completed.with(Vec::is_empty)>
+            <For each=move || if c.completed_open.get() { completed.get() } else { Vec::new() }
+                key=|r| r.clone() let:row>
+                <TaskRow row=row phase=None/>
+            </For>
+        </ul>
+    }
+}
+
+#[component]
+fn ListFoot() -> impl IntoView {
+    let c = ctx();
+    let count = Memo::new(move |_| c.view_room.with(|r| r.completed.len()));
+    let has_completed = move || count.get() > 0;
+    view! {
         <div class="list-foot">
-            {move || {
-                let n = completed.with(Vec::len);
-                (n > 0)
-                    .then(|| {
-                        view! {
-                            <button
-                                class="completed-toggle"
-                                class:open=move || c.completed_open.get()
-                                aria-expanded=move || c.completed_open.get().to_string()
-                                on:click=move |_| c.completed_open.update(|o| *o = !*o)
-                            >
-                                {icon(Icon::ChevronRight)}
-                                <span class="caps">"Completed"</span>
-                                <span class="count">{n}</span>
-                            </button>
+            <Show when=has_completed>
+                <button type="button" class="completed-toggle"
+                    class:open=move || c.completed_open.get()
+                    aria-expanded=move || c.completed_open.get().to_string()
+                    aria-controls="completed-rows"
+                    on:click=move |_| {
+                        let open = !c.completed_open.get_untracked();
+                        c.completed_open.set(open);
+                        if open {
+                            request_animation_frame(|| {
+                                if let Some(rows) = document().get_element_by_id("completed-rows") {
+                                    rows.scroll_into_view();
+                                }
+                            });
                         }
-                    })
-            }}
+                    }
+                >
+                    {icon(Icon::ChevronRight)}
+                    <span class="caps">"Completed"</span>
+                    <span class="count">{move || count.get()}</span>
+                </button>
+            </Show>
             <ToastView/>
         </div>
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Columns {
+    agent: bool,
+    priority: bool,
+    due: bool,
+}
+
+impl Columns {
+    fn for_rows<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Self {
+        let mut columns = Self::default();
+        columns.include(rows);
+        columns
+    }
+
+    fn include<'a>(&mut self, rows: impl IntoIterator<Item = &'a Row>) {
+        for row in rows {
+            self.agent |= row.agent.is_some();
+            self.priority |= row.priority > 0;
+            self.due |= row.due.is_some();
+        }
     }
 }
 
@@ -979,6 +1304,13 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             }
         })
     };
+    let tags = row
+        .tags
+        .iter()
+        .map(|t| format!("#{t}"))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let full_tags = tags.clone();
     let label = format!(
         "{} “{}”",
         if row.done { "Reopen" } else { "Complete" },
@@ -992,6 +1324,9 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             class:exiting=phase == Some(Phase::Exit)
             class:overdue=overdue
             class:selected=move || c.selected.get() == Some(id)
+            class:with-agent=move || c.columns.with(|cols| cols.agent)
+            class:with-priority=move || c.columns.with(|cols| cols.priority)
+            class:with-due=move || c.columns.with(|cols| cols.due)
             on:click=move |_| c.select(Some(id))
         >
             <button
@@ -1005,18 +1340,18 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 {tick_svg()}
             </button>
             <div class="row-main">
-                <span class="row-title">{row.title.clone()}</span>
+                <button type="button" class="row-title" id=format!("row-{id}")>{row.title.clone()}</button>
                 <span class="meta">
-                    // Only with a date: without one the chips start flush with the title.
-                    {due_view("due").map(|d| view! { <span class="due-slot">{d}</span> })}
+                    <span class="due-slot">{due_view("due")}</span>
                     {row.chip.clone().map(|ch| chip(ch.label, ch.hue))}
                     {row.steps.map(|(d, t)| view! { <span class="steps">{bars(d, t)}{format!("{d}/{t}")}</span> })}
-                    {row.tags.iter().map(|t| view! { <span class="tag">{format!("#{t}")}</span> }).collect_view()}
-                    {row.email.then(|| view! { <span class="meta-icon" title="From an email">{icon(Icon::Mail)}</span> })}
+                    {row.email.then(|| view! { <span class="meta-icon" title="From an email" aria-label="From an email" role="img">{icon(Icon::Mail)}</span> })}
+                    {(!tags.is_empty()).then(|| view! { <span class="tag" title=full_tags>{tags}</span> })}
                 </span>
             </div>
             <span class="col-agent">{row.agent.as_ref().map(mark)}</span>
-            <span class="col-priority" data-p=row.priority.to_string() aria-label=format!("Priority {}", row.priority)>
+            <span class="col-priority" data-p=row.priority.to_string()
+                aria-label=(row.priority > 0).then(|| format!("Priority {}", row.priority))>
                 {"!".repeat(usize::from(row.priority))}
             </span>
             <span class="col-due">{due_view("due")}</span>
@@ -1109,25 +1444,8 @@ fn ToastView() -> impl IntoView {
 // ---- the finished day ------------------------------------------------------------------------------------
 
 #[component]
-fn FinishedDay() -> impl IntoView {
+fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
-    let node = NodeRef::<html::Div>::new();
-    let width = RwSignal::new(0.0_f64);
-    node.on_load(move |el| {
-        width.set(f64::from(el.client_width()));
-        platform::observe_width(&el, move |w| width.set(w));
-    });
-    let tomorrow = Memo::new(move |_| c.state.with(|s| model::tomorrow(s, &c.now.get())));
-    let small_row = |r: Row, date: Option<String>| {
-        view! {
-            <li class="t-row">
-                <span class="check static" aria-hidden="true"></span>
-                <span class="t-title">{r.title}</span>
-                {r.chip.map(|ch| chip(ch.label, ch.hue))}
-                <span class="t-date">{date}</span>
-            </li>
-        }
-    };
     view! {
         <header class="room-head finished" data-theme="dark" data-room-hue="my-day">
             <div class="head-text">
@@ -1141,17 +1459,11 @@ fn FinishedDay() -> impl IntoView {
                     }}
                 </div>
                 <div class="title-row">
-                    <h1 class="room-title">{move || c.view_room.with(|r| r.title.clone())}</h1>
-                    <p class="summary fig">
-                        {move || c.view_room.with(|r| format!("{} of {} done", r.done, r.total))}
-                        <span class="dot-sep">"·"</span>
-                        <span class="all-clear">"all clear"</span>
-                    </p>
+                    <RoomTitle/>
                 </div>
             </div>
             <div
                 class="landscape tall"
-                node_ref=node
                 inner_html=move || {
                     let w = width.get();
                     #[allow(clippy::cast_possible_truncation)]
@@ -1163,32 +1475,49 @@ fn FinishedDay() -> impl IntoView {
                 }
             ></div>
         </header>
+    }
+}
+
+#[component]
+fn Handover() -> impl IntoView {
+    let c = ctx();
+    let tomorrow = Memo::new(move |_| c.state.with(|s| model::tomorrow(s, &c.now.get())));
+    let small_row = |r: Row, date: Option<String>| {
+        view! {
+            <li class="t-row">
+                <span class="check static" aria-hidden="true"></span>
+                <span class="t-title">{r.title}</span>
+                {r.chip.map(|ch| chip(ch.label, ch.hue))}
+                <span class="t-date">{date}</span>
+            </li>
+        }
+    };
+    view! {
         <section class="tomorrow">
             {move || {
                 let t = tomorrow.get();
                 let weekday = t.weekday.clone();
                 view! {
                     <h2 class="caps">"When the sun comes up"</h2>
-                    {t
-                        .first
-                        .clone()
-                        .map(|(r, date)| {
+                    <div class="next">
+                        <span class="sunrise">{icon(Icon::Sunrise)}</span>
+                        {if let Some((r, date)) = t.first {
                             view! {
-                                <div class="next">
-                                    <span class="sunrise">{icon(Icon::Sunrise)}</span>
-                                    <div class="next-text">
-                                        <div class="next-title">{r.title.clone()}</div>
-                                        <div class="next-meta">
-                                            <span class="due" data-tone="later">{date}</span>
-                                            {r.chip.clone().map(|ch| chip(ch.label, ch.hue))}
-                                        </div>
+                                <div class="next-text">
+                                    <div class="next-title">{r.title}</div>
+                                    <div class="next-meta">
+                                        <span class="due" data-tone="later">{date}</span>
+                                        {r.chip.map(|ch| chip(ch.label, ch.hue))}
                                     </div>
-                                    <a class="button primary" href=RoomId::Smart("planned").path() on:click=link_room(c, RoomId::Smart("planned"))>
-                                        {format!("Plan {weekday}")}
-                                    </a>
                                 </div>
-                            }
-                        })}
+                            }.into_any()
+                        } else {
+                            view! { <p class="next-text no-tomorrow">"Nothing planned for tomorrow."</p> }.into_any()
+                        }}
+                        <a class="button primary" href=RoomId::Smart("planned").path() on:click=link_room(c, RoomId::Smart("planned"))>
+                            {format!("Plan {weekday}")}
+                        </a>
+                    </div>
                     {(!t.also.is_empty())
                         .then(|| {
                             view! {
@@ -1225,9 +1554,6 @@ fn FinishedDay() -> impl IntoView {
                 }
             }}
         </section>
-        <div class="list-foot bare">
-            <ToastView/>
-        </div>
     }
 }
 
@@ -1238,18 +1564,24 @@ fn DetailPane() -> impl IntoView {
     let c = ctx();
     // Mounted once per task: a live update of the same task changes the fields in place, so an
     // editor being typed in keeps its draft (and its focus).
-    let id = Memo::new(move |_| c.detail.with(|d| d.as_ref().map(|d| d.id)));
+    // Keep the last body behind an inert, hidden panel for its CSS exit transition.
+    let rendered = Memo::new(move |prev: Option<&Option<Detail>>| {
+        c.detail.get().or_else(|| prev.cloned().flatten())
+    });
+    let id = Memo::new(move |_| rendered.with(|d| d.as_ref().map(|d| d.id)));
     view! {
-        <section class="detail" aria-label="Task detail">
-            {move || id.get().map(|id| view! { <DetailBody id=id/> })}
+        <section class="detail" id="task-detail" tabindex="-1" aria-label="Task detail"
+            role=move || c.detail_modal.get().then_some("dialog")
+            aria-modal=move || c.detail_modal.get().then_some("true")
+            inert=move || c.detail.with(Option::is_none)>
+            {move || id.get().map(|id| view! { <DetailBody id=id rendered=rendered/> })}
         </section>
     }
 }
 
 #[component]
-fn DetailBody(id: TaskId) -> impl IntoView {
-    let c = ctx();
-    let d = Memo::new(move |_| c.detail.get().filter(|d| d.id == id));
+fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
+    let d = Memo::new(move |_| rendered.get().filter(|d| d.id == id));
     let field = move |f: fn(&Detail) -> String| {
         Signal::derive(move || d.with(|d| d.as_ref().map(f).unwrap_or_default()))
     };
@@ -1257,7 +1589,7 @@ fn DetailBody(id: TaskId) -> impl IntoView {
     let notes = field(|d| d.notes.clone());
     let done = move || d.with(|d| d.as_ref().is_some_and(|d| d.done));
     view! {
-        {move || d.get().map(|d| view! { <DetailTop d=d/> })}
+        <DetailTop id=id detail=d/>
         <div class="detail-body">
             <div class="d-head" class:done=done>
                 {move || d.get().map(|d| view! { <DetailCheck d=d/> })}
@@ -1281,12 +1613,11 @@ fn DetailBody(id: TaskId) -> impl IntoView {
 }
 
 #[component]
-fn DetailTop(d: Detail) -> impl IntoView {
+fn DetailTop(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
-    let id = d.id;
-    let important = d.important;
+    let important = move || detail.with(|d| d.as_ref().is_some_and(|d| d.important));
     let toggle_important = move |_| {
-        let p = if important {
+        let p = if important() {
             Priority::None
         } else {
             Priority::High
@@ -1299,24 +1630,37 @@ fn DetailTop(d: Detail) -> impl IntoView {
             },
         });
     };
-    let my_day = d.my_day;
+    let my_day = move || detail.with(|d| d.as_ref().is_some_and(|d| d.my_day));
     let toggle_my_day = move |_| {
-        let date = (!my_day).then(|| c.now.get_untracked().today());
+        let date = (!my_day()).then(|| c.now.get_untracked().today());
         c.submit(Command::SetMyDay { id, date });
     };
     view! {
         <div class="detail-top">
-            <button class="icon-button back" aria-label="Back" on:click=move |_| c.select(None)>
-                {icon(Icon::ChevronLeft)}
-            </button>
             <div class="crumb">
-                {d.crumb.0.clone().map(|ch| view! { {chip(ch.label, ch.hue)}<span class="crumb-sep">"/"</span> })}
-                <span class="crumb-list">{d.crumb.1.clone()}</span>
+                {move || detail.with(|d| d.as_ref().map(|d| d.crumb.clone())).map(|(group, list)| {
+                    let full_name = list.clone();
+                    view! {
+                        {group.map(|ch| view! { {chip(ch.label, ch.hue)}<span class="crumb-sep">"/"</span> })}
+                        <span class="crumb-list" title=full_name>{list}</span>
+                    }
+                })}
             </div>
             <button
                 class="icon-button"
+                class:on=my_day
+                aria-pressed=move || my_day().to_string()
+                title=move || if my_day() { "Remove from My Day" } else { "Add to My Day" }
+                aria-label="My Day"
+                disabled=move || c.read_only()
+                on:click=toggle_my_day
+            >
+                {icon(Icon::Sun)}
+            </button>
+            <button
+                class="icon-button"
                 class:on=important
-                aria-pressed=important.to_string()
+                aria-pressed=move || important().to_string()
                 title="Important"
                 aria-label="Important"
                 disabled=move || c.read_only()
@@ -1324,18 +1668,8 @@ fn DetailTop(d: Detail) -> impl IntoView {
             >
                 {icon(Icon::Star)}
             </button>
-            <button
-                class="icon-button"
-                class:on=my_day
-                aria-pressed=my_day.to_string()
-                title=if my_day { "Remove from My Day" } else { "Add to My Day" }
-                aria-label="My Day"
-                disabled=move || c.read_only()
-                on:click=toggle_my_day
-            >
-                {icon(Icon::Sun)}
-            </button>
-            <button class="icon-button close" aria-label="Close" on:click=move |_| c.select(None)>
+            <button class="icon-button close" aria-label="Close" title="Close (Esc)" aria-keyshortcuts="Escape"
+                on:click=move |_| c.select(None)>
                 {icon(Icon::X)}
             </button>
         </div>
@@ -1424,6 +1758,8 @@ fn DetailSteps(d: Detail) -> impl IntoView {
 #[component]
 fn DetailRest(d: Detail) -> impl IntoView {
     view! {
+    <section class="d-section" aria-label="Read-only task fields">
+    <h3 class="caps d-caps">"Task fields · Read only"</h3>
     <dl class="props">
         <div class="prop">
             <dt>{icon(Icon::Calendar)}"Due"</dt>
@@ -1448,6 +1784,7 @@ fn DetailRest(d: Detail) -> impl IntoView {
             </dd>
         </div>
     </dl>
+    </section>
 
     {(!d.sources.is_empty())
         .then(|| {
@@ -1629,12 +1966,14 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                                 "Enter" => {
                                     ev.prevent_default();
                                     commit();
+                                    request_animation_frame(|| { platform::focus("edit-task-title"); });
                                 }
                                 "Escape" => {
                                     ev.prevent_default();
                                     ev.stop_propagation();
                                     draft.reset(title);
                                     c.editing.set(false);
+                                    request_animation_frame(|| { platform::focus("edit-task-title"); });
                                 }
                                 _ => {}
                             }
@@ -1645,8 +1984,10 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                     .into_any()
             } else {
                 view! {
-                    <h2 class="d-title" title="Edit (E)" on:click=move |_| if !c.read_only() { c.editing.set(true); }>
-                        {move || title.get()}
+                    <h2 class="d-title">
+                        <button type="button" id="edit-task-title" disabled=move || c.read_only()
+                            title="Edit title (E)" aria-keyshortcuts="E"
+                            on:click=move |_| c.editing.set(true)>{move || title.get()}</button>
                     </h2>
                 }
                     .into_any()
@@ -1729,21 +2070,27 @@ fn AddStep(id: TaskId) -> impl IntoView {
 fn StatusBar() -> impl IntoView {
     let c = ctx();
     view! {
-        <footer class="statusbar">
+        <footer class="statusbar" inert=move || c.detail_modal.get()>
             <span class="sb-counts">
-                {move || {
-                    let r = c.view_room.get();
-                    format!("{} open   {:02} done", r.open(), r.done)
-                }}
+                {move || c.view_room.with(|r| format!("{} open   {} done", r.open(), r.done))}
             </span>
             <span class="sb-keys" aria-hidden="true">
-                <span class="keycap">"J"</span><span class="keycap">"K"</span>" move"
-                <span class="keycap">"Space"</span>" complete"
-                <span class="keycap">"E"</span>" edit"
-                <span class="keycap">"N"</span>" new"
-            </span>
-            <span class="sb-sync" data-conn=move || conn_key(&c.sync.get())>
-                {move || sync_text(&c.sync.get(), c.synced_at.get())}
+                <Show when=move || !c.shown.with(Vec::is_empty)>
+                    <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" move"</span>
+                </Show>
+                <Show when=move || !c.read_only() && c.selected.with(|id| id.is_some_and(|id|
+                    c.shown.with(|rows| rows.iter().any(|s| s.row.id == id && s.phase.is_none()))))>
+                    <span><kbd class="keycap">"Space"</kbd>" toggle completion"</span>
+                </Show>
+                <Show when=move || !c.read_only() && c.detail.with(Option::is_some)>
+                    <span><kbd class="keycap">"E"</kbd>" edit title"</span>
+                </Show>
+                <Show when=move || !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add.is_some())>
+                    <span><kbd class="keycap">"N"</kbd>" add task"</span>
+                </Show>
+                <Show when=move || c.detail.with(Option::is_some)>
+                    <span><kbd class="keycap">"Esc"</kbd>" close detail"</span>
+                </Show>
             </span>
         </footer>
     }
