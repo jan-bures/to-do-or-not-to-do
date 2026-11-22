@@ -139,8 +139,8 @@ class TodoModel(
     @Volatile private var collapsed: Set<String> = emptySet()
 
     /**
-     * "+ Add step" drafts by task: here, not in the UI, so a pending one survives a recreation. An empty
-     * one goes when its pane closes; any goes once its task is done or gone (see [pruneDrafts]).
+     * "+ Add step" drafts by task: here, not in the UI, so a pending one survives a recreation. The only
+     * cleanup is [pruneDrafts]; the map is bounded by the open tasks viewed in this process.
      */
     private val stepDrafts = ConcurrentHashMap<String, StepDraft>()
 
@@ -332,17 +332,13 @@ class TodoModel(
      */
     override fun stepDraft(task: String): StepDraft = stepDrafts.getOrPut(task) { StepDraft(task) }
 
-    override fun releaseStepDraft(task: String) {
-        stepDrafts.computeIfPresent(task) { _, d -> d.takeIf { it.holders > 0 || it.text.isNotEmpty() || it.sending } }
-    }
-
     /**
      * Drops the drafts of tasks that are done or gone, except one on its way (its answer is still to
-     * land; the refresh after it drops it) and one a pane is still showing.
+     * land; the refresh after it drops it) and the open task's, which its pane may still show.
      */
     private fun pruneDrafts(n: LocalNow) {
         for ((id, d) in stepDrafts) {
-            if (d.sending || d.holders > 0) continue
+            if (d.sending || id == selected) continue
             val t = engine.task(id, n)
             if (t == null || t.done) stepDrafts.remove(id, d)
         }

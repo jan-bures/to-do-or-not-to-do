@@ -291,13 +291,11 @@ class ParityTest {
         var sent = 0
         val send: (String, (String?) -> Unit) -> Unit = { t, done -> sent++; m.addStep(id, t, done) }
 
-        val old = m.stepDraft(id).apply { hold() } // the pane before the rotation
+        val old = m.stepDraft(id) // the pane before the rotation
         old.edit("Print the form")
         old.submit(send)
-        val new = m.stepDraft(id).apply { hold() } // the new pane takes the draft first
+        val new = m.stepDraft(id) // the new pane takes the draft first
         advanceUntilIdle() // the step is added before the old pane leaves
-        old.letGo()
-        m.releaseStepDraft(id) // the old pane leaves
 
         assertTrue("the new pane's draft is still the model's", m.stepDraft(id) === new)
         assertEquals("", new.text)
@@ -314,25 +312,31 @@ class ParityTest {
         val b = engine.taskId(engine.list("Finance"), "Pay quarterly VAT filing")
         val m = model(engine)
         m.select(a)
-        m.stepDraft(a).apply { hold(); edit("Print the form"); letGo() }
-        m.releaseStepDraft(a)
+        m.stepDraft(a).edit("Print the form")
         m.select(b)
-        assertEquals("", m.stepDraft(b).apply { hold() }.text)
+        assertEquals("", m.stepDraft(b).text)
         m.select(a)
         assertEquals("Print the form", m.stepDraft(a).text)
     }
 
     @Test
-    fun an_empty_draft_goes_when_its_pane_closes_and_a_typed_one_stays() = runTest {
+    fun a_draft_survives_the_pane_switching_from_compact_to_wide() = runTest {
+        // Unfolding swaps the cover screen's detail pane for the inner screen's: the old pane leaves
+        // while the new one already shows the draft. Both ask the model, and get the same draft.
         val engine = fixtureEngine()
         val a = engine.taskId(engine.list("Admin"), "Renew passport appointment")
         val m = model(engine)
-        val empty = m.stepDraft(a)
-        m.releaseStepDraft(a)
-        assertTrue("released", m.stepDraft(a) !== empty)
-        val typed = m.stepDraft(a).apply { edit("Print the form") }
-        m.releaseStepDraft(a)
-        assertTrue("kept", m.stepDraft(a) === typed)
+        m.select(a)
+        advanceUntilIdle()
+        val compact = m.stepDraft(a)
+        val wide = m.stepDraft(a)
+        assertTrue(compact === wide)
+        wide.edit("Print the form") // typed in the wide pane, after the compact one left
+        m.select(null)
+        advanceUntilIdle()
+        m.select(a)
+        advanceUntilIdle()
+        assertEquals("Print the form", m.stepDraft(a).text)
     }
 
     @Test

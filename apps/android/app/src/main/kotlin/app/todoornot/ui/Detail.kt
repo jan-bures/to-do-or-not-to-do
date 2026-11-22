@@ -222,15 +222,8 @@ private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) 
 private fun AddStep(task: String, actions: Actions) {
     val r = LocalDesign.current.room
     // The draft is the model's only (nothing is saved with the Activity), so it and a submission still
-    // on its way survive a rotation. The pane holds it while shown and lets go when it leaves.
-    val draft = remember(task, actions) { actions.stepDraft(task) }
-    DisposableEffect(draft) {
-        draft.hold()
-        onDispose {
-            draft.letGo()
-            actions.releaseStepDraft(task)
-        }
-    }
+    // on its way survive a rotation, and every pane for this task, compact or wide, shows the same one.
+    val draft = actions.stepDraft(task)
     fun submit() = draft.submit { title, done -> actions.addStep(task, title, done) }
     Column(Modifier.fillMaxWidth().hairline(r.line)) {
         Row(

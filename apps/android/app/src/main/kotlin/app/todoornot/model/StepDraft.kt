@@ -24,21 +24,6 @@ class StepDraft(val task: String) {
     var sending by mutableStateOf(false)
         private set
 
-    /**
-     * How many panes show this draft. During a rotation the new pane can take it before the old one
-     * lets go, so the old pane's leaving must not drop it. Changed on the main thread only.
-     */
-    @Volatile var holders = 0
-        private set
-
-    fun hold() {
-        holders++
-    }
-
-    fun letGo() {
-        holders--
-    }
-
     fun edit(value: String) {
         text = value.replace("\n", "")
         problem = null

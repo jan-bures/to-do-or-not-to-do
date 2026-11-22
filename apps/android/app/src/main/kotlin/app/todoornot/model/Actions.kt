@@ -19,9 +19,6 @@ interface Actions {
 
     /** The task's "+ Add step" draft, kept where it outlives the Activity. */
     fun stepDraft(task: String): StepDraft
-
-    /** A pane let go of the task's draft: dropped if no pane shows it, it is empty and nothing is on its way. */
-    fun releaseStepDraft(task: String)
     fun setStepDone(id: String, done: Boolean)
     fun createList(name: String)
 
@@ -56,7 +53,6 @@ interface Actions {
         override fun setImportant(id: String, on: Boolean) = Unit
         override fun addStep(task: String, title: String, onResult: (String?) -> Unit) = Unit
         override fun stepDraft(task: String) = StepDraft(task)
-        override fun releaseStepDraft(task: String) = Unit
         override fun setStepDone(id: String, done: Boolean) = Unit
         override fun createList(name: String) = Unit
         override fun setFilter(text: String) = Unit
