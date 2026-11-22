@@ -233,10 +233,10 @@ private fun WidgetText(
             fontSize = token.size.sp,
             fontWeight = if (token.weight >= 500) FontWeight.Medium else FontWeight.Normal,
             fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
-            fontFamily = when {
-                italic || token.role == FontRole.DISPLAY || token.role == FontRole.DISPLAY_TEXT -> FontFamily.Serif
-                token.role == FontRole.MONO -> FontFamily.Monospace
-                else -> FontFamily.SansSerif
+            // Glance can only name system families; Geist and Geist Mono map to their nearest ones.
+            fontFamily = when (token.role) {
+                FontRole.MONO -> FontFamily.Monospace
+                FontRole.UI -> FontFamily.SansSerif
             },
         ),
     )
@@ -274,7 +274,10 @@ private fun WidgetIcon(
             if (icon != null) {
                 canvas.scale(pixels / 24f, pixels / 24f) // SVG viewBox, not a layout measure
                 paint.strokeWidth = icon.strokeWidth
-                icon.paths.forEach { canvas.drawPath(PathParser.createPathFromPathData(it), paint) }
+                icon.paths.forEach {
+                    paint.style = if (filled || it.filled) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
+                    canvas.drawPath(PathParser.createPathFromPathData(it.d), paint)
+                }
             }
         }
         widgetIcons.put(cacheKey, bitmap)
