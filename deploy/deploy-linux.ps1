@@ -14,9 +14,10 @@
     2. Copies them, with deploy/linux/install-release.sh, to a new directory in the remote user's home.
     3. Runs install-release.sh there with sudo. It installs the binaries as a new release directory,
        stops the backups and the server behind a durable deploy marker, copies the databases, switches
-       the current release atomically, starts the server and waits for /health on the VM itself, and
-       rolls back if it doesn't answer. See that script for the details, and the runbook ("An
-       interrupted deploy") for what to do if the connection drops or the VM loses power meanwhile.
+       the current release atomically, starts the server and waits for /health on the VM itself. If it
+       doesn't answer, the server is stopped and the marker stays (exit 3): you choose between fixing and
+       finishing, or rolling back. See that script for the details, and the runbook ("An interrupted
+       deploy") for that choice and for what to do if the connection drops or the VM loses power meanwhile.
     4. Removes the uploaded files, and with -PublicHealthUrl checks /health from outside too.
 
     The transport is pluggable:
@@ -205,8 +206,8 @@ $code = Invoke-Remote $remote
 switch ($code) {
     0 { if ($NoStart) { Write-Host 'Installed; the server stays stopped.' -ForegroundColor Green } else { Write-Host 'Deployed.' -ForegroundColor Green } }
     1 { Write-Host 'Nothing changed on the VM.' -ForegroundColor Yellow; exit 1 }
-    2 { Write-Host 'The new release failed its health check and was rolled back; the previous release runs.' -ForegroundColor Yellow; exit 2 }
-    3 { Write-Host 'The deploy is unfinished and its marker stays (on the VM: sudo /usr/local/lib/todo/install-release --status). See the runbook, "An interrupted deploy".' -ForegroundColor Red; exit 3 }
+    2 { Write-Host 'Rolled back; the previous release is current.' -ForegroundColor Yellow; exit 2 }
+    3 { Write-Host 'The deploy is unfinished and its marker stays; if the new release failed its health check, the server is stopped (on the VM: sudo /usr/local/lib/todo/install-release --status). See the runbook, "An interrupted deploy".' -ForegroundColor Red; exit 3 }
     default { Write-Host "The install ended with exit code $code (the connection may have dropped). On the VM, run: sudo /usr/local/lib/todo/install-release --status" -ForegroundColor Red; exit 1 }
 }
 

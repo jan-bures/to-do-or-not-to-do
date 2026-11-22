@@ -14,7 +14,7 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 | Script | Runs on | What it does |
 |---|---|---|
 | `deploy/linux/provision.sh` | the VM, as root | Users, directories, swap, unattended upgrades, journald limits, `cloudflared`, the systemd units. Idempotent. |
-| `deploy/deploy-linux.ps1` | the Windows PC | Builds the Linux binaries in WSL, copies them over, installs them on the VM, checks health, rolls back. |
+| `deploy/deploy-linux.ps1` | the Windows PC | Builds the Linux binaries in WSL, copies them over, installs them on the VM, checks health, and stops a release that fails it. |
 | `deploy/linux/install-release.sh` | the VM, as root | The VM half of a deploy. `deploy-linux.ps1` uploads and runs it. |
 | `deploy/linux/build-release.sh` | WSL or any Linux | Builds `todo-server` and `todo-backup` for `x86_64-unknown-linux-gnu`. |
 | `deploy/linux/server.toml.example`, `backup.toml.example` | | Config templates, placeholders only. |
@@ -226,14 +226,18 @@ From the Windows PC:
       stops the deploy before it switches.
    5. **switched.** It points `/opt/todo/current` at the new release (a new symlink, renamed over the old
       one), checks that it does, starts the server and waits up to 60 s (`-HealthTimeoutSeconds`) until the
-      unit is active and `/health` answers 200. The server runs pending migrations before it listens. The
-      moment it first answers, the marker records `served=yes`: from then on it may have accepted writes.
+      unit is active and `/health` answers 200. The server runs pending migrations before it listens. Before
+      it authorizes the start, it records `served=yes` durably in the marker: a started release may accept
+      writes as soon as it listens. If that write fails, nothing starts and the deploy exits 3.
    6. It starts the backup timers that were running before (timers that were off stay off), and then removes
       the marker, as the very last step. Until then the guard refuses any backup run the timers start. If a
       timer won't start, the marker stays and the deploy exits 3; `--recover finish` tries again.
-4. **Roll back.** If the new release never became healthy, it may still have migrated the databases, so the
-   script rolls back by itself. (A release that answered even once is never rolled back automatically: see
-   [An interrupted deploy](#an-interrupted-deploy).)
+4. **A failed start.** If the new release doesn't become healthy, the script doesn't roll back on its own:
+   the release was started and may have accepted writes. It stops the server and the backups, checks that
+   they stopped, keeps the marker and exits 3. The message says either that everything is stopped or what
+   is still running. The service stays down until you decide, from
+   [An interrupted deploy](#an-interrupted-deploy): fix the cause and finish, or roll back with
+   `--discard-writes`. A rollback then works like this:
    1. **restoring.** It stops everything and checks that it stopped, and only then writes `restoring` and
       restores the copy, in full, before anything starts. The files in the
       `MANIFEST` are copied into a fresh root-only directory inside the data directory, given the service
@@ -248,8 +252,9 @@ From the Windows PC:
    The live database is never overwritten in place.
 
 Exit codes: 0 deployed; 1 nothing changed (a build, copy, checksum or config failure, a missing database, or
-another deploy running); 2 rolled back, the previous release is current; 3 unfinished (see the next section);
-4 deployed, but `-PublicHealthUrl` didn't answer.
+another deploy running); 2 rolled back, the previous release is current (from a recovery); 3 unfinished,
+including a new release that didn't become healthy (see the next section); 4 deployed, but
+`-PublicHealthUrl` didn't answer.
 
 | Option | Effect |
 |---|---|
@@ -298,7 +303,7 @@ the start policy (`start=no` after `-NoStart`) and whether the new release ever 
 | Phase | What is true |
 |---|---|
 | `prepared` | The previous release is current, and the new one never ran: the databases are as the previous release left it. The copy may be incomplete. |
-| `switched` | The copy is complete. `current` may point at either release (the rename may not have happened), and the new one may have run. With `served=yes` it answered its health check and may have accepted writes. |
+| `switched` | The copy is complete. `current` may point at either release (the rename may not have happened). With `served=no` the new release was never started; with `served=yes` it was, and it may have accepted writes. |
 | `restoring` | Everything was stopped, then a rollback restore was started; the databases may be a mix of old and new until it completes. Nothing runs. |
 | `restored` | The databases are exactly the copy again. The previous release may have run on them since. |
 
@@ -309,17 +314,18 @@ Then choose one:
 
 - **Finish.** `sudo /usr/local/lib/todo/install-release --recover finish` carries on from `prepared` or
   `switched`: it stops what runs, takes the copy again if the phase is `prepared`, points `current` at the
-  new release and checks it, and starts it. If the new release doesn't become healthy and never did
-  (`served=no`), it rolls back as a normal deploy would. With `served=yes` it doesn't: it leaves the server
-  stopped, keeps the marker and exits 3, so its writes are never thrown away without you deciding to. Fix
-  the cause and run `--recover finish` again. From `restoring` and `restored` only a rollback is possible.
+  new release and checks it, and starts it. If it doesn't become healthy, it never restores: it stops the
+  server, checks that it stopped, keeps the marker and exits 3, so writes are never thrown away without you
+  deciding to. Fix the cause and run `--recover finish` again. From `restoring` and `restored` only a
+  rollback is possible.
 - **Roll back.** `sudo /usr/local/lib/todo/install-release --recover rollback` returns to the previous
   release. From `prepared` it just points `current` back and starts it. From `switched` or `restoring` it first
   restores the copy in full, as above, every time it runs, so the server never starts on a mixed pair of
   databases; anything the new release wrote is then only in `failed-<time>/`. From `restored` it never
   restores again: it only points `current` back and starts the previous release.
-- **Roll back and discard writes.** From `switched` with `served=yes`, a plain rollback changes nothing: it
-  prints what would be lost (everything written since the deploy started) and exits 1. To go ahead, run
+- **Roll back and discard writes.** From `switched` with `served=yes` (the new release was started), a plain
+  rollback changes nothing: it prints what would be lost (everything written since the deploy started) and
+  exits 1. To go ahead, run
   `sudo /usr/local/lib/todo/install-release --recover rollback --discard-writes`. The live databases are moved
   to `failed-<time>/`, where they stay, and the copy taken before the deploy is restored.
 
@@ -334,6 +340,32 @@ itself interrupted can always be run again.
 
 Don't delete the marker by hand. If you must, stop the server first, and check that `/opt/todo/current` points
 at a release that can open the databases.
+
+### Known limits
+
+These remain by design:
+
+- **A failed start means downtime until you act.** A new release that starts but doesn't become healthy is
+  never rolled back automatically, because it may have accepted writes. The service stays down until you
+  run `--recover finish` (after a fix) or `--recover rollback --discard-writes`.
+- **`--discard-writes` loses data from the service.** Everything written since the deploy started, including
+  any writes the new release accepted, stops being served. The replaced databases stay in
+  `/var/lib/todo-deploy/failed-<time>/` (the newest three), but nothing merges them back.
+- **No way back after a finished deploy.** Once the marker is gone, the script can't undo the deploy. A
+  release that becomes healthy but turns out broken stays current, and deploying the older release again
+  only works if it can open the migrated databases. The `pre-<time>/` copies (the newest three) are there for
+  a manual restore, which also loses the writes made since.
+- **Only `/health` is checked.** A release that answers `/health` but is broken elsewhere counts as deployed.
+- **A leftover start permission.** If the script is killed (not by a reboot) in the moment between writing
+  `/run/todo-deploy/allow-start` and the server's start, the permission stays. Until the next deploy or
+  recovery removes it, or a reboot clears it, it allows one start of the release that phase was about to
+  start anyway.
+- **A daily backup can be skipped.** If a deploy is still finishing when the daily run is due (03:30 UTC),
+  the guard refuses that run, because the marker still exists. That day's daily backup is then missing.
+  The 15-minute backups go on as usual.
+- **The restore relies on the service being stopped.** Planted symlinks and files are moved aside rather
+  than followed, but the restore assumes nothing runs as `todo` while it works. The script checks that
+  every unit is stopped; a process started as `todo` outside these units could still race it.
 
 ## Moving from the Windows pilot
 

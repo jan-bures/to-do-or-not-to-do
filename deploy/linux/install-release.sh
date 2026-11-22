@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs a release of todo-server and todo-backup on a provisioned VM, and rolls back if the new
+# Installs a release of todo-server and todo-backup on a provisioned VM, and stops it again if the new
 # server doesn't come up healthy. deploy-linux.ps1 uploads it with the binaries and runs it:
 #
 #   sudo bash install-release.sh [--health-timeout S] [--keep N] [--no-start] [--allow-empty-database] STAGING_DIR
@@ -21,7 +21,7 @@
 #              databases with a MANIFEST of exactly the files that existed (/var/lib/todo-deploy/pre-*).
 #   switched   The copy is complete. `current` should be the new release (the rename may not have
 #              happened yet), and the new release may have run. Forward: point `current` at it, check,
-#              start, wait for /health 200. The marker's `served` says whether it ever passed that check.
+#              start, wait for /health 200. The marker's `served` says whether it was ever started.
 #   restoring  A rollback after the new release may have run; everything was stopped before this was
 #              written. The databases may be half restored. Forward: restore the copy in full, every time.
 #   restored   The databases are exactly the copy again, durably; the previous release may have run on
@@ -31,10 +31,12 @@
 # after an interruption. The last step of every outcome starts the backup timers that were running,
 # then removes the marker; if a timer won't start, the marker stays and a recovery tries again.
 #
-# Once the new release has answered /health with 200 even once (served=yes, recorded at once), it may
-# have accepted writes, and nothing restores the copy on its own any more: if it later fails, the deploy
-# and --recover finish stop it and keep the marker. Only --recover rollback --discard-writes then
-# restores the copy. A release that never passed the check is rolled back automatically.
+# Any start of the new release counts as serving: it may accept writes as soon as it listens, before a
+# health check sees it. So served=yes is made durable before the start is authorized (in the same marker
+# write as the start's nonce; if that write fails, nothing starts). From then on nothing restores the
+# copy on its own: if the new release doesn't become healthy, the deploy and --recover finish stop it,
+# check that it stopped, keep the marker and exit 3. Only --recover rollback --discard-writes then
+# restores the copy. A rollback needs no flag only while the new release was never started.
 #
 # --no-start leaves the server stopped; the policy is kept in the marker, so a recovery honours it too.
 # --keep N (3) is how many older copies (pre-*), replaced files (failed-*) and older releases to keep.
@@ -266,13 +268,16 @@ start_server() {
 }
 
 # Stops the timers, any backup run and the server (which also cancels a queued Restart= attempt), and
-# waits until each is inactive or failed. Any failure is reported and returned: nothing may touch
-# `current` or the databases while one of them still runs.
+# waits until each is inactive or failed. Every stop is attempted even if an earlier one failed, and every
+# failure is reported; still_active lists what is still running. Returns non-zero on any failure: nothing
+# may touch `current` or the databases while one of them still runs.
+still_active=""
 stop_all() {
-    local u state deadline code
-    systemctl stop "${TIMERS[@]}" || { printf 'error: could not stop the backup timers\n' >&2; return 1; }
-    systemctl stop 'todo-backup@*.service' || { printf 'error: could not stop the backup runs\n' >&2; return 1; }
-    systemctl stop "$SERVICE" || { printf 'error: could not stop %s\n' "$SERVICE" >&2; return 1; }
+    local u state deadline code failed=0
+    still_active=""
+    systemctl stop "${TIMERS[@]}" || { printf 'error: could not stop the backup timers\n' >&2; failed=1; }
+    systemctl stop 'todo-backup@*.service' || { printf 'error: could not stop the backup runs\n' >&2; failed=1; }
+    systemctl stop "$SERVICE" || { printf 'error: could not stop %s\n' "$SERVICE" >&2; failed=1; }
     deadline=$((SECONDS + STOP_TIMEOUT))
     for u in "$SERVICE" "${TIMERS[@]}" "${BACKUP_UNITS[@]}"; do
         while :; do
@@ -280,7 +285,9 @@ stop_all() {
             case "$state" in inactive | failed) break ;; esac
             if [ "$SECONDS" -ge "$deadline" ]; then
                 printf 'error: %s is still %s after stopping it\n' "$u" "${state:-unknown}" >&2
-                return 1
+                still_active="${still_active:+$still_active, }$u"
+                failed=1
+                break
             fi
             sleep 1
         done
@@ -289,8 +296,10 @@ stop_all() {
     code="$(http_status)"
     if [ "$code" != 000 ]; then
         printf 'error: something still answers %s (HTTP %s)\n' "$health_url" "$code" >&2
-        return 1
+        still_active="${still_active:+$still_active, }a listener on $health_url"
+        failed=1
     fi
+    return "$failed"
 }
 
 # The last step of every outcome: the timers that were running start again (harmless while the marker
@@ -321,13 +330,10 @@ start_and_finish() {
         exit "$code"
     fi
     log "starting $SERVICE ($what release $id), waiting up to ${health_timeout}s for HTTP 200 from $health_url"
+    # Once it starts, the new release may accept writes. start_server makes served=yes durable (with the
+    # nonce) before it authorizes the start, and exits 3 without starting anything if it can't.
+    if [ "$what" = new ]; then served=yes; fi
     if start_server; then
-        if [ "$what" = new ] && [ "$served" != yes ]; then
-            # It answered: from now on it may have accepted writes, so nothing restores on its own.
-            served=yes
-            write_marker "$phase"
-            log "the new release passed its health check; recorded served=yes"
-        fi
         crash_point "started-$what"
         finalize
         log "the $what release runs: $("$CURRENT/todo-server" --version)"
@@ -500,7 +506,7 @@ rollback_from() {
         switched | restoring)
             # The new release may have run, and a restore may be half done: restore in full, every time.
             if [ "$1" = switched ] && [ "$served" = yes ]; then
-                printf 'The new release %s passed its health check (served=yes), so it may have accepted writes since\n' "$new_id" >&2
+                printf 'The new release %s was started (served=yes), so it may have accepted writes since\n' "$new_id" >&2
                 printf 'the deploy started (%s). A rollback restores the copy taken before the deploy, %s;\n' "$stamp" "$snapshot" >&2
                 printf 'the live databases move to %s/failed-<time>/ and stay there, and everything written since is lost\n' "$DEPLOY_DIR" >&2
                 printf 'from the running service.\n' >&2
@@ -555,12 +561,15 @@ deploy_from() {
             if ! start_and_finish 0 new; then
                 printf 'error: the new release did not become healthy. Its last log lines:\n' >&2
                 journalctl -u "$SERVICE" -n 30 --no-pager -o cat >&2 || true
-                if [ "$served" = yes ]; then
-                    # It served before: its writes count. Stop, keep the marker, and leave the choice to the operator.
-                    stop_all || true
-                    die3 "the new release $new_id passed its health check earlier (served=yes), so the copy is not restored automatically. It is stopped. Fix the cause and run --recover finish, or discard its writes with --recover rollback --discard-writes"
+                # It was started, so it may have accepted writes: never restore on our own. Stop it,
+                # keep the marker, and leave the choice to the operator.
+                if stop_all; then
+                    die3 "the new release $new_id was started (served=yes) and may have accepted writes, so the copy is not restored automatically. It is stopped, and so are the backups. Fix the cause and run --recover finish, or discard its writes with --recover rollback --discard-writes"
                 fi
-                rollback_from switched
+                if [ -n "$still_active" ]; then
+                    die3 "the new release $new_id did not become healthy, and it could not be stopped completely: still active: $still_active. Stop it by hand (sudo systemctl stop $SERVICE), then run --recover finish, or --recover rollback --discard-writes"
+                fi
+                die3 "the new release $new_id did not become healthy. Nothing is still active, but a stop command failed (see the errors above). Check with systemctl status, then run --recover finish, or --recover rollback --discard-writes"
             fi
             ;;
         restoring | restored) fail "a rollback is under way (phase $1): run --recover rollback" ;;
