@@ -408,10 +408,13 @@ fn corrupt<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> StoreE
 
 const EVENT_COLUMNS: &str = "seq, id, group_id, actor, at, undoes, forced, payload";
 /// The event columns, then the command's ID, the event's index in it and how many events it has. A
-/// command's events are written in one transaction, so the count is final once any of them is read.
+/// command's events are written in one transaction, so the length is final once any of them is read.
+/// The length is the last index plus one: one seek in the `(command_id, command_idx)` index per
+/// event, where counting would walk the whole batch for each of its events.
 const LOG_COLUMNS: &str = concat!(
     "seq, id, group_id, actor, at, undoes, forced, payload, command_id, command_idx, ",
-    "(SELECT COUNT(*) FROM events AS batch WHERE batch.command_id = events.command_id)",
+    "(SELECT batch.command_idx + 1 FROM events AS batch WHERE batch.command_id = events.command_id ",
+    "ORDER BY batch.command_idx DESC LIMIT 1)",
 );
 
 /// A stored event as the API returns it: the event plus the command (or undo) that produced it.
@@ -1411,5 +1414,51 @@ mod lock_tests {
         let again = lock_database(&db).expect("released despite the duplicate");
         drop(duplicate);
         drop(again);
+    }
+}
+
+#[cfg(test)]
+mod log_query_tests {
+    use super::*;
+    use rusqlite::StatementStatus;
+
+    /// How many SQLite VM steps reading the whole log with its command lengths takes, for a log of
+    /// one command with `len` events.
+    fn steps_to_read_a_batch(len: usize) -> i32 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_writer(&dir.path().join("todo.sqlite3")).unwrap();
+        let tx = conn.transaction().unwrap();
+        for i in 0..len {
+            tx.execute(
+                "INSERT INTO events (id, command_id, command_idx, group_id, actor, at, forced, payload)
+                 VALUES (?1, 'command', ?2, 'group', 'actor', 'at', 0, '{}')",
+                params![format!("event {i}"), i64::try_from(i).unwrap()],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {LOG_COLUMNS} FROM events WHERE seq > ?1 ORDER BY seq"
+            ))
+            .unwrap();
+        let lens: Vec<i64> = stmt
+            .query_map(params![0], |r| r.get(10))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(lens, vec![i64::try_from(len).unwrap(); len]);
+        stmt.get_status(StatementStatus::VmStep)
+    }
+
+    /// The command length is a seek in the `(command_id, command_idx)` index, so paging a large batch
+    /// takes time in proportion to it. Counting the batch for every event made it quadratic.
+    #[test]
+    fn reading_a_batch_with_its_length_is_linear() {
+        let (small, large) = (steps_to_read_a_batch(100), steps_to_read_a_batch(1000));
+        assert!(
+            large < small * 20,
+            "10 times the events took {small} -> {large} VM steps"
+        );
     }
 }

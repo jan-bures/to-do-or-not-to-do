@@ -27,7 +27,12 @@
 //! not applied, stored or counted in the cursor, until the rest arrives. So the view never shows half
 //! a command, a half-applied undo never settles its outbox entry, and a restart in between simply
 //! fetches the batch again. [`Replica::received`] is where fetching continues. An event without a
-//! length (an older server) counts as ending its batch.
+//! length (an older server) counts as ending its batch; for predicting an undo, a tracked command's
+//! receipt (which lists all its events) tells its length then.
+//!
+//! A batch that doesn't apply (the confirmed state diverged from the server's) is left out whole
+//! too, received or replayed from storage: none of its events are applied or stored, and the outbox
+//! entry it would confirm stays. The whole batches before it stay applied.
 //!
 //! # Leaving the outbox
 //!
@@ -173,19 +178,39 @@ struct CommandLog {
     events: Vec<Event>,
     /// How many events the command produced, if the server said ([`LogEvent::command_len`]).
     len: Option<usize>,
+    /// The command's receipt: its epoch, first event and how many events it lists. It tells the
+    /// length where the events don't (an older server), once it matches the bound first event.
+    receipt: Option<(Option<Epoch>, EventRef, usize)>,
 }
 
 impl CommandLog {
+    fn new(handle: Weak<CommandId>) -> Self {
+        Self {
+            handle,
+            first: None,
+            events: Vec::new(),
+            len: None,
+            receipt: None,
+        }
+    }
+
     /// The whole batch, once the confirmed state has all of it (`cursor`).
     fn batch(&self, cursor: u64) -> Option<&[Event]> {
         let last = self.events.last()?.seq?;
-        let complete = match self.len {
+        let complete = match self.len.or_else(|| self.receipt_len()) {
             Some(len) => self.events.len() == len && last <= cursor,
             // Without a length, only a later confirmed event proves the batch ended (a command's
             // events are consecutive in the log).
             None => last < cursor,
         };
         complete.then_some(self.events.as_slice())
+    }
+
+    /// How many events the receipt lists, if it is for the batch this log is bound to.
+    fn receipt_len(&self) -> Option<usize> {
+        let (epoch, first) = self.first?;
+        let (theirs, receipt_first, len) = self.receipt?;
+        (receipt_first == first && theirs.is_none_or(|theirs| theirs == epoch)).then_some(len)
     }
 }
 
@@ -276,11 +301,69 @@ fn acked_elsewhere(entry: &OutboxEntry, epoch: Epoch) -> bool {
     entry.acked.is_some() && entry.acked_epoch != Some(epoch)
 }
 
+/// A stored batch did not apply after some of its events had: replay again, stopping after
+/// `stop_after`, the event before the batch.
+struct PartialBatch {
+    stop_after: u64,
+}
+
+impl PartialBatch {
+    /// Where to stop instead, if the replayed events end with some of `command`'s.
+    fn of(replayed: &[&LogEvent], command: CommandId) -> Option<Self> {
+        let start = replayed
+            .iter()
+            .rposition(|other| other.command_id != command)
+            .map_or(0, |i| i + 1);
+        let first = replayed.get(start)?.event.seq?;
+        Some(Self {
+            stop_after: first.saturating_sub(1),
+        })
+    }
+}
+
 /// Replays the stored events onto the snapshot and finds the outbox entries they settle.
-fn restore(loaded: Loaded) -> Restored {
+///
+/// Replay stops at a gap or at an event that does not apply, and stops after `stop_after` if given.
+/// A batch is replayed whole or not at all: if one stops part of the way through,
+/// [`PartialBatch`] says to load again and stop before it. (The snapshot is consumed by the replay,
+/// so starting over is how its first events are taken back; this only happens to damaged storage.)
+fn restore(loaded: Loaded, stop_after: Option<u64>) -> Result<Restored, PartialBatch> {
     let (mut confirmed, mut cursor) = loaded.snapshot.unwrap_or_default();
-    let mut replayed = 0;
     let mut needs_snapshot = false;
+    let mut accepted: Vec<&LogEvent> = Vec::new();
+    for e in &loaded.events {
+        let Some(seq) = e.event.seq else { continue };
+        if seq <= cursor {
+            continue;
+        }
+        if stop_after.is_some_and(|stop| seq > stop) {
+            needs_snapshot = true;
+            break;
+        }
+        if seq != cursor + 1 {
+            tracing::warn!(cursor, seq, "stored events have a gap; refetching the rest");
+            needs_snapshot = true;
+            break;
+        }
+        if let Err(err) = apply(&mut confirmed, &e.event) {
+            tracing::warn!(seq, error = %err, "a stored event does not apply; refetching its batch");
+            if let Some(partial) = PartialBatch::of(&accepted, e.command_id) {
+                return Err(partial);
+            }
+            needs_snapshot = true;
+            break;
+        }
+        accepted.push(e);
+        cursor = seq;
+    }
+    // Storage only gets whole batches; should one end short anyway, it is fetched again too.
+    if let Some(last) = accepted.last().filter(|last| last.batch_continues())
+        && let Some(partial) = PartialBatch::of(&accepted, last.command_id)
+    {
+        tracing::warn!("the stored events end inside a batch; refetching it");
+        return Err(partial);
+    }
+    let replayed = accepted.len();
     let mut seen_commands = BTreeSet::new();
     let mut first_events = BTreeMap::new();
     // The events an outbox undo needs to show in the view: those of the command whose first event it
@@ -304,21 +387,8 @@ fn restore(loaded: Loaded) -> Restored {
         }
     }
     let mut undo_logs: BTreeMap<CommandId, StoredLog> = BTreeMap::new();
-    for e in &loaded.events {
+    for e in accepted {
         let Some(seq) = e.event.seq else { continue };
-        if seq <= cursor {
-            continue;
-        }
-        if seq != cursor + 1 {
-            tracing::warn!(cursor, seq, "stored events have a gap; refetching the rest");
-            needs_snapshot = true;
-            break;
-        }
-        if let Err(err) = apply(&mut confirmed, &e.event) {
-            tracing::warn!(seq, error = %err, "a stored event does not apply; refetching from it");
-            needs_snapshot = true;
-            break;
-        }
         seen_commands.insert(e.command_id);
         if e.command_idx == 0 {
             let first = EventRef {
@@ -342,8 +412,6 @@ fn restore(loaded: Loaded) -> Restored {
         {
             log.events.push(e.event.clone());
         }
-        cursor = seq;
-        replayed += 1;
     }
     // Writes are atomic, so an entry leaves storage with the events that confirm it. Check anyway:
     // an entry whose events are confirmed must not be applied (or sent) again.
@@ -383,7 +451,7 @@ fn restore(loaded: Loaded) -> Restored {
             false
         }
     });
-    Restored {
+    Ok(Restored {
         confirmed,
         cursor,
         epoch: loaded.epoch,
@@ -396,7 +464,7 @@ fn restore(loaded: Loaded) -> Restored {
         resolved_undos,
         failed_undos,
         undo_logs,
-    }
+    })
 }
 
 impl fmt::Debug for Replica {
@@ -444,7 +512,13 @@ impl Replica {
 
     /// Builds everything from storage.
     fn load(&mut self) -> Result<(), StorageError> {
-        let r = restore(self.storage.load()?);
+        let mut stop_after = None;
+        let r = loop {
+            match restore(self.storage.load()?, stop_after) {
+                Ok(r) => break r,
+                Err(partial) => stop_after = Some(partial.stop_after),
+            }
+        };
         let failed_ids: Vec<_> = r.failed_undos.iter().map(|f| f.entry.command_id).collect();
         if !r.settled.is_empty()
             || !r.unbound.is_empty()
@@ -533,18 +607,13 @@ impl Replica {
             Some(handle) => handle,
             None => {
                 let handle = Arc::new(original);
-                let (first, events, len) = log.map_or((None, Vec::new(), None), |(epoch, log)| {
-                    (Some((epoch, log.first)), log.events, log.len)
-                });
-                self.tracked.insert(
-                    original,
-                    CommandLog {
-                        handle: Arc::downgrade(&handle),
-                        first,
-                        events,
-                        len,
-                    },
-                );
+                let mut tracked = CommandLog::new(Arc::downgrade(&handle));
+                if let Some((epoch, log)) = log {
+                    tracked.first = Some((epoch, log.first));
+                    tracked.events = log.events;
+                    tracked.len = log.len;
+                }
+                self.tracked.insert(original, tracked);
                 handle
             }
         };
@@ -716,15 +785,8 @@ impl Replica {
     pub(crate) fn track(&mut self, id: CommandId) -> TrackedCommand {
         self.prune_tracking();
         let id = Arc::new(id);
-        self.tracked.insert(
-            *id,
-            CommandLog {
-                handle: Arc::downgrade(&id),
-                first: None,
-                events: Vec::new(),
-                len: None,
-            },
-        );
+        self.tracked
+            .insert(*id, CommandLog::new(Arc::downgrade(&id)));
         TrackedCommand(id)
     }
 
@@ -830,6 +892,7 @@ impl Replica {
         command_id: CommandId,
         result: &CommandResult,
     ) -> Result<Ack, StorageError> {
+        self.note_receipt(command_id, result);
         let Some(pos) = self.position(command_id) else {
             return Ok(Ack::Recorded);
         };
@@ -888,6 +951,22 @@ impl Replica {
             self.view = None;
         }
         Ok(Ack::Recorded)
+    }
+
+    /// Keeps a tracked command's receipt: against a server that doesn't send
+    /// [`LogEvent::command_len`], it is what says the latest command's batch is whole (no later
+    /// event does yet). Memory only, like the rest of the log.
+    fn note_receipt(&mut self, id: CommandId, result: &CommandResult) {
+        let Some(first) = result.events.first() else {
+            return;
+        };
+        if let Some(log) = self.tracked.get_mut(&id) {
+            log.receipt = Some((result.epoch, *first, result.events.len()));
+            if log.len.is_none() {
+                // A dependent undo may show now.
+                self.view = None;
+            }
+        }
     }
 
     fn dependent_undos(&self, id: CommandId) -> impl Iterator<Item = &OutboxEntry> {
@@ -1078,9 +1157,10 @@ impl Replica {
     ///
     /// The first epoch is adopted while the replica is empty; another one is refused with
     /// [`ConfirmError::EpochChanged`]. Adopting an epoch forgets acknowledgements from other ones. On
-    /// a gap or a divergence the events before it stay applied (and stored). The events are applied to
-    /// a copy of the confirmed state that replaces it only after the write succeeded, so if the write
-    /// fails, nothing changes.
+    /// a gap the events before it are applied (and stored). On a divergence, the whole batches before
+    /// the one that doesn't apply are, and nothing of that batch: its outbox entry stays. The events
+    /// are applied to a copy of the confirmed state that replaces it only after the write succeeded,
+    /// so if the write fails, nothing changes.
     pub fn apply_confirmed(
         &mut self,
         epoch: Epoch,
@@ -1091,11 +1171,12 @@ impl Replica {
             None if self.cursor == 0 => true,
             _ => return Err(ConfirmError::EpochChanged),
         };
-        // The held start of a batch, then what arrived: consecutive from the cursor.
-        let mut received: Vec<&LogEvent> = Vec::new();
+        // What arrived goes after the held start of a batch: consecutive from the cursor. Each
+        // event is copied in once; a failed write takes the new ones out again.
+        let held_before = self.held.len();
         let mut failure = None;
-        let mut last = self.cursor;
-        for e in self.held.iter().chain(events) {
+        let mut last = self.received();
+        for e in events {
             let Some(seq) = e.event.seq else {
                 failure = Some(ConfirmError::MissingSeq);
                 break;
@@ -1111,8 +1192,9 @@ impl Replica {
                 break;
             }
             last = seq;
-            received.push(e);
+            self.held.push(e.clone());
         }
+        let received = &self.held;
         // A batch that goes on past what arrived waits for the rest (a command's events are
         // consecutive, so only the last one can be incomplete).
         let whole = match received.last() {
@@ -1122,28 +1204,46 @@ impl Replica {
                 .map_or(0, |i| i + 1),
             _ => received.len(),
         };
-        let mut applied: Vec<LogEvent> = Vec::with_capacity(whole);
-        let mut cursor = self.cursor;
+        // Whole batches only: a batch that doesn't apply is left out entirely, and so is everything
+        // after it.
+        let mut count = 0;
+        let mut diverged = false;
         let mut next: Option<State> = None;
-        for e in &received[..whole] {
+        for (i, e) in received[..whole].iter().enumerate() {
             let Some(seq) = e.event.seq else { break };
             // `apply` leaves the state untouched when it fails.
             let state = next.get_or_insert_with(|| self.confirmed.clone());
             if let Err(error) = apply(state, &e.event) {
                 failure = Some(ConfirmError::Diverged { seq, error });
+                diverged = true;
+                // Back to the start of its batch. Rare, so the batches before it are applied again
+                // rather than the state copied at every batch.
+                count = received[..i]
+                    .iter()
+                    .rposition(|other| other.command_id != e.command_id)
+                    .map_or(0, |start| start + 1);
+                if count == 0 {
+                    next = None;
+                } else if count < i {
+                    next = replayed(&self.confirmed, &received[..count]);
+                    if next.is_none() {
+                        count = 0;
+                    }
+                }
                 break;
             }
-            cursor = seq;
-            applied.push((*e).clone());
+            count = i + 1;
         }
-        // Held events must follow on from the cursor; after a divergence there is nothing to hold.
-        let held: Vec<LogEvent> = if applied.len() == whole {
-            received[whole..].iter().map(|e| (*e).clone()).collect()
-        } else {
-            Vec::new()
-        };
+        let applied = &received[..count];
+        let cursor = applied
+            .last()
+            .and_then(|e| e.event.seq)
+            .unwrap_or(self.cursor);
         if applied.is_empty() && !adopt {
-            self.held = held;
+            // After a divergence there is nothing to hold: held events follow on from the cursor.
+            if diverged {
+                self.held.clear();
+            }
             return failure.map_or(Ok(0), Err);
         }
         let unbound: Vec<OutboxEntry> = if adopt {
@@ -1209,7 +1309,7 @@ impl Replica {
                 cursor,
             });
         } else if !applied.is_empty() {
-            ops.push(StorageOp::AppendEvents(&applied));
+            ops.push(StorageOp::AppendEvents(applied));
         }
         let failed_ids: BTreeSet<_> = failed.iter().map(|f| f.entry.command_id).collect();
         ops.extend(ready.iter().map(StorageOp::PutOutbox));
@@ -1222,10 +1322,15 @@ impl Replica {
         );
         if let Err(err) = self.storage.write(&ops) {
             tracing::warn!(error = %err, cursor = self.cursor, "cannot store confirmed events");
+            self.held.truncate(held_before);
             return Err(err.into());
         }
+        // The applied batches move out of the buffer; what is left starts an incomplete one.
+        let applied: Vec<LogEvent> = self.held.drain(..count).collect();
+        if diverged {
+            self.held.clear();
+        }
         self.replace_outbox(ready);
-        self.held = held;
         if adopt {
             self.epoch = Some(epoch);
             for u in unbound {
@@ -1308,6 +1413,15 @@ impl Replica {
         self.view = None;
         Ok(())
     }
+}
+
+/// `state` with `events` applied, or `None` if one of them doesn't apply.
+fn replayed(state: &State, events: &[LogEvent]) -> Option<State> {
+    let mut state = state.clone();
+    for e in events {
+        apply(&mut state, &e.event).ok()?;
+    }
+    Some(state)
 }
 
 /// Replaces a dependency with a checked undo of the original command's first event.

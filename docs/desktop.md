@@ -395,8 +395,8 @@ there; the view only samples it each frame. Every duration, curve and cue comes 
   outbox; otherwise it queues a non-forced undo tied to that command's exact server event. The
   shared view shows the undo before sync when it knows the whole original batch, including the next
   occurrence spawned by completing a repeat: the pending command's own batch, or the server's once
-  every event of it has arrived (events carry `command_len`, and the sync engine applies only whole
-  batches). An undo the server would refuse is not shown. Conflicts appear in the status bar; Undo
+  every event of it has arrived (events carry `command_len`, or an older server's receipt lists them,
+  and the sync engine applies only whole batches). An undo the server would refuse is not shown. Conflicts appear in the status bar; Undo
   does not overwrite another device's changes. Undo during a held completion reverses the row in
   place; other restored rows enter over `ROW_ENTER`. Undoing a reorder does not replay row entrance. Undo is
   the exact inverse: it brings back the deleted task, step or list, never what it belongs to. When that

@@ -66,6 +66,8 @@ pub struct FakeServer {
     pub state: State,
     pub log: Vec<LogEvent>,
     pub epoch: Uuid,
+    /// Leave out [`LogEvent::command_len`], as a server from before it did.
+    pub legacy: bool,
     results: HashMap<Uuid, (String, CommandResult)>,
     clock_ms: i64,
 }
@@ -76,6 +78,7 @@ impl Default for FakeServer {
             state: State::new(),
             log: Vec::new(),
             epoch: EPOCH,
+            legacy: false,
             results: HashMap::new(),
             clock_ms: 0,
         }
@@ -146,7 +149,7 @@ impl FakeServer {
                 event: e,
                 command_id,
                 command_idx: i as u32,
-                command_len: Some(len),
+                command_len: (!self.legacy).then_some(len),
             });
         }
         CommandResult {

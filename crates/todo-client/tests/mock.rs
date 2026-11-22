@@ -332,3 +332,52 @@ fn a_reset_that_fails_is_retried_instead_of_tripping_the_divergence_guard() {
     assert!(c.view().tasks.contains_key(&task_id(1)));
     assert!(!c.view().tasks.contains_key(&task_id(2)));
 }
+
+/// A server from before `command_len` doesn't say where a batch ends, and the latest command has no
+/// later event to prove it. The command's receipt lists all its events, so an undo of the latest
+/// confirmed completion still shows offline.
+#[test]
+fn without_command_len_the_receipt_completes_the_latest_batch_for_an_undo() {
+    use todo_client::TrackedUndo;
+    use todo_core::command::NewTask;
+    use todo_core::recurrence::{Recurrence, Rule};
+
+    let server = seeded_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.legacy = true;
+        for e in &mut s.log {
+            e.command_len = None;
+        }
+    }
+    let t = MockTransport::new(server.clone(), owner());
+    let storage = MemoryStorage::new();
+    run_until(&client(&t, &storage, 1), |c| synced(c, &t));
+    let c = client(&t, &storage, 2);
+    let task = task_id(2);
+    let mut repeat = NewTask::new(task, list_id(1), "Repeat");
+    repeat.due = Some("2026-11-21".parse().unwrap());
+    repeat.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+    c.submit(Command::CreateTask(Box::new(repeat))).unwrap();
+    let done = c
+        .submit_tracked(Command::CompleteTask { id: task })
+        .unwrap();
+    run_until(&c, |c| synced(c, &t) && c.view().tasks.len() == 3);
+    assert!(
+        server
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .all(|e| e.command_len.is_none()),
+        "an older server"
+    );
+
+    // Offline: the client isn't running.
+    let TrackedUndo::Queued(_) = c.undo_tracked(&done).unwrap() else {
+        panic!("a confirmed completion is undone through the outbox");
+    };
+    let view = c.view();
+    assert!(!view.tasks[&task].is_done(), "the undo shows offline");
+    assert_eq!(view.tasks.len(), 2, "with the next repeat gone");
+}

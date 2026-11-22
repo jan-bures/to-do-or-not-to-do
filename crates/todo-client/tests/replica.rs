@@ -12,7 +12,7 @@ use todo_client::storage::{Storage, StorageOp};
 use todo_client::{MemoryStorage, Replica};
 use todo_core::Command;
 use todo_core::command::{NewTask, Placement};
-use todo_core::ids::StepId;
+use todo_core::ids::{StepId, TaskId};
 use todo_core::recurrence::{Recurrence, Rule};
 use uuid::Uuid;
 
@@ -907,6 +907,209 @@ fn a_gap_and_a_divergence_are_reported() {
         Err(ConfirmError::Diverged { seq: 3, .. })
     ));
     assert_eq!(r.cursor(), 2);
+}
+
+/// A cache damaged so that it has a completed repeat's next occurrence but not the task itself, and
+/// an undo of that completion in the outbox. Returns the storage, the undo, the server, the cursor of
+/// the damaged state, the next occurrence, and where the undo's own events start in the log.
+fn damaged_cache_with_an_undo() -> (MemoryStorage, OutboxEntry, FakeServer, u64, TaskId, usize) {
+    let (mut r, mut server, _) = seeded();
+    let task = task_id(2);
+    server
+        .execute(&owner(), Uuid::from_u128(9000), &repeat(task))
+        .unwrap();
+    let done = server
+        .execute(
+            &owner(),
+            Uuid::from_u128(9001),
+            &Command::CompleteTask { id: task },
+        )
+        .unwrap();
+    r.apply_confirmed(EPOCH, &server.log).unwrap();
+    let mut damaged = r.confirmed().clone();
+    damaged.tasks.remove(&task);
+    let next = *damaged.tasks.keys().find(|t| **t != task_id(1)).unwrap();
+    let first_event = done.events[0];
+    let undo = OutboxEntry {
+        command_id: Uuid::from_u128(200),
+        op: Operation::Undo {
+            seq: first_event.seq,
+            expected_event_id: first_event.id,
+            epoch: Some(EPOCH),
+            force: false,
+        },
+        submitted_at: ts(5),
+        attempts: 1,
+        acked: None,
+        acked_epoch: None,
+    };
+    let mut storage = MemoryStorage::new();
+    storage
+        .write(&[
+            StorageOp::SetEpoch(EPOCH),
+            StorageOp::Snapshot {
+                state: &damaged,
+                cursor: server.head(),
+            },
+            StorageOp::PutOutbox(&undo),
+        ])
+        .unwrap();
+    let cursor = server.head();
+    let from = server.log.len();
+    let receipt = server
+        .undo(&owner(), undo.command_id, first_event.seq)
+        .unwrap();
+    assert_eq!(
+        receipt.events.len(),
+        2,
+        "the next repeat goes, then the task reopens"
+    );
+    (storage, undo, server, cursor, next, from)
+}
+
+fn live(state: &todo_core::State, task: TaskId) -> bool {
+    state.tasks.get(&task).is_some_and(|t| t.deleted.is_none())
+}
+
+/// A batch whose second event doesn't apply is not applied at all: its first event is neither
+/// applied nor stored, and the command's outbox entry is not settled.
+#[test]
+fn a_divergence_inside_a_batch_discards_the_whole_batch() {
+    let (storage, undo, server, cursor, next, from) = damaged_cache_with_an_undo();
+    let mut r = open(&storage);
+    assert!(live(r.confirmed(), next));
+    assert!(matches!(
+        r.apply_confirmed(EPOCH, &server.log[from..]),
+        Err(ConfirmError::Diverged { .. })
+    ));
+    for r in [&mut r, &mut open(&storage)] {
+        assert_eq!(r.cursor(), cursor, "nothing of the batch is confirmed");
+        assert_eq!(r.received(), cursor, "nor held");
+        assert!(live(r.confirmed(), next), "the next repeat is still there");
+        assert_eq!(r.outbox(), std::slice::from_ref(&undo), "not settled");
+    }
+}
+
+/// Earlier whole batches stay applied when a later one diverges.
+#[test]
+fn a_divergence_keeps_the_whole_batches_before_it() {
+    let (storage, undo, mut server, cursor, next, from) = damaged_cache_with_an_undo();
+    // A command between the undo's events would break the log; put one before them instead.
+    let mut log = server.log[..from].to_vec();
+    let note = server
+        .execute(
+            &owner(),
+            Uuid::from_u128(300),
+            &add_note(task_id(1), "kept"),
+        )
+        .unwrap();
+    let mut note_event = server.log.last().unwrap().clone();
+    note_event.event.seq = Some(cursor + 1);
+    assert_eq!(note.events.len(), 1);
+    log.push(note_event);
+    for e in &server.log[from..from + 2] {
+        let mut e = e.clone();
+        e.event.seq = e.event.seq.map(|s| s + 1);
+        log.push(e);
+    }
+    let mut r = open(&storage);
+    assert!(matches!(
+        r.apply_confirmed(EPOCH, &log[from..]),
+        Err(ConfirmError::Diverged { .. })
+    ));
+    for r in [&mut r, &mut open(&storage)] {
+        assert_eq!(r.cursor(), cursor + 1, "the note's batch is confirmed");
+        assert_eq!(r.confirmed().tasks[&task_id(1)].notes, "kept");
+        assert!(live(r.confirmed(), next));
+        assert_eq!(r.outbox(), std::slice::from_ref(&undo));
+    }
+}
+
+/// The same holds for stored events replayed on opening: a stored batch that doesn't apply as a whole
+/// is left out, with the outbox entry it would settle kept.
+#[test]
+fn a_stored_batch_that_diverges_is_replayed_not_at_all() {
+    let (mut storage, undo, server, cursor, next, from) = damaged_cache_with_an_undo();
+    storage
+        .write(&[StorageOp::AppendEvents(&server.log[from..])])
+        .unwrap();
+    let r = open(&storage);
+    assert_eq!(r.cursor(), cursor, "refetched from the batch's start");
+    assert!(live(r.confirmed(), next));
+    assert_eq!(r.outbox(), std::slice::from_ref(&undo), "not settled");
+}
+
+/// Should stored events end inside a batch, the batch is fetched again rather than half replayed.
+#[test]
+fn stored_events_that_end_inside_a_batch_are_fetched_again() {
+    let (r, mut server, mut storage) = seeded();
+    let cursor = r.cursor();
+    let task = task_id(2);
+    server
+        .execute(&owner(), Uuid::from_u128(9000), &repeat(task))
+        .unwrap();
+    let from = server.log.len();
+    server
+        .execute(
+            &owner(),
+            Uuid::from_u128(9001),
+            &Command::CompleteTask { id: task },
+        )
+        .unwrap();
+    storage
+        .write(&[StorageOp::AppendEvents(&server.log[cursor as usize..=from])])
+        .unwrap();
+    let r = open(&storage);
+    assert_eq!(
+        r.cursor(),
+        cursor + 1,
+        "the creation, not half the completion"
+    );
+    assert!(!r.confirmed().tasks[&task].is_done());
+}
+
+/// A batch that arrives one event at a time is held until its last event, and a failed write then
+/// leaves the held start as it was, so the same events go through once storage works again.
+#[test]
+fn a_batch_streamed_event_by_event_survives_a_failed_write_at_its_end() {
+    let (mut r, mut server, storage) = seeded();
+    let (source, target, _, _) = merge_fixture(&mut r, &mut server);
+    let cursor = r.cursor();
+    let from = server.log.len();
+    server
+        .execute(
+            &owner(),
+            Uuid::from_u128(100),
+            &Command::MergeTasks { source, target },
+        )
+        .unwrap();
+    let last = server.log.len() - 1;
+    assert!(last - from >= 2, "a batch of three or more");
+    for e in &server.log[from..last] {
+        assert_eq!(
+            r.apply_confirmed(EPOCH, std::slice::from_ref(e)).unwrap(),
+            0
+        );
+        assert_eq!(r.received(), e.event.seq.unwrap());
+    }
+    assert_eq!(r.cursor(), cursor);
+    storage.set_fail_writes(true);
+    assert!(matches!(
+        r.apply_confirmed(EPOCH, &server.log[last..]),
+        Err(ConfirmError::Storage(_))
+    ));
+    assert_eq!(r.cursor(), cursor);
+    assert_eq!(r.received(), server.log[last - 1].event.seq.unwrap());
+    storage.set_fail_writes(false);
+    assert_eq!(
+        r.apply_confirmed(EPOCH, &server.log[last..]).unwrap(),
+        last + 1 - from
+    );
+    assert_eq!(r.received(), server.head());
+    for r in [&mut r, &mut open(&storage)] {
+        assert_eq!(r.cursor(), server.head());
+        assert!(r.confirmed().data_eq(&server.state));
+    }
 }
 
 #[test]
