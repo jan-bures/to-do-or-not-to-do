@@ -81,7 +81,9 @@ import app.todoornot.model.Ghost
 import app.todoornot.model.MotionFrame
 import app.todoornot.model.RowLook
 import app.todoornot.model.Section
+import app.todoornot.model.Shown
 import app.todoornot.model.countdown
+import app.todoornot.model.withGhosts
 import app.todoornot.model.rowIn
 import app.todoornot.model.Toast
 import app.todoornot.model.UiState
@@ -273,8 +275,8 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, gener
     val rows = withGhosts(room.tasks, ghosts, Section.ROWS)
     LazyColumn(Modifier.fillMaxSize()) {
         // Only when nothing at all is listed: a filter that matches only done tasks shows them under
-        // Completed, without a "nothing matches" line above them.
-        if (showsEmptyLine(room)) {
+        // Completed, without a "nothing matches" line above them. Nor while a ghost plays out.
+        if (showsEmptyLine(room, ghosts)) {
             item("empty") { Empty(room.emptyLine) }
         }
         // The rows; the Completed and Agent activity smart lists show their done tasks here too.
@@ -307,24 +309,6 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, gener
             }
         }
     }
-}
-
-/** A row the list draws: one the room lists, or a [ghost] painted where it last was. */
-data class Shown(val row: TaskRow, val ghost: Boolean = false)
-
-/**
- * The rows of [section] as the list draws them: the room's own [rows], with each of the [ghosts] in that
- * section put back at its last place (in the order of those places, so each lands where it was). A ghost
- * whose task the rows list (a read from before its latest toggle) isn't drawn twice.
- */
-fun withGhosts(rows: List<TaskRow>, ghosts: List<Ghost>, section: Section): List<Shown> {
-    val out = rows.mapTo(ArrayList(rows.size + ghosts.size)) { Shown(it) }
-    if (ghosts.isEmpty()) return out
-    val listed = rows.mapTo(HashSet()) { it.id }
-    for (g in ghosts.filter { it.section == section && it.row.id !in listed }.sortedBy { it.index }) {
-        out.add(g.index.coerceIn(0, out.size), Shown(g.row, ghost = true))
-    }
-    return out
 }
 
 /**
@@ -605,7 +589,9 @@ private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAd
 
 /**
  * The empty line ("Nothing here yet.", "Nothing matches the filter.") only when nothing at all is listed:
- * no open tasks, no completed ones, and no hand-over or planning for tomorrow.
+ * no open tasks, no completed ones, and no hand-over or planning for tomorrow. While [ghosts] play out
+ * (the last match just completed, say) it waits until they've gone, so it never pushes them down.
  */
-fun showsEmptyLine(room: RoomView): Boolean =
-    room.tasks.isEmpty() && room.completed.isEmpty() && room.tomorrow == null && room.planWeekday == null
+fun showsEmptyLine(room: RoomView, ghosts: List<Ghost> = emptyList()): Boolean =
+    room.tasks.isEmpty() && room.completed.isEmpty() && room.tomorrow == null && room.planWeekday == null &&
+        ghosts.isEmpty()

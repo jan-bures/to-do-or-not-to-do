@@ -171,9 +171,39 @@ enum class Section { ROWS, COMPLETED }
 
 /**
  * A row the room no longer lists, painted as it last was while its choreography plays out ([Motion.ghost]):
- * [row] as the last read listed it, at [index] in [section]. Inert: it takes no taps and never counts.
+ * [row] as the last read listed it, in [section], under the rows painted [above] it then (nearest first,
+ * ghosts included). Inert: it takes no taps and never counts.
  */
-data class Ghost(val row: TaskRow, val section: Section, val index: Int)
+data class Ghost(val row: TaskRow, val section: Section, val above: List<String>)
+
+/** A row the list draws: one the room lists, or a [ghost] painted where it last was. */
+data class Shown(val row: TaskRow, val ghost: Boolean = false)
+
+/**
+ * The rows of [section] as the list draws them: the room's own [rows], with each of the [ghosts] in that
+ * section put back where it was painted, under the nearest row it was painted under that is still drawn
+ * (at the top when none is). So a ghost keeps its place among the rows as other ghosts come and go, and
+ * when rows above it leave. A ghost whose task the rows list (a read from before its latest toggle) isn't
+ * drawn twice.
+ */
+fun withGhosts(rows: List<TaskRow>, ghosts: List<Ghost>, section: Section): List<Shown> {
+    val out = rows.mapTo(ArrayList(rows.size + ghosts.size)) { Shown(it) }
+    if (ghosts.isEmpty()) return out
+    val listed = rows.mapTo(HashSet()) { it.id }
+    // The ones painted higher first, so a ghost painted under another finds it drawn.
+    for (g in ghosts.filter { it.section == section && it.row.id !in listed }.sortedBy { it.above.size }) {
+        val under = g.above.firstNotNullOfOrNull { id -> out.indexOfFirst { it.row.id == id }.takeIf { it >= 0 } }
+        out.add(if (under == null) 0 else under + 1, Shown(g.row, ghost = true))
+    }
+    return out
+}
+
+/** The ghost [row] would leave in [section], drawn as [rows] with [ghosts]: under the rows painted above it. */
+fun ghostAt(row: TaskRow, section: Section, rows: List<TaskRow>, ghosts: List<Ghost>): Ghost {
+    val painted = withGhosts(rows, ghosts, section)
+    val at = painted.indexOfFirst { it.row.id == row.id }.coerceAtLeast(0)
+    return Ghost(row, section, painted.subList(0, at).asReversed().map { it.row.id })
+}
 
 /**
  * A row's choreography: drawn in [section] (where it was toggled; for [Phase.Enter], where it entered),
@@ -541,6 +571,9 @@ class Motion {
 
     /** The ghosts, each as the room last listed it. */
     fun ghosts(): List<Ghost> = ghosts.values.toList()
+
+    /** The tasks whose rows are ghosts. */
+    fun ghostIds(): Set<String> = ghosts.keys.toSet()
 
     /**
      * Stops the row of task [id] at once, ghost or not: a fresh read lists the task again (it's drawn as

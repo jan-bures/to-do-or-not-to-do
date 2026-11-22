@@ -24,8 +24,9 @@ import app.todoornot.model.rowIn
 import app.todoornot.model.Section
 import app.todoornot.model.UnpairQuestion
 import app.todoornot.model.unsentCount
+import app.todoornot.ui.showsEmptyLine
 import app.todoornot.ui.unpairWording
-import app.todoornot.ui.withGhosts
+import app.todoornot.model.withGhosts
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
@@ -59,17 +60,30 @@ private fun settledFrom(at: Long) = at + maxOf(M.OVERLAY_OUT, M.CHECK_TICK)
 private fun TodoModel.drawn(): List<String> =
     withGhosts(ui.value.room.tasks, motion.ghosts(), Section.ROWS).map { it.row.id }
 
+/** The filter [WithAgent] answers itself: the tasks the owner changed last. */
+private const val BY_OWNER = "updated_by:owner"
+
 /**
- * The fixture engine with an agent at work: what [agentSetDone] changes is an agent's latest change, so
- * Agent activity lists it first, as the server's own engine would once an agent's command lands (the
- * fixture engine writes only as its owner). Everything else is the fixture engine's.
+ * The fixture engine with an agent at work: what [agentSetDone] and [agentTouch] change is an agent's
+ * latest change, so Agent activity lists it first, and [BY_OWNER] no longer lists it, as the server's own
+ * engine would once an agent's command lands (the fixture engine writes only as its owner). A list [gone]
+ * (a sync deleted it) falls back to My Day, as the engine resolves it. Everything else is the fixture
+ * engine's.
  */
 private class WithAgent(private val real: TodoEngine) : TodoEngine(NoHandle) {
     /** The tasks an agent touched last, the latest first, until the owner changes them. */
     private val touched = ArrayList<String>()
 
+    /** A room a sync deleted: the engine shows My Day for it. */
+    var gone: RoomKey? = null
+
     fun agentSetDone(id: String, done: Boolean) {
         real.setDone(id, done)
+        agentTouch(id)
+    }
+
+    /** An agent changes the task (renames it, say) without completing or reopening it. */
+    fun agentTouch(id: String) {
         touched.remove(id)
         touched.add(0, id)
     }
@@ -80,7 +94,10 @@ private class WithAgent(private val real: TodoEngine) : TodoEngine(NoHandle) {
     }
 
     override fun roomPlaced(key: RoomKey, filter: String, placement: RowPlacement, now: LocalNow): RoomView {
-        val view = real.roomPlaced(key, filter, placement, now)
+        val view = real.roomPlaced(if (key == gone) MY_DAY else key, filter, placement, now)
+        if (filter == BY_OWNER) {
+            return view.copy(tasks = view.tasks.filter { it.id !in touched }, completed = view.completed.filter { it.id !in touched })
+        }
         if (key != AGENTS || touched.isEmpty()) return view
         val all = real.roomPlaced(ALL, "", placement, now)
         val rows = touched.mapNotNull { id -> (all.tasks + all.completed).firstOrNull { it.id == id } }
@@ -576,7 +593,7 @@ class TodoModelTest {
         assertEquals(engine.room(AGENTS, FIXTURE_NOW).total, m.ui.value.room.total)
         assertEquals(engine.room(AGENTS, FIXTURE_NOW).open, m.ui.value.room.open)
         // But it's painted where it was, as it was, filling.
-        assertEquals(listOf(Ghost(row, Section.ROWS, index)), m.motion.ghosts())
+        assertEquals(listOf(Ghost(row, Section.ROWS, order.take(index).reversed())), m.motion.ghosts())
         assertEquals(order, m.drawn())
         assertEquals(true, m.motion.checked(row.id))
         // A tap on it does nothing at all.
@@ -719,6 +736,277 @@ class TodoModelTest {
         assertNull(m.motion.row(row.id))
         assertTrue(m.ui.value.room.tasks.first().done)
         assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /**
+     * The owner completes an agent's task in Agent activity; while its ghost holds, an agent renames it, so
+     * the room lists it again. The read that lists it shows it as it is, done, never as the open row the
+     * hold would place.
+     */
+    @Test
+    fun a_ghost_the_room_lists_again_mid_hold_shows_as_it_is() {
+        val engine = WithAgent(fixtureEngine())
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        m.open(AGENTS)
+        s.drain()
+        val order = m.ui.value.room.tasks.map { it.id }
+        val row = m.ui.value.room.tasks.first { it.id != order.first() && !it.done }
+        m.setDone(row.id, true, m.ui.value.generation)
+        s.drain()
+        assertTrue(m.motion.motion.isGhost(row.id))
+        assertEquals(setOf(row.id), m.motion.motion.holding())
+        m.frame(EXIT_AT - 100)
+        s.drain()
+        // An agent renames it, and the engine says so.
+        engine.agentTouch(row.id)
+        s.changed()
+        fun asItIs() {
+            val listed = m.ui.value.room.tasks.firstOrNull { it.id == row.id } ?: return
+            assertTrue("listed done", listed.done)
+            assertEquals(true, m.motion.checked(row.id) ?: listed.done)
+        }
+        s.drain { asItIs() }
+        val listed = m.ui.value.room.tasks.first()
+        assertEquals(row.id, listed.id)
+        assertTrue(listed.done)
+        assertTrue(m.motion.ghosts().isEmpty())
+        assertNull(m.motion.row(row.id))
+        assertTrue(m.motion.motion.holding().isEmpty())
+        assertEquals(listOf(row.id) + (order - row.id), m.drawn())
+        m.frame(time + 5_000)
+        s.drain { asItIs() }
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /**
+     * On a wide screen, the detail pane's checkbox, tapped after another room opens and before its read
+     * lands, only writes; so does Undo in that gap. Nothing in the new room is held, placed or painted.
+     */
+    @Test
+    fun the_detail_checkbox_and_undo_in_the_gap_after_a_room_switch_only_write() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.select(id)
+        s.drain()
+        val shown = m.ui.value
+        assertEquals(id, shown.detail?.id)
+        m.open(ALL)
+        assertEquals("the screen still shows My Day", MY_DAY, m.ui.value.room.key)
+        // The detail pane's checkbox, as the pane passes it.
+        m.setDone(id, true, shown.generation, row = false)
+        assertTrue(m.motion.motion.ids().isEmpty())
+        s.drain { assertTrue(m.motion.motion.ids().isEmpty()) }
+        assertEquals(true, engine.taskDone(id))
+        assertEquals(ALL, m.ui.value.room.key)
+        assertTrue(m.ui.value.room.completed.any { it.id == id })
+        assertTrue(m.motion.motion.holding().isEmpty())
+        // Undo, after My Day opens again and before its read lands.
+        val toast = m.ui.value.toast!!
+        assertEquals(id, toast.reopen)
+        m.open(MY_DAY)
+        assertEquals(ALL, m.ui.value.room.key)
+        m.undo(toast)
+        assertTrue(m.motion.motion.ids().isEmpty())
+        s.drain { assertTrue(m.motion.motion.ids().isEmpty()) }
+        assertEquals(false, engine.taskDone(id))
+        assertEquals(MY_DAY, m.ui.value.room.key)
+        assertTrue(m.ui.value.room.tasks.any { it.id == id })
+        assertTrue(m.motion.motion.reopening().isEmpty())
+        assertTrue(m.motion.ghosts().isEmpty())
+        // In the room on screen, the detail pane's checkbox moves as ever.
+        m.setDone(id, true, m.ui.value.generation, row = false)
+        assertEquals(setOf(id), m.motion.motion.holding())
+    }
+
+    /**
+     * A task completes in a list, and a sync deletes the list (the task now elsewhere, in My Day): the
+     * engine falls back to My Day. That's a new room, at rest: nothing of the list's choreography plays on
+     * in My Day, and a tap on a row of the list only writes.
+     */
+    @Test
+    fun a_room_the_engine_falls_back_from_leaves_its_motion_behind() {
+        val real = fixtureEngine()
+        val (list, id) = real.home(FIXTURE_NOW).groups.flatMap { it.lists }.firstNotNullOf { l ->
+            real.room(l.key, FIXTURE_NOW).tasks.firstOrNull { it.myDay && !it.done }?.let { l.key to it.id }
+        }
+        val engine = WithAgent(real)
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        m.open(list)
+        s.drain()
+        val inList = m.ui.value
+        assertEquals(list, inList.room.key)
+        m.setDone(id, true, inList.generation)
+        s.drain()
+        assertEquals(setOf(id), m.motion.motion.holding())
+        m.frame(EXIT_AT - 100)
+        s.drain()
+        engine.gone = list
+        s.changed()
+        fun atRest() {
+            val ui = m.ui.value
+            if (ui.room.key == list) return
+            assertNotEquals(inList.generation, ui.generation)
+            assertFalse("not held open", ui.room.tasks.any { it.id == id })
+            assertTrue(m.motion.motion.ids().isEmpty())
+            assertTrue(m.motion.ghosts().isEmpty())
+        }
+        s.drain { atRest() }
+        assertEquals(MY_DAY, m.ui.value.room.key)
+        atRest()
+        assertEquals(real.room(MY_DAY, FIXTURE_NOW).done, m.ui.value.room.done)
+        // A tap on a row of the list only writes.
+        m.setDone(id, false, inList.generation)
+        assertTrue(m.motion.motion.ids().isEmpty())
+        s.drain()
+        assertEquals(false, real.taskDone(id))
+        assertTrue(m.motion.motion.ids().isEmpty())
+        m.frame(time + 5_000)
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /**
+     * Under a filter on who changed a task last, the owner completes a task and undoes it. While it settles,
+     * an agent completes it, and the read that has it done no longer lists it: its row plays on as a ghost,
+     * then collapses out, never snapping.
+     */
+    @Test
+    fun a_settling_row_the_data_drops_plays_out_as_a_ghost() {
+        val engine = WithAgent(fixtureEngine())
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        m.open(ALL)
+        m.setFilter(BY_OWNER)
+        s.drain()
+        val order = m.ui.value.room.tasks.map { it.id }
+        val row = m.ui.value.room.tasks.first { !it.done }
+        m.setDone(row.id, true, m.ui.value.generation)
+        s.drain()
+        val undoAt = EXIT_AT - 100
+        m.frame(undoAt)
+        m.undo(m.ui.value.toast!!)
+        s.drain()
+        assertEquals(false, engine.taskDone(row.id))
+        assertEquals(order, m.drawn())
+        // Mid-settle, an agent completes it.
+        val settled = settledFrom(undoAt)
+        m.frame((undoAt + settled) / 2)
+        engine.agentSetDone(row.id, true)
+        s.changed()
+        fun inPlace() = assertEquals(order, m.drawn())
+        s.drain { inPlace() }
+        assertFalse(m.ui.value.room.tasks.any { it.id == row.id })
+        assertTrue(m.motion.motion.isGhost(row.id))
+        for (t in listOf(settled, settled + M.ROW_COLLAPSE / 2)) {
+            m.frame(t)
+            s.drain { inPlace() }
+        }
+        assertTrue(m.motion.rowIn(row.id, Section.ROWS)!!.height < 1f)
+        m.frame(settled + M.ROW_COLLAPSE)
+        s.drain()
+        assertEquals(order - row.id, m.drawn())
+        assertTrue(m.motion.ghosts().isEmpty())
+        m.frame(time + 5_000)
+        assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    /** A task deleted while its row settles stops at once: there is nothing to paint. */
+    @Test
+    fun a_settling_row_whose_task_is_deleted_stops_at_once() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        m.setDone(id, true)
+        s.drain()
+        val undoAt = EXIT_AT - 100
+        m.frame(undoAt)
+        m.undo(m.ui.value.toast!!)
+        s.drain()
+        m.frame((undoAt + settledFrom(undoAt)) / 2)
+        engine.fixtureDeleteTask(id)
+        s.changed()
+        s.drain()
+        assertFalse(m.drawn().contains(id))
+        assertTrue(m.motion.ghosts().isEmpty())
+        assertNull(m.motion.row(id))
+    }
+
+    /**
+     * In Agent activity the owner completes a task, then another two rows below it while the first is a
+     * ghost: every row stays where it was painted as the second ghost arrives and as the first leaves.
+     */
+    @Test
+    fun staggered_ghosts_keep_the_rows_in_order() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        m.open(AGENTS)
+        s.drain()
+        val rows = m.ui.value.room.tasks
+        val order = rows.map { it.id }
+        val i = rows.indices.first { it + 2 < rows.size && !rows[it].done && !rows[it + 2].done }
+        val a = order[i]
+        val c = order[i + 2]
+        m.setDone(a, true, m.ui.value.generation)
+        s.drain { assertEquals(order, m.drawn()) }
+        assertTrue(m.motion.motion.isGhost(a))
+        // The second ghost arrives.
+        val second = 500L
+        m.frame(second)
+        m.setDone(c, true, m.ui.value.generation)
+        assertEquals(order, m.drawn())
+        s.drain { assertEquals(order, m.drawn()) }
+        assertEquals(setOf(a, c), m.motion.motion.ghostIds())
+        // The first leaves.
+        m.frame(RELEASE_AT)
+        assertEquals(order - a, m.drawn())
+        s.drain { assertEquals(order - a, m.drawn()) }
+        assertEquals(setOf(c), m.motion.motion.ghostIds())
+        m.frame(second + RELEASE_AT)
+        s.drain { assertEquals(order - a - c, m.drawn()) }
+        assertTrue(m.motion.ghosts().isEmpty())
+    }
+
+    /**
+     * The filter's only match is completed in Agent activity and leaves as a ghost: "Nothing matches the
+     * filter" waits until it has gone, so it never pushes the ghost down.
+     */
+    @Test
+    fun the_empty_line_waits_for_the_last_ghost() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val m = s.model
+        s.drain()
+        m.open(AGENTS)
+        s.drain()
+        val titles = m.ui.value.room.tasks.groupBy { it.title }
+        val row = m.ui.value.room.tasks.first { !it.done && titles[it.title]!!.size == 1 }
+        m.setFilter(row.title)
+        s.drain()
+        assertEquals(listOf(row.id), m.ui.value.room.tasks.map { it.id })
+        fun empty() = showsEmptyLine(m.ui.value.room, m.motion.ghosts())
+        m.setDone(row.id, true, m.ui.value.generation)
+        s.drain { assertFalse(empty()) }
+        assertTrue(m.ui.value.room.tasks.isEmpty())
+        assertTrue(m.motion.motion.isGhost(row.id))
+        for (t in listOf(EXIT_AT, RELEASE_AT - 1)) {
+            m.frame(t)
+            s.drain { assertFalse(empty()) }
+        }
+        m.frame(RELEASE_AT)
+        s.drain()
+        assertTrue(m.motion.ghosts().isEmpty())
+        assertTrue(empty())
     }
 
     /**
@@ -892,13 +1180,22 @@ class TodoModelTest {
     fun ghosts_are_drawn_back_in_their_places() {
         val rows = (0 until 4).map { fixtureEngine().room(MY_DAY, FIXTURE_NOW).tasks[it] }
         val (a, b, c, d) = rows
-        val drawn = withGhosts(listOf(b, d), listOf(Ghost(c, Section.ROWS, 2), Ghost(a, Section.ROWS, 0)), Section.ROWS)
-        assertEquals(listOf(a, b, c, d).map { it.id }, drawn.map { it.row.id })
+        fun ghost(t: app.todoornot.core.TaskRow, vararg above: app.todoornot.core.TaskRow, section: Section = Section.ROWS) =
+            Ghost(t, section, above.map { it.id })
+        fun ids(rows: List<app.todoornot.model.Shown>) = rows.map { it.row.id }
+        // Each under the row it was painted under (C was painted under B, with the ghost of A above).
+        val drawn = withGhosts(listOf(b, d), listOf(ghost(c, b, a), ghost(a)), Section.ROWS)
+        assertEquals(listOf(a, b, c, d).map { it.id }, ids(drawn))
         assertEquals(listOf(true, false, true, false), drawn.map { it.ghost })
-        // Another section's ghosts, and a ghost the rows list again, aren't drawn here; a place past the end
-        // is the end.
-        val other = withGhosts(listOf(b), listOf(Ghost(a, Section.COMPLETED, 0), Ghost(b, Section.ROWS, 0), Ghost(c, Section.ROWS, 9)), Section.ROWS)
-        assertEquals(listOf(b.id to false, c.id to true), other.map { it.row.id to it.ghost })
+        // The row it was under has gone: under the nearest one above that's still drawn, else at the top.
+        assertEquals(listOf(b, c, d).map { it.id }, ids(withGhosts(listOf(b, d), listOf(ghost(c, b, a)), Section.ROWS)))
+        assertEquals(listOf(a, c, d).map { it.id }, ids(withGhosts(listOf(a, d), listOf(ghost(c, b, a)), Section.ROWS)))
+        assertEquals(listOf(c, d).map { it.id }, ids(withGhosts(listOf(d), listOf(ghost(c, b, a)), Section.ROWS)))
+        // Under another ghost, which goes under its own.
+        assertEquals(listOf(b, c, d).map { it.id }, ids(withGhosts(listOf(d), listOf(ghost(c, b, a), ghost(b, a)), Section.ROWS)))
+        // Another section's ghosts, and a ghost the rows list again, aren't drawn here.
+        val other = withGhosts(listOf(b), listOf(ghost(a, section = Section.COMPLETED), ghost(b), ghost(c, d)), Section.ROWS)
+        assertEquals(listOf(c.id to true, b.id to false), other.map { it.row.id to it.ghost })
     }
 
     /** The engine's own listener, calling back on its own threads, refreshes the screen. */

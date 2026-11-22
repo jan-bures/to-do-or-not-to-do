@@ -53,7 +53,7 @@ private fun taskRow(id: String, done: Boolean = false) = TaskRow(
 )
 
 /** [id]'s row, last listed at [index] among the open rows. */
-private fun ghostOf(id: String, index: Int = 0) = Ghost(taskRow(id), Section.ROWS, index)
+private fun ghostOf(id: String) = Ghost(taskRow(id), Section.ROWS, emptyList())
 
 /**
  * The completion choreography, the sun and the dusk as pure functions of a clock: the same model, and the
@@ -179,9 +179,9 @@ class MotionTest {
             mo.reopen("a", 300, pace)
             val settled = mo.advance(5_000)
             assertEquals(listOf(Release.Settled("a")), settled)
-            assertTrue(mo.ghost("a", ghostOf("a", 2), 6_000, pace))
+            assertTrue(mo.ghost("a", ghostOf("a"), 6_000, pace))
             assertTrue(mo.isGhost("a"))
-            assertEquals(listOf(ghostOf("a", 2)), mo.ghosts())
+            assertEquals(listOf(ghostOf("a")), mo.ghosts())
             assertTrue(mo.lingering().isEmpty())
             assertEquals(Section.ROWS, mo.placedIn("a"))
             assertEquals("$pace: it starts where it is", RowLook.rest(false), mo.look("a", 6_000))

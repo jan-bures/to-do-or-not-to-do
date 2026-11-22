@@ -84,7 +84,7 @@ private fun Screen(
                     RoomPane(state, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed)
                     Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
                     if (detail != null) {
-                        DetailPane(detail, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
+                        DetailPane(detail, actions, standalone = false, state.generation, Modifier.weight(1f).statusBarsPadding())
                     } else {
                         NoDetail(Modifier.weight(1f))
                     }
@@ -94,7 +94,7 @@ private fun Screen(
                     RoomPane(state, actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed)
                     if (detail != null) {
                         BackHandler { actions.select(null) }
-                        DetailPane(detail, actions, standalone = true)
+                        DetailPane(detail, actions, standalone = true, state.generation)
                     }
                 }
             }

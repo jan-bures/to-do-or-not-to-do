@@ -58,13 +58,17 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 - **Ghosts.** A read can drop a row while it plays, or while it settles, for a reason other than its own
   done state: a toggle makes the owner the task's last editor, so Agent activity, or a filter such as
   `updated_by:agent`, no longer lists it. The app then keeps a ghost (`Motion.ghost`): the row's last
-  `TaskRow`, painted at its last place, which plays the rest of its choreography from there. A completing or
+  `TaskRow`, painted at its last place (under the nearest row it was painted under that is still drawn, so
+  ghosts that come and go never reorder the rows), which plays the rest of its choreography from there. A
+  row that drops out while it settles because the data changed (an agent completed it, and the filter no
+  longer matches) becomes a ghost too, rather than snapping out. A completing or
   reopening ghost collapses out as the row would have and is gone at its release (it enters nowhere); a
   reversed one settles, then collapses out (`ROW_COLLAPSE`, `EXIT`; a `REDUCED_FADE` fade with reduced
-  motion) and is gone. Ghosts are paint only: a tap on one does nothing (the Undo toast still reverses it),
-  accessibility skips them, and they never count towards the header, the counts or the sun. If a fresh read
-  lists the task again (an agent completed it once more), the ghost goes at once and the live row shows
-  as that read has it, at rest. Switching rooms ends every ghost.
+  motion) and is gone. Ghosts are paint only: a tap on one does nothing (the Undo toast and the detail
+  pane still reverse it), accessibility skips them, and they never count towards the header, the counts or
+  the sun. The empty line waits until the last ghost has gone. If a fresh read lists the task again (an
+  agent changed it once more), that read lists it as it is, not placed, so the ghost goes at once and the
+  live row shows its true state, at rest. Switching rooms ends every ghost.
 - **Interrupting.** A second tap part way reverses the row from where it is, in place, and nothing is
   released. Until the engine has the reversal written, the reads still place the task as the tap asked, even
   if the write lands after the row has settled, so a read in between never moves the row or changes the
@@ -77,10 +81,11 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   task stops at once, and so does a row in a section that isn't shown (a closed Completed); switching rooms
   (or creating a list, which opens it) puts everything at rest. A row that has gone (or hasn't arrived)
   takes no taps.
-- **Room generations.** Every way into a room starts a new generation (`UiState.generation`), and a row tap
-  carries the generation its rows were read in. A tap on a row still showing from the room before, in the
-  moment before the new room's rows arrive, is written (with its toast), but it starts no choreography and
-  places, holds or paints nothing in the new room.
+- **Room generations.** Every way into a room starts a new generation (`UiState.generation`), and so does a
+  read where the engine resolves the room to another (a sync deleted the open list: My Day). A row tap and
+  the detail pane's checkbox carry the generation they were read in; Undo uses the one on screen. A toggle
+  from the room before, in the moment before the new room's rows arrive, is written (with its toast), but it
+  starts no choreography and places, holds or paints nothing in the new room.
 - **The sun** eases from where it is to wherever the count puts it, whatever changed it (a sync too),
   retargeting mid-travel. A new room places it without travel.
 - **Dusk.** Once My Day's last row has left, the header grows into the dusk scene over `DUSK` (`SUN`): the

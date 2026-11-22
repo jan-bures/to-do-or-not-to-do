@@ -62,10 +62,11 @@ private const val IMPORTANT: UByte = 3u
 /**
  * A task's detail: breadcrumb, title (editable), steps (tick them, or add one), notes, fields and
  * sources. The bar's actions are in the desktop's order: My Day (sun), Important (star), then close.
- * Beside the list on the unfolded phone; on its own, with a back arrow, on the cover screen.
+ * Beside the list on the unfolded phone; on its own, with a back arrow, on the cover screen. Its checkbox
+ * carries the room [generation] it was read in, so a tap after another room opens only writes.
  */
 @Composable
-fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, modifier: Modifier = Modifier) {
+fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, generation: Long, modifier: Modifier = Modifier) {
     val r = LocalDesign.current.room
     Column(modifier.fillMaxSize().background(r.pane).then(if (standalone) Modifier.statusBarsPadding() else Modifier)) {
         Row(
@@ -106,7 +107,7 @@ fun DetailPane(detail: TaskDetail, actions: Actions, standalone: Boolean, modifi
         ) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
                 Box(Modifier.size(P.COL_CHECK.dp, Tokens.Type.DETAIL_TITLE_PHONE.lineHeight.dp), contentAlignment = Alignment.Center) {
-                    Check(detail.done, { actions.setDone(detail.id, it) }, detail.title)
+                    Check(detail.done, { actions.setDone(detail.id, it, generation, row = false) }, detail.title)
                 }
                 TitleField(detail, actions, Modifier.weight(1f))
             }
