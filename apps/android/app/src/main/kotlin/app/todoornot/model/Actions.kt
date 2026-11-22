@@ -13,12 +13,17 @@ interface Actions {
 
     /** The star: important is high priority, as on the desktop. */
     fun setImportant(id: String, on: Boolean)
-    fun addStep(task: String, title: String)
+
+    /** Adds a step; [onResult] gets null once it is added, else why it wasn't. */
+    fun addStep(task: String, title: String, onResult: (String?) -> Unit)
     fun setStepDone(id: String, done: Boolean)
     fun createList(name: String)
 
     /** Filters the open room: the query language when it parses, else words in the title. */
     fun setFilter(text: String)
+
+    /** Opens or closes the filter field; closing clears the filter. */
+    fun setSearching(on: Boolean)
 
     /** Folds or unfolds a collection in the drawer. */
     fun toggleCollection(id: String)
@@ -43,10 +48,11 @@ interface Actions {
         override fun rename(id: String, title: String) = Unit
         override fun setMyDay(id: String, on: Boolean) = Unit
         override fun setImportant(id: String, on: Boolean) = Unit
-        override fun addStep(task: String, title: String) = Unit
+        override fun addStep(task: String, title: String, onResult: (String?) -> Unit) = Unit
         override fun setStepDone(id: String, done: Boolean) = Unit
         override fun createList(name: String) = Unit
         override fun setFilter(text: String) = Unit
+        override fun setSearching(on: Boolean) = Unit
         override fun toggleCollection(id: String) = Unit
         override fun undo(t: Toast) = Unit
         override fun dismissToast(t: Toast) = Unit

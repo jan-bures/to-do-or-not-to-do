@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -213,40 +214,54 @@ private fun StepMark(done: Boolean, title: String, onToggle: (Boolean) -> Unit) 
     }
 }
 
-/** "+ Add step" at the end of the steps. Done adds it and keeps the field open for the next one. */
+/**
+ * "+ Add step" at the end of the steps. Done adds it and keeps the field open for the next one. The
+ * draft is kept until the step is added; if it is refused (too long, say), the reason shows here, in the
+ * detail pane, where a toast would be hidden.
+ */
 @Composable
 private fun AddStep(task: String, actions: Actions) {
     val r = LocalDesign.current.room
-    var text by remember(task) { mutableStateOf("") }
+    var text by rememberSaveable(task) { mutableStateOf("") }
+    var problem by remember(task) { mutableStateOf<String?>(null) }
     fun submit() {
         val t = text.trim()
-        if (t.isNotEmpty()) actions.addStep(task, t)
-        text = ""
-    }
-    Row(
-        Modifier.fillMaxWidth().height(P.TOUCH.dp).hairline(r.line),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-    ) {
-        Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
-            Icon("plus", r.accentStrong, size = C.ICON_SMALL.dp)
+        if (t.isEmpty()) return
+        actions.addStep(task, t) { error ->
+            problem = error
+            // Clear only what was sent, so anything typed meanwhile stays.
+            if (error == null && text.trim() == t) text = ""
         }
-        BasicTextField(
-            value = text,
-            onValueChange = { text = it.replace("\n", "") },
-            modifier = Modifier.weight(1f).semantics { contentDescription = "Add step" },
-            textStyle = Tokens.Type.STEP.style(r.ink),
-            singleLine = true,
-            cursorBrush = SolidColor(r.accent),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { submit() }),
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (text.isEmpty()) Label("Add step", Tokens.Type.STEP, r.ink3)
-                    inner()
-                }
-            },
-        )
+    }
+    Column(Modifier.fillMaxWidth().hairline(r.line)) {
+        Row(
+            Modifier.fillMaxWidth().height(P.TOUCH.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+        ) {
+            Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
+                Icon("plus", r.accentStrong, size = C.ICON_SMALL.dp)
+            }
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it.replace("\n", ""); problem = null },
+                modifier = Modifier.weight(1f).semantics { contentDescription = "Add step" },
+                textStyle = Tokens.Type.STEP.style(r.ink),
+                singleLine = true,
+                cursorBrush = SolidColor(r.accent),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submit() }),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (text.isEmpty()) Label("Add step", Tokens.Type.STEP, r.ink3)
+                        inner()
+                    }
+                },
+            )
+        }
+        problem?.let {
+            Label(it, Tokens.Type.META_PHONE, r.dangerInk, Modifier.padding(start = P.COL_CHECK.dp + S.S3.dp, bottom = S.S2.dp), maxLines = 3)
+        }
     }
 }
 

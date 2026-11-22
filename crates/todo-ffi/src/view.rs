@@ -283,6 +283,9 @@ pub struct RoomView {
     pub tomorrow: Option<Tomorrow>,
     /// A filter is applied: the rows (not the progress) are only the matching ones.
     pub filtered: bool,
+    /// The finished day (not filtered): the next day's name ("Sunday") for *Plan Sunday*, even when
+    /// nothing is due then and there is no hand-over.
+    pub plan_weekday: Option<String>,
 }
 
 /// A step in the detail pane.
@@ -704,6 +707,10 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         }
     ) && progress_total > 0
         && progress_done >= progress_total;
+    let plan_weekday = (finished && !filtered)
+        .then(|| add_days(today, 1))
+        .flatten()
+        .map(|d| labels::weekday(d).to_owned());
     let tomorrow = if finished && !filtered {
         tomorrow(state, &ix, now)
     } else {
@@ -734,6 +741,7 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         add_placeholder: placeholder,
         tomorrow,
         filtered,
+        plan_weekday,
         key,
     }
 }

@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 /** A short message above the composer, with an optional undo. */
 data class Toast(
@@ -44,7 +45,9 @@ data class UiState(
     val toast: Toast?,
     /** Set while the unpair confirmation is showing. */
     val unpairing: UnpairQuestion? = null,
-    /** The filter typed into the bar: query language or words; empty when not filtering. */
+    /** The filter field is open (the search button was tapped, or a filter is typed). */
+    val searching: Boolean = false,
+    /** The filter typed into the field: query language or words; empty when not filtering. */
     val filter: String = "",
     /** Collections folded in the drawer, by ID. */
     val collapsed: Set<String> = emptySet(),
@@ -117,6 +120,15 @@ class TodoModel(
 
     @Volatile private var filter = ""
 
+    @Volatile private var searching = false
+
+    /** Refreshes in the order they started; one that finishes after a newer one is dropped. */
+    private val refreshes = AtomicLong()
+
+    private var published = 0L
+
+    private val publishing = Any()
+
     @Volatile private var collapsed: Set<String> = emptySet()
 
     @Volatile private var syncedAt: LocalNow? = null
@@ -143,12 +155,14 @@ class TodoModel(
 
     /** Reads the whole screen state synchronously (the screenshot tests use this directly). */
     fun read(): UiState {
+        // The inputs first: the state read belongs to this filter, whatever changes while reading.
+        val f = filter
+        val open = searching
         val n = now()
         val detail = selected?.let { engine.task(it, n) }
         if (detail == null) selected = null
         val status = engine.status()
         if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
-        val f = filter
         return UiState(
             home = engine.home(n),
             room = if (f.isBlank()) engine.room(key, n) else engine.roomMatching(key, f, n),
@@ -157,14 +171,27 @@ class TodoModel(
             failed = engine.failed(),
             toast = toast,
             unpairing = if (askingUnpair) UnpairQuestion(unsentCount(status), unpairChanged) else null,
+            searching = open || f.isNotEmpty(),
             filter = f,
             collapsed = collapsed,
             syncedAt = syncedAt,
         )
     }
 
+    /**
+     * Re-reads the screen. Reads can finish out of order (a slow read for "m" after the read for
+     * "milk"), so only the newest read so far is published, and only while its filter is still the
+     * current one: the rows always belong to the filter on screen.
+     */
     suspend fun refresh() {
-        _ui.value = withContext(io) { read() }
+        val generation = refreshes.incrementAndGet()
+        val state = withContext(io) { read() }
+        synchronized(publishing) {
+            if (generation > published && state.filter == filter) {
+                published = generation
+                _ui.value = state
+            }
+        }
     }
 
     private fun act(block: () -> Unit) {
@@ -186,16 +213,41 @@ class TodoModel(
         toast = t
     }
 
-    /** Opens a room. A filter belongs to the room it was typed in, so it is cleared. */
+    /**
+     * Opens a room, even the one already open. A filter belongs to the room it was typed in, so the
+     * filter and its field are cleared together.
+     */
     override fun open(room: RoomKey) {
-        key = room
-        selected = null
-        filter = ""
+        synchronized(publishing) {
+            key = room
+            selected = null
+            filter = ""
+            searching = false
+            _ui.value = _ui.value.copy(filter = "", searching = false)
+        }
         scope.launch { refresh() }
     }
 
+    /**
+     * The model holds the filter: the field shows [UiState.filter], so the text on screen and the rows
+     * under it always come from here. The text is published at once (typing stays responsive), the rows
+     * when they have been read.
+     */
     override fun setFilter(text: String) {
-        filter = text
+        synchronized(publishing) {
+            filter = text
+            _ui.value = _ui.value.copy(filter = text, searching = searching || text.isNotEmpty())
+        }
+        scope.launch { refresh() }
+    }
+
+    /** Opens or closes the filter field; closing it clears the filter. */
+    override fun setSearching(on: Boolean) {
+        synchronized(publishing) {
+            searching = on
+            if (!on) filter = ""
+            _ui.value = _ui.value.copy(searching = on || filter.isNotEmpty(), filter = filter)
+        }
         scope.launch { refresh() }
     }
 
@@ -210,6 +262,7 @@ class TodoModel(
         key = room
         selected = null
         filter = ""
+        searching = false
     }
 
     override fun select(id: String?) {
@@ -248,7 +301,26 @@ class TodoModel(
 
     override fun setImportant(id: String, on: Boolean) = act { engine.setImportant(id, on) }
 
-    override fun addStep(task: String, title: String) = act { engine.addStep(task, title) }
+    /**
+     * Adds a step and says how it went: null once it is added, else why not (a title too long, say),
+     * so the field can keep the draft and show the reason in the detail pane, where a toast is hidden.
+     */
+    override fun addStep(task: String, title: String, onResult: (String?) -> Unit) {
+        scope.launch {
+            val problem = writes.withLock {
+                withContext(io) {
+                    try {
+                        engine.addStep(task, title)
+                        null
+                    } catch (e: FfiException) {
+                        PairingModel.describe(e)
+                    }
+                }
+            }
+            onResult(problem)
+            refresh()
+        }
+    }
 
     override fun setStepDone(id: String, done: Boolean) = act { engine.setStepDone(id, done) }
 

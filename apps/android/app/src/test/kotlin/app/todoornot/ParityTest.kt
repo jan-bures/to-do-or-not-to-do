@@ -59,8 +59,10 @@ class ParityTest {
         val id = engine.taskId(admin, "Renew passport appointment")
         m.select(id)
         val before = m.ui.value.detail!!.steps.size
-        m.addStep(id, "Print the form")
+        var result: String? = "not called"
+        m.addStep(id, "Print the form") { result = it }
         advanceUntilIdle()
+        assertNull(result)
         val steps = m.ui.value.detail!!.steps
         assertEquals(before + 1, steps.size)
         assertEquals("Print the form", steps.last().title)
@@ -102,6 +104,98 @@ class ParityTest {
         advanceUntilIdle()
         assertEquals("", m.ui.value.filter)
         assertFalse(m.ui.value.room.filtered)
+    }
+
+    @Test
+    fun a_refused_step_reports_why_and_adds_nothing() = runTest {
+        val engine = fixtureEngine()
+        val admin = engine.list("Admin")
+        val m = model(engine, admin)
+        val id = engine.taskId(admin, "Renew passport appointment")
+        m.select(id)
+        val before = m.ui.value.detail!!.steps.size
+        var result: String? = null
+        m.addStep(id, "x".repeat(501)) { result = it }
+        advanceUntilIdle()
+        assertTrue("the reason is given to the editor", !result.isNullOrBlank())
+        assertEquals(before, m.ui.value.detail!!.steps.size)
+        assertNull("no toast: the detail pane shows the reason", m.ui.value.toast)
+    }
+
+    @Test
+    fun opening_the_same_room_again_clears_the_filter_and_its_field() = runTest {
+        val m = model()
+        m.setSearching(true)
+        m.setFilter("rohlíky")
+        advanceUntilIdle()
+        assertTrue(m.ui.value.searching)
+        m.open(RoomKey.Smart(SmartList.MY_DAY))
+        advanceUntilIdle()
+        assertEquals("", m.ui.value.filter)
+        assertFalse(m.ui.value.searching)
+        assertFalse(m.ui.value.room.filtered)
+    }
+
+    @Test
+    fun closing_the_filter_field_clears_the_filter() = runTest {
+        val m = model()
+        m.setSearching(true)
+        advanceUntilIdle()
+        assertTrue("an open, empty field", m.ui.value.searching)
+        assertEquals("", m.ui.value.filter)
+        m.setFilter("rohlíky")
+        advanceUntilIdle()
+        m.setSearching(false)
+        advanceUntilIdle()
+        assertFalse(m.ui.value.searching)
+        assertEquals("", m.ui.value.filter)
+        assertFalse(m.ui.value.room.filtered)
+    }
+
+    @Test
+    fun a_slow_read_for_an_older_filter_never_replaces_the_newer_rows() = runTest {
+        // The read for "a" is overtaken: while it runs, the owner types on to "rohlíky", whose read
+        // finishes first. The slow one must not publish its rows, or its filter, over the newer ones.
+        lateinit var m: TodoModel
+        var overtake = false
+        m = TodoModel(
+            fixtureEngine(),
+            CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
+            UnconfinedTestDispatcher(testScheduler),
+            now = {
+                if (overtake) {
+                    overtake = false
+                    m.setFilter("rohlíky")
+                }
+                FIXTURE_NOW
+            },
+        )
+        overtake = true
+        m.setFilter("a")
+        advanceUntilIdle()
+        assertEquals("rohlíky", m.ui.value.filter)
+        assertEquals(listOf("Koupit rohlíky a mléko"), m.ui.value.room.tasks.map { it.title })
+    }
+
+    @Test
+    fun a_filter_that_matches_only_done_tasks_lists_them_without_the_empty_line() = runTest {
+        val m = model(fixtureEngine("finished"))
+        val done = m.ui.value.room.completed.first().title
+        m.setFilter(done)
+        advanceUntilIdle()
+        val room = m.ui.value.room
+        assertTrue(room.tasks.isEmpty())
+        assertTrue(room.completed.any { it.title == done })
+        assertFalse("nothing-matches is for when nothing is listed", app.todoornot.ui.showsEmptyLine(room))
+    }
+
+    @Test
+    fun a_finished_day_offers_planning_even_without_a_hand_over() = runTest {
+        val engine = fixtureEngine("finished")
+        val room = model(engine).ui.value.room
+        assertTrue(room.finished)
+        assertTrue(room.planWeekday != null)
+        assertFalse(app.todoornot.ui.showsEmptyLine(room))
     }
 
     @Test

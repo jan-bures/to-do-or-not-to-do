@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -120,20 +121,18 @@ fun RoomPane(
                 collapse.forced = v
             }
         }
-        // The filter field is open while there's a filter, or once the search button is tapped.
-        var searching by rememberSaveable(room.key.toString()) { mutableStateOf(state.filter.isNotEmpty()) }
+        // The model holds the filter and whether its field is open, so the text and the rows agree.
         Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
             RoomHeader(room, landscape, collapse, onMenu, bar) {
                 SyncChip(state.status, actions::nudge)
-                IconButton("search", "Filter", tint = if (searching) LocalDesign.current.room.accentStrong else null) {
-                    if (searching) actions.setFilter("")
-                    searching = !searching
+                IconButton("search", "Filter", tint = if (state.searching) LocalDesign.current.room.accentStrong else null) {
+                    actions.setSearching(!state.searching)
                 }
             }
             Box(Modifier.collapsing(collapse, HeaderCollapse.Part.Pills)) {
                 RoomPills(state.home, room.key, actions::open, onMenu)
             }
-            if (searching) FilterField(state.filter, room.key.toString(), actions::setFilter) { searching = false; actions.setFilter("") }
+            if (state.searching) FilterField(state.filter, actions::setFilter) { actions.setSearching(false) }
             state.failed.firstOrNull()?.let { f ->
                 Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
             }
@@ -152,17 +151,16 @@ fun RoomPane(
  * `priority>=high`), or plain words to find in titles. The rows narrow as you type; the progress doesn't.
  */
 @Composable
-private fun FilterField(filter: String, room: String, onChange: (String) -> Unit, onClose: () -> Unit) {
+private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () -> Unit) {
     val r = LocalDesign.current.room
-    var text by rememberSaveable(room) { mutableStateOf(filter) }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(room) { if (text.isEmpty()) runCatching { focus.requestFocus() } }
+    LaunchedEffect(Unit) { if (text.isEmpty()) runCatching { focus.requestFocus() } }
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
     Box(Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S4.dp, vertical = S.S2.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(Tokens.Metrics.Component.BUTTON.dp + S.S2.dp)
+                .heightIn(min = P.TOUCH.dp)
                 .clip(shape)
                 .background(r.raised)
                 .border(Tokens.Elevation.HAIRLINE.dp, if (text.isEmpty()) r.control else r.accent, shape)
@@ -173,7 +171,7 @@ private fun FilterField(filter: String, room: String, onChange: (String) -> Unit
             Icon("search", if (text.isEmpty()) r.ink3 else r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
             BasicTextField(
                 value = text,
-                onValueChange = { text = it.replace("\n", ""); onChange(text) },
+                onValueChange = { onChange(it.replace("\n", "")) },
                 modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "Filter" },
                 textStyle = Tokens.Type.SUMMARY.style(r.ink),
                 singleLine = true,
@@ -277,7 +275,9 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
         }
     }
     LazyColumn(Modifier.fillMaxSize()) {
-        if (room.tasks.isEmpty() && room.tomorrow == null && (room.completed.isEmpty() || room.filtered)) {
+        // Only when nothing at all is listed: a filter that matches only done tasks shows them under
+        // Completed, without a "nothing matches" line above them.
+        if (showsEmptyLine(room)) {
             item("empty") { Empty(room.emptyLine) }
         }
         items(room.tasks, key = { it.id }) { t ->
@@ -295,6 +295,8 @@ private fun TaskList(room: RoomView, selected: String?, actions: Actions) {
             )
         }
         room.tomorrow?.let { tomorrow(it, actions) }
+        // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
+        if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions) }
         // The finished day keeps today's Completed section under the hand-over, as on the desktop.
         if (room.completed.isNotEmpty()) {
             item("completed-header") {
@@ -380,6 +382,19 @@ private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions) {
         item("tomorrow-more") {
             val r = LocalDesign.current.room
             Label("${t.more} more", Tokens.Type.COUNT, r.ink3, Modifier.padding(start = S.S5.dp + S.S8.dp, top = S.S3.dp, bottom = S.S6.dp))
+        }
+    }
+}
+
+private fun LazyListScope.planOnly(weekday: String, actions: Actions) {
+    item("plan-next") {
+        val r = LocalDesign.current.room
+        Column(Modifier.fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
+            Label("When the sun comes up", Tokens.Type.CAPS_LABEL, r.ink3)
+            Spacer(Modifier.height(S.S2.dp))
+            Label("Nothing is due on $weekday yet.", Tokens.Type.NOTES, r.ink2)
+            Spacer(Modifier.height(S.S4.dp))
+            Button("Plan $weekday", primary = true) { actions.open(RoomKey.Smart(SmartList.PLANNED)) }
         }
     }
 }
@@ -527,3 +542,10 @@ private fun Composer(placeholder: String, draft: String, keyboard: Boolean, onAd
         }
     }
 }
+
+/**
+ * The empty line ("Nothing here yet.", "Nothing matches the filter.") only when nothing at all is listed:
+ * no open tasks, no completed ones, and no hand-over or planning for tomorrow.
+ */
+fun showsEmptyLine(room: RoomView): Boolean =
+    room.tasks.isEmpty() && room.completed.isEmpty() && room.tomorrow == null && room.planWeekday == null

@@ -609,3 +609,23 @@ fn a_room_can_be_filtered_with_the_query_language_or_words() {
     assert!(none.tasks.is_empty());
     assert_eq!(none.empty_line, "Nothing matches the filter.");
 }
+
+/// A finished day with nothing due tomorrow still offers *Plan <weekday>*, without a hand-over.
+#[test]
+fn a_finished_day_offers_planning_even_with_nothing_due_tomorrow() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(offline_config(&dir.path().join("todo.sqlite"))).unwrap();
+    let id = engine
+        .add_task(my_day(), "Water the plants".into(), now())
+        .unwrap();
+    assert_eq!(engine.room(my_day(), now()).plan_weekday, None);
+    engine.set_done(id, true).unwrap();
+    let room = engine.room(my_day(), now());
+    assert!(room.finished);
+    assert!(room.tomorrow.is_none());
+    let weekday = room.plan_weekday.expect("the next day's name");
+    assert!(weekday.ends_with("day"), "{weekday}");
+    // Not while filtering: the hand-over and its button wait.
+    let filtered = engine.room_matching(my_day(), "plants".into(), now());
+    assert_eq!(filtered.plan_weekday, None);
+}
