@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use gpui::{
     AnyWindowHandle, App, AppContext, AsyncApp, Bounds, QuitMode, TitlebarOptions, WindowBounds,
-    WindowKind, WindowOptions, point, px, size,
+    WindowOptions, point, px, size,
 };
 use gpui_platform::application;
 use gpui_windows::todo_patch;
@@ -57,29 +57,20 @@ pub fn window_size(fixture: &str) -> (f32, f32) {
 /// Typed into the quick-add fixture, to show its focused state.
 const QUICK_ADD_TYPED: &str = "Call the venue about Friday's room";
 
-fn options(width: f32, height: f32, quick: bool) -> WindowOptions {
+fn fixture_window_options(width: f32, height: f32) -> WindowOptions {
     WindowOptions {
         // Top-left of the primary display; the window may be larger than the screen at 150 %.
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
             point(px(0.), px(0.)),
             size(px(width), px(height)),
         ))),
-        titlebar: if quick {
-            None
-        } else {
-            Some(TitlebarOptions {
-                title: Some("To-do (screenshot)".into()),
-                appears_transparent: true,
-                ..Default::default()
-            })
-        },
+        titlebar: Some(TitlebarOptions {
+            title: Some("To-do (screenshot)".into()),
+            appears_transparent: true,
+            ..Default::default()
+        }),
         focus: false,
         show: false,
-        kind: if quick {
-            WindowKind::PopUp
-        } else {
-            WindowKind::Normal
-        },
         is_resizable: false,
         ..WindowOptions::default()
     }
@@ -155,6 +146,13 @@ pub fn run(shots: Vec<ScreenshotOptions>) -> anyhow::Result<i32> {
             cx.bind_keys(ui::text_area::key_bindings());
             cx.bind_keys(shell::key_bindings());
             cx.spawn(async move |cx| {
+                if shots.iter().any(|opts| opts.fixture == "quick-add")
+                    && let Err(e) = check_native_quick_add(cx).await
+                {
+                    eprintln!("error checking native quick add: {e:#}");
+                    cx.update(|cx| cx.quit());
+                    return;
+                }
                 for opts in shots {
                     if let Err(e) = render(cx, &opts).await {
                         eprintln!("error rendering {}: {e:#}", opts.out.display());
@@ -196,11 +194,11 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     };
     let logical = window_size(&opts.fixture);
     let expected = expected_size(logical, opts.scale);
+    let main_options = || fixture_window_options(logical.0, logical.1);
     let opened_at = Instant::now();
     let handle: AnyWindowHandle = cx.update(|cx| {
         if quick {
-            let (w, h) = logical;
-            cx.open_window(options(w, h, true), |window, cx| {
+            cx.open_window(quick_add::window_options(cx), |window, cx| {
                 cx.new(|cx| {
                     QuickAddView::new(
                         model::my_day_progress(&fixture.state, fixture.now.today()),
@@ -214,7 +212,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             })
             .map(Into::into)
         } else if let Some(waiting) = pairing {
-            cx.open_window(options(logical.0, logical.1, false), |window, cx| {
+            cx.open_window(main_options(), |window, cx| {
                 cx.new(|cx| {
                     PairingView::fixture(
                         theme,
@@ -228,13 +226,13 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             })
             .map(Into::into)
         } else if let Some(confirming) = failed {
-            cx.open_window(options(logical.0, logical.1, false), |_, cx| {
+            cx.open_window(main_options(), |_, cx| {
                 cx.new(|cx| FailedView::fixture(theme, confirming, cx))
             })
             .map(Into::into)
         } else {
             let store = Rc::new(Store::fixture(&fixture));
-            cx.open_window(options(logical.0, logical.1, false), |window, cx| {
+            cx.open_window(main_options(), |window, cx| {
                 let view = cx.new(|cx| {
                     let mut shell = ShellView::new(
                         store,
@@ -271,6 +269,39 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     save(&image, &opts.out, opts.overwrite)?;
     println!("wrote {} ({}x{})", opts.out.display(), got.0, got.1);
     Ok(())
+}
+
+/// Check the actual HWND before overriding the renderer's scale. The old capture-only
+/// sizing path filled in the requested bounds and masked a bug in native startup.
+async fn check_native_quick_add(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let handle = cx.update(|cx| {
+        cx.open_window(quick_add::window_options(cx), |_, cx| {
+            cx.new(|_| gpui::Empty)
+        })
+    })?;
+    let hwnd = handle.update(cx, |_, window, _| win::hwnd_of(window))?;
+    let check = |cx: &mut AsyncApp| -> anyhow::Result<()> {
+        let rect = win::window_rect(hwnd)?;
+        let scale = handle.update(cx, |_, window, _| window.scale_factor())?;
+        let got = (
+            (rect.right - rect.left) as u32,
+            (rect.bottom - rect.top) as u32,
+        );
+        let expected = expected_size(window_size("quick-add"), scale);
+        anyhow::ensure!(
+            got == expected,
+            "hidden quick-add HWND is {got:?}, expected {expected:?} at scale {scale}"
+        );
+        anyhow::ensure!(!win::is_shown(hwnd), "quick-add HWND is visible");
+        Ok(())
+    };
+    let result = check(cx)
+        .and_then(|()| quick_add::position(hwnd))
+        .and_then(|()| check(cx).context("after moving to the cursor's monitor"));
+    // Let the backend deliver any display-change callbacks queued by the move before removing the window.
+    cx.foreground_executor().spawn(async {}).await;
+    handle.update(cx, |_, window, _| window.remove_window())?;
+    result
 }
 
 async fn sleep(cx: &AsyncApp, ms: u64) {
@@ -322,11 +353,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn neither_fixture_window_kind_requests_show_or_focus() {
-        for quick in [false, true] {
-            let opts = options(MAIN_SIZE.0, MAIN_SIZE.1, quick);
-            assert!(!opts.show && !opts.focus);
-        }
+    fn main_fixture_window_does_not_request_show_or_focus() {
+        let opts = fixture_window_options(MAIN_SIZE.0, MAIN_SIZE.1);
+        assert!(!opts.show && !opts.focus);
     }
 
     #[test]

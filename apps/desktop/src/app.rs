@@ -53,7 +53,7 @@ struct Hwnds {
 /// Shows the quick-add window straight from the hotkey handler, before GPUI's next frame, and tells the UI
 /// thread to focus its input.
 fn on_hotkey(quick_hwnd: isize, tx: &UnboundedSender<ShellEvent>) {
-    win::show_and_focus(quick_hwnd);
+    quick_add::show(quick_hwnd);
     let _ = tx.unbounded_send(ShellEvent::QuickAddShown);
 }
 
@@ -211,7 +211,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         let progress = main
             .read_with(cx, |root, cx| root.my_day_progress(cx))
             .unwrap_or_default();
-        let quick = match cx.open_window(quick_add::window_options(cx, false), |window, cx| {
+        let quick = match cx.open_window(quick_add::window_options(cx), |window, cx| {
             cx.new(|cx| QuickAddView::new(progress, theme, None, hotkey_ok, window, cx))
         }) {
             Ok(w) => w,
@@ -254,6 +254,10 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
             let _hotkey = hotkey;
             let _clock = clock;
             while let Some(event) = rx.next().await {
+                // Positioning sends synchronous move/resize messages back into GPUI.
+                if event == ShellEvent::Tray(TrayAction::QuickAdd) {
+                    quick_add::show(hwnds.quick);
+                }
                 let quit = cx.update(|cx| {
                     handle_event(
                         event,
@@ -364,11 +368,9 @@ fn handle_event(
                 win::show_and_focus(hwnds.main);
             }
         }
-        ShellEvent::Tray(TrayAction::QuickAdd) => {
-            win::show_and_focus(hwnds.quick);
+        ShellEvent::Tray(TrayAction::QuickAdd) | ShellEvent::QuickAddShown => {
             focus_quick_add(quick, cx);
         }
-        ShellEvent::QuickAddShown => focus_quick_add(quick, cx),
         ShellEvent::ClockJumped => {
             let _ = main.update(cx, |root, _, cx| root.clock_changed(cx));
         }

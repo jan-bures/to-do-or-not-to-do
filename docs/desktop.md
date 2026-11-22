@@ -153,9 +153,12 @@ particular pairing.
   desktop), the renderer uses the WARP software adapter instead of failing. `TODO_FORCE_WARP=1` forces it.
 - **Frame capture.** A window can request a readback of its next frame, which is taken from its own
   render target before it's presented. The screenshot mode uses it.
-- **Hidden capture windows.** With the screenshot scale override set, the renderer sizes the hidden HWND
-  with `SWP_NOACTIVATE`, skips activation and keeps the pointer outside the fixture. It requests lower
-  DXGI device scheduling priority and paints on demand instead of at every vsync.
+- **Fixed popups.** Quick add's frameless HWND is created at its requested bounds and tracks the monitor's
+  DPI. Its native show path doesn't need to activate through GPUI to apply those bounds. Normal windows
+  keep the upstream placement path.
+- **Hidden capture windows.** With the screenshot scale override set, the renderer sizes hidden normal
+  windows with `SWP_NOACTIVATE`, skips activation and keeps the pointer outside the fixture. It requests
+  lower DXGI device scheduling priority and paints on demand instead of at every vsync.
 - **Present timestamps.** The time of each window's first and latest present, for the benchmarks.
 - **Scale factor override.** Lets the screenshot mode render at 150 % on a 100 % monitor. While it's set,
   the window keeps the bounds it asked for even when they don't fit on the display, and
@@ -332,7 +335,7 @@ and unprefixed weekday abbreviations because the field is explicitly for dates.
 | Tray icon and menu | `src/platform/tray.rs` | Show or hide, quick add, "Start with Windows" (checkbox), quit. A left click toggles the window. The icon is the app icon from the exe's icon resource, loaded at the small-icon size of the notification area's DPI (16 px at 100 %, 20 at 125 %, 24 at 150 %, 32 at 200 %). A hidden watcher window (`platform/icon.rs`) reloads it when the DPI, the display, the system settings or Explorer change. Without the resource it falls back to the embedded 32 px render. The main window's icons follow its monitor's DPI the same way (see `vendor/gpui_windows/VENDORED.md`). |
 | Close hides to tray | `src/app.rs` | Closing the main window hides it. Only "Quit" ends the app. If the tray icon can't be created, the window is shown even with `--background`, and closing it quits, so the process is never left running invisibly. |
 | Single instance | `src/platform/single_instance.rs` | A named mutex marks the running instance, and a named event activates it. A second launch signals the event, allows the first to take the foreground and exits. The names carry the user's SID and live in the session's `Local\` namespace, so each user gets their own instance, and both objects have a DACL that admits only that user. The event is created before the mutex is claimed, so a launch that races the first one's startup is never lost. If the check can't be set up (an elevated copy created the objects, say), the app logs it and runs standalone: visible, and not listening for second launches. |
-| Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** opens a small always-on-top window, already rendered and hidden, so showing it is immediate. Enter adds the task to My Day (before pairing, it shows the pairing window instead). Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
+| Global quick add | `src/platform/hotkey.rs`, `src/ui/quick_add.rs` | **Ctrl+Alt+Space** or the tray's Quick add item opens an always-on-top window kept hidden between uses. It is 640 × 196 logical pixels at the monitor's DPI, with no resize or maximize controls. It opens horizontally centered, a fifth of the way down the cursor's monitor, or the foreground window's monitor if the cursor's monitor is unavailable. Enter adds the task to My Day (before pairing, it shows the pairing window instead). Esc or clicking away dismisses it. If another app owns the shortcut, the tray item says so and the quick-add window drops its shortcut hint; the tray item still opens it. |
 | Reminder toasts | `src/model/reminders.rs`, `src/ui/shell/reminders.rs`, `src/platform/toast.rs` | See [Reminder toasts](#reminder-toasts). |
 | Start with Windows | `src/platform/autostart.rs` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `To-do or not to do`, `"<exe>" --background`. Per user, so no admin rights are needed. It's toggled from the tray. |
 | Main window | `src/ui/root.rs`, `src/ui/shell.rs` | Pairing until paired, then the custom title bar with the filter, sidebar, list, detail pane and status bar, as in F2. The panes show quiet scrollbars when they overflow. Drag the sidebar or docked detail divider to resize it, or Tab to a divider and use the arrows. Double-click, Home or Enter resets the divider. The caption buttons keep Windows' native hit testing for Snap Layouts. |
@@ -579,7 +582,10 @@ todo-desktop --screenshot <out.png> --fixture <name> [--theme light|dark] [--sca
 Both modes use the same below-normal-priority fixture runner. It never enters interactive startup: no
 SID-scoped instance mutex or activation event, profile/cache, network, tray, global hotkey or autostart.
 It cannot activate an existing instance or receive a handoff. The batch loads GPUI and the fonts once,
-then opens and closes **one never-shown HWND per shot**. GPUI's Windows headless platform has no real
+then opens and closes **one never-shown HWND per shot**. If the batch includes quick add, it first checks
+that the hidden production popup has the right native size at real monitor DPI, before and after positioning
+it on the cursor's monitor. The quick-add capture then uses the same window options at the fixture scale.
+GPUI's Windows headless platform has no real
 text system or Direct3D window renderer. Instead the runner sizes a hidden window without activating it,
 requests paint messages and reads its own render target. No visible window, taskbar entry, sound or input.
 A capture never samples the live pointer: unlike the old visible gallery, it cannot accidentally show a

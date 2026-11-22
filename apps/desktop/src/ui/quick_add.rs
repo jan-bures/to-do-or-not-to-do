@@ -5,7 +5,7 @@
 
 use gpui::{
     App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, SharedString, Size,
-    Window, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px, size,
+    Window, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px,
 };
 
 use super::input::{InputEvent, TextInput};
@@ -13,6 +13,7 @@ use super::kit;
 use super::landscape::{LandscapeCache, Sky, landscape, sun_at};
 use super::shell::quick_add_colors;
 use crate::model::Smart;
+use crate::platform::win;
 use crate::theme::{
     self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
 };
@@ -238,30 +239,47 @@ impl Render for QuickAddView {
     }
 }
 
-/// Where the quick-add window opens: horizontally centred, a fifth of the way down the display.
-pub fn window_options(cx: &App, show: bool) -> WindowOptions {
-    let centered = Bounds::centered(None, SIZE, cx);
-    let display_top = cx
-        .primary_display()
-        .map(|d| d.bounds().origin.y)
-        .unwrap_or_default();
-    let display_h = cx
-        .primary_display()
-        .map(|d| d.bounds().size.height)
-        .unwrap_or(px(900.));
-    let origin = point(centered.origin.x, display_top + display_h * 0.2);
+const TOP_FRACTION: f32 = 0.2;
+
+/// Create the hidden popup at its real size on the primary display. It is repositioned on show.
+pub fn window_options(cx: &App) -> WindowOptions {
+    let bounds = match cx.primary_display() {
+        Some(display) => {
+            let display = display.bounds();
+            Bounds::new(
+                point(
+                    display.center().x - SIZE.width / 2.,
+                    display.origin.y + display.size.height * TOP_FRACTION,
+                ),
+                SIZE,
+            )
+        }
+        None => Bounds::centered(None, SIZE, cx),
+    };
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-            origin,
-            size(SIZE.width, SIZE.height),
-        ))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
-        focus: show,
-        show,
+        focus: false,
+        show: false,
         kind: WindowKind::PopUp,
+        is_movable: false,
         is_resizable: false,
         is_minimizable: false,
         app_id: Some("to-do-or-not-to-do".into()),
         ..WindowOptions::default()
+    }
+}
+
+pub fn position(hwnd: isize) -> anyhow::Result<()> {
+    win::position_popup(hwnd, SIZE, TOP_FRACTION)
+}
+
+/// Re-anchor before showing, so there's no frame on the wrong monitor or at the wrong DPI.
+pub fn show(hwnd: isize) {
+    if hwnd != 0 {
+        if let Err(error) = position(hwnd) {
+            tracing::warn!(%error, "couldn't position quick add");
+        }
+        win::show_and_focus(hwnd);
     }
 }

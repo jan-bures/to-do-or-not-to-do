@@ -936,8 +936,14 @@ impl WindowsWindowInner {
         } else {
             // For non-maximized windows, use the suggested RECT from the system
             let rect = unsafe { &*(lparam.0 as *const RECT) };
-            let width = rect.right - rect.left;
-            let height = rect.bottom - rect.top;
+            // TO-DO PATCH (fixed popups): use the requested logical size, not a
+            // suggestion scaled from the previously rounded device size.
+            let (width, height) = if let Some(size) = self.fixed_popup_size {
+                let size = size.to_device_pixels(new_scale_factor);
+                (size.width.0, size.height.0)
+            } else {
+                (rect.right - rect.left, rect.bottom - rect.top)
+            };
             // this will emit `WM_SIZE` and `WM_MOVE` right here
             // even before this function returns
             // the new size is handled in `WM_SIZE`

@@ -104,6 +104,8 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) is_movable: bool,
     pub(crate) is_resizable: bool,
     pub(crate) is_minimizable: bool,
+    // TO-DO PATCH (fixed popups): retain the requested client size across DPI changes.
+    pub(crate) fixed_popup_size: Option<Size<Pixels>>,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) validation_number: usize,
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
@@ -296,6 +298,7 @@ impl WindowsWindowInner {
             is_movable: context.is_movable,
             is_resizable: context.is_resizable,
             is_minimizable: context.is_minimizable,
+            fixed_popup_size: context.fixed_popup_size,
             executor: context.executor.clone(),
             validation_number: context.validation_number,
             main_receiver: context.main_receiver.clone(),
@@ -422,6 +425,7 @@ struct WindowCreateContext {
     is_movable: bool,
     is_resizable: bool,
     is_minimizable: bool,
+    fixed_popup_size: Option<Size<Pixels>>,
     min_size: Option<Size<Pixels>>,
     executor: ForegroundExecutor,
     current_cursor: Option<HCURSOR>,
@@ -493,8 +497,16 @@ impl WindowsWindow {
                 .unwrap_or(""),
         );
 
+        let fixed_popup_size = (params.kind == WindowKind::PopUp && !params.is_resizable)
+            .then_some(params.bounds.size);
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
-            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
+            // TO-DO PATCH (fixed popups): a frameless popup has no caption, resize frame or maximize box.
+            let style = if fixed_popup_size.is_some() {
+                WS_POPUP
+            } else {
+                WINDOW_STYLE(0)
+            };
+            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, style)
         } else {
             let mut dwstyle = WS_SYSMENU;
 
@@ -526,6 +538,20 @@ impl WindowsWindow {
         }
         .or_else(WindowsDisplay::primary_monitor)
         .context("failed to find any monitor")?;
+        // TO-DO PATCH (fixed popups): a hidden popup can be shown by its native hotkey without
+        // GPUI's activate(), which normally applies deferred placement. Give it its real bounds
+        // at creation instead of leaving it at the system's default overlapped-window size.
+        let (x, y, width, height) = if fixed_popup_size.is_some() {
+            let bounds = params.bounds.to_device_pixels(display.scale_factor());
+            (
+                bounds.origin.x.0,
+                bounds.origin.y.0,
+                bounds.size.width.0,
+                bounds.size.height.0,
+            )
+        } else {
+            (CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT)
+        };
         let appearance = system_appearance().unwrap_or_default();
         let mut context = WindowCreateContext {
             inner: None,
@@ -535,6 +561,7 @@ impl WindowsWindow {
             is_movable: params.is_movable,
             is_resizable: params.is_resizable,
             is_minimizable: params.is_minimizable,
+            fixed_popup_size,
             min_size: params.window_min_size,
             executor,
             current_cursor,
@@ -556,10 +583,10 @@ impl WindowsWindow {
                 WINDOW_CLASS_NAME,
                 &window_name,
                 dwstyle,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                x,
+                y,
+                width,
+                height,
                 parent_hwnd,
                 None,
                 Some(hinstance.into()),
@@ -579,6 +606,14 @@ impl WindowsWindow {
         set_non_rude_hwnd(hwnd, true);
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.border_offset.update(hwnd)?;
+        // TO-DO PATCH (fixed popups): don't queue or apply overlapped-window placement.
+        if fixed_popup_size.is_some() {
+            if params.show {
+                let command = if params.focus { SW_SHOW } else { SW_SHOWNOACTIVATE };
+                let _ = unsafe { ShowWindow(hwnd, command) };
+            }
+            return Ok(Self(this));
+        }
         let placement =
             retrieve_window_placement(hwnd, display, params.bounds, &this.state.border_offset)?;
         if params.show {
