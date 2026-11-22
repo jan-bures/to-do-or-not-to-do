@@ -333,7 +333,7 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
 
     // Signed out: every app route goes to sign-in, files included.
     let anon = env.browser();
-    for path in ["/app", "/app/list/x", "/app/todo_web_bg.wasm"] {
+    for path in ["/app", "/app/", "/app/list/x", "/app/todo_web_bg.wasm"] {
         let p = anon.get(path).await;
         assert_eq!(p.status, StatusCode::SEE_OTHER, "{path}");
         assert!(
@@ -345,7 +345,7 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
 
     let b = env.owner().await;
     let csrf = b.csrf.clone().unwrap();
-    for path in ["/app", "/app/list/abc", "/app/task/abc/steps"] {
+    for path in ["/app", "/app/", "/app/list/abc", "/app/task/abc/steps"] {
         let p = b.get(path).await;
         assert_eq!(p.status, StatusCode::OK, "{path}");
         assert_eq!(p.header(CONTENT_SECURITY_POLICY), APP_CSP, "{path}");
@@ -450,6 +450,7 @@ async fn without_a_build_the_app_is_absent_and_root_opens_the_admin_pages() {
     let env = Env::start().await;
     let b = env.owner().await;
     assert_eq!(b.get("/app").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(b.get("/app/").await.status, StatusCode::NOT_FOUND);
     assert_eq!(b.get("/app/list/x").await.status, StatusCode::NOT_FOUND);
     let p = b.get("/").await;
     assert_eq!(p.status, StatusCode::SEE_OTHER);

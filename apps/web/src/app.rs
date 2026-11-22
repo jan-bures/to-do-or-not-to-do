@@ -3,7 +3,9 @@
 
 use crate::backend::{self, Sync};
 use crate::landscape::{self, Sky};
-use crate::model::{self, AgentMark, Detail, DueTone, Now, Room, RoomId, Row, Sidebar, Source};
+use crate::model::{
+    self, AgentMark, Detail, DueTone, Now, Room, RoomId, Row, Sidebar, Source, Tomorrow,
+};
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
@@ -11,7 +13,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use todo_client::{Connection, intent};
-use todo_core::ids::{CollectionId, ListId, TaskId};
+use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
+use todo_core::model::Priority;
 use todo_core::{Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
 use todo_design::{Glyph, Icon, motion};
@@ -28,7 +31,9 @@ pub enum Phase {
 /// A row that was just completed and is still shown where it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Linger {
+    token: u64,
     room: RoomId,
+    handover: bool,
     row: Row,
     index: usize,
     phase: Phase,
@@ -77,6 +82,7 @@ pub struct Ctx {
     quick_add: NodeRef<html::Input>,
     view_room: Memo<Room>,
     finished: Memo<bool>,
+    tomorrow: Memo<Option<Tomorrow>>,
     shown: Memo<Vec<Shown>>,
     detail: Memo<Option<Detail>>,
     sidebar: Memo<Sidebar>,
@@ -199,6 +205,10 @@ impl Ctx {
         let undoable = self
             .state
             .with_untracked(|s| model::reopen_undoes_completion(s, row.id));
+        let handover = self.tomorrow.with_untracked(|plan| {
+            plan.as_ref()
+                .is_some_and(|plan| plan.rows().any(|r| r.id == row.id))
+        });
         let index = self
             .shown
             .get_untracked()
@@ -209,12 +219,16 @@ impl Ctx {
             return;
         }
         let id = row.id;
+        // A rapid Undo followed by another completion starts a fresh timer for the same task.
+        let token = self.toast_seq.get_untracked() + 1;
         let mut done = row.clone();
         done.done = true;
         self.lingering.update(|l| {
             l.retain(|x| x.row.id != id);
             l.push(Linger {
+                token,
                 room,
+                handover,
                 row: done,
                 index,
                 phase: Phase::Hold,
@@ -227,12 +241,12 @@ impl Ctx {
         set_timeout(
             move || {
                 self.lingering.update(|l| {
-                    for x in l.iter_mut().filter(|x| x.row.id == id) {
+                    for x in l.iter_mut().filter(|x| x.token == token) {
                         x.phase = Phase::Exit;
                     }
                 });
                 set_timeout(
-                    move || self.lingering.update(|l| l.retain(|x| x.row.id != id)),
+                    move || self.lingering.update(|l| l.retain(|x| x.token != token)),
                     Duration::from_millis(u64::from(motion::ROW_COLLAPSE)),
                 );
             },
@@ -263,23 +277,40 @@ impl Ctx {
         }
     }
 
-    /// Moves the selection by `delta` rows (J/K).
+    fn actionable_rows(self) -> Vec<Row> {
+        if let Some(plan) = self.tomorrow.get_untracked() {
+            return plan.rows().filter(|r| !r.done).cloned().collect();
+        }
+        self.shown.with_untracked(|rows| {
+            rows.iter()
+                .filter(|s| s.phase.is_none())
+                .map(|s| s.row.clone())
+                .collect()
+        })
+    }
+
+    /// Moves the selection by `delta` rows (J/K), including the finished day's hand-over.
     fn step_selection(self, delta: isize) {
-        let rows = self.shown.get_untracked();
+        let rows = self.actionable_rows();
         if rows.is_empty() {
             return;
         }
         let cur = self
             .selected
             .get_untracked()
-            .and_then(|id| rows.iter().position(|s| s.row.id == id));
+            .and_then(|id| rows.iter().position(|r| r.id == id));
         let next = match cur {
             None => 0,
             Some(i) => i
                 .saturating_add_signed(delta)
                 .min(rows.len().saturating_sub(1)),
         };
-        self.select(rows.get(next).map(|s| s.row.id));
+        if let Some(row) = rows.get(next) {
+            self.select(Some(row.id));
+            if !self.detail_modal.get_untracked() {
+                platform::focus(&format!("row-{}", row.id));
+            }
+        }
     }
 }
 
@@ -310,7 +341,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             .collect();
         if r.id != RoomId::Smart("completed") {
             for l in lingering.get().iter().filter(|l| {
-                l.room == r.id && (!r.filtered || r.completed.iter().any(|row| row.id == l.row.id))
+                !l.handover
+                    && l.room == r.id
+                    && (!r.filtered || r.completed.iter().any(|row| row.id == l.row.id))
             }) {
                 if rows.iter().any(|s| s.row.id == l.row.id) {
                     continue;
@@ -329,7 +362,18 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     });
     let finished = Memo::new(move |_| {
         view_room.with(Room::finished)
-            && lingering.with(|l| l.iter().all(|x| x.room != RoomId::default()))
+            && lingering.with(|l| l.iter().all(|x| x.handover || x.room != RoomId::default()))
+    });
+    let tomorrow = Memo::new(move |_| {
+        (finished.get() && !view_room.with(|r| r.filtered)).then(|| {
+            lingering.with(|leaving| {
+                state.with(|s| {
+                    model::tomorrow(s, &now.get(), |id| {
+                        leaving.iter().any(|x| x.handover && x.row.id == id)
+                    })
+                })
+            })
+        })
     });
     let selected = RwSignal::new(task0);
     let detail = Memo::new(move |_| {
@@ -373,6 +417,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         quick_add: NodeRef::new(),
         view_room,
         finished,
+        tomorrow,
         shown,
         detail,
         sidebar,
@@ -535,7 +580,36 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         c.open_filter();
         return;
     }
-    if typing || drawer || ev.alt_key() || ev.meta_key() {
+    if typing || drawer || ev.meta_key() {
+        return;
+    }
+    if ev.alt_key() {
+        if !ev.ctrl_key()
+            && !ev.shift_key()
+            && !c.read_only()
+            && matches!(key.as_str(), "arrowup" | "arrowdown")
+            && let (Some(id), room @ RoomId::List(_)) =
+                (c.selected.get_untracked(), c.room.get_untracked())
+        {
+            ev.prevent_default();
+            let by = if key == "arrowup" { -1 } else { 1 };
+            if let Some(cmd) = c
+                .state
+                .with_untracked(|s| model::reorder_task(s, &room, id, by))
+            {
+                let positions = platform::row_positions();
+                if c.submit(cmd) {
+                    request_animation_frame(move || {
+                        if c.room.get_untracked() == room {
+                            platform::animate_reorder(positions);
+                            if !modal {
+                                platform::refocus_row(&format!("row-{id}"));
+                            }
+                        }
+                    });
+                }
+            }
+        }
         return;
     }
     if ev.ctrl_key() {
@@ -570,22 +644,41 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             {
                 return;
             }
-            let row = selected.and_then(|id| {
-                c.shown
-                    .get_untracked()
-                    .into_iter()
-                    .find(|s| s.row.id == id && s.phase.is_none())
-                    .map(|s| s.row)
-            });
-            if let Some(row) = row {
+            if let Some(row) = c
+                .actionable_rows()
+                .into_iter()
+                .find(|r| Some(r.id) == selected)
+            {
                 ev.prevent_default();
-                c.toggle(&row);
+                if !ev.repeat() {
+                    c.toggle(&row);
+                }
             }
         }
         "e" => {
             if c.detail.with_untracked(Option::is_some) && !c.read_only() {
                 ev.prevent_default();
                 c.editing.set(true);
+            }
+        }
+        "d" | "p" if !c.read_only() => {
+            let Some(id) = c.detail.with_untracked(|d| d.as_ref().map(|d| d.id)) else {
+                return;
+            };
+            ev.prevent_default();
+            if key == "d" {
+                if let Some(button) = document()
+                    .get_element_by_id("edit-task-due")
+                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+                {
+                    button.click();
+                }
+            } else if ev.shift_key() {
+                platform::focus_select("task-priority");
+            } else if !ev.repeat() && c.submit_intent(|s| intent::cycle_priority(s, id)) && !modal {
+                request_animation_frame(move || {
+                    platform::refocus_row(&format!("row-{id}"));
+                });
             }
         }
         "n" if !modal => {
@@ -996,7 +1089,7 @@ fn RoomPane() -> impl IntoView {
             </Show>
             <RoomPills/>
             <QuickAdd/>
-            <Show when=move || finished.get() && !c.view_room.with(|r| r.filtered) fallback=|| view! { <TaskList/> }>
+            <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
                 <Handover/>
             </Show>
             <CompletedRows/>
@@ -1011,7 +1104,7 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
     let leaving = Memo::new(move |_| {
         let id = c.view_room.with(|r| r.id.clone());
         c.lingering
-            .with(|l| l.iter().filter(|x| x.room == id).count())
+            .with(|l| l.iter().filter(|x| !x.handover && x.room == id).count())
     });
     let counts = Memo::new(move |_| {
         let r = c.view_room.get();
@@ -1151,6 +1244,11 @@ fn QuickAdd() -> impl IntoView {
         }
     };
     let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
+    let date = Memo::new(move |_| value.with(|text| model::date_preview(text, &c.now.get())));
+    // Keep the last label available while the visual chip fades out.
+    let chip_label = Memo::new(move |prev: Option<&String>| {
+        date.get().or_else(|| prev.cloned()).unwrap_or_default()
+    });
     view! {
         <Show when=move || add_placeholder.with(Option::is_some)>
             <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
@@ -1167,6 +1265,10 @@ fn QuickAdd() -> impl IntoView {
                     prop:value=move || value.get()
                     on:input=move |ev| value.set(event_target_value(&ev))
                 />
+                <span class="qa-date-announcement" role="status">{move || date.get().map(|date| format!("Due {date}"))}</span>
+                <span class="qa-date-chip" class:no-date=move || date.with(Option::is_none) aria-hidden="true">
+                    {icon(Icon::Calendar)}{move || chip_label.get()}
+                </span>
                 <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
                     <span class="keycap">"N"</span>
                 </span>
@@ -1501,79 +1603,124 @@ fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
 #[component]
 fn Handover() -> impl IntoView {
     let c = ctx();
-    let tomorrow = Memo::new(move |_| c.state.with(|s| model::tomorrow(s, &c.now.get())));
-    let small_row = |r: Row, date: Option<String>| {
-        view! {
-            <li class="t-row">
-                <span class="check static" aria-hidden="true"></span>
-                <span class="t-title">{r.title}</span>
-                {r.chip.map(|ch| chip(ch.label, ch.hue))}
-                <span class="t-date">{date}</span>
-            </li>
-        }
-    };
+    let first = Memo::new(move |_| {
+        c.tomorrow
+            .with(|t| t.as_ref().and_then(|t| t.first.clone()))
+    });
+    let weekday = Memo::new(move |_| {
+        c.tomorrow
+            .with(|t| t.as_ref().map(|t| t.weekday.clone()).unwrap_or_default())
+    });
     view! {
         <section class="tomorrow">
-            {move || {
-                let t = tomorrow.get();
-                let weekday = t.weekday.clone();
-                view! {
-                    <h2 class="caps">"When the sun comes up"</h2>
-                    <div class="next">
+            <h2 class="caps">"When the sun comes up"</h2>
+            <div class="next">
+                {move || match first.get() {
+                    Some((row, date)) => view! { <HandoverFirst row=row date=date/> }.into_any(),
+                    None => view! {
                         <span class="sunrise">{icon(Icon::Sunrise)}</span>
-                        {if let Some((r, date)) = t.first {
-                            view! {
-                                <div class="next-text">
-                                    <div class="next-title">{r.title}</div>
-                                    <div class="next-meta">
-                                        <span class="due" data-tone="later">{date}</span>
-                                        {r.chip.map(|ch| chip(ch.label, ch.hue))}
-                                    </div>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <p class="next-text no-tomorrow">{format!("Nothing is due on {weekday} yet.")}</p> }.into_any()
-                        }}
-                        <a class="button primary" href=RoomId::Smart("planned").path() on:click=link_room(c, RoomId::Smart("planned"))>
-                            {format!("Plan {weekday}")}
-                        </a>
-                    </div>
-                    {(!t.also.is_empty())
-                        .then(|| {
-                            view! {
-                                <h2 class="caps">{format!("Also on {}", t.weekday)}</h2>
-                                <ul class="t-rows">
-                                    {t.also.clone().into_iter().map(|r| small_row(r, None)).collect_view()}
-                                </ul>
-                            }
-                        })}
-                    {(!t.week.is_empty())
-                        .then(|| {
-                            let today = c.now.get_untracked().today();
-                            let state = c.state.get_untracked();
-                            view! {
-                                <h2 class="caps">"Rest of the week"</h2>
-                                <ul class="t-rows">
-                                    {t
-                                        .week
-                                        .clone()
-                                        .into_iter()
-                                        .map(|r| {
-                                            let date = state
-                                                .tasks
-                                                .get(&r.id)
-                                                .and_then(|x| x.due)
-                                                .map(|d| model::short_date(d, today));
-                                            small_row(r, date)
-                                        })
-                                        .collect_view()}
-                                </ul>
-                                {(t.more > 0).then(|| view! { <p class="more">{format!("{} more", t.more)}</p> })}
-                            }
-                        })}
-                }
-            }}
+                        <p class="next-text no-tomorrow">{format!("Nothing is due on {} yet.", weekday.get())}</p>
+                    }.into_any(),
+                }}
+                <a class="button primary" href=RoomId::Smart("planned").path() on:click=link_room(c, RoomId::Smart("planned"))>
+                    {move || format!("Plan {}", weekday.get())}
+                </a>
+            </div>
+            <Show when=move || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| !t.also.is_empty()))>
+                <h2 class="caps">{move || format!("Also on {}", weekday.get())}</h2>
+                <ul class="t-rows">
+                    <For each=move || c.tomorrow.with(|t| t.as_ref().map(|t| t.also.clone()).unwrap_or_default())
+                        key=|row| row.clone() let:row>
+                        <HandoverRow row=row show_date=false/>
+                    </For>
+                </ul>
+            </Show>
+            <Show when=move || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| !t.week.is_empty()))>
+                <h2 class="caps">"Rest of the week"</h2>
+                <ul class="t-rows">
+                    <For each=move || c.tomorrow.with(|t| t.as_ref().map(|t| t.week.clone()).unwrap_or_default())
+                        key=|row| row.clone() let:row>
+                        <HandoverRow row=row show_date=true/>
+                    </For>
+                </ul>
+                {move || c.tomorrow.with(|t| t.as_ref().filter(|t| t.more > 0).map(|t| {
+                    view! { <p class="more">{format!("{} more", t.more)}</p> }
+                }))}
+            </Show>
         </section>
+    }
+}
+
+fn handover_phase(c: Ctx, id: TaskId) -> Memo<Option<Phase>> {
+    Memo::new(move |_| {
+        c.lingering.with(|l| {
+            l.iter()
+                .find(|x| x.handover && x.row.id == id)
+                .map(|x| x.phase)
+        })
+    })
+}
+
+#[component]
+fn HandoverFirst(row: Row, date: String) -> impl IntoView {
+    let c = ctx();
+    let id = row.id;
+    let phase = handover_phase(c, id);
+    view! {
+        <div class="next-task handover-task" class:done=row.done
+            class:selected=move || c.selected.get() == Some(id)
+            class:completing=move || phase.get() == Some(Phase::Hold)
+            class:exiting=move || phase.get() == Some(Phase::Exit)
+            on:click=move |_| c.select(Some(id))>
+            <HandoverCheck row=row.clone()/>
+            <span class="sunrise">{icon(Icon::Sunrise)}</span>
+            <div class="next-text">
+                <button class="next-title" type="button" id=format!("row-{id}")>{row.title}</button>
+                <div class="next-meta">
+                    <span class="due" data-tone="later">{date}</span>
+                    {row.chip.map(|ch| chip(ch.label, ch.hue))}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
+    let c = ctx();
+    let id = row.id;
+    let phase = handover_phase(c, id);
+    view! {
+        <li class="t-row handover-task" class:done=row.done
+            class:selected=move || c.selected.get() == Some(id)
+            class:completing=move || phase.get() == Some(Phase::Hold)
+            class:exiting=move || phase.get() == Some(Phase::Exit)
+            on:click=move |_| c.select(Some(id))>
+            <HandoverCheck row=row.clone()/>
+            <button class="t-title" type="button" id=format!("row-{id}")>{row.title}</button>
+            {row.chip.map(|ch| chip(ch.label, ch.hue))}
+            <span class="t-date">{row.due.filter(|_| show_date).map(|d| d.text)}</span>
+        </li>
+    }
+}
+
+#[component]
+fn HandoverCheck(row: Row) -> impl IntoView {
+    let c = ctx();
+    let label = format!(
+        "{} “{}”",
+        if row.done { "Reopen" } else { "Complete" },
+        row.title
+    );
+    view! {
+        <button class="check" type="button" role="checkbox" aria-label=label
+            aria-checked=row.done.to_string() disabled=move || c.read_only()
+            on:click=move |ev| {
+                ev.stop_propagation();
+                c.toggle(&row);
+            }>
+            {tick_svg()}
+        </button>
     }
 }
 
@@ -1624,7 +1771,7 @@ fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
             {move || d.get().map(|d| view! { <p class="stamps">{d.stamps.clone()}</p> })}
 
             <section class="d-section">
-                {move || d.get().map(|d| view! { <DetailSteps d=d/> })}
+                <DetailSteps detail=d/>
                 <AddStep id=id/>
             </section>
 
@@ -1633,6 +1780,13 @@ fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
                 <NotesEditor id=id notes=notes/>
             </section>
 
+            <section class="d-section" aria-label="Schedule and priority">
+                <h3 class="caps d-caps">"Schedule and priority"</h3>
+                <dl class="props">
+                    <DueEditor id=id detail=d/>
+                    <PriorityEditor id=id detail=d/>
+                </dl>
+            </section>
             {move || d.get().map(|d| view! { <DetailRest d=d/> })}
         </div>
     }
@@ -1641,7 +1795,8 @@ fn DetailBody(id: TaskId, rendered: Memo<Option<Detail>>) -> impl IntoView {
 #[component]
 fn DetailTop(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
-    let important = move || detail.with(|d| d.as_ref().is_some_and(|d| d.important));
+    let important =
+        move || detail.with(|d| d.as_ref().is_some_and(|d| d.priority == Priority::High));
     let toggle_important = move |_| {
         c.submit_intent(|state| intent::toggle_important(state, id));
     };
@@ -1696,9 +1851,7 @@ fn DetailCheck(d: Detail) -> impl IntoView {
     let c = ctx();
     let id = d.id;
     let done = d.done;
-    let check_row = c
-        .shown
-        .with_untracked(|rows| rows.iter().find(|s| s.row.id == id).map(|s| s.row.clone()));
+    let check_row = c.actionable_rows().into_iter().find(|row| row.id == id);
     let on_check = move |_| {
         if done {
             c.uncomplete(id);
@@ -1723,45 +1876,245 @@ fn DetailCheck(d: Detail) -> impl IntoView {
 }
 
 #[component]
-fn DetailSteps(d: Detail) -> impl IntoView {
-    let c = ctx();
-    let steps_done = d.steps.iter().filter(|s| s.done).count();
-    let steps_total = d.steps.len();
+fn DetailSteps(detail: Memo<Option<Detail>>) -> impl IntoView {
+    let steps = Memo::new(move |_| {
+        detail.with(|d| d.as_ref().map(|d| d.steps.clone()).unwrap_or_default())
+    });
+    let counts = Memo::new(move |_| steps.with(|s| (s.iter().filter(|s| s.done).count(), s.len())));
     view! {
         <h3 class="caps d-caps">
             "Steps"
-            {(steps_total > 0)
-                .then(|| view! { <span class="steps">{bars(steps_done, steps_total)}{format!("{steps_done}/{steps_total}")}</span> })}
+            {move || {
+                let (done, total) = counts.get();
+                (total > 0).then(|| view! { <span class="steps">{bars(done, total)}{format!("{done}/{total}")}</span> })
+            }}
         </h3>
         <ul class="step-rows">
-            {d
-                .steps
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let sid = s.id;
-                    let sdone = s.done;
-                    view! {
-                        <li class="step" class:done=sdone>
-                            <button
-                                class="check small"
-                                role="checkbox"
-                                disabled=move || c.read_only()
-                                aria-checked=sdone.to_string()
-                                aria-label=format!("Step {}", i + 1)
-                                on:click=move |_| {
-                                    c.submit_intent(|state| intent::set_step_done(state, sid, !sdone));
-                                }
-                            >
-                                {tick_svg()}
-                            </button>
-                            <span class="step-title">{s.title.clone()}</span>
-                            <span class="step-n">{format!("{:02}", i + 1)}</span>
-                        </li>
-                    }
-                })
-                .collect_view()}
+            <For each=move || steps.with(|s| s.iter().map(|s| s.id).collect::<Vec<_>>())
+                key=|id| *id let:id>
+                <DetailStep id=id steps=steps/>
+            </For>
         </ul>
+    }
+}
+
+#[component]
+fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
+    let c = ctx();
+    let step = Memo::new(move |_| {
+        steps.with(|s| {
+            s.iter()
+                .enumerate()
+                .find(|(_, step)| step.id == id)
+                .map(|(i, step)| (i, step.clone()))
+        })
+    });
+    let index = move || step.with(|s| s.as_ref().map_or(0, |(i, _)| *i));
+    let done = move || step.with(|s| s.as_ref().is_some_and(|(_, s)| s.done));
+    let title = Signal::derive(move || {
+        step.with(|s| s.as_ref().map(|(_, s)| s.title.clone()).unwrap_or_default())
+    });
+    let editing = RwSignal::new(false);
+    let draft = Draft::new(title);
+    let input = NodeRef::<html::Input>::new();
+    let focus_title = move || {
+        platform::focus(&format!("step-title-{id}"));
+    };
+    let finish = move |save| {
+        if editing.get_untracked() {
+            editing.set(false);
+            if save {
+                let text = draft.text.get_untracked();
+                c.submit_intent(|s| intent::retitle_step(s, id, &text));
+            }
+            draft.reset(title);
+        }
+    };
+    Effect::new(move |_| {
+        if editing.get()
+            && let Some(input) = input.get()
+        {
+            let _ = input.focus();
+            input.select();
+        }
+    });
+    let move_step = move |by| {
+        if c.submit_intent(|s| intent::nudge(s, id.into(), by)) {
+            request_animation_frame(focus_title);
+        }
+    };
+    view! {
+        <li class="step" class:done=done>
+            <button class="check small" type="button" role="checkbox"
+                disabled=move || c.read_only() aria-checked=move || done().to_string()
+                aria-label=move || format!("Step {}", index() + 1)
+                on:click=move |_| { c.submit_intent(|state| intent::toggle_step(state, id)); }>
+                {tick_svg()}
+            </button>
+            <Show when=move || editing.get() fallback=move || view! {
+                <button type="button" class="step-title" id=format!("step-title-{id}") title="Rename step"
+                    disabled=move || c.read_only() on:click=move |_| editing.set(true)>{move || title.get()}</button>
+            }>
+                <input class="step-input" type="text" node_ref=input aria-label="Step title"
+                    disabled=move || c.read_only() prop:value=move || draft.text.get()
+                    on:input=move |ev| draft.input(event_target_value(&ev))
+                    on:blur=move |_| finish(true)
+                    on:keydown=move |ev| {
+                        if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            finish(ev.key() == "Enter");
+                            request_animation_frame(focus_title);
+                        }
+                    }/>
+            </Show>
+            <div class="step-tail">
+                <span class="step-n" aria-hidden="true">{move || format!("{:02}", index() + 1)}</span>
+                <div class="step-actions">
+                    <button class="icon-button" type="button" title="Move step up"
+                        aria-label=move || format!("Move step {} up", index() + 1)
+                        disabled=move || c.read_only() || index() == 0
+                        on:click=move |_| move_step(-1)>{icon(Icon::ChevronUp)}</button>
+                    <button class="icon-button" type="button" title="Move step down"
+                        aria-label=move || format!("Move step {} down", index() + 1)
+                        disabled=move || c.read_only() || steps.with(|s| index() + 1 >= s.len())
+                        on:click=move |_| move_step(1)>{icon(Icon::ChevronDown)}</button>
+                    <button class="icon-button" type="button" title="Delete step"
+                        aria-label=move || format!("Delete step {}", index() + 1)
+                        disabled=move || c.read_only()
+                        on:click=move |_| {
+                            if c.submit(intent::delete(id)) {
+                                request_animation_frame(|| { platform::focus("add-step"); });
+                            }
+                        }>{icon(Icon::TrashTwo)}</button>
+                </div>
+            </div>
+        </li>
+    }
+}
+
+#[component]
+fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
+    let c = ctx();
+    let due = Memo::new(move |_| detail.with(|d| d.as_ref().and_then(|d| d.due.clone())));
+    let editing = RwSignal::new(false);
+    let invalid = RwSignal::new(false);
+    let draft = RwSignal::new(String::new());
+    let input = NodeRef::<html::Input>::new();
+    let start = move |_| {
+        draft.set(due.with_untracked(|d| {
+            d.as_ref()
+                .map(|(date, _)| date.to_string())
+                .unwrap_or_default()
+        }));
+        invalid.set(false);
+        editing.set(true);
+    };
+    let close = move || {
+        editing.set(false);
+        request_animation_frame(|| {
+            platform::focus("edit-task-due");
+        });
+    };
+    let save = move || {
+        let now = if c.live {
+            platform::now()
+        } else {
+            c.now.get_untracked()
+        };
+        let Ok(date) = model::due_edit(&draft.get_untracked(), &now) else {
+            invalid.set(true);
+            return;
+        };
+        let cmd = c.state.with_untracked(|s| intent::set_due(s, id, date));
+        if cmd.is_none_or(|cmd| c.submit(cmd)) {
+            close();
+        }
+    };
+    Effect::new(move |_| {
+        if editing.get()
+            && let Some(input) = input.get()
+        {
+            let _ = input.focus();
+            input.select();
+        }
+    });
+    view! {
+        <div class="prop">
+            <dt>{icon(Icon::Calendar)}"Due"</dt>
+            <dd class="mono">
+                <Show when=move || editing.get() fallback=move || view! {
+                    <button id="edit-task-due" type="button" class="prop-edit"
+                        aria-label=move || format!("Edit due date: {}", due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "not set".into())))
+                        title="Edit due date (D)" aria-keyshortcuts="D" disabled=move || c.read_only()
+                        on:click=start>
+                        {move || due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "Set date".into()))}
+                    </button>
+                }>
+                    <input class="prop-input" type="text" node_ref=input aria-label="Due date"
+                        disabled=move || c.read_only() placeholder="tomorrow, fri, +3d…"
+                        aria-invalid=move || invalid.get().to_string()
+                        aria-describedby=move || invalid.get().then_some("due-date-error")
+                        prop:value=move || draft.get()
+                        on:input=move |ev| { draft.set(event_target_value(&ev)); invalid.set(false); }
+                        on:blur=move |_| editing.set(false)
+                        on:keydown=move |ev| {
+                            if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                if ev.key() == "Enter" { save(); } else { close(); }
+                            }
+                        }/>
+                    <Show when=move || invalid.get()>
+                        <p id="due-date-error" class="prop-error" role="alert">"Try tomorrow, fri, +3d or a date like 2026-12-01."</p>
+                    </Show>
+                </Show>
+            </dd>
+        </div>
+    }
+}
+
+#[component]
+fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
+    let c = ctx();
+    let priority =
+        Memo::new(move |_| detail.with(|d| d.as_ref().map_or(Priority::None, |d| d.priority)));
+    let return_focus = move || {
+        if c.detail_modal.get_untracked() || !platform::focus(&format!("row-{id}")) {
+            platform::focus("task-detail");
+        }
+    };
+    let options = [
+        (Priority::None, "None", "None"),
+        (Priority::Low, "Low", "! Low"),
+        (Priority::Normal, "Normal", "!! Normal"),
+        (Priority::High, "High", "!!! High"),
+    ];
+    view! {
+        <div class="prop">
+            <dt>{icon(Icon::Flag)}<label for="task-priority">"Priority"</label></dt>
+            <dd class="mono">
+                <select id="task-priority" class="prop-input" title="Choose priority (Shift+P)" aria-keyshortcuts="Shift+P"
+                    disabled=move || c.read_only()
+                    on:change=move |ev| {
+                        let value = event_target_value(&ev);
+                        if let Some((level, _, _)) = options.iter().find(|(_, name, _)| value == *name) {
+                            c.submit_intent(|s| intent::pick_priority(s, id, *level));
+                            request_animation_frame(return_focus);
+                        }
+                    }
+                    on:keydown=move |ev| {
+                        if ev.key() == "Escape" {
+                            ev.stop_propagation();
+                            return_focus();
+                        }
+                    }>
+                    {options.into_iter().map(|(level, name, label)| view! {
+                        <option value=name prop:selected=move || priority.get() == level>{label}</option>
+                    }).collect_view()}
+                </select>
+            </dd>
+        </div>
     }
 }
 
@@ -1771,10 +2124,6 @@ fn DetailRest(d: Detail) -> impl IntoView {
     <section class="d-section" aria-label="Read-only task fields">
     <h3 class="caps d-caps">"Task fields · Read only"</h3>
     <dl class="props">
-        <div class="prop">
-            <dt>{icon(Icon::Calendar)}"Due"</dt>
-            <dd class="mono">{d.due.clone().unwrap_or_else(|| "—".to_owned())}</dd>
-        </div>
         <div class="prop">
             <dt>{icon(Icon::Bell)}"Reminder"</dt>
             <dd class="mono">{d.reminder.clone().unwrap_or_else(|| "—".to_owned())}</dd>
@@ -2039,6 +2388,7 @@ fn AddStep(id: TaskId) -> impl IntoView {
             {icon(Icon::Plus)}
             <input
                 type="text"
+                id="add-step"
                 placeholder="Add step"
                 aria-label="Add step"
                 disabled=move || c.read_only()
@@ -2061,11 +2411,12 @@ fn StatusBar() -> impl IntoView {
                 {move || c.view_room.with(|r| format!("{} open   {} done", r.open(), r.done))}
             </span>
             <span class="sb-keys" aria-hidden="true">
-                <Show when=move || !c.shown.with(Vec::is_empty)>
+                <Show when=move || !c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done)))>
                     <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" move"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.selected.with(|id| id.is_some_and(|id|
-                    c.shown.with(|rows| rows.iter().any(|s| s.row.id == id && s.phase.is_none()))))>
+                    c.shown.with(|rows| rows.iter().any(|s| s.row.id == id && s.phase.is_none()))
+                    || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| r.id == id && !r.done)))))>
                     <span><kbd class="keycap">"Space"</kbd>" toggle completion"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.detail.with(Option::is_some)>

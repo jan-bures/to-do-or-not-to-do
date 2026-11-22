@@ -62,6 +62,25 @@ test("quick-add keeps ordinary trailing words and escaped syntax in the title", 
   }
 });
 
+test("quick-add previews only parsed dates and clears the chip after submit", async ({ page }) => {
+  const w = watch(page);
+  await open(page, "/app?fixture=blank");
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  const preview = page.locator(".qa-date-chip");
+  await add.fill("Water the plants by fri !!");
+  await expect(preview).toHaveText("Fri 27 Nov");
+  await expect(preview).toBeVisible();
+  await add.fill(String.raw`Water the plants \tomorrow`);
+  await expect(preview).toBeHidden();
+  await add.fill("Water the plants zítra !!");
+  await expect(preview).toHaveText("Tomorrow");
+  await add.press("Enter");
+  await expect(preview).toBeHidden();
+  await expect(add).toBeFocused();
+  await expect(row(page, "Water the plants").locator(".col-due")).toHaveText("Tomorrow");
+  await w.check();
+});
+
 test("completing a task holds, collapses, moves the sun, and can be undone", async ({ page }) => {
   const w = watch(page);
   await open(page);
@@ -129,6 +148,115 @@ test("steps, important and My Day toggles work from the detail pane", async ({ p
   await expect(detail.locator(".d-caps .steps")).toContainText("3/6");
   await detail.getByRole("button", { name: "My Day" }).click();
   await expect(row(page, "Prepare the November board update")).toHaveCount(0);
+  await w.check();
+});
+
+test("the due date accepts relative and past dates, rejects bad input, and can be cleared", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const board = row(page, "Prepare the November board update");
+  await board.locator(".row-title").click();
+  const input = page.getByRole("textbox", { name: "Due date" });
+  const due = page.getByRole("button", { name: /^Edit due date/ });
+  await page.keyboard.press("d");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("2026-11-21");
+  await input.fill("next week maybe");
+  await input.press("Enter");
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  await expect(input).toHaveValue("next week maybe");
+  await input.press("Escape");
+  await expect(due).toHaveText("Today");
+  await due.click();
+  await input.fill("zítra");
+  await input.press("Enter");
+  await expect(due).toHaveText("Tomorrow");
+  await expect(board.locator(".col-due")).toHaveText("Tomorrow");
+  await due.click();
+  await input.fill("2026-11-20");
+  await input.press("Enter");
+  await expect(board.locator(".col-due")).toHaveText("1d overdue");
+  await due.click();
+  await input.fill("");
+  await input.press("Enter");
+  await expect(due).toHaveText("Set date");
+  await expect(board.locator(".col-due")).toBeEmpty();
+  await expect(page.getByRole("region", { name: "Read-only task fields" }).locator(".prop:nth-child(2) dd")).toHaveText("Does not repeat");
+  await w.check();
+});
+
+test("four priority levels stay in sync with the star, row and P shortcut", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const task = row(page, "Review the API latency report");
+  const title = task.locator(".row-title");
+  await title.click();
+  const priority = page.getByRole("combobox", { name: "Priority" });
+  const star = page.getByRole("button", { name: "Important", exact: true });
+  for (const [level, mark] of [["High", "!!!"], ["Low", "!"], ["Normal", "!!"], ["None", ""]]) {
+    await priority.selectOption(level);
+    await expect(priority).toHaveValue(level);
+    await expect(task.locator(".col-priority")).toHaveText(mark);
+    await expect(star).toHaveAttribute("aria-pressed", String(level === "High"));
+  }
+  await title.click();
+  for (const level of ["Low", "Normal", "High", "None"]) {
+    await page.keyboard.press("p");
+    await expect(priority).toHaveValue(level);
+  }
+  await page.keyboard.press("Shift+p");
+  await expect(priority).toBeFocused();
+  await w.check();
+});
+
+test("step titles can be renamed, cancelled, reordered and deleted", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await row(page, "Prepare the November board update").locator(".row-title").click();
+  const steps = page.locator(".step-rows .step");
+  const title = steps.first().locator(".step-title");
+  const original = await title.textContent();
+  await title.click();
+  const input = page.getByRole("textbox", { name: "Step title" });
+  await expect(input).toBeFocused();
+  await input.fill("Discard this draft");
+  await input.press("Escape");
+  await expect(title).toHaveText(original);
+  await title.click();
+  await input.fill("Check the first draft");
+  await input.press("Enter");
+  await expect(title).toHaveText("Check the first draft");
+  await expect(steps.first().getByRole("button", { name: "Move step 1 up" })).toBeDisabled();
+  await steps.first().getByRole("button", { name: "Move step 1 down" }).click();
+  await expect(steps.nth(1).locator(".step-title")).toHaveText("Check the first draft");
+  await steps.nth(1).getByRole("button", { name: "Move step 2 up" }).click();
+  await expect(title).toHaveText("Check the first draft");
+  await steps.first().getByRole("button", { name: "Delete step 1" }).click();
+  await expect(steps).toHaveCount(4);
+  await expect(page.locator(".step-title", { hasText: "Check the first draft" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Add step" })).toBeFocused();
+  await w.check();
+});
+
+test("Alt+Up and Alt+Down reorder in a concrete list, not in My Day", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  const latency = "Review the API latency report";
+  const agenda = "Draft the agenda for Tuesday’s sync";
+  await row(page, latency).locator(".row-title").click();
+  await page.keyboard.press("Alt+ArrowDown");
+  await page.locator(".sidebar").getByRole("link", { name: /^Team/ }).click();
+  const titles = rows(page).locator(".row-title");
+  const order = await titles.allTextContents();
+  expect(order.slice(0, 2)).toEqual([latency, agenda]);
+  await titles.first().click();
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(titles).toHaveText(order);
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(titles).toHaveText([agenda, latency, ...order.slice(2)]);
+  await expect(row(page, latency)).toHaveClass(/selected/);
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(titles).toHaveText(order);
   await w.check();
 });
 
@@ -330,6 +458,36 @@ test("finished My Day keeps quick-add and makes today's completed tasks availabl
   await w.check();
 });
 
+test("hand-over rows select, complete with choreography, and can be undone", async ({ page }) => {
+  const w = watch(page);
+  await open(page, "/app?fixture=finished");
+  const handover = page.locator(".tomorrow");
+  const lunch = "Připravit nedělní oběd";
+  const detail = page.locator(".detail .d-title");
+  await handover.getByRole("button", { name: lunch }).click();
+  await expect(detail).toHaveText(lunch);
+  await expect(page).toHaveURL(/\/app\/task\//);
+  await page.keyboard.press("j");
+  await expect(detail).toHaveText("Prepare the November board update");
+  await page.keyboard.press("k");
+  await expect(detail).toHaveText(lunch);
+  await page.keyboard.press("Escape");
+  await expect(handover.getByRole("button", { name: lunch })).toBeFocused();
+  await handover.getByRole("checkbox", { name: `Complete “${lunch}”` }).click();
+  await expect(handover.getByRole("checkbox", { name: `Reopen “${lunch}”` })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(".room-head.finished")).toBeVisible();
+  await expect(page.locator(".finished .summary")).toContainText("12 of 12 done");
+  await expect(handover.getByRole("button", { name: lunch })).toHaveCount(0);
+  await page.keyboard.press("Control+z");
+  await expect(handover.getByRole("checkbox", { name: `Complete “${lunch}”` })).toBeVisible();
+  await handover.getByRole("button", { name: "Submit the October expense report" }).click();
+  await expect(detail).toHaveText("Submit the October expense report");
+  await page.keyboard.press("Space");
+  await expect(handover.getByRole("checkbox", { name: /Reopen.*October expense/ })).toHaveAttribute("aria-checked", "true");
+  await expect(handover.getByRole("button", { name: "Submit the October expense report" })).toHaveCount(0);
+  await w.check();
+});
+
 test("finished My Day still opens Planned when tomorrow has no tasks", async ({ page }) => {
   const w = watch(page);
   await page.setViewportSize({ width: 412, height: 920 });
@@ -405,7 +563,9 @@ test("detail actions, read-only fields, sync label and context keyboard hints ma
   const buttons = page.locator(".detail-top button");
   expect(await buttons.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))).toEqual(["My Day", "Important", "Close"]);
   const fields = page.getByRole("region", { name: "Read-only task fields" });
-  await expect(fields.locator("dt")).toHaveText(["Due", "Reminder", "Repeat", "Tags"]);
+  await expect(fields.locator("dt")).toHaveText(["Reminder", "Repeat", "Tags"]);
+  const editable = page.getByRole("region", { name: "Schedule and priority" });
+  await expect(editable.locator("dt")).toHaveText(["Due", "Priority"]);
   const muted = await page.locator(".detail .notes").evaluate((el) => getComputedStyle(el).color);
   await expect(fields.locator("dd").first()).toHaveCSS("color", muted);
   await expect(keys).toContainText("Esc");

@@ -391,6 +391,7 @@ fn table() -> Vec<Route> {
         ),
         // The web app (see `spa`), and its session's CSRF token for a tab whose token went stale.
         r(Method::GET, "/app", Session, false, get(spa::root)),
+        r(Method::GET, "/app/", Session, false, get(spa::root)),
         r(
             Method::GET,
             "/auth/session",

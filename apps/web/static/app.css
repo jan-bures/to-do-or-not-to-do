@@ -715,6 +715,31 @@ a {
   color: var(--color-ink-3);
 }
 
+.qa-date-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-ink-2);
+  background: var(--color-wash);
+  border-radius: var(--radius-button);
+  font: var(--text-due);
+  white-space: nowrap;
+}
+
+.qa-date-chip .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+}
+
+.qa-date-chip.no-date {
+  display: none;
+  opacity: 0;
+  transition: opacity var(--duration-overlay-out) var(--ease-exit),
+    display var(--duration-overlay-out) allow-discrete;
+}
+
 /* ---- rows ------------------------------------------------------------------------------------------- */
 
 .rows {
@@ -724,6 +749,7 @@ a {
 }
 
 .row {
+  --row-height: var(--desktop-row);
   position: relative;
   display: grid;
   grid-template-columns: var(--desktop-col-check) minmax(0, 1fr)
@@ -1009,7 +1035,8 @@ a {
 }
 
 .done .row-title,
-.step.done .step-title {
+.step.done .step-title,
+.handover-task.done :is(.next-title, .t-title) {
   color: var(--color-ink-3);
   text-decoration: line-through;
   text-decoration-color: var(--color-ink-4);
@@ -1052,7 +1079,7 @@ a {
 
 @keyframes row-exit {
   from {
-    height: var(--desktop-row);
+    height: var(--row-height);
     opacity: 1;
   }
   to {
@@ -1121,7 +1148,8 @@ a {
   border-top: var(--hairline) solid var(--color-line);
 }
 
-.toast-announcement {
+.toast-announcement,
+.qa-date-announcement {
   position: absolute;
   width: var(--hairline);
   height: var(--hairline);
@@ -1283,6 +1311,35 @@ a {
   height: var(--space-6);
 }
 
+.next-task {
+  --row-height: calc(var(--space-10) + var(--space-3));
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  height: var(--row-height);
+}
+
+.handover-task {
+  cursor: pointer;
+  overflow: hidden;
+  padding-inline: var(--space-2);
+}
+
+.handover-task:hover {
+  background: var(--color-hover);
+}
+
+.handover-task.selected {
+  background: var(--color-wash);
+  box-shadow: inset var(--selection-bar) 0 var(--color-accent);
+}
+
+.handover-task .check {
+  flex: none;
+}
+
 .next-text {
   flex: 1;
   min-width: 0;
@@ -1298,6 +1355,8 @@ a {
 }
 
 .next-title {
+  display: block;
+  max-width: 100%;
   font: var(--text-next-title);
   letter-spacing: var(--text-next-title-tracking);
 }
@@ -1316,10 +1375,11 @@ a {
 }
 
 .t-row {
+  --row-height: calc(var(--space-8) + var(--space-1));
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  height: calc(var(--space-8) + var(--space-1));
+  height: var(--row-height);
   border-top: var(--hairline) solid var(--color-line);
 }
 
@@ -1327,14 +1387,13 @@ a {
   border-bottom: var(--hairline) solid var(--color-line);
 }
 
-.check.static {
-  flex: none;
-  width: calc(var(--component-checkbox) - var(--space-1));
-  height: calc(var(--component-checkbox) - var(--space-1));
-}
-
 .t-title {
   font: var(--text-body);
+}
+
+.t-title,
+.next-title {
+  text-align: left;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1489,18 +1548,59 @@ a {
   height: calc(var(--component-checkbox) - var(--space-1));
 }
 
-.step-title {
+.step-title,
+.step-input {
   flex: 1;
   min-width: 0;
   font: var(--text-step);
+}
+
+.step-title {
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.step-tail {
+  position: relative;
+  flex: none;
+}
+
 .step-n {
+  position: absolute;
+  inset: 0 0 0 auto;
+  display: grid;
+  align-items: center;
   font: var(--text-tag);
   color: var(--color-ink-4);
+  pointer-events: none;
+}
+
+.step-actions {
+  display: flex;
+  opacity: 0;
+  transition: opacity var(--duration-hover) var(--ease-standard);
+}
+
+.step-actions .icon-button {
+  width: var(--component-button-small);
+  height: var(--component-button-small);
+}
+
+.step-actions .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+}
+
+.step:hover .step-actions,
+.step:focus-within .step-actions {
+  opacity: 1;
+}
+
+.step:hover .step-n,
+.step:focus-within .step-n {
+  opacity: 0;
 }
 
 .add-step {
@@ -1588,6 +1688,36 @@ a {
   overflow-wrap: anywhere;
   font: var(--text-step);
   color: var(--color-ink-2);
+}
+
+.prop-edit,
+.prop-input,
+.step-input {
+  border: var(--hairline) solid var(--color-control);
+  border-radius: var(--radius-button);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  min-height: var(--component-button-small);
+  padding: 0 var(--space-2);
+}
+
+.prop-edit,
+.prop-input {
+  max-width: 100%;
+  font: inherit;
+}
+
+.prop-input {
+  width: 100%;
+}
+
+.prop-error {
+  margin: var(--space-1) 0;
+  color: var(--color-danger-ink);
+  background: var(--color-danger-bg);
+  padding: var(--space-1);
+  border-radius: var(--radius-button);
+  font: var(--text-step);
 }
 
 .prop dd.mono {
@@ -1970,6 +2100,7 @@ a.source:hover {
   }
 
   .row {
+    --row-height: var(--phone-row);
     grid-template-columns: var(--phone-col-check) minmax(0, 1fr) var(--row-agent, ) var(--row-priority, );
     column-gap: var(--space-2);
     height: var(--phone-row);
@@ -2015,19 +2146,6 @@ a.source:hover {
   .due:not([data-tone="overdue"]) {
     font-family: var(--font-ui);
     font-weight: 500;
-  }
-
-  @keyframes row-exit {
-    from {
-      height: var(--phone-row);
-      opacity: 1;
-    }
-    to {
-      height: 0;
-      padding-top: 0;
-      opacity: 0;
-      border-bottom-width: 0;
-    }
   }
 
   .list-foot,
@@ -2100,6 +2218,42 @@ a.source:hover {
   .next {
     flex-wrap: wrap;
   }
+
+  .next-task {
+    flex-basis: var(--phone-due-slot);
+  }
+
+  .t-row {
+    --row-height: var(--phone-touch);
+  }
+
+  .t-row .chip,
+  .next-meta .chip {
+    max-width: var(--phone-chip-max);
+  }
+
+  .step {
+    height: var(--phone-touch);
+    gap: var(--space-1);
+  }
+
+  .step-n {
+    display: none;
+  }
+
+  .step-actions {
+    opacity: 1;
+  }
+
+  .step-actions .icon-button {
+    width: var(--phone-touch);
+    height: var(--phone-touch);
+  }
+
+  .prop-edit,
+  .prop-input {
+    min-height: var(--phone-touch);
+  }
 }
 
 /* ---- reduced motion: movement becomes an instant change, fades stay short ---------------------------- */
@@ -2120,6 +2274,10 @@ a.source:hover {
 
   .toast {
     animation-name: none;
+  }
+
+  .qa-date-chip.no-date {
+    transition-duration: var(--duration-reduced-fade);
   }
 
   .sidebar,

@@ -14,12 +14,12 @@ use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::Offset;
 use std::collections::BTreeMap;
-use todo_client::intent::TaskRoom;
+use todo_client::intent::{self, TaskRoom, quick_add};
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
 use todo_core::recurrence::Rule;
-use todo_core::{Actor, State};
+use todo_core::{Actor, Command, State};
 use todo_design::Glyph;
 use todo_design::hues::{self, SWATCHES};
 
@@ -583,6 +583,38 @@ pub fn short_date(d: Date, today: Date) -> String {
 
 /// How a due date reads relative to today.
 #[must_use]
+pub fn date_preview(text: &str, now: &Now) -> Option<String> {
+    quick_add::parse(text, &now.eval())
+        .due
+        .map(|d| date_label(d, now.today()))
+}
+
+/// An empty due-date edit clears the date; invalid text is distinct from clearing it.
+pub fn due_edit(text: &str, now: &Now) -> Result<Option<Date>, ()> {
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        quick_add::due_text(text, &now.eval()).map(Some).ok_or(())
+    }
+}
+
+fn date_label(d: Date, today: Date) -> String {
+    match (d - today).get_days() {
+        0 => "Today".to_owned(),
+        1 => "Tomorrow".to_owned(),
+        _ => short_date(d, today),
+    }
+}
+
+/// Manual order is only editable from the task's own list, not from an aggregate room.
+pub fn reorder_task(state: &State, room: &RoomId, id: TaskId, by: i32) -> Option<Command> {
+    let RoomId::List(list) = room else {
+        return None;
+    };
+    (state.tasks.get(&id)?.list == *list).then_some(())?;
+    intent::nudge(state, id.into(), by)
+}
+
 pub fn due(d: Date, today: Date) -> Due {
     let days = (d - today).get_days();
     let (text, tone) = match days {
@@ -992,15 +1024,29 @@ pub struct Tomorrow {
     pub more: usize,
 }
 
-/// Tomorrow's plan, shown when My Day is finished.
+impl Tomorrow {
+    pub fn rows(&self) -> impl Iterator<Item = &Row> {
+        self.first
+            .iter()
+            .map(|(row, _)| row)
+            .chain(&self.also)
+            .chain(&self.week)
+    }
+}
+
+/// Tomorrow's plan, shown when My Day is finished. A completing row keeps its place until it exits.
 #[must_use]
-pub fn tomorrow(state: &State, now: &Now) -> Tomorrow {
+pub fn tomorrow(state: &State, now: &Now, leaving: impl Fn(TaskId) -> bool) -> Tomorrow {
     let today = now.today();
     let tomorrow = today.tomorrow().unwrap_or(today);
     let mut upcoming: Vec<&Task> = state
         .tasks
         .values()
-        .filter(|t| task_live(state, t) && !t.is_done() && t.due.is_some_and(|d| d > today))
+        .filter(|t| {
+            task_live(state, t)
+                && (!t.is_done() || leaving(t.id))
+                && t.due.is_some_and(|d| d > today)
+        })
         .collect();
     upcoming.sort_by(|a, b| a.due.cmp(&b.due).then(a.position.cmp(&b.position)));
     let week_end = today
@@ -1096,8 +1142,8 @@ pub struct Detail {
     pub steps: Vec<StepView>,
     /// Notes.
     pub notes: String,
-    /// Due date, long form.
-    pub due: Option<String>,
+    /// Due date, shown relative to the local clock when appropriate.
+    pub due: Option<(Date, String)>,
     /// The next reminder.
     pub reminder: Option<String>,
     /// The repeat rule.
@@ -1110,8 +1156,8 @@ pub struct Detail {
     pub attachments: Vec<AttachmentView>,
     /// In My Day today.
     pub my_day: bool,
-    /// Marked important (high priority).
-    pub important: bool,
+    /// The task's priority; high is also shown as Important.
+    pub priority: Priority,
     /// The agent that created it.
     pub agent: Option<AgentMark>,
     /// What happened to it, newest first.
@@ -1327,18 +1373,14 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
             })
             .collect(),
         notes: t.notes.clone(),
-        due: t.due.map(|d| match (d - today).get_days() {
-            0 => "Today".to_owned(),
-            1 => "Tomorrow".to_owned(),
-            _ => short_date(d, today),
-        }),
+        due: t.due.map(|d| (d, date_label(d, today))),
         reminder,
         repeat: repeat_text(t.recurrence.as_ref()),
         tags,
         sources,
         attachments,
         my_day: t.my_day == Some(today),
-        important: t.priority == Priority::High,
+        priority: t.priority,
         agent: agent_mark(&t.created.by),
         activity: activity(t, now),
     })
@@ -1503,6 +1545,60 @@ mod tests {
     }
 
     #[test]
+    fn date_preview_and_due_editor_have_distinct_rules() {
+        let n = now();
+        assert_eq!(
+            date_preview("Mail it zítra !!", &n).as_deref(),
+            Some("Tomorrow")
+        );
+        for text in ["tomorrow", r"See you \tomorrow", "Read on 2026-11-20"] {
+            assert_eq!(date_preview(text, &n), None, "{text}");
+        }
+        assert_eq!(due_edit("  ", &n), Ok(None));
+        assert_eq!(due_edit("not a date", &n), Err(()));
+        assert_eq!(due_edit("fri", &n), Ok(Some("2026-11-27".parse().unwrap())));
+        let past = due_edit("2026-11-20", &n).unwrap();
+        let mut s = fixtures::state();
+        let id = fixtures::task(1);
+        assert!(s.tasks[&id].recurrence.is_some());
+        let owner = Actor::owner("web").unwrap();
+        for date in [past, None] {
+            let cmd = intent::set_due(&s, id, date).unwrap();
+            for event in todo_core::decide(&s, &owner, &cmd, n.at).unwrap() {
+                todo_core::apply(&mut s, &event).unwrap();
+            }
+            assert_eq!(detail(&s, &n, id).unwrap().due.map(|d| d.0), date);
+        }
+        assert!(s.tasks[&id].recurrence.is_none());
+    }
+
+    #[test]
+    fn task_reorder_is_scoped_to_its_own_list() {
+        let mut s = fixtures::state();
+        let n = now();
+        let a = fixtures::task(3);
+        let b = fixtures::task(6);
+        let list = RoomId::List(s.tasks[&a].list);
+        assert!(reorder_task(&s, &RoomId::default(), a, 1).is_none());
+        assert!(reorder_task(&s, &RoomId::List(s.tasks[&fixtures::task(1)].list), a, 1).is_none());
+        assert!(reorder_task(&s, &list, a, -1).is_none());
+        let cmd = reorder_task(&s, &list, a, 1).unwrap();
+        let owner = Actor::owner("web").unwrap();
+        for event in todo_core::decide(&s, &owner, &cmd, n.at).unwrap() {
+            todo_core::apply(&mut s, &event).unwrap();
+        }
+        assert_eq!(
+            room(&s, &n, &list, "")
+                .rows
+                .iter()
+                .take(2)
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            [b, a]
+        );
+    }
+
+    #[test]
     fn my_day_counts_match_the_mockup_story() {
         let s = fixtures::state();
         let r = room(&s, &now(), &RoomId::Smart("my_day"), "");
@@ -1626,7 +1722,7 @@ mod tests {
         let n = now();
         let r = room(&s, &n, &RoomId::Smart("my_day"), "");
         assert!(r.finished(), "{} of {}", r.done, r.total);
-        let t = tomorrow(&s, &n);
+        let t = tomorrow(&s, &n, |_| false);
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_some());
         assert_eq!(r.completed.len(), 12);
@@ -1635,11 +1731,29 @@ mod tests {
 
     #[test]
     fn later_tasks_do_not_take_the_place_of_tomorrows_first_task() {
-        let t = tomorrow(&fixtures::finished_without_tomorrow(), &now());
+        let t = tomorrow(&fixtures::finished_without_tomorrow(), &now(), |_| false);
         assert_eq!(t.weekday, "Sunday");
         assert!(t.first.is_none() && t.also.is_empty());
         assert_eq!(t.week[0].title, "Prepare the November board update");
         assert!(t.week.iter().any(|row| row.id == fixtures::task(21)));
+    }
+
+    #[test]
+    fn a_completing_handover_task_keeps_its_slot_until_exit() {
+        let mut s = fixtures::finished_state();
+        let n = now();
+        let t = tomorrow(&s, &n, |_| false);
+        let id = t.first.unwrap().0.id;
+        let cmd = intent::set_done(&s, id, true).unwrap();
+        let owner = Actor::owner("web").unwrap();
+        for event in todo_core::decide(&s, &owner, &cmd, n.at).unwrap() {
+            todo_core::apply(&mut s, &event).unwrap();
+        }
+        let t = tomorrow(&s, &n, |leaving| leaving == id);
+        let first = t.rows().next().unwrap();
+        assert_eq!(first.id, id);
+        assert!(first.done);
+        assert!(tomorrow(&s, &n, |_| false).rows().all(|row| row.id != id));
     }
 
     #[test]

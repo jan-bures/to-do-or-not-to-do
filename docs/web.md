@@ -33,7 +33,8 @@ The [Linux release](hosting-linux.md#deploy) includes the production build and s
 server. The Linux config template sets `[web] dir = "/opt/todo/current/web"`. For a local or manual
 build, set `[web] dir` (or `TODO_SERVER_WEB_DIR`) to the path of `apps/web/dist` and restart the server.
 
-With a build configured, `/` opens the app; without one, `/` opens the admin pages as before.
+With a build configured, `/` opens the app and `/app/` serves the same session-gated page as `/app`.
+Without a build, `/` opens the admin pages as before.
 
 ### Its own workspace
 
@@ -277,13 +278,14 @@ The filter narrows open and completed rows in the current room using the shared 
 hide a collection's lists without changing rooms. **New list** creates a sibling of the current list, a
 child of the current collection, or a top-level list from a smart room. Each new list gets a swatch.
 
-Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) when you submit, with no preview. A
-trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
+Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
+and to set that date when you submit. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
 `by fri`); past dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
 `See you tomorrow` as the title. The room supplies defaults: My Day adds today's My Day stamp,
 Important defaults to high priority and Planned defaults to due today. New tasks go first in their
 list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside the
-current collection when applicable.
+current collection when applicable. **Alt+Up/Down** moves the selected task one place among its live
+siblings in its own list, even when the list is filtered. Aggregate rooms don't support manual reordering.
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses
@@ -298,7 +300,13 @@ one is scheduled. Reduced motion turns movement into instant changes.
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
 touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
-edited follow the update. Due, Reminder, Repeat and Tags are labelled read-only. On a narrower viewport,
+edited follow the update. Click **Due** or press **D** to edit a date. The editor accepts the same relative
+syntax as the desktop and also accepts past dates. Enter saves; Escape or clicking away cancels. Saving a
+blank field clears both the date and any repeat rule. Choose any of the four levels in the **Priority**
+field (also reachable with **Shift+P**), or press **P** to cycle none → low → normal → high → none. The
+Important star still toggles high priority. Click a step's title to rename it, or use the step's up,
+down and delete buttons (visible on hover or keyboard focus on desktop, always visible on phones).
+Reminder, Repeat and Tags are still labelled read-only. On a narrower viewport,
 the detail takes focus, limits Tab to the pane and makes the rest of the app inert. Click the medium-width
 scrim, use Close, or press Esc to dismiss it and return focus to the selected row (or the room heading).
 The scrim and pane use the overlay motion tokens; reduced motion uses a short fade without a slide.
@@ -306,7 +314,9 @@ While the detail is modal, Undo and other toast feedback appear in its own botto
 
 Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
 **Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.
-The list scrolls separately from its toast strip and phone composer.
+Click a hand-over task's title, or use **J/K**, to open its detail. Its checkbox or **Space** on a selected
+row completes it in place and offers the usual Undo for non-recurring tasks. The My Day count stays put:
+these tasks belong to tomorrow or later. The list scrolls separately from its toast strip and phone composer.
 
 **The app icon** is Daybreak, from `assets/brand` (see its README); the build copies it into `dist/brand/`.
 The favicon is the 16 px drawing (`small-16.svg`, since a tab shows it at 16 CSS px and the master must never be
@@ -315,7 +325,8 @@ sidebar's mark is the same 16 px drawing, as shipped. There is no web manifest: 
 of scope for now, and the generated 192 and 512 px and maskable icons are ready for it.
 
 Keyboard: **J/K** or the arrows move the selection, **Space** toggles a selected task from the list, **E**
-edits the detail title, and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
+edits the detail title, **D** edits its due date, **P** cycles priority (**Shift+P** focuses the picker),
+**Alt+Up/Down** reorders in a list, and **N** focuses quick-add. **/** or **Ctrl+K** opens the room filter. **Esc** closes
 the active editor, overlay or filter. The status bar shows shortcuts only when their actions are available.
 
 ## Tests
@@ -328,8 +339,9 @@ the active editor, overlay or filter. The status bar shows shortcuts only when t
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
-  the detail, a collapsed collection, an active query filter, the finished day with Completed closed and
-  expanded, a finished day with no tasks tomorrow, an empty list, the storage-error and read-only alerts
+  the detail, due-date editor and step controls, a collapsed collection, an active query filter, the finished
+  day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
+  an empty list, the phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
   `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.

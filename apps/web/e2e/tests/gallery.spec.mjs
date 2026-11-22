@@ -24,6 +24,33 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`editing due date and steps (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+      await page.keyboard.press("d");
+      const due = page.getByRole("textbox", { name: "Due date" });
+      await due.fill("tomorrow");
+      await expect(due).toBeFocused();
+      await shot(page, `desktop-due-editor-${scheme}`);
+      await due.press("Escape");
+      await page.locator(".step-title").nth(2).hover();
+      await expect(page.locator(".step-actions").nth(2)).toHaveCSS("opacity", "1");
+      await shot(page, `desktop-step-actions-${scheme}`);
+      await w.check();
+    });
+
+    test(`phone quick-add previews a date (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(PHONE);
+      await open(page);
+      await page.getByRole("textbox", { name: "Add a task" }).fill("Water the plants zítra");
+      await expect(page.locator(".qa-date-chip")).toHaveText("Tomorrow");
+      await shot(page, `phone-quick-add-date-${scheme}`);
+      await w.check();
+    });
+
     test(`desktop collection (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);
@@ -41,6 +68,10 @@ for (const scheme of ["light", "dark"]) {
       await open(page, "/app?fixture=finished");
       await page.locator(".room-head.finished").waitFor();
       await shot(page, `finished-${scheme}`);
+      await page.getByRole("button", { name: "Připravit nedělní oběd" }).click();
+      await expect(page.locator(".detail .d-title")).toHaveText("Připravit nedělní oběd");
+      await shot(page, `finished-selected-${scheme}`);
+      await page.getByRole("button", { name: "Close", exact: true }).click();
       await page.getByRole("button", { name: "Completed 12" }).click();
       await expect(page.locator(".completed-rows .row")).toHaveCount(12);
       await shot(page, `finished-completed-${scheme}`);

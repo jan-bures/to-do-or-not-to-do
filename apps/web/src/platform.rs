@@ -1,8 +1,8 @@
 //! Small browser helpers: the clock, the theme, the address bar, the CSRF token and downloads.
 
 use crate::model::Now;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 
 fn window() -> Option<web_sys::Window> {
     web_sys::window()
@@ -91,6 +91,102 @@ pub fn focus(id: &str) -> bool {
             let _ = el.focus();
             document().and_then(|d| d.active_element()).as_ref() == Some(el.as_ref())
         })
+}
+
+/// Restores focus after an optimistic update replaced a row, but not if focus has moved elsewhere.
+pub fn refocus_row(id: &str) {
+    if document()
+        .and_then(|doc| doc.active_element())
+        .is_none_or(|el| el.tag_name() == "BODY" || el.id() == id)
+    {
+        focus(id);
+    }
+}
+
+fn method(el: &web_sys::Element, name: &str) -> Option<js_sys::Function> {
+    js_sys::Reflect::get(el, &JsValue::from_str(name))
+        .ok()?
+        .dyn_into()
+        .ok()
+}
+
+/// Opens the native priority picker if supported; otherwise its normal keys work from focus.
+pub fn focus_select(id: &str) {
+    if focus(id)
+        && let Some(el) = document().and_then(|doc| doc.get_element_by_id(id))
+        && let Some(picker) = method(&el, "showPicker")
+    {
+        let _ = picker.call0(&el);
+    }
+}
+
+/// Captures current row positions, including in-flight nudges, before the command moves them.
+pub fn row_positions() -> Vec<(web_sys::Element, f64)> {
+    if reduced_motion() {
+        return Vec::new();
+    }
+    let Some(rows) = document().and_then(|doc| {
+        doc.query_selector_all(".rows:not(.completed-rows) > .row:not(.done)")
+            .ok()
+    }) else {
+        return Vec::new();
+    };
+    (0..rows.length())
+        .filter_map(|i| rows.item(i)?.dyn_into::<web_sys::Element>().ok())
+        .map(|row| {
+            let y = row.get_bounding_client_rect().top();
+            (row, y)
+        })
+        .collect()
+}
+
+/// Slides the moved rows to their new slots without changing the DOM order or inline styles.
+pub fn animate_reorder(before: Vec<(web_sys::Element, f64)>) {
+    use todo_design::motion;
+    const NUDGE: &str = "task-nudge";
+    if before.is_empty() || reduced_motion() {
+        return;
+    }
+    let options = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &options,
+        &"duration".into(),
+        &f64::from(motion::ROW_ENTER).into(),
+    );
+    let _ = js_sys::Reflect::set(&options, &"easing".into(), &motion::STANDARD.css().into());
+    for (row, y) in before.into_iter().filter(|(r, _)| r.is_connected()) {
+        let (Some(animate), Some(animations)) =
+            (method(&row, "animate"), method(&row, "getAnimations"))
+        else {
+            continue;
+        };
+        if let Ok(animations) = animations
+            .call0(&row)
+            .and_then(JsCast::dyn_into::<js_sys::Array>)
+        {
+            for animation in animations
+                .iter()
+                .filter_map(|a| a.dyn_into::<web_sys::Animation>().ok())
+            {
+                if animation.id() == NUDGE {
+                    animation.cancel();
+                }
+            }
+        }
+        let dy = y - row.get_bounding_client_rect().top();
+        if dy.abs() >= 1.0 {
+            let frames = js_sys::Object::new();
+            let transform =
+                js_sys::Array::of2(&format!("translateY({dy}px)").into(), &"none".into());
+            let _ = js_sys::Reflect::set(&frames, &"transform".into(), &transform);
+            if let Ok(animation) = animate
+                .call2(&row, &frames, &options)
+                .and_then(JsCast::dyn_into::<web_sys::Animation>)
+            {
+                animation.set_id(NUDGE);
+            }
+        }
+    }
 }
 
 /// Wraps Tab within the active overlay. The rest of the shell is inert.

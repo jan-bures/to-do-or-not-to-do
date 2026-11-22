@@ -78,7 +78,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Room pills, drawer (phone) | n/a | n/a | wired `W/app.rs:953`, `:888` | wired `A/ui/Pills.kt:65`, `:81`, `A/ui/Header.kt:109` |
 | Filter by query or words (Ctrl+K, `/`) | `C/query` | wired `D/ui/shell.rs:271`, clear `:1150` | wired `W/app.rs:899`, `:907` | wired `A/ui/RoomPane.kt:136`, `:182` |
 | Keyboard: J/K, arrows, Space, E, Esc | n/a | wired `D/ui/shell.rs:66`–`78`, `:2089` | wired `W/app.rs:492` | n/a |
-| Keyboard: D (due), P (priority), Shift+P (priority picker), Alt+Up/Down (reorder) | n/a | wired `D/ui/shell.rs:2251`–`2264` | missing | n/a |
+| Keyboard: D (due), P (priority), Shift+P (priority picker), Alt+Up/Down (reorder) | n/a | wired `D/ui/shell.rs:2251`–`2264` | wired `W/app.rs` (`on_key`) | n/a |
 | Keyboard: Ctrl+N or N focuses quick add | n/a | wired `D/ui/shell.rs:2604` | wired `W/app.rs:583` | n/a |
 
 ### Lists and collections
@@ -104,13 +104,13 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Quick add in a room | `CreateTask` `C/command.rs:197` | wired `D/ui/shell.rs:248`, `:940` | wired `W/app.rs:1146` | wired `A/ui/RoomPane.kt:152`, `F/engine.rs:440` |
 | The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` |
-| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired on submit (`W/app.rs`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
+| Quick-add syntax: a trailing date (`tomorrow`, `fri`, `+3d`, `zítra`) and `!`/`!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired, with live date chip (`W/app.rs`, `QuickAdd`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
 | Quick-add field's calendar and flag icons | n/a | hidden until the date picker (D2); the date and priority are typed (`D/ui/shell.rs:1564`) | missing | missing |
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
-| Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | missing (the star only) | missing (the star only) |
-| Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | missing | missing |
+| Set priority (four levels) | `UpdateTask.priority` | wired: the detail pane's Priority row picks any level, by click or Shift+P (`D/ui/shell/detail.rs:727`, `T/intent/mod.rs`); click the row's mark, or P, cycles (`D/ui/shell.rs:1951`, `:2257`) | wired: the detail pane's Priority field, Shift+P and P (`W/app.rs`) | missing (the star only) |
+| Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list (`W/app.rs`, `W/model.rs`) | missing |
 | Move a task to another list | `MoveTask` `C/command.rs:206` | missing (undo already handles it: `D/ui/shell/undo.rs:31`) | missing | missing |
 | Delete a task | `Delete` | missing (undo already handles it: `D/ui/shell/undo.rs:28`) | missing | missing (a fixture-only hook: `F/engine.rs:499`) |
 | Trash and restore | `Restore` `C/command.rs:370` | missing | missing | missing |
@@ -118,8 +118,8 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
 | Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, show or hide completed, delete list (`D/ui/shell.rs:1382`, `D/model/menus.rs:245`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | missing | missing |
-| Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | shown, rows inert (`W/app.rs:1508`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
-| Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | shown (`aria-hidden`, `W/app.rs:1509`) | wired `A/ui/RoomPane.kt:465` |
+| Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | wired: click or J/K selects (`W/app.rs`, `Handover`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
+| Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | wired: completes in place, with the usual completion undo (`W/app.rs`, `HandoverCheck`) | wired `A/ui/RoomPane.kt:465` |
 | Plan <weekday> (opens Planned) | n/a | wired `D/ui/shell.rs:2160` | wired `W/app.rs:1538` | wired `A/ui/RoomPane.kt:398`, `:438` |
 
 ### Task detail
@@ -133,10 +133,10 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Important toggle (high priority or none) | `UpdateTask.priority` | wired `D/ui/shell/detail.rs:744` | wired `W/app.rs:1694` | wired `A/ui/Detail.kt:94`, `F/engine.rs:558` |
 | Add a step | `CreateStep` `C/command.rs:262` | wired `D/ui/shell/detail.rs:83`, `:184` | wired `W/app.rs:2063` | wired `A/ui/Detail.kt:223`, `F/engine.rs:581` |
 | Complete a step | `CompleteStep` / `UncompleteStep` `C/command.rs:281` | wired `D/ui/shell/detail.rs:434` | wired `W/app.rs:1764` | wired `A/ui/Detail.kt:135`, `F/engine.rs:598` |
-| Rename a step | `UpdateStep` `C/command.rs:274` | wired: click its title (`D/ui/shell/detail.rs:403`) | missing | missing |
-| Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | missing | missing |
-| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | missing | missing |
-| Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | shown "read only" (`W/app.rs:1789`) | shown (`A/ui/Detail.kt:154`) |
+| Rename a step | `UpdateStep` `C/command.rs:274` | wired: click its title (`D/ui/shell/detail.rs:403`) | wired: click its title (`W/app.rs`, `DetailStep`) | missing |
+| Reorder steps | `Reorder` | wired: hover arrows (`D/ui/shell/detail.rs:459`, `:466`) | wired: up/down buttons (`W/app.rs`, `DetailStep`) | missing |
+| Delete a step | `Delete` | wired, with undo (`D/ui/shell/detail.rs:476`, `D/ui/shell/undo.rs:34`) | wired: delete button (`W/app.rs`, `DetailStep`), no undo yet | missing |
+| Due date | `UpdateTask.due` | wired: typed, with D or a click (`D/ui/shell/detail.rs:706`, `:203`, `:251`) | wired: typed, with D or a click (`W/app.rs`, `DueEditor`) | shown (`A/ui/Detail.kt:154`) |
 | Reminder | `AddReminder` / `UpdateReminder` `C/command.rs:340`, `:350`; `Delete` | shown only when set, with a "not editable" tooltip and no edit affordance (`D/model/derive.rs:724`, `D/ui/shell/detail.rs:740`) | shown "read only" | shown |
 | Repeat | `UpdateTask.recurrence` (`C/recurrence.rs`) | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:733`). Clearing the due date also clears the repeat (`T/intent/mod.rs`, `set_due`). | shown "read only" | shown |
 | Tags on a task | `AddTag` / `RemoveTag` `C/command.rs:234`, `:241` | shown only when set, with a "not editable" tooltip (`D/model/derive.rs:749`) | shown "read only" | shown |
@@ -159,7 +159,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Undo toast after completing | client-side | wired `D/ui/shell/undo.rs:376`, Ctrl+Z | wired `W/app.rs:1437`, Ctrl+Z | wired `A/ui/RoomPane.kt:509` |
 | Exact undo through the server (compensating event, covers a recurring task's next occurrence) | `POST /events/{seq}/undo` (`S/api/mod.rs:142`); `SyncClient::undo_tracked` | wired `D/ui/shell/undo.rs:172`, `D/store.rs:147` | missing: reopens instead, and offers no Undo for a recurring task (`W/app.rs:243`) | wired: the toast holds the tracked completion; `F/engine.rs::undo_completion` reverses the whole event batch |
-| Undo a reorder | same | wired | n/a (no reorder) | n/a |
+| Undo a reorder | same | wired | missing | n/a |
 | Undo anything else (rename, edits, deletes) | same | partial: deleting a list or a step can be undone (`D/ui/shell/undo.rs:29`); renames and edits can't | missing | missing |
 | Activity feed (all events, newest first, undo per event) | `GET /activity` (`S/api/mod.rs:143`) | missing (planned) | missing | missing |
 | Group or filter changes by agent | `updated_by:` in the query language | partial: Agent activity smart list; sidebar summary per agent (`D/model/derive.rs:607`, `D/ui/shell/sidebar.rs:474`), not clickable | partial: smart list; sidebar summary (`W/app.rs:778`) | partial: smart list only; missing the agent summary |
@@ -237,14 +237,14 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 
 | # | Gap | Size |
 |---|---|---|
-| 3.1 | A live date chip in quick-add. The shared parser already reads the suffix on submit. | S |
-| 3.2 | Edit the due date. The row is labelled "read only" (`W/app.rs:1789`). | S–M |
-| 3.3 | Set the priority to four levels, with P. Only the star exists. | S |
-| 3.4 | Steps: rename, reorder, delete. | S–M |
+| 3.1 | **Done.** Quick-add previews a date with the shared parser. | S |
+| 3.2 | **Done.** Edit or clear the due date from detail or with D. | S–M |
+| 3.3 | **Done.** Choose from four priority levels in detail or cycle with P. | S |
+| 3.4 | **Done.** Steps can be renamed, reordered and deleted. | S–M |
 | 3.5 | Lists and collections: rename, reorder, delete, with a context menu or a room menu. | M |
-| 3.6 | Reorder tasks with Alt+Up/Down. | S |
+| 3.6 | **Done.** Reorder tasks in a list with Alt+Up/Down. | S |
 | 3.7 | Exact undo through `SyncClient::undo_tracked`, including undo for a recurring task and for reorders. | M |
-| 3.8 | Hand-over rows: select the task, and complete it from its box. | S |
+| 3.8 | **Done.** Hand-over rows select the task and can complete it from the checkbox. | S |
 | 3.9 | "Not synced" list with dismiss. | S |
 | 3.10 | Remember folded collections across reloads (in `localStorage`, say). | S |
 | 3.11 | Upload attachments. The server must also accept the session (cookie and CSRF) on the upload route, which is bearer-only today. | M |
