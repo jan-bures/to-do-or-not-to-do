@@ -165,7 +165,7 @@ fn releases_config_accepts_file_and_environment_values() {
         cfg.releases.dir.as_deref(),
         Some(std::path::Path::new("desktop-releases"))
     );
-    cfg.apply_env(|key| (key == "TODO_SERVER_RELEASES_DIR").then(|| String::new()))
+    cfg.apply_env(|key| (key == "TODO_SERVER_RELEASES_DIR").then(String::new))
         .unwrap();
     assert!(cfg.releases.dir.is_none());
 }
