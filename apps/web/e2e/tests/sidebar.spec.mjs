@@ -248,6 +248,23 @@ test("Tab closes Settings and wraps within the phone drawer", async ({ page }) =
   await w.check();
 });
 
+test("the drawer's deferred focus does not close Settings after Space opens it", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  // Hold the drawer's initial focus frame until after the Settings button is activated.
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  await page.getByRole("button", { name: "Lists", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  const settings = drawer.getByRole("button", { name: "Settings", exact: true });
+  await settings.press("Space");
+  await expect(settings).toHaveAttribute("aria-expanded", "true");
+  await page.clock.runFor(32);
+  await expect(drawer.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
+  await w.check();
+});
+
 test("the compact footer fits in one row at the sidebar minimum", async ({ page }) => {
   const w = watch(page);
   await page.emulateMedia({ colorScheme: "light" });

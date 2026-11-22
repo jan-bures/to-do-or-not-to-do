@@ -747,8 +747,19 @@ fn track_overlay_focus(c: Ctx) {
             });
         } else if open || prev.is_some_and(|(was_open, _)| was_open) {
             request_animation_frame(move || {
-                if open == c.drawer.get_untracked() {
-                    platform::focus(if open { "list-drawer" } else { "open-drawer" });
+                if open != c.drawer.get_untracked() {
+                    return;
+                }
+                if open {
+                    // A control may already have focus by the time this frame runs.
+                    if !document()
+                        .active_element()
+                        .is_some_and(|el| el.closest("#list-drawer").ok().flatten().is_some())
+                    {
+                        platform::focus("list-drawer");
+                    }
+                } else {
+                    platform::focus("open-drawer");
                 }
             });
         }
