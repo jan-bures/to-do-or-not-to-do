@@ -8,7 +8,7 @@
 //! picker says so before it is set.
 
 use jiff::civil::{Date, DateTime};
-use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::tz::{AmbiguousOffset, Offset, TimeZone};
 use todo_core::ids::TaskId;
 use todo_core::time::{Timestamp, Weekday, add_days};
 
@@ -322,17 +322,14 @@ pub fn preview(draft: Draft, now: &Now) -> Result<(Timestamp, String), &'static 
     ))
 }
 
-/// The clock a picker page is worked out with. The presets page keeps the time the picker opened
-/// (`opened`, milliseconds since the epoch), so its instants never change under it: what a click or
-/// Enter (which reads the page again) saves is what was shown, even once the hour rolls over. The
-/// custom page uses the time now, to tell a time that has passed.
-pub fn page_now(opened: i64, draft: Option<Draft>, now: &Now) -> Now {
-    match (draft, Timestamp::from_millisecond(opened)) {
-        (None, Ok(at)) => Now {
-            at,
-            tz: now.tz.clone(),
-        },
-        _ => now.clone(),
+/// Preset instants and their local offsets, captured on opening. A redraw or Enter uses the same
+/// choices even after the hour or the time zone changes. The custom page still uses the live clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Presets([Option<(Timestamp, Offset)>; Preset::ALL.len()]);
+
+impl Presets {
+    pub fn new(now: &Now) -> Self {
+        Self(Preset::ALL.map(|p| p.at(now).map(|at| (at, now.tz.to_offset(at)))))
     }
 }
 
@@ -342,24 +339,26 @@ pub fn entries(
     task: TaskId,
     seen: Option<Timestamp>,
     draft: Option<Draft>,
+    presets: &Presets,
     now: &Now,
 ) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
     let Some(d) = draft else {
         entries.push(MenuEntry::Heading("Reminder".into()));
-        for p in Preset::ALL {
-            let Some(at) = p.at(now) else {
+        for (p, resolved) in Preset::ALL.into_iter().zip(presets.0) {
+            let Some((at, offset)) = resolved else {
                 continue;
             };
-            let hint = match p {
-                Preset::LaterToday => labels::clock(at, &now.tz),
-                _ => format!(
-                    "{} {}",
-                    labels::weekday(now.date_of(at))
-                        .get(..3)
-                        .unwrap_or_default(),
-                    labels::clock(at, &now.tz)
-                ),
+            let zone = TimeZone::fixed(offset);
+            let clock = labels::clock(at, &zone);
+            let hint = if p == Preset::LaterToday {
+                clock
+            } else {
+                let day = at.to_zoned_datetime(zone).date();
+                format!(
+                    "{} {clock}",
+                    labels::weekday(day).get(..3).unwrap_or_default()
+                )
             };
             entries.push(MenuEntry::Item(MenuItem {
                 icon: p.icon(),
@@ -379,7 +378,7 @@ pub fn entries(
             "Pick a day and time…",
             MenuAction::Reminder(task, Action::Custom),
         );
-        let preset = Preset::ALL.iter().any(|p| p.at(now) == seen);
+        let preset = presets.0.iter().flatten().any(|&(at, _)| seen == Some(at));
         entries.push(with(custom, |i| MenuItem {
             checked: seen.is_some() && !preset,
             ..i
@@ -443,6 +442,15 @@ mod tests {
         Now::fixed("2026-11-21T10:35:00Z")
     }
 
+    fn entries(
+        task: TaskId,
+        seen: Option<Timestamp>,
+        draft: Option<Draft>,
+        now: &Now,
+    ) -> Vec<MenuEntry> {
+        super::entries(task, seen, draft, &Presets::new(now), now)
+    }
+
     fn ts(s: &str) -> Timestamp {
         s.parse().expect("timestamp")
     }
@@ -482,15 +490,26 @@ mod tests {
     #[test]
     fn the_presets_page_keeps_the_instants_it_opened_with_also_for_the_keyboard() {
         use crate::model::menus::chosen;
-        let opened = ts("2026-11-21T10:59:00Z").as_millisecond();
-        // Drawn at 10:59, and drawn (or Enter read) again at 11:01: the same 13:00.
-        let page = |at: &str| {
-            let now = Now::fixed(at);
-            entries(task(), None, None, &page_now(opened, None, &now))
+        let opened = Now::fixed("2026-11-21T10:59:00Z");
+        let presets = Presets::new(&opened);
+        let drawn = super::entries(task(), None, None, &presets, &opened);
+        // Enter reads the page after both the hour and the system time zone have changed.
+        let later = Now {
+            at: ts(NOW_LATE),
+            tz: TimeZone::get("America/New_York").expect("bundled tz"),
         };
-        let drawn = page("2026-11-21T10:59:30Z");
-        let entered = page("2026-11-21T11:01:00Z");
+        let entered = super::entries(task(), None, None, &presets, &later);
         assert_eq!(drawn, entered);
+        assert_eq!(
+            chosen(&entered, Some("tomorrow-morning")),
+            Some(MenuAction::Reminder(
+                task(),
+                Action::Preset(
+                    Preset::TomorrowMorning,
+                    ts("2026-11-22T09:00:00Z").as_millisecond()
+                )
+            ))
+        );
         let action = chosen(&entered, Some("later-today")).expect("Enter on Later today");
         assert_eq!(
             action,
@@ -508,10 +527,9 @@ mod tests {
             None,
             &Now::fixed(NOW_LATE),
         );
-        assert_eq!(
-            page_now(opened, Some(d), &Now::fixed(NOW_LATE)).at,
-            ts(NOW_LATE)
-        );
+        let late = Now::fixed(NOW_LATE);
+        let custom = super::entries(task(), None, Some(d), &presets, &late);
+        assert!(items(&custom).all(|i| i.key != "reminder-apply"));
     }
 
     const NOW_LATE: &str = "2026-11-21T11:01:00Z";

@@ -79,7 +79,7 @@ pub enum Stale {
 
 /// Checks that what the edit was made on still stands: the task is live, and `seen` is a live reminder
 /// of it at the same time, or (`None`) the task still has no reminder.
-fn check(state: &State, task: TaskId, seen: Option<Seen>) -> Result<(), Stale> {
+pub fn check_seen(state: &State, task: TaskId, seen: Option<Seen>) -> Result<(), Stale> {
     if !state.is_live(task.into()) {
         return Err(Stale::Task);
     }
@@ -102,7 +102,7 @@ pub fn set_reminder(
     at: Timestamp,
     new_id: impl FnOnce() -> Uuid,
 ) -> Result<Option<Command>, Stale> {
-    check(state, task, seen)?;
+    check_seen(state, task, seen)?;
     Ok(match seen {
         Some(s) if s.at == at => None,
         Some(s) => Some(Command::UpdateReminder { id: s.id, at }),
@@ -116,7 +116,7 @@ pub fn set_reminder(
 
 /// Removes the reminder the owner saw (others stay); [`Stale`] when it has changed or gone since.
 pub fn remove_reminder(state: &State, task: TaskId, seen: Seen) -> Result<Command, Stale> {
-    check(state, task, Some(seen))?;
+    check_seen(state, task, Some(seen))?;
     Ok(Command::Delete { id: seen.id.into() })
 }
 

@@ -99,13 +99,13 @@ pub(super) enum MenuKind {
         draft: Option<Draft>,
     },
     /// The detail pane's reminder picker: its presets, or (`draft`) its custom page. `seen` is the
-    /// reminder the row showed when it opened, which an edit is made on; `opened` (milliseconds since
-    /// the epoch) is when it opened, which its presets are worked out from (`reminder::page_now`).
+    /// reminder the row showed when it opened, which an edit is made on. The presets are resolved
+    /// once on opening, so a redraw or keyboard action cannot change their meaning.
     Reminder {
         task: TaskId,
         seen: Option<todo_client::intent::reminder::Seen>,
         draft: Option<reminder::Draft>,
-        opened: i64,
+        presets: reminder::Presets,
     },
     /// A task's context menu (right-click its row, or Shift+F10), or the list picker (M).
     Task {
@@ -228,10 +228,9 @@ impl ShellView {
                 task,
                 seen,
                 draft,
-                opened,
+                ref presets,
             } if state.is_live(task.into()) => {
-                let now = reminder::page_now(opened, draft, &self.store.now());
-                reminder::entries(task, seen.map(|s| s.at), draft, &now)
+                reminder::entries(task, seen.map(|s| s.at), draft, presets, &self.store.now())
             }
             MenuKind::Reminder { .. } => Vec::new(),
             MenuKind::Tags {
@@ -948,7 +947,7 @@ impl ShellView {
                     task: id,
                     seen,
                     draft,
-                    opened,
+                    presets,
                 },
             trigger,
             ..
@@ -975,7 +974,7 @@ impl ShellView {
                     task,
                     seen,
                     draft: Some(draft),
-                    opened,
+                    presets,
                 };
                 self.open_menu(kind, None, trigger, window, cx);
                 return;
@@ -1018,38 +1017,44 @@ impl ShellView {
             }
         };
         match cmd {
-            Ok(cmd) => {
-                if let Some(cmd) = cmd
-                    && !self.submit(vec![cmd])
-                {
-                    return self.refresh(cx);
-                }
-                self.close_menu(keyboard, window, cx);
-            }
+            Ok(Some(cmd)) => match self.submit_if(cmd, |state| {
+                commands::reminder::check_seen(state, task, seen).is_ok()
+            }) {
+                Ok(true) => self.close_menu(keyboard, window, cx),
+                Ok(false) => self.refresh_stale_reminder(task, window, cx),
+                Err(()) => {} // Keep the draft and the storage/command error.
+            },
+            Ok(None) => self.close_menu(keyboard, window, cx),
             Err(commands::reminder::Stale::Task) => return self.close_menu(false, window, cx),
             Err(commands::reminder::Stale::Reminder) => {
-                // Shown again as it is now, so the owner can check it and choose again.
-                self.notice = Some(Notice::error(reminder::CHANGED));
-                let seen = commands::reminder::Seen::of(&state, task, &now.eval());
-                if let Some(Menu {
-                    kind:
-                        MenuKind::Reminder {
-                            seen: s,
-                            draft,
-                            opened,
-                            ..
-                        },
-                    ..
-                }) = self.menu.as_mut()
-                {
-                    *s = seen;
-                    *draft = None;
-                    *opened = now.at.as_millisecond();
-                }
-                self.highlight_first();
+                self.refresh_stale_reminder(task, window, cx);
             }
         }
         self.refresh(cx);
+    }
+
+    /// Re-read after a stale snapshot or a refused queue guard, not from the earlier edit snapshot.
+    fn refresh_stale_reminder(
+        &mut self,
+        task: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.store.view();
+        if !state.is_live(task.into()) {
+            return self.close_menu(false, window, cx);
+        }
+        let now = self.store.now();
+        self.notice = Some(Notice::error(reminder::CHANGED));
+        if let Some(menu) = self.menu.as_mut() {
+            menu.kind = MenuKind::Reminder {
+                task,
+                seen: commands::reminder::Seen::of(&state, task, &now.eval()),
+                draft: None,
+                presets: reminder::Presets::new(&now),
+            };
+        }
+        self.highlight_first();
     }
 
     /// Takes one refused change (or, with `None`, every one the list shows) off the "couldn't sync"

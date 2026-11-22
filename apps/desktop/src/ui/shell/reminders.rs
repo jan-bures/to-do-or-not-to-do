@@ -15,62 +15,26 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures::future::{Either, select};
 use gpui::{AsyncApp, AsyncWindowContext, Context, Task, WeakEntity, Window};
 use todo_client::Readiness;
+use todo_client::intent::reminder::Alarm;
 use todo_core::Command;
 use todo_core::ids::TaskId;
 use todo_core::time::Timestamp;
 
 use super::ShellView;
 use crate::config::DataDir;
-use crate::model::reminders::{
-    Activation, Claim, Occurrence, Outcome, RETRY_MS, Reminders, still_as_shown,
-};
+use crate::model::reminders::{Activation, Claim, Outcome, RETRY_MS, Reminders, still_as_shown};
 use crate::model::{Now, RoomKey};
 use crate::platform::toast::{self, ToastEvent};
 use crate::platform::win;
 
-/// How long a reminder that is due may be held back when the first attempt to reach the server
-/// failed (offline, refused): then it shows from this computer's copy. Until that attempt ends, or
-/// until the replica has caught up with the server's head, it waits (`todo_client::Readiness`).
-const CATCH_UP: Duration = Duration::from_secs(60);
 /// The longest one wake timer runs: a timer left behind by a new deadline ends within this, and a
 /// wake that slept through a suspended computer is at most this late.
 const WAKE_CHUNK: Duration = Duration::from_secs(60);
 /// The shortest wait between two passes the wake loop starts: whatever the clocks say, it yields.
 const MIN_WAKE: Duration = Duration::from_millis(250);
 
-/// Whether reminders that are due may show yet, and when to look again if not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Gate {
-    pub open: bool,
-    /// While closed: how long until it opens by itself (the failed first attempt's fallback). `None`
-    /// when only the replica catching up opens it (which wakes the shell anyway).
-    pub recheck_in: Option<Duration>,
-}
-
-/// The gate for the replica's readiness, `since_start` (monotonic) after the session started.
-pub(super) fn gate(readiness: Readiness, since_start: Duration) -> Gate {
-    match readiness {
-        Readiness::CaughtUp => Gate {
-            open: true,
-            recheck_in: None,
-        },
-        Readiness::Failed if since_start >= CATCH_UP => Gate {
-            open: true,
-            recheck_in: None,
-        },
-        Readiness::Failed => Gate {
-            open: false,
-            recheck_in: Some(CATCH_UP - since_start),
-        },
-        Readiness::Starting => Gate {
-            open: false,
-            recheck_in: None,
-        },
-    }
-}
-
 /// When the wake loop should look next: the next reminder (wall clock: alarms are instants), or a
-/// monotonic deadline (the startup hold, a save to try again), whichever comes first. Never longer
+/// monotonic deadline (a save to try again), whichever comes first. Never longer
 /// than [`WAKE_CHUNK`], never shorter than [`MIN_WAKE`]: a deadline the clock has already passed (it
 /// jumped forward) can't make it spin.
 pub(super) fn wake_in(
@@ -110,14 +74,11 @@ impl Deadlines {
 pub(super) struct Alerts {
     reminders: Reminders,
     data: DataDir,
-    started: Instant,
     /// The schedule changed and hasn't been saved yet, and when a failed save is tried again (its
     /// own back-off: a refresh, a keystroke in the filter, never writes before then).
     dirty: bool,
     save_retry: Option<Instant>,
     save_failures: usize,
-    /// When the startup hold ends, while something is held for it.
-    hold_ends: Option<Instant>,
     deadlines: Rc<Cell<Deadlines>>,
     rewake: UnboundedSender<()>,
     _wake: Task<()>,
@@ -158,11 +119,9 @@ impl ShellView {
         self.alerts = Some(Alerts {
             reminders: Reminders::new(data.load_reminders(), Box::new(sink)),
             data,
-            started: Instant::now(),
             dirty: false,
             save_retry: None,
             save_failures: 0,
-            hold_ends: None,
             deadlines,
             rewake,
             _wake: wake,
@@ -185,14 +144,10 @@ impl ShellView {
             return;
         };
         let (state, readiness) = self.store.view_and_readiness();
-        let gate = gate(readiness, alerts.started.elapsed());
-        let outcome = alerts
-            .reminders
-            .reconcile(&state, &Now::system(), gate.open);
-        alerts.hold_ends = (outcome.held && !gate.open)
-            .then_some(gate.recheck_in)
-            .flatten()
-            .map(|d| Instant::now() + d);
+        let outcome =
+            alerts
+                .reminders
+                .reconcile(&state, &Now::system(), readiness == Readiness::CaughtUp);
         self.after_reminders(outcome, cx);
     }
 
@@ -220,14 +175,9 @@ impl ShellView {
                 }
             }
         }
-        let save = alerts.save_retry.filter(|_| alerts.dirty);
-        let mono = match (alerts.hold_ends, save) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
         let next = Deadlines {
             wall: outcome.next,
-            mono,
+            mono: alerts.save_retry.filter(|_| alerts.dirty),
         };
         if alerts.deadlines.get() != next {
             alerts.deadlines.set(next);
@@ -240,21 +190,23 @@ impl ShellView {
         let (Some(launch), Some(alerts)) = (Activation::parse(launch), self.alerts.as_mut()) else {
             return;
         };
-        let state = self.store.view();
-        if let Some(outcome) = alerts.reminders.failed(launch, &state, &Now::system()) {
-            self.after_reminders(outcome, cx);
+        if alerts.reminders.failed(launch, &Now::system()) {
+            alerts.dirty = true;
+            self.reconcile_reminders(cx);
         }
     }
 
     /// A toast's button, or the toast itself, was clicked.
     fn on_toast(&mut self, arguments: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.store.view();
+        let (state, readiness) = self.store.view_and_readiness();
         let Some(activation) = Activation::parse(arguments) else {
             return win::show_and_focus(win::hwnd_of(window));
         };
         let claim = match self.alerts.as_mut() {
-            Some(alerts) => alerts.reminders.claim(activation, &state, &Now::system()),
-            None => None,
+            Some(alerts) if readiness == Readiness::CaughtUp => {
+                alerts.reminders.claim(activation, &state, &Now::system())
+            }
+            _ => None,
         };
         match (activation, claim) {
             (_, Some(Claim::Open(task))) => {
@@ -262,9 +214,7 @@ impl ShellView {
                 self.reveal_task(task, window, cx);
             }
             (_, Some(Claim::Snoozed(outcome))) => self.after_reminders(outcome, cx),
-            (_, Some(Claim::Complete(occurrence, task))) => {
-                self.complete_from_toast(occurrence, task, cx);
-            }
+            (_, Some(Claim::Complete(alarm))) => self.complete_from_toast(alarm, cx),
             // Open from a toast no longer up (or the summary): the window, as it is, nothing selected.
             (Activation::Open(_) | Activation::Missed(_), None) => {
                 win::show_and_focus(win::hwnd_of(window));
@@ -279,20 +229,16 @@ impl ShellView {
     /// if the reminder is still as the toast showed it, checked under the sync client's lock as it is
     /// queued: a sync that moved or removed the reminder, or completed the task, wins. The row plays
     /// the completion only when this queued it. Undo (the toast, Ctrl+Z) brings it back.
-    fn complete_from_toast(
-        &mut self,
-        occurrence: Occurrence,
-        task: TaskId,
-        cx: &mut Context<Self>,
-    ) {
+    fn complete_from_toast(&mut self, alarm: Alarm, cx: &mut Context<Self>) {
+        let task = alarm.task;
         let visible = self.task_is_visible(task);
         let queued = self.submit_if(Command::CompleteTask { id: task }, |state| {
-            still_as_shown(state, occurrence, task)
+            still_as_shown(state, alarm)
         });
         if let Some(alerts) = self.alerts.as_mut() {
-            alerts.reminders.dismiss(occurrence.id);
+            alerts.reminders.dismiss(alarm.reminder);
         }
-        if queued && visible && self.animate {
+        if queued == Ok(true) && visible && self.animate {
             let (now, pace) = (self.now(), self.pace());
             let _ = self.motion.complete(task, now, pace);
         }
@@ -372,27 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_waits_for_the_backlog_and_falls_back_only_after_a_failed_attempt() {
-        let s = Duration::from_secs;
-        // Caught up: open at once.
-        assert!(gate(Readiness::CaughtUp, s(0)).open);
-        // Still starting (connecting, reading the backlog): closed, however long, until it's in.
-        let starting = gate(Readiness::Starting, s(600));
-        assert!(!starting.open);
-        assert_eq!(starting.recheck_in, None);
-        // The first attempt failed: closed for the rest of the minute, then from the cache.
-        let failed = gate(Readiness::Failed, s(15));
-        assert_eq!(
-            failed,
-            Gate {
-                open: false,
-                recheck_in: Some(s(45))
-            }
-        );
-        assert!(gate(Readiness::Failed, s(60)).open);
-    }
-
-    #[test]
     fn the_wake_never_spins_on_a_deadline_the_clock_has_passed() {
         let now = Instant::now();
         let wall_now = ts("2026-11-21T10:00:00Z");
@@ -410,7 +335,7 @@ mod tests {
             wake_in(Some(ts("2026-11-21T09:00:00Z")), None, wall_now, now),
             Some(MIN_WAKE)
         );
-        // The startup hold is monotonic: a wall-clock jump doesn't touch it.
+        // Save retries are monotonic: a wall-clock jump doesn't touch them.
         let hold = now + Duration::from_secs(30);
         for wall in [
             wall_now,
@@ -439,13 +364,13 @@ mod tests {
         let f = fixtures::my_day();
         let task = f.ui.task.expect("selected");
         let seen = Seen::of(&f.state, task, &f.now.eval()).expect("the task has a reminder");
-        let occurrence = Occurrence {
-            id: seen.id,
-            at: seen.at.as_millisecond(),
-            token: 1,
+        let alarm = Alarm {
+            reminder: seen.id,
+            task,
+            at: seen.at,
         };
         let complete = || Command::CompleteTask { id: task };
-        let guard = |s: &todo_core::State| still_as_shown(s, occurrence, task);
+        let guard = |s: &todo_core::State| still_as_shown(s, alarm);
         // Rescheduled between the claim and the queue: nothing is completed.
         let moved = Store::fixture(&f);
         moved
@@ -461,6 +386,41 @@ mod tests {
                 .is_none()
         );
         assert!(!moved.view().tasks[&task].is_done());
+        // An edit within one millisecond must also invalidate the queued completion.
+        let fine = Store::fixture(&f);
+        let at = Timestamp::new(seen.at.as_second(), seen.at.subsec_nanosecond() + 1)
+            .expect("in the same millisecond");
+        assert_eq!(seen.at.as_millisecond(), at.as_millisecond());
+        fine.submit(Command::UpdateReminder { id: seen.id, at })
+            .expect("moved");
+        assert!(
+            fine.submit_undoable_if(complete(), guard)
+                .expect("valid")
+                .is_none()
+        );
+        // Merge reparented the reminder without changing its timestamp.
+        let merged = Store::fixture(&f);
+        let target = f
+            .state
+            .tasks
+            .values()
+            .find(|t| t.id != task && !t.is_done() && f.state.is_live(t.id.into()))
+            .expect("another task")
+            .id;
+        merged
+            .submit(Command::MergeTasks {
+                source: task,
+                target,
+            })
+            .expect("merged");
+        assert_eq!(merged.view().reminders[&seen.id].task, target);
+        assert!(
+            merged
+                .submit_undoable_if(complete(), guard)
+                .expect("valid")
+                .is_none()
+        );
+        assert!(!merged.view().tasks[&target].is_done());
         // Removed meanwhile: nothing either.
         let removed = Store::fixture(&f);
         removed

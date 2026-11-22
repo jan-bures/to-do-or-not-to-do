@@ -203,11 +203,12 @@ struct Fake {
     /// The toasts shown, last first per tag: what their buttons ask for.
     toasts: Rc<RefCell<Vec<Toast>>>,
     fail: Rc<Cell<bool>>,
+    fail_tag: Rc<RefCell<Option<String>>>,
 }
 
 impl ToastSink for Fake {
     fn show(&mut self, toast: &Toast) -> Result<(), NotShown> {
-        if self.fail.get() {
+        if self.fail.get() || self.fail_tag.borrow().as_deref() == Some(&toast.tag) {
             self.log.borrow_mut().push(format!("failed {}", toast.tag));
             return Err(NotShown("no notifier".into()));
         }
@@ -416,10 +417,10 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
     assert_eq!(r.claim(complete, &done.state, &at), None);
     // As shown: Complete is claimed once; the toast goes once the completion is queued.
     fake.take();
-    let Some(Claim::Complete(occurrence, claimed)) = r.claim(complete, &w.state, &at) else {
+    let Some(Claim::Complete(alarm)) = r.claim(complete, &w.state, &at) else {
         panic!("claimed");
     };
-    assert_eq!(claimed, task);
+    assert_eq!(alarm.task, task);
     assert!(
         fake.take().is_empty(),
         "nothing happens in Windows between the claim and the queue"
@@ -432,10 +433,10 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
         id: call,
         at: ts("2026-11-22T09:00:00Z"),
     });
-    assert!(still_as_shown(&w.state, occurrence, task));
-    assert!(!still_as_shown(&later.state, occurrence, task));
-    assert!(!still_as_shown(&removed.state, occurrence, task));
-    assert!(!still_as_shown(&done.state, occurrence, task));
+    assert!(still_as_shown(&w.state, alarm));
+    assert!(!still_as_shown(&later.state, alarm));
+    assert!(!still_as_shown(&removed.state, alarm));
+    assert!(!still_as_shown(&done.state, alarm));
     r.dismiss(call);
     assert_eq!(fake.take(), [format!("hide {call}")]);
     assert_eq!(r.claim(complete, &w.state, &at), None);
@@ -448,6 +449,69 @@ fn a_toasts_buttons_act_only_on_the_reminder_as_it_was_shown_and_only_once() {
         other => other,
     };
     assert_eq!(r.claim(forged, &w.state, &at), None);
+}
+
+#[test]
+fn a_toast_token_cannot_follow_a_reparent_or_a_submillisecond_edit() {
+    let mut w = World::new();
+    let (source, id) = w.task("Source", "2026-11-21T10:00:00.000000001Z");
+    let (target, _) = w.task("Target", "2026-11-21T11:00:00Z");
+    let original = w.state.clone();
+    let at = now("2026-11-21T10:00:01Z");
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &at, true);
+    let open = fake.button(&id.to_string(), "Open");
+    let snooze = fake.button(&id.to_string(), "Snooze 10 min");
+    let complete = fake.button(&id.to_string(), "Complete");
+    assert_eq!(r.claim(open, &w.state, &at), Some(Claim::Open(source)));
+    w.run(Command::UpdateReminder {
+        id,
+        at: ts("2026-11-21T10:00:00.000000002Z"),
+    });
+    assert_eq!(
+        r.claim(complete, &w.state, &at),
+        None,
+        "same millisecond is not the same instant"
+    );
+    w.state = original.clone();
+    w.run(Command::MergeTasks { source, target });
+    assert_eq!(w.state.reminders[&id].task, target);
+    assert_eq!(w.state.reminders[&id].at, original.reminders[&id].at);
+    for action in [open, snooze, complete] {
+        assert_eq!(r.claim(action, &w.state, &at), None);
+    }
+    fake.take();
+    r.reconcile(&w.state, &at, true);
+    assert!(fake.take().contains(&format!("hide {id}")));
+    assert_eq!(
+        r.claim(complete, &original, &at),
+        None,
+        "reconciliation invalidated the token"
+    );
+}
+
+#[test]
+fn a_partial_resync_leaves_the_durable_snooze_alone_until_replay_finishes() {
+    let mut w = World::new();
+    let (_, id) = w.task("Read the gas meter", NOW);
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &now(NOW), true);
+    let snooze = fake.button(&id.to_string(), "Snooze 10 min");
+    let at = now("2026-11-21T10:01:00Z");
+    assert!(matches!(
+        r.claim(snooze, &w.state, &at),
+        Some(Claim::Snoozed(_))
+    ));
+    let durable = r.schedule().to_json().expect("json");
+    fake.take();
+    let due = now("2026-11-21T10:11:00Z");
+    for state in [&State::new(), &w.state] {
+        assert_eq!(r.reconcile(state, &due, false), Outcome::default());
+        assert_eq!(r.schedule().to_json().expect("json"), durable);
+        assert!(fake.take().is_empty(), "no toast from a partial view");
+    }
+    assert!(r.reconcile(&w.state, &due, true).changed);
+    assert!(fake.take()[0].starts_with(&format!("show {id}")));
 }
 
 #[test]
@@ -549,17 +613,35 @@ fn open_acts_only_for_the_toast_up_and_selects_nothing_otherwise() {
 }
 
 #[test]
-fn a_batch_stops_at_the_first_toast_windows_refuses() {
+fn an_individual_success_does_not_reset_a_refused_summarys_back_off() {
     let mut w = World::new();
-    w.task("Call the dentist", "2026-11-21T09:59:00Z");
-    w.task("Water the plants", "2026-11-21T09:58:00Z");
-    w.task("Read the gas meter", "2026-11-21T06:00:00Z");
+    let (gas, _) = w.task("Read the gas meter", "2026-11-21T06:00:00Z");
+    w.task("Clean the windows", "2026-11-21T07:00:00Z");
+    let (_, fresh) = w.task("Call the dentist", NOW);
+    let (_, next) = w.task("Water the plants", "2026-11-21T10:00:30Z");
     let (mut r, fake) = driver();
-    fake.fail.set(true);
+    r.reconcile(&w.state, &now("2026-11-21T09:59:00Z"), true);
+    fake.take();
+    w.run(Command::CompleteTask { id: gas });
+    *fake.fail_tag.borrow_mut() = Some(MISSED_TAG.into());
     let out = r.reconcile(&w.state, &now(NOW), true);
-    assert_eq!(fake.take().len(), 1, "asked once for the whole batch");
-    assert!(r.schedule().shown.is_empty());
+    let log = fake.take();
+    assert!(log.iter().any(|l| l.starts_with(&format!("show {fresh}"))));
+    assert_eq!(log.last().expect("quiet rebuild refused"), "failed missed");
     assert_eq!(out.next, Some(ts("2026-11-21T10:00:30Z")));
+    r.reconcile(&w.state, &now("2026-11-21T10:00:10Z"), true);
+    assert!(fake.take().is_empty(), "the refused rebuild must back off");
+    let out = r.reconcile(&w.state, &now("2026-11-21T10:00:30Z"), true);
+    let log = fake.take();
+    assert!(log[0].starts_with(&format!("show {next}")));
+    assert_eq!(log[1], "failed missed");
+    assert_eq!(
+        out.next,
+        Some(ts("2026-11-21T10:02:30Z")),
+        "second refusal, not first"
+    );
+    r.reconcile(&w.state, &now("2026-11-21T10:01:00Z"), true);
+    assert!(fake.take().is_empty());
 }
 
 #[test]
@@ -571,10 +653,9 @@ fn a_toast_windows_reports_failed_later_is_shown_again() {
     let launch = fake.button(&call.to_string(), "Open");
     fake.take();
     // Windows says it failed after all: not counted as shown, tried again after the back-off.
-    let out = r
-        .failed(launch, &w.state, &now("2026-11-21T10:00:01Z"))
-        .expect("known");
-    assert!(out.changed && out.held);
+    let at = now("2026-11-21T10:00:01Z");
+    assert!(r.failed(launch, &at));
+    let out = r.reconcile(&w.state, &at, true);
     assert!(r.schedule().shown.is_empty());
     assert_eq!(out.next, Some(ts("2026-11-21T10:00:31Z")));
     assert!(fake.take().is_empty());
@@ -582,9 +663,79 @@ fn a_toast_windows_reports_failed_later_is_shown_again() {
     assert_eq!(fake.take().len(), 1);
     assert!(r.schedule().shown.iter().any(|s| s.id == call));
     // A report about a toast already replaced does nothing.
+    let later = now("2026-11-21T10:00:40Z");
+    assert!(!r.failed(launch, &later));
+    let retry = fake.button(&call.to_string(), "Open");
+    assert!(r.failed(retry, &later));
+    let out = r.reconcile(&w.state, &later, true);
     assert_eq!(
-        r.failed(launch, &w.state, &now("2026-11-21T10:00:40Z")),
-        None
+        out.next,
+        Some(ts("2026-11-21T10:02:40Z")),
+        "a second asynchronous failure backs off longer"
+    );
+    let at = now("2026-11-21T10:02:40Z");
+    r.reconcile(&w.state, &at, true);
+    assert!(r.failed(fake.button(&call.to_string(), "Open"), &at));
+    let out = r.reconcile(&w.state, &at, true);
+    assert_eq!(out.next, Some(ts("2026-11-21T10:12:40Z")));
+    r.reconcile(&w.state, &now("2026-11-21T10:12:40Z"), true);
+    assert!(
+        fake.take()
+            .last()
+            .expect("retried")
+            .starts_with(&format!("show {call}"))
+    );
+}
+
+#[test]
+fn a_failed_first_summary_is_pending_after_restart_and_pops_up_again() {
+    let mut w = World::new();
+    let (_, first) = w.task("First", "2026-11-21T06:00:00Z");
+    let (_, second) = w.task("Second", "2026-11-21T07:00:00Z");
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &now(NOW), true);
+    assert_eq!(r.schedule().shown.len(), 2);
+    let at = now("2026-11-21T10:00:01Z");
+    assert!(r.failed(fake.button(MISSED_TAG, "Open"), &at));
+    let out = r.reconcile(&w.state, &at, true);
+    assert_eq!(out.next, Some(ts("2026-11-21T10:00:31Z")));
+    let pending = Schedule::from_json(&r.schedule().to_json().expect("json"));
+    assert!(pending.shown.is_empty());
+    assert!(pending.records.contains_key(&first) && pending.records.contains_key(&second));
+    fake.take();
+    let mut restarted = Reminders::new(pending, Box::new(fake.clone()));
+    restarted.reconcile(&w.state, &at, true);
+    assert_eq!(
+        fake.take(),
+        ["show missed | 2 missed reminders | First, Second | Open"]
+    );
+}
+
+#[test]
+fn a_failed_summary_update_only_rolls_back_its_new_members() {
+    let mut w = World::new();
+    let (_, earlier) = w.task("Earlier", "2026-11-21T06:00:00Z");
+    let (mut r, fake) = driver();
+    r.reconcile(&w.state, &now(NOW), true);
+    let (_, new) = w.task("New", "2026-11-21T07:00:00Z");
+    let at = now("2026-11-21T10:00:01Z");
+    r.reconcile(&w.state, &at, true);
+    assert!(r.failed(fake.button(MISSED_TAG, "Open"), &at));
+    assert!(r.schedule().shown.iter().any(|s| s.id == earlier));
+    assert!(!r.schedule().shown.iter().any(|s| s.id == new));
+    fake.take();
+    let at = now("2026-11-21T10:00:31Z");
+    r.reconcile(&w.state, &at, true);
+    assert_eq!(
+        fake.take(),
+        ["show missed | 2 missed reminders | Earlier, New | Open"]
+    );
+    assert!(r.failed(fake.button(MISSED_TAG, "Open"), &at));
+    let out = r.reconcile(&w.state, &at, true);
+    assert_eq!(
+        out.next,
+        Some(ts("2026-11-21T10:02:31Z")),
+        "summary's second asynchronous failure"
     );
 }
 

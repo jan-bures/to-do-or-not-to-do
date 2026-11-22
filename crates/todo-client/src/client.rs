@@ -43,8 +43,8 @@ use crate::platform::{
     Clock, Entropy, EventStream, Response, SseFrame, StreamOpen, Transport, TransportError,
 };
 use crate::protocol::{
-    self, CATCH_UP_FRAME, CatchUpNotice, EPOCH_MISMATCH, EVENT_FRAME, EVENT_MISMATCH, EventPage,
-    HELLO_FRAME, Hello, LogEvent, SendOutcome, error_detail,
+    self, BACKLOG_END_FRAME, CATCH_UP_FRAME, CatchUpNotice, EPOCH_MISMATCH, EVENT_FRAME,
+    EVENT_MISMATCH, EventPage, HELLO_FRAME, Hello, LogEvent, SendOutcome, error_detail,
 };
 use crate::replica::{
     Ack, ConfirmError, OpenError, Replica, SubmitError, TrackedCommand, TrackedUndo,
@@ -118,7 +118,8 @@ pub enum Readiness {
     /// An attempt failed (offline, refused) before the replica caught up.
     Failed,
     /// The replica has every event up to the server's head when it was reached: the `hello` frame's
-    /// `head_seq`, or the end of a catch-up. It stays so until a full resync.
+    /// `head_seq`, an explicit end-of-backlog frame, or the end of a catch-up. It stays so until a
+    /// full resync.
     CaughtUp,
 }
 
@@ -1104,10 +1105,13 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                         ?diverged_at,
                         "the server's log is not the one this client followed; resyncing from 0"
                     );
-                    match self.with(|s| s.replica.reset()) {
+                    match self.with(|s| {
+                        // The old view is no longer authoritative even if writing the reset fails.
+                        // Publish the reset and readiness under the same lock.
+                        s.readiness = Readiness::Starting;
+                        s.replica.reset()
+                    }) {
                         Ok(()) => {
-                            // Starting over from nothing: not caught up until it has the log again.
-                            self.with(|s| s.readiness = Readiness::Starting);
                             // Only a durable reset counts: it arms the repeat-divergence guard and
                             // releases a sender waiting to resend a divergent acknowledgement.
                             last_divergence = diverged_at;
@@ -1419,11 +1423,14 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     return step;
                 }
                 epoch = Some(hello.epoch);
-                match hello.head_seq {
-                    Some(h) if self.received() < h => head = Some(h),
-                    // Already there, or a server that doesn't say (agent tokens).
-                    _ => self.reached_head(),
+                head = hello.head_seq;
+                if head.is_some_and(|h| self.received() >= h) {
+                    head = None;
+                    self.reached_head();
                 }
+            } else if event == BACKLOG_END_FRAME && epoch.is_some() {
+                head = None;
+                self.reached_head();
             } else if event == EVENT_FRAME {
                 let Some(epoch) = epoch else {
                     return self.fail(

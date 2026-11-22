@@ -116,6 +116,8 @@ pub const HEARTBEAT: &str = "heartbeat";
 pub const CATCH_UP: &str = "catch_up";
 /// The SSE event name of the first frame of every stream. Its data is a [`Hello`].
 pub const HELLO: &str = "hello";
+/// Initial replay is complete on a stream that doesn't expose the head sequence number.
+pub const BACKLOG_END: &str = "backlog_end";
 /// The response header that carries the log epoch of a stream.
 pub const LOG_EPOCH_HEADER: &str = "log-epoch";
 
@@ -163,9 +165,10 @@ pub struct CatchUp {
 /// The event log since a sequence number, as JSON or as an SSE stream (`Accept: text/event-stream`).
 ///
 /// SSE frames carry `id: <seq>`, `event: event` and the event JSON as `data`; the first frame is
-/// `event: hello` with the log epoch. A `:heartbeat` comment is sent periodically. On reconnect,
-/// `Last-Event-ID` takes precedence over `since`. See the module documentation for the log epoch
-/// (409 `epoch_mismatch`) and the catch-up protocol (409 `catch_up_required`, the `catch_up` frame).
+/// `event: hello` with the log epoch. On agent streams, `event: backlog_end` marks the end of the
+/// initial replay without disclosing a sequence number. A `:heartbeat` comment is sent periodically.
+/// On reconnect, `Last-Event-ID` takes precedence over `since`. See the module documentation for the
+/// log epoch (409 `epoch_mismatch`) and catch-up protocol (409 `catch_up_required`, `catch_up` frame).
 #[utoipa::path(
     get, path = "/api/v1/events", tag = "events", params(EventsParams),
     responses(
@@ -630,6 +633,13 @@ impl Pump {
         if !self.catch_up().await {
             return;
         }
+        if hello.head_seq.is_none()
+            && !self
+                .send(SseEvent::default().event(BACKLOG_END).data("{}"))
+                .await
+        {
+            return;
+        }
         let mut beat = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
         beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -897,7 +907,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agents_get_no_log_head_in_hello() {
+    async fn an_agent_stream_marks_backlog_end_without_exposing_the_head() {
         let r = rig(3);
         let (tx, mut rx) = mpsc::channel(64);
         let (pump, _, live) = pump(&r, tx, Duration::from_secs(3600));
@@ -908,6 +918,22 @@ mod tests {
             text.contains("epoch") && !text.contains("head_seq"),
             "{text}"
         );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..4 {
+                let frame = rx.recv().await.unwrap();
+                assert!(
+                    frame.check.is_some(),
+                    "a list and three tasks precede the marker"
+                );
+            }
+            let marker = rx.recv().await.unwrap();
+            let text = format!("{:?}", marker.frame);
+            assert!(text.contains(BACKLOG_END), "{text}");
+            assert!(marker.check.is_none());
+            assert!(!text.contains("head_seq") && !text.contains("id:"));
+        })
+        .await
+        .expect("received replay and its end marker");
         task.abort();
     }
 

@@ -18,6 +18,8 @@ pub const EVENT_FRAME: &str = "event";
 pub const CATCH_UP_FRAME: &str = "catch_up";
 /// The SSE event name of the first frame of every stream.
 pub const HELLO_FRAME: &str = "hello";
+/// The initial SSE backlog is in, without revealing the server's head sequence number.
+pub const BACKLOG_END_FRAME: &str = "backlog_end";
 
 /// Error code: the request named another log epoch than the server's (409).
 pub const EPOCH_MISMATCH: &str = "epoch_mismatch";

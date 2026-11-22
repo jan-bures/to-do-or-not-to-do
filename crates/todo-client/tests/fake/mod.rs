@@ -223,6 +223,8 @@ pub struct Script {
     pub outcome_unknown: usize,
     /// Fail this many requests (of any kind) with a network error before they reach the server.
     pub offline: usize,
+    /// Match an agent stream, with no head in hello but an end-of-backlog frame.
+    pub hide_head: bool,
 }
 
 /// A [`Transport`] over a shared [`FakeServer`].
@@ -315,15 +317,25 @@ pub struct MockStream {
     grew: Notify,
     next: u64,
     hello: Option<String>,
+    backlog_end: Option<u64>,
 }
 
 impl EventStream for MockStream {
     async fn next_frame(&mut self) -> Option<Result<SseFrame, TransportError>> {
+        yield_now().await;
         if let Some(data) = self.hello.take() {
             return Some(Ok(SseFrame::Event {
                 event: "hello".into(),
                 id: None,
                 data,
+            }));
+        }
+        if self.backlog_end == Some(self.next) {
+            self.backlog_end = None;
+            return Some(Ok(SseFrame::Event {
+                event: "backlog_end".into(),
+                id: None,
+                data: "{}".into(),
             }));
         }
         loop {
@@ -374,7 +386,12 @@ impl Transport for MockTransport {
         }
         let since: u64 = query(&request.path, "since").unwrap_or(0);
         let head = server.head();
-        let hello = json!({ "epoch": server.epoch, "head_seq": head }).to_string();
+        let hide_head = self.script.lock().unwrap().hide_head;
+        let hello = if hide_head {
+            json!({ "epoch": server.epoch })
+        } else {
+            json!({ "epoch": server.epoch, "head_seq": head })
+        };
         drop(server);
         if since > head {
             return Ok(StreamOpen::Refused(error(
@@ -387,7 +404,8 @@ impl Transport for MockTransport {
             server: self.server.clone(),
             grew: self.grew.clone(),
             next: since,
-            hello: Some(hello),
+            hello: Some(hello.to_string()),
+            backlog_end: hide_head.then_some(head),
         }))
     }
 }

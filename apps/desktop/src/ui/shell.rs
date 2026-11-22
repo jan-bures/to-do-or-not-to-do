@@ -1168,7 +1168,7 @@ impl ShellView {
             task,
             seen,
             draft,
-            opened: now.at.as_millisecond(),
+            presets: model::menus::reminder::Presets::new(&now),
         }
     }
 
@@ -1360,15 +1360,15 @@ impl ShellView {
     }
 
     /// Submits one undoable command only if `guard` holds on the state at the moment it is queued
-    /// (`Store::submit_undoable_if`), with its undo toast. Returns whether it was queued; a refused
-    /// guard is silent, a refused command says why in the status bar.
+    /// (`Store::submit_undoable_if`), with its undo toast. `Ok(false)` means the guard refused;
+    /// `Err(())` means the command failed, with its error already in the status bar.
     fn submit_if(
         &mut self,
         cmd: todo_core::Command,
         guard: impl FnOnce(&todo_core::State) -> bool,
-    ) -> bool {
+    ) -> Result<bool, ()> {
         let Some((entity, kind)) = undo::EditKind::of(&cmd) else {
-            return false;
+            return Err(());
         };
         let label = undo::toast_label(&self.store.view(), &cmd, entity, kind);
         let room = self.shell.room.key;
@@ -1382,13 +1382,13 @@ impl ShellView {
                 };
                 self.remember_undo(action, label);
                 self.notice = None;
-                true
+                Ok(true)
             }
-            Ok(None) => false,
+            Ok(None) => Ok(false),
             Err(e) => {
                 tracing::warn!("a change was refused: {e}");
                 self.notice = Some(Notice::error(format!("Couldn't save that: {e}")));
-                false
+                Err(())
             }
         }
     }

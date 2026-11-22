@@ -119,6 +119,42 @@ fn readiness_says_caught_up_only_once_the_servers_head_is_in() {
 }
 
 #[test]
+fn an_unknown_head_waits_for_backlog_end() {
+    let t = MockTransport::new(seeded_server(), owner());
+    t.script.lock().unwrap().hide_head = true;
+    let c = client(&t, &MemoryStorage::new(), 1);
+    let before_event = std::cell::Cell::new(0);
+    let after_events = std::cell::Cell::new(false);
+    run_until(&c, |c| {
+        match (c.cursor(), c.readiness()) {
+            (0, Readiness::Starting) if c.status().connection == Connection::Online => {
+                before_event.set(before_event.get() + 1);
+            }
+            (2, Readiness::Starting) => after_events.set(true),
+            (seq, Readiness::CaughtUp) => {
+                assert_eq!(seq, 2, "hello alone is not caught up");
+                return true;
+            }
+            _ => {}
+        }
+        false
+    });
+    assert!(before_event.get() >= 2, "observed both sides of hello");
+    assert!(
+        after_events.get(),
+        "even the last event isn't an end marker"
+    );
+}
+
+#[test]
+fn an_explicit_zero_head_does_not_need_backlog_end() {
+    let t = MockTransport::new(Arc::default(), owner());
+    let c = client(&t, &MemoryStorage::new(), 1);
+    run_until(&c, |c| c.readiness() == Readiness::CaughtUp);
+    assert_eq!(c.cursor(), 0);
+}
+
+#[test]
 fn readiness_says_failed_when_the_first_attempt_fails_then_catches_up() {
     let server = seeded_server();
     let t = MockTransport::new(server.clone(), owner());
@@ -153,6 +189,57 @@ fn a_guarded_submit_queues_only_while_the_guard_holds() {
     assert!(queued.is_some());
     assert_eq!(c.pending().len(), 1);
     assert!(c.view().tasks[&task_id(1)].completed_at.is_some());
+}
+
+#[test]
+fn reminder_picker_commands_are_refused_if_their_seen_reminder_changes_before_enqueue() {
+    use todo_client::intent::reminder::{Seen, check_seen, remove_reminder, set_reminder};
+    use todo_core::ids::ReminderId;
+
+    let t = MockTransport::new(seeded_server(), owner());
+    let c = client(&t, &MemoryStorage::new(), 1);
+    run_until(&c, |c| synced(c, &t));
+    let task = task_id(1);
+    let id = ReminderId::new_v7(1_790_000_000_000, [7; 10]);
+    let attempted_id = ReminderId::new_v7(1_790_000_000_001, [8; 10]);
+    let add = set_reminder(&c.view(), task, None, ts(1000), || attempted_id.as_uuid())
+        .unwrap()
+        .unwrap();
+    // A reminder arrived after a picker that initially saw none prepared its AddReminder.
+    c.submit(Command::AddReminder {
+        id,
+        task,
+        at: ts(2000),
+    })
+    .unwrap();
+    let before = c.pending().len();
+    assert!(
+        c.submit_tracked_if(add, |state| check_seen(state, task, None).is_ok())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(c.pending().len(), before);
+    assert!(!c.view().reminders.contains_key(&attempted_id));
+
+    let seen = Seen { id, at: ts(2000) };
+    let snapshot = c.view();
+    let edit = set_reminder(&snapshot, task, Some(seen), ts(3000), Uuid::nil)
+        .unwrap()
+        .unwrap();
+    let remove = remove_reminder(&snapshot, task, seen).unwrap();
+    c.submit(Command::UpdateReminder { id, at: ts(4000) })
+        .unwrap();
+    let before = c.pending().len();
+    for cmd in [edit, remove] {
+        assert!(
+            c.submit_tracked_if(cmd, |state| check_seen(state, task, Some(seen)).is_ok())
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(c.pending().len(), before);
+    assert_eq!(c.view().reminders[&id].at, ts(4000));
+    assert!(c.view().is_live(id.into()));
 }
 
 #[test]
@@ -404,6 +491,78 @@ fn a_reset_that_fails_is_retried_instead_of_tripping_the_divergence_guard() {
     assert_eq!(flaky.failed.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(c.view().tasks.contains_key(&task_id(1)));
     assert!(!c.view().tasks.contains_key(&task_id(2)));
+}
+
+#[test]
+fn a_full_resync_is_not_ready_during_reset_failure_or_replay() {
+    use std::cell::Cell;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let server = seeded_server();
+    let t = MockTransport::new(server.clone(), owner());
+    let storage = FailingResets {
+        inner: MemoryStorage::new(),
+        left: Arc::new(2.into()),
+        failed: Arc::default(),
+    };
+    let mut cfg = ClientConfig::new(owner());
+    cfg.backoff = Backoff {
+        initial: Duration::from_millis(1),
+        max: Duration::from_millis(2),
+    };
+    let c = SyncClient::new(
+        t.clone(),
+        FastClock::default(),
+        CountingEntropy::seeded(1),
+        storage.clone(),
+        cfg,
+    )
+    .unwrap();
+    let restarted = Cell::new(false);
+    let observed_failed_reset = Cell::new(false);
+    let observed_empty_view = Cell::new(false);
+    run_until(&c, |c| {
+        let (view, readiness) = c.view_and_readiness();
+        if !restarted.get() {
+            if readiness == Readiness::CaughtUp {
+                assert!(view.tasks.contains_key(&task_id(1)));
+                restarted.set(true);
+                // Replace event 2. The new event 3 refers to the replacement task, so applying it
+                // to the old view requires a full resync.
+                let mut server = server.lock().unwrap();
+                server.restore(1, EPOCH);
+                server
+                    .execute(
+                        &owner(),
+                        Uuid::from_u128(902),
+                        &create_task(task_id(2), list_id(1), "Replacement"),
+                    )
+                    .unwrap();
+                server
+                    .execute(&owner(), Uuid::from_u128(903), &add_note(task_id(2), "n"))
+                    .unwrap();
+                t.grew.notify();
+            }
+        } else if storage.left.load(SeqCst) < 2 {
+            if c.cursor() == 0 {
+                assert!(view.tasks.is_empty());
+                assert_eq!(readiness, Readiness::Starting);
+                observed_empty_view.set(true);
+            } else if !observed_empty_view.get() {
+                assert!(view.tasks.contains_key(&task_id(1)));
+                assert_eq!(readiness, Readiness::Starting, "reset is being retried");
+                observed_failed_reset.set(true);
+            }
+            if observed_empty_view.get() && readiness == Readiness::CaughtUp {
+                assert!(view.tasks.contains_key(&task_id(2)));
+                return true;
+            }
+        }
+        false
+    });
+    assert!(observed_failed_reset.get());
+    assert!(observed_empty_view.get());
+    assert_eq!(storage.failed.load(SeqCst), 2);
 }
 
 /// A server from before `command_len` doesn't say where a batch ends, and the latest command has no
