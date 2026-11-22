@@ -1,5 +1,10 @@
 package app.todoornot
 
+import app.todoornot.model.activitySource
+import app.todoornot.core.FeedRevision
+import app.todoornot.core.CustomRepeat
+import app.todoornot.core.RepeatUnit
+
 import app.todoornot.core.Completion
 import app.todoornot.core.quickAddDate
 import app.todoornot.core.FailedChange
@@ -543,6 +548,14 @@ class TodoModelTest {
     }
 
     @Test
+    fun activity_headings_use_the_same_offset_as_today() {
+        val at = java.time.Instant.parse("2025-11-20T23:30:00Z").toEpochMilli()
+        val day = app.todoornot.ui.activityDay(at, FIXTURE_NOW.utcOffsetSecs)
+        assertEquals("21 Nov 2025", app.todoornot.ui.dayHeading(day, java.time.LocalDate.parse("2026-11-21")))
+        assertEquals("Yesterday", app.todoornot.ui.dayHeading(day, java.time.LocalDate.parse("2025-11-22")))
+    }
+
+    @Test
     fun activity_is_a_room_not_the_agent_activity_task_list() {
         val e = fixtureEngine()
         val s = Stepped(e) { time }
@@ -558,12 +571,31 @@ class TodoModelTest {
         assertNull(m.ui.value.detail)
         assertEquals("", m.ui.value.filter)
         var problem: String? = null
-        s.scope.launch { problem = m.activityPage(agent.id, null).problem }
+        val source = m.ui.value.activitySource
+        s.scope.launch { problem = m.activityPage(source, null)?.problem }
         s.drain()
         assertEquals("Couldn’t load activity. Try again.", problem)
+        val same = m.ui.value.copy(activityRevision = FeedRevision(source.epoch, 42u))
+        assertEquals(source, same.activitySource)
+        assertNotEquals(source, same.copy(activityRevision = FeedRevision("new", 0u)).activitySource)
+        // Start the older page, then switch filters while its IO is still queued.
+        var returned = false
+        s.scope.launch { assertNull(m.activityPage(source, 17u)); returned = true }
+        s.runMain()
         m.openActivity(null)
         s.drain()
         assertEquals("", m.ui.value.activity)
+        assertTrue(returned)
+        // An invalid filter throws FfiException before any request. The UI gets a retryable error.
+        m.openActivity("not an agent!")
+        s.drain()
+        s.scope.launch {
+            val retry = requireNotNull(m.activityPage(m.ui.value.activitySource, 17u))
+            assertEquals("Couldn’t load activity. Try again.", retry.problem)
+            assertEquals(17uL, retry.before)
+            assertFalse(retry.skip)
+        }
+        s.drain()
         m.select(id) // A notification can open a task from Activity.
         s.drain()
         assertNull(m.ui.value.activity)
@@ -578,6 +610,14 @@ class TodoModelTest {
         val s = Stepped(e) { time }
         val m = s.model
         m.select(id)
+        val monday = CustomRepeat(RepeatUnit.WEEK, 1u, 1u)
+        val preview = m.previewRepeat(id, monday)
+        assertTrue(preview.valid)
+        assertEquals("Every Monday", preview.description)
+        assertEquals("Due will be 23 Nov 2026.", preview.dueNote)
+        val invalid = m.previewRepeat(id, monday.copy(weekdays = 0u))
+        assertFalse(invalid.valid)
+        assertEquals("Choose at least one weekday.", invalid.description)
         m.organize(app.todoornot.model.OrganizeEdit.Repeat(id, app.todoornot.core.RepeatChoice.Weekdays))
         s.drain()
         assertEquals("2026-11-23", m.ui.value.detail!!.due)
@@ -596,6 +636,7 @@ class TodoModelTest {
         m.confirmDelete(target, next!!) { assertNull(it) }
         s.drain()
         assertTrue(m.ui.value.detail!!.tags.isEmpty())
+        assertEquals("Deleted tag “garden”", m.ui.value.toast!!.text)
         m.undo(m.ui.value.toast!!)
         s.drain()
         assertEquals(tag.id, m.ui.value.detail!!.tags.single().id)
@@ -603,6 +644,19 @@ class TodoModelTest {
         s.drain()
         assertTrue(m.ui.value.detail!!.sources.isEmpty())
         assertFalse(m.ui.value.toast!!.undoable)
+        m.organize(app.todoornot.model.OrganizeEdit.AddLink(id, "  todo.example.com  "))
+        s.drain()
+        val toast = m.ui.value.toast!!
+        assertEquals("Added link “https://todo.example.com”", toast.text)
+        val window = m.toastRemaining(toast)
+        time += 123
+        // A new surface reads the same model deadline, not a fresh countdown.
+        assertEquals(window - 123, m.toastRemaining(m.read().toast!!))
+        time += window
+        m.undo(toast)
+        s.drain()
+        assertNull(m.ui.value.toast)
+        assertEquals(1, m.ui.value.detail!!.sources.size)
         s.scope.cancel()
     }
 

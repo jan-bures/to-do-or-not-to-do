@@ -57,10 +57,14 @@ interface Actions {
     fun organize(edit: OrganizeEdit) = Unit
     fun organizeQuestion(target: app.todoornot.core.ColorTarget): String? = null
     fun confirmDelete(target: app.todoornot.core.ColorTarget, asked: String, result: (String?) -> Unit) = Unit
+    fun tagNamed(name: String): Boolean = false
+    fun previewRepeat(id: String, draft: app.todoornot.core.CustomRepeat): app.todoornot.core.RepeatPreview =
+        app.todoornot.core.RepeatPreview("No such task.", null, false)
     fun openActivity(agent: String?) = Unit
-    suspend fun activityPage(agent: String?, before: ULong?): app.todoornot.core.FeedPage =
-        app.todoornot.core.FeedPage(emptyList(), null, null)
+    suspend fun activityPage(source: ActivitySource, before: ULong?): app.todoornot.core.FeedPage? =
+        app.todoornot.core.FeedPage(emptyList(), null, null, false)
     fun undoEvent(event: app.todoornot.core.ActivityRow) = Unit
+    suspend fun retiredEvents(ids: List<String>): Map<String, String> = emptyMap()
 
     /** Renames a list or a collection. */
     fun renameRoom(room: RoomKey, name: String)
@@ -90,6 +94,7 @@ interface Actions {
     /** Opens or closes the room's Completed section. */
     fun setShowCompleted(on: Boolean)
     fun undo(t: Toast)
+    fun toastRemaining(t: Toast): Long? = null
     fun dismissToast(t: Toast)
     fun dismissFailed(id: String)
     fun nudge()

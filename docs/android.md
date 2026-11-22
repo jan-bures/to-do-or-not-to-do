@@ -31,9 +31,11 @@ What the first version does:
   with its letter mark and what it did today ("2 added, 1 edited", "3 edited", "idle"), worded as the
   desktop's sidebar words it (`view::agents` in `todo-ffi`). Tap one to open Activity filtered to its ID.
 - **Activity.** The drawer's Activity room reads the confirmed event log, newest first. Events are grouped
-  by local calendar day and show the actor and relative time. Scrolling reads older pages. Undo names
-  the event by sequence **and** event ID; a queued undo shows “Undoing…” and a refusal uses the shared
-  plain wording, never the server message. The Agent activity smart list is still a list of tasks.
+  by local calendar day and show the actor and relative time. Scrolling reads older pages. New events mark
+  **Refresh activity •** without moving the reader. Switching agent or log epoch starts a new feed. If a
+  change is too large, **Skip this change** continues at the server’s cursor. Undo names the event by
+  sequence **and** event ID; “Undoing…” disables Undo for its whole batch. A refusal allows a retry and
+  uses the shared plain wording, never the server message. The Agent activity smart list is still a list of tasks.
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a

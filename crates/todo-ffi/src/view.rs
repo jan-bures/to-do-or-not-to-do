@@ -144,6 +144,8 @@ pub struct Chip {
 /// An entry in the navigation (sidebar sheet, room pills).
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct NavItem {
+    /// Whether the shared move-list intent has a destination for this list.
+    pub can_move_list: bool,
     /// Where it goes.
     pub key: RoomKey,
     /// Its name.
@@ -617,7 +619,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .iter()
             .filter_map(|t| state.tags.get(t))
             .filter(|t| t.deleted.is_none())
-            .map(|t| format!("#{}", t.name))
+            .map(|t| format!("#{}", labels::one_line(&t.name)))
             .collect(),
         from_mail: ix.mail.contains(&task.id),
         completed_at: task.completed_at.map(|c| c.to_string()),
@@ -977,6 +979,7 @@ pub fn home(state: &State, now: &Now) -> Home {
     let smart = SmartList::ALL
         .iter()
         .map(|s| NavItem {
+            can_move_list: false,
             key: RoomKey::Smart { list: *s },
             name: s.label().into(),
             hue: s.hue().into(),
@@ -995,6 +998,7 @@ pub fn home(state: &State, now: &Now) -> Home {
         .collect();
     let counts = open_counts(state);
     let list_item = |l: &List| NavItem {
+        can_move_list: todo_client::intent::can_move_list(state, l.id),
         key: RoomKey::List {
             id: l.id.to_string(),
         },
@@ -1032,6 +1036,7 @@ pub fn home(state: &State, now: &Now) -> Home {
         let open = lists_in.iter().map(|l| l.open).sum();
         groups.push(NavGroup {
             collection: Some(NavItem {
+                can_move_list: false,
                 key: RoomKey::Collection {
                     id: c.id.to_string(),
                 },
@@ -1181,7 +1186,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         .iter()
         .filter_map(|t| state.tags.get(t))
         .filter(|t| t.deleted.is_none())
-        .map(|t| format!("#{}", t.name))
+        .map(|t| format!("#{}", labels::one_line(&t.name)))
         .collect();
     fields.push(DetailField {
         edit: Some(FieldEdit::Tags),
@@ -1253,7 +1258,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             .into_iter()
             .map(|t| crate::engine::organize::TagChoice {
                 id: t.id.to_string(),
-                name: t.name.clone(),
+                name: labels::one_line(&t.name),
                 hue: lists::swatch(t.color.as_deref(), t.id.as_uuid().as_bytes()).into(),
                 selected: task.tags.contains(&t.id),
             })

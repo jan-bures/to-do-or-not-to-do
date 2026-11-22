@@ -366,7 +366,7 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
     }
     if (tags) TagsDialog(detail, actions) { tags = false }
     if (repeat) OverlayDialog({ repeat = false }) { overlay ->
-        RepeatCard(detail, custom, { custom = true }, { choice -> overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.Repeat(detail.id, choice)) } }, overlay::close)
+        RepeatCard(detail, custom, { custom = true }, { choice -> overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.Repeat(detail.id, choice)) } }, overlay::close) { draft -> actions.previewRepeat(detail.id, draft) }
     }
     if (pickingDue) {
         DueDateDialog(detail.due, today, detail.repeats, onSave = { actions.setDue(detail.id, it) }, onDismiss = { pickingDue = false })

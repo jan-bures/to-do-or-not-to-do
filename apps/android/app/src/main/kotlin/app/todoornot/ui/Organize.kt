@@ -55,7 +55,7 @@ private fun Input(label: String, value: String, edit: (String) -> Unit) {
 }
 
 @Composable
-internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Unit, choose: (RepeatChoice) -> Unit, cancel: () -> Unit) {
+internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Unit, choose: (RepeatChoice) -> Unit, cancel: () -> Unit, preview: (CustomRepeat) -> RepeatPreview) {
     val draft = detail.customRepeat
     if (!custom) {
         PickerCard("Repeat") {
@@ -81,11 +81,12 @@ internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Uni
                     group.forEach { (i, day) -> val bit = 1 shl i; Button(day, days and bit != 0, Modifier.weight(1f)) { days = days xor bit } }
                 } }
             }
-            val max = remember { maxRepeatInterval() }
-            val number = interval.toUIntOrNull() ?: 0u
-            val problem = when { number !in 1u..max -> "Choose an interval from 1 to $max."; unit == RepeatUnit.WEEK && days == 0 -> "Choose at least one weekday."; else -> null }
-            if (problem != null) Label(problem, Tokens.Type.META_PHONE, LocalDesign.current.room.dangerInk)
-            Button("Apply repeat", true, enabled = problem == null) { choose(RepeatChoice.Custom(CustomRepeat(unit, interval.toUInt(), days.toUByte()))) }
+            val edit = CustomRepeat(unit, interval.toUIntOrNull() ?: 0u, days.toUByte())
+            val result = preview(edit)
+            val r = LocalDesign.current.room
+            Label(result.description, Tokens.Type.META_PHONE, if (result.valid) r.ink2 else r.dangerInk, maxLines = Int.MAX_VALUE)
+            result.dueNote?.let { Label(it, Tokens.Type.META_PHONE, r.ink2, maxLines = Int.MAX_VALUE) }
+            Button("Apply repeat", true, enabled = result.valid) { choose(RepeatChoice.Custom(edit)) }
             Button("Cancel", false, onClick = cancel)
         }
     }
@@ -115,12 +116,12 @@ internal fun SwatchCard(selected: String, choose: (String) -> Unit, cancel: () -
 }
 
 @Composable
-internal fun TagsCard(tags: List<TagChoice>, toggle: (TagChoice) -> Unit, manage: (TagChoice) -> Unit, create: (String) -> Unit, cancel: () -> Unit, initialText: String = "") {
+internal fun TagsCard(tags: List<TagChoice>, toggle: (TagChoice) -> Unit, manage: (TagChoice) -> Unit, create: (String) -> Unit, cancel: () -> Unit, existing: (String) -> Boolean, initialText: String = "") {
     var name by rememberSaveable { mutableStateOf(initialText) }
     val typed = name.trim()
     PickerCard("Tags") {
         Input("Type to find or create a tag", name) { name = it }
-        if (typed.isNotEmpty() && tags.none { it.name.lowercase(Locale.ROOT) == typed.lowercase(Locale.ROOT) }) {
+        if (typed.isNotEmpty() && !existing(typed)) {
             Choice("Create tag “$typed”") { create(typed) }
         }
         tags.filter { it.name.contains(name.trim(), ignoreCase = true) }.forEach { t -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -168,11 +169,12 @@ internal fun TagsDialog(detail: TaskDetail, actions: Actions, dismiss: () -> Uni
     OverlayDialog(dismiss) { overlay ->
         fun edit(e: OrganizeEdit) = overlay.choose { actions.organize(e) }
         when {
-            page == "Tags" || tag == null -> TagsCard(detail.tags, { edit(OrganizeEdit.ToggleTag(detail.id, it.id)) }, { id = it.id; page = "Options" }, { edit(OrganizeEdit.TagNamed(detail.id, it)) }, overlay::close)
+            page == "Delete" && id != null -> ConfirmOrganize(ColorTarget.Tag(requireNotNull(id)), actions, overlay)
+            page == "Tags" || tag == null -> TagsCard(detail.tags, { edit(OrganizeEdit.ToggleTag(detail.id, it.id)) }, { id = it.id; page = "Options" }, { edit(OrganizeEdit.TagNamed(detail.id, it)) }, overlay::close, actions::tagNamed)
             page == "Options" -> TagOptions(tag, { edit(OrganizeEdit.ToggleTag(detail.id, tag.id)) }, { page = it })
             page == "Rename" -> RenameCard("Rename tag", tag.name, { edit(OrganizeEdit.RenameTag(tag.id, it)) }, overlay::close)
             page == "Colour" -> SwatchCard(tag.hue, { edit(OrganizeEdit.Color(ColorTarget.Tag(tag.id), it)) }, overlay::close)
-            else -> ConfirmOrganize(ColorTarget.Tag(tag.id), actions, overlay)
+            else -> Unit
         }
     }
 }

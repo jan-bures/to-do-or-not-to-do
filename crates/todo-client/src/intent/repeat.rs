@@ -51,6 +51,40 @@ impl Preset {
     }
 }
 
+/// The same anchored choices and labels on each platform. Preserve a clamped month day.
+pub fn presets(
+    due: Option<Date>,
+    current: Option<&Recurrence>,
+    today: Date,
+) -> Vec<(Preset, &'static str, String, bool)> {
+    let anchor = due.unwrap_or(today);
+    [
+        Preset::Daily,
+        Preset::Weekdays,
+        Preset::Weekly,
+        Preset::Monthly,
+        Preset::Yearly,
+    ]
+    .into_iter()
+    .map(|preset| {
+        let rule = preset.rule_for(anchor, current);
+        let (key, label) = match preset {
+            Preset::Daily => ("daily", "Daily".into()),
+            Preset::Weekdays => ("weekdays", "Weekdays".into()),
+            Preset::Weekly => ("weekly", format!("Weekly on {}", anchor.strftime("%A"))),
+            Preset::Monthly => {
+                let Rule::Monthly { day, .. } = &rule else {
+                    unreachable!()
+                };
+                ("monthly", format!("Monthly on day {day}"))
+            }
+            Preset::Yearly => ("yearly", "Yearly".into()),
+        };
+        (preset, key, label, current.is_some_and(|r| r.rule == rule))
+    })
+    .collect()
+}
+
 /// How a custom repeat interval is measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
@@ -114,6 +148,19 @@ impl RepeatDraft {
             Unit::Year => Rule::Yearly { interval },
         }
     }
+}
+
+/// Preview exactly the rule Apply would submit, including any imported end date.
+pub fn preview(
+    rule: Rule,
+    due: Option<Date>,
+    until: Option<Date>,
+    today: Date,
+) -> Result<(String, Option<Date>), RecurrenceError> {
+    let repeat = Recurrence { rule, until };
+    repeat.validate()?;
+    let first = due.is_none().then(|| repeat.first_due(today)).transpose()?;
+    Ok((describe_repeat(&repeat), first))
 }
 
 pub const UNDATED_NOTE: &str = "Due starts today or on the next matching day.";
@@ -283,6 +330,21 @@ mod tests {
             error_text(RecurrenceError::NoOccurrence),
             "No future date matches this rule."
         );
+    }
+
+    #[test]
+    fn preview_explains_an_imported_end_date_before_the_first_matching_day() {
+        let rule = Rule::Weekly {
+            interval: 1,
+            days: [Weekday::Tue].into(),
+        };
+        assert_eq!(
+            error_text(preview(rule.clone(), None, Some(MON), MON).unwrap_err()),
+            "No future date matches this rule."
+        );
+        let (description, first) = preview(rule, None, None, MON).unwrap();
+        assert_eq!(description, "Every Tuesday");
+        assert_eq!(first, Some(MON.tomorrow().unwrap()));
     }
 
     #[test]

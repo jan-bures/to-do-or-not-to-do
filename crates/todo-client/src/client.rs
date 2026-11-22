@@ -586,6 +586,13 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         })
     }
 
+    /// Revision of the confirmed log. A cursor advances within an epoch; only an epoch change
+    /// invalidates the sequence numbers of previously read activity pages.
+    #[must_use]
+    pub fn activity_revision(&self) -> (Option<Epoch>, u64) {
+        self.with(|s| (s.replica.epoch(), s.replica.cursor()))
+    }
+
     /// The log epoch the confirmed state belongs to.
     #[must_use]
     pub fn epoch(&self) -> Option<Epoch> {

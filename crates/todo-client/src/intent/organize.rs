@@ -90,7 +90,11 @@ pub fn can_move_list(state: &State, id: ListId) -> bool {
     let Some(list) = state.lists.get(&id).filter(|_| state.is_live(id.into())) else {
         return false;
     };
-    list.collection.is_some() || !collections(state).is_empty()
+    list.collection.is_some()
+        || state
+            .collections
+            .keys()
+            .any(|id| state.is_live((*id).into()))
 }
 
 /// The swatch with this key (`"lagoon"`), if the design has one.
@@ -451,6 +455,40 @@ mod tests {
             }
             id.expect("task")
         }
+    }
+
+    #[test]
+    fn confirmation_questions_count_only_live_contents_and_word_names_on_one_line() {
+        let mut w = World::new();
+        let c = w.collection("Front\nyard");
+        let collection = |s: &State| confirm::collection_question(s, c);
+        assert_eq!(
+            collection(&w.state).as_deref(),
+            Some("Delete the collection “Front yard”? Undo brings it back.")
+        );
+        let list = w.list(Some(c), "Beds");
+        let task = w.task(list, "Plant bulbs");
+        let tag = TagId::from_uuid(w.id());
+        w.run(create_tag(&w.state, tag, "spring").unwrap());
+        w.run(toggle_tag(&w.state, task, tag).unwrap());
+        assert_eq!(
+            collection(&w.state).as_deref(),
+            Some(
+                "Delete the collection “Front yard” with its list and its task? Undo brings them all back."
+            )
+        );
+        assert_eq!(
+            confirm::tag_question(&w.state, tag).as_deref(),
+            Some("Delete the tag “spring”? It’s on 1 task. The task stays. Undo restores the tag.")
+        );
+        w.run(delete(c));
+        assert!(collection(&w.state).is_none());
+        assert_eq!(
+            confirm::tag_question(&w.state, tag).as_deref(),
+            Some("Delete the tag “spring”? Undo restores the tag.")
+        );
+        w.run(delete(tag));
+        assert!(confirm::tag_question(&w.state, tag).is_none());
     }
 
     #[test]

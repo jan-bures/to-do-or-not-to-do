@@ -263,6 +263,8 @@ pub struct TodoEngine {
     /// What each undo this engine queued reverses (forgotten on restart: a refusal is then worded
     /// generally).
     undos: Mutex<HashMap<CommandId, Undone>>,
+    /// Original batch -> queued event. The outbox remains the authority on whether it is pending.
+    activity_groups: Mutex<HashMap<todo_core::ids::EventId, todo_core::ids::EventId>>,
     run: Mutex<Option<JoinHandle<()>>>,
     watch: Mutex<Option<JoinHandle<()>>>,
 }
@@ -397,6 +399,7 @@ impl TodoEngine {
             recovered,
             fixture,
             undos: Mutex::new(HashMap::new()),
+            activity_groups: Mutex::new(HashMap::new()),
             run: Mutex::new(None),
             watch: Mutex::new(None),
         })
@@ -1248,11 +1251,18 @@ mod tests {
         assert_eq!(last(), intent::create_collection(collection, " Garden "));
         let list = before.tasks[&task].list;
         let before = e.state();
-        e.move_list(list.to_string(), Some(id.clone())).unwrap();
+        let moved = e
+            .move_list(list.to_string(), Some(id.clone()))
+            .unwrap()
+            .unwrap();
+        let name = crate::labels::one_line(&before.lists[&list].name);
+        assert_eq!(moved.toast_text(), format!("Moved “{name}” to Garden"));
         assert_eq!(
             Some(last()),
             intent::move_list(&before, list, Some(collection))
         );
+        let moved = e.move_list(list.to_string(), None).unwrap().unwrap();
+        assert_eq!(moved.toast_text(), format!("Moved “{name}” out of Garden"));
         let target = ColorTarget::Collection { id };
         let before = e.state();
         let color = if before.collections[&collection].color.as_deref() == Some("fern") {
@@ -1267,6 +1277,7 @@ mod tests {
         );
         let before = e.state();
         e.tag_task_named(task.to_string(), "garden".into()).unwrap();
+        assert!(e.tag_named(" GARDEN ".into()));
         let tag = intent::tag_named(&e.state(), "garden").unwrap();
         let (_, expected) =
             intent::tag_task_named(&before, task, "garden", || tag.as_uuid()).unwrap();

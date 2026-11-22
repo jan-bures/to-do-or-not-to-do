@@ -111,7 +111,7 @@ private fun moves(home: Home, room: RoomKey): List<MenuEntry> {
     val (up, down) = siblingPlace(home, room) ?: return emptyList()
     return listOfNotNull(
         MenuEntry.Item("pencil", "Colour…", MenuAction.Colour(room)),
-        (room as? RoomKey.List)?.let { MenuEntry.Item("list", "Move to…", MenuAction.MoveList(it), enabled = home.groups.any { g -> g.collection != null }) },
+        (room as? RoomKey.List)?.let { MenuEntry.Item("list", "Move to…", MenuAction.MoveList(it), enabled = home.groups.any { g -> g.lists.any { list -> list.key == room && list.canMoveList } }) },
         MenuEntry.Item("chevron-up", "Move up", MenuAction.Move(room, -1), enabled = up),
         MenuEntry.Item("chevron-down", "Move down", MenuAction.Move(room, 1), enabled = down),
     )

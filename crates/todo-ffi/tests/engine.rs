@@ -1393,7 +1393,12 @@ async fn organize_and_page_activity_with_exact_event_undo() {
     let row = &filtered.rows[0];
     assert_eq!(row.actor, "Gardener");
     e.stop();
-    e.undo_activity_event(row.seq, row.id.clone()).unwrap();
+    e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+        .unwrap();
+    assert_eq!(
+        e.pending_activity_groups(),
+        std::slice::from_ref(&row.group)
+    );
     assert_eq!(e.activity_undo_states()[&row.id], "Undoing…");
     e.start().unwrap();
     eventually("event undo refused", || !e.failed().is_empty()).await;
@@ -1402,6 +1407,140 @@ async fn organize_and_page_activity_with_exact_event_undo() {
         todo_client::failure::undo_message("undo_conflict")
     );
     e.stop();
+    assert!(e.pending_activity_groups().is_empty());
+    e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+        .unwrap();
+    assert_eq!(e.status().pending, 1, "a refusal is retryable");
+}
+
+/// A too-large change and a page with no visible items both return an exclusive server cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipping_an_oversized_change_does_not_stop_at_an_empty_page() {
+    use axum::{
+        Router,
+        http::{StatusCode, Uri},
+        routing::get,
+    };
+    let router = Router::new().route("/api/v1/activity",get(|uri:Uri|async move {match uri.query() {
+        None => (StatusCode::INTERNAL_SERVER_ERROR,r#"{"error":{"code":"item_too_large","message":"internal detail","details":{"next_before":15}}}"#),
+        Some("before=15") => (StatusCode::OK,r#"{"items":[],"next_before":7}"#),
+        Some("before=7") => (StatusCode::OK,r#"{"items":[],"next_before":null}"#),
+        _ => (StatusCode::BAD_REQUEST,""),
+    }}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let db = tempfile::tempdir().unwrap();
+    let e = TodoEngine::open(EngineConfig {
+        server_url: format!("http://{addr}"),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let read = |before| {
+        let e = e.clone();
+        tokio::task::spawn_blocking(move || e.activity_page(None, before, now()).unwrap())
+    };
+    let blocked = read(None).await.unwrap();
+    assert!(blocked.skip);
+    assert_eq!(blocked.before, Some(15));
+    assert_eq!(
+        blocked.problem.as_deref(),
+        Some("One change was too large to show.")
+    );
+    let older = read(blocked.before).await.unwrap();
+    assert!(!older.skip && older.rows.is_empty());
+    assert_eq!(older.before, Some(7));
+    let end = read(older.before).await.unwrap();
+    assert!(end.problem.is_none() && end.before.is_none());
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn collection_restore_tag_name_collision_and_batch_undo() {
+    use todo_ffi::engine::organize::{ColorTarget, OrganizeDeletion, RepeatChoice};
+    let server = TestServer::start().await;
+    let db = tempfile::tempdir().unwrap();
+    let e = TodoEngine::open(EngineConfig {
+        server_url: server.url(),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let collection = e.create_collection("Work".into()).unwrap();
+    let RoomKey::Collection { id: c } = &collection else {
+        panic!("collection")
+    };
+    let list = e.create_list("Office".into(), collection.clone()).unwrap();
+    let RoomKey::List { id: l } = &list else {
+        panic!("list")
+    };
+    let id = e
+        .add_task(list.clone(), "File receipts".into(), now())
+        .unwrap();
+    e.tag_task_named(id.clone(), "tax".into()).unwrap();
+    e.set_repeat(id.clone(), RepeatChoice::Daily, now())
+        .unwrap();
+    let tag = e.task(id.clone(), now()).unwrap().tags[0].id.clone();
+    let settle = || eventually("sent", || e.status().pending == 0);
+    let delete = |target: ColorTarget| {
+        let asked = e.organize_question(target.clone()).unwrap();
+        let OrganizeDeletion::Deleted { change } =
+            e.confirm_organize_delete(target, asked).unwrap()
+        else {
+            panic!("deleted")
+        };
+        change
+    };
+    e.start().unwrap();
+    settle().await;
+    let change = delete(ColorTarget::Collection { id: c.clone() });
+    assert_eq!(change.toast_text(), "Deleted collection “Work”");
+    settle().await;
+    assert!(e.task(id.clone(), now()).is_none());
+    e.undo_organize(change).unwrap();
+    settle().await;
+    let remote = server.running.engine.state();
+    let list_id = l.parse().unwrap();
+    assert_eq!(remote.lists[&list_id].collection, Some(c.parse().unwrap()));
+    let task_id = id.parse().unwrap();
+    assert!(remote.is_live(todo_core::ids::EntityId::Task(task_id)));
+    assert_eq!(remote.tasks[&task_id].list, list_id);
+    let change = delete(ColorTarget::Tag { id: tag.clone() });
+    assert_eq!(change.toast_text(), "Deleted tag “tax”");
+    settle().await;
+    e.tag_task_named(id.clone(), "tax".into()).unwrap();
+    settle().await;
+    e.undo_organize(change).unwrap();
+    settle().await;
+    assert_eq!(
+        e.failed()[0].reason,
+        todo_client::failure::undo_message("duplicate_name")
+    );
+    let tags = e.task(id.clone(), now()).unwrap().tags;
+    assert_eq!(tags.len(), 1);
+    assert_ne!(tags[0].id, tag);
+    e.set_done(id, true).unwrap();
+    settle().await;
+    e.stop();
+    let reader = e.clone();
+    let page =
+        tokio::task::spawn_blocking(move || reader.activity_page(None, None, now()).unwrap())
+            .await
+            .unwrap();
+    let a = &page.rows[0];
+    let b = &page.rows[1];
+    assert_eq!(a.group, b.group);
+    assert_ne!(a.id, b.id);
+    for row in [a, b] {
+        e.undo_activity_event(row.seq, row.id.clone(), row.group.clone())
+            .unwrap();
+    }
+    assert_eq!(e.status().pending, 1);
 }
 
 /// Deleting a step and a list online, then undoing both: the server has them back, exactly.

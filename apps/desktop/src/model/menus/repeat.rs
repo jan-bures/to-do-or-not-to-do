@@ -2,12 +2,12 @@
 use super::{MenuAction, MenuEntry, MenuItem, item, with};
 use crate::theme::Icon;
 use todo_client::intent::repeat::{
-    Preset, RepeatDraft, UNDATED_NOTE, Unit, describe_repeat, error_text,
+    Preset, RepeatDraft, UNDATED_NOTE, Unit, error_text, presets, preview,
 };
 use todo_core::{
     ids::TaskId,
     model::Task,
-    recurrence::{MAX_INTERVAL, Recurrence, Rule},
+    recurrence::{MAX_INTERVAL, Rule},
     time::{Date, Weekday},
 };
 
@@ -91,7 +91,6 @@ fn choice(
 }
 
 pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
-    let anchor = t.due.unwrap_or(today);
     let mut entries = vec![];
     let mut starts = None;
     if let Some(d) = draft {
@@ -137,18 +136,15 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
             });
         }
         entries.push(MenuEntry::Separator);
-        let r = Recurrence {
-            rule: d.rule(),
-            until: t.recurrence.as_ref().and_then(|r| r.until),
-        };
-        let valid = if t.due.is_none() {
-            r.first_due(today).map(|date| starts = Some(date))
-        } else {
-            r.validate()
-        };
-        match valid {
-            Ok(()) => {
-                entries.push(MenuEntry::Note(describe_repeat(&r).into()));
+        match preview(
+            d.rule(),
+            t.due,
+            t.recurrence.as_ref().and_then(|r| r.until),
+            today,
+        ) {
+            Ok((description, first)) => {
+                starts = first;
+                entries.push(MenuEntry::Note(description.into()));
                 entries.push(item(
                     "repeat-apply",
                     Icon::Check,
@@ -161,24 +157,7 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
     } else {
         entries.push(MenuEntry::Heading("Repeat".into()));
         let mut matched = false;
-        for (key, label, preset) in [
-            ("daily", "Daily".to_owned(), Preset::Daily),
-            ("weekdays", "Weekdays".into(), Preset::Weekdays),
-            (
-                "weekly",
-                format!("Weekly on {}", crate::model::labels::weekday(anchor)),
-                Preset::Weekly,
-            ),
-            ("monthly", "Monthly".into(), Preset::Monthly),
-            ("yearly", "Yearly".into(), Preset::Yearly),
-        ] {
-            let rule = preset.rule_for(anchor, t.recurrence.as_ref());
-            let label = if let Rule::Monthly { day, .. } = rule {
-                format!("Monthly on day {day}")
-            } else {
-                label
-            };
-            let on = t.recurrence.as_ref().is_some_and(|r| r.rule == rule);
+        for (preset, key, label, on) in presets(t.due, t.recurrence.as_ref(), today) {
             matched |= on;
             entries.push(MenuEntry::Item(choice(
                 t.id,
@@ -229,6 +208,7 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
 mod tests {
     use super::*;
     use crate::fixtures;
+    use todo_core::recurrence::Recurrence;
     #[test]
     fn a_clamped_month_end_stays_on_day_31_in_the_picker_and_command() {
         let f = fixtures::my_day();

@@ -568,7 +568,7 @@ class GalleryTest {
             }
         }
         val (e, admin, id) = admin()
-        val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = admin, listen = {})
+        val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, clock = { 0L }, start = admin, listen = {})
         m.select(id)
         m.deleteStep(requireNotNull(m.ui.value.detail).steps[1].id)
         val s = m.ui.value
@@ -673,10 +673,10 @@ class GalleryTest {
             main("drawer_toast_$suffix", COVER, toastState.copy(detail = null), dark, drawer = true)
             main("landscape_toast_$suffix", COVER_SIDEWAYS, toastState, dark, wide = true)
             fun card(name: String, content: @Composable () -> Unit) = overlaid("${name}_$suffix", COVER, s, dark) { DialogBackdrop { content() } }
-            card("repeat") { RepeatCard(detail, false, {}, {}, {}) }
-            card("custom_repeat") { RepeatCard(detail, true, {}, {}, {}) }
-            card("tags") { TagsCard(detail.tags, {}, {}, {}, {}) }
-            card("create_tag") { TagsCard(detail.tags, {}, {}, {}, {}, initialText = "seedlings") }
+            card("repeat") { RepeatCard(detail, false, {}, {}, {}) { e.previewRepeat(id, it, FIXTURE_NOW) } }
+            card("custom_repeat") { RepeatCard(detail, true, {}, {}, {}) { e.previewRepeat(id, it, FIXTURE_NOW) } }
+            card("tags") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed) }
+            card("create_tag") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed, initialText = "seedlings") }
             card("tag_options") { app.todoornot.ui.TagOptions(tag, {}, {}) }
             card("swatches") { SwatchCard("fern", {}, {}) }
             card("rename_tag") { RenameCard("Rename tag", "garden", {}, {}, focus = false) }
@@ -689,10 +689,10 @@ class GalleryTest {
                 card("confirm_$noun") { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false) }
             }
             val at = FIXTURE_NOW.epochMs
-            val rows = listOf(ActivityRow("c", 3u, "Added Water herbs", "You", at, "Just now", false, true),
-                ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", at - 60_000, "1 min ago", false, true),
-                ActivityRow("a", 1u, "Added Prepare the beds", "You", at - 86_400_000, "1 day ago", false, true))
-            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityContent(s.copy(eventStates = mapOf("b" to "Undoing…", "a" to "Couldn't undo: it was changed again.")), null, rows, null, false, true, java.time.ZoneOffset.UTC, {}, Actions.None, {}) } }
+            val rows = listOf(ActivityRow("c", 3u, "Added Water herbs", "You", at, "Just now", false, true, "c"),
+                ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", at - 60_000, "1 min ago", false, true, "b"),
+                ActivityRow("a", 1u, "Added Prepare the beds", "You", at - 86_400_000, "1 day ago", false, true, "a"))
+            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityContent(s.copy(eventStates = mapOf("b" to "Undoing…", "a" to "Couldn't undo: it was changed again.")), null, rows, null, false, true, {}, Actions.None, {}, updates = true) } }
         }
     }
 

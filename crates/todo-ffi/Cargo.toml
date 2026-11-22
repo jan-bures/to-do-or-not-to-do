@@ -48,6 +48,7 @@ jni.workspace = true
 rustls-platform-verifier.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 # Damages a cache in the recovery tests.
 rusqlite.workspace = true
 todo-server.workspace = true

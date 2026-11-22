@@ -40,6 +40,26 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Keeps a list's or a collection's room across a recreation (a rename dialog's target). */
+private val OrganizeSaver = Saver<MenuAction?, String>(
+    save = { action -> when (action) {
+        is MenuAction.MoveList -> "move:${action.room.id}"
+        is MenuAction.DeleteCollection -> "delete:${action.room.id}"
+        is MenuAction.Colour -> when (val room = action.room) {
+            is RoomKey.List -> "list:${room.id}"
+            is RoomKey.Collection -> "collection:${room.id}"
+            else -> ""
+        }
+        else -> ""
+    } },
+    restore = { saved -> val id = saved.substringAfter(':'); when (saved.substringBefore(':')) {
+        "move" -> MenuAction.MoveList(RoomKey.List(id))
+        "delete" -> MenuAction.DeleteCollection(RoomKey.Collection(id))
+        "list" -> MenuAction.Colour(RoomKey.List(id))
+        "collection" -> MenuAction.Colour(RoomKey.Collection(id))
+        else -> null
+    } },
+)
+
 private val RoomSaver = Saver<RoomKey?, String>(
     save = { k ->
         when (k) {
@@ -110,7 +130,7 @@ private fun Screen(
                 moving = emptySet()
             }
         }
-        var organize by remember { mutableStateOf<MenuAction?>(null) }
+        var organize by rememberSaveable(stateSaver = OrganizeSaver) { mutableStateOf<MenuAction?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
         if (newCollection) OverlayDialog({ newCollection = false }) { overlay ->
             RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); scope.launch { drawer.close() } } }, overlay::close)
@@ -216,7 +236,7 @@ private fun Screen(
             val feed = state.activity
             if (feed != null) {
                 BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
-                ActivityRoom(paneSurface, feed.ifEmpty { null }, actions, menu)
+                ActivityRoom(paneSurface, actions, menu)
             } else if (wide) {
                 Row(Modifier.fillMaxSize().background(r.pane)) {
                     RoomPane(

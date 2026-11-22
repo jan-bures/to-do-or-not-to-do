@@ -510,9 +510,14 @@ internal fun ToastStrip(toast: Toast?, actions: Actions) {
     ) {
         val t = remember(toast?.serial) { toast } ?: return@AnimatedVisibility
         // A functional timer: its full length whatever the animation scale (even 0), the bar following it.
-        var left by remember(t.serial) { mutableFloatStateOf(1f) }
+        val window = M.UNDO_WINDOW.toLong()
+        var left by remember(t.serial) { mutableFloatStateOf((actions.toastRemaining(t) ?: window).toFloat() / window) }
         LaunchedEffect(t.serial) {
-            countdown(M.UNDO_WINDOW.toLong()) { left = it }
+            if (actions.toastRemaining(t) == null) countdown(window) { left = it } else {
+                while (left > 0f) androidx.compose.runtime.withFrameMillis {
+                    left = (actions.toastRemaining(t) ?: 0L).toFloat() / window
+                }
+            }
             actions.dismissToast(t)
         }
         Box(

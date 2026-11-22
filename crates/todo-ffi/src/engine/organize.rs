@@ -1,10 +1,22 @@
 //! Android bindings for the shared organize and repeat intents.
 use super::*;
+use crate::labels::one_line;
 use todo_client::intent::repeat::{self, Preset};
-use todo_core::{ids::TagId, model::Task, recurrence::Rule, time::Weekday};
+use todo_core::{
+    ids::TagId,
+    model::{LinkKind, Task},
+    recurrence::Rule,
+};
 
 #[derive(Debug, uniffi::Object)]
-pub struct OrganizeChange(TrackedCommand, Undone);
+pub struct OrganizeChange(TrackedCommand, Undone, String);
+
+#[uniffi::export]
+impl OrganizeChange {
+    pub fn toast_text(&self) -> String {
+        self.2.clone()
+    }
+}
 
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum ColorTarget {
@@ -67,34 +79,7 @@ impl RepeatChoice {
             Self::Monthly => Preset::Monthly,
             Self::Yearly => Preset::Yearly,
             Self::Stop => return None,
-            Self::Custom {
-                draft:
-                    CustomRepeat {
-                        unit,
-                        interval,
-                        weekdays,
-                    },
-            } => {
-                return Some(match unit {
-                    RepeatUnit::Day => Rule::Daily { interval },
-                    RepeatUnit::Year => Rule::Yearly { interval },
-                    RepeatUnit::Week => Rule::Weekly {
-                        interval,
-                        days: Weekday::ALL
-                            .into_iter()
-                            .filter(|d| weekdays & (1 << d.offset()) != 0)
-                            .collect(),
-                    },
-                    RepeatUnit::Month => {
-                        let Rule::Monthly { day, .. } =
-                            Preset::Monthly.rule_for(anchor, t.recurrence.as_ref())
-                        else {
-                            unreachable!()
-                        };
-                        Rule::Monthly { interval, day }
-                    }
-                });
-            }
+            Self::Custom { draft } => return Some(draft.fields(t, today).rule()),
         };
         Some(preset.rule_for(anchor, t.recurrence.as_ref()))
     }
@@ -106,55 +91,60 @@ pub struct RepeatOption {
     pub selected: bool,
 }
 
-#[uniffi::export]
-pub fn max_repeat_interval() -> u32 {
-    todo_core::recurrence::MAX_INTERVAL
+impl CustomRepeat {
+    fn fields(self, t: &Task, today: Date) -> repeat::RepeatDraft {
+        let mut draft = repeat::RepeatDraft::new(t.due, t.recurrence.as_ref(), today);
+        draft.unit = match self.unit {
+            RepeatUnit::Day => repeat::Unit::Day,
+            RepeatUnit::Week => repeat::Unit::Week,
+            RepeatUnit::Month => repeat::Unit::Month,
+            RepeatUnit::Year => repeat::Unit::Year,
+        };
+        draft.interval = self.interval;
+        draft.days = std::array::from_fn(|i| self.weekdays & (1 << i) != 0);
+        draft
+    }
+}
+#[derive(Debug, uniffi::Record)]
+pub struct RepeatPreview {
+    pub description: String,
+    pub due_note: Option<String>,
+    pub valid: bool,
 }
 
 pub(crate) fn presets(t: &Task, today: Date) -> Vec<RepeatOption> {
     use RepeatChoice as C;
-    [C::Daily, C::Weekdays, C::Weekly, C::Monthly, C::Yearly]
+    repeat::presets(t.due, t.recurrence.as_ref(), today)
         .into_iter()
-        .map(|choice| {
-            let rule = choice.rule(t, today);
-            let label = match (choice, &rule) {
-                (C::Daily, _) => "Daily".into(),
-                (C::Weekdays, _) => "Weekdays".into(),
-                (C::Weekly, _) => format!(
-                    "Weekly on {}",
-                    crate::labels::weekday(t.due.unwrap_or(today))
-                ),
-                (C::Monthly, Some(Rule::Monthly { day, .. })) => format!("Monthly on day {day}"),
-                _ => "Yearly".into(),
-            };
-            RepeatOption {
-                choice,
-                label,
-                selected: t
-                    .recurrence
-                    .as_ref()
-                    .is_some_and(|r| Some(&r.rule) == rule.as_ref()),
-            }
+        .map(|(p, _, label, selected)| RepeatOption {
+            choice: match p {
+                Preset::Daily => C::Daily,
+                Preset::Weekdays => C::Weekdays,
+                Preset::Weekly => C::Weekly,
+                Preset::Monthly => C::Monthly,
+                Preset::Yearly => C::Yearly,
+            },
+            label,
+            selected,
         })
         .collect()
 }
 
 pub(crate) fn draft(t: &Task, today: Date) -> CustomRepeat {
-    let mut weekdays = 1 << Weekday::of(t.due.unwrap_or(today)).offset();
-    let (unit, interval) = match t.recurrence.as_ref().map(|r| &r.rule) {
-        None => (RepeatUnit::Day, 1),
-        Some(Rule::Daily { interval }) => (RepeatUnit::Day, *interval),
-        Some(Rule::Weekly { interval, days }) => {
-            weekdays = days.iter().fold(0, |mask, d| mask | (1 << d.offset()));
-            (RepeatUnit::Week, *interval)
-        }
-        Some(Rule::Monthly { interval, .. }) => (RepeatUnit::Month, *interval),
-        Some(Rule::Yearly { interval }) => (RepeatUnit::Year, *interval),
-    };
+    let d = repeat::RepeatDraft::new(t.due, t.recurrence.as_ref(), today);
     CustomRepeat {
-        unit,
-        interval,
-        weekdays,
+        unit: match d.unit {
+            repeat::Unit::Day => RepeatUnit::Day,
+            repeat::Unit::Week => RepeatUnit::Week,
+            repeat::Unit::Month => RepeatUnit::Month,
+            repeat::Unit::Year => RepeatUnit::Year,
+        },
+        interval: d.interval,
+        weekdays: d
+            .days
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (i, &on)| mask | (u8::from(on) << i)),
     }
 }
 #[derive(Debug, uniffi::Enum)]
@@ -176,18 +166,48 @@ impl TodoEngine {
         cmd: Option<Command>,
         what: &'static str,
         noun: &'static str,
+        toast: String,
     ) -> Result<Option<Arc<OrganizeChange>>, FfiError> {
         Ok(cmd
             .map(|cmd| {
                 self.client
                     .submit_tracked(cmd)
-                    .map(|t| Arc::new(OrganizeChange(t, Undone::Change(what, noun))))
+                    .map(|t| Arc::new(OrganizeChange(t, Undone::Change(what, noun), toast)))
             })
             .transpose()?)
     }
 }
 #[uniffi::export]
 impl TodoEngine {
+    pub fn tag_named(&self, name: String) -> bool {
+        intent::tag_named(&self.state(), &name).is_some()
+    }
+    pub fn preview_repeat(&self, id: String, draft: CustomRepeat, now: LocalNow) -> RepeatPreview {
+        let invalid = |description| RepeatPreview {
+            description,
+            due_note: None,
+            valid: false,
+        };
+        let Ok((id, s)) = self.live_task(&id) else {
+            return invalid("No such task.".into());
+        };
+        let t = &s.tasks[&id];
+        let today = Now::new(now).today();
+        match repeat::preview(
+            draft.fields(t, today).rule(),
+            t.due,
+            t.recurrence.as_ref().and_then(|r| r.until),
+            today,
+        ) {
+            Ok((description, first)) => RepeatPreview {
+                description,
+                due_note: first
+                    .map(|day| format!("Due will be {}.", intent::quick_add::long_date(day))),
+                valid: true,
+            },
+            Err(e) => invalid(repeat::error_text(e)),
+        }
+    }
     pub fn set_repeat(
         &self,
         id: String,
@@ -197,8 +217,14 @@ impl TodoEngine {
         let (id, s) = self.live_task(&id)?;
         let today = Now::new(now).today();
         let rule = choice.rule(&s.tasks[&id], today);
-        let cmd = repeat::set_repeat(&s, id, rule, today).map_err(|e| invalid(e.to_string()))?;
-        self.track_change(cmd, "Undo changing repeat", "task")
+        let cmd =
+            repeat::set_repeat(&s, id, rule, today).map_err(|e| invalid(repeat::error_text(e)))?;
+        self.track_change(
+            cmd,
+            "Undo changing repeat",
+            "task",
+            format!("Changed schedule for “{}”", one_line(&s.tasks[&id].title)),
+        )
     }
     pub fn undo_organize(&self, change: Arc<OrganizeChange>) -> Result<(), FfiError> {
         self.undo_tracked(&change.0, change.1)
@@ -212,14 +238,35 @@ impl TodoEngine {
             self.client.new_uuid()
         })
         .map_err(|e| invalid(e.to_string()))?;
-        self.track_change(Some(cmd), "Undo adding a link", "link")
+        let Command::AddLink {
+            kind: LinkKind::Web { url, .. },
+            ..
+        } = &cmd
+        else {
+            return Err(invalid("Not a web link."));
+        };
+        let toast = format!("Added link “{}”", one_line(url));
+        self.track_change(Some(cmd), "Undo adding a link", "link", toast)
     }
     pub fn remove_link(&self, id: String) -> Result<Option<Arc<OrganizeChange>>, FfiError> {
-        let cmd = intent::delete_link(
-            &self.state(),
-            id.parse().map_err(|_| invalid("No such link."))?,
-        );
-        self.track_change(cmd, "Undo removing a link", "link")
+        let s = self.state();
+        let id = id.parse().map_err(|_| invalid("No such link."))?;
+        let Some(link) = s.links.get(&id) else {
+            return Ok(None);
+        };
+        let name = match &link.kind {
+            LinkKind::Web { url, title } => title
+                .as_ref()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or(url),
+            LinkKind::Email(m) => &m.subject,
+        };
+        self.track_change(
+            intent::delete_link(&s, id),
+            "Undo removing a link",
+            "link",
+            format!("Removed link “{}”", one_line(name)),
+        )
     }
     pub fn toggle_tag(&self, task: String, id: String) -> Result<bool, FfiError> {
         self.submit_some(intent::toggle_tag(
@@ -257,12 +304,29 @@ impl TodoEngine {
         id: String,
         collection: Option<String>,
     ) -> Result<Option<Arc<OrganizeChange>>, FfiError> {
-        let cmd = intent::move_list(
-            &self.state(),
-            list_id(&id)?,
-            collection.as_deref().map(collection_id).transpose()?,
-        );
-        self.track_change(cmd, "Undo moving a list", "list")
+        let s = self.state();
+        let id = list_id(&id)?;
+        let dest = collection.as_deref().map(collection_id).transpose()?;
+        let Some(cmd) = intent::move_list(&s, id, dest) else {
+            return Ok(None);
+        };
+        let list = &s.lists[&id];
+        let place = if let Some(c) = dest {
+            format!("to {}", one_line(&s.collections[&c].name))
+        } else {
+            list.collection
+                .and_then(|c| s.collections.get(&c))
+                .map_or_else(
+                    || "out of its collection".into(),
+                    |c| format!("out of {}", one_line(&c.name)),
+                )
+        };
+        self.track_change(
+            Some(cmd),
+            "Undo moving a list",
+            "list",
+            format!("Moved “{}” {place}", one_line(&list.name)),
+        )
     }
     pub fn organize_question(&self, target: ColorTarget) -> Option<String> {
         question(&self.state(), target.entity().ok()?)
@@ -278,17 +342,28 @@ impl TodoEngine {
         if current.as_deref() != Some(&asked) {
             return Ok(OrganizeDeletion::Changed { question: current });
         }
-        let (cmd, what, noun) = match id {
+        let (cmd, what, noun, name) = match id {
             EntityId::Collection(c) => (
                 intent::delete_collection(&s, c),
                 "Undo deleting a collection",
                 "collection",
+                &s.collections[&c].name,
             ),
-            EntityId::Tag(t) => (Some(intent::delete(t)), "Undo deleting a tag", "tag"),
+            EntityId::Tag(t) => (
+                Some(intent::delete(t)),
+                "Undo deleting a tag",
+                "tag",
+                &s.tags[&t].name,
+            ),
             _ => return Err(invalid("Cannot delete this item.")),
         };
         let change = self
-            .track_change(cmd, what, noun)?
+            .track_change(
+                cmd,
+                what,
+                noun,
+                format!("Deleted {noun} “{}”", one_line(name)),
+            )?
             .ok_or_else(|| invalid("Already deleted."))?;
         Ok(OrganizeDeletion::Deleted { change })
     }

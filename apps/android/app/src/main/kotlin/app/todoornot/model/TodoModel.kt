@@ -66,6 +66,7 @@ data class Toast(
     val swap: TaskSwap? = null,
     val reminder: ReminderChange? = null,
     val organize: OrganizeChange? = null,
+    val deadlineMs: Long = 0,
 ) {
     val undoable: Boolean get() = completion != null || deletion != null || moved != null || reminder != null || organize != null
 }
@@ -102,7 +103,9 @@ data class UiState(
     val reorder: TaskSwap? = null,
     /** null for a task room, empty for all activity, otherwise the agent's wire ID. */
     val activity: String? = null,
-    val activityRevision: ULong = 0u,
+    val activityRevision: app.todoornot.core.FeedRevision? = null,
+    val utcOffsetSecs: Int = 0,
+    val pendingGroups: Set<String> = emptySet(),
     val eventStates: Map<String, String> = emptyMap(),
 ) {
     val selected: String? get() = detail?.id
@@ -404,7 +407,9 @@ class TodoModel(
             generation = gen,
             today = isoDay(n),
             activity = activity,
-            activityRevision = if (activity == null) 0u else engine.activityRevision(),
+            activityRevision = if (activity == null) null else engine.activityRevision(),
+            utcOffsetSecs = n.utcOffsetSecs,
+            pendingGroups = if (activity == null) emptySet() else engine.pendingActivityGroups().toSet(),
             eventStates = if (activity == null) emptyMap() else engine.activityUndoStates(),
             reorder = reorder?.takeIf { it.room == k },
         )
@@ -584,8 +589,10 @@ class TodoModel(
     }
 
     private fun show(t: Toast?) {
-        toast = t
+        toast = t?.copy(deadlineMs = clock() + app.todoornot.design.Tokens.Motion.UNDO_WINDOW)
     }
+
+    override fun toastRemaining(t: Toast): Long = (t.deadlineMs - clock()).coerceAtLeast(0L)
 
     /**
      * Opens a room, even the one already open. A filter belongs to the room it was typed in, so the
@@ -782,6 +789,7 @@ class TodoModel(
 
     override fun undo(t: Toast) {
         if (toast?.serial != t.serial) return
+        if (toastRemaining(t) == 0L) { dismissToast(t); return }
         t.organize?.let { change ->
             show(null)
             act { engine.undoOrganize(change) }
@@ -1000,30 +1008,24 @@ class TodoModel(
     }
 
     override fun organize(edit: OrganizeEdit) = act {
-        fun tracked(text: String, change: OrganizeChange?) {
-            if (change != null) show(Toast(++serial, text, organize = change))
+        fun tracked(change: OrganizeChange?) {
+            if (change != null) show(Toast(++serial, change.toastText(), organize = change))
         }
         when (edit) {
-            is OrganizeEdit.Repeat -> {
-                val title = engine.task(edit.task, now())?.title ?: return@act
-                tracked("Changed schedule for “${oneLine(title)}”", engine.setRepeat(edit.task, edit.choice, now()))
-            }
+            is OrganizeEdit.Repeat -> tracked(engine.setRepeat(edit.task, edit.choice, now()))
             is OrganizeEdit.ToggleTag -> engine.toggleTag(edit.task, edit.id)
             is OrganizeEdit.TagNamed -> engine.tagTaskNamed(edit.task, edit.name)
             is OrganizeEdit.RenameTag -> engine.renameTag(edit.id, edit.name)
             is OrganizeEdit.Color -> engine.setSwatch(edit.target, edit.hue)
-            is OrganizeEdit.AddLink -> tracked("Added link “${oneLine(edit.address)}”", engine.addWebLink(edit.task, edit.address))
-            is OrganizeEdit.RemoveLink -> {
-                val title = _ui.value.detail?.sources?.find { it.id == edit.id }?.title
-                tracked(title?.let { "Removed link “${oneLine(it)}”" } ?: "Removed link", engine.removeLink(edit.id))
-            }
+            is OrganizeEdit.AddLink -> tracked(engine.addWebLink(edit.task, edit.address))
+            is OrganizeEdit.RemoveLink -> tracked(engine.removeLink(edit.id))
             is OrganizeEdit.NewCollection -> enter(engine.createCollection(edit.name))
-            is OrganizeEdit.MoveList -> {
-                val name = _ui.value.home.groups.flatMap { it.lists }.find { it.key == RoomKey.List(edit.id) }?.name
-                tracked(name?.let { "Moved “${oneLine(it)}”" } ?: "Moved list", engine.moveList(edit.id, edit.collection))
-            }
+            is OrganizeEdit.MoveList -> tracked(engine.moveList(edit.id, edit.collection))
         }
     }
+
+    override fun tagNamed(name: String) = engine.tagNamed(name)
+    override fun previewRepeat(id: String, draft: app.todoornot.core.CustomRepeat) = engine.previewRepeat(id, draft, now())
 
     override fun organizeQuestion(target: ColorTarget) = engine.organizeQuestion(target)
 
@@ -1033,7 +1035,7 @@ class TodoModel(
             writeEdit {
                 when (val reply = engine.confirmOrganizeDelete(target, asked)) {
                     is OrganizeDeletion.Changed -> next = reply.question
-                    is OrganizeDeletion.Deleted -> show(Toast(++serial, if (target is ColorTarget.Tag) "Deleted tag" else "Deleted collection", organize = reply.change))
+                    is OrganizeDeletion.Deleted -> show(Toast(++serial, reply.change.toastText(), organize = reply.change))
                 }
             }?.let { show(Toast(++serial, it)) }
             refresh()
@@ -1041,8 +1043,16 @@ class TodoModel(
         }
     }
 
-    override suspend fun activityPage(agent: String?, before: ULong?) = withContext(io) { engine.activityPage(agent, before, now()) }
-    override fun undoEvent(event: ActivityRow) = act { engine.undoActivityEvent(event.seq, event.id) }
+    override suspend fun activityPage(source: ActivitySource, before: ULong?): app.todoornot.core.FeedPage? {
+        val page = withContext(io) {
+            try { engine.activityPage(source.agent, before, now()) } catch (_: FfiException) {
+                app.todoornot.core.FeedPage(emptyList(), before, "Couldn’t load activity. Try again.", false)
+            }
+        }
+        return page.takeIf { activity == source.agent.orEmpty() && _ui.value.activitySource == source }
+    }
+    override suspend fun retiredEvents(ids: List<String>) = withContext(io) { engine.activityRetired(ids) }
+    override fun undoEvent(event: ActivityRow) = act { engine.undoActivityEvent(event.seq, event.id, event.group) }
 
     override fun renameRoom(room: RoomKey, name: String) = act {
         when (room) {
