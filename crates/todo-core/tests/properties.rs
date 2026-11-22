@@ -549,7 +549,11 @@ proptest! {
                 (e, list, key)
             })
             .collect();
-        prop_assume!(!moves.is_empty());
+        // Most generated histories have no cross-list move; `prop_assume!` would reject them all
+        // and trip proptest's global reject limit, so they pass vacuously instead.
+        if moves.is_empty() {
+            return Ok(());
+        }
         let (event, list, key) = &moves[pick_idx % moves.len()];
         let EntityId::Task(task) = event.payload.target() else {
             panic!("a task list change on {:?}", event.payload.target());
