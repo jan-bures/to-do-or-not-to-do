@@ -95,7 +95,7 @@ there is no free-form colour.
 - **The pane is near-white or near-black, never pure.** The canvas, which holds the sidebar, title bar and status
   bar, sits one step darker in light mode and one step lighter in dark mode.
 - **Colour means something, or it isn't there.**
-  - Accent is for the checked box, the selection bar, "due soon" and the primary button.
+  - Accent is for the checked box, "due soon" and the primary button. Selection bars use `accent-strong`.
   - On a selected row the checked box uses `check-selected` instead, so it still reaches 3:1 on `wash`.
   - Danger is for overdue items.
   - The list hue is for list identity.
@@ -137,7 +137,8 @@ animation, and without relying on hue alone.
   closed shape: `important-fill` gold for the Important star, warm `sun-ink` amber for the My Day sun, and
   `danger` red for a true flag toggle. Fill only the sun's disc; its rays stay strokes. A flag used as a
   field label and a pin used as decoration are not toggles. The neutral `!` / `!!` / `!!!` priority scale
-  stays separate. The row star and the detail star show and edit the same high-priority state.
+  stays separate. The row star and the detail star show and edit the same high-priority state. Where
+  the task-actions menu offers a toggle, its icon shows the same current state as the toolbar.
 - **Selected rows, chips, segments and options:** Use a filled or tinted container (`wash`, or the stronger
   fill for a compact segment) and a stronger label. Selected navigation and task rows also get a 3 px
   leading selection bar. Preset, tag and list choices retain their tick; for colour-only swatches the tick
@@ -551,7 +552,7 @@ Completing a task is the one choreographed moment in the app.
     body (`opacity: 0.25 → 1.0`) with zero horizontal slide, keeping the top action bar anchored. **Key-repeat
     rule:** if another task is selected within `CONTENT_SWAP` (holding `J`/`K` or arrow keys), cancel the fade
     and paint the new task immediately (`0 ms`).
-  - **Row selection bar:** The `3 px` left `accent` bar and `wash` fill crossfade over `HOVER` (`90 ms`,
+  - **Row selection bar:** The `3 px` left `accent-strong` bar and `wash` fill crossfade over `HOVER` (`90 ms`,
     `STANDARD`).
 - **Stagger:** None.
 - **Reduced motion:** Open, close, and switch drop all translation and width slides, using `REDUCED_FADE`

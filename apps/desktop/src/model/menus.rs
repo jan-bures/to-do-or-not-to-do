@@ -1036,15 +1036,15 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
         return Vec::new();
     };
     let done = if t.is_done() { "Reopen" } else { "Complete" };
-    let my_day = if t.my_day == Some(today) {
-        "Remove from My Day"
+    let (sun, my_day) = if t.my_day == Some(today) {
+        (Icon::SunFilled, "Remove from My Day")
     } else {
-        "Add to My Day"
+        (Icon::Sun, "Add to My Day")
     };
-    let important = if t.priority == Priority::High {
-        "Remove importance"
+    let (star, important) = if t.priority == Priority::High {
+        (Icon::StarFilled, "Remove importance")
     } else {
-        "Mark as important"
+        (Icon::Star, "Mark as important")
     };
     let marks = priority_label(t.priority).1;
     let priority = with(
@@ -1079,15 +1079,10 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
             done,
             MenuAction::ToggleDone(task),
         ),
-        item(
-            "task-my-day",
-            Icon::Sun,
-            my_day,
-            MenuAction::ToggleMyDay(task),
-        ),
+        item("task-my-day", sun, my_day, MenuAction::ToggleMyDay(task)),
         item(
             "task-important",
-            Icon::Star,
+            star,
             important,
             MenuAction::ToggleImportant(task),
         ),
@@ -2299,6 +2294,30 @@ second line"
         });
         assert!(task_menu(&gone, id, today).is_empty());
         assert!(move_menu(&gone, id, "").is_empty());
+    }
+
+    #[test]
+    fn task_menu_toggle_icons_show_current_state_and_priority_keeps_its_flag() {
+        let mut f = fixtures::my_day();
+        let id = f.ui.task.expect("selected task");
+        let today = f.now.today();
+        for (on, expected) in [
+            (false, [Icon::Sun, Icon::Star, Icon::Flag]),
+            (true, [Icon::SunFilled, Icon::StarFilled, Icon::Flag]),
+        ] {
+            let task = f.state.tasks.get_mut(&id).expect("selected task");
+            task.my_day = on.then_some(today);
+            task.priority = if on { Priority::High } else { Priority::Normal };
+            let menu = task_menu(&f.state, id, today);
+            assert_eq!(
+                items(&menu)
+                    .skip(1)
+                    .take(3)
+                    .map(|i| i.icon)
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
     }
 
     #[test]

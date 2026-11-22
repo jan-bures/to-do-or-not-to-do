@@ -134,7 +134,12 @@ private fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
     ) {
-        Icon(item.icon, if (!item.enabled) r.ink4 else if (item.danger) r.danger else r.ink3, size = C.ICON_SMALL.dp)
+        val iconInk = when {
+            !item.enabled -> r.ink4
+            item.danger -> r.danger
+            else -> r.taskToggleFill(item.icon) ?: r.ink3
+        }
+        Icon(item.icon, iconInk, size = C.ICON_SMALL.dp)
         Label(item.label, Tokens.Type.NAV_SUB, ink, Modifier.weight(1f),
             weight = if (item.checked) Tokens.Type.BUTTON.weight else null)
         item.hint?.let { Label(it, Tokens.Type.PRIORITY, r.ink3) }

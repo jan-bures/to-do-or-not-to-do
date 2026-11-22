@@ -162,10 +162,18 @@ test("completed and hand-over rows can be deleted and restored", async ({ page }
   const done = page.getByRole("list", { name: "Completed tasks" });
   const firstDone = await done.locator(".row-title").first().textContent();
   const nextDone = await done.locator(".row-title").nth(1).textContent();
+  // Changing priority must keep the completed row mounted, but deletion must still change its phase.
+  const firstStar = done.locator(".important-toggle").first();
+  const wasImportant = (await firstStar.getAttribute("aria-pressed")) === "true";
+  await firstStar.press("Enter");
+  await expect(firstStar).toHaveAttribute("aria-pressed", String(!wasImportant));
+  await expect(firstStar).toBeFocused();
   await row(page, firstDone).click();
+  await watchExits(page);
   await page.keyboard.press("Delete");
   await expect(row(page, firstDone)).toHaveCount(0);
   await expect(row(page, nextDone)).toBeFocused();
+  expect(await page.evaluate(() => window.taskExits)).toEqual(["row-exit"]);
   await page.keyboard.press("Control+z");
   await expect(row(page, firstDone)).toBeVisible();
   await page.getByRole("button", { name: "Completed 12" }).click();

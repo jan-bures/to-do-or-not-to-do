@@ -1890,6 +1890,18 @@ class TodoModelTest {
     }
 
     @Test
+    fun task_menu_toggle_icons_show_current_state_and_priority_keeps_its_flag() {
+        val s = Stepped(fixtureEngine()) { time }
+        val (_, id) = s.openAdmin()
+        val room = s.model.ui.value.room
+        fun icons(myDay: Boolean, priority: Int) = taskMenu(room, id, false, myDay, priority)
+            .filterIsInstance<MenuEntry.Item>().drop(1).take(3).map { it.icon }
+        assertEquals(listOf("sun", "star", "flag"), icons(false, 2))
+        assertEquals(listOf("sun-filled", "star", "flag"), icons(true, 2))
+        assertEquals(listOf("sun", "star-filled", "flag"), icons(false, 3))
+    }
+
+    @Test
     fun due_dates_and_priorities_are_written_from_the_detail_pane() {
         val s = Stepped(fixtureEngine()) { time }
         val m = s.model

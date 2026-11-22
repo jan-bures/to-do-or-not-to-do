@@ -89,8 +89,8 @@ fun TaskRowView(
             )
         }
         Column(Modifier.weight(1f)) {
-            // The title shares its line with agent and priority, but metadata can use their space below.
-            Row(Modifier.fillMaxWidth().height(titleLine), horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
+            // Let the title's scaled text grow past the design line height; metadata uses the full width below.
+            Row(Modifier.fillMaxWidth().heightIn(min = titleLine), horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
                 Box(Modifier.weight(1f)) { Title(task.title, lerp(r.ink, r.ink3, l.dim), l.strike) }
                 if (showsAgent(task)) {
                     Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {

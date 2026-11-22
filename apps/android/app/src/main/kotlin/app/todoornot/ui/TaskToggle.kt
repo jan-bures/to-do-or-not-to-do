@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
+import app.todoornot.design.RoomColors
 import app.todoornot.design.Tokens
 import app.todoornot.model.Pace
 import app.todoornot.model.ease
@@ -35,6 +36,13 @@ internal const val IMPORTANT: UByte = 3u
 
 internal enum class TaskToggle(val icon: String, val label: String) {
     MY_DAY("sun", "My Day"), IMPORTANT("star", "Important"),
+}
+
+/** The active ink shared by task toggles and their menu equivalents. */
+internal fun RoomColors.taskToggleFill(icon: String): Color? = when (icon) {
+    "sun-filled" -> sunInk
+    "star-filled" -> importantFill
+    else -> null
 }
 
 internal fun toggleScale(progress: Float, on: Boolean, reduced: Boolean): Float =
@@ -80,7 +88,8 @@ internal fun TaskToggleButton(
         contentAlignment = alignment,
     ) {
         Icon(toggle.icon, r.ink3, Modifier.graphicsLayer { alpha = 1f - fill })
-        Icon("${toggle.icon}-filled", if (toggle == TaskToggle.MY_DAY) r.sunInk else r.importantFill,
+        val filled = "${toggle.icon}-filled"
+        Icon(filled, r.taskToggleFill(filled) ?: r.ink3,
             Modifier.graphicsLayer { alpha = fill; scaleX = scale; scaleY = scale })
     }
 }

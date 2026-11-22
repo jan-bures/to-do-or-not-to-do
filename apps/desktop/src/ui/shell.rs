@@ -2699,7 +2699,7 @@ impl ShellView {
                     .top(px(-elevation::HAIRLINE))
                     .bottom(px(-elevation::HAIRLINE))
                     .w(px(elevation::SELECTION_BAR))
-                    .bg(p.accent),
+                    .bg(p.accent_strong),
             )
         } else {
             let hover = p.hover;
@@ -3718,7 +3718,7 @@ impl ShellView {
     fn focus_stop(&mut self, stop: hints::Stop, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.stop_handle(stop).clone();
         window.focus(&handle, cx);
-        // A stop below its pane's fold (a long sidebar, the end of the feed) is scrolled into view.
+        // Reveal stops that can scroll out of the detail pane or the Activity feed.
         if let Some((pane, key)) = hints::reveal(stop) {
             let handle = match pane {
                 hints::ScrollPane::Detail => &self.detail_scroll,

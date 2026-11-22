@@ -1612,7 +1612,11 @@ impl ShellView {
                 (None, None) => kit::icon(
                     item.icon,
                     component::ICON_SMALL,
-                    if item.danger { p.danger } else { p.ink_3 },
+                    if item.danger {
+                        p.danger
+                    } else {
+                        kit::task_toggle_fill(p, item.icon).unwrap_or(p.ink_3)
+                    },
                 )
                 .into_any_element(),
             })

@@ -1088,6 +1088,7 @@ impl ShellView {
             .flex_col()
             .child(
                 div()
+                    .relative()
                     .h(px(desktop::DETAIL_TOP))
                     .flex_none()
                     .flex()
@@ -1097,6 +1098,7 @@ impl ShellView {
                     .pr(px(space::S3))
                     .border_b_1()
                     .border_color(p.line)
+                    .when(live, |d| d.child(self.probe("detail-toolbar")))
                     .child(crumbs.style(ty::SUMMARY).text_color(p.ink_2))
                     .child(
                         // My Day, Important, Close: the same order on every client.

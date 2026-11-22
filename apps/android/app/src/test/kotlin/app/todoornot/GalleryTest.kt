@@ -263,6 +263,12 @@ class GalleryTest {
             val theme = if (dark) "dark" else "light"
             main("toggle_states_off_$theme", INNER, off, dark)
             main("toggle_states_on_$theme", INNER, on, dark)
+            val detail = requireNotNull(on.detail)
+            overlaid("toggle_states_menu_$theme", COVER, on, dark) {
+                Box(Modifier.fillMaxSize().padding(top = Tokens.Metrics.Phone.APP_BAR.dp, end = Tokens.Space.S2.dp), contentAlignment = Alignment.TopEnd) {
+                    MenuCard(taskMenu(on.room, id, detail.done, detail.myDay, detail.priority.toInt()), {})
+                }
+            }
         }
     }
 
@@ -324,7 +330,7 @@ class GalleryTest {
         main("cover_sideways_light", COVER_SIDEWAYS, state(fixtureEngine()), dark = false, wide = false)
     }
 
-    /** At a large font scale the rows grow; the chips under the titles keep their room. */
+    /** At a large font scale the title and chips stay legible, including descenders and diacritics. */
     @Test
     fun large_text() {
         main("cover_large_text_light", COVER.copy(fontScale = 1.3f), state(fixtureEngine()), dark = false)

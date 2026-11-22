@@ -67,8 +67,9 @@ sealed interface MenuAction {
  */
 fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority: Int): List<MenuEntry> = buildList {
     add(MenuEntry.Item("circle-check", if (done) "Reopen" else "Complete", MenuAction.Done(!done)))
-    add(MenuEntry.Item("sun", if (myDay) "Remove from My Day" else "Add to My Day", MenuAction.MyDay(!myDay)))
-    add(MenuEntry.Item("star", if (priority == 3) "Remove importance" else "Mark as important", MenuAction.Important(priority != 3)))
+    val important = priority == 3
+    add(MenuEntry.Item(if (myDay) "sun-filled" else "sun", if (myDay) "Remove from My Day" else "Add to My Day", MenuAction.MyDay(!myDay)))
+    add(MenuEntry.Item(if (important) "star-filled" else "star", if (important) "Remove importance" else "Mark as important", MenuAction.Important(!important)))
     add(MenuEntry.Item("flag", "Priority…", MenuAction.PickPriority, hint = "!".repeat(priority).ifEmpty { null }))
     add(MenuEntry.Item("list", "Move to…", MenuAction.PickList))
     val list = room.key as? RoomKey.List

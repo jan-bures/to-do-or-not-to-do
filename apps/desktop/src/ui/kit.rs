@@ -28,13 +28,23 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// The active ink shared by task toggles and their menu equivalents.
+pub fn task_toggle_fill(p: &Palette, glyph: Icon) -> Option<Hsla> {
+    match glyph {
+        Icon::SunFilled => Some(p.sun_ink),
+        Icon::StarFilled => Some(p.important_fill),
+        _ => None,
+    }
+}
+
 /// A binary glyph: quiet outline off, semantic fill on. The fill may fade and pop without resizing
 /// the hit target or displacing the outline.
 pub fn task_toggle(p: &Palette, glyph: Icon, size: f32, fill: f32, scale: f32) -> Div {
-    let (filled, color) = match glyph {
-        Icon::Sun => (Icon::SunFilled, p.sun_ink),
-        _ => (Icon::StarFilled, p.important_fill),
+    let filled = match glyph {
+        Icon::Sun => Icon::SunFilled,
+        _ => Icon::StarFilled,
     };
+    let color = task_toggle_fill(p, filled).unwrap_or(p.ink_3);
     let scaled = size * scale;
     let inset = px((size - scaled) / 2.);
     div()

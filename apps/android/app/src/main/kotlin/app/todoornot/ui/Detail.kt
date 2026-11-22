@@ -116,8 +116,11 @@ fun DetailPane(
                     if (i == 0) ListChip(c) else Label(c.label, Tokens.Type.BUTTON_SMALL, r.ink)
                 }
             }
-            TaskToggleButton(TaskToggle.MY_DAY, detail.myDay) { actions.setMyDay(detail.id, it) }
-            TaskToggleButton(TaskToggle.IMPORTANT, detail.priority == IMPORTANT) { actions.setImportant(detail.id, it) }
+            // A different task starts at its own state. Only changes to this task animate.
+            key(detail.id) {
+                TaskToggleButton(TaskToggle.MY_DAY, detail.myDay) { actions.setMyDay(detail.id, it) }
+                TaskToggleButton(TaskToggle.IMPORTANT, detail.priority == IMPORTANT) { actions.setImportant(detail.id, it) }
+            }
             TaskActionsAnchor(state, actions, detail.id, detail.list, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
                 IconButton("ellipsis", "Task actions", onClick = open)
             }

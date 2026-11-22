@@ -132,6 +132,7 @@ pub enum ScrollPane {
 /// always in view.
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
+        Stop::DetailMyDay | Stop::DetailImportant => Some((ScrollPane::Detail, "detail-toolbar")),
         Stop::Reminder => Some((ScrollPane::Detail, "reminder-row")),
         Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
         // Load older activity (or Try again) ends the feed, below the last change read.
@@ -143,8 +144,6 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
         | Stop::DetailSplitter
-        | Stop::DetailMyDay
-        | Stop::DetailImportant
         // New list and New collection are pinned below the sidebar's scrolled rooms.
         | Stop::NewList
         | Stop::NewCollection
@@ -807,6 +806,17 @@ mod tests {
         // New list and New collection are pinned under the sidebar's scrolled rooms, always in view.
         assert_eq!(reveal(Stop::NewList), None);
         assert_eq!(reveal(Stop::NewCollection), None);
+    }
+
+    #[test]
+    fn shift_tab_from_reminder_reveals_the_detail_toolbar() {
+        let mut from = Stop::Reminder;
+        for expected in [Stop::DetailImportant, Stop::DetailMyDay] {
+            let next = tab_stop(from, false, |_| true);
+            assert_eq!(next, expected);
+            assert_eq!(reveal(next), Some((ScrollPane::Detail, "detail-toolbar")));
+            from = next;
+        }
     }
 
     #[test]
