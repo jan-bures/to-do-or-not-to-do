@@ -61,6 +61,22 @@ test("Activity distinguishes an empty log from a filter with no results", async 
   await w.check();
 });
 
+test("invalid Activity URLs are replaced without adding a history entry", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await open(page, "/app/activity/agent/INVALID!?fixture=blank");
+  await expect(page).toHaveURL(/\/app\/activity\?fixture=blank$/);
+  await expect(page.getByText("No activity yet.")).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "My Day" })).toBeVisible();
+  await page.evaluate(() => history.pushState(null, "", "/app/activity/list/not-a-room"));
+  await page.goBack();
+  await page.goForward();
+  await expect(page).toHaveURL(/\/app\/activity$/);
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await w.check();
+});
+
 test("phone drawer and keyboard reach Undo and a refusal keeps its focus", async ({ page }) => {
   const w = watch(page);
   await page.setViewportSize({ width: 412, height: 920 });
@@ -73,9 +89,11 @@ test("phone drawer and keyboard reach Undo and a refusal keeps its focus", async
   const undo = page.getByRole("button", { name: /^Undo: Updated task.*due date/ });
   await undo.focus();
   await undo.press("Enter");
-  await expect(entries(page).filter({ has: undo }).getByRole("status")).toHaveText(
-    "Couldn't undo: the item was changed again.",
-  );
+  const message = "Couldn't undo: the item was changed again.";
+  const status = page.locator(".activity-body").getByRole("status");
+  await expect(status).toHaveCount(1);
+  await expect(status).toHaveText(message);
+  await expect(entries(page).filter({ has: undo }).getByText(message)).toBeVisible();
   await expect(undo).toBeFocused();
   await expect(undo).toBeEnabled();
   await w.check();

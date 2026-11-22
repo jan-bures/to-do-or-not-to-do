@@ -105,7 +105,9 @@ for (const scheme of ["light", "dark"]) {
 
       const undo = page.getByRole("button", { name: /^Undo: Updated task.*due date/ });
       await undo.click();
-      await expect(page.getByText("Couldn't undo: the item was changed again.")).toBeVisible();
+      await expect(page.locator(".activity-refusal").filter({
+        hasText: "Couldn't undo: the item was changed again.",
+      })).toBeVisible();
       await shot(page, `activity-refused-${scheme}`);
 
       await page.getByRole("region", { name: "Agents" }).getByRole("link", { name: /Codex/ }).click();

@@ -104,6 +104,7 @@ pub fn event(state: &State, event: &Event) -> String {
             match (completed, fields.as_slice()) {
                 (Some(true), ["completion"]) => format!("Completed {}", describe(state, target)),
                 (Some(false), ["completion"]) => format!("Reopened {}", describe(state, target)),
+                (_, []) => format!("Updated {}", describe(state, target)),
                 _ => format!(
                     "Updated {} ({})",
                     describe(state, target),
@@ -210,7 +211,37 @@ pub fn undo(state: &State, events: &[Event]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::clip;
+    use super::*;
+    use todo_core::actor::Actor;
+    use todo_core::event::Change;
+    use todo_core::ids::{EventId, TaskId};
+    use todo_core::model::Stamp;
+    use todo_core::time::Timestamp;
+    use uuid::Uuid;
+
+    #[test]
+    fn touch_only_updates_have_no_empty_field_list() {
+        let id = EventId::from_uuid(Uuid::from_u128(1));
+        let at = Timestamp::UNIX_EPOCH;
+        let stamp = Stamp {
+            at,
+            by: Actor::System,
+        };
+        let update = Event {
+            id,
+            seq: Some(1),
+            actor: Actor::System,
+            at,
+            group: id,
+            undoes: None,
+            forced: false,
+            payload: EventPayload::Updated {
+                target: TaskId::from_uuid(Uuid::from_u128(2)).into(),
+                changes: vec![FieldChange::Touch(Change::new(stamp.clone(), stamp))],
+            },
+        };
+        assert_eq!(event(&State::new(), &update), "Updated task");
+    }
 
     #[test]
     fn long_labels_are_clipped() {

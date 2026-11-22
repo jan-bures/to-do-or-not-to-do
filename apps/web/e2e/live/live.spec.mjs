@@ -232,11 +232,34 @@ test("Activity reads confirmed changes and compensates another tab's past edit",
 
   await reader.getByRole("link", { name: "Activity", exact: true }).click();
   await expect(reader).toHaveURL(/\/app\/activity$/);
-  const edit = reader.locator(".activity-row").filter({ hasText: `Updated task "${edited}" (title)` });
+  const editRow = (page, title) => page.locator(".activity-row").filter({
+    has: page.getByText(`Updated task "${title}" (title)`, { exact: true }),
+  });
+  const edit = editRow(reader, edited);
   await expect(edit).toBeVisible();
   await expect(edit.locator(".activity-meta")).toContainText("You");
+
+  // Hold the outbox entry so a tab already open and a tab reloading both see the pending undo.
+  const observer = await openApp();
+  problems.push(watch(observer));
+  await observer.getByRole("link", { name: "Activity", exact: true }).click();
+  await expect(editRow(observer, edited).getByRole("button", { name: /^Undo:/ })).toBeEnabled();
+  const undoPath = "**/api/v1/events/*/undo";
+  await context.route(undoPath, (r) => r.abort("internetdisconnected"));
   await edit.getByRole("button", { name: /^Undo:/ }).click();
-  await expect(edit.getByText("Undone", { exact: true })).toBeVisible();
+  const pending = (page) => editRow(page, edited).getByRole("button", { name: /^Undoing: Updated task/ });
+  await expect(pending(reader)).toHaveText("Undoing");
+  await expect(pending(reader)).toBeDisabled();
+  const undoRecord = '"op":"undo"';
+  await committed(reader, undoRecord);
+  await expect(pending(observer)).toBeDisabled();
+  await pending(observer).dispatchEvent("click"); // aria-disabled alone does not block a click.
+  await reader.reload();
+  await expect(pending(reader)).toBeDisabled();
+  expect(await stored(reader, undoRecord)).toBe(1);
+  await context.unroute(undoPath);
+  await author.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(edit.getByText("Undone", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(row(author, original)).toBeVisible();
   await expect(row(author, edited)).toHaveCount(0);
   await reader.getByRole("button", { name: "Refresh activity" }).click();
@@ -244,11 +267,73 @@ test("Activity reads confirmed changes and compensates another tab's past edit",
   await expect(compensation).toContainText(`Undo: Updated task "${original}" (title)`);
   await compensation.getByRole("button", { name: /^Undo:/ }).click();
   await expect(row(author, edited)).toBeVisible();
-  await expect(reader.locator(".activity-row").nth(1).getByText("Superseded", { exact: true })).toBeVisible();
+  const label = (row) => row.getByText("Undo unavailable", { exact: true });
+  const loadedBeforeRedo = editRow(reader, original);
+  await expect(label(loadedBeforeRedo)).toBeVisible();
+  await expect(loadedBeforeRedo.getByRole("button")).toHaveCount(0);
+  await reader.reload();
+  const loadedAfterRedo = editRow(reader, edited);
+  await expect(label(loadedAfterRedo)).toBeVisible();
+  await expect(loadedAfterRedo.getByRole("button")).toHaveCount(0);
 
   expect(problems.flat()).toEqual([]);
+  await observer.close();
   await reader.close();
   await author.close();
+});
+
+test("Activity queues a refresh during pagination and focuses its heading when a row is removed", async () => {
+  const author = await openApp();
+  const reader = await openApp();
+  const problems = [author, reader].map(watch);
+  const older = Promise.withResolvers();
+  const releaseOlder = Promise.withResolvers();
+  const refresh = Promise.withResolvers();
+  const releaseRefresh = Promise.withResolvers();
+  let latestReads = 0;
+  await reader.route("**/api/v1/activity?*", async (route) => {
+    const url = new URL(route.request().url());
+    // Real server pages, but make the first page short enough for one edit to replace its row.
+    url.searchParams.set("limit", "1");
+    if (url.searchParams.has("before")) {
+      older.resolve();
+      await releaseOlder.promise;
+    } else if (++latestReads === 2) {
+      refresh.resolve();
+      await releaseRefresh.promise;
+    }
+    await route.fulfill({ response: await route.fetch({ url: url.href }) });
+  });
+  try {
+    await reader.getByRole("link", { name: "Activity", exact: true }).click();
+    const first = reader.locator(".activity-row").first();
+    const undo = first.getByRole("button", { name: /^Undo:/ });
+    await expect(undo).toBeEnabled();
+    const previousSummary = await first.locator(".activity-summary").textContent();
+
+    await reader.getByRole("button", { name: "Load older activity" }).click();
+    await older.promise;
+    await reader.getByRole("button", { name: "Refresh activity" }).click();
+    expect(latestReads).toBe(1);
+    const title = "Newest change after paging started";
+    await add(author, title);
+    await expect.poll(() => occurrences(author, title)).toBe(1);
+
+    releaseOlder.resolve();
+    await refresh.promise;
+    await undo.focus();
+    await expect(undo).toBeFocused();
+    releaseRefresh.resolve();
+    await expect(first).toContainText(title);
+    await expect(reader.getByText(previousSummary, { exact: true })).toHaveCount(0);
+    await expect(reader.getByRole("heading", { name: "Activity", exact: true })).toBeFocused();
+    expect(problems.flat()).toEqual([]);
+  } finally {
+    releaseOlder.resolve();
+    releaseRefresh.resolve();
+    await reader.close();
+    await author.close();
+  }
 });
 
 test("attachments wait for task creation and event delivery; the web session can then download and remove them", async () => {

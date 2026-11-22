@@ -22,6 +22,7 @@ use crate::changes::{self, Failure};
 use crate::model::Now;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +75,9 @@ thread_local! {
     static STORE: RefCell<Option<(MirrorStorage, IdbFlusher)>> = const { RefCell::new(None) };
     /// The sender lock, while this tab holds or waits for it.
     static SENDER: RefCell<Option<SenderLock>> = const { RefCell::new(None) };
-    /// Bumped when something only this module knows changed (a scan error, an upgrade waiting).
+    /// Undo targets in the shared outbox, for tabs that aren't adopting its commands.
+    static SHARED_UNDOS: RefCell<BTreeSet<EventId>> = const { RefCell::new(BTreeSet::new()) };
+    /// Bumped when something only this module knows changed (an outbox scan, an upgrade waiting).
     static LOCAL: Notify = Notify::default();
     /// Bumped to rescan the outbox store now (the tab became visible, or the network came back).
     static RESCAN: Notify = Notify::default();
@@ -271,8 +274,8 @@ async fn become_sender() {
     }
 }
 
-/// Reads every tab's queued commands from IndexedDB: the sending tab (`adopt`) takes them in, and
-/// every tab takes in what another refused. A read that keeps failing shows the storage alert.
+/// Reads every tab's queued commands from IndexedDB: the sending tab (`adopt`) takes them in, while
+/// the others only note pending undo targets. Every tab takes in what another refused.
 async fn scan(adopt: bool) -> Result<(), ()> {
     let (Some(c), Some((_, flusher))) = (live(), store()) else {
         return Err(());
@@ -298,8 +301,22 @@ async fn scan(adopt: bool) -> Result<(), ()> {
             return Err(());
         }
     };
-    if adopt && let Err(e) = c.adopt(outbox) {
-        tracing::warn!("could not take in other tabs' changes: {e}");
+    if adopt {
+        if let Err(e) = c.adopt(outbox) {
+            tracing::warn!("could not take in other tabs' changes: {e}");
+        }
+    } else {
+        let targets = outbox
+            .iter()
+            .filter_map(|entry| entry.undo_target())
+            .collect();
+        SHARED_UNDOS.with(|shared| {
+            let mut shared = shared.borrow_mut();
+            if *shared != targets {
+                *shared = targets;
+                LOCAL.with(Notify::notify);
+            }
+        });
     }
     if let Err(e) = c.adopt_failed(failed) {
         tracing::warn!("could not take in other tabs' refusals: {e}");
@@ -412,11 +429,16 @@ pub async fn next_change() {
     .await;
 }
 
-/// Asks the engine to retry now, and the sending tab to read the outbox store (the tab became
-/// visible, or the network came back).
+/// Asks the engine to retry now, and reads the outbox store (the tab became visible, or the network
+/// came back).
 pub fn nudge() {
     if let Some(c) = live() {
         c.nudge();
+        if !c.is_sending() && !UPGRADING.with(Cell::get) {
+            wasm_bindgen_futures::spawn_local(async {
+                let _ = scan(false).await;
+            });
+        }
     }
     RESCAN.with(Notify::notify);
 }
@@ -736,9 +758,21 @@ pub async fn activity(query: &ActivityQuery) -> Result<ActivityPage, ActivityErr
     Err(ActivityError::Unavailable)
 }
 
-/// Reconcile an already loaded feed row with any newer compensation the replica confirmed.
-pub fn activity_flags(id: EventId, compensating: bool) -> Option<(bool, bool)> {
-    live()?.with_confirmed(|state| {
+#[derive(Default)]
+pub struct ActivityFlags {
+    /// Undone and at the head of the undo chain, when the replica has seen the event.
+    pub confirmed: Option<(bool, bool)>,
+    pub pending: bool,
+}
+
+/// Reconcile the loaded row with the replica's confirmed journal and the shared outbox.
+pub fn activity_flags(id: EventId, compensating: bool) -> ActivityFlags {
+    let Some(c) = live() else {
+        return ActivityFlags::default();
+    };
+    let pending = c.pending_undo(id).is_some()
+        || (!c.is_sending() && SHARED_UNDOS.with(|shared| shared.borrow().contains(&id)));
+    let confirmed = c.with_confirmed(|state| {
         let journal = &state.journal;
         if !journal.has_seen(id) {
             return None;
@@ -751,7 +785,8 @@ pub fn activity_flags(id: EventId, compensating: bool) -> Option<(bool, bool)> {
             journal.is_undone(root)
         };
         Some((undone, head == id))
-    })
+    });
+    ActivityFlags { confirmed, pending }
 }
 
 /// Queue the checked, non-forced compensation. `None` is an immediate success in the fixture.

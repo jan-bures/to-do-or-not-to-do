@@ -111,13 +111,13 @@ impl RoomId {
         let rest = path.strip_prefix("/app").unwrap_or(path);
         let segs: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
         let (room, used) = match segs.as_slice() {
-            ["activity"] => return (RoomId::Activity(None), None),
             ["activity", "agent", agent] => {
                 return (
                     RoomId::Activity(todo_core::actor::AgentId::new(*agent).ok()),
                     None,
                 );
             }
+            ["activity", ..] => return (RoomId::Activity(None), None),
             ["collection", id, ..] => (id.parse().map(RoomId::Collection).ok(), 2),
             ["list", id, ..] => (id.parse().map(RoomId::List).ok(), 2),
             ["task", ..] | [] => (Some(RoomId::default()), 0),
@@ -1471,6 +1471,22 @@ mod tests {
             RoomId::from_path("/app/list/not-a-uuid"),
             (RoomId::default(), None)
         );
+    }
+
+    #[test]
+    fn malformed_activity_routes_open_unfiltered_activity() {
+        for path in [
+            "/app/activity/agent/INVALID!",
+            "/app/activity/agent/",
+            "/app/activity/agent/writer/extra",
+            "/app/activity/list/extra",
+        ] {
+            assert_eq!(
+                RoomId::from_path(path),
+                (RoomId::Activity(None), None),
+                "{path}"
+            );
+        }
     }
 
     #[test]

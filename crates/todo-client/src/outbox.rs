@@ -87,6 +87,17 @@ impl OutboxEntry {
             Operation::Undo { .. } | Operation::UndoAfter { .. } => None,
         }
     }
+
+    /// The event ID for a checked undo, once its target is known.
+    #[must_use]
+    pub fn undo_target(&self) -> Option<EventId> {
+        match self.op {
+            Operation::Undo {
+                expected_event_id, ..
+            } => Some(expected_event_id),
+            _ => None,
+        }
+    }
 }
 
 /// Why the server definitively refused an entry.

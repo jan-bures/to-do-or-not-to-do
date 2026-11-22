@@ -431,9 +431,21 @@ pub fn mount(now: Now, live: bool, notice: Option<String>) {
     leptos::mount::mount_to_body(move || view! { <App now=now live=live notice=notice.clone()/> });
 }
 
+fn current_route() -> (RoomId, Option<TaskId>) {
+    let path = platform::path();
+    let (room, task) = RoomId::from_path(&path);
+    if room.is_activity() {
+        let canonical = room.path();
+        if canonical != path {
+            platform::replace_path(&canonical);
+        }
+    }
+    (room, task)
+}
+
 #[component]
 fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
-    let (room0, task0) = RoomId::from_path(&platform::path());
+    let (room0, task0) = current_route();
     let state = RwSignal::new(backend::view());
     let now = RwSignal::new(now);
     let room = RwSignal::new(room0);
@@ -568,7 +580,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     });
 
     platform::on_pop_state(move || {
-        let (r, t) = RoomId::from_path(&platform::path());
+        let (r, t) = current_route();
         if r != c.room.get_untracked() {
             c.reset_room_controls();
         }

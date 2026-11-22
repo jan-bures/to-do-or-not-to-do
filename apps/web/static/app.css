@@ -734,7 +734,6 @@ a {
 .activity-page-controls { margin-block-start: var(--space-4); }
 .activity-page-controls p { margin: 0; }
 .activity-progress:not(:empty) { margin-block-end: var(--space-2); }
-.activity-button.activity-undone { border-color: transparent; }
 
 /* ---- room header --------------------------------------------------------------------------------- */
 
@@ -1424,6 +1423,7 @@ a {
 }
 
 .toast-announcement,
+.activity-announcement,
 .qa-date-announcement {
   position: absolute;
   width: var(--hairline);

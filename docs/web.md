@@ -39,6 +39,10 @@ build, set `[web] dir` (or `TODO_SERVER_WEB_DIR`) to the path of `apps/web/dist`
 With a build configured, `/` opens the app and `/app/` serves the same session-gated page as `/app`.
 Without a build, `/` opens the admin pages as before.
 
+The Activity release adds the `events_actor` index migration. A server binary that predates this
+migration refuses the migrated database. To roll back to that binary, restore the database copy taken
+before deployment; see the [Linux deploy recovery procedure](hosting-linux.md#an-interrupted-deploy).
+
 ### Its own workspace
 
 `apps/web` is a separate Cargo workspace with its own `Cargo.lock`, like `apps/desktop`. Leptos and its
@@ -306,9 +310,12 @@ that arrives while the list is open stays for the next opening. Dismissing doesn
 and grouped by local day. Scroll down or choose **Load older activity** for more. Select an agent in the
 sidebar (the Lists drawer on a phone) to open `/app/activity/agent/<agent-id>`. Use **Clear filter** to see
 all actors again. **Refresh activity** starts from the newest changes again without moving the feed as
-new events arrive. A dot on that button means the replica has advanced since the feed was read.
+new events arrive. If an older page is loading, the refresh waits for that request. If refreshing removes
+the focused row, focus moves to the Activity heading. A dot on the refresh button means the replica has
+advanced since the feed was read. Event summaries may use an item's current name, even for older changes.
 
-Each change at the head of its undo chain offers **Undo**. Conflict and other refusals stay beside the
+Each change at the head of its undo chain offers **Undo**. A queued undo disables the action for that
+event, including after reload and when another tab sees it in the shared outbox. Conflict and other refusals stay beside the
 change in plain words; the server is never asked to force the undo. Activity uses
 `SyncClient::undo_activity`: a past event has no local tracked submission to cancel. The shared outbox
 sends its sequence and expected event ID, with the replica's log epoch when known, to compensate the

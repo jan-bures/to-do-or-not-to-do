@@ -435,7 +435,12 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     assert!(item.what_happened().contains("renamed"));
     let event = item.event_ref().unwrap();
     assert_eq!(event.seq, server.head());
+    b.set_sending(false);
     let undo_id = b.undo_activity(event).unwrap();
+    assert_eq!(b.pending_undo(event.id), Some(undo_id));
+    assert_eq!(b.undo_activity(event).unwrap(), undo_id);
+    assert_eq!(b.pending().len(), 1, "the same undo isn't queued twice");
+    b.set_sending(true);
     eventually("b sees the undo", WAIT, || {
         b.view().tasks[&task].title == "rename me"
     })
@@ -453,6 +458,52 @@ async fn undo_goes_through_the_outbox_and_reaches_the_other_client() {
     b.undo_activity(event).unwrap();
     eventually("refused", WAIT, || b.failed().len() == 1).await;
     assert_eq!(b.failed()[0].rejection.code, "already_undone");
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn activity_undo_refuses_a_later_edit_of_the_same_field() {
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, cmd) = new_list(&a, "Undo conflict");
+    a.submit(cmd).unwrap();
+    let (task, cmd) = new_task(&a, list, "before the edits");
+    a.submit(cmd).unwrap();
+    let rename = |title: &str| Command::UpdateTask {
+        id: task,
+        patch: TaskPatch {
+            title: Some(title.into()),
+            ..Default::default()
+        },
+    };
+    a.submit(rename("first edit")).unwrap();
+    eventually("first edit synced", WAIT, || converged(&a, &server)).await;
+    let page = b
+        .activity(&todo_client::activity::ActivityQuery {
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let event = page.items[0].event_ref().unwrap();
+
+    a.submit(rename("later edit")).unwrap();
+    eventually("both see the later edit", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    let undo = b.undo_activity(event).unwrap();
+    eventually("undo refused", WAIT, || !b.failed().is_empty()).await;
+    let failure = &b.failed()[0];
+    assert_eq!(failure.entry.command_id, undo);
+    assert_eq!(failure.rejection.code, "undo_conflict");
+    assert_eq!(b.pending_undo(event.id), None);
+    assert_eq!(b.view().tasks[&task].title, "later edit");
+    assert_eq!(server.state().tasks[&task].title, "later edit");
     stop(&a, ha).await;
     stop(&b, hb).await;
     server.stop().await;

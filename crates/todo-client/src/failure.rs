@@ -241,6 +241,44 @@ mod tests {
     }
 
     #[test]
+    fn undo_refusals_use_fixed_words_and_fall_back_for_unknown_codes() {
+        for (code, message) in [
+            (
+                "undo_conflict",
+                "Couldn't undo: the item was changed again.",
+            ),
+            (
+                "undo_no_event",
+                "Couldn't undo: the original change couldn't be found.",
+            ),
+            (
+                "event_not_found",
+                "Couldn't undo: the original change couldn't be found.",
+            ),
+            (
+                "epoch_mismatch",
+                "Couldn't undo: the server's history changed.",
+            ),
+            (
+                "event_mismatch",
+                "Couldn't undo: the server's history changed.",
+            ),
+            ("not_found", "Couldn't undo: the item no longer exists."),
+            (
+                "already_undone",
+                "Couldn't undo: the change was already undone.",
+            ),
+            (
+                "undo_invariant",
+                "Couldn't undo: something the change depends on changed.",
+            ),
+            ("an_unknown_code", "Couldn't undo that."),
+        ] {
+            assert_eq!(undo_message(code), message, "{code}");
+        }
+    }
+
+    #[test]
     fn upload_refusals_use_fixed_words_and_an_optional_size_limit() {
         assert_eq!(
             attachment_upload(Some(413), None),

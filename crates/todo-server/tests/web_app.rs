@@ -200,6 +200,28 @@ async fn activity_filters_before_paging_without_expanding_visibility() {
         "Created task \"Older visible task\""
     );
     assert_eq!(page["items"][0]["event"]["actor"]["agent_id"], "writer");
+
+    // Exactly one page of matches still gives a cursor. Older owner events don't fill the
+    // next page, which terminates the scan.
+    let path_exact = "/api/v1/activity?agent=writer&limit=2";
+    let (s, _, full) = api(&b, Method::GET, path_exact, csrf, None, None).await;
+    assert_eq!(s, StatusCode::OK, "{full}");
+    assert_eq!(full["items"].as_array().unwrap().len(), 2);
+    assert_eq!(full["next_before"], full["items"][1]["event"]["seq"]);
+    let before = full["next_before"].as_u64().unwrap();
+    let (s, _, end) = api(
+        &b,
+        Method::GET,
+        &format!("{path_exact}&before={before}"),
+        csrf,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{end}");
+    assert_eq!(end["items"], json!([]));
+    assert_eq!(end["next_before"], Value::Null);
+
     let (s, _, _) = api(&b, Method::GET, path, None, None, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 

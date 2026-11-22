@@ -25,15 +25,21 @@ enum Outcome {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Undos(RwSignal<BTreeMap<EventId, (EventId, Outcome)>>);
+pub(super) struct Undos {
+    outcomes: RwSignal<BTreeMap<EventId, (EventId, Outcome)>>,
+    announcement: RwSignal<Option<&'static str>>,
+}
 
 impl Undos {
     pub(super) fn new() -> Self {
-        Self(RwSignal::new(BTreeMap::new()))
+        Self {
+            outcomes: RwSignal::new(BTreeMap::new()),
+            announcement: RwSignal::new(None),
+        }
     }
 
     pub(super) fn settle(self) {
-        let settled: Vec<_> = self.0.with_untracked(|undos| {
+        let settled: Vec<_> = self.outcomes.with_untracked(|undos| {
             undos
                 .iter()
                 .filter_map(|(&id, &(_, outcome))| {
@@ -45,8 +51,10 @@ impl Undos {
                 .collect()
         });
         if !settled.is_empty() {
-            self.0.update(|undos| {
+            self.outcomes.update(|undos| {
                 for (id, refusal) in settled {
+                    self.announcement
+                        .set(Some(refusal.unwrap_or("Change undone.")));
                     if let Some(message) = refusal {
                         if let Some(entry) = undos.get_mut(&id) {
                             entry.1 = Outcome::Refused(message);
@@ -62,11 +70,12 @@ impl Undos {
     }
 
     fn outcome(self, id: EventId) -> Option<Outcome> {
-        self.0.with(|undos| undos.get(&id).map(|entry| entry.1))
+        self.outcomes
+            .with(|undos| undos.get(&id).map(|entry| entry.1))
     }
 
     fn group_outcome(self, group: EventId) -> Option<Outcome> {
-        self.0.with(|undos| {
+        self.outcomes.with(|undos| {
             undos.values().find_map(|&(g, outcome)| {
                 (group == g && !matches!(outcome, Outcome::Refused(_))).then_some(outcome)
             })
@@ -82,9 +91,14 @@ impl Undos {
             Ok(None) => Outcome::FixtureDone,
             Err(message) => Outcome::Refused(message),
         };
-        self.0.update(|undos| {
+        self.outcomes.update(|undos| {
             undos.insert(target.id, (group, outcome));
         });
+        self.announcement.set(Some(match outcome {
+            Outcome::Pending(_) => "Undoing…",
+            Outcome::FixtureDone => "Change undone.",
+            Outcome::Refused(message) => message,
+        }));
         c.refresh();
     }
 }
@@ -119,11 +133,25 @@ impl Entry {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Load {
+    Latest,
+    Older,
+}
+
+enum AfterLoad {
+    Ignore,
+    Applied,
+    Refresh,
+    SignIn,
+}
+
 #[derive(Default)]
 struct Pages {
     entries: BTreeMap<Reverse<u64>, Entry>,
     next: Option<u64>,
-    pending: bool,
+    pending: Option<Load>,
+    refresh_queued: bool,
     error: Option<(Option<u64>, ActivityError)>,
     reading: bool,
     revision: Revision,
@@ -132,30 +160,50 @@ struct Pages {
 
 fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u64>) {
     let revision = c.activity_revision.get_untracked();
+    let kind = if before.is_none() {
+        Load::Latest
+    } else {
+        Load::Older
+    };
     let Some(Some(request)) = pages.try_update(|state| {
-        if state.pending {
+        if let Some(pending) = state.pending {
+            if kind == Load::Latest && pending == Load::Older {
+                state.refresh_queued = true;
+            }
             return None;
         }
-        state.pending = true;
+        state.pending = Some(kind);
         state.error = None;
         state.request += 1;
         Some(state.request)
     }) else {
         return;
     };
+    c.activity_undos.announcement.set(None);
     leptos::task::spawn_local(async move {
         let result = backend::activity(&ActivityQuery {
             before,
             limit: Some(PAGE_SIZE),
-            agent,
+            agent: agent.clone(),
         })
         .await;
-        let applied = pages.try_update(|state| {
+        let focused_row = if kind == Load::Latest && result.is_ok() {
+            document()
+                .active_element()
+                .and_then(|el| el.closest(".activity-row").ok().flatten())
+        } else {
+            None
+        };
+        let next = pages.try_update(|state| {
             if state.request != request {
-                return false;
+                return AfterLoad::Ignore;
             }
-            state.pending = false;
+            state.pending = None;
+            let refresh = std::mem::take(&mut state.refresh_queued);
             match result {
+                Err(ActivityError::Unauthorized) => return AfterLoad::SignIn,
+                // The refresh replaces all pages. Don't append the stale page just to discard it.
+                _ if refresh => return AfterLoad::Refresh,
                 Ok(page) => {
                     if before.is_none() {
                         state.entries.clear();
@@ -172,15 +220,21 @@ fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u
                 }
                 Err(error) => state.error = Some((before, error)),
             }
-            true
+            AfterLoad::Applied
         });
-        if applied == Some(true)
-            && pages.with_untracked(|p| {
-                p.error
-                    .is_some_and(|(_, error)| error == ActivityError::Unauthorized)
-            })
-        {
-            platform::sign_in(&platform::path());
+        match next {
+            Some(AfterLoad::Refresh) => load(c, pages, agent, None),
+            Some(AfterLoad::SignIn) => platform::sign_in(&platform::path()),
+            Some(AfterLoad::Applied) => {
+                if let Some(row) = focused_row {
+                    request_animation_frame(move || {
+                        if !row.is_connected() && pages.try_with_untracked(|_| ()).is_some() {
+                            platform::refocus_row("room-title");
+                        }
+                    });
+                }
+            }
+            Some(AfterLoad::Ignore) | None => {}
         }
     });
 }
@@ -189,6 +243,7 @@ fn load(c: Ctx, pages: RwSignal<Pages>, agent: Option<AgentId>, before: Option<u
 pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> impl IntoView {
     let c = ctx();
     let pages = RwSignal::new(Pages::default());
+    let announcement = c.activity_undos.announcement;
     let request = Callback::new({
         let agent = agent.clone();
         move |before| load(c, pages, agent.clone(), before)
@@ -232,7 +287,9 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
         })
     });
     let has_older = move || pages.with(|p| p.next.is_some() && p.error.is_none());
-    let pending = move || pages.with(|p| p.pending);
+    let pending = move || pages.with(|p| p.pending.is_some());
+    let refresh_pending =
+        move || pages.with(|p| p.pending == Some(Load::Latest) || p.refresh_queued);
     let has_updates = move || {
         let revision = c.activity_revision.get();
         pages.with(|p| p.reading && p.revision != revision)
@@ -246,7 +303,7 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                         <a class="button activity-button" href=RoomId::Activity(None).path()
                             on:click=link_room(c, RoomId::Activity(None))>"Clear filter"</a>
                     })}
-                    <button class="button activity-button" type="button" aria-disabled=move || pending().to_string()
+                    <button class="button activity-button" type="button" aria-disabled=move || refresh_pending().to_string()
                         on:click=move |_| request.run(None)>
                         "Refresh activity"
                         <span aria-hidden="true">{move || has_updates().then_some(" •")}</span>
@@ -277,7 +334,10 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                 <p class="empty-line">{if agent.is_some() { "No activity from this agent." } else { "No activity yet." }}</p>
             </Show>
             <div class="activity-page-controls">
-                <p class="activity-progress" role="status">{move || pending().then_some("Loading activity…")}</p>
+                <p class="activity-progress" aria-hidden="true">{move || pending().then_some("Loading activity…")}</p>
+                <span class="activity-announcement" role="status">{move || {
+                    announcement.get().or_else(|| pending().then_some("Loading activity…"))
+                }}</span>
                 {move || pages.with(|p| p.error).map(|(before, error)| {
                     let next = match error { ActivityError::TooLarge { next_before } => Some(next_before), _ => before };
                     view! {
@@ -300,32 +360,55 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Undo,
+    Undoing,
+    Undone,
+    Unavailable,
+}
+
+impl Action {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Undoing => "Undoing",
+            Self::Undone => "Undone",
+            Self::Unavailable => "Undo unavailable",
+        }
+    }
+}
+
 #[component]
 fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
     let c = ctx();
     let undos = c.activity_undos;
-    let group_outcome =
-        move || entry.with(|item| item.as_ref().and_then(|row| undos.group_outcome(row.group)));
-    let in_progress = move || matches!(group_outcome(), Some(Outcome::Pending(_)));
-    let flags = Memo::new(move |_| {
-        c.activity_revision.track();
+    let action = Memo::new(move |_| {
+        // The outbox can change without advancing the confirmed cursor.
+        c.sync.track();
         entry.with(|item| {
-            item.as_ref().map_or((false, false), |row| {
-                if group_outcome() == Some(Outcome::FixtureDone) {
-                    return (true, false);
-                }
-                match backend::activity_flags(id, row.compensating) {
-                    // Old links never become heads again: a redo adds a new link. Once the
-                    // replica sees a compensation, its journal can also distinguish an undone
-                    // original from one that's since been redone.
-                    Some((undone, false)) => (undone, false),
-                    // The page can be ahead of the replica; never re-enable a superseded link.
-                    _ => (row.undone, row.can_undo),
-                }
-            })
+            let Some(row) = item.as_ref() else {
+                return Action::Unavailable;
+            };
+            let group = undos.group_outcome(row.group);
+            let flags = backend::activity_flags(id, row.compensating);
+            // The feed can be ahead of the replica. Once either knows the link is no longer a
+            // head, it cannot be undone again (a redo creates a new link).
+            let (undone, can_undo) = match flags.confirmed {
+                Some((undone, false)) => (undone, false),
+                _ => (row.undone, row.can_undo),
+            };
+            if group == Some(Outcome::FixtureDone) || undone {
+                Action::Undone
+            } else if !can_undo {
+                Action::Unavailable
+            } else if flags.pending || matches!(group, Some(Outcome::Pending(_))) {
+                Action::Undoing
+            } else {
+                Action::Undo
+            }
         })
     });
-    let had_button = entry.with_untracked(|item| item.as_ref().is_some_and(|row| row.can_undo));
     view! {
         <li class="activity-row">
             <span class="activity-mark" aria-hidden="true">{move || entry.with(|item| {
@@ -349,32 +432,28 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
                     </time>
                 </div>
-                <div class="activity-refusal" role="status">{move || match undos.outcome(id) {
+                <div class="activity-refusal">{move || match undos.outcome(id) {
                     Some(Outcome::Refused(message)) => Some(message),
                     _ => None,
                 }}</div>
             </div>
             <div class="activity-row-action">
-                <Show when=move || had_button fallback=move || view! {
-                    <span class="activity-undone">{move || if flags.get().0 { "Undone" } else { "Superseded" }}</span>
-                }>
-                    <button class="button activity-button" class:activity-undone=move || !flags.get().1 type="button"
-                        aria-label=move || flags.get().1.then(|| entry.with(|item| item.as_ref().map_or_else(
-                            || "Undo".to_owned(), |row| format!("Undo: {}", row.what))))
-                        aria-disabled=move || (in_progress() || c.read_only() || !flags.get().1).to_string()
-                        tabindex=move || if flags.get().1 { "0" } else { "-1" }
+                <Show when=move || matches!(action.get(), Action::Undo | Action::Undoing)
+                    fallback=move || view! {
+                        <span class="activity-undone">{move || action.get().label()}</span>
+                    }>
+                    <button class="button activity-button" type="button"
+                        aria-label=move || entry.with(|item| item.as_ref().map(|row| {
+                            format!("{}: {}", action.get().label(), row.what)
+                        }))
+                        aria-disabled=move || (action.get() != Action::Undo || c.read_only()).to_string()
                         on:click=move |_| {
-                            if !c.read_only() && flags.get_untracked().1
+                            if !c.read_only() && action.get_untracked() == Action::Undo
                                 && let Some(row) = entry.get_untracked()
                             {
                                 undos.run(c, row.target, row.group);
                             }
-                        }>{move || match flags.get() {
-                            (true, false) => "Undone",
-                            (false, false) => "Superseded",
-                            (_, true) if in_progress() => "Undoing…",
-                            _ => "Undo",
-                        }}</button>
+                        }>{move || action.get().label()}</button>
                 </Show>
             </div>
         </li>

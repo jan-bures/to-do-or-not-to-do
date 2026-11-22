@@ -178,6 +178,34 @@ struct Shared {
 }
 
 impl Shared {
+    fn enqueue(
+        &mut self,
+        op: Operation,
+        command_id: CommandId,
+        now: Timestamp,
+    ) -> Result<(), SubmitError> {
+        // Strictly increasing submission times keep identical commands in one millisecond from
+        // deciding to identical events in the view.
+        let ms = now.as_millisecond().max(self.last_submitted_ms + 1);
+        self.replica.submit(OutboxEntry {
+            command_id,
+            op,
+            submitted_at: Timestamp::from_millisecond(ms).unwrap_or(now),
+            attempts: 0,
+            acked: None,
+            acked_epoch: None,
+        })?;
+        self.last_submitted_ms = ms;
+        Ok(())
+    }
+
+    fn pending_undo(&self, event: EventId) -> Option<CommandId> {
+        self.replica
+            .outbox()
+            .iter()
+            .find_map(|entry| (entry.undo_target() == Some(event)).then_some(entry.command_id))
+    }
+
     fn connection(&self) -> Connection {
         let offline = matches!(
             self.stream,
@@ -393,19 +421,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         let command_id = self.new_uuid();
         let now = self.inner.clock.now();
         let result = self.with(|s| {
-            // Strictly increasing submission times keep two identical commands submitted within one
-            // millisecond from deciding to identical events in the view.
-            let ms = now.as_millisecond().max(s.last_submitted_ms + 1);
-            let submitted_at = Timestamp::from_millisecond(ms).unwrap_or(now);
-            s.replica.submit(OutboxEntry {
-                command_id,
-                op,
-                submitted_at,
-                attempts: 0,
-                acked: None,
-                acked_epoch: None,
-            })?;
-            s.last_submitted_ms = ms;
+            s.enqueue(op, command_id, now)?;
             Ok::<_, SubmitError>(result(&mut s.replica, command_id))
         })?;
         self.inner.outbox_changed.notify();
@@ -515,9 +531,39 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
     /// Requests a non-forced compensation for the command that produced a confirmed feed event.
     /// Unlike `compensate_tracked`, this doesn't need a local submission handle: the event already
     /// exists in the server's log. The durable outbox still sends the checked undo, not a local
-    /// cancellation, and the server compensates the entire original batch.
+    /// cancellation, and the server compensates the entire original batch. If the outbox already
+    /// holds an undo for this event, returns its command ID without queueing another.
     pub fn undo_activity(&self, event: protocol::EventRef) -> Result<CommandId, SubmitError> {
-        self.undo(event.seq, event.id, false)
+        let command_id = self.new_uuid();
+        let now = self.inner.clock.now();
+        let existing = self.with(|s| {
+            if let Some(existing) = s.pending_undo(event.id) {
+                return Ok(Some(existing));
+            }
+            s.enqueue(
+                Operation::Undo {
+                    seq: event.seq,
+                    force: false,
+                    expected_event_id: event.id,
+                    epoch: s.replica.epoch(),
+                },
+                command_id,
+                now,
+            )?;
+            Ok::<_, SubmitError>(None)
+        })?;
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
+        self.inner.outbox_changed.notify();
+        self.changed();
+        Ok(command_id)
+    }
+
+    /// The queued undo for this exact event, including one recovered from storage or adopted.
+    #[must_use]
+    pub fn pending_undo(&self, event: EventId) -> Option<CommandId> {
+        self.with(|s| s.pending_undo(event))
     }
 
     /// The log epoch the confirmed state belongs to.

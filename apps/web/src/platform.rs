@@ -350,6 +350,16 @@ pub fn push_path(path: &str) {
     }
 }
 
+/// Replaces the current path (keeping the query), without adding a history entry.
+pub fn replace_path(path: &str) {
+    if let Some(w) = window() {
+        let url = format!("{path}{}", query());
+        let _ = w
+            .history()
+            .and_then(|h| h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url)));
+    }
+}
+
 /// Calls `f` when the user goes back or forward.
 pub fn on_pop_state(f: impl Fn() + 'static) {
     if let Some(w) = window() {
