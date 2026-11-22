@@ -124,6 +124,9 @@ pub const CONTENT_SWAP: u32 = 120;
 pub const OVERLAY_OUT: u32 = 120;
 /// The checkbox disc filling with accent and popping slightly with [`POP`].
 pub const CHECK_FILL: u32 = 140;
+/// The checkbox disc's scale when its fill starts; it pops to `1.0` with [`POP`] over [`CHECK_FILL`]. A scale,
+/// not a duration, so it isn't exported with them.
+pub const CHECK_FILL_FROM_SCALE: f32 = 0.55;
 /// Toast leaving.
 pub const TOAST_OUT: u32 = 140;
 /// Menus, popovers, date pickers and dialogs entering.

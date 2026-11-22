@@ -91,13 +91,72 @@ fn a_task_being_completed_keeps_its_place_until_released() {
     let gone = f.shell();
     assert!(!gone.room.tasks.iter().any(|r| r.id == vat));
     assert_eq!(gone.room.summary(), (4, 12, 8));
-    // Held, it stays where it was, shown done, and counts as done.
+    // Held, it stays where it was, shown done, and still counts as open: the counts (and the sun) change
+    // when it has left.
     f.ui.holding.insert(vat);
     let held = f.shell();
     assert_eq!(held.room.tasks[0].id, vat);
     assert!(held.room.tasks[0].done);
-    assert_eq!(held.room.summary(), (4, 12, 8));
+    assert_eq!(held.room.summary(), before.room.summary());
+    assert_eq!(held.room.done_today, before.room.done_today);
     assert_eq!(held.room.completed_count, 3);
+}
+
+#[test]
+fn a_task_being_reopened_keeps_its_completed_place_until_released() {
+    let mut f = fixtures::my_day();
+    f.ui.show_completed = true;
+    let before = f.shell();
+    let landlord = before.room.completed[0].id;
+    let at = f.state.tasks[&landlord].completed_at.expect("done");
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::UncompleteTask { id: landlord },
+    );
+    // Without holding it, it's open at once.
+    let open = f.shell();
+    assert!(open.room.tasks.iter().any(|r| r.id == landlord));
+    assert_eq!(open.room.summary(), (2, 12, 10));
+    // Reopening, it stays first in Completed, drawn done, and still counts as done.
+    f.ui.reopening.insert(landlord, at);
+    let reopening = f.shell();
+    assert!(!reopening.room.tasks.iter().any(|r| r.id == landlord));
+    assert_eq!(reopening.room.completed[0].id, landlord);
+    assert!(reopening.room.completed[0].done);
+    assert_eq!(reopening.room.summary(), before.room.summary());
+    // The detail pane tells the truth.
+    f.ui.task = Some(landlord);
+    assert_eq!(f.shell().detail.map(|d| d.done), Some(false));
+}
+
+#[test]
+fn the_day_finishes_when_its_last_task_has_left() {
+    let mut f = fixtures::my_day();
+    let open: Vec<TaskId> = f.shell().room.tasks.iter().map(|r| r.id).collect();
+    for id in &open {
+        run(
+            &mut f.state,
+            fixtures_now(),
+            Command::CompleteTask { id: *id },
+        );
+    }
+    let last = *open.last().expect("open tasks");
+    f.ui.task = None;
+    f.ui.holding.insert(last);
+    // While the last one plays, the day isn't finished yet: no dusk, no hand-over, the row still shows.
+    let held = f.shell();
+    assert!(!held.room.finished_day());
+    assert!(held.room.handover().is_none() && held.room.plan_only().is_none());
+    assert_eq!(
+        held.room.tasks.iter().map(|r| r.id).collect::<Vec<_>>(),
+        [last]
+    );
+    let (done, total, open_count) = held.room.summary();
+    assert_eq!((done + 1, open_count), (total, 1));
+    // Released, it is.
+    f.ui.holding.clear();
+    assert!(f.shell().room.finished_day());
 }
 
 fn fixtures_now() -> &'static str {

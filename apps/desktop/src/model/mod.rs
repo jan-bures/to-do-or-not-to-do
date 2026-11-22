@@ -16,9 +16,10 @@ pub mod hints;
 pub mod labels;
 pub mod layout;
 pub mod lists;
+pub mod motion;
 pub mod quick_add;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::SharedString;
 use jiff::tz::TimeZone;
@@ -188,8 +189,12 @@ pub struct UiState {
     pub filter: String,
     /// The Completed section is open.
     pub show_completed: bool,
-    /// Tasks just completed that keep their place while the completion plays.
+    /// Tasks just completed that keep their place in the open rows while the completion plays. They count
+    /// as open until they're released (`motion::Release`), so the counts and the sun change only then.
     pub holding: BTreeSet<TaskId>,
+    /// Tasks just reopened that keep their completed place (with when they were completed) while they
+    /// leave it. They count as done until they're released.
+    pub reopening: BTreeMap<TaskId, Timestamp>,
     /// Collection IDs whose child lists are hidden in the sidebar.
     pub collapsed_collections: BTreeSet<CollectionId>,
 }

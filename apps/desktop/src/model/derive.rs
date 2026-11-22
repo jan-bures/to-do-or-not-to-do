@@ -260,23 +260,29 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         k => k,
     };
     let (open, done) = room_tasks(state, key, &ui.holding, ctx);
+    // A task still playing its completion counts as open: the counts (and the sun) change when it has
+    // left the rows.
+    let counted_done = |t: &Task| t.is_done() && !ui.holding.contains(&t.id);
+    let finished_on = |t: &Task, pred: &dyn Fn(jiff::civil::Date) -> bool| {
+        counted_done(t) && completed_on(now, t, pred)
+    };
 
     // Progress, before filtering.
     let (progress_done, progress_total) = match key {
         RoomKey::Smart(Smart::MyDay) => {
-            let d = open.iter().filter(|t| t.is_done()).count() + done.len();
+            let d = open.iter().filter(|t| counted_done(t)).count() + done.len();
             (d, open.len() + done.len())
         }
         RoomKey::Smart(Smart::AgentActivity) => {
-            (open.iter().filter(|t| t.is_done()).count(), open.len())
+            (open.iter().filter(|t| counted_done(t)).count(), open.len())
         }
         _ => {
             let today_done = open
                 .iter()
                 .chain(done.iter())
-                .filter(|t| completed_on(now, t, |d| d == today))
+                .filter(|t| finished_on(t, &|d| d == today))
                 .count();
-            let still_open = open.iter().filter(|t| !t.is_done()).count();
+            let still_open = open.iter().filter(|t| !counted_done(t)).count();
             (today_done, today_done + still_open)
         }
     };
@@ -285,13 +291,13 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let done_today = open
         .iter()
         .chain(done.iter())
-        .filter(|t| completed_on(now, t, |d| d == today))
+        .filter(|t| finished_on(t, &|d| d == today))
         .count();
     let finished_this_month = open
         .iter()
         .chain(done.iter())
         .filter(|t| {
-            completed_on(now, t, |d| {
+            finished_on(t, &|d| {
                 d.year() == today.year() && d.month() == today.month()
             })
         })
@@ -835,11 +841,32 @@ pub fn my_day_progress(state: &State, now: &Now) -> (u32, u32) {
     (done, total)
 }
 
+/// The state with each task being reopened still done, as it was, so the room keeps it in its completed
+/// place (and counts it done) until it has left. Only the room sees this; the detail pane shows the truth.
+fn still_done(state: &State, reopening: &BTreeMap<TaskId, Timestamp>) -> State {
+    let mut placed = state.clone();
+    for (id, at) in reopening {
+        if let Some(t) = placed.tasks.get_mut(id)
+            && t.completed_at.is_none()
+        {
+            t.completed_at = Some(*at);
+        }
+    }
+    placed
+}
+
 /// Derives what the window shows.
 pub fn derive(state: &State, ui: &UiState, sync: &SyncInfo, now: &Now) -> Shell {
     let ctx = now.eval();
     let ix = Index::new(state, now);
-    let room = room(state, &ix, ui, now, &ctx);
+    let placed;
+    let room_state = if ui.reopening.is_empty() {
+        state
+    } else {
+        placed = still_done(state, &ui.reopening);
+        &placed
+    };
+    let room = room(room_state, &ix, ui, now, &ctx);
     let mut sidebar = sidebar(state, &ix, ui, sync, now, &ctx);
     sidebar.selected = room.key;
     let detail = ui.task.and_then(|id| detail(state, &ix, id, now));
