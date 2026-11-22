@@ -227,11 +227,16 @@ and command IDs are idempotent, but two tabs' offline edits to one task may land
 
 **Upgrades.** Opening the database at a newer version waits until every other tab has closed its connection.
 While it waits, the page says "Close other To-do tabs to finish updating", and goes on by itself when they do.
-Every connection listens for `versionchange`: when another tab needs a newer version, the tab stops syncing,
-writes what it still has, releases the sender lock, closes the database and reloads (to get the newer build).
+Every connection listens for `versionchange`: when another tab needs a newer version, the tab stops syncing
+and from then on is **read-only**. `backend::submit` refuses every command without applying it (an edit made
+now would show as saved but never reach a database), and quick-add, the checkboxes, the toggles and the
+editors are disabled. A persistent alert says "A newer version is open in another tab. Reload to keep
+editing", with a **Reload** button, in case the automatic reload doesn't happen. The tab writes what it still
+has, releases the sender lock, closes the database and reloads (to get the newer build).
 It never closes the database while its journal holds a write: if a write is failing, the tab keeps the
 connection open (which keeps the upgrade waiting), keeps retrying, and says "This tab has changes it couldn’t
-save yet; other tabs will update once they’re saved." Once they are stored, it closes and reloads.
+save yet; other tabs will update once they’re saved." (That alert comes before the read-only one: reloading
+then would drop those changes.) Once they are stored, it closes and reloads.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -303,7 +308,8 @@ quick-add, **Esc** closes the detail.
   any console error or CSP violation.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, a collection, the finished day, an empty list, the storage-error alert (desktop and phone,
-  `?fixture=storage-error`), a medium window, and the phone's list, detail and drawer. The PNGs land in `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
+  `?fixture=storage-error`), the read-only alert after an upgrade elsewhere (desktop and phone,
+  `?fixture=read-only`), a medium window, and the phone's list, detail and drawer. The PNGs land in `apps/web/e2e/gallery/`; CI uploads them as `web-gallery`. Compare them with the
   approved mockups (kept outside this repository) after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
@@ -320,8 +326,10 @@ quick-add, **Esc** closes the detail.
   write failure (injected) that shows the alert, sends nothing, asks before closing, and sends the edit once
   after storage recovers; an upgrade blocked by an old connection showing its notice and going ahead; a tab
   whose write is failing keeping a newer version's upgrade waiting, with its alert, until the write is stored
-  (the newer database then holds the edit); and a connection closing (and the tab reloading) for a newer
-  version. Tests wait for
+  (the newer database then holds the edit); a tab whose reload after an upgrade does nothing (the reload
+  answers 204) staying read-only: the alert shows, the controls are disabled, and neither the keyboard nor
+  a quick-add forced past its disabled field changes anything; and a connection closing (and the tab
+  reloading) for a newer version. Tests wait for
   IndexedDB commits by reading the `outbox` store, never for a fixed time. The port is `LIVE_PORT` (default
   47412).
 - **Server tests** (`crates/todo-server/tests/web_app.rs`): the session path of the API (reads and writes as

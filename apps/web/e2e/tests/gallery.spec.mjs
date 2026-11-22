@@ -66,6 +66,18 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`read only after an upgrade elsewhere (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app?fixture=read-only");
+      await page.locator(".toast-read-only[role=alert]").waitFor();
+      await shot(page, `read-only-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await page.locator(".toast-read-only[role=alert]").waitFor();
+      await shot(page, `phone-read-only-${scheme}`);
+      await w.check();
+    });
+
     test(`medium window with detail (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(MEDIUM);

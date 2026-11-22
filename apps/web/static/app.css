@@ -1006,6 +1006,27 @@ a {
   display: none;
 }
 
+/* Its action (Reload, when a newer version took the database over) reads on the danger fill. */
+.toast-error .toast-undo {
+  color: var(--color-danger-ink);
+  text-decoration: underline;
+}
+
+/* No edits while a newer version holds the database: the controls keep showing the task's state. */
+.check:disabled,
+.icon-button:disabled,
+.qa-input:disabled,
+.title-input:disabled,
+.add-step input:disabled,
+.notes:read-only {
+  cursor: default;
+}
+
+.icon-button:disabled {
+  color: var(--color-ink-4);
+  background: transparent;
+}
+
 /* The undo window, as a thin line that runs out. */
 .toast-timer {
   position: absolute;

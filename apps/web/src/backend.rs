@@ -53,6 +53,8 @@ struct Local {
     now: Now,
     /// Pretend storing fails (`?fixture=storage-error`, for the gallery).
     storage_error: bool,
+    /// Pretend a newer version took the database over (`?fixture=read-only`, for the gallery).
+    read_only: bool,
     started_ms: f64,
     counter: u64,
 }
@@ -115,6 +117,8 @@ pub struct Sync {
     pub unsaved: bool,
     /// Another tab waits to upgrade the database until this one's unsaved changes are stored.
     pub holding_upgrade: bool,
+    /// A newer version took the database over: this tab takes no more edits (reload to keep editing).
+    pub read_only: bool,
 }
 
 impl Default for Sync {
@@ -128,6 +132,7 @@ impl Default for Sync {
             local_error: None,
             unsaved: false,
             holding_upgrade: false,
+            read_only: false,
         }
     }
 }
@@ -163,8 +168,10 @@ fn owner() -> Actor {
 /// [`StartError::Storage`], and the page offers [`reset_local_data`].
 ///
 /// `blocked` hears about a database upgrade that waits for other tabs. When another tab upgrades,
-/// this one stops syncing, closes the database once everything it wrote is stored (saying so while
-/// writes keep failing), gives up the sender lock, and reloads.
+/// this one stops syncing and takes no more edits ([`submit`] refuses them, so nothing is shown as
+/// saved that no database will hold), closes the database once everything it wrote is stored (saying
+/// so while writes keep failing), gives up the sender lock, and reloads. If the reload doesn't happen,
+/// the tab stays read-only and says so.
 pub async fn open_live(csrf: String, blocked: Rc<dyn Fn(bool)>) -> Result<Opened, StartError> {
     let hooks = OpenHooks {
         blocked,
@@ -173,6 +180,7 @@ pub async fn open_live(csrf: String, blocked: Rc<dyn Fn(bool)>) -> Result<Opened
             if let Some(c) = live() {
                 c.stop();
             }
+            LOCAL.with(Notify::notify);
         }),
         holding: Rc::new(|holding| {
             HOLDING.with(|h| h.set(holding));
@@ -320,6 +328,7 @@ pub fn open_fixtures(state: State, now: Now) {
             state: Arc::new(state),
             now,
             storage_error: crate::platform::query().contains("storage-error"),
+            read_only: crate::platform::query().contains("read-only"),
             started_ms: js_sys::Date::now(),
             counter: 0,
         }));
@@ -410,6 +419,7 @@ pub fn status() -> Sync {
                     .or_else(|| SCAN_ERROR.with(|e| e.borrow().clone())),
                 unsaved: store().is_some_and(|(s, _)| s.unsaved()),
                 holding_upgrade: HOLDING.with(Cell::get),
+                read_only: UPGRADING.with(Cell::get),
             }
         }
         #[cfg(feature = "fixtures")]
@@ -420,6 +430,7 @@ pub fn status() -> Sync {
                 .storage_error
                 .then(|| "QuotaExceededError: the quota has been exceeded".to_owned()),
             unsaved: l.storage_error,
+            read_only: l.read_only,
             ..Sync::default()
         },
         None => Sync::default(),
@@ -443,10 +454,20 @@ pub fn new_uuid() -> Uuid {
     })
 }
 
-/// Queues a command; the view reflects it at once. Fails if the command is invalid against the view.
+/// Why [`submit`] refuses every command once a newer version took the database over.
+pub const READ_ONLY: &str = "a newer version is open in another tab";
+
+/// Queues a command; the view reflects it at once. Fails if the command is invalid against the view,
+/// and refuses every command (with [`READ_ONLY`], applying nothing) once another tab upgrades the
+/// database: this tab's connection is closing, so an edit made now would be shown but never stored.
 pub fn submit(command: Command) -> Result<(), String> {
+    if UPGRADING.with(Cell::get) {
+        return Err(READ_ONLY.to_owned());
+    }
     BACKEND.with(|b| match &mut *b.borrow_mut() {
         Some(Backend::Live(c)) => c.submit(command).map(|_| ()).map_err(|e| e.to_string()),
+        #[cfg(feature = "fixtures")]
+        Some(Backend::Local(l)) if l.read_only => Err(READ_ONLY.to_owned()),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => {
             // Event times move on with the real clock so repeated commands get distinct IDs.

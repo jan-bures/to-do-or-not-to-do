@@ -618,6 +618,83 @@ test("a tab with changes it couldn't save keeps an upgrade waiting until they're
   await newer.close();
 });
 
+test("once a newer version takes the database over, the tab takes no edits and says so", async () => {
+  const app = await openApp();
+  const problems = watch(app);
+  await add(app, "Jen ke čtení");
+  await expect.poll(() => occurrences(app, "Jen ke čtení"), { timeout: 15_000 }).toBe(1);
+  await row(app, "Jen ke čtení").click();
+  await expect(app.locator(".d-title")).toHaveText("Jen ke čtení");
+  // The reload the tab tries after closing its connection answers 204, so the page stays (found by
+  // review: the tab then went on taking edits that no database would ever hold).
+  let reloads = 0;
+  await app.route("**/*", (r) => {
+    if (!r.request().isNavigationRequest()) return r.continue();
+    reloads += 1;
+    return r.fulfill({ status: 204 });
+  });
+  const newer = await context.newPage();
+  await newer.goto("/health");
+  const opened = await newer.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open("todo-replica", 3);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          open.result.close();
+          resolve("opened");
+        };
+      }),
+  );
+  expect(opened).toBe("opened");
+  await expect.poll(() => reloads, { timeout: 10_000 }).toBeGreaterThan(0);
+
+  const alert = app.locator(".toast-read-only[role=alert]");
+  await expect(alert).toContainText("A newer version is open in another tab. Reload to keep editing");
+  await expect(alert.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(app.locator(".qa-input")).toBeDisabled();
+  await expect(row(app, "Jen ke čtení").locator(".check")).toBeDisabled();
+  await expect(app.locator(".check.big")).toBeDisabled();
+
+  // The keyboard can't edit either: Space doesn't complete, E doesn't open the title editor.
+  await app.keyboard.press(" ");
+  await app.keyboard.press("e");
+  // And an edit forced past the disabled field is refused by the backend, applying nothing.
+  await app.evaluate(() => {
+    const input = document.querySelector(".qa-input");
+    input.disabled = false;
+    input.value = "Nemá se objevit";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.form.requestSubmit();
+  });
+  await app.waitForTimeout(500);
+  await expect(row(app, "Jen ke čtení")).toHaveCount(1);
+  await expect(row(app, "Jen ke čtení").locator(".check")).toHaveAttribute("aria-checked", "false");
+  await expect(app.locator(".title-input")).toHaveCount(0);
+  await expect(row(app, "Nemá se objevit")).toHaveCount(0);
+  await expect(app.locator(".toast[role=status]")).toHaveCount(0);
+  await expect(alert).toBeVisible();
+  expect(await stored(newer, "Nemá se objevit")).toBe(0);
+  expect(await occurrences(app, "Nemá se objevit")).toBe(0);
+  expect(problems).toEqual([]);
+
+  // Clean up: back to this build's database.
+  await app.unroute("**/*");
+  await newer.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const del = indexedDB.deleteDatabase("todo-replica");
+        del.onsuccess = () => resolve();
+        del.onerror = () => reject(del.error);
+      }),
+  );
+  await app.reload();
+  await expect(app.locator(".sync-text")).toHaveText(/^Synced/, { timeout: 15_000 });
+  await expect(row(app, "Jen ke čtení")).toHaveCount(1, { timeout: 15_000 });
+  await app.close();
+  await newer.close();
+});
+
 test("a tab lets go of the database when a newer version needs it, and reloads", async () => {
   const app = await openApp();
   const newer = await context.newPage();

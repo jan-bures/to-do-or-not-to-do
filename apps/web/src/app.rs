@@ -95,11 +95,21 @@ impl Ctx {
         self.sync.set(s);
     }
 
+    /// A newer version took the database over: no more edits here (see `backend::submit`).
+    fn read_only(self) -> bool {
+        self.sync.with(|s| s.read_only)
+    }
+
     fn submit(self, cmd: Command) -> bool {
         match backend::submit(cmd) {
             Ok(()) => {
                 self.refresh();
                 true
+            }
+            // Nothing was applied; the persistent alert says why and offers a reload.
+            Err(_) if backend::status().read_only => {
+                self.refresh();
+                false
             }
             Err(e) => {
                 tracing::warn!("command refused: {e}");
@@ -413,7 +423,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             }
         }
         "e" => {
-            if c.selected.get_untracked().is_some() {
+            if c.selected.get_untracked().is_some() && !c.read_only() {
                 ev.prevent_default();
                 c.editing.set(true);
             }
@@ -872,6 +882,7 @@ fn QuickAdd() -> impl IntoView {
                                 node_ref=c.quick_add
                                 class="qa-input"
                                 type="text"
+                                disabled=move || c.read_only()
                                 autocomplete="off"
                                 enterkeyhint="done"
                                 aria-label="Add a task"
@@ -986,6 +997,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             <button
                 class="check"
                 role="checkbox"
+                disabled=move || c.read_only()
                 aria-checked=row.done.to_string()
                 aria-label=label
                 on:click=on_check
@@ -1027,6 +1039,21 @@ fn ToastView() -> impl IntoView {
                                 "This tab has changes it couldn’t save yet; other tabs will update once they’re saved."
                             </span>
                             <span class="toast-text toast-short">"Saving before other tabs update"</span>
+                        </div>
+                    }
+                    .into_any(),
+                );
+            }
+            // A newer version took the database over: no more edits until the tab reloads.
+            if c.read_only() {
+                return Some(
+                    view! {
+                        <div class="toast toast-error toast-read-only" role="alert">
+                            <span class="toast-text toast-long">
+                                "A newer version is open in another tab. Reload to keep editing"
+                            </span>
+                            <span class="toast-text toast-short">"Newer version open"</span>
+                            <button class="toast-undo" on:click=move |_| platform::reload()>"Reload"</button>
                         </div>
                     }
                     .into_any(),
@@ -1292,6 +1319,7 @@ fn DetailTop(d: Detail) -> impl IntoView {
                 aria-pressed=important.to_string()
                 title="Important"
                 aria-label="Important"
+                disabled=move || c.read_only()
                 on:click=toggle_important
             >
                 {icon(Icon::Star)}
@@ -1302,6 +1330,7 @@ fn DetailTop(d: Detail) -> impl IntoView {
                 aria-pressed=my_day.to_string()
                 title=if my_day { "Remove from My Day" } else { "Add to My Day" }
                 aria-label="My Day"
+                disabled=move || c.read_only()
                 on:click=toggle_my_day
             >
                 {icon(Icon::Sun)}
@@ -1334,6 +1363,7 @@ fn DetailCheck(d: Detail) -> impl IntoView {
         <button
             class="check big"
             role="checkbox"
+            disabled=move || c.read_only()
             aria-checked=done.to_string()
             aria-label=if done { "Reopen" } else { "Complete" }
             on:click=on_check
@@ -1367,6 +1397,7 @@ fn DetailSteps(d: Detail) -> impl IntoView {
                             <button
                                 class="check small"
                                 role="checkbox"
+                                disabled=move || c.read_only()
                                 aria-checked=sdone.to_string()
                                 aria-label=format!("Step {}", i + 1)
                                 on:click=move |_| {
@@ -1589,6 +1620,7 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                     <input
                         class="title-input"
                         node_ref=input
+                        disabled=move || c.read_only()
                         aria-label="Title"
                         prop:value=move || draft.text.get()
                         on:input=move |ev| draft.input(event_target_value(&ev))
@@ -1613,7 +1645,7 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                     .into_any()
             } else {
                 view! {
-                    <h2 class="d-title" title="Edit (E)" on:click=move |_| c.editing.set(true)>
+                    <h2 class="d-title" title="Edit (E)" on:click=move |_| if !c.read_only() { c.editing.set(true); }>
                         {move || title.get()}
                     </h2>
                 }
@@ -1631,6 +1663,7 @@ fn NotesEditor(id: TaskId, notes: Signal<String>) -> impl IntoView {
         <textarea
             class="notes"
             aria-label="Notes"
+            readonly=move || c.read_only()
             placeholder="Add a note"
             rows="3"
             prop:value=move || draft.text.get()
@@ -1681,6 +1714,7 @@ fn AddStep(id: TaskId) -> impl IntoView {
                 type="text"
                 placeholder="Add step"
                 aria-label="Add step"
+                disabled=move || c.read_only()
                 autocomplete="off"
                 prop:value=move || value.get()
                 on:input=move |ev| value.set(event_target_value(&ev))
