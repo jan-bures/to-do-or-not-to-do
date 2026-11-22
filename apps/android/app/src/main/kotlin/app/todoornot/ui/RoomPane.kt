@@ -77,7 +77,9 @@ import app.todoornot.design.cubic
 import app.todoornot.design.style
 import app.todoornot.model.Actions
 import app.todoornot.model.DuskLook
+import app.todoornot.model.Ghost
 import app.todoornot.model.MotionFrame
+import app.todoornot.model.RowLook
 import app.todoornot.model.Section
 import app.todoornot.model.countdown
 import app.todoornot.model.rowIn
@@ -142,7 +144,7 @@ fun RoomPane(
             }
             if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
             Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true)) {
-                TaskList(room, state.selected, state.showCompleted, actions)
+                TaskList(room, state.selected, state.showCompleted, state.generation, actions)
             }
             ToastStrip(state.toast, actions)
             Composer(room.addPlaceholder, draft, keyboard, actions::add)
@@ -256,15 +258,19 @@ private fun Banner(text: String, action: String, onAction: () -> Unit) {
  * The tasks. Checking a box plays the choreography in place (`docs/design-language.md`, Motion): the
  * row fills, holds and collapses while the rows below close up, and only then leaves for Completed. As
  * dusk falls on a finished day, tomorrow's hand-over enters item by item, and takes taps only once it
- * has begun to appear.
+ * has begun to appear. A row the room no longer lists while its choreography plays is painted where it
+ * last was, inert, until that's over (a ghost: [withGhosts]). Every tap on a row carries the room
+ * [generation] the rows were read in.
  */
 @Composable
-private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actions: Actions) {
+private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, generation: Long, actions: Actions) {
     val r = LocalDesign.current.room
     val motion = LocalMotion.current
     val dusk: () -> DuskLook = remember(room.key, room.finished, motion) {
         { motion.dusk(room.key) ?: DuskLook.rest(room.finished) }
     }
+    val ghosts by remember(motion) { derivedStateOf { motion.ghosts() } }
+    val rows = withGhosts(room.tasks, ghosts, Section.ROWS)
     LazyColumn(Modifier.fillMaxSize()) {
         // Only when nothing at all is listed: a filter that matches only done tasks shows them under
         // Completed, without a "nothing matches" line above them.
@@ -272,12 +278,13 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actio
             item("empty") { Empty(room.emptyLine) }
         }
         // The rows; the Completed and Agent activity smart lists show their done tasks here too.
-        items(room.tasks, key = { it.id }) { t -> MovingRow(t, Section.ROWS, selected, actions, motion) }
-        room.tomorrow?.let { tomorrow(it, actions, dusk) }
+        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, selected, generation, actions, motion) }
+        room.tomorrow?.let { tomorrow(it, generation, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
         if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
         // The finished day keeps today's Completed section under the hand-over, as on the desktop.
-        if (room.completed.isNotEmpty()) {
+        // A ghost there keeps the open section while it plays out (it isn't counted).
+        if (room.completed.isNotEmpty() || (showDone && ghosts.any { it.section == Section.COMPLETED })) {
             item("completed-header") {
                 Row(
                     Modifier
@@ -294,34 +301,64 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, actio
                 }
             }
             if (showDone) {
-                items(room.completed, key = { "done-" + it.id }) { t -> MovingRow(t, Section.COMPLETED, selected, actions, motion) }
+                items(withGhosts(room.completed, ghosts, Section.COMPLETED), key = { "done-" + it.row.id }) { s ->
+                    MovingRow(s, Section.COMPLETED, selected, generation, actions, motion)
+                }
             }
         }
     }
 }
 
+/** A row the list draws: one the room lists, or a [ghost] painted where it last was. */
+data class Shown(val row: TaskRow, val ghost: Boolean = false)
+
+/**
+ * The rows of [section] as the list draws them: the room's own [rows], with each of the [ghosts] in that
+ * section put back at its last place (in the order of those places, so each lands where it was). A ghost
+ * whose task the rows list (a read from before its latest toggle) isn't drawn twice.
+ */
+fun withGhosts(rows: List<TaskRow>, ghosts: List<Ghost>, section: Section): List<Shown> {
+    val out = rows.mapTo(ArrayList(rows.size + ghosts.size)) { Shown(it) }
+    if (ghosts.isEmpty()) return out
+    val listed = rows.mapTo(HashSet()) { it.id }
+    for (g in ghosts.filter { it.section == section && it.row.id !in listed }.sortedBy { it.index }) {
+        out.add(g.index.coerceIn(0, out.size), Shown(g.row, ghost = true))
+    }
+    return out
+}
+
 /**
  * A task row in [section] of the list, with its choreography: only a row that moves recomposes as the
  * frames go by. A row at rest that the list just gained (a new task, another room) fades in; one arriving
- * from its choreography enters as that says.
+ * from its choreography enters as that says. A ghost is paint only: it takes no taps.
  */
 @Composable
-private fun LazyItemScope.MovingRow(t: TaskRow, section: Section, selected: String?, actions: Actions, motion: MotionFrame) {
+private fun LazyItemScope.MovingRow(
+    s: Shown,
+    section: Section,
+    selected: String?,
+    generation: Long,
+    actions: Actions,
+    motion: MotionFrame,
+) {
+    val t = s.row
     val look by remember(t.id, section, motion) { derivedStateOf { motion.rowIn(t.id, section) } }
     val checked by remember(t.id, motion) { derivedStateOf { motion.checked(t.id) } }
-    val l = look
+    // A ghost whose choreography is over is gone, whatever the list has yet to hear.
+    val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
     TaskRowView(
         t,
-        selected = t.id == selected,
+        selected = !s.ghost && t.id == selected,
         checked = checked ?: t.done,
-        onCheck = { actions.setDone(t.id, it) },
-        onOpen = { actions.select(t.id) },
+        onCheck = { if (!s.ghost) actions.setDone(t.id, it, generation) },
+        onOpen = { if (!s.ghost) actions.select(t.id) },
         modifier = Modifier.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
             placementSpec = null,
             fadeOutSpec = null,
         ),
         look = l,
+        inert = s.ghost,
     )
 }
 
@@ -344,7 +381,7 @@ private fun shown(i: Int, dusk: () -> DuskLook): Boolean {
  * The finished day hands over to tomorrow: the first thing, the rest of tomorrow, then the week. Each
  * item enters in turn as dusk falls ([handover]).
  */
-private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions, dusk: () -> DuskLook) {
+private fun LazyListScope.tomorrow(t: Tomorrow, generation: Long, actions: Actions, dusk: () -> DuskLook) {
     var n = 0
     item("tomorrow-first") {
         val d = LocalDesign.current
@@ -382,14 +419,14 @@ private fun LazyListScope.tomorrow(t: Tomorrow, actions: Actions, dusk: () -> Du
         item("tomorrow-also") { Caps("Also on ${t.weekday}", Modifier.handover(caps, dusk)) }
         val first = n + 1
         n += t.also.size
-        itemsIndexed(t.also, key = { _, it -> "also-" + it.id }) { i, it -> SmallRow(it, actions, first + i, dusk) }
+        itemsIndexed(t.also, key = { _, it -> "also-" + it.id }) { i, it -> SmallRow(it, generation, actions, first + i, dusk) }
     }
     if (t.week.isNotEmpty()) {
         val caps = ++n
         item("tomorrow-week") { Caps("Rest of the week", Modifier.handover(caps, dusk)) }
         val first = n + 1
         n += t.week.size
-        itemsIndexed(t.week, key = { _, it -> "week-" + it.id }) { i, it -> SmallRow(it, actions, first + i, dusk) }
+        itemsIndexed(t.week, key = { _, it -> "week-" + it.id }) { i, it -> SmallRow(it, generation, actions, first + i, dusk) }
     }
     if (t.more > 0u) {
         val last = ++n
@@ -427,7 +464,7 @@ private fun Caps(text: String, modifier: Modifier = Modifier) {
 
 /** A compact row for the hand-over (item [i] of it): check, title, chip, and the date on the right. */
 @Composable
-private fun SmallRow(t: TaskRow, actions: Actions, i: Int, dusk: () -> DuskLook) {
+private fun SmallRow(t: TaskRow, generation: Long, actions: Actions, i: Int, dusk: () -> DuskLook) {
     val r = LocalDesign.current.room
     val on = shown(i, dusk)
     Row(
@@ -441,7 +478,7 @@ private fun SmallRow(t: TaskRow, actions: Actions, i: Int, dusk: () -> DuskLook)
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
-        Check(t.done, { actions.setDone(t.id, it) }, t.title, enabled = on)
+        Check(t.done, { actions.setDone(t.id, it, generation) }, t.title, enabled = on)
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
             t.chip?.let { ListChip(it) }

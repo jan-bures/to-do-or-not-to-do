@@ -32,6 +32,9 @@ interface MotionFrame {
     /** Where [room]'s header is between the strip and the dusk scene, or null when it's at rest. */
     fun dusk(room: RoomKey): DuskLook?
 
+    /** The rows the room no longer lists, painted while their choreography plays out ([Motion.ghost]). */
+    fun ghosts(): List<Ghost> = emptyList()
+
     /** Runs the frames this motion needs while the screen is shown: none at rest. */
     suspend fun drive() = Unit
 
@@ -94,6 +97,8 @@ class MotionHost(private val clock: () -> Long) : MotionFrame {
             val at = max(time, t)
             val released = if (motion.due(at)) motion.advance(at) else emptyList()
             time = at
+            // What the list holds may have changed (a ghost gone): whatever reads it reads again.
+            if (released.isNotEmpty()) version++
             released
         }
         if (released.isNotEmpty()) onRelease(released)
@@ -121,6 +126,12 @@ class MotionHost(private val clock: () -> Long) : MotionFrame {
     override fun sun(room: RoomKey): Float? = sample { motion.sun(room, it) }
 
     override fun dusk(room: RoomKey): DuskLook? = sample { motion.dusk(room, it) }
+
+    /** Follows changes, not frames: a ghost's look is sampled by its row. */
+    override fun ghosts(): List<Ghost> = synchronized(this) {
+        version
+        motion.ghosts()
+    }
 
     /**
      * Asks for exactly the frames the motion needs: every frame while something moves, a single timer

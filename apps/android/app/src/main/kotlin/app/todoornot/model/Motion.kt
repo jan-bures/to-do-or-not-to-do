@@ -1,6 +1,7 @@
 package app.todoornot.model
 
 import app.todoornot.core.RoomKey
+import app.todoornot.core.TaskRow
 import app.todoornot.design.Easing
 import app.todoornot.design.Tokens
 import kotlin.math.abs
@@ -25,8 +26,11 @@ import kotlin.math.roundToLong
  * Reopening a completed task mirrors it: the disc clears (OVERLAY_OUT, EXIT), the row collapses out of its
  * completed place and is released into the open rows, where it enters. Toggling a row again in the middle
  * reverses it from wherever it is, in place; once it has settled, the screen's next read says whether the
- * room still has it, and if not it collapses out (ROW_COLLAPSE, EXIT) rather than snapping. With reduced
- * motion, movement is instant, fades take at most REDUCED_FADE, and the hold keeps its full length ([Pace]).
+ * room still has it. A row the room drops while it plays (for any reason but its own done state, which the
+ * reads place) becomes a ghost ([Motion.ghost]): the screen paints its last row, inert, while it plays the
+ * rest of its choreography, and a reversed one then collapses out (ROW_COLLAPSE, EXIT) rather than
+ * snapping. With reduced motion, movement is instant, fades take at most REDUCED_FADE, and the hold keeps
+ * its full length ([Pace]).
  *
  * Every duration, curve and cue is a `todo-design` token (the generated [Tokens]). Nothing here sleeps or
  * touches Compose: the screen samples it at each frame's time, and [Motion.wake] says when it needs the
@@ -150,15 +154,12 @@ private sealed interface Phase {
 
     /**
      * A settle that has ended: at rest where it is, until the screen's next read says whether the room
-     * still has the row ([Motion.leave] if not, [Motion.letGo] if so).
+     * still has the row ([Motion.letGo] if so, [Motion.ghost] if not).
      */
     data class Linger(val done: Boolean) : Phase
 
-    /** Leaving a room that no longer has the row: it only collapses (ROW_COLLAPSE, EXIT). */
+    /** A ghost leaving: it only collapses (ROW_COLLAPSE, EXIT), and is then gone. */
     data class Leave(val done: Boolean) : Phase
-
-    /** Left: drawn as nothing until a read without it is on screen. */
-    data class Gone(val done: Boolean) : Phase
 }
 
 /**
@@ -167,6 +168,12 @@ private sealed interface Phase {
  * done state.
  */
 enum class Section { ROWS, COMPLETED }
+
+/**
+ * A row the room no longer lists, painted as it last was while its choreography plays out ([Motion.ghost]):
+ * [row] as the last read listed it, at [index] in [section]. Inert: it takes no taps and never counts.
+ */
+data class Ghost(val row: TaskRow, val section: Section, val index: Int)
 
 /**
  * A row's choreography: drawn in [section] (where it was toggled; for [Phase.Enter], where it entered),
@@ -203,7 +210,7 @@ private class RowMotion(
         Phase.Complete -> landed() + M.COMPLETE_HOLD
         Phase.Reopen -> max(clear(), restoreEnd())
         is Phase.Leave -> 0L
-        is Phase.Settle, is Phase.Enter, is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
+        is Phase.Settle, is Phase.Enter, is Phase.Linger -> Long.MAX_VALUE
     }
 
     private fun exitSpan(): Long = max(pace.movement(M.ROW_COLLAPSE), pace.fade(M.ROW_COLLAPSE))
@@ -217,12 +224,12 @@ private class RowMotion(
         }
         is Phase.Enter -> max(pace.movement(M.ROW_ENTER), pace.fade(M.ROW_ENTER))
         is Phase.Leave -> exitSpan()
-        is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
+        is Phase.Linger -> Long.MAX_VALUE
     }
 
-    /** When it ends: never for a row lingering or gone (the screen's reads end those). */
+    /** When it ends: never for a row lingering (the screen's reads end those). */
     fun end(): Long = when (phase) {
-        is Phase.Linger, is Phase.Gone -> Long.MAX_VALUE
+        is Phase.Linger -> Long.MAX_VALUE
         else -> start + length()
     }
 
@@ -281,13 +288,12 @@ private class RowMotion(
             )
             is Phase.Linger -> f
             is Phase.Leave -> placed(f)
-            is Phase.Gone -> RowLook.hidden(phase.done)
         }
     }
 
     fun wake(now: Long): Wake {
-        // At rest, or drawn as nothing: no frames until a read decides.
-        if (phase is Phase.Linger || phase is Phase.Gone) return Wake.Idle
+        // At rest: no frames until a read decides.
+        if (phase is Phase.Linger) return Wake.Idle
         if (phase == Phase.Complete) {
             // Holding still: nothing to draw until the row starts to leave.
             val quiet = start + landed()
@@ -333,7 +339,7 @@ sealed interface Release {
      */
     data class Settled(override val id: String) : Release
 
-    /** A row left a room that no longer has it ([Motion.leave]). */
+    /** A reversed ghost finished collapsing out: it's gone ([Motion.ghost]). */
     data class Left(override val id: String) : Release
 }
 
@@ -422,6 +428,9 @@ private data class Dusking(val room: RoomKey, val from: Float, val to: Boolean, 
 /** The screen's motion: rows in their choreography, the sun and the dusk. Not thread-safe: one owner. */
 class Motion {
     private val rows = LinkedHashMap<String, RowMotion>()
+
+    /** The rows in motion that are ghosts, by task: a subset of [rows]' keys ([prune] keeps it so). */
+    private val ghosts = LinkedHashMap<String, Ghost>()
     private var sun: Travel? = null
     private var dusk: Dusking? = null
 
@@ -446,7 +455,6 @@ class Motion {
         is Phase.Enter -> p.done
         is Phase.Linger -> p.done
         is Phase.Leave -> p.done
-        is Phase.Gone -> p.done
     }
 
     private fun start(id: String, phase: Phase, now: Long, pace: Pace, rest: Boolean, section: Section, next: Section = section) {
@@ -463,6 +471,9 @@ class Motion {
         return if (r?.phase == Phase.Reopen) {
             start(id, Phase.Settle(done = true), now, pace, rest = true, section = r.section)
             Keep.IN_PLACE
+        } else if (id in ghosts) {
+            // A ghost only reverses (the Undo toast); otherwise it plays on as it was.
+            Keep.IN_PLACE
         } else {
             start(id, Phase.Complete, now, pace, rest = false, section = from, next = to)
             Keep.HOLDING
@@ -478,6 +489,9 @@ class Motion {
         return if (r?.phase == Phase.Complete) {
             start(id, Phase.Settle(done = false), now, pace, rest = false, section = r.section)
             Keep.IN_PLACE
+        } else if (id in ghosts) {
+            // A ghost only reverses (the Undo toast); otherwise it plays on as it was.
+            Keep.IN_PLACE
         } else {
             start(id, Phase.Reopen, now, pace, rest = true, section = from, next = to)
             Keep.REOPENING
@@ -492,25 +506,8 @@ class Motion {
 
     private fun ids(phase: Phase): Set<String> = rows.filterValues { it.phase == phase }.keys.toSet()
 
-    /**
-     * Tasks whose rows still play where they were toggled: everything in motion but the rows entering
-     * after a release and the rows gone. The room keeps these rows where they are.
-     */
-    fun inPlace(): Set<String> = rows.filterValues { it.phase !is Phase.Enter && it.phase !is Phase.Gone }.keys.toSet()
-
     /** Rows whose settle has ended, waiting for a read to say whether the room still has them. */
     fun lingering(): Set<String> = rows.filterValues { it.phase is Phase.Linger }.keys.toSet()
-
-    /**
-     * The lingering row of task [id] leaves a room that no longer has it: exit only, it collapses
-     * (ROW_COLLAPSE, EXIT; with reduced motion it fades in REDUCED_FADE and leaves the layout when it's
-     * released), never snapping out.
-     */
-    fun leave(id: String, now: Long, pace: Pace) {
-        val r = rows[id] ?: return
-        val p = r.phase as? Phase.Linger ?: return
-        rows[id] = RowMotion(Phase.Leave(p.done), now, r.look(now), pace, r.section)
-    }
 
     /** The lingering row of task [id] is where its room has it anyway: it comes to rest. */
     fun letGo(id: String) {
@@ -518,15 +515,40 @@ class Motion {
     }
 
     /**
-     * A row gone from a room that has it again after all (an agent changed it once more): it enters. Only
-     * for a read with the current placement, which no longer keeps it.
+     * The room no longer lists the row of task [id] while it plays ([Phase.Complete], [Phase.Reopen] or
+     * [Phase.Settle]) or lingers: it becomes a ghost, painted as [ghost] says, inert, while it plays the
+     * rest of its choreography. A completion or a reopening then collapses out as it would have, and is
+     * gone at its release (it enters nowhere); a reversed one settles, then collapses out (ROW_COLLAPSE,
+     * EXIT; with reduced motion it only fades, in REDUCED_FADE), and is gone ([Release.Left]). Returns
+     * whether it became one: a row entering after its release, or at rest, doesn't.
      */
-    fun returned(now: Long, shown: (String) -> Boolean) {
-        for (entry in rows.entries) {
-            val r = entry.value
-            val p = r.phase as? Phase.Gone ?: continue
-            if (shown(entry.key)) entry.setValue(RowMotion(Phase.Enter(p.done), now, RowLook.hidden(p.done), r.pace, r.section))
+    fun ghost(id: String, ghost: Ghost, now: Long, pace: Pace): Boolean {
+        val r = rows[id] ?: return false
+        when (val p = r.phase) {
+            Phase.Complete, Phase.Reopen, is Phase.Settle, is Phase.Leave -> Unit
+            is Phase.Linger -> rows[id] = RowMotion(Phase.Leave(p.done), now, r.look(now), pace, r.section)
+            is Phase.Enter -> return false
         }
+        ghosts[id] = ghost
+        return true
+    }
+
+    /** Whether the row of task [id] is a ghost. */
+    fun isGhost(id: String): Boolean = id in ghosts
+
+    /** The ghost of task [id]'s row, or null if it isn't one. */
+    fun ghostOf(id: String): Ghost? = ghosts[id]
+
+    /** The ghosts, each as the room last listed it. */
+    fun ghosts(): List<Ghost> = ghosts.values.toList()
+
+    /**
+     * Stops the row of task [id] at once, ghost or not: a fresh read lists the task again (it's drawn as
+     * that read has it, at rest), or the section a ghost is in has closed.
+     */
+    fun drop(id: String) {
+        rows.remove(id)
+        ghosts.remove(id)
     }
 
     /** The tasks in motion, for following the data ([reconcile]). */
@@ -536,7 +558,8 @@ class Motion {
      * Follows the data when it changed under a choreography (another device, an agent, a refused
      * command): [done] says whether each task is done now, or null when it's gone. A completion whose task
      * is open again, or a reopening whose task is done again, settles back in place; a row at rest or
-     * entering that no longer matches its task's state stops at once.
+     * entering that no longer matches its task's state stops at once. A ghost only stops if its task is
+     * gone: otherwise it plays out (a completion or reopening settles first, as any row does).
      */
     fun reconcile(now: Long, pace: Pace, done: (String) -> Boolean?) {
         val it = rows.entries.iterator()
@@ -544,10 +567,12 @@ class Motion {
             val entry = it.next()
             val r = entry.value
             val d = done(entry.key)
+            val ghost = entry.key in ghosts
             when {
                 d == null -> it.remove()
                 (d == false && r.phase == Phase.Complete) || (d == true && r.phase == Phase.Reopen) ->
                     entry.setValue(RowMotion(Phase.Settle(done = r.phase == Phase.Reopen), now, r.look(now), pace, r.section))
+                ghost -> Unit
                 r.phase is Phase.Settle && r.phase.done != d -> it.remove()
                 r.phase is Phase.Enter && r.phase.done != d -> it.remove()
                 // At rest: it takes the task's new state, and the next read still decides whether it stays.
@@ -555,12 +580,14 @@ class Motion {
                     entry.setValue(RowMotion(Phase.Linger(d), now, RowLook.rest(d), pace, r.section))
             }
         }
+        prune()
     }
 
     /**
      * Moves every row past its end: rows that finished leaving are released (and enter their new place,
-     * timed from when they left), entering ones come to rest, a settle that has ended lingers until a read
-     * decides ([Release.Settled]), and a row that left a room is gone ([Release.Left]).
+     * timed from when they left), entering ones come to rest, and a settle that has ended lingers until a
+     * read decides ([Release.Settled]). A ghost enters nowhere: released, it's gone; settled, it collapses
+     * out; and once that's over it's gone ([Release.Left]).
      */
     fun advance(now: Long): List<Release> {
         val released = ArrayList<Release>()
@@ -571,16 +598,21 @@ class Motion {
             val end = r.end()
             if (now < end) continue
             val id = entry.key
+            val ghost = id in ghosts
             val done = when (val p = r.phase) {
                 Phase.Complete -> true
                 Phase.Reopen -> false
                 is Phase.Settle -> {
-                    entry.setValue(RowMotion(Phase.Linger(p.done), end, RowLook.rest(p.done), r.pace, r.section))
-                    released += Release.Settled(id)
+                    if (ghost) {
+                        entry.setValue(RowMotion(Phase.Leave(p.done), end, RowLook.rest(p.done), r.pace, r.section))
+                    } else {
+                        entry.setValue(RowMotion(Phase.Linger(p.done), end, RowLook.rest(p.done), r.pace, r.section))
+                        released += Release.Settled(id)
+                    }
                     continue
                 }
                 is Phase.Leave -> {
-                    entry.setValue(RowMotion(Phase.Gone(p.done), end, RowLook.hidden(p.done), r.pace, r.section))
+                    it.remove()
                     released += Release.Left(id)
                     continue
                 }
@@ -588,28 +620,37 @@ class Motion {
                     it.remove()
                     continue
                 }
-                is Phase.Linger, is Phase.Gone -> continue
+                is Phase.Linger -> continue
             }
             released += if (done) Release.Completed(id) else Release.Reopened(id)
             val entering = RowMotion(Phase.Enter(done), end, RowLook.hidden(done), r.pace, r.next)
-            if (now < entering.end()) entry.setValue(entering) else it.remove()
+            if (!ghost && now < entering.end()) entry.setValue(entering) else it.remove()
         }
+        // A settled ghost collapses from where it settled: past its collapse too, it's gone at once.
+        for (id in ghosts.keys.toList()) {
+            val r = rows[id] ?: continue
+            if (r.phase is Phase.Leave && now >= r.end()) {
+                rows.remove(id)
+                released += Release.Left(id)
+            }
+        }
+        prune()
         return released
     }
 
     /**
-     * Stops the motion of every row the list doesn't show ([shown] is false): deleted, filtered out, in a
-     * closed Completed section, or never in this room, so nothing keeps waking the screen for it. A task
-     * reopened from where it isn't shown (the detail pane, with Completed closed) goes straight to
-     * entering the open rows. Returns whether a task held open or kept done was let go, so the screen
-     * reads again.
+     * Stops the motion of every row the list doesn't show ([shown] is false) that isn't a ghost: deleted,
+     * filtered out, in a closed Completed section, or never in this room, so nothing keeps waking the
+     * screen for it. A task reopened from where it isn't shown (the detail pane, with Completed closed)
+     * goes straight to entering the open rows. Returns whether a task held open or kept done was let go,
+     * so the screen reads again.
      */
     fun retainShown(now: Long, shown: (String) -> Boolean): Boolean {
         var letGo = false
         val it = rows.entries.iterator()
         while (it.hasNext()) {
             val entry = it.next()
-            if (shown(entry.key)) continue
+            if (entry.key in ghosts || shown(entry.key)) continue
             val r = entry.value
             when (r.phase) {
                 Phase.Complete -> {
@@ -620,17 +661,25 @@ class Motion {
                     letGo = true
                     entry.setValue(RowMotion(Phase.Enter(false), now, RowLook.hidden(false), r.pace, r.next))
                 }
-                is Phase.Settle, is Phase.Enter, is Phase.Linger, is Phase.Leave, is Phase.Gone -> it.remove()
+                is Phase.Settle, is Phase.Enter, is Phase.Linger, is Phase.Leave -> it.remove()
             }
         }
         return letGo
     }
 
+    /** Ghosts whose rows have stopped are gone too. */
+    private fun prune() {
+        ghosts.keys.retainAll(rows.keys)
+    }
+
     /** Whether any row is in its choreography. */
     val rowsMoving: Boolean get() = rows.isNotEmpty()
 
-    /** Everything at rest at once, as on switching rooms: completions and reopenings are let go. */
-    fun settleAll() = rows.clear()
+    /** Everything at rest at once, as on switching rooms: completions and reopenings are let go, ghosts go. */
+    fun settleAll() {
+        rows.clear()
+        ghosts.clear()
+    }
 
     /**
      * Points the sun at [target] (its place on the arc, or null when the room has no sun). In the same

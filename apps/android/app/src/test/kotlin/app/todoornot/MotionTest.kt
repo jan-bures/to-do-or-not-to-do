@@ -2,8 +2,10 @@ package app.todoornot
 
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
+import app.todoornot.core.TaskRow
 import app.todoornot.design.Tokens
 import app.todoornot.model.DuskLook
+import app.todoornot.model.Ghost
 import app.todoornot.model.Keep
 import app.todoornot.model.Motion
 import app.todoornot.model.Pace
@@ -33,6 +35,25 @@ private val ALL: RoomKey = RoomKey.Smart(SmartList.ALL)
 private fun close(a: Float, b: Float) = abs(a - b) < 1e-4f
 
 private fun Motion.look(id: String, t: Long): RowLook = row(id, t) ?: error("$id is at rest at $t")
+
+/** A task's row as a read listed it, for a ghost. */
+private fun taskRow(id: String, done: Boolean = false) = TaskRow(
+    id = id,
+    title = "Task $id",
+    done = done,
+    myDay = false,
+    chip = null,
+    due = null,
+    priority = 0u,
+    agent = null,
+    steps = null,
+    tags = emptyList(),
+    fromMail = false,
+    completedAt = null,
+)
+
+/** [id]'s row, last listed at [index] among the open rows. */
+private fun ghostOf(id: String, index: Int = 0) = Ghost(taskRow(id), Section.ROWS, index)
 
 /**
  * The completion choreography, the sun and the dusk as pure functions of a clock: the same model, and the
@@ -142,7 +163,7 @@ class MotionTest {
         // At its end it lingers at rest, waiting for no frame, until a read says the room still has it.
         assertEquals(listOf(Release.Settled("a")), mo.advance(5_000))
         assertEquals(RowLook.rest(false), mo.row("a", 5_000))
-        assertEquals(setOf("a"), mo.inPlace())
+        assertEquals(setOf("a"), mo.lingering())
         assertEquals(Wake.Idle, mo.wake(5_000))
         assertTrue(mo.advance(10_000).isEmpty())
         mo.letGo("a")
@@ -151,15 +172,17 @@ class MotionTest {
     }
 
     @Test
-    fun a_settled_row_its_room_no_longer_has_collapses_out_and_never_snaps() {
+    fun a_settled_row_its_room_no_longer_lists_collapses_out_as_a_ghost_and_never_snaps() {
         for (pace in listOf(Pace.FULL, Pace.REDUCED)) {
             val mo = Motion()
             mo.complete("a", 0, pace)
             mo.reopen("a", 300, pace)
             val settled = mo.advance(5_000)
             assertEquals(listOf(Release.Settled("a")), settled)
-            mo.leave("a", 6_000, pace)
-            assertEquals(setOf("a"), mo.inPlace())
+            assertTrue(mo.ghost("a", ghostOf("a", 2), 6_000, pace))
+            assertTrue(mo.isGhost("a"))
+            assertEquals(listOf(ghostOf("a", 2)), mo.ghosts())
+            assertTrue(mo.lingering().isEmpty())
             assertEquals(Section.ROWS, mo.placedIn("a"))
             assertEquals("$pace: it starts where it is", RowLook.rest(false), mo.look("a", 6_000))
             assertEquals(Wake.Frame, mo.wake(6_000))
@@ -170,29 +193,90 @@ class MotionTest {
             assertEquals("$pace", expected, mid.opacity, 1e-4f)
             assertEquals("$pace", if (pace.reduced) 1f else expected, mid.height, 1e-4f)
             assertTrue(mo.advance(6_000 + span - 1).isEmpty())
-            // Then it's gone: drawn as nothing, no longer pinned, until a read without it drops it.
+            // Then it's gone, ghost and all.
             assertEquals(listOf(Release.Left("a")), mo.advance(6_000 + span))
-            assertTrue(mo.look("a", 6_000 + span).gone)
-            assertTrue(mo.inPlace().isEmpty())
+            assertNull(mo.row("a", 6_000 + span))
+            assertTrue(mo.ghosts().isEmpty())
             assertEquals(Wake.Idle, mo.wake(6_000 + span))
-            assertFalse(mo.retainShown(7_000) { false })
-            assertNull(mo.row("a", 7_000))
         }
     }
 
     @Test
-    fun a_gone_row_its_room_has_again_enters() {
+    fun a_ghost_plays_its_completion_out_and_enters_nowhere() {
         val mo = Motion()
         mo.complete("a", 0, Pace.FULL)
-        mo.reopen("a", 300, Pace.FULL)
-        mo.advance(5_000)
-        mo.leave("a", 5_000, Pace.FULL)
-        assertEquals(listOf(Release.Left("a")), mo.advance(6_000))
-        mo.returned(6_000) { true }
-        assertEquals(0f, mo.look("a", 6_000).height)
-        assertEquals(1f, mo.look("a", 6_000L + M.ROW_ENTER).height)
-        assertTrue(mo.advance(6_000L + M.ROW_ENTER).isEmpty())
-        assertNull(mo.row("a", 6_000L + M.ROW_ENTER))
+        assertTrue(mo.ghost("a", ghostOf("a"), 100, Pace.FULL))
+        // Nothing jumps: it fills, holds and collapses as it would have, still held.
+        assertEquals(setOf("a"), mo.holding())
+        assertEquals(RowLook.rest(true), mo.look("a", EXIT_AT - 1))
+        assertTrue(mo.look("a", EXIT_AT + M.ROW_COLLAPSE / 2).height in 0.01f..0.99f)
+        // A tap reaches a ghost only through the toast, and only a reversal moves it.
+        assertEquals(Keep.IN_PLACE, mo.complete("a", 200, Pace.FULL))
+        assertEquals(setOf("a"), mo.holding())
+        // Released at the end: gone, not entering Completed.
+        assertEquals(listOf(Release.Completed("a")), mo.advance(RELEASE_AT))
+        assertNull(mo.row("a", RELEASE_AT))
+        assertTrue(mo.ghosts().isEmpty() && mo.holding().isEmpty())
+        assertEquals(Wake.Idle, mo.wake(RELEASE_AT))
+    }
+
+    @Test
+    fun a_reversed_ghost_settles_then_collapses_out() {
+        for (pace in listOf(Pace.FULL, Pace.REDUCED)) {
+            val mo = Motion()
+            mo.complete("a", 0, pace)
+            mo.ghost("a", ghostOf("a"), 100, pace)
+            val at = 400L
+            val before = mo.look("a", at)
+            // The Undo toast reverses it in place: no jump (with reduced motion the strike goes at once),
+            // still a ghost.
+            assertEquals(Keep.IN_PLACE, mo.reopen("a", at, pace))
+            if (!pace.reduced) assertEquals(before, mo.look("a", at))
+            assertTrue(mo.isGhost("a") && mo.holding().isEmpty())
+            // Its settle ends; it collapses out from there instead of lingering, and is gone.
+            val settle = maxOf(M.OVERLAY_OUT, M.CHECK_TICK).toLong()
+            val end = at + if (pace.reduced) minOf(settle, M.REDUCED_FADE.toLong()) else settle
+            val span = if (pace.reduced) minOf(M.ROW_COLLAPSE, M.REDUCED_FADE).toLong() else M.ROW_COLLAPSE.toLong()
+            val released = mo.advance(end)
+            assertTrue("$pace: $released", released.isEmpty())
+            assertTrue(mo.lingering().isEmpty())
+            assertEquals(RowLook.rest(false), mo.look("a", end))
+            val mid = mo.look("a", end + span / 2)
+            assertTrue("$pace: $mid", mid.opacity > 0f && mid.opacity < 1f)
+            assertTrue(mo.advance(end + span - 1).isEmpty())
+            assertEquals(listOf(Release.Left("a")), mo.advance(end + span))
+            assertTrue(mo.ghosts().isEmpty())
+            assertNull(mo.row("a", end + span))
+        }
+    }
+
+    @Test
+    fun a_ghost_stops_only_when_its_task_is_gone_or_it_is_dropped() {
+        val mo = Motion()
+        mo.complete("a", 0, Pace.FULL)
+        mo.complete("b", 0, Pace.FULL)
+        mo.reopen("b", 100, Pace.FULL)
+        mo.complete("c", 0, Pace.FULL)
+        for (id in listOf("a", "b", "c")) mo.ghost(id, ghostOf(id), 200, Pace.FULL)
+        // B settling open, though its task is done again; C deleted.
+        mo.reconcile(300, Pace.FULL) { mapOf("a" to true, "b" to true)[it] }
+        assertNotNull(mo.row("b", 300))
+        assertNull(mo.row("c", 300))
+        assertEquals(setOf("a", "b"), mo.ghosts().map { it.row.id }.toSet())
+        // Shown or not, a ghost isn't the list's to stop.
+        assertFalse(mo.retainShown(300) { false })
+        assertEquals(setOf("a", "b"), mo.ids())
+        // A read lists A again: dropped at once.
+        mo.drop("a")
+        assertNull(mo.row("a", 300))
+        assertEquals(listOf("b"), mo.ghosts().map { it.row.id })
+        // Entering rows never become ghosts; switching rooms ends every ghost.
+        mo.complete("d", 0, Pace.FULL)
+        mo.advance(RELEASE_AT)
+        assertFalse(mo.ghost("d", ghostOf("d"), RELEASE_AT, Pace.FULL))
+        mo.settleAll()
+        assertTrue(mo.ghosts().isEmpty())
+        assertEquals(Wake.Idle, mo.wake(RELEASE_AT))
     }
 
     @Test
@@ -489,23 +573,29 @@ class MotionTest {
                         is Release.Left -> left += r.id
                     }
                 }
+                for (g in mo.ghosts()) assertNotNull("$case: a ghost with no motion", mo.row(g.row.id, now))
                 check("after advance $step")
                 val id = ids[rnd.nextInt(ids.size)]
-                when (rnd.nextInt(10)) {
+                when (rnd.nextInt(11)) {
                     in 0..5 -> if (id !in deleted) {
                         val d = done.getValue(id)
                         val before = mo.row(id, now) ?: RowLook.rest(placed.getValue(id))
+                        val ghost = mo.isGhost(id)
                         done[id] = !d
                         when (if (d) mo.reopen(id, now, pace) else mo.complete(id, now, pace)) {
                             Keep.HOLDING -> assertFalse(placed.getValue(id))
                             Keep.REOPENING -> assertTrue(placed.getValue(id))
-                            Keep.IN_PLACE -> assertEquals(!d, placed.getValue(id))
+                            // A ghost that doesn't reverse plays on as it was.
+                            Keep.IN_PLACE -> if (!ghost) assertEquals(!d, placed.getValue(id))
                         }
+                        assertEquals("$case: a ghost stays one", ghost, mo.isGhost(id))
                         val after = mo.row(id, now) ?: error("a toggle starts motion")
                         if (!pace.reduced) assertEquals("$case: a toggle jumped", seen(before), seen(after))
                     }
                     in 6..7 -> if (id !in deleted) done[id] = !done.getValue(id)
                     8 -> deleted += id
+                    // The room drops a row while it plays (or lists a ghost again).
+                    9 -> if (rnd.nextBoolean()) mo.ghost(id, ghostOf(id), now, pace) else mo.drop(id)
                     else -> mo.settleAll()
                 }
                 // As the model does: the state answers (a deleted task is gone), and the list doesn't show
@@ -515,15 +605,15 @@ class MotionTest {
                 while (mo.retainShown(now) { it !in deleted && it !in left }) {
                     // Letting a task go reads again; the list still doesn't show it.
                 }
-                // A read decides each lingering row: the room has it, or only its pin keeps it.
-                for (l in mo.lingering()) if (rnd.nextBoolean()) mo.leave(l, now, pace) else mo.letGo(l)
+                // A read decides each lingering row: the room lists it, or it's a ghost now.
+                for (l in mo.lingering()) if (rnd.nextBoolean()) mo.ghost(l, ghostOf(l), now, pace) else mo.letGo(l)
                 val holding = mo.holding()
                 val reopening = mo.reopening()
                 for (t in ids) if (t !in holding && t !in reopening) placed[t] = done.getValue(t)
                 check("after step $step")
             }
             // Quiet: everything is released and at rest, with no frames and no timers, once the reads have
-            // decided the rows that lingered and dropped the rows that left.
+            // decided the rows that lingered and the ghosts have gone.
             val left = HashSet<String>()
             fun quiet() {
                 now += 10_000
@@ -538,10 +628,11 @@ class MotionTest {
                 assertEquals("$case", Wake.Idle, mo.wake(now))
             }
             quiet()
-            for (l in mo.lingering()) if (rnd.nextBoolean()) mo.leave(l, now, pace) else mo.letGo(l)
+            for (l in mo.lingering()) if (rnd.nextBoolean()) mo.ghost(l, ghostOf(l), now, pace) else mo.letGo(l)
             quiet()
             mo.retainShown(now) { it !in left }
             assertTrue(mo.lingering().isEmpty())
+            assertTrue(mo.ghosts().isEmpty())
             assertTrue(mo.holding().isEmpty() && mo.reopening().isEmpty())
             for (t in ids) {
                 if (t !in deleted) assertEquals("$case $t", done.getValue(t), placed.getValue(t))

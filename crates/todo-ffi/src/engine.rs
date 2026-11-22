@@ -118,6 +118,9 @@ pub struct FailedChange {
 pub struct TodoEngine {
     client: Client,
     recovered: Option<CacheRecovery>,
+    /// Built by [`TodoEngine::fixture`]: only such an engine takes the test hooks
+    /// ([`TodoEngine::fixture_delete_task`], [`TodoEngine::fixture_restore_task`]).
+    fixture: bool,
     run: Mutex<Option<JoinHandle<()>>>,
     watch: Mutex<Option<JoinHandle<()>>>,
 }
@@ -159,13 +162,23 @@ fn describe(entry: &OutboxEntry) -> &'static str {
 }
 
 impl TodoEngine {
-    fn new(client: Client, recovered: Option<CacheRecovery>) -> Arc<Self> {
+    fn new(client: Client, recovered: Option<CacheRecovery>, fixture: bool) -> Arc<Self> {
         Arc::new(Self {
             client,
             recovered,
+            fixture,
             run: Mutex::new(None),
             watch: Mutex::new(None),
         })
+    }
+
+    /// Refuses a test hook on an engine that isn't a fixture.
+    fn fixture_only(&self) -> Result<(), FfiError> {
+        if self.fixture {
+            Ok(())
+        } else {
+            Err(invalid("only a fixture engine takes this"))
+        }
     }
 
     /// The optimistic view (for tests).
@@ -253,7 +266,7 @@ impl TodoEngine {
             }
             other => other?,
         };
-        Ok(Self::new(client, recovered))
+        Ok(Self::new(client, recovered, false))
     }
 
     /// What opening carried over from a damaged cache, if it had to set one aside: the app tells the
@@ -287,7 +300,7 @@ impl TodoEngine {
         .map_err(|e| FfiError::Storage {
             detail: e.to_string(),
         })?;
-        Ok(Self::new(client, None))
+        Ok(Self::new(client, None, true))
     }
 
     /// Starts syncing (the app came to the foreground): sends the outbox and follows the live event
@@ -377,13 +390,9 @@ impl TodoEngine {
     }
 
     /// The navigation, counting the tasks held or being reopened in `placement` as they were (see
-    /// [`view::placed`]). Pins belong to the room on screen, so they don't change the counts.
+    /// [`view::placed`]).
     pub fn home_placed(&self, placement: RowPlacement, now: LocalNow) -> Home {
         let state = self.client.view();
-        let placement = RowPlacement {
-            pinned: Vec::new(),
-            ..placement
-        };
         if placement.is_empty() {
             return view::home(&state, &Now::new(now));
         }
@@ -484,8 +493,11 @@ impl TodoEngine {
         Ok(())
     }
 
-    /// Deletes a task (a tombstone: [`TodoEngine::restore_task`] brings it back).
-    pub fn delete_task(&self, id: String) -> Result<(), FfiError> {
+    /// A test hook, refused unless this is a [`fixture`](Self::fixture) engine (the app has no way to
+    /// delete a task yet): deletes a task, as another device would. A tombstone:
+    /// [`fixture_restore_task`](Self::fixture_restore_task) brings it back.
+    pub fn fixture_delete_task(&self, id: String) -> Result<(), FfiError> {
+        self.fixture_only()?;
         let id = task_id(&id)?;
         self.client.submit(Command::Delete {
             id: EntityId::Task(id),
@@ -493,8 +505,11 @@ impl TodoEngine {
         Ok(())
     }
 
-    /// Restores a deleted task.
-    pub fn restore_task(&self, id: String) -> Result<(), FfiError> {
+    /// A test hook, refused unless this is a [`fixture`](Self::fixture) engine: restores a deleted task,
+    /// as another device would. Only what deleting it changed comes back: a task merged into another
+    /// keeps its `merged_into`, so it stays gone.
+    pub fn fixture_restore_task(&self, id: String) -> Result<(), FfiError> {
+        self.fixture_only()?;
         let id = task_id(&id)?;
         self.client.submit(Command::Restore {
             id: EntityId::Task(id),

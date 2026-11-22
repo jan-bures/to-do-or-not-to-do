@@ -5,7 +5,6 @@ import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.Home
 import app.todoornot.core.LocalNow
-import app.todoornot.core.Pin
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.Reopening
 import app.todoornot.core.RoomKey
@@ -59,6 +58,11 @@ data class UiState(
     val syncedAt: LocalNow? = null,
     /** The Completed section is open. */
     val showCompleted: Boolean = false,
+    /**
+     * The room generation the rows were read in: every way into a room starts a new one. A row tap passes
+     * it back, so a tap on a row of the room before ([Actions.setDone]) only writes.
+     */
+    val generation: Long = 0L,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
@@ -118,8 +122,9 @@ fun unsentCount(status: SyncStatus): Int = (status.pending + status.failed).toIn
  * It also owns the screen's [motion] (`docs/design-language.md`, Motion): a toggled task is written at
  * once, but its row stays where it was, and counts as it did, until its choreography releases it. The
  * reads place it there ([RowPlacement]); only the release changes the rows, the counts, the sun and the
- * finished day. [clock] is a monotonic clock in milliseconds; [pace] reads the system's animator
- * duration scale when a transition starts. [listen] registers what to call when the engine says something
+ * finished day. A row the room drops while it plays for any other reason (in Agent activity, the owner's
+ * toggle makes the owner its last editor) plays on as a ghost ([Motion.ghost]). [clock] is a monotonic
+ * clock in milliseconds; [pace] reads the system's animator duration scale when a transition starts. [listen] registers what to call when the engine says something
  * changed: by default its listener, which calls back on the engine's own threads.
  */
 class TodoModel(
@@ -165,6 +170,9 @@ class TodoModel(
      */
     private var inputs = 0L
 
+    /** The room generation ([UiState.generation]): bumped (under [motion] and [publishing]) by [enter]. */
+    @Volatile private var generation = 0L
+
     private val publishing = Any()
 
     @Volatile private var collapsed: Set<String> = emptySet()
@@ -188,7 +196,7 @@ class TodoModel(
     /** Where the reads keep the rows in their choreography, and how often that has changed. */
     private class Placed(val version: Long, val rows: RowPlacement)
 
-    @Volatile private var placement = Placed(0L, RowPlacement(emptyList(), emptyList(), emptyList()))
+    @Volatile private var placement = Placed(0L, RowPlacement(emptyList(), emptyList()))
 
     /**
      * The tasks in motion or with a toggle still to be written, whose state each read reports so the
@@ -203,11 +211,10 @@ class TodoModel(
     private val reopenedAt = HashMap<String, String>()
 
     /**
-     * When each task pinned in the room was last changed before it was toggled, as its row gave it: a
-     * room sorted by it (Agent activity) keeps the row where it was while it's pinned. Only the time; who
-     * changed it never reaches the app.
+     * Where each task in motion was last listed (its row, section and place), so a row the room drops
+     * while it plays is painted as it last was ([Motion.ghost]).
      */
-    private val changedAt = HashMap<String, String>()
+    private val lastSeen = HashMap<String, Ghost>()
 
     /** A toggle: its place in the order they were made, and the state it asks for. */
     private class Toggle(val serial: Long, val done: Boolean)
@@ -261,8 +268,14 @@ class TodoModel(
     /** A read: the [inputs] it was read for, the screen, and the state of the tasks in motion. */
     private class Snapshot(val epoch: Long, val state: UiState, val truth: Truth)
 
-    /** The [inputs] a read belongs to, taken together. */
-    private data class Inputs(val epoch: Long, val filter: String, val searching: Boolean, val showCompleted: Boolean)
+    /** The [inputs] a read belongs to, taken together, with the room [generation]. */
+    private data class Inputs(
+        val epoch: Long,
+        val filter: String,
+        val searching: Boolean,
+        val showCompleted: Boolean,
+        val generation: Long,
+    )
 
     /** Reads the whole screen state synchronously (the screenshot tests use this directly). */
     fun read(): UiState = snapshot().state
@@ -270,7 +283,9 @@ class TodoModel(
     /** Reads the screen, with the [inputs] it was read for. */
     private fun snapshot(): Snapshot {
         // The inputs first, together: the state read belongs to them, whatever changes while reading.
-        val (epoch, f, open, showDone) = synchronized(publishing) { Inputs(inputs, filter, searching, showCompleted) }
+        val (epoch, f, open, showDone, gen) = synchronized(publishing) {
+            Inputs(inputs, filter, searching, showCompleted, generation)
+        }
         // Toggles applied before the read are in it; the placement and the tasks in motion go with it.
         val seen = written
         val place = placement
@@ -295,6 +310,7 @@ class TodoModel(
             collapsed = collapsed,
             syncedAt = syncedAt,
             showCompleted = showDone,
+            generation = gen,
         )
         return Snapshot(epoch, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
     }
@@ -354,23 +370,39 @@ class TodoModel(
         m.aimSun(room.key, if (room.finished) 1f else sunAt(room.done, room.total), now, p)
         // Only a read with the current placement says what the list shows; an older one is followed by a
         // newer read.
+        val rows = room.tasks
+        val done = if (state.showCompleted) room.completed else emptyList()
         val listed = HashSet<String>()
-        room.tasks.mapTo(listed) { it.id }
-        if (state.showCompleted) room.completed.mapTo(listed) { it.id }
+        rows.mapTo(listed) { it.id }
+        done.mapTo(listed) { it.id }
+        fun visible(section: Section) = section == Section.ROWS || state.showCompleted
         val current = truth.placed == placement.version
-        val letGo = current && m.retainShown(now) { it in listed || ahead(it) }
+        var letGo = false
         if (current) {
-            // A row whose settle has ended, once the read has its toggle written: where the room still has
-            // it, it comes to rest; where only its pin keeps it (the owner's toggle took it out of Agent
-            // activity), it collapses out. A toggle still to be written keeps it until a read has that too.
-            val pinnedOnly = room.pinnedOnly.toSet()
-            for (id in m.lingering()) {
-                if (ahead(id)) continue
-                if (id in pinnedOnly) m.leave(id, now, p) else m.letGo(id)
+            val ids = m.ids()
+            rows.forEachIndexed { i, t -> if (t.id in ids) lastSeen[t.id] = Ghost(t, Section.ROWS, i) }
+            done.forEachIndexed { i, t -> if (t.id in ids) lastSeen[t.id] = Ghost(t, Section.COMPLETED, i) }
+            for (id in ids) {
+                val ghost = m.ghostOf(id)
+                val seen = lastSeen[id]
+                if (ghost != null) {
+                    // Listed again (an agent changed it once more): the live row, as the read has it, at
+                    // rest. A read from before its latest toggle doesn't decide that. A ghost in a section
+                    // that has closed goes too.
+                    if ((id in listed && !ahead(id)) || !visible(ghost.section)) m.drop(id)
+                } else if (id !in listed && seen != null && visible(seen.section)) {
+                    // Dropped while it plays, for a reason other than its done state (the placement keeps
+                    // that): painted as it last was, it plays on.
+                    m.ghost(id, seen, now, p)
+                }
             }
-            // A row gone from the room that the room has again after all, not only by its pin, enters.
-            m.returned(now) { it in listed && it !in pinnedOnly }
+            letGo = m.retainShown(now) { it in listed || ahead(it) }
+            // A row whose settle has ended, once the read has its toggle written, and still listed (else it
+            // has become a ghost, or stopped): it comes to rest. A toggle still to be written keeps it until
+            // a read has that too.
+            for (id in m.lingering()) if (!ahead(id)) m.letGo(id)
         }
+        lastSeen.keys.retainAll(m.ids())
         val moved = placeRows()
         motion.touched()
         return letGo || moved
@@ -385,10 +417,8 @@ class TodoModel(
      * A task completing counts as open and one being reopened as done, until released. A toggle not yet
      * written (a second tap that reverses a choreography, say) keeps its task as it asked, open or done,
      * until the engine has it too, even past the end of its choreography: a read in between never moves
-     * the row or changes the counts. A row still where it was toggled, or with a toggle to be written, is
-     * pinned in the room, with its task's last-change time as it was: a room that selects or sorts by its
-     * last change (Agent activity) doesn't drop or move the row early. Its leaving is a choreography too
-     * ([Motion.leave]).
+     * the row or changes the counts. Only the done state is placed: a row the room drops for another
+     * reason plays on as a ghost ([follow]).
      */
     private fun placeRows(): Boolean {
         val m = motion.motion
@@ -400,11 +430,9 @@ class TodoModel(
         val holding = held + unwritten.filterValues { !it.done }.keys
         val reopening = back + unwritten.filterValues { it.done }.keys
         reopenedAt.keys.retainAll(reopening)
-        changedAt.keys.retainAll(m.inPlace() + unwritten.keys)
         val next = RowPlacement(
             holding.sorted(),
             reopening.sorted().mapNotNull { id -> reopenedAt[id]?.let { Reopening(id, it) } },
-            changedAt.entries.sortedBy { it.key }.map { (id, at) -> Pin(id, at) },
         )
         moving = (ids + toggled.keys).associateWith { toggled[it]?.serial ?: 0L }
         if (next == placement.rows) return false
@@ -442,17 +470,20 @@ class TodoModel(
 
     /**
      * Every way into a room goes through here ([open], [createList]). A new room starts at rest:
-     * choreographies under way, and the rows kept for writes still on their way, are let go, so the rows
-     * are the engine's own. Nothing is selected, the filter and its field are cleared, and Completed is
-     * closed; a read for the room before is never published.
+     * choreographies under way, the rows kept for writes still on their way, and the ghosts are let go, so
+     * the rows are the engine's own. Nothing is selected, the filter and its field are cleared, and
+     * Completed is closed; a read for the room before is never published. A new room generation starts:
+     * a tap on a row of the room before only writes.
      */
     private fun enter(room: RoomKey) {
         synchronized(motion) {
             motion.motion.settleAll()
             toggled.clear()
+            lastSeen.clear()
             placeRows()
             motion.touched()
             synchronized(publishing) {
+                generation++
                 key = room
                 selected = null
                 filter = ""
@@ -523,11 +554,16 @@ class TodoModel(
 
     /**
      * Completes or reopens a task: written at once, while its row plays the choreography where it is (a
-     * second toggle part way reverses it in place). A task the list doesn't show just changes.
+     * second toggle part way reverses it in place). A task the list doesn't show just changes, and so does
+     * one tapped on a row of a room before this one ([generation] isn't the current one): its write lands
+     * in a room that never showed that row, so nothing there moves, is placed or is painted. A ghost's row
+     * is inert: a tap on it does nothing at all (the Undo toast, with no [generation], still reverses it).
      */
-    override fun setDone(id: String, done: Boolean) {
+    override fun setDone(id: String, done: Boolean, generation: Long?) {
         val (toggle, again) = synchronized(motion) {
+            if (generation != null && generation != this.generation) return@synchronized null to false
             val m = motion.motion
+            if (generation != null && m.isGhost(id)) return
             val at = motion.now()
             val room = _ui.value.room
             // The row as the screen shows it: its section, and (reopening) when it had been completed.
@@ -546,8 +582,14 @@ class TodoModel(
             }
             val toggle = ++toggles
             toggled[id] = Toggle(toggle, done)
-            // While it's pinned, its row shows the time it was pinned with: that one stays.
-            (row ?: doneRow)?.changedAt?.let { changedAt.getOrPut(id) { it } }
+            // Where the row is, should the room drop it while it plays (a ghost keeps its own).
+            if (!m.isGhost(id)) {
+                if (row != null) {
+                    lastSeen[id] = Ghost(row, Section.ROWS, room.tasks.indexOf(row))
+                } else if (doneRow != null && _ui.value.showCompleted) {
+                    lastSeen[id] = Ghost(doneRow, Section.COMPLETED, room.completed.indexOf(doneRow))
+                }
+            }
             if (done) {
                 m.complete(id, at, pace(), from, to)
             } else {
@@ -565,9 +607,11 @@ class TodoModel(
             } finally {
                 // Written (or refused): the engine has the task as it is now, so the placement lets it go
                 // before the read that follows.
-                synchronized(motion) {
-                    if (toggle > written) written = toggle
-                    placeRows()
+                if (toggle != null) {
+                    synchronized(motion) {
+                        if (toggle > written) written = toggle
+                        placeRows()
+                    }
                 }
             }
         }

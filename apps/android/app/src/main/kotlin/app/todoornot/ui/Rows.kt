@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DueTone
@@ -41,7 +42,8 @@ private val S = Tokens.Space
  * [look] is the row's frame of its choreography (null at rest): the disc pops and the tick draws, the
  * title dims and its strike-through draws from the left, and the row fades and collapses. [checked] is
  * whether the task is done as far as a tap is concerned (a held row is done, though it's still listed
- * open). A row that has gone (or hasn't arrived) takes no taps.
+ * open). A row that has gone (or hasn't arrived) takes no taps, and neither does an [inert] one (a ghost,
+ * painted while its choreography plays out after its room dropped it), which accessibility skips too.
  */
 @Composable
 fun TaskRowView(
@@ -52,14 +54,16 @@ fun TaskRowView(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
     look: RowLook? = null,
+    inert: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     val l = look ?: RowLook.rest(task.done)
-    val live = !l.gone
+    val live = !l.gone && !inert
     val titleLine = Tokens.Type.TASK_TITLE_PHONE.lineHeight.dp
     val bottom = (P.ROW.dp - P.ROW_PAD_TOP.dp - titleLine - S.S1.dp - metaLine).coerceAtLeast(0.dp)
     val m = modifier
         .rowMotion(look)
+        .then(if (inert) Modifier.clearAndSetSemantics { } else Modifier)
         .fillMaxWidth()
         .heightIn(min = P.ROW.dp)
         .then(if (selected) Modifier.background(r.wash).selectionBar(r.accent) else Modifier)
