@@ -370,7 +370,11 @@ because the Keystore key goes with it.
    talks HTTPS only. A debug build also accepts plain `http://` to the device itself (`localhost`,
    `127.0.0.1`), which is what the emulator setup below uses. The Rust core enforces this (the build
    variant passes the allowance in, because the core is always compiled in release mode), and each
-   variant's network security config says the same for the platform's network stack.
+   variant's network security config says the same for the platform's network stack. That config
+   has one exception: the certificate revocation hosts of the common CAs (Let's Encrypt, Google Trust
+   Services, SSL.com, Sectigo, DigiCert). Android fetches OCSP responses and CRLs over plain http when it
+   checks the server certificate, and if that fetch is blocked, the verifier reports the certificate as
+   revoked.
 2. The app shows a code and a link. Open the link on a device where you can sign in with your passkey (or
    tap *Open link* to use the phone's browser), check that the code matches, and approve it.
 3. The app moves on by itself. **Unpair this phone**, under the settings button in the drawer's footer,

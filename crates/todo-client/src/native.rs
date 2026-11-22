@@ -267,8 +267,26 @@ fn network(e: reqwest::Error) -> TransportError {
         TransportError::Timeout
     } else {
         // Without the URL: it is the configured server, and status messages need not repeat it.
-        TransportError::Network(e.without_url().to_string())
+        TransportError::Network(error_chain(&e.without_url()))
     }
+}
+
+/// An error and its sources, joined with `: `.
+///
+/// reqwest's own message is only "error sending request"; the cause (DNS, connection refused, a TLS
+/// certificate problem) is in the source chain.
+pub fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut source = e.source();
+    while let Some(s) = source {
+        let text = s.to_string();
+        // Some layers repeat their source's message; keep each message once.
+        if parts.last().is_none_or(|last| !last.contains(&text)) {
+            parts.push(text);
+        }
+        source = s.source();
+    }
+    parts.join(": ")
 }
 
 fn retry_after(res: &reqwest::Response) -> Option<Duration> {
@@ -403,5 +421,27 @@ impl Entropy for OsEntropy {
             let r = uuid::Uuid::new_v4().into_bytes();
             chunk.copy_from_slice(&r[..chunk.len()]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct Layer(&'static str, #[source] Option<Box<Layer>>);
+
+    #[test]
+    fn error_chain_includes_every_source_once() {
+        let inner = Layer("invalid peer certificate: UnknownIssuer", None);
+        let middle = Layer(
+            "invalid peer certificate: UnknownIssuer",
+            Some(Box::new(inner)),
+        );
+        let outer = Layer("error sending request", Some(Box::new(middle)));
+        assert_eq!(
+            super::error_chain(&outer),
+            "error sending request: invalid peer certificate: UnknownIssuer"
+        );
+        assert_eq!(super::error_chain(&Layer("plain", None)), "plain");
     }
 }

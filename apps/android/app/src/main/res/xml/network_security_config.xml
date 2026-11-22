@@ -3,7 +3,22 @@
   HTTPS only. The Rust core enforces this itself (it refuses plain http in a release build); this config
   is the same rule for anything on the platform's network stack. The debug build overrides it to allow
   plain http to loopback only, for the emulator workflow in docs/android.md.
+
+  The one exception is certificate revocation. rustls-platform-verifier asks Android to check the
+  server certificate, and Android fetches the CA's OCSP response or CRL over plain http (they are
+  signed, so http is how CAs publish them). Blocking that fetch fails the check, and the verifier
+  reports it as a revoked certificate. These are the revocation hosts of the CAs that issue edge
+  certificates for common hosting (Let's Encrypt, Google Trust Services, SSL.com, Sectigo, DigiCert).
+  Keep the list in step with the debug config (PlatformNetworkConfigTest checks it).
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">lencr.org</domain>
+        <domain includeSubdomains="true">pki.goog</domain>
+        <domain includeSubdomains="true">ssl.com</domain>
+        <domain includeSubdomains="true">sectigo.com</domain>
+        <domain includeSubdomains="true">usertrust.com</domain>
+        <domain includeSubdomains="true">digicert.com</domain>
+    </domain-config>
 </network-security-config>

@@ -197,7 +197,7 @@ fn network(e: &reqwest::Error) -> FfiError {
         }
     } else {
         FfiError::Network {
-            detail: e.to_string(),
+            detail: todo_client::native::error_chain(e),
         }
     }
 }

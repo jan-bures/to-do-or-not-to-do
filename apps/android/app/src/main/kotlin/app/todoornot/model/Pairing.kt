@@ -159,7 +159,7 @@ class PairingModel(
 
         fun describe(e: FfiException): String = when (e) {
             is FfiException.BadAddress -> e.reason
-            is FfiException.Network -> "Couldn't reach the server. Check the address and your connection."
+            is FfiException.Network -> "Couldn't reach the server. Check the address and your connection. (${e.detail})"
             is FfiException.Expired -> EXPIRED
             is FfiException.Refused -> "The server refused (${e.status}): ${e.detail}"
             is FfiException.Protocol -> "That doesn't look like a to-do server: ${e.detail}"
