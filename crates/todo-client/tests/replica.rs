@@ -846,29 +846,42 @@ fn a_rejected_command_moves_to_couldnt_sync_until_dismissed() {
 }
 
 #[test]
-fn dismissing_all_empties_couldnt_sync_in_one_write_or_not_at_all() {
+fn dismissing_many_removes_exactly_those_in_one_write_or_none() {
     let (mut r, _server, storage) = seeded();
     let rejection = Rejection {
         status: 409,
         code: "deleted".into(),
         message: "task is deleted".into(),
     };
-    for n in 1..=3 {
+    let reject = |r: &mut Replica, n: u128| {
         let e = entry(n, add_note(task_id(1), "x"), 1);
         r.submit(e.clone()).unwrap();
         r.reject(e.command_id, rejection.clone(), ts(2)).unwrap();
-    }
-    assert_eq!(r.failed().len(), 3);
+        e.command_id
+    };
+    let shown: Vec<_> = (1..=3).map(|n| reject(&mut r, n)).collect();
+    // Refused after the list was shown: dismissing what was shown leaves it.
+    let later = reject(&mut r, 4);
+    assert_eq!(r.failed().len(), 4);
     // A write that fails leaves every entry, in memory and on disk.
     storage.set_fail_writes(true);
-    assert!(r.dismiss_all().is_err());
+    assert!(r.dismiss_many(&shown).is_err());
     storage.set_fail_writes(false);
-    assert_eq!(r.failed().len(), 3);
-    assert_eq!(open(&storage).failed().len(), 3);
-    assert_eq!(r.dismiss_all().unwrap(), 3);
-    assert!(r.failed().is_empty());
-    assert!(open(&storage).failed().is_empty(), "and it lasts");
-    assert_eq!(r.dismiss_all().unwrap(), 0);
+    assert_eq!(r.failed().len(), 4);
+    assert_eq!(open(&storage).failed().len(), 4);
+    assert_eq!(r.dismiss_many(&shown).unwrap(), 3);
+    let left: Vec<_> = r.failed().iter().map(|f| f.entry.command_id).collect();
+    assert_eq!(left, [later]);
+    let reopened: Vec<_> = open(&storage)
+        .failed()
+        .iter()
+        .map(|f| f.entry.command_id)
+        .collect();
+    assert_eq!(reopened, [later], "and it lasts");
+    // Already gone, or never there: nothing to do, and nothing written.
+    storage.set_fail_writes(true);
+    assert_eq!(r.dismiss_many(&shown).unwrap(), 0);
+    storage.set_fail_writes(false);
 }
 
 #[test]

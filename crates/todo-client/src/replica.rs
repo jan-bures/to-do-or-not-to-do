@@ -1144,21 +1144,24 @@ impl Replica {
         Ok(true)
     }
 
-    /// Empties the "couldn't sync" list in one storage write. Returns how many entries it held. If the
-    /// write fails, the list is left as it was.
-    pub fn dismiss_all(&mut self) -> Result<usize, StorageError> {
-        if self.failed.is_empty() {
-            return Ok(0);
-        }
+    /// Removes the given entries from the "couldn't sync" list in one storage write: the ones the app
+    /// showed, so an entry refused since stays. IDs not in the list are ignored. Returns how many were
+    /// removed. If the write fails, the list is left as it was.
+    pub fn dismiss_many(&mut self, command_ids: &[CommandId]) -> Result<usize, StorageError> {
         let ops: Vec<StorageOp> = self
             .failed
             .iter()
-            .map(|f| StorageOp::RemoveFailed(f.entry.command_id))
+            .map(|f| f.entry.command_id)
+            .filter(|id| command_ids.contains(id))
+            .map(StorageOp::RemoveFailed)
             .collect();
+        if ops.is_empty() {
+            return Ok(0);
+        }
         self.storage.write(&ops)?;
-        let n = self.failed.len();
-        self.failed.clear();
-        Ok(n)
+        self.failed
+            .retain(|f| !command_ids.contains(&f.entry.command_id));
+        Ok(ops.len())
     }
 
     fn position(&self, command_id: CommandId) -> Option<usize> {

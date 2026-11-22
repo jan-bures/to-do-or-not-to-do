@@ -535,9 +535,10 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         Ok(removed)
     }
 
-    /// Empties the "couldn't sync" list. Returns how many entries were removed.
-    pub fn dismiss_all(&self) -> Result<usize, StorageError> {
-        let removed = self.with(|s| s.replica.dismiss_all())?;
+    /// Removes the given entries from the "couldn't sync" list at once (the ones the app showed; one
+    /// refused since stays). Returns how many were removed.
+    pub fn dismiss_many(&self, command_ids: &[CommandId]) -> Result<usize, StorageError> {
+        let removed = self.with(|s| s.replica.dismiss_many(command_ids))?;
         if removed > 0 {
             self.changed();
         }
