@@ -2,6 +2,7 @@ package app.todoornot.model
 
 import app.todoornot.core.Home
 import app.todoornot.core.RoomKey
+import app.todoornot.core.RoomView
 import app.todoornot.core.StepRow
 
 /**
@@ -28,6 +29,14 @@ sealed interface MenuEntry {
 
 /** What a menu item does. */
 sealed interface MenuAction {
+    data class Done(val on: Boolean) : MenuAction
+    data class MyDay(val on: Boolean) : MenuAction
+    data class Important(val on: Boolean) : MenuAction
+    data object PickPriority : MenuAction
+    data object PickList : MenuAction
+    data object DeleteTask : MenuAction
+    data class ReorderTask(val list: String, val neighbour: String?, val by: Int) : MenuAction
+
     /** Rename a list or a collection (a dialog). */
     data class Rename(val room: RoomKey) : MenuAction
 
@@ -48,6 +57,28 @@ sealed interface MenuAction {
 
     /** Set the priority by its `!` marks: 3 (high) to 0 (none). */
     data class SetPriority(val task: String, val marks: Int) : MenuAction
+}
+
+/** The row and the detail header offer the same actions. Only open rows of a manual list
+ * have visible neighbours to swap with (Completed is ordered by completion time).
+ */
+fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority: Int): List<MenuEntry> = buildList {
+    add(MenuEntry.Item("circle-check", if (done) "Reopen" else "Complete", MenuAction.Done(!done)))
+    add(MenuEntry.Item("sun", if (myDay) "Remove from My Day" else "Add to My Day", MenuAction.MyDay(!myDay)))
+    add(MenuEntry.Item("star", if (priority == 3) "Remove importance" else "Mark as important", MenuAction.Important(priority != 3)))
+    add(MenuEntry.Item("flag", "Priority…", MenuAction.PickPriority, hint = "!".repeat(priority).ifEmpty { null }))
+    add(MenuEntry.Item("list", "Move to…", MenuAction.PickList))
+    val list = room.key as? RoomKey.List
+    if (list != null && !done) {
+        val i = room.tasks.indexOfFirst { it.id == id }
+        if (i >= 0) for (by in listOf(-1, 1)) {
+            val other = room.tasks.getOrNull(i + by)?.id
+            add(MenuEntry.Item(if (by < 0) "chevron-up" else "chevron-down", if (by < 0) "Move up" else "Move down",
+                MenuAction.ReorderTask(list.id, other, by), enabled = other != null))
+        }
+    }
+    add(MenuEntry.Separator)
+    add(MenuEntry.Item("trash-2", "Delete task", MenuAction.DeleteTask, danger = true))
 }
 
 /** Where [room] stands among its siblings, for Move up and Move down; null when it isn't in the drawer. */

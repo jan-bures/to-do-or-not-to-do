@@ -373,6 +373,35 @@ pub fn list_groups(state: &State) -> Vec<(Option<CollectionId>, Vec<ListId>)> {
         .collect()
 }
 
+/// Moves an open task past its visible neighbour in a manual list. Completed and filtered-out
+/// siblings need not be adjacent in the underlying order. A stale tap never moves a task in a
+/// different list, or swaps a pair that has already changed places.
+pub fn reorder_open_task(
+    state: &State,
+    list: ListId,
+    id: TaskId,
+    neighbour: TaskId,
+    by: i32,
+) -> Option<Command> {
+    let open = |id: TaskId| {
+        state
+            .tasks
+            .get(&id)
+            .filter(|t| t.list == list && !t.is_done() && state.is_live(id.into()))
+    };
+    let (task, other) = (open(id)?, open(neighbour)?);
+    let ordering = (&task.position, id).cmp(&(&other.position, neighbour));
+    let placement = match by {
+        -1 if ordering.is_gt() => Placement::Before(neighbour.into()),
+        1 if ordering.is_lt() => Placement::After(neighbour.into()),
+        _ => return None,
+    };
+    Some(Command::Reorder {
+        id: id.into(),
+        placement,
+    })
+}
+
 /// Moves an item one place up (`-1`) or down (`1`) among its live siblings; `None` at either end.
 pub fn nudge(state: &State, id: EntityId, by: i32) -> Option<Command> {
     let scope = state.scope_of(id)?;
@@ -437,6 +466,32 @@ mod tests {
             self.run(Command::CreateTask(Box::new(NewTask::new(id, list, title))));
             id
         }
+    }
+
+    #[test]
+    fn reordering_visible_tasks_skips_hidden_rows_and_rejects_stale_neighbours() {
+        let mut w = World::new();
+        let list = w.list("Garden");
+        let other = w.list("Home");
+        let a = w.task(list, "A");
+        let hidden = w.task(list, "Hidden");
+        let b = w.task(list, "B");
+        w.run(Command::CompleteTask { id: hidden });
+        assert!(reorder_open_task(&w.state, list, a, hidden, 1).is_none());
+        assert!(reorder_open_task(&w.state, other, a, b, 1).is_none());
+        let move_down = reorder_open_task(&w.state, list, a, b, 1).expect("move down");
+        assert_eq!(
+            move_down,
+            Command::Reorder {
+                id: a.into(),
+                placement: Placement::After(b.into())
+            }
+        );
+        w.run(move_down);
+        assert!(reorder_open_task(&w.state, list, a, b, 1).is_none());
+        assert!(reorder_open_task(&w.state, list, a, b, -1).is_some());
+        w.run(move_to_list(&w.state, b, other).expect("change list"));
+        assert!(reorder_open_task(&w.state, list, a, b, -1).is_none());
     }
 
     #[test]

@@ -19,6 +19,9 @@ import app.todoornot.model.DuskLook
 import app.todoornot.model.Ghost
 import app.todoornot.model.Pace
 import app.todoornot.model.RowLook
+import app.todoornot.model.MenuAction
+import app.todoornot.model.MenuEntry
+import app.todoornot.model.taskMenu
 import app.todoornot.model.TodoModel
 import app.todoornot.model.Wake
 import app.todoornot.model.ease
@@ -1545,6 +1548,103 @@ class TodoModelTest {
         m.select(id)
         drain()
         return admin to id
+    }
+
+    @Test
+    fun task_actions_use_the_captured_task_and_offer_exact_undo() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, id) = s.openAdmin()
+        val before = requireNotNull(m.ui.value.detail)
+        val list = (admin as RoomKey.List).id
+        val dest = (m.engine.list("Errands") as RoomKey.List).id
+        val pending = m.ui.value.status.pending
+        m.moveTaskTo(id, list) // Current destination: no command or toast.
+        s.drain()
+        assertEquals(pending, m.ui.value.status.pending)
+        assertNull(m.ui.value.toast)
+        m.moveTaskTo(id, dest)
+        s.drain()
+        assertFalse(m.ui.value.room.tasks.any { it.id == id })
+        assertNull(m.ui.value.detail)
+        val moved = requireNotNull(m.ui.value.toast)
+        assertEquals("Moved “${before.title}” to Errands", moved.text)
+        m.undo(moved)
+        s.drain()
+        assertTrue(m.ui.value.room.tasks.any { it.id == id })
+        m.select(id)
+        s.drain()
+        m.deleteTask(id)
+        m.undo(moved) // A stale toast doesn't undo the deletion.
+        s.drain()
+        assertNull(m.ui.value.detail)
+        val deleted = requireNotNull(m.ui.value.toast)
+        assertEquals("Deleted “${before.title}”", deleted.text)
+        m.undo(deleted)
+        m.undo(deleted)
+        s.drain()
+        assertEquals(before, m.engine.task(id, FIXTURE_NOW))
+        assertEquals(pending, m.ui.value.status.pending)
+
+        // Deleting from the row while another detail is open must not close that pane.
+        m.add("Keep this detail open")
+        s.drain()
+        val other = m.ui.value.room.tasks.first().id
+        m.select(other)
+        s.drain()
+        m.deleteTask(id)
+        s.drain()
+        assertEquals(other, m.ui.value.selected)
+    }
+
+    @Test
+    fun move_picker_filters_list_and_collection_words_and_ticks_the_current_list() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, id) = s.openAdmin()
+        m.renameRoom(admin, "Úřady")
+        s.drain()
+        s.scope.launch {
+            val groups = m.moveDestinations(id, "URAD  pers")
+            assertEquals(listOf("Personal"), groups.map { it.heading })
+            val match = groups.single().lists.single()
+            assertEquals((admin as RoomKey.List).id, match.id)
+            assertTrue(match.current)
+            assertTrue(m.moveDestinations(id, "not-a-list").isEmpty())
+        }.also { job ->
+            s.drain()
+            assertTrue(job.isCompleted && !job.isCancelled)
+        }
+    }
+
+    @Test
+    fun menu_reorders_open_rows_in_a_manual_list_and_undo_restores_their_order() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, _) = s.openAdmin()
+        m.add("Mint")
+        m.add("Parsley")
+        s.drain()
+        val room = m.ui.value.room
+        val ids = room.tasks.map { it.id }
+        val menu = taskMenu(room, ids.first(), false, false, 0).filterIsInstance<MenuEntry.Item>()
+        assertFalse(menu.single { it.label == "Move up" }.enabled)
+        val down = menu.single { it.label == "Move down" }.action as MenuAction.ReorderTask
+        assertEquals((admin as RoomKey.List).id, down.list)
+        m.reorderTask(down.list, ids.first(), requireNotNull(down.neighbour), down.by)
+        s.drain()
+        assertEquals(ids.take(2).reversed() + ids.drop(2), m.ui.value.room.tasks.map { it.id })
+        m.undo(requireNotNull(m.ui.value.toast))
+        s.drain()
+        assertEquals(ids, m.ui.value.room.tasks.map { it.id })
+        m.open(RoomKey.Smart(SmartList.ALL))
+        s.drain()
+        val pending = m.ui.value.status.pending
+        m.reorderTask(down.list, ids.first(), requireNotNull(down.neighbour), down.by)
+        s.drain()
+        assertEquals(pending, m.ui.value.status.pending)
+        val smart = taskMenu(m.ui.value.room, ids.first(), true, true, 3).filterIsInstance<MenuEntry.Item>()
+        assertEquals(listOf("Reopen", "Remove from My Day", "Remove importance", "Priority…", "Move to…", "Delete task"), smart.map { it.label })
     }
 
     @Test

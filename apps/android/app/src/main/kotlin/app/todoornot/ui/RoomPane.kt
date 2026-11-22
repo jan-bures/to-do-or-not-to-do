@@ -20,6 +20,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,6 +79,7 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.cubic
 import app.todoornot.design.style
+import kotlinx.coroutines.delay
 import app.todoornot.model.Actions
 import app.todoornot.model.MenuAction
 import app.todoornot.model.roomMenu
@@ -160,7 +163,7 @@ fun RoomPane(
             }
             if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
             Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true)) {
-                TaskList(room, state.selected, state.showCompleted, state.generation, actions)
+                TaskList(state, actions)
             }
             ToastStrip(state.toast, actions)
             Composer(room.addPlaceholder, draft, keyboard, actions)
@@ -279,13 +282,22 @@ private fun Banner(text: String, action: String, onAction: () -> Unit) {
  * [generation] the rows were read in.
  */
 @Composable
-private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, generation: Long, actions: Actions) {
+private fun TaskList(state: UiState, actions: Actions) {
+    val room = state.room
+    val showDone = state.showCompleted
     val r = LocalDesign.current.room
     val motion = LocalMotion.current
     val dusk: () -> DuskLook = remember(room.key, room.finished, motion) {
         { motion.dusk(room.key) ?: DuskLook.rest(room.finished) }
     }
     val ghosts by remember(motion) { derivedStateOf { motion.ghosts() } }
+    var swapping by remember(state.reorder) { mutableStateOf(state.reorder?.rows.orEmpty()) }
+    LaunchedEffect(state.reorder) {
+        if (swapping.isNotEmpty()) {
+            delay(M.ROW_ENTER.toLong())
+            swapping = emptySet()
+        }
+    }
     val rows = withGhosts(room.tasks, ghosts, Section.ROWS)
     LazyColumn(Modifier.fillMaxSize()) {
         // Only when nothing at all is listed: a filter that matches only done tasks shows them under
@@ -294,8 +306,8 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, gener
             item("empty") { Empty(room.emptyLine) }
         }
         // The rows; the Completed and Agent activity smart lists show their done tasks here too.
-        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, selected, generation, actions, motion) }
-        room.tomorrow?.let { tomorrow(it, generation, actions, dusk) }
+        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, state, actions, motion, swap = s.row.id in swapping) }
+        room.tomorrow?.let { tomorrow(it, state, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
         if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
         // The finished day keeps today's Completed section under the hand-over, as on the desktop.
@@ -318,7 +330,7 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, gener
             }
             if (showDone) {
                 items(withGhosts(room.completed, ghosts, Section.COMPLETED), key = { "done-" + it.row.id }) { s ->
-                    MovingRow(s, Section.COMPLETED, selected, generation, actions, motion)
+                    MovingRow(s, Section.COMPLETED, state, actions, motion)
                 }
             }
         }
@@ -334,30 +346,29 @@ private fun TaskList(room: RoomView, selected: String?, showDone: Boolean, gener
 private fun LazyItemScope.MovingRow(
     s: Shown,
     section: Section,
-    selected: String?,
-    generation: Long,
+    state: UiState,
     actions: Actions,
     motion: MotionFrame,
+    swap: Boolean = false,
 ) {
     val t = s.row
     val look by remember(t.id, section, motion) { derivedStateOf { motion.rowIn(t.id, section) } }
     val checked by remember(t.id, motion) { derivedStateOf { motion.checked(t.id) } }
     // A ghost whose choreography is over is gone, whatever the list has yet to hear.
     val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
-    TaskRowView(
-        t,
-        selected = !s.ghost && t.id == selected,
-        checked = checked ?: t.done,
-        onCheck = { if (!s.ghost) actions.setDone(t.id, it, generation) },
-        onOpen = { if (!s.ghost) actions.select(t.id) },
+    val done = checked ?: t.done
+    TaskActionsAnchor(state, actions, t.id, done, t.myDay, t.priority.toInt(), row = true,
+        enabled = !s.ghost && l?.gone != true,
         modifier = Modifier.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
-            placementSpec = null,
+            placementSpec = if (swap) tween(M.ROW_ENTER, easing = M.EASE_STANDARD.cubic()) else null,
             fadeOutSpec = null,
         ),
-        look = l,
-        inert = s.ghost,
-    )
+    ) { openMenu ->
+        TaskRowView(t, selected = !s.ghost && t.id == state.selected, checked = done,
+            onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
+            onOpen = { if (!s.ghost) actions.select(t.id) }, onActions = openMenu, look = l, inert = s.ghost)
+    }
 }
 
 @Composable
@@ -379,7 +390,7 @@ private fun shown(i: Int, dusk: () -> DuskLook): Boolean {
  * The finished day hands over to tomorrow: the first thing, the rest of tomorrow, then the week. Each
  * item enters in turn as dusk falls ([handover]).
  */
-private fun LazyListScope.tomorrow(t: Tomorrow, generation: Long, actions: Actions, dusk: () -> DuskLook) {
+private fun LazyListScope.tomorrow(t: Tomorrow, state: UiState, actions: Actions, dusk: () -> DuskLook) {
     var n = 0
     item("tomorrow-first") {
         val d = LocalDesign.current
@@ -388,11 +399,7 @@ private fun LazyListScope.tomorrow(t: Tomorrow, generation: Long, actions: Actio
         Column(Modifier.handover(0, dusk).fillMaxWidth().padding(start = S.S5.dp, end = S.S5.dp, top = S.S5.dp)) {
             Label("When the sun comes up", Tokens.Type.CAPS_LABEL, r.ink3)
             Spacer(Modifier.height(S.S3.dp))
-            Row(
-                Modifier.fillMaxWidth().clickable(enabled = on) { actions.select(t.first.id) },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(S.S4.dp),
-            ) {
+            HandoverRow(t.first, state, actions, enabled = on, gap = S.S4.dp) {
                 Box(
                     Modifier.size(Tokens.Metrics.Component.BUTTON.dp + S.S3.dp).background(r.tint, CircleShape),
                     contentAlignment = Alignment.Center,
@@ -417,14 +424,14 @@ private fun LazyListScope.tomorrow(t: Tomorrow, generation: Long, actions: Actio
         item("tomorrow-also") { Caps("Also on ${t.weekday}", Modifier.handover(caps, dusk)) }
         val first = n + 1
         n += t.also.size
-        itemsIndexed(t.also, key = { _, it -> "also-" + it.id }) { i, it -> SmallRow(it, generation, actions, first + i, dusk) }
+        itemsIndexed(t.also, key = { _, it -> "also-" + it.id }) { i, it -> SmallRow(it, state, actions, first + i, dusk) }
     }
     if (t.week.isNotEmpty()) {
         val caps = ++n
         item("tomorrow-week") { Caps("Rest of the week", Modifier.handover(caps, dusk)) }
         val first = n + 1
         n += t.week.size
-        itemsIndexed(t.week, key = { _, it -> "week-" + it.id }) { i, it -> SmallRow(it, generation, actions, first + i, dusk) }
+        itemsIndexed(t.week, key = { _, it -> "week-" + it.id }) { i, it -> SmallRow(it, state, actions, first + i, dusk) }
     }
     if (t.more > 0u) {
         val last = ++n
@@ -460,23 +467,27 @@ private fun Caps(text: String, modifier: Modifier = Modifier) {
     Label(text, Tokens.Type.CAPS_LABEL, r.ink3, modifier.padding(start = S.S5.dp, top = S.S6.dp, bottom = S.S2.dp))
 }
 
+@Composable
+private fun HandoverRow(t: TaskRow, state: UiState, actions: Actions, enabled: Boolean, gap: Dp,
+    modifier: Modifier = Modifier, inset: Modifier = Modifier, content: @Composable RowScope.() -> Unit,
+) {
+    TaskActionsAnchor(state, actions, t.id, t.done, t.myDay, t.priority.toInt(), row = true, enabled = enabled) { menu ->
+        Row(modifier.fillMaxWidth().combinedClickable(enabled = enabled, onLongClickLabel = "Task actions", onLongClick = menu,
+            onClick = { actions.select(t.id) }).then(inset), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(gap), content = content)
+    }
+}
+
 /** A compact row for the hand-over (item [i] of it): check, title, chip, and the date on the right. */
 @Composable
-private fun SmallRow(t: TaskRow, generation: Long, actions: Actions, i: Int, dusk: () -> DuskLook) {
+private fun SmallRow(t: TaskRow, state: UiState, actions: Actions, i: Int, dusk: () -> DuskLook) {
     val r = LocalDesign.current.room
     val on = shown(i, dusk)
-    Row(
-        Modifier
-            .handover(i, dusk)
-            .fillMaxWidth()
-            .height(P.TOUCH.dp)
-            .hairline(r.line, top = true)
-            .clickable(enabled = on) { actions.select(t.id) }
-            .padding(start = S.S3.dp, end = S.S5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+    HandoverRow(t, state, actions, enabled = on, gap = S.S2.dp,
+        modifier = Modifier.handover(i, dusk).height(P.TOUCH.dp).hairline(r.line, top = true),
+        inset = Modifier.padding(start = S.S3.dp, end = S.S5.dp),
     ) {
-        Check(t.done, { actions.setDone(t.id, it, generation) }, t.title, enabled = on)
+        Check(t.done, { actions.setDone(t.id, it, state.generation) }, t.title, enabled = on)
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
             t.chip?.let { ListChip(it) }

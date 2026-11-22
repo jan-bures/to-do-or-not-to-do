@@ -12,6 +12,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -93,6 +95,7 @@ fun MenuCard(entries: List<MenuEntry>, onChoose: (MenuAction) -> Unit, modifier:
         modifier
             .width(Tokens.Metrics.Desktop.MENU.dp)
             .overlay(shape, d)
+            .verticalScroll(rememberScrollState())
             .padding(vertical = S.S1.dp)
             .semantics { if (title != null) paneTitle = title },
     ) {

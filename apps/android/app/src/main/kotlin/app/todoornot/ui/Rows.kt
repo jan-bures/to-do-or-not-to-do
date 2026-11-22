@@ -1,7 +1,7 @@
 package app.todoornot.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +52,7 @@ fun TaskRowView(
     checked: Boolean,
     onCheck: (Boolean) -> Unit,
     onOpen: () -> Unit,
+    onActions: () -> Unit,
     modifier: Modifier = Modifier,
     look: RowLook? = null,
     inert: Boolean = false,
@@ -68,7 +69,7 @@ fun TaskRowView(
         .heightIn(min = P.ROW.dp)
         .then(if (selected) Modifier.background(r.wash).selectionBar(r.accent) else Modifier)
         .hairline(r.line)
-        .clickable(enabled = live, onClick = onOpen)
+        .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = "Task actions", onLongClick = onActions)
         .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = P.ROW_PAD_TOP.dp, bottom = bottom)
     Row(m, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
         Box(Modifier.size(P.COL_CHECK.dp, titleLine), contentAlignment = Alignment.Center) {

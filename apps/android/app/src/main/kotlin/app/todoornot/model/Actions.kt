@@ -1,5 +1,6 @@
 package app.todoornot.model
 
+import app.todoornot.core.DestinationGroup
 import app.todoornot.core.RoomKey
 
 /** What the main screen can ask for. [TodoModel] does the work; the screenshot gallery passes [None]. */
@@ -14,6 +15,10 @@ interface Actions {
      * row, which is inert while it's a ghost (the detail pane's checkbox isn't).
      */
     fun setDone(id: String, done: Boolean, generation: Long? = null, row: Boolean = generation != null)
+    fun deleteTask(id: String)
+    suspend fun moveDestinations(id: String, filter: String): List<DestinationGroup>
+    fun moveTaskTo(id: String, list: String)
+    fun reorderTask(list: String, id: String, neighbour: String, by: Int)
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft
     fun setNotes(id: String, notes: String, onResult: (String?) -> Unit)
@@ -89,6 +94,10 @@ interface Actions {
         override fun add(title: String) = Unit
         override fun previewDate(text: String): String? = null
         override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) = Unit
+        override fun deleteTask(id: String) = Unit
+        override suspend fun moveDestinations(id: String, filter: String) = emptyList<DestinationGroup>()
+        override fun moveTaskTo(id: String, list: String) = Unit
+        override fun reorderTask(list: String, id: String, neighbour: String, by: Int) = Unit
         override fun rename(id: String, title: String) = Unit
         override fun notesDraft(task: String) = NotesDraft(task)
         override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) = Unit

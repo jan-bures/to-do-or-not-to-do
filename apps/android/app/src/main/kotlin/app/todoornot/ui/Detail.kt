@@ -65,7 +65,7 @@ import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.Actions
 import app.todoornot.model.MenuAction
-import app.todoornot.model.Toast as UiToast
+import app.todoornot.model.UiState
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.stepMenu
 import kotlinx.coroutines.delay
@@ -80,23 +80,23 @@ private const val IMPORTANT: UByte = 3u
 /**
  * A task's detail: breadcrumb, title (editable), steps (tick, rename, move or delete them, or add one),
  * notes, fields (the due date and the priority are edited from their rows) and sources. The bar's actions
- * are in the desktop's order: My Day (sun), Important (star), then close. Beside the list on the unfolded
- * phone; on its own, with a back arrow, on the cover screen, where it shows the [toast] strip itself (with
- * Undo for a deleted step). Its checkbox carries the room [generation] it was read in, so a tap after
- * another room opens only writes. [today] (ISO) is where the date picker opens for an undated task.
+ * are My Day (sun), Important (star), task actions (⋯), then Close. Beside the list on the unfolded
+ * phone; on its own, with a back arrow and its own Undo strip, on the cover screen. Its checkbox
+ * carries the room generation it was read in, so a tap after another room opens only writes.
  * [stepEditing] starts with that step's title being renamed (the gallery).
  */
 @Composable
 fun DetailPane(
-    detail: TaskDetail,
+    state: UiState,
     actions: Actions,
     standalone: Boolean,
-    generation: Long,
     modifier: Modifier = Modifier,
-    today: String = "",
-    toast: UiToast? = null,
     stepEditing: String? = null,
 ) {
+    val detail = state.detail ?: return
+    val today = state.today
+    val generation = state.generation
+    val toast = state.toast
     val r = LocalDesign.current.room
     Column(modifier.fillMaxSize().background(r.pane).then(if (standalone) Modifier.statusBarsPadding() else Modifier)) {
         Row(
@@ -126,6 +126,9 @@ fun DetailPane(
                 if (important) "Not important" else "Mark important",
                 tint = if (important) r.accentStrong else r.ink3,
             ) { actions.setImportant(detail.id, !important) }
+            TaskActionsAnchor(state, actions, detail.id, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
+                IconButton("ellipsis", "Task actions", onClick = open)
+            }
             if (!standalone) IconButton("x", "Close") { actions.select(null) }
         }
         Box(Modifier.weight(1f)) {

@@ -1248,6 +1248,72 @@ fn the_drawer_lists_the_agents_seen_this_week() {
     assert!(blank.home(now()).agents.is_empty());
 }
 
+/// A sent task move, reorder and delete each have a checked inverse. An out-of-band reorder
+/// after a move prevents its inverse from overwriting the newer position.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_actions_and_move_conflict_on_the_server() {
+    let server = TestServer::start().await;
+    let db = tempfile::tempdir().unwrap();
+    let e = TodoEngine::open(EngineConfig {
+        server_url: server.url(),
+        token: OTHER_TOKEN.into(),
+        device_id: "other".into(),
+        database_path: db.path().join("cache.sqlite").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let source = e.create_list("Garden".into(), my_day()).unwrap();
+    let target = e.create_list("Weekend".into(), my_day()).unwrap();
+    let RoomKey::List { id: list } = target.clone() else {
+        panic!("list")
+    };
+    let id = e.add_task(source, "Plant bulbs".into(), now()).unwrap();
+    let other = e.add_task(target, "Buy tools".into(), now()).unwrap();
+    let task: todo_core::ids::TaskId = id.parse().unwrap();
+    let before = e.state().tasks[&task].clone();
+    let remote = &server.running.engine;
+    e.start().unwrap();
+    let settled = || eventually("outbox drained", || e.status().pending == 0);
+    settled().await;
+    let deleted = e.delete_task(id.clone()).unwrap();
+    settled().await;
+    assert!(!remote.state().is_live(task.into()));
+    e.undo_deletion(deleted).unwrap();
+    settled().await;
+    assert!(remote.state().is_live(task.into()));
+    let moved = e.move_task_to(id.clone(), list.clone()).unwrap().unwrap();
+    settled().await;
+    assert_eq!(remote.state().tasks[&task].list.to_string(), list);
+    e.undo_task_move(moved).unwrap();
+    settled().await;
+    assert_eq!(remote.state().tasks[&task].list, before.list);
+    assert_eq!(remote.state().tasks[&task].position, before.position);
+    let moved = e.move_task_to(id.clone(), list.clone()).unwrap().unwrap();
+    settled().await;
+    let first = remote.state().tasks[&task].position.clone();
+    let reorder = e.reorder_task(list, id, other, 1).unwrap().unwrap();
+    settled().await;
+    assert_ne!(remote.state().tasks[&task].position, first);
+    e.undo_task_move(reorder).unwrap();
+    settled().await;
+    assert_eq!(remote.state().tasks[&task].position, first);
+    let reorder = todo_client::intent::nudge(&remote.state(), task.into(), 1).unwrap();
+    remote
+        .execute(
+            &Actor::owner("desktop").unwrap(),
+            uuid::Uuid::from_u128(1),
+            &reorder,
+        )
+        .unwrap();
+    let latest = remote.state().tasks[&task].clone();
+    e.undo_task_move(moved).unwrap();
+    eventually("conflict", || !e.failed().is_empty()).await;
+    assert_eq!(e.failed()[0].what, "Undo moving a task");
+    assert_eq!(e.failed()[0].reason, "It was changed again since.");
+    assert_eq!(remote.state().tasks[&task], latest);
+    e.stop();
+}
+
 /// Deleting a step and a list online, then undoing both: the server has them back, exactly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn undoing_a_deletion_restores_it_on_the_server() {

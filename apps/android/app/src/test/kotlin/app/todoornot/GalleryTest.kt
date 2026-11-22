@@ -46,6 +46,8 @@ import app.todoornot.model.drawerMenu
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.roomMenu
 import app.todoornot.model.stepMenu
+import app.todoornot.model.taskMenu
+import app.todoornot.ui.MoveTaskCard
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.DeleteListCard
 import app.todoornot.ui.DetailPane
@@ -482,7 +484,7 @@ class GalleryTest {
             shot("step_actions_${if (dark) "dark" else "light"}", COVER) {
                 TodoTheme(dark, s.room.hue) {
                     Box(Modifier.fillMaxSize()) {
-                        DetailPane(detail, Actions.None, standalone = true, s.generation, today = s.today, stepEditing = detail.steps[1].id)
+                        DetailPane(s, Actions.None, standalone = true, stepEditing = detail.steps[1].id)
                         Box(Modifier.fillMaxSize().padding(start = 146.dp, top = 303.dp)) {
                             MenuCard(stepMenu(detail.steps, detail.steps[2].id), {})
                         }
@@ -497,8 +499,32 @@ class GalleryTest {
         val s = m.ui.value
         shot("step_deleted_light", COVER) {
             TodoTheme(false, s.room.hue) {
-                DetailPane(requireNotNull(s.detail), m, standalone = true, s.generation, today = s.today, toast = s.toast)
+                DetailPane(s, m, standalone = true)
             }
+        }
+    }
+
+    @Test
+    fun task_actions() {
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val (e, admin, id) = admin()
+            e.addTask(admin, "File the receipt", FIXTURE_NOW)
+            val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = admin, listen = {})
+            m.select(id)
+            val s = m.ui.value
+            val detail = requireNotNull(s.detail)
+            overlaid("task_menu_$theme", COVER, s, dark) {
+                Box(Modifier.fillMaxSize().padding(top = Tokens.Metrics.Phone.APP_BAR.dp, end = Tokens.Space.S2.dp), contentAlignment = Alignment.TopEnd) {
+                    MenuCard(taskMenu(s.room, id, detail.done, detail.myDay, detail.priority.toInt()), {})
+                }
+            }
+            val groups = e.moveDestinations(id, "")
+            overlaid("move_task_$theme", COVER, s, dark) {
+                DialogBackdrop { MoveTaskCard("", {}, groups, {}, {}) }
+            }
+            m.deleteTask(id)
+            main("task_deleted_$theme", COVER, m.ui.value, dark)
         }
     }
 

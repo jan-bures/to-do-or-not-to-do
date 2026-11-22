@@ -194,7 +194,7 @@ private fun Screen(
                     )
                     Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
                     if (detail != null) {
-                        DetailPane(detail, actions, standalone = false, state.generation, Modifier.weight(1f).statusBarsPadding(), today = state.today)
+                        DetailPane(state, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
                     } else {
                         NoDetail(Modifier.weight(1f))
                     }
@@ -204,7 +204,7 @@ private fun Screen(
                     RoomPane(state, actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed, onRoomMenu = onRoomMenu)
                     if (detail != null) {
                         BackHandler { actions.select(null) }
-                        DetailPane(detail, actions, standalone = true, state.generation, today = state.today, toast = state.toast)
+                        DetailPane(state, actions, standalone = true)
                     }
                 }
             }

@@ -123,12 +123,40 @@ pub struct FailedChange {
 #[derive(Debug, uniffi::Object)]
 pub struct Completion(TrackedCommand);
 
-/// An opaque reference to an exact deletion (a step, or a list with its tasks), for its Undo. Kept by the
+/// An opaque reference to an exact deletion (a task, a step, or a list with its tasks), for its Undo. Kept by the
 /// toast, like [`Completion`].
 #[derive(Debug, uniffi::Object)]
 pub struct Deletion {
     tracked: TrackedCommand,
     entity: EntityId,
+}
+
+/// The exact move or reorder the toast can undo.
+#[derive(Debug, uniffi::Object)]
+pub struct TaskMove(TrackedCommand);
+
+/// One destination in the Move to… picker.
+#[derive(Debug, uniffi::Record)]
+pub struct Destination {
+    /// List ID, never its (possibly ambiguous) display name.
+    pub id: String,
+    /// One-line list name.
+    pub name: String,
+    /// The same list mark and swatch as the drawer.
+    pub glyph: String,
+    /// The list's swatch key.
+    pub hue: String,
+    /// The task is already here.
+    pub current: bool,
+}
+
+/// A non-empty group of matching destinations, in sidebar order.
+#[derive(Debug, uniffi::Record)]
+pub struct DestinationGroup {
+    /// Collection name, or “Other lists” when there are also collections.
+    pub heading: Option<String>,
+    /// Matching lists.
+    pub lists: Vec<Destination>,
 }
 
 /// What confirming a list's deletion did.
@@ -149,6 +177,8 @@ pub enum ListDeletion {
 /// What an undo in the outbox reverses, so a refusal can say so in plain words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Undone {
+    TaskDelete,
+    TaskMove,
     Completion,
     Step,
     List,
@@ -157,6 +187,7 @@ enum Undone {
 impl Undone {
     fn of(entity: EntityId) -> Self {
         match entity {
+            EntityId::Task(_) => Self::TaskDelete,
             EntityId::Step(_) => Self::Step,
             EntityId::List(_) => Self::List,
             _ => Self::Completion,
@@ -165,6 +196,8 @@ impl Undone {
 
     fn what(self) -> &'static str {
         match self {
+            Self::TaskDelete => "Undo deleting a task",
+            Self::TaskMove => "Undo moving a task",
             Self::Completion => "Undo a completion",
             Self::Step => "Undo deleting a step",
             Self::List => "Undo deleting a list",
@@ -173,7 +206,7 @@ impl Undone {
 
     fn noun(self) -> &'static str {
         match self {
-            Self::Completion => "task",
+            Self::TaskDelete | Self::TaskMove | Self::Completion => "task",
             Self::Step => "step",
             Self::List => "list",
         }
@@ -249,14 +282,14 @@ fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
 /// Why the server refused a change, in the app's own words: from the rejection's code, never the
 /// server's message, which can be technical or quote task content.
 fn reason(failed: &todo_client::FailedEntry, undone: Option<Undone>) -> String {
-    if failed.entry.command().is_some() {
+    if failed.entry.command().is_some() || matches!(undone, None | Some(Undone::TaskMove)) {
         todo_client::failure::why(failed).to_owned()
     } else {
         undo_failure_message(&failed.rejection.code, undone)
     }
 }
 
-/// Why a restored step or list still shows nothing: Undo brings back exactly what was deleted, never
+/// Why a restored item still shows nothing: Undo brings back exactly what was deleted, never
 /// what it belongs to, so if that (its task, list or collection) was deleted meanwhile, elsewhere, the
 /// restored item stays hidden with it. `None` when it shows, or while the view doesn't predict the undo.
 fn hidden_by_parent(state: &State, entity: EntityId) -> Option<String> {
@@ -364,6 +397,16 @@ impl TodoEngine {
             }
             None => Ok(false),
         }
+    }
+
+    fn track_move(&self, command: Option<Command>) -> Result<Option<Arc<TaskMove>>, FfiError> {
+        Ok(command
+            .map(|cmd| {
+                self.client
+                    .submit_tracked(cmd)
+                    .map(|t| Arc::new(TaskMove(t)))
+            })
+            .transpose()?)
     }
 
     /// Deletes a live step or list, tracked for its Undo.
@@ -699,6 +742,106 @@ impl TodoEngine {
         Ok(())
     }
 
+    /// Deletes a task immediately. The toast holds the exact deletion for Undo.
+    pub fn delete_task(&self, id: String) -> Result<Arc<Deletion>, FfiError> {
+        let id = task_id(&id)?;
+        let cmd =
+            intent::delete_task(&self.client.view(), id).ok_or_else(|| invalid("No such task."))?;
+        Ok(Arc::new(Deletion {
+            tracked: self.client.submit_tracked(cmd)?,
+            entity: id.into(),
+        }))
+    }
+
+    /// The Move to… picker: every typed word must match the list or its collection, ignoring
+    /// case and accents (the same fold as the desktop). Empty groups never get a heading.
+    pub fn move_destinations(&self, id: String, filter: String) -> Vec<DestinationGroup> {
+        use todo_core::query::fold;
+        let state = self.client.view();
+        let Some(task) = id
+            .parse()
+            .ok()
+            .and_then(|id| state.tasks.get(&id))
+            .filter(|t| view::task_live(&state, t))
+        else {
+            return vec![];
+        };
+        let groups = intent::list_groups(&state);
+        let has_collections = groups.iter().any(|(c, _)| c.is_some());
+        let filter = fold(&filter);
+        groups
+            .into_iter()
+            .filter_map(|(c, ids)| {
+                let collection = c
+                    .and_then(|id| state.collections.get(&id))
+                    .map(|c| c.name.as_str());
+                let lists = ids
+                    .into_iter()
+                    .filter_map(|id| {
+                        let list = state.lists.get(&id)?;
+                        let haystack =
+                            fold(&format!("{} {}", list.name, collection.unwrap_or_default()));
+                        filter
+                            .split_whitespace()
+                            .all(|word| haystack.contains(word))
+                            .then(|| Destination {
+                                id: id.to_string(),
+                                name: crate::labels::one_line(&list.name),
+                                glyph: crate::lists::list_glyph(&list.name).into(),
+                                hue: crate::lists::swatch(
+                                    list.color.as_deref(),
+                                    id.as_uuid().as_bytes(),
+                                )
+                                .into(),
+                                current: id == task.list,
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                (!lists.is_empty()).then(|| DestinationGroup {
+                    heading: collection
+                        .map(crate::labels::one_line)
+                        .or_else(|| has_collections.then(|| "Other lists".into())),
+                    lists,
+                })
+            })
+            .collect()
+    }
+
+    /// Moves to the front of another list. Choosing the current list queues nothing.
+    pub fn move_task_to(
+        &self,
+        id: String,
+        list: String,
+    ) -> Result<Option<Arc<TaskMove>>, FfiError> {
+        self.track_move(intent::move_to_list(
+            &self.client.view(),
+            task_id(&id)?,
+            list_id(&list)?,
+        ))
+    }
+
+    /// Moves past the adjacent visible open task in this manual list, not in a smart room.
+    pub fn reorder_task(
+        &self,
+        list: String,
+        id: String,
+        neighbour: String,
+        by: i32,
+    ) -> Result<Option<Arc<TaskMove>>, FfiError> {
+        self.track_move(intent::reorder_open_task(
+            &self.client.view(),
+            list_id(&list)?,
+            task_id(&id)?,
+            task_id(&neighbour)?,
+            by,
+        ))
+    }
+
+    /// Reverses this exact move. A later conflicting change is not overwritten.
+    pub fn undo_task_move(&self, moved: Arc<TaskMove>) -> Result<(), FfiError> {
+        self.undo_tracked(&moved.0, Undone::TaskMove)
+    }
+
     /// Renames a step.
     pub fn rename_step(&self, id: String, title: String) -> Result<(), FfiError> {
         if title.trim().is_empty() {
@@ -806,8 +949,7 @@ impl TodoEngine {
         Ok(())
     }
 
-    /// A test hook, refused unless this is a [`fixture`](Self::fixture) engine (the app has no way to
-    /// delete a task yet): deletes a task, as another device would. A tombstone:
+    /// A fixture-only out-of-band deletion, as from another device. A tombstone:
     /// [`fixture_restore_task`](Self::fixture_restore_task) brings it back.
     pub fn fixture_delete_task(&self, id: String) -> Result<(), FfiError> {
         self.fixture_only()?;
@@ -1182,6 +1324,64 @@ mod tests {
         ));
         expected.push(intent::delete(list));
         assert_eq!(queued(&engine, at), expected);
+    }
+
+    #[test]
+    fn task_actions_queue_exactly_the_shared_intents() {
+        let now = fixture_now();
+        let e = TodoEngine::fixture("blank".into(), now).expect("fixture");
+        let source = e
+            .create_list("Source".into(), RoomKey::default())
+            .expect("list");
+        let RoomKey::List { id: list } = source.clone() else {
+            panic!("list")
+        };
+        let RoomKey::List { id: dest } = e
+            .create_list("Žluté".into(), RoomKey::default())
+            .expect("list")
+        else {
+            panic!("list")
+        };
+        let other = e
+            .add_task(source.clone(), "First".into(), now)
+            .expect("task");
+        let id = e.add_task(source, "New".into(), now).expect("task");
+        let task = task_id(&id).expect("id");
+        let at = e.client.pending().len();
+        let picks = e.move_destinations(id.clone(), "ZLUTE".into());
+        assert_eq!(picks.len(), 1);
+        assert_eq!(picks[0].lists.len(), 1);
+        assert_eq!(picks[0].lists[0].id, dest);
+        assert!(!picks[0].lists[0].current);
+        assert!(
+            e.move_task_to(id.clone(), list.clone())
+                .expect("same list")
+                .is_none()
+        );
+        let cmd = intent::reorder_open_task(
+            &e.state(),
+            list_id(&list).expect("list"),
+            task,
+            task_id(&other).expect("other"),
+            1,
+        )
+        .expect("reorder");
+        e.reorder_task(list.clone(), id.clone(), other.clone(), 1)
+            .expect("reorder")
+            .expect("handle");
+        assert!(
+            e.reorder_task(list, id.clone(), other, 1)
+                .expect("already moved")
+                .is_none()
+        );
+        let moved =
+            intent::move_to_list(&e.state(), task, list_id(&dest).expect("list")).expect("move");
+        e.move_task_to(id.clone(), dest)
+            .expect("move")
+            .expect("handle");
+        let deleted = intent::delete_task(&e.state(), task).expect("delete");
+        e.delete_task(id).expect("delete");
+        assert_eq!(queued(&e, at), [cmd, moved, deleted]);
     }
 
     #[test]

@@ -16,6 +16,7 @@ import app.todoornot.core.RowPlacement
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
+import app.todoornot.core.TaskMove
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
@@ -34,21 +35,24 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /** The task ID drives only the row animation; the handle identifies exactly which event to undo. */
 data class CompletionAction(val task: String, val target: Completion)
 
 /**
  * A short message above the composer, with an optional undo: of a completion (which plays the row's
- * motion back) or of a deletion (a step, or a list with its tasks).
+ * motion back), a deletion or a move.
  */
 data class Toast(
     val serial: Long,
     val text: String,
     val completion: CompletionAction? = null,
     val deletion: Deletion? = null,
+    val moved: TaskMove? = null,
+    val swap: TaskSwap? = null,
 ) {
-    val undoable: Boolean get() = completion != null || deletion != null
+    val undoable: Boolean get() = completion != null || deletion != null || moved != null
 }
 
 /** Everything the main screen shows, read from the engine in one go. */
@@ -79,10 +83,14 @@ data class UiState(
     val generation: Long = 0L,
     /** Today's date (ISO) by the model's clock: where the date picker opens for a task with no due date. */
     val today: String = "",
+    /** Last local reorder (including Undo). Only these two rows glide when its read lands. */
+    val reorder: TaskSwap? = null,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.problem == ProblemKind.UNAUTHORIZED
 }
+
+data class TaskSwap(val serial: Long, val room: RoomKey, val rows: Set<String>)
 
 /**
  * The unpair confirmation: how many changes on this phone haven't reached the server (queued or refused).
@@ -167,11 +175,13 @@ class TodoModel(
 ) : Actions {
     @Volatile private var key: RoomKey = start
 
-    @Volatile private var selected: String? = null
+    private val selection = AtomicReference<String?>(null)
+    private val selected get() = selection.get()
 
     @Volatile private var toast: Toast? = null
 
     @Volatile private var serial = 0L
+    @Volatile private var reorder: TaskSwap? = null
 
     @Volatile private var askingUnpair = false
 
@@ -213,8 +223,7 @@ class TodoModel(
     override fun notesDraft(task: String): NotesDraft = noteDrafts.getOrPut(task) { NotesDraft(task) }
 
     private fun selectTask(id: String?) {
-        val previous = selected
-        selected = id
+        val previous = selection.getAndSet(id)
         if (previous == null || previous == id) return
         val draft = noteDrafts[previous] ?: return
         draft.save(this) // No-op for a closed editor or a save already on its way.
@@ -337,8 +346,9 @@ class TodoModel(
         val k = key
         val n = now()
         pruneDrafts(n)
-        val detail = selected?.let { engine.task(it, n) }
-        if (detail == null) selected = null
+        val reading = selected
+        val detail = reading?.let { engine.task(it, n) }
+        if (detail == null) selection.compareAndSet(reading, null)
         val status = engine.status()
         if (status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
         val state = UiState(
@@ -356,6 +366,7 @@ class TodoModel(
             showCompleted = showDone,
             generation = gen,
             today = isoDay(n),
+            reorder = reorder?.takeIf { it.room == k },
         )
         return Snapshot(epoch, k, state, Truth(ids.keys.associateWith { engine.taskDone(it) }, seen, place.version, ids))
     }
@@ -568,6 +579,7 @@ class TodoModel(
             motion.touched()
             synchronized(publishing) {
                 generation++
+                reorder = null
                 key = room
                 if (fresh) {
                     selectTask(null)
@@ -728,6 +740,14 @@ class TodoModel(
             act { engine.undoDeletion(deletion)?.let { show(Toast(++serial, it)) } }
             return
         }
+        t.moved?.let { moved ->
+            show(null)
+            act {
+                engine.undoTaskMove(moved)
+                t.swap?.let { reorder = it.copy(serial = ++serial) }
+            }
+            return
+        }
         val action = t.completion ?: return
         show(null)
         toggle(action.task, false, generation = null, row = false, undo = action.target)
@@ -737,6 +757,53 @@ class TodoModel(
         if (toast?.serial == t.serial) {
             show(null)
             scope.launch { refresh() }
+        }
+    }
+
+    override fun deleteTask(id: String) {
+        noteDrafts[id]?.save(this)
+        act {
+            val title = engine.task(id, now())?.title ?: return@act
+            val target = engine.deleteTask(id)
+            // The next read drops this detail if it is still selected, not a newer selection.
+            show(Toast(++serial, "Deleted “${oneLine(title)}”", deletion = target))
+        }
+    }
+
+    override suspend fun moveDestinations(id: String, filter: String) = withContext(io) { engine.moveDestinations(id, filter) }
+
+    override fun moveTaskTo(id: String, list: String) {
+        val here = key
+        noteDrafts[id]?.save(this)
+        act {
+            val title = engine.task(id, now())?.title ?: return@act
+            val dest = RoomKey.List(list)
+            val group = _ui.value.home.groups.firstOrNull { g -> g.lists.any { it.key == dest } }
+            val name = group?.lists?.firstOrNull { it.key == dest }?.name
+            engine.moveTaskTo(id, list)?.let { target ->
+                val leaves = when (here) {
+                    is RoomKey.List -> here != dest
+                    is RoomKey.Collection -> group != null && group.collection?.key != here
+                    is RoomKey.Smart -> false
+                }
+                val open = selected
+                if (key == here && leaves && open == id) selection.compareAndSet(open, null)
+                val where = name?.let { " to ${oneLine(it)}" }.orEmpty()
+                show(Toast(++serial, "Moved “${oneLine(title)}”$where", moved = target))
+            }
+        }
+    }
+
+    override fun reorderTask(list: String, id: String, neighbour: String, by: Int) {
+        val room = RoomKey.List(list)
+        if (key != room) return
+        act {
+            val title = engine.task(id, now())?.title ?: return@act
+            engine.reorderTask(list, id, neighbour, by)?.let { target ->
+                val swap = TaskSwap(++serial, room, setOf(id, neighbour))
+                reorder = swap
+                show(Toast(serial, "Moved “${oneLine(title)}”", moved = target, swap = swap))
+            }
         }
     }
 

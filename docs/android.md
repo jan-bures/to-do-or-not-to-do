@@ -35,6 +35,14 @@ What the first version does:
   room, even the same one, clears the filter and closes its field.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
+- **Task actions.** Long-press a task row or tap **⋯** in its detail header. The menu offers Complete or
+  Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to… and
+  Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
+  from a list or collection name to filter; case and accents don't matter. The task moves to the front
+  of the chosen list. In a manual list, **Move up** and **Move down** move an open task past its visible
+  neighbour. **Delete task** doesn't ask first and closes that task's detail. All three changes offer
+  **Undo**. If another device reorders the moved task before Undo, the change stays and the failed-change
+  banner explains: “Undo moving a task: It was changed again since.”
 - **Due date and priority.** In the detail pane, the **Due** row opens the date picker: the Material date
   picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
   (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes
@@ -120,7 +128,7 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 - **Refused changes** show in the banner in the app's own words (`todo_client::failure`, the desktop's
   wording): what the change was and why it was refused, from the rejection's code. The server's message,
   which can be technical or quote task content, never reaches the screen.
-- **Undo for deletions.** Deleting a step or a list goes through the same tracked path as a completion
+- **Undo for deletions.** Deleting a task, a step or a list goes through the same tracked path as a completion
   (`SyncClient::submit_tracked`, then `undo_tracked` from the toast): an unsent delete is cancelled, a sent
   one gets a checked inverse. A refused undo shows in the banner in plain words, naming what it reverses
   ("Undo deleting a step: Couldn't undo: the step was changed again."), never the server's text. If what
@@ -180,7 +188,7 @@ Popups and dialogs are windows of their own, which Paparazzi can't draw, so the 
 cards in place over the screen, at rest: the date picker (`due_date_picker`, drawn with today's ring off,
 since the picker reads the device's clock for it), the priority picker, a step being renamed and a step's
 menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
-rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), and the agent
+rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), and the agent
 summary; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
