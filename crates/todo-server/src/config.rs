@@ -101,6 +101,10 @@
 //! # The built web app (see docs/web.md), read into memory at start-up and served at `/app` to the
 //! # signed-in owner. Without it `/app` answers 404. Also `TODO_SERVER_WEB_DIR`.
 //! dir = "/opt/todo/web"
+//!
+//! [releases]
+//! # Private desktop update feed; absent means disabled. Also `TODO_SERVER_RELEASES_DIR`.
+//! dir = "/opt/todo/desktop-releases"
 //! ```
 
 use jiff::tz::TimeZone;
@@ -368,6 +372,14 @@ pub struct WebConfig {
     pub dir: Option<PathBuf>,
 }
 
+/// The Velopack release feed (see `docs/desktop.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReleasesConfig {
+    /// Dedicated publisher-controlled directory. Without it `/releases` answers 404.
+    pub dir: Option<PathBuf>,
+}
+
 /// The server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -395,6 +407,8 @@ pub struct Config {
     pub admin: AdminConfig,
     /// The web app.
     pub web: WebConfig,
+    /// The desktop release feed.
+    pub releases: ReleasesConfig,
 }
 
 /// Email ingest settings (see the module docs and `docs/ingest-email.md`).
@@ -437,6 +451,7 @@ impl Default for Config {
             attachments: crate::blobs::AttachmentsConfig::default(),
             admin: AdminConfig::default(),
             web: WebConfig::default(),
+            releases: ReleasesConfig::default(),
         }
     }
 }
@@ -547,6 +562,10 @@ impl Config {
         if let Some(v) = get("TODO_SERVER_WEB_DIR") {
             let v = v.trim();
             self.web.dir = (!v.is_empty()).then(|| PathBuf::from(v));
+        }
+        if let Some(v) = get("TODO_SERVER_RELEASES_DIR") {
+            let v = v.trim();
+            self.releases.dir = (!v.is_empty()).then(|| PathBuf::from(v));
         }
         if let Some(v) = get("TODO_SERVER_ADMIN_BIND") {
             let v = v.trim();

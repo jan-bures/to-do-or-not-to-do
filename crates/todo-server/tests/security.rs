@@ -112,8 +112,8 @@ fn is_open(op: &Value) -> bool {
 }
 
 /// Every route the server serves: `/health`, the web route table (which the web router is built
-/// from), every operation in the OpenAPI document, and the MCP endpoint. [`the_inventory_matches_the_router_source`]
-/// checks that nothing else is registered.
+/// from), every operation in the OpenAPI document, the MCP endpoint and the optional desktop feed.
+/// [`the_inventory_matches_the_router_source`] checks that nothing else is registered.
 fn inventory() -> Vec<Route> {
     let mut v = vec![Route {
         method: "GET".into(),
@@ -148,6 +148,11 @@ fn inventory() -> Vec<Route> {
         path: todo_server::mcp::PATH.into(),
         public: false,
     });
+    v.push(Route {
+        method: "GET".into(),
+        path: "/releases/{file}".into(),
+        public: false,
+    });
     v.sort();
     v
 }
@@ -170,6 +175,8 @@ fn concrete(path: &str) -> String {
         path.replace("{id}", "my_day")
     } else if path.starts_with("/api/") {
         path.replace("{id}", UUID).replace("{seq}", "1")
+    } else if path == "/releases/{file}" {
+        "/releases/releases.win.json".into()
     } else {
         path.replace("{id}", "1")
             .replace("{file}", "app.css")
@@ -288,6 +295,7 @@ fn the_inventory_matches_the_router_source() {
         ("app.rs", "nest", "\"/api/v1\""),
         // The MCP service, at `todo_server::mcp::PATH`.
         ("mcp/mod.rs", "route_service", "PATH"),
+        ("releases.rs", "route", "\"/releases/{file}\""),
         // The web router, built from `todo_server::web::routes()`.
         ("web/mod.rs", "route", "path"),
     ]
@@ -416,8 +424,18 @@ fn assert_anonymous(what: &str, headers: &reqwest::header::HeaderMap, body: &str
 
 #[tokio::test]
 async fn every_method_outside_the_public_set_is_refused_without_credentials() {
-    // With the admin listener on: its token must open nothing here.
-    let env = Env::start_with(admin_on).await;
+    // With the admin listener on: its token must open nothing here. Enable the private feed too.
+    let releases = tempfile::tempdir().unwrap();
+    std::fs::write(
+        releases.path().join("releases.win.json"),
+        r#"{"Assets":[]}"#,
+    )
+    .unwrap();
+    let env = Env::start_with(|c| {
+        admin_on(c);
+        c.releases.dir = Some(releases.path().into());
+    })
+    .await;
     let client = no_redirects();
     let public = public_set();
     let mut targets: Vec<(String, String)> = inventory()
@@ -1522,7 +1540,12 @@ async fn email_ingest_needs_a_fresh_signature_and_an_unused_nonce() {
 #[tokio::test]
 async fn oversized_bodies_are_rejected_on_every_route() {
     const LIMIT: usize = 4096;
-    let env = Env::start_with(|c| c.limits.max_body_bytes = LIMIT).await;
+    let releases = tempfile::tempdir().unwrap();
+    let env = Env::start_with(|c| {
+        c.limits.max_body_bytes = LIMIT;
+        c.releases.dir = Some(releases.path().into());
+    })
+    .await;
     let addr = env.t.server.addr;
     let bearer = format!("Bearer {TOKEN_A}");
     let mut targets: Vec<(String, String)> = Vec::new();

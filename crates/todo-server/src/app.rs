@@ -75,6 +75,8 @@ pub struct AppState {
     pub attachments: Arc<crate::blobs::Attachments>,
     /// The web app served at `/app`, when `[web] dir` is set.
     pub web: Option<Arc<crate::web::spa::WebApp>>,
+    /// The private desktop release feed, when `[releases] dir` is set.
+    pub releases: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -244,6 +246,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .merge(crate::web::router(state.clone()))
         .merge(crate::mcp::router(state.clone()))
+        .merge(crate::releases::router(&state))
         .route_layer(from_fn(api::tag_route))
         .nest("/api/v1", api::router(state.clone()))
         .layer(from_fn_with_state(limits.request_timeout(), deadline))
@@ -421,6 +424,18 @@ impl Server {
             }
             None => None,
         };
+        let releases = if let Some(dir) = &config.releases.dir {
+            Some(
+                crate::releases::directory(dir)
+                    .await
+                    .map_err(|source| ServerError::Io {
+                        context: "opening the desktop releases directory".into(),
+                        source,
+                    })?,
+            )
+        } else {
+            None
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
         let collector = attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
@@ -441,6 +456,7 @@ impl Server {
             ingest: ingest.clone(),
             attachments: attachments.clone(),
             web,
+            releases,
         };
         let admin = admin.map(|(l, hash)| {
             let st = crate::admin::AdminState::new(state.clone(), hash, &config.admin);

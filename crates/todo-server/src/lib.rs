@@ -33,6 +33,7 @@ pub mod engine;
 pub mod ingest;
 pub mod mcp;
 pub mod ratelimit;
+mod releases;
 pub mod scope;
 pub mod summary;
 pub mod web;
