@@ -140,6 +140,15 @@ fn order(state: &State, list: ListId) -> Vec<TaskId> {
 #[test]
 fn activity_revocation_survives_reopening_the_same_pairing_offline() {
     let server = TestServer::start();
+    // Stand in for the owner's independent setup passkey. This test never opens a browser or
+    // reads its WebAuthn payload; the server only needs the row for the revocation invariant.
+    rusqlite::Connection::open(server.running().engine.path())
+        .expect("server database")
+        .execute(
+            "INSERT INTO passkeys (cred_id, name, passkey, created_at) VALUES ('root', 'First passkey', '{}', 0)",
+            [],
+        )
+        .expect("seed setup passkey");
     let net = runtime().expect("runtime");
     let home = tempfile::tempdir().expect("home");
     let paths = Paths::in_dir(home.path().to_owned());
