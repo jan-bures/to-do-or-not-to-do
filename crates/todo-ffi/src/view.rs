@@ -9,11 +9,11 @@ use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
 use todo_client::room_header;
-use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
-use todo_core::model::{LinkKind, List, Priority, Task};
+use todo_core::model::{LinkKind, List, Priority, Stamp, Task};
 use todo_core::query::{BuiltinList, EvalContext, Query, fold};
 use todo_core::time::{Timestamp, add_days, days_between};
+use todo_core::{Actor, State};
 
 /// A built-in smart list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, uniffi::Enum)]
@@ -312,6 +312,27 @@ pub struct TaskRow {
     /// the app. Reopening a task passes it back in [`Reopening`], so the row keeps its completed place (done
     /// tasks sort by it to the nanosecond) while it leaves it.
     pub completed_at: Option<String>,
+    /// The update stamp if the last change was by an agent. Pass it back in [`Holding`] to keep the
+    /// row's place in Agent activity during completion. No owner device ID crosses the row boundary.
+    pub agent_update: Option<AgentUpdate>,
+}
+
+/// The agent and exact time of a task's latest update.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentUpdate {
+    /// Agent ID (not its display label).
+    pub agent_id: String,
+    /// RFC 3339 timestamp, opaque to the app.
+    pub at: String,
+}
+
+impl AgentUpdate {
+    fn stamp(&self) -> Option<Stamp> {
+        Some(Stamp {
+            at: self.at.parse().ok()?,
+            by: Actor::agent(&self.agent_id).ok()?,
+        })
+    }
 }
 
 /// What the finished day hands over to: tomorrow's first task and the rest of the week.
@@ -375,15 +396,24 @@ pub struct RoomView {
 
 /// Where the app's completion choreography keeps tasks while it plays (as the desktop's `UiState::holding`
 /// and `reopening`). A row toggled on screen stays where it was, and counts as it did, until its motion
-/// releases it: only then do the rows, the counts, the sun and the finished day change. Only the done
-/// state is placed: a task that leaves a room for any other reason (an owner's toggle in Agent activity,
-/// say) leaves the room's rows, and the app paints what is left of its choreography itself.
+/// releases it: only then do the rows, the counts, the sun and the finished day change. The old agent
+/// update stamp (if any) keeps a completing row in Agent activity; other fields and liveness follow
+/// the replica.
 #[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
 pub struct RowPlacement {
     /// Tasks just completed: they keep their place in the open rows and count as open.
-    pub holding: Vec<String>,
+    pub holding: Vec<Holding>,
     /// Tasks just reopened: they keep their completed place and count as done.
     pub reopening: Vec<Reopening>,
+}
+
+/// A task held open while its completion plays.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Holding {
+    /// Task ID.
+    pub id: String,
+    /// The latest agent update before completion, as given by [`TaskRow::agent_update`].
+    pub agent_update: Option<AgentUpdate>,
 }
 
 /// A task being reopened, with when it had been completed ([`TaskRow::completed_at`]).
@@ -403,13 +433,19 @@ impl RowPlacement {
 }
 
 /// The state as the rows place it while a choreography plays: each held task still open, and each task
-/// being reopened still done, as it was. IDs or times that don't parse, and IDs that name no task, are
-/// ignored. Only the list and its counts read this; the detail pane always shows the truth.
+/// being reopened still done, as it was. A held completion also keeps the old agent update stamp.
+/// Invalid IDs or stamps are ignored. Only the list and its counts read this; the detail pane always
+/// shows the truth.
 pub fn placed(state: &State, placement: &RowPlacement) -> State {
     let mut placed = state.clone();
-    for id in &placement.holding {
-        if let Some(t) = task_id(id).and_then(|id| placed.tasks.get_mut(&id)) {
+    for h in &placement.holding {
+        if let Some(t) = task_id(&h.id).and_then(|id| placed.tasks.get_mut(&id))
+            && t.is_done()
+        {
             t.completed_at = None;
+            if let Some(stamp) = h.agent_update.as_ref().and_then(AgentUpdate::stamp) {
+                t.updated = stamp;
+            }
         }
     }
     for r in &placement.reopening {
@@ -674,6 +710,10 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .collect(),
         from_mail: ix.mail.contains(&task.id),
         completed_at: task.completed_at.map(|c| c.to_string()),
+        agent_update: task.updated.by.agent_id().map(|agent| AgentUpdate {
+            agent_id: agent.to_string(),
+            at: task.updated.at.to_string(),
+        }),
     }
 }
 
@@ -945,12 +985,7 @@ pub fn home(state: &State, now: &Now) -> Home {
             icon: Some(s.icon().into()),
             open: match s {
                 SmartList::Completed => 0,
-                _ => count(
-                    s.builtin()
-                        .parse()
-                        .map(|q| q.run(state, &ctx).len())
-                        .unwrap_or(0),
-                ),
+                _ => count(room_header::smart_list_count(state, s.builtin(), &ctx)),
             },
         })
         .collect();

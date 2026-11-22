@@ -11,7 +11,7 @@ use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows}
 use todo_client::room_header;
 use todo_core::State;
 use todo_core::ids::{ListId, TaskId};
-use todo_core::model::{LinkKind, Priority, Task};
+use todo_core::model::{LinkKind, Priority, Stamp, Task};
 use todo_core::query::{EvalContext, Query, fold};
 use todo_core::time::{Timestamp, add_days, days_between};
 
@@ -163,16 +163,27 @@ fn eyebrow(e: room_header::Eyebrow) -> Eyebrow {
 }
 
 /// The inline filter: query language when it parses, else words in the title.
-fn filter<'a>(state: &State, text: &str, ctx: &EvalContext, tasks: Vec<&'a Task>) -> Vec<&'a Task> {
+fn filter<'a>(
+    state: &State,
+    text: &str,
+    ctx: &EvalContext,
+    tasks: Vec<&'a Task>,
+    held_updates: &BTreeMap<TaskId, Stamp>,
+) -> Vec<&'a Task> {
     let text = text.trim();
     if text.is_empty() {
         return tasks;
     }
     match Query::parse(text) {
-        Ok(q) => tasks
-            .into_iter()
-            .filter(|t| q.matches(state, t, ctx))
-            .collect(),
+        Ok(q) => {
+            let matcher = q.matcher(state, ctx);
+            tasks
+                .into_iter()
+                .filter(|t| {
+                    room_header::matches_with_held_update(&matcher, t, held_updates.get(&t.id))
+                })
+                .collect()
+        }
         Err(_) => {
             // Not a query: every word of it must appear in the title.
             let folded = fold(text);
@@ -195,14 +206,15 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let key = ui.room.resolved(state);
     let shared = shared_key(key);
     // The header (progress, summary, eyebrow, counts) comes from the shared derivation, before filtering.
-    let tasks = room_header::room_tasks(state, shared, &ui.holding, ctx);
+    let tasks =
+        room_header::room_tasks_with_updates(state, shared, &ui.holding, &ui.held_updates, ctx);
     let header = room_header::header_of(state, shared, &tasks, &ui.holding, &now.local());
     let room_header::RoomTasks { open, done } = tasks;
 
     // The filter narrows tasks; Activity has none to narrow.
     let filtered = !ui.filter.trim().is_empty() && !key.is_activity();
-    let open = filter(state, &ui.filter, ctx, open);
-    let done = filter(state, &ui.filter, ctx, done);
+    let open = filter(state, &ui.filter, ctx, open, &ui.held_updates);
+    let done = filter(state, &ui.filter, ctx, done, &ui.held_updates);
     let completed_count = done.len();
 
     let (title, hue, chips, placeholder): (SharedString, Hue, Chips, SharedString) = match key {
@@ -365,14 +377,6 @@ fn sidebar(
     ctx: &EvalContext,
 ) -> Sidebar {
     let today = ctx.today;
-    let count = |s: &str| {
-        Query::parse(s)
-            .map(|q| {
-                let m = q.matcher(state, ctx);
-                state.tasks.values().filter(|t| m.matches(t)).count()
-            })
-            .unwrap_or(0)
-    };
     let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     let agent_today = state
         .tasks
@@ -391,7 +395,11 @@ fn sidebar(
             },
             _ => NavItem {
                 smart: s,
-                count: Some(as_u32(count(s.builtin().query))),
+                count: Some(as_u32(room_header::smart_list_count(
+                    state,
+                    s.builtin(),
+                    ctx,
+                ))),
                 pip: None,
             },
         })

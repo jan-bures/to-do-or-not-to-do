@@ -355,7 +355,7 @@ pub fn sidebar(state: &State, now: &Now, date_of: impl Fn(Timestamp) -> Date) ->
         .map(|b| NavItem {
             room: RoomId::Smart(b.id),
             name: smart_name(b.id).to_owned(),
-            count: b.parse().map_or(0, |q| q.run(state, &ctx).len()),
+            count: room_header::smart_list_count(state, *b, &ctx),
             hue: smart_hue(b.id),
             glyph: None,
         })
@@ -792,8 +792,12 @@ pub fn room_memos(
         })
     });
     let filtered = Memo::new(move |_| {
-        unfiltered
-            .with(|room| text.with(|text| state.with(|s| filter_room(room, s, &now.get(), text))))
+        unfiltered.with(|room| {
+            text.with(|text| {
+                holds
+                    .with(|updates| state.with(|s| filter_room(room, s, &now.get(), text, updates)))
+            })
+        })
     });
     (unfiltered, filtered)
 }
@@ -801,7 +805,7 @@ pub fn room_memos(
 #[cfg(test)]
 fn room(state: &State, now: &Now, id: &RoomId, filter: &str, holding: &BTreeSet<TaskId>) -> Room {
     let unfiltered = unfiltered_room(state, now, id, holding, &BTreeMap::new());
-    filter_room(&unfiltered, state, now, filter)
+    filter_room(&unfiltered, state, now, filter, &BTreeMap::new())
 }
 
 fn unfiltered_room(
@@ -877,7 +881,13 @@ fn unfiltered_room(
     }
 }
 
-fn filter_room(room: &Room, state: &State, now: &Now, text: &str) -> Room {
+fn filter_room(
+    room: &Room,
+    state: &State,
+    now: &Now,
+    text: &str,
+    updates: &BTreeMap<TaskId, Stamp>,
+) -> Room {
     let text = text.trim();
     if text.is_empty() || room.id.is_activity() {
         return room.clone();
@@ -889,10 +899,9 @@ fn filter_room(room: &Room, state: &State, now: &Now, text: &str) -> Room {
     let folded = matcher.is_none().then(|| fold(text));
     let matches = |row: &&Row| {
         if let Some(matcher) = &matcher {
-            state
-                .tasks
-                .get(&row.id)
-                .is_some_and(|task| matcher.matches_fields(task))
+            state.tasks.get(&row.id).is_some_and(|task| {
+                room_header::matches_with_held_update(matcher, task, updates.get(&row.id))
+            })
         } else {
             let title = fold(&row.title);
             folded
@@ -1468,6 +1477,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             [b, a]
         );
+    }
+
+    #[test]
+    fn restoring_a_merge_source_leaves_the_my_day_badge_equal_to_the_room() {
+        let mut s = fixtures::state();
+        let n = now();
+        let id = RoomId::Smart("my_day");
+        let (source, target) = (fixtures::task(3), fixtures::task(6));
+        for task in [source, target] {
+            s.tasks.get_mut(&task).unwrap().my_day = Some(n.today());
+        }
+        let before = room(&s, &n, &id, "", &BTreeSet::new()).header.open();
+        let owner = Actor::owner("web").unwrap();
+        for command in [
+            Command::MergeTasks { source, target },
+            Command::Restore { id: source.into() },
+        ] {
+            for event in todo_core::decide(&s, &owner, &command, n.at).unwrap() {
+                todo_core::apply(&mut s, &event).unwrap();
+            }
+        }
+        let after = room(&s, &n, &id, "", &BTreeSet::new());
+        assert_eq!(after.header.open(), before - 1);
+        let sidebar = sidebar(&s, &n, |at| n.local_time().date_of(at));
+        let badge = sidebar.smart.iter().find(|item| item.room == id).unwrap();
+        assert_eq!(badge.count, after.header.open());
     }
 
     #[test]

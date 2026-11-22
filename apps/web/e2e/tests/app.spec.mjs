@@ -45,20 +45,26 @@ test.describe("rooms spanning the autumn clock change", () => {
     await expect(completed.locator(".act-when")).toHaveText("today 00:30");
   });
 
-  test("Agent activity holds the old membership and score until the row leaves", async ({ page }) => {
-    await page.clock.install({ time: new Date("2026-11-01T12:00:00Z") });
-    await open(page, "/app/agent-activity?fixture=dst");
-    await page.clock.pauseAt(new Date("2026-11-01T12:01:00Z"));
-    const active = row(page, "Newer agent change");
-    await active.getByRole("checkbox").evaluate((checkbox) => checkbox.click());
-    await expect(active).toHaveClass(/completing/);
-    await expect(rows(page).locator(".row-title")).toHaveText(["Newer agent change", "After midnight"]);
-    await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
-    await expect(page.locator(".sb-counts")).toHaveText("1 open · 0 done today");
-    await page.clock.runFor(1100);
-    await expect(rows(page).locator(".row-title")).toHaveText(["After midnight"]);
-    await expect(page.locator(".summary")).toContainText("1 of 1 done");
-  });
+  for (const filter of ["", "updated_by:agent"]) {
+    test(`Agent activity holds the old membership and score until the row leaves (${filter || "unfiltered"})`, async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-11-01T12:00:00Z") });
+      await open(page, "/app/agent-activity?fixture=dst");
+      if (filter) {
+        await page.keyboard.press("/");
+        await page.getByRole("searchbox", { name: "Filter tasks" }).fill(filter);
+      }
+      await page.clock.pauseAt(new Date("2026-11-01T12:01:00Z"));
+      const active = row(page, "Newer agent change");
+      await active.getByRole("checkbox").evaluate((checkbox) => checkbox.click());
+      await expect(active).toHaveClass(/completing/);
+      await expect(rows(page).locator(".row-title")).toHaveText(["Newer agent change", "After midnight"]);
+      await expect(page.locator(".summary")).toHaveText(/1 of 2 done\s*·\s*1 open/);
+      await expect(page.locator(".sb-counts")).toHaveText("1 open · 0 done today");
+      await page.clock.runFor(1100);
+      await expect(rows(page).locator(".row-title")).toHaveText(["After midnight"]);
+      await expect(page.locator(".summary")).toContainText("1 of 1 done");
+    });
+  }
 });
 
 test("adding a task puts it in My Day", async ({ page }) => {

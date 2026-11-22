@@ -24,7 +24,7 @@ use jiff::tz::TimeZone;
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::model::{Stamp, Task};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Query};
+use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Matcher, Query};
 use todo_core::time::{Date, Timestamp, Weekday};
 
 use crate::activity;
@@ -205,6 +205,34 @@ pub fn my_day_progress(state: &State, today: Date) -> (usize, usize) {
         .fold((0, 0), |(done, total), t| {
             (done + usize::from(t.is_done()), total + 1)
         })
+}
+
+/// Counts the tasks selected by a smart list, without sorting them. Badges and room membership
+/// use the same eligibility rule, which excludes merge sources even if they were restored.
+#[must_use]
+pub fn smart_list_count(state: &State, builtin: BuiltinList, ctx: &EvalContext) -> usize {
+    let Ok(query) = builtin.parse() else {
+        return 0;
+    };
+    let matcher = query.matcher(state, ctx);
+    state
+        .tasks
+        .values()
+        .filter(|t| task_live(state, t) && matcher.matches_fields(t))
+        .count()
+}
+
+/// Filters an already eligible row. While it plays its completion, use the same update stamp
+/// that kept it in Agent activity; the other fields still follow the replica.
+#[must_use]
+pub fn matches_with_held_update(matcher: &Matcher<'_>, task: &Task, held: Option<&Stamp>) -> bool {
+    if let Some(stamp) = held.filter(|_| task.is_done()) {
+        let mut before = task.clone();
+        before.updated = stamp.clone();
+        matcher.matches_fields(&before)
+    } else {
+        matcher.matches_fields(task)
+    }
 }
 
 /// A room's tasks, unfiltered.

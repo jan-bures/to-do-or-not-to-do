@@ -796,7 +796,7 @@ fn a_finished_day_offers_planning_even_with_nothing_due_tomorrow() {
 
 #[test]
 fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
-    use todo_ffi::view::{Reopening, RowPlacement};
+    use todo_ffi::view::{Holding, Reopening, RowPlacement};
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let before = engine.room(my_day(), now());
     let home_before = engine.home(now());
@@ -807,7 +807,10 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
 
     // Held: still the first open row, and the counts and the drawer are as they were.
     let holding = RowPlacement {
-        holding: vec![first.clone()],
+        holding: vec![Holding {
+            id: first.clone(),
+            agent_update: before.tasks[0].agent_update.clone(),
+        }],
         reopening: vec![],
     };
     let held = engine.room_placed(my_day(), String::new(), holding.clone(), now());
@@ -852,7 +855,10 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
 
     // Unknown or malformed IDs and times are ignored; a task that's gone answers None.
     let junk = RowPlacement {
-        holding: vec!["not-an-id".into()],
+        holding: vec![Holding {
+            id: "not-an-id".into(),
+            agent_update: None,
+        }],
         reopening: vec![Reopening {
             id: first.clone(),
             completed_at: "not a time".into(),
@@ -865,33 +871,40 @@ fn a_placement_keeps_toggled_rows_where_they_were_until_released() {
     assert_eq!(engine.task_done("not-an-id".into()), None);
 }
 
-/// A placement only keeps a task's done state: a task the owner toggled in Agent activity is no longer an
-/// agent's change, and the room drops it however it's placed (the app paints what is left of its row).
 #[test]
-fn a_placement_never_keeps_a_task_its_room_no_longer_selects() {
-    use todo_ffi::view::RowPlacement;
+fn agent_activity_keeps_membership_order_and_score_until_a_completion_is_released() {
+    use todo_ffi::view::{Holding, RowPlacement};
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let agents = RoomKey::Smart {
         list: SmartList::AgentActivity,
     };
-    let row = engine
-        .room(agents.clone(), now())
+    let filter = "updated_by:agent";
+    let before = engine.room_matching(agents.clone(), filter.into(), now());
+    let row = before
         .tasks
-        .into_iter()
+        .iter()
         .find(|t| !t.done)
         .expect("an open agent task");
+    assert!(row.agent_update.is_some());
     engine.set_done(row.id.clone(), true).unwrap();
     let held = RowPlacement {
-        holding: vec![row.id.clone()],
+        holding: vec![Holding {
+            id: row.id.clone(),
+            agent_update: row.agent_update.clone(),
+        }],
         reopening: vec![],
     };
-    let placed = engine.room_placed(agents.clone(), String::new(), held, now());
-    assert!(placed.tasks.iter().all(|t| t.id != row.id));
-    assert_eq!(placed, engine.room(agents, now()));
+    let placed = engine.room_placed(agents.clone(), filter.into(), held, now());
+    assert_eq!(placed, before);
+    let released = engine.room_matching(agents, filter.into(), now());
+    assert!(released.tasks.iter().all(|t| t.id != row.id));
+    assert_eq!(
+        (released.done, released.total, released.open),
+        (before.done, before.total - 1, before.open - 1)
+    );
 }
 
-/// What the placement needs from a row is only its completion time: no row carries which device or actor
-/// changed its task. (The agent badge still names the agent that last touched it.)
+/// The placement carries agent updates, but no row carries an owner stamp or device ID.
 #[test]
 fn rows_carry_no_device_or_owner_stamp() {
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();

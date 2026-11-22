@@ -611,6 +611,9 @@ impl ShellView {
                 .map(|t| t.is_done())
         });
         self.ui.holding = self.motion.holding().collect();
+        self.ui
+            .held_updates
+            .retain(|id, _| self.ui.holding.contains(id));
         let reopening: Vec<TaskId> = self.motion.reopening().collect();
         self.ui.reopening.retain(|id, _| reopening.contains(id));
         let leaving: Vec<TaskId> = self.motion.leaving().collect();
@@ -1524,7 +1527,9 @@ impl ShellView {
             } else {
                 self.motion.complete(id, now, pace)
             };
-            if keep == Keep::Reopening
+            if keep == Keep::Holding {
+                self.ui.held_updates.insert(id, task.updated.clone());
+            } else if keep == Keep::Reopening
                 && let Some(at) = completed_at
             {
                 self.ui.reopening.insert(id, at);

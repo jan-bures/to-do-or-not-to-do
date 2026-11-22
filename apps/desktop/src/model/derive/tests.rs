@@ -126,6 +126,35 @@ fn a_task_being_completed_keeps_its_place_until_released() {
 }
 
 #[test]
+fn agent_activity_keeps_the_held_row_in_order_and_in_the_score_even_when_filtered() {
+    let mut f = fixtures::my_day();
+    f.ui.room = RoomKey::Smart(Smart::AgentActivity);
+    f.ui.filter = "updated_by:agent".into();
+    let before = f.shell().room;
+    let task = before.tasks.iter().find(|t| !t.done).expect("agent row").id;
+    f.ui.held_updates
+        .insert(task, f.state.tasks[&task].updated.clone());
+    f.ui.holding.insert(task);
+    run(
+        &mut f.state,
+        fixtures_now(),
+        Command::CompleteTask { id: task },
+    );
+
+    let held = f.shell().room;
+    assert_eq!(held.summary(), before.summary());
+    assert_eq!(titles(&held.tasks), titles(&before.tasks));
+    assert!(held.tasks.iter().any(|t| t.id == task && t.done));
+
+    f.ui.holding.clear();
+    f.ui.held_updates.clear();
+    let released = f.shell().room;
+    let (done, total, open) = before.summary();
+    assert_eq!(released.summary(), (done, total - 1, open - 1));
+    assert!(!released.tasks.iter().any(|t| t.id == task));
+}
+
+#[test]
 fn space_can_reach_the_open_detail_after_its_row_leaves() {
     let mut f = fixtures::my_day();
     let task = f.shell().room.tasks[0].id;

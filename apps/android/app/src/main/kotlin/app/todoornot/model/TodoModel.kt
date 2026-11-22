@@ -5,6 +5,7 @@ import app.todoornot.core.ActivityRow
 import app.todoornot.core.ActivityLoad
 import app.todoornot.core.ActivityPager
 import app.todoornot.core.ActivityView
+import app.todoornot.core.AgentUpdate
 import app.todoornot.core.OrganizeChange
 import app.todoornot.core.OrganizeDeletion
 import app.todoornot.core.Completion
@@ -13,6 +14,7 @@ import app.todoornot.core.Deletion
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FfiException
 import app.todoornot.core.FieldEdit
+import app.todoornot.core.Holding
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
@@ -310,6 +312,9 @@ class TodoModel(
      */
     private val reopenedAt = HashMap<String, String>()
 
+    /** A completing row's last agent update, so it keeps its place in Agent activity. */
+    private val heldUpdates = HashMap<String, AgentUpdate>()
+
     /**
      * Where each task in motion was last listed (its row, section and place), so a row the room drops
      * while it plays is painted as it last was ([Motion.ghost]).
@@ -440,7 +445,10 @@ class TodoModel(
         val back = HashSet<String>()
         for (t in room.tasks + room.completed) if (t.id in place.ghosts && (toggles[t.id] ?: 0L) <= seen) back += t.id
         if (back.isEmpty()) return room
-        val rows = RowPlacement(place.rows.holding - back, place.rows.reopening.filter { it.id !in back })
+        val rows = RowPlacement(
+            place.rows.holding.filter { it.id !in back },
+            place.rows.reopening.filter { it.id !in back },
+        )
         val free = engine.roomPlaced(k, f, rows, n)
         return room.copy(tasks = free.tasks, completed = free.completed)
     }
@@ -513,10 +521,9 @@ class TodoModel(
             val ghosts = m.ghosts()
             for (t in rows) if (t.id in ids && !m.isGhost(t.id)) lastSeen[t.id] = ghostAt(t, Section.ROWS, rows, ghosts)
             for (t in done) if (t.id in ids && !m.isGhost(t.id)) lastSeen[t.id] = ghostAt(t, Section.COMPLETED, done, ghosts)
-            // A row dropped while it plays, for a reason other than its done state (the placement keeps
-            // that), is painted as it last was and plays on: a ghost. Before the data is followed, which
-            // would stop a settle the new state no longer matches (an agent completed the task, and the
-            // filter dropped it). A deleted task's row stops at once instead.
+            // Placement keeps the done state and pre-completion agent update. If the room still drops
+            // the row, paint it as it was: a ghost. Do this before reconcile can stop a settle the new
+            // state no longer matches. A deleted task's row stops at once instead.
             for (id in ids) {
                 if (m.isGhost(id) || id in listed) continue
                 val seen = lastSeen[id] ?: continue
@@ -561,8 +568,8 @@ class TodoModel(
      * A task completing counts as open and one being reopened as done, until released. A toggle not yet
      * written (a second tap that reverses a choreography, say) keeps its task as it asked, open or done,
      * until the engine has it too, even past the end of its choreography: a read in between never moves
-     * the row or changes the counts. Only the done state is placed: a row the room drops for another
-     * reason plays on as a ghost ([follow]).
+     * the row or changes the counts. The old agent update is restored too. A row the room drops for
+     * another reason plays on as a ghost ([follow]).
      */
     private fun placeRows(): Boolean {
         val m = motion.motion
@@ -574,8 +581,9 @@ class TodoModel(
         val holding = held + unwritten.filterValues { !it.done }.keys
         val reopening = back + unwritten.filterValues { it.done }.keys
         reopenedAt.keys.retainAll(reopening)
+        heldUpdates.keys.retainAll(holding)
         val next = RowPlacement(
-            holding.sorted(),
+            holding.sorted().map { id -> Holding(id, heldUpdates[id]) },
             reopening.sorted().mapNotNull { id -> reopenedAt[id]?.let { Reopening(id, it) } },
         )
         moving = (ids + toggled.keys).associateWith { toggled[it]?.serial ?: 0L }
@@ -765,6 +773,7 @@ class TodoModel(
                 }
             }
             if (done) {
+                (openRow ?: doneRow)?.agentUpdate?.let { heldUpdates[id] = it }
                 m.complete(id, at, pace(), from, to)
             } else {
                 m.reopen(id, at, pace(), from, to)

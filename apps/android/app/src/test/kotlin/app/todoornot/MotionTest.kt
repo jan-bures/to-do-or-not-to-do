@@ -50,6 +50,7 @@ private fun taskRow(id: String, done: Boolean = false) = TaskRow(
     tags = emptyList(),
     fromMail = false,
     completedAt = null,
+    agentUpdate = null,
 )
 
 /** [id]'s row, last listed at [index] among the open rows. */

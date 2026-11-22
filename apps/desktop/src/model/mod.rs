@@ -29,6 +29,7 @@ use todo_client::Connection;
 use todo_client::room_header::{self, LocalTime, SmartList};
 use todo_core::State;
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, StepId, TagId, TaskId};
+use todo_core::model::Stamp;
 use todo_core::query::{BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
@@ -243,6 +244,8 @@ pub struct UiState {
     /// Tasks just completed that keep their place in the open rows while the completion plays. They count
     /// as open until they're released (`motion::Release`), so the counts and the sun change only then.
     pub holding: BTreeSet<TaskId>,
+    /// Update stamps from before completion, for Agent activity membership, order and filters.
+    pub held_updates: BTreeMap<TaskId, Stamp>,
     /// Tasks just reopened that keep their completed place (with when they were completed) while they
     /// leave it. They count as done until they're released.
     pub reopening: BTreeMap<TaskId, Timestamp>,

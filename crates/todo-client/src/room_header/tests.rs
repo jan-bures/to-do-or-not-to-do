@@ -314,6 +314,35 @@ fn my_day_counts_its_whole_plan_and_finishes_the_day() {
 }
 
 #[test]
+fn restoring_a_merge_source_does_not_increase_smart_list_badges_or_room_counts() {
+    let mut w = World::new();
+    let list = w.list("Errands", None);
+    let source = w.task(list, "duplicate");
+    let target = w.task(list, "keep this one");
+    let now = utc("2026-11-01T10:00:00Z");
+    for id in [source, target] {
+        let task = w.task_mut(id);
+        task.my_day = Some(now.today());
+        task.due = Some(now.today());
+        task.priority = Priority::High;
+    }
+    w.run(Command::MergeTasks { source, target });
+    w.run(Command::Restore { id: source.into() });
+    assert!(w.state.is_live(source.into()));
+    assert_eq!(w.state.tasks[&source].merged_into, Some(target));
+    for smart in [
+        SmartList::MyDay,
+        SmartList::All,
+        SmartList::Important,
+        SmartList::Planned,
+    ] {
+        let badge = smart_list_count(&w.state, smart.builtin(), &now.eval());
+        assert_eq!(badge, 1, "{smart:?}");
+        assert_eq!(badge, w.header(RoomKey::Smart(smart), &now).open());
+    }
+}
+
+#[test]
 fn completed_counts_every_finished_task() {
     let mut w = World::new();
     let list = w.list("Errands", None);
