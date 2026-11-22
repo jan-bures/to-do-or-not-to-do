@@ -216,8 +216,10 @@ pub struct Engine {
     /// Set when a failed write could not be rolled back.
     poisoned: AtomicBool,
     /// Test hook: milliseconds to sleep between claiming a commit and committing.
+    #[cfg(feature = "test-hooks")]
     commit_delay_ms: AtomicU64,
     /// Test hook: a claimed commit waits for this lock (see [`Engine::hold_commits`]).
+    #[cfg(feature = "test-hooks")]
     commit_gate: Mutex<()>,
     /// Writes waiting for the writer (see [`Engine::waiting_writes`]).
     waiting: AtomicUsize,
@@ -226,6 +228,7 @@ pub struct Engine {
 }
 
 /// Keeps claimed commits from committing (see [`Engine::hold_commits`]).
+#[cfg(feature = "test-hooks")]
 #[derive(Debug)]
 #[must_use]
 pub struct CommitHold<'a> {
@@ -431,7 +434,9 @@ impl Engine {
             epoch,
             clock,
             poisoned: AtomicBool::new(false),
+            #[cfg(feature = "test-hooks")]
             commit_delay_ms: AtomicU64::new(0),
+            #[cfg(feature = "test-hooks")]
             commit_gate: Mutex::new(()),
             waiting: AtomicUsize::new(0),
             commit_check: RwLock::new(None),
@@ -543,8 +548,8 @@ impl Engine {
     }
 
     /// Test hook: sleep this long between claiming a commit and committing, to widen the race between
-    /// a commit and the request deadline.
-    #[doc(hidden)]
+    /// a commit and the request deadline. Only with the `test-hooks` feature.
+    #[cfg(feature = "test-hooks")]
     pub fn set_commit_delay(&self, delay: std::time::Duration) {
         self.commit_delay_ms.store(
             u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
@@ -555,11 +560,21 @@ impl Engine {
     /// Test hook: until the returned guard is dropped, a write that claimed its commit waits (holding
     /// the writer) before it commits. For tests that need a commit to outlive the request deadline
     /// without betting on how long a fixed delay takes.
-    #[doc(hidden)]
+    /// Only with the `test-hooks` feature.
+    #[cfg(feature = "test-hooks")]
     pub fn hold_commits(&self) -> CommitHold<'_> {
         CommitHold {
             _guard: lock(&self.commit_gate),
         }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn test_hooks_before_commit(&self) {
+        let delay = self.commit_delay_ms.load(Ordering::Relaxed);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+        }
+        drop(lock(&self.commit_gate));
     }
 
     /// Installs a check that every write (command, undo, unique write) must pass, run inside the
@@ -1109,11 +1124,8 @@ impl Engine {
             if !p.cancel.begin_commit() {
                 return Err(EngineError::Cancelled);
             }
-            let delay = self.commit_delay_ms.load(Ordering::Relaxed);
-            if delay > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(delay));
-            }
-            drop(lock(&self.commit_gate));
+            #[cfg(feature = "test-hooks")]
+            self.test_hooks_before_commit();
             tx.commit().map_err(StoreError::from)?;
             Ok(result)
         })();

@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "todo-server"
 path = "src/main.rs"
 
+[features]
+# Hooks that let the integration tests hold or slow a commit. Never in a release build: only the
+# self dev-dependency below enables it, for this package's tests.
+test-hooks = []
+
 [dependencies]
 todo-core = { workspace = true, features = ["openapi"] }
 anyhow.workspace = true
@@ -54,6 +59,7 @@ ureq.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+todo-server = { path = ".", features = ["test-hooks"] }
 tokio = { workspace = true, features = ["io-util"] }
 reqwest.workspace = true
 # Only to install the *ring* provider when the workspace build gives reqwest `rustls-no-provider`.
