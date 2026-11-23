@@ -77,9 +77,10 @@ p { max-inline-size: 72ch; }
 .row-copy { gap: var(--space-1); }
 .row-actions { justify-self: end; }
 .row-actions .stack { justify-items: end; text-align: end; max-inline-size: var(--desktop-detail-min); }
-.actions, .fields, .facts { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2) var(--space-3); }
-.facts { align-items: baseline; gap: 0 var(--space-2); }
-.facts > span { display: inline-block; }
+.actions, .fields { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2) var(--space-3); }
+.facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0; }
+.facts > span { min-inline-size: 0; }
+.fact-separator { display: inline-block; margin-inline: var(--space-1); }
 time, .short-id { white-space: nowrap; }
 time { font-variant-numeric: tabular-nums; }
 code, .secret, .code-input { font: var(--text-summary-figures); }
@@ -123,6 +124,22 @@ summary.danger { display: inline-flex; align-items: center; min-height: var(--co
 :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
 label { display: grid; gap: var(--space-1); min-inline-size: 0; max-inline-size: 100%; font: var(--text-nav); }
 input, select { min-inline-size: 0; inline-size: 100%; }
+.select-control { position: relative; display: block; min-inline-size: 0; }
+.select-control select { display: block; appearance: none; padding-inline-end: var(--space-8); }
+.select-control::after, .audit-toggle::after {
+  content: "";
+  inline-size: var(--space-2);
+  block-size: var(--space-2);
+  border: solid var(--color-ink-2);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.select-control::after {
+  position: absolute;
+  inset-block-start: calc(50% - var(--space-2) * .75);
+  inset-inline-end: var(--space-3);
+  pointer-events: none;
+}
 form, .fields { max-inline-size: 100%; }
 .form-grid {
   display: grid;
@@ -134,16 +151,43 @@ form, .fields { max-inline-size: 100%; }
 .secret { inline-size: min(var(--desktop-list-min), 100%); }
 .grant { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, calc(var(--space-10) * 3)); align-items: center; gap: var(--space-3); }
 .grant-list { padding-inline-start: var(--space-4); }
-.audit-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-log { inline-size: 100%; }
+.audit-day { gap: var(--space-2); }
+.audit-day + .audit-day { margin-block-start: var(--space-6); }
+.audit-events { inline-size: 100%; list-style: none; padding: 0; border-block-start: 1px solid var(--color-line); }
+.audit-events > li { border-block-end: 1px solid var(--color-line); }
+.audit-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 32ch) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-1);
+  border-radius: var(--radius-sm);
+  font: var(--text-body);
+}
+.audit-line::-webkit-details-marker { display: none; }
+.audit-line:hover, .audit-events details[open] > summary { background: var(--color-hover); }
+.audit-event { font: var(--text-nav); color: var(--color-ink); }
+.audit-toggle { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+.audit-toggle::after { margin-inline-end: var(--space-1); transform: translateY(-25%) rotate(45deg); }
+.audit-events details[open] .audit-toggle::after { transform: translateY(25%) rotate(225deg); }
+.audit-detail { display: block; padding: var(--space-1) var(--space-3) var(--space-3); white-space: pre-wrap; }
+@media (forced-colors: active) {
+  .select-control select { appearance: auto; padding-inline-end: var(--space-3); }
+  .select-control::after { display: none; }
+}
 @media (max-width: 640px) {
   .shell { padding-inline: var(--space-4); }
   main { padding-block-start: var(--space-6); }
   h1 { font: var(--text-room-title-phone); letter-spacing: var(--text-room-title-phone-tracking); }
   nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); }
   nav a { padding-inline: var(--space-2); justify-content: center; }
+  .session-note.facts { display: grid; gap: var(--space-1); }
+  .session-note .fact-separator { display: none; }
   .row { grid-template-columns: minmax(0, 1fr); }
   .row-actions, .row-actions .stack, .confirm[open] { justify-self: start; justify-items: start; text-align: start; }
   .fields, .page-body > .stack, section > .stack { inline-size: 100%; }
   .fields > label { flex-basis: 100%; }
   .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .audit-line { grid-template-columns: minmax(0, 1fr) minmax(0, 38%) auto; gap: var(--space-2); }
 }

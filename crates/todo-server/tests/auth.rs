@@ -458,6 +458,28 @@ async fn admin_actions_need_a_recent_passkey_verification() {
     b.step_up().await;
     let (_, token) = b.create_agent("fresh", "read", "").await;
     assert!(token.starts_with("tda_"));
+    assert!(
+        b.get("/admin")
+            .await
+            .body
+            .contains("Changes allowed for about 5 more minutes.")
+    );
+    let agents = b.get("/admin/agents").await.body;
+    assert!(agents.contains("Enabled"));
+    assert!(agents.contains("Not used yet"));
+    assert!(!agents.contains("Never active"));
+    assert_eq!(
+        env.api(Method::GET, "/api/v1/lists", &token, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(
+        b.get("/admin/agents")
+            .await
+            .body
+            .contains("Last used <time")
+    );
     let p = b.post_json("/auth/passkeys/start", json!({})).await;
     assert_eq!(p.status, StatusCode::OK, "{}", p.body);
     env.advance(5 * MINUTE + Duration::from_secs(1));
@@ -465,6 +487,46 @@ async fn admin_actions_need_a_recent_passkey_verification() {
         .post_form("/admin/shares", &[("target", &format!("list:{list}"))])
         .await;
     assert_eq!(p.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_audit_log_groups_events_by_utc_day_with_short_times_and_exact_titles() {
+    let env = Env::start().await;
+    let owner = env.owner().await;
+    let svc = &env.t.server.authsvc;
+    let day = 86_400_000;
+    let midnight = svc.now().div_euclid(day) * day;
+    let previous = midnight - 1_000;
+    let older = jiff::Timestamp::from_millisecond(midnight - 3 * day).unwrap();
+    let store = svc.store();
+    store
+        .audit(older.as_millisecond(), "fixture_old", None, "{}")
+        .unwrap();
+    store
+        .audit(previous, "fixture_before_midnight", Some("192.0.2.4"), "{}")
+        .unwrap();
+    store
+        .audit(midnight, "fixture_at_midnight", None, "{}")
+        .unwrap();
+
+    let audit = owner.get("/admin/audit").await;
+    assert_eq!(audit.status, StatusCode::OK);
+    let (_, today) = audit.body.split_once(">Today</h2>").unwrap();
+    let (today, yesterday) = today.split_once(">Yesterday</h2>").unwrap();
+    let (yesterday, older_group) = yesterday.split_once("</section><section").unwrap();
+    assert!(today.contains("Fixture at midnight") && today.contains(">00:00</time>"));
+    assert!(!today.contains("Fixture before midnight"));
+    assert!(yesterday.contains("Fixture before midnight"));
+    assert!(yesterday.contains(">23:59</time>"));
+    let exact = jiff::Timestamp::from_millisecond(previous).unwrap();
+    assert!(yesterday.contains(&format!(
+        r#"datetime="{exact}" title="{}""#,
+        exact.strftime("%Y-%m-%d 23:59:59 UTC")
+    )));
+    assert!(yesterday.contains("192.0.2.4"));
+    assert!(older_group.contains("Fixture old"));
+    assert!(older_group.contains(&older.strftime("%a, %b %-d").to_string()));
+    assert!(today.contains(r#"<span class="audit-toggle">Details</span>"#));
 }
 
 /// The email allowlist and list keys: owner-only, step-up, audited, and in effect at once.

@@ -34,6 +34,8 @@ pub(super) enum Section {
     Audit,
 }
 
+const FACT_SEPARATOR: &str = r#"<span class="fact-separator" aria-hidden="true">·</span>"#;
+
 const SECTIONS: [(Section, &str, &str); 6] = [
     (Section::Overview, "/admin", "Overview"),
     (Section::Devices, "/admin/devices", "Devices"),
@@ -89,7 +91,7 @@ pub fn page(title: &str, chrome: &Chrome<'_>, body: &str) -> String {
             Some(0) => banner.push_str(r#"<div class="session-note"><strong>Passkey check needed for changes</strong><button type="button" class="secondary" data-action="step-up">Verify with passkey</button></div>"#),
             Some(minutes) => {
                 let unit = if minutes == 1 { "minute" } else { "minutes" };
-                let _ = write!(banner, r#"<p class="session-note"><strong>Passkey verified</strong><span>About {minutes} {unit} left at page load.</span></p>"#);
+                let _ = write!(banner, r#"<p class="session-note facts"><span><strong>Passkey verified</strong></span><span>{FACT_SEPARATOR}Changes allowed for about {minutes} more {unit}.</span></p>"#);
             }
             None => {}
         }
@@ -214,6 +216,19 @@ pub(super) fn date_time(ms: i64) -> String {
     time_element(ms, |t| t.strftime("%d %b %Y, %H:%M UTC").to_string())
 }
 
+pub(super) fn clock_time(ms: i64) -> String {
+    time_element(ms, |t| t.strftime("%H:%M").to_string())
+}
+
+/// Keep native select behavior; the wrapper supplies the same chevron on every page.
+pub(super) fn select_control(name: &str, required: bool, options: &str) -> String {
+    let required = if required { " required" } else { "" };
+    format!(
+        r#"<span class="select-control"><select name="{}"{required}>{options}</select></span>"#,
+        esc(name)
+    )
+}
+
 pub(super) fn last_active(at: Option<i64>, now: i64) -> String {
     at.map_or_else(
         || "Never active".into(),
@@ -256,12 +271,11 @@ pub(super) fn row(out: &mut String, title: &str, facts: &[String], extra: &str, 
         esc(title)
     );
     if !facts.is_empty() {
-        out.push_str(r#"<div class="facts meta">"#);
-        for (i, fact) in facts.iter().enumerate() {
-            let sep = if i == 0 { "" } else { "· " };
-            let _ = write!(out, "<span>{sep}{fact}</span>");
-        }
-        out.push_str("</div>");
+        let _ = write!(
+            out,
+            r#"<div class="facts meta">{}</div>"#,
+            fact_items(facts)
+        );
     }
     out.push_str(extra);
     out.push_str("</div>");
@@ -269,6 +283,16 @@ pub(super) fn row(out: &mut String, title: &str, facts: &[String], extra: &str, 
         let _ = write!(out, r#"<div class="row-actions actions">{actions}</div>"#);
     }
     out.push_str("</li>");
+}
+
+/// Keep each metadata item together with its separator when the line wraps.
+pub(super) fn fact_items(facts: &[String]) -> String {
+    let mut out = String::new();
+    for (i, fact) in facts.iter().enumerate() {
+        let sep = if i == 0 { "" } else { FACT_SEPARATOR };
+        let _ = write!(out, "<span>{sep}{fact}</span>");
+    }
+    out
 }
 
 #[cfg(test)]

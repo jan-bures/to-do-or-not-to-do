@@ -7,7 +7,7 @@
 //! Every change is owner-only: it needs the session's CSRF token and a recent passkey check
 //! (step-up), and is written to the audit log in the same transaction as the change.
 
-use super::html::{PageError, Section, date, esc, row};
+use super::html::{PageError, Section, date, esc, row, select_control};
 use super::pages::{
     PageResult, bad_input, csrf_field, guard, not_found, ok_page, owner_chrome, sorted_structure,
 };
@@ -106,10 +106,17 @@ pub async fn page(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     let _ = write!(
         body,
         r#"<form class="stack" method="post" action="/admin/ingest/inbox">{csrf}
-<div class="fields"><label>Inbox list <select name="list"><option value="">None</option>{opts}</select></label><button type="submit">Save Inbox</button></div>
+<div class="fields"><label>Inbox list {select}</label><button type="submit">Save Inbox</button></div>
 <p class="hint">{VISIBILITY}</p>
 </form></section>"#,
-        opts = list_options(&state, inbox.filter(|_| inbox_label.is_some())),
+        select = select_control(
+            "list",
+            false,
+            &format!(
+                r#"<option value="">None</option>{}"#,
+                list_options(&state, inbox.filter(|_| inbox_label.is_some()))
+            )
+        ),
     );
 
     // Senders.
@@ -175,10 +182,15 @@ pub async fn page(State(app): State<AppState>, s: OwnerSession) -> PageResult {
             body,
             r#"<form class="stack" method="post" action="/admin/ingest/keys">{csrf}
 <div class="fields"><label>Key <input name="key" class="code-input" aria-describedby="key-format" required maxlength="64" pattern="[a-z0-9][a-z0-9_\-]{{0,63}}"></label>
-<label>Destination list <select name="list" required><option value="">Choose a list</option>{opts}</select></label><button type="submit">Add key</button></div>
-<p class="hint" id="key-format">Start with a lowercase letter or digit. Use only lowercase letters, digits, hyphens or underscores.</p>
+<label>Destination list {select}</label><button type="submit">Add key</button></div>
+<p class="hint" id="key-format">Start with a lowercase letter or digit. Use only lowercase letters, digits, hyphens, or underscores.</p>
 <p class="hint">{VISIBILITY}</p>
-</form>"#
+</form>"#,
+            select = select_control(
+                "list",
+                true,
+                &format!(r#"<option value="">Choose a list</option>{opts}"#)
+            )
         );
     }
     body.push_str("</section>");

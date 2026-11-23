@@ -6,7 +6,8 @@
 //! five minutes (step-up).
 
 use super::html::{
-    Chrome, PageError, Section, date, date_time, esc, html, last_active, page, relative_time, row,
+    Chrome, PageError, Section, clock_time, date, date_time, esc, fact_items, html, last_active,
+    page, relative_time, row, select_control,
 };
 use super::safe_next;
 use crate::api::error::ApiError;
@@ -94,17 +95,16 @@ fn parse_level(s: &str) -> Option<AccessLevel> {
 }
 
 fn level_select(name: &str, selected: Option<AccessLevel>, inherit: bool) -> String {
-    let mut out = format!(r#"<select name="{}">"#, esc(name));
+    let mut options = String::new();
     if inherit {
         let sel = if selected.is_none() { " selected" } else { "" };
-        let _ = write!(out, r#"<option value="inherit"{sel}>inherit</option>"#);
+        let _ = write!(options, r#"<option value="inherit"{sel}>inherit</option>"#);
     }
     for (l, n) in LEVELS {
         let sel = if selected == Some(l) { " selected" } else { "" };
-        let _ = write!(out, r#"<option value="{n}"{sel}>{n}</option>"#);
+        let _ = write!(options, r#"<option value="{n}"{sel}>{n}</option>"#);
     }
-    out.push_str("</select>");
-    out
+    select_control(name, false, &options)
 }
 
 // ---- sign-in and setup ----------------------------------------------------------------------------
@@ -292,14 +292,17 @@ pub async fn pair(
     let code = format_code(&p.user_code);
     let mut body = format!(
         r#"<section aria-labelledby="pair-device"><h2 id="pair-device">{name}</h2>
-<p class="meta">Requested {at} · Source address: {source}</p>
+<p class="facts meta">{facts}</p>
 <p>Only approve if you started this on your own device and its code matches <code>{code}</code>.</p></section>"#,
         name = esc(&p.device_name),
-        at = date_time(p.created_at),
         code = esc(&code),
-        source = p
-            .source
-            .map_or_else(|| "Unknown".into(), |ip| ip.to_string()),
+        facts = fact_items(&[
+            format!("Requested {}", date_time(p.created_at)),
+            p.source.map_or_else(
+                || "Source address unknown".into(),
+                |ip| format!("Source address: {ip}")
+            ),
+        ]),
     );
     if fresh {
         let _ = write!(
@@ -643,7 +646,7 @@ fn agent_status(a: &AgentRow, now: i64) -> String {
             date(x)
         )
     } else {
-        "Active".into()
+        "Enabled".into()
     }
 }
 
@@ -680,7 +683,10 @@ pub async fn agents(State(app): State<AppState>, s: OwnerSession) -> PageResult 
                 format!("Default: {}", level_name(a.grants.default)),
                 format!("{} writes/hour", a.writes_per_hour),
                 agent_status(a, now),
-                last_active(a.last_used_at, now),
+                a.last_used_at.map_or_else(
+                    || "Not used yet".into(),
+                    |at| format!("Last used {}", relative_time(at, now)),
+                ),
             ],
             "",
             &actions,
@@ -1007,8 +1013,13 @@ pub async fn shares(State(app): State<AppState>, s: OwnerSession) -> PageResult 
     } else {
         let _ = write!(
             body,
-            r#"<form class="fields" method="post" action="/admin/shares">{csrf}<label>List or collection <select name="target" required><option value="">Choose an item</option>{options}</select></label><button type="submit">Create link</button></form>"#,
-            csrf = csrf_field(&s)
+            r#"<form class="fields" method="post" action="/admin/shares">{csrf}<label>List or collection {target}</label><button type="submit">Create link</button></form>"#,
+            csrf = csrf_field(&s),
+            target = select_control(
+                "target",
+                true,
+                &format!(r#"<option value="">Choose an item</option>{options}"#)
+            ),
         );
     }
     body.push_str("</section>");
@@ -1101,36 +1112,71 @@ pub async fn share_revoke(
 pub async fn audit(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     let rows = blocking(&app.authsvc, |svc| svc.store().audit_page(200)).await??;
     let mut body = String::from(
-        r#"<p class="lead">The latest 200 sign-ins, access changes and security events.</p>"#,
+        r#"<p class="lead">The latest 200 sign-ins, access changes, and security events. Times are shown in UTC.</p>"#,
     );
     if rows.is_empty() {
         body.push_str(r#"<p class="empty">No events recorded yet. Sign-ins and access changes will appear here.</p>"#);
     } else {
-        body.push_str(r#"<ul class="rows" role="list">"#);
-        for r in &rows {
-            let detail = audit_detail(&r.detail);
-            let extra = format!(
-                r#"<details><summary>Event details</summary><code class="audit-detail">{kind}{detail}</code></details>"#,
-                kind = esc(&r.kind),
-                detail = detail.map_or_else(String::new, |d| format!("\n{}", esc(&d)))
-            );
-            let mut facts = vec![date_time(r.at)];
-            if let Some(ip) = &r.ip {
-                facts.push(format!("From {}", esc(ip)));
-            }
-            let mut title = r.kind.replace('_', " ");
-            if let Some(first) = title.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
-            row(&mut body, &title, &facts, &extra, "");
+        let today = audit_day(app.authsvc.now());
+        let mut days = BTreeMap::<_, Vec<_>>::new();
+        for event in rows {
+            days.entry(audit_day(event.at)).or_default().push(event);
         }
-        body.push_str("</ul>");
+        body.push_str(r#"<div class="audit-log">"#);
+        for (i, (day, events)) in days.into_iter().rev().enumerate() {
+            let heading = audit_day_label(day, today);
+            let _ = write!(
+                body,
+                r#"<section class="audit-day" aria-labelledby="audit-day-{i}"><h2 id="audit-day-{i}">{heading}</h2><ul class="audit-events" role="list">"#
+            );
+            for event in &events {
+                audit_event(&mut body, event);
+            }
+            body.push_str("</ul></section>");
+        }
+        body.push_str("</div>");
     }
     ok_page(
         "Audit log",
         &owner_chrome(&app.authsvc, &s).in_section(Section::Audit),
         &body,
     )
+}
+
+fn audit_day(at: i64) -> Option<jiff::civil::Date> {
+    jiff::Timestamp::from_millisecond(at)
+        .ok()
+        .map(|t| jiff::tz::TimeZone::UTC.to_datetime(t).date())
+}
+
+fn audit_day_label(day: Option<jiff::civil::Date>, today: Option<jiff::civil::Date>) -> String {
+    let Some(day) = day else {
+        return "Unknown date".into();
+    };
+    match today {
+        Some(today) if today == day => "Today".into(),
+        Some(today) if today.yesterday().ok() == Some(day) => "Yesterday".into(),
+        Some(today) if today.year() == day.year() => day.strftime("%a, %b %-d").to_string(),
+        _ => day.strftime("%a, %b %-d, %Y").to_string(),
+    }
+}
+
+fn audit_event(out: &mut String, event: &crate::auth::store::AuditRow) {
+    let mut title = event.kind.replace('_', " ");
+    if let Some(first) = title.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let facts = fact_items(&[
+        clock_time(event.at),
+        event.ip.as_deref().map_or_else(|| "No source".into(), esc),
+    ]);
+    let detail = audit_detail(&event.detail).map_or_else(String::new, |d| format!("\n{}", esc(&d)));
+    let _ = write!(
+        out,
+        r#"<li><details><summary class="audit-line"><span class="audit-event">{title}</span><span class="facts meta">{facts}</span><span class="audit-toggle">Details</span></summary><code class="audit-detail">{kind}{detail}</code></details></li>"#,
+        title = esc(&title),
+        kind = esc(&event.kind)
+    );
 }
 
 fn audit_detail(raw: &str) -> Option<String> {

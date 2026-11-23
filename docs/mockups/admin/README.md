@@ -2,7 +2,7 @@
 
 These are captures of the real server-rendered pages, populated through a disposable loopback server. All names, lists, addresses and displayed pairing codes are fixtures. No production account or server is used.
 
-Each view is captured in light and dark at 1440 px and 412 px. The Playwright run also writes a 300%-scale keyboard-focus crop for each capture in its test output directory. The full views below are checked in; the crops are generated review artifacts.
+Each view is captured in light and dark at 1440 px and 412 px. The Playwright run also writes a 300%-scale keyboard-focus crop for each capture in its test output directory. The run also crops the fresh passkey banner, metadata separators, audit rows, and select chevrons at 300%. The full views below are checked in; the crops are generated review artifacts.
 
 | Capture prefix | Focus crop |
 | --- | --- |
@@ -15,13 +15,13 @@ Each view is captured in light and dark at 1440 px and 412 px. The Playwright ru
 | `agent-grants` | List access selector |
 | `shares` | List or collection selector |
 | `email` | Email address field |
-| `audit` | Event details disclosure |
+| `audit` | Inline Details disclosure |
 | `pair` | Pairing code field |
 | `pair-approval` | Approve device button |
 | `verify`, `step-up-needed` | Verify with passkey |
 | `invite` | Device name field |
 
-From the repository root, build the server and web app, then run the gallery (requires Playwright Chromium):
+From the repository root, build the server and web app, then run the gallery (requires Node 24 and Playwright Chromium):
 
 ```sh
 cargo build -p todo-server
