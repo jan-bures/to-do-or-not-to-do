@@ -9,16 +9,63 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A unique group for each main push also prevents newer pushes replacing pending runs.
+  group: ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      runbooks: ${{ steps.paths.outputs.runbooks }}
+      shared: ${{ steps.paths.outputs.shared }}
+      android: ${{ steps.paths.outputs.android }}
+      web: ${{ steps.paths.outputs.web }}
+      desktop: ${{ steps.paths.outputs.desktop }}
+      desktop-package: ${{ steps.paths.outputs.desktop-package }}
+      linux-release: ${{ steps.paths.outputs.linux-release }}
+      email-worker: ${{ steps.paths.outputs.email-worker }}
+      deploy-scripts: ${{ steps.paths.outputs.deploy-scripts }}
+      brand-assets: ${{ steps.paths.outputs.brand-assets }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash .github/scripts/test-ci-changes.sh
+      - name: Select jobs from the changed paths
+        id: paths
+        shell: bash
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          paths="$RUNNER_TEMP/ci-paths"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            merge_base=$(git merge-base "$PR_BASE" "$PR_HEAD")
+            git diff --no-renames --name-only -z "$merge_base" "$PR_HEAD" -- > "$paths"
+            bash .github/scripts/ci-changes.sh < "$paths" | tee -a "$GITHUB_OUTPUT"
+          else
+            # Main runs every job even if the previous tip is missing (e.g., a new ref).
+            if git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+              git diff --no-renames --name-only -z "$PUSH_BEFORE" "$GITHUB_SHA" -- > "$paths"
+              echo 'Areas touched by this push:'
+              bash .github/scripts/ci-changes.sh < "$paths"
+            fi
+            echo 'Main push: running every check.'
+            bash .github/scripts/ci-changes.sh --all | tee -a "$GITHUB_OUTPUT"
+          fi
+
   lint-test-linux:
     name: fmt, clippy, test (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -35,15 +82,21 @@ jobs:
 
   test-windows:
     name: test (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.runbooks == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned toolchain
+        if: needs.changes.outputs.rust == 'true'
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust == 'true'
       - run: cargo test --workspace --locked
+        if: needs.changes.outputs.rust == 'true'
       # The runbooks' PowerShell blocks must parse as written, in both editions.
       - name: Parse the PowerShell blocks in the runbooks
+        if: needs.changes.outputs.runbooks == 'true'
         run: |
           pwsh -NoProfile -File deploy/check-doc-powershell.ps1 docs/hosting-linux.md deploy/windows/README.md
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -52,6 +105,8 @@ jobs:
 
   desktop-windows:
     name: desktop app (Windows)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -66,21 +121,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
-      # The screenshot gallery: every shell fixture, both themes, 100 % and 150 %, each checked for its exact
-      # pixel size. Hosted runners have no GPU, so the renderer falls back to WARP; their screen is smaller
-      # than a 150 % window, which the screenshot mode allows for.
-      - name: Render the gallery
-        shell: pwsh
-        run: ./scripts/gallery.ps1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: desktop-gallery
-          path: apps/desktop/target/gallery/*.png
-          if-no-files-found: warn
 
   desktop-package:
-    name: Windows installer (built, not published)
+    name: Windows installer and screenshot gallery (built, not published)
+    needs: changes
+    if: needs.changes.outputs.desktop-package == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -108,9 +153,21 @@ jobs:
           ./scripts/package.ps1 -ReleaseDir $release -AllowUnmerged:('${{ github.event_name }}' -eq 'pull_request')
           python -B scripts/scan-release-desktop.py $release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Use the installer build instead of compiling GPUI in release mode again. Hosted runners use WARP.
+      - name: Render the gallery
+        shell: pwsh
+        run: ./scripts/gallery.ps1 -NoBuild -BinaryPath target/x86_64-pc-windows-msvc/release/todo-desktop.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: desktop-gallery
+          path: apps/desktop/target/gallery/*.png
+          if-no-files-found: warn
 
   shared-crates-targets:
     name: shared crates build for wasm32 and Android
+    needs: changes
+    if: needs.changes.outputs.shared == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -122,6 +179,8 @@ jobs:
 
   deploy-scripts:
     name: deploy scripts (shellcheck, install and recovery, systemd units)
+    needs: changes
+    if: needs.changes.outputs.deploy-scripts == 'true'
     runs-on: ubuntu-latest
     # Debian 13, the target: its shellcheck and systemd, and none of the runner's own units, whose
     # warnings `systemd-analyze verify` would otherwise print.
@@ -156,6 +215,8 @@ jobs:
 
   linux-release:
     name: Linux release with web app (built, not published)
+    needs: changes
+    if: needs.changes.outputs.linux-release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -180,6 +241,8 @@ jobs:
 
   android:
     name: Android app (debug and unsigned release APKs, unit and screenshot tests)
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -237,7 +300,9 @@ jobs:
           if-no-files-found: ignore
 
   web-app:
-    name: web app (wasm, browser tests)
+    name: web app (wasm build and Rust tests)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -249,6 +314,7 @@ jobs:
           workspaces: |
             apps/web
             .
+          cache-workspace-crates: true
       - name: Install wasm-bindgen-cli (the version in apps/web/Cargo.lock)
         run: |
           v=$(grep -A1 '^name = "wasm-bindgen"$' apps/web/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
@@ -272,29 +338,76 @@ jobs:
           node apps/web/scripts/build.mjs
           node apps/web/scripts/build.mjs --fixtures
       - run: cargo build -p todo-server --locked
-      - name: Install Playwright and Chromium
+      # Tar preserves the server's executable bit; upload-artifact alone does not.
+      - name: Bundle the browser test builds
+        run: tar -cf "$RUNNER_TEMP/web-build.tar" apps/web/dist apps/web/dist-fixtures target/debug/todo-server
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-build
+          path: ${{ runner.temp }}/web-build.tar
+          compression-level: 1
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: error
+
+  web-browser:
+    name: web browser tests (${{ matrix.suite }})
+    needs: web-app
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: fixtures-1
+            shard: 1/2
+          - suite: fixtures-2
+            shard: 2/2
+          # These tests share a server and run serially; keep the whole live suite together.
+          - suite: live
+    defaults:
+      run:
         working-directory: apps/web/e2e
-        run: |
-          npm ci --ignore-scripts
-          npx playwright install --with-deps chromium
-      # Interaction tests and the screenshot gallery on the fixtures build, under the server's exact CSP.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: apps/web/e2e/package-lock.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-build
+          path: ${{ runner.temp }}
+      - name: Restore the browser test builds
+        working-directory: .
+        run: tar -xf "$RUNNER_TEMP/web-build.tar"
+      - run: npm ci --ignore-scripts
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/web/e2e/package-lock.json') }}
+      # System packages aren't in the cache. Playwright reuses the Chromium files on a cache hit.
+      - run: npx playwright install --with-deps chromium
       - name: Browser tests and gallery
-        working-directory: apps/web/e2e
-        run: npx playwright test
-      # The real app against a real server: passkey sign-in, the session + CSRF API, live updates, and an
-      # offline edit that survives a reload.
+        if: matrix.suite != 'live'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: npx playwright test --fully-parallel --shard="$SHARD"
       - name: Live tests against todo-server
-        working-directory: apps/web/e2e
+        if: matrix.suite == 'live'
         run: npx playwright test -c live.config.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
+        if: always() && matrix.suite != 'live'
         with:
-          name: web-gallery
+          name: web-gallery-${{ matrix.suite }}
           path: apps/web/e2e/gallery/*.png
+          overwrite: true
           if-no-files-found: warn
 
   email-worker:
     name: email worker tests (Node)
+    needs: changes
+    if: needs.changes.outputs.email-worker == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -305,11 +418,15 @@ jobs:
         with:
           # Pinned Node LTS (24.x "Krypton").
           node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: workers/email-ingest/package-lock.json
       - run: npm ci --ignore-scripts
       - run: npm test
 
   brand-assets:
     name: brand assets are up to date
+    needs: changes
+    if: needs.changes.outputs.brand-assets == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -319,6 +436,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: assets/brand/package-lock.json
       # Regenerates the icon rasters, the .ico and the flattened monochrome layer in memory and fails when a
       # checked-in file differs. Run `npm run generate` in assets/brand to fix it.
       - run: npm ci --ignore-scripts
@@ -334,3 +453,33 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  ci-ok:
+    needs:
+      - changes
+      - lint-test-linux
+      - test-windows
+      - desktop-windows
+      - desktop-package
+      - shared-crates-targets
+      - deploy-scripts
+      - linux-release
+      - android
+      - web-app
+      - web-browser
+      - email-worker
+      - brand-assets
+      - secret-scan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks to succeed or be skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "CI did not pass: a required job concluded with $result" >&2; exit 1 ;;
+            esac
+          done
