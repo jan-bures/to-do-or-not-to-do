@@ -73,6 +73,16 @@ pub fn glyph(glyph: Glyph, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// A live status light centered in one text line. In a wrapping row, top-align the row.
+pub fn status_light(color: Hsla, style: ty::TextStyle) -> Div {
+    div()
+        .flex_none()
+        .h(px(style.line_height))
+        .flex()
+        .items_center()
+        .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(color))
+}
+
 /// The round checkbox. Overdue tasks get the danger ring and wash.
 pub fn checkbox(p: &Palette, overdue: bool, size: f32) -> Div {
     let (border, bg) = if overdue {

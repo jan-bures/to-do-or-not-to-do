@@ -707,17 +707,15 @@ impl PairingView {
                 div()
                     .mt(px(space::S3))
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap(px(space::S2))
                     .style(ty::SUMMARY_FIGURES)
                     .text_color(if note.is_some() { p.danger_ink } else { p.ink_3 })
-                    .child(
-                        div()
-                            .size(px(component::CHIP_DOT))
-                            .rounded_full()
-                            .bg(if note.is_some() { p.danger } else { p.accent }),
-                    )
-                    .child(status),
+                    .child(kit::status_light(
+                        if note.is_some() { p.danger } else { p.accent },
+                        ty::SUMMARY_FIGURES,
+                    ))
+                    .child(div().min_w_0().child(status)),
             )
             .child(
                 div()

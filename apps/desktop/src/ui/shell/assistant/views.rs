@@ -50,14 +50,6 @@ fn one_line(el: Div) -> Div {
     el.overflow_hidden().text_ellipsis().whitespace_nowrap()
 }
 
-fn status_light(color: Hsla) -> Div {
-    div()
-        .flex_none()
-        .size(px(component::PRIVACY_DOT))
-        .rounded_full()
-        .bg(color)
-}
-
 fn box_panel(p: &Palette) -> Div {
     div()
         .w_full()
@@ -691,7 +683,7 @@ impl ShellView {
                     .items_center()
                     .gap(px(space::S2))
                     .min_w_0()
-                    .children(light.map(status_light))
+                    .children(light.map(|color| kit::status_light(color, ty::META)))
                     .child(text(ty::META, route_ink, route).flex_none())
                     .child(one_line(text(ty::COUNT, model_ink, format!("· {model}"))))
                     .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
@@ -1919,9 +1911,9 @@ impl ShellView {
                     .child(
                         div()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap(px(space::S2))
-                            .children(light.map(status_light))
+                            .children(light.map(|color| kit::status_light(color, ty::META)))
                             .child(text(ty::META, status_ink, connection)),
                     )
                     .child(

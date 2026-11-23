@@ -154,6 +154,7 @@ animation, and without relying on hue alone.
   provider cards use only a full accent border; do not add a rail or a light to the network label.
 - **Live status lights** are for connection or sync health only. Show green when connected, accent
   while testing, and red with explicit **Unreachable** wording when the assistant cannot connect.
+  When a status label wraps, center its light on the first line, not the entire text block.
   Use no light for untested or static labels. Never add dots to list pills, tags, or counts.
 - **Contrast and focus:** Both the off outline and the on glyph must reach 3:1 on the surfaces they sit on,
   in light and dark, including a selected row. Keep labels at 4.5:1. A tinted background alone may be subtle;
