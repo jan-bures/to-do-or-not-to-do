@@ -152,7 +152,11 @@ class WidgetModelTest {
 
     @Test
     fun rows_honour_font_scale_and_stay_on_the_grid() {
-        assertEquals(Tokens.Metrics.Phone.TOUCH, widgetRowHeight(1f))
+        val type = Tokens.Type
+        assertEquals(type.TASK_TITLE.lineHeight + type.COUNT.lineHeight + Tokens.Space.S2, widgetRowHeight(1f))
+        // A title-only row uses the compact 40dp target, so a 4x3 widget fits five of them under the header.
+        assertEquals(Tokens.Space.S10, widgetRowHeight(1f, hasMeta = false))
+        assertTrue(widgetRowHeight(1f, hasMeta = false) < widgetRowHeight(1f))
         assertTrue(widgetRowHeight(1.5f) > widgetRowHeight(1f))
         assertEquals(0f, widgetRowHeight(1.5f) % Tokens.Space.S1)
     }

@@ -75,6 +75,10 @@ class WidgetGalleryTest {
         val reading = engine.list("Reading list")
         engine.addTask(reading, "Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení", FIXTURE_NOW)
         themes("large_text", 304, 152, widgetData(engine, reading, FIXTURE_NOW), fontScale = 1.5f)
+        // A 4x3 launcher cell of title-only tasks: five rows fit under the header with the next one peeking.
+        listOf("Draft the release notes", "Review the pairing flow", "Call the bank", "Order printer ink", "Book the dentist", "Renew the domain")
+            .forEach { engine.addTask(reading, it, FIXTURE_NOW) }
+        themes("medium_titles", 400, 268, widgetData(engine, reading, FIXTURE_NOW))
     }
 
     @Test
