@@ -16,6 +16,7 @@ import app.todoornot.updates.TaggedIndex
 import app.todoornot.updates.checkDue
 import app.todoornot.updates.mayDownload
 import app.todoornot.updates.newer
+import app.todoornot.updates.releaseRedirect
 import app.todoornot.updates.sha256
 import app.todoornot.updates.verifyApk
 import app.todoornot.updates.verifyBytes
@@ -95,6 +96,35 @@ class UpdatesTest {
         assertTrue(httpsUrl(URI("https://todo.example.com/download?temporary=1")))
         assertFalse(httpsUrl(URI("http://todo.example.com/download")))
         assertFalse(httpsUrl(URI("https://credential@todo.example.com/download")))
+    }
+
+    @Test fun redirects_allow_the_configured_host_and_known_github_release_hosts() {
+        val initial = URI("https://todo.example.com/owner/repo/releases.atom")
+        var current = initial
+        for ((location, expectedHost) in listOf(
+            "/redirect" to "todo.example.com",
+            "https://GitHub.com/owner/repo/releases/download/tag/asset" to "GitHub.com",
+            "//objects.githubusercontent.com/asset" to "objects.githubusercontent.com",
+            "https://release-assets.githubusercontent.com/asset?temporary=1" to "release-assets.githubusercontent.com",
+            "https://todo.example.com/asset" to "todo.example.com",
+        )) {
+            current = requireNotNull(releaseRedirect(initial, current, location))
+            assertEquals(expectedHost, current.host)
+        }
+    }
+
+    @Test fun redirects_reject_other_hosts_and_non_https_hops_even_after_a_trusted_hop() {
+        val initial = URI("https://todo.example.com/owner/repo/releases.atom")
+        val current = URI("https://release-assets.githubusercontent.com/asset")
+        for (location in listOf(
+            "https://untrusted.example.com/asset",
+            "https://release-assets.githubusercontent.com.example.com/asset",
+            "https://raw.githubusercontent.com/asset",
+            "http://release-assets.githubusercontent.com/asset",
+            "https://you@github.com/asset",
+        )) {
+            assertNull(location, releaseRedirect(initial, current, location))
+        }
     }
 
     private fun history(vararg heights: Int) = """<feed xmlns="http://www.w3.org/2005/Atom">${heights.joinToString("") {

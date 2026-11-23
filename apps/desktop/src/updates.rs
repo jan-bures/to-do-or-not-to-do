@@ -2,9 +2,11 @@
 //! second verification on restart or before GPUI on the next primary launch.
 
 mod history;
+mod rejections;
 mod release;
 mod state;
 
+use rejections::Rejections;
 use release::{APP_ID, CHANNEL, MAX_FEED, MAX_PROOF, Receipt, Rejection, Release};
 use state::{Check, Schedule};
 pub use state::{Failure, Snapshot, State};
@@ -26,15 +28,24 @@ use velopack::sources::NoneSource;
 use velopack::{Error, UpdateManager, VelopackAsset};
 
 const REPOSITORY: &str = env!("TODO_DESKTOP_UPDATE_FEED");
+const MAX_REDIRECTS: usize = 5;
+const GITHUB_RELEASE_HOSTS: [&str; 3] = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
 
 #[derive(Debug)]
-struct ReleaseUrls(String);
+struct ReleaseUrls {
+    releases: String,
+    base_host: String,
+}
 
 impl ReleaseUrls {
     fn new(repository: &str) -> Option<Self> {
         let url = url::Url::parse(repository.trim()).ok()?;
+        let host = url.host_str()?;
         if url.scheme() != "https"
-            || !url.has_host()
             || !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
@@ -43,28 +54,45 @@ impl ReleaseUrls {
         {
             return None;
         }
-        Some(Self(format!(
-            "{}/releases",
-            url.as_str().trim_end_matches('/')
-        )))
+        Some(Self {
+            releases: format!("{}/releases", url.as_str().trim_end_matches('/')),
+            base_host: host.to_owned(),
+        })
     }
 
     fn history(&self) -> String {
-        format!("{}.atom", self.0)
+        format!("{}.atom", self.releases)
     }
 
     fn manifest(&self, version: &Version) -> String {
-        format!("{}/download/v{version}/releases.win.json", self.0)
+        format!("{}/download/v{version}/releases.win.json", self.releases)
     }
 
     fn proof(&self, version: &Version) -> String {
-        format!("{}/download/v{version}/desktop-update.sig.json", self.0)
+        format!(
+            "{}/download/v{version}/desktop-update.sig.json",
+            self.releases
+        )
     }
 
     fn package(&self, asset: &VelopackAsset) -> String {
         // The latest release can change between requests. Asset names and versions have already
         // been validated, and each package lives under its own immutable release tag.
-        format!("{}/download/v{}/{}", self.0, asset.Version, asset.FileName)
+        format!(
+            "{}/download/v{}/{}",
+            self.releases, asset.Version, asset.FileName
+        )
+    }
+
+    fn redirect(&self, current: &url::Url, location: &str) -> Option<url::Url> {
+        let next = current.join(location).ok()?;
+        let host = next.host_str()?;
+        (next.scheme() == "https"
+            && next.username().is_empty()
+            && next.password().is_none()
+            && next.fragment().is_none()
+            && (host == self.base_host || GITHUB_RELEASE_HOSTS.contains(&host)))
+        .then_some(next)
     }
 }
 
@@ -76,11 +104,19 @@ struct Feed {
     stopped: Arc<AtomicBool>,
 }
 
+// Only package byte mismatches can enter the cooldown cache. Authentication errors are handled
+// before staging and cannot be turned into retriable mismatches by this path.
+enum StageFailure {
+    Download,
+    Mismatch,
+}
+
 impl Feed {
     fn agent(https_only: bool) -> ureq::Agent {
         ureq::Agent::config_builder()
             .https_only(https_only)
-            .max_redirects(5)
+            // Check Location ourselves before making any request to its target.
+            .max_redirects(0)
             .tls_config(
                 TlsConfig::builder()
                     .root_certs(RootCerts::PlatformVerifier)
@@ -111,18 +147,32 @@ impl Feed {
     }
 
     fn get(&self, url: &str, body_timeout: Duration) -> Result<impl Read + use<>, Error> {
-        self.ensure_running()?;
-        let response = self
-            .agent
-            .get(url)
-            .config()
-            .timeout_recv_body(Some(body_timeout))
-            .build()
-            .call()?;
-        if response.status() != 200 {
-            return Err(Error::Other("expected a complete 200 response".into()));
+        let mut address =
+            url::Url::parse(url).map_err(|_| Error::Other("invalid update address".into()))?;
+        for hops in 0..=MAX_REDIRECTS {
+            self.ensure_running()?;
+            let response = self
+                .agent
+                .get(address.as_str())
+                .config()
+                .timeout_recv_body(Some(body_timeout))
+                .build()
+                .call()?;
+            match response.status().as_u16() {
+                200 => return Ok(response.into_body().into_reader()),
+                301 | 302 | 303 | 307 | 308 if hops < MAX_REDIRECTS => {
+                    address = response
+                        .headers()
+                        .get(ureq::http::header::LOCATION)
+                        .and_then(|header| header.to_str().ok())
+                        .and_then(|location| self.urls.redirect(&address, location))
+                        .ok_or_else(|| Error::Other("invalid update redirect".into()))?;
+                }
+                301 | 302 | 303 | 307 | 308 => break,
+                _ => return Err(Error::Other("expected a complete 200 response".into())),
+            }
         }
-        Ok(response.into_body().into_reader())
+        Err(Error::Other("too many update redirects".into()))
     }
 }
 
@@ -168,23 +218,25 @@ impl Feed {
         asset: &VelopackAsset,
         file: &mut File,
         progress: &impl Fn(Option<u8>),
-    ) -> Result<(), Failure> {
+    ) -> Result<(), StageFailure> {
         let mut reader = self
             .get(&self.urls.package(asset), package_body_timeout(asset.Size))
-            .map_err(|_| Failure::Download)?
+            .map_err(|_| StageFailure::Download)?
             .take(asset.Size + 1);
         let mut buffer = vec![0; 64 * 1024];
         let mut bytes = 0;
         let mut hash = Sha256::new();
         let mut reported = 0;
         loop {
-            self.ensure_running().map_err(|_| Failure::Download)?;
-            let n = reader.read(&mut buffer).map_err(|_| Failure::Download)?;
+            self.ensure_running().map_err(|_| StageFailure::Download)?;
+            let n = reader
+                .read(&mut buffer)
+                .map_err(|_| StageFailure::Download)?;
             if n == 0 {
                 break;
             }
             file.write_all(&buffer[..n])
-                .map_err(|_| Failure::Download)?;
+                .map_err(|_| StageFailure::Download)?;
             hash.update(&buffer[..n]);
             bytes += n as u64;
             let percent = (100 * bytes / asset.Size).min(99) as u8;
@@ -194,7 +246,7 @@ impl Feed {
             }
         }
         if !release::matches_bytes(asset, bytes, &hash.finalize()) {
-            return Err(Failure::Verify);
+            return Err(StageFailure::Mismatch);
         }
         Ok(())
     }
@@ -389,8 +441,10 @@ impl Controller {
                                 changed
                             });
                         },
+                        Timestamp::now,
                     );
-                    // Verification failures are not transient; resume the ordinary schedule.
+                    // Use the ordinary check schedule for verification failures; package
+                    // mismatches have a separate per-offer cooldown.
                     schedule.finished(
                         check,
                         result.is_ok() || result == Err(Failure::Verify),
@@ -529,10 +583,7 @@ fn startup_state(
         Ok(None) => {}
         Err(rejected) => discard_pending(dir, rejected.as_ref()),
     }
-    if read_rejections(dir)
-        .iter()
-        .any(|bad| bad.version > *installed)
-    {
+    if Rejections::load(dir).has_newer_blocked(installed, Timestamp::now()) {
         failed(Failure::Verify)
     } else {
         State::Idle
@@ -544,7 +595,7 @@ fn discard_pending(dir: &Path, rejected: Option<&Rejection>) {
     if let Some(rejected) = rejected {
         let version = &rejected.version;
         let _ = std::fs::remove_file(dir.join(format!("{APP_ID}-{version}-full.nupkg")));
-        reject(dir, rejected);
+        Rejections::load(dir).record_mismatch(dir, rejected, Timestamp::now());
     }
 }
 
@@ -595,39 +646,19 @@ fn read_receipt(path: &Path) -> io::Result<Option<Receipt>> {
 
 const RECEIPT: &str = ".todo-signed-update";
 const FAILED: &str = ".todo-failed-update";
-const REJECTIONS: &str = ".todo-rejected-updates";
-const MAX_REJECTIONS: usize = 32;
-
-fn read_rejections(dir: &Path) -> Vec<Rejection> {
-    File::open(dir.join(REJECTIONS))
-        .ok()
-        .and_then(|file| release::read_bounded(file, 16 * 1024).ok())
-        .and_then(|bytes| serde_json::from_slice::<Vec<Rejection>>(&bytes).ok())
-        .filter(|versions| versions.len() <= MAX_REJECTIONS)
-        .unwrap_or_default()
-}
-
-fn reject(dir: &Path, rejected: &Rejection) {
-    let mut entries = read_rejections(dir);
-    if entries
-        .iter()
-        .any(|entry| entry.fingerprint == rejected.fingerprint)
-    {
-        return;
-    }
-    entries.insert(0, rejected.clone());
-    entries.truncate(MAX_REJECTIONS);
-    if atomic_json(&dir.join(REJECTIONS), &entries).is_err() {
-        tracing::warn!("could not record the rejected desktop update");
-    }
-}
 
 fn atomic_json(path: &Path, data: &impl serde::Serialize) -> io::Result<()> {
+    atomic_write(path, |file| {
+        serde_json::to_writer(file, data).map_err(io::Error::other)
+    })
+}
+
+fn atomic_write(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer(&mut temp, data).map_err(io::Error::other)?;
+    write(temp.as_file_mut())?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|e| e.error)?;
     Ok(())
@@ -664,6 +695,7 @@ fn stage_update(
     check: Check,
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
     downloading: impl Fn(Option<u8>),
+    now: impl Fn() -> Timestamp,
 ) -> Result<Option<String>, Failure> {
     let Some((tag, manifest)) = feed.latest()? else {
         return Ok(None);
@@ -679,11 +711,8 @@ fn stage_update(
     if !signed.newer_than(installed) {
         return Ok(None);
     }
-    let mut rejections = read_rejections(dir);
-    let rejected = rejections
-        .iter()
-        .position(|entry| entry.fingerprint == signed.rejection.fingerprint);
-    if check == Check::Automatic && rejected.is_some() {
+    let mut rejections = Rejections::load(dir);
+    if check == Check::Automatic && rejections.blocks(&signed.rejection, now()) {
         return Err(Failure::Verify);
     }
     let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
@@ -691,14 +720,13 @@ fn stage_update(
         return Err(Failure::Apply);
     }
     downloading(None);
-    let result = stage_verified(feed, dir, &signed, &receipt, &downloading);
-    if result == Err(Failure::Verify) {
-        reject(dir, &signed.rejection);
-    }
-    result?;
-    if let Some(index) = rejected {
-        rejections.remove(index);
-        let _ = atomic_json(&dir.join(REJECTIONS), &rejections);
+    match stage_verified(feed, dir, &signed, &receipt, &downloading) {
+        Ok(()) => rejections.clear(dir, &signed.rejection),
+        Err(StageFailure::Mismatch) => {
+            rejections.record_mismatch(dir, &signed.rejection, now());
+            return Err(Failure::Verify);
+        }
+        Err(StageFailure::Download) => return Err(Failure::Download),
     }
     tracing::info!("desktop update staged for next launch");
     Ok(Some(signed.full.Version))
@@ -710,26 +738,26 @@ fn stage_verified(
     release: &Release,
     receipt: &Receipt,
     progress: &impl Fn(Option<u8>),
-) -> Result<(), Failure> {
+) -> Result<(), StageFailure> {
     // Native Velopack delta reconstruction can produce a different ZIP from the original full
     // package. Stage the signed full bytes directly, without letting download_updates extract
     // a replacement Update.exe or letting any unauthenticated file qualify as pending.
-    std::fs::create_dir_all(dir).map_err(|_| Failure::Download)?;
+    std::fs::create_dir_all(dir).map_err(|_| StageFailure::Download)?;
     let mut partial = tempfile::Builder::new()
         .suffix(".partial")
         .tempfile_in(dir)
-        .map_err(|_| Failure::Download)?;
+        .map_err(|_| StageFailure::Download)?;
     feed.download(&release.full, partial.as_file_mut(), progress)?;
     partial
         .as_file()
         .sync_all()
-        .map_err(|_| Failure::Download)?;
-    feed.ensure_running().map_err(|_| Failure::Download)?;
+        .map_err(|_| StageFailure::Download)?;
+    feed.ensure_running().map_err(|_| StageFailure::Download)?;
     let dest = dir.join(&release.full.FileName);
-    partial.persist(&dest).map_err(|_| Failure::Download)?;
+    partial.persist(&dest).map_err(|_| StageFailure::Download)?;
     if atomic_json(&dir.join(RECEIPT), receipt).is_err() {
         let _ = std::fs::remove_file(dest);
-        return Err(Failure::Download);
+        return Err(StageFailure::Download);
     }
     Ok(())
 }
@@ -929,6 +957,117 @@ mod tests {
         }
     }
 
+    fn redirect_feed(replies: Vec<(&'static str, &'static str)>) -> (Feed, Arc<Mutex<usize>>) {
+        let calls = Arc::new(Mutex::new(0));
+        let observed = calls.clone();
+        let agent = ureq::Agent::config_builder()
+            .https_only(true)
+            .max_redirects(0)
+            .middleware(
+                move |req: ureq::http::Request<ureq::SendBody>,
+                      _next: ureq::middleware::MiddlewareNext| {
+                    let mut seen = observed.lock().expect("request count");
+                    let (address, location) =
+                        replies.get(*seen).expect("unexpected redirect request");
+                    assert_eq!(req.uri().to_string(), *address);
+                    assert!(
+                        !req.headers()
+                            .contains_key(ureq::http::header::AUTHORIZATION)
+                    );
+                    *seen += 1;
+                    let response = ureq::http::Response::builder();
+                    if location.is_empty() {
+                        Ok(response
+                            .status(200)
+                            .body(ureq::Body::builder().data(b"asset".to_vec()))
+                            .expect("body"))
+                    } else {
+                        Ok(response
+                            .status(302)
+                            .header(ureq::http::header::LOCATION, *location)
+                            .body(ureq::Body::builder().data(Vec::new()))
+                            .expect("redirect"))
+                    }
+                },
+            )
+            .build()
+            .into();
+        let urls = ReleaseUrls::new("https://todo.example.com/owner/project").expect("fork feed");
+        (
+            Feed {
+                urls,
+                agent,
+                stopped: Arc::default(),
+            },
+            calls,
+        )
+    }
+
+    #[test]
+    fn follows_at_most_five_redirects_on_the_feed_and_github_hosts() {
+        let replies = vec![
+            (
+                "https://todo.example.com/owner/project/releases.atom",
+                "/relative",
+            ),
+            (
+                "https://todo.example.com/relative",
+                "https://GitHub.com/asset",
+            ),
+            (
+                "https://github.com/asset",
+                "//objects.githubusercontent.com/asset",
+            ),
+            (
+                "https://objects.githubusercontent.com/asset",
+                "https://release-assets.githubusercontent.com/asset?temporary=1",
+            ),
+            (
+                "https://release-assets.githubusercontent.com/asset?temporary=1",
+                "https://todo.example.com/package",
+            ),
+            ("https://todo.example.com/package", ""),
+        ];
+        let (feed, calls) = redirect_feed(replies.clone());
+        let body = feed
+            .get(&feed.urls.history(), Duration::from_secs(1))
+            .expect("allowed chain");
+        assert_eq!(read_text(body, 8), Ok("asset".into()));
+        assert_eq!(*calls.lock().expect("request count"), 6);
+
+        let mut chain = replies;
+        chain[5].1 = "/another";
+        let (feed, calls) = redirect_feed(chain);
+        let result = feed.get(&feed.urls.history(), Duration::from_secs(1));
+        assert!(matches!(result, Err(Error::Other(msg)) if msg == "too many update redirects"));
+        assert_eq!(*calls.lock().expect("request count"), 6);
+    }
+
+    #[test]
+    fn rejects_unlisted_hosts_and_non_https_before_requesting_the_target() {
+        for bad in [
+            "https://untrusted.example.com/asset",
+            "https://release-assets.githubusercontent.com.example.com/asset",
+            "https://raw.githubusercontent.com/asset",
+            "http://release-assets.githubusercontent.com/asset",
+            "https://you@github.com/asset",
+        ] {
+            let (feed, calls) = redirect_feed(vec![
+                (
+                    "https://todo.example.com/owner/project/releases.atom",
+                    "https://github.com/asset",
+                ),
+                ("https://github.com/asset", bad),
+            ]);
+            let result = feed.get(&feed.urls.history(), Duration::from_secs(1));
+            assert!(
+                matches!(result, Err(Error::Other(msg)) if msg == "invalid update redirect"),
+                "{bad}"
+            );
+            assert_eq!(*calls.lock().expect("request count"), 2);
+        }
+    }
+
     #[test]
     fn empty_feed_disables_worker_even_for_an_install() {
         let controller =
@@ -1013,11 +1152,24 @@ mod tests {
         let signed = verify(&receipt).expect("valid fixture");
         let offer = || (FEED_ROUTE, 200, manifest.as_bytes().to_vec());
         let valid_proof = || (PROOF_ROUTE, 200, proof.as_bytes().to_vec());
+        let start = Timestamp::now();
+        let now = std::cell::Cell::new(start);
+        let set_hours = |hours: i64| {
+            now.set(Timestamp::from_second(start.as_second() + hours * 3600).expect("valid time"));
+        };
         let check = |requests: Vec<_>, current: &Version, mode| {
             let mut history = vec![("/releases.atom", 200, history::atom(&[&tag]).into_bytes())];
             history.extend(requests);
             let (feed, server) = serve_update(history);
-            let result = stage_update(&feed, dir.path(), current, mode, verify, |_| {});
+            let result = stage_update(
+                &feed,
+                dir.path(),
+                current,
+                mode,
+                verify,
+                |_| {},
+                || now.get(),
+            );
             server.join().expect("test server");
             result
         };
@@ -1038,14 +1190,31 @@ mod tests {
             ),
             Err(Failure::Verify)
         );
-        assert!(read_rejections(dir.path()).is_empty());
+        let wrong_tag = release::test_receipt(
+            &key,
+            "v0.1.0-build.11",
+            manifest.replace("build.10", "build.11"),
+        );
+        assert_eq!(
+            check(
+                vec![
+                    (FEED_ROUTE, 200, wrong_tag.manifest.into_bytes()),
+                    (PROOF_ROUTE, 200, wrong_tag.proof.into_bytes())
+                ],
+                &installed,
+                Check::Manual,
+            ),
+            Err(Failure::Verify),
+            "a valid signature never overrides a tag mismatch",
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).expect("packages").count(), 0);
         let untrusted = Receipt {
             manifest: manifest.clone(),
             proof: "{}".into(),
         };
         atomic_json(&dir.path().join(RECEIPT), &untrusted).expect("unsigned receipt fixture");
         assert_eq!(startup_state(dir.path(), &installed, verify), State::Idle);
-        assert!(read_rejections(dir.path()).is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).expect("packages").count(), 0);
         let package = dir.path().join(name);
         assert_eq!(
             check(
@@ -1061,7 +1230,8 @@ mod tests {
             check(vec![offer(), valid_proof()], &offered, Check::Manual),
             Ok(None)
         );
-        for bad in [b"fixture tamper!".as_slice(), b"short"] {
+        for (hour, bad) in [(0, b"fixture tamper!".as_slice()), (1, b"short")] {
+            set_hours(hour);
             assert_eq!(
                 check(
                     vec![offer(), valid_proof(), (FULL_ROUTE, 200, bad.to_vec())],
@@ -1077,10 +1247,7 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            read_rejections(dir.path()),
-            std::slice::from_ref(&signed.rejection)
-        );
+        assert!(Rejections::load(dir.path()).blocks(&signed.rejection, now.get()));
         assert!(matches!(
             startup_state(dir.path(), &installed, verify),
             State::Failed {
@@ -1112,13 +1279,33 @@ mod tests {
                 .expect("no receipt")
                 .is_none()
         );
-        assert_eq!(
-            check(
-                vec![offer(), valid_proof(), (FULL_ROUTE, 200, PACKAGE.to_vec())],
-                &installed,
-                Check::Manual
-            ),
-            Ok(Some(offered.to_string()))
+
+        for (before, retry) in [(5, 6), (23, 24), (47, 48)] {
+            set_hours(before);
+            assert_eq!(
+                check(vec![offer(), valid_proof()], &installed, Check::Automatic),
+                Err(Failure::Verify),
+                "no automatic download while cooling down",
+            );
+            set_hours(retry);
+            let body = if retry == 48 { PACKAGE } else { b"corrupt" };
+            assert_eq!(
+                check(
+                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, body.to_vec())],
+                    &installed,
+                    Check::Automatic
+                ),
+                if retry == 48 {
+                    Ok(Some(offered.to_string()))
+                } else {
+                    Err(Failure::Verify)
+                },
+            );
+        }
+        set_hours(47);
+        assert!(
+            !Rejections::load(dir.path()).blocks(&signed.rejection, now.get()),
+            "successful retry clears the marker"
         );
         assert!(
             verified_pending(dir.path(), &installed, verify)
@@ -1185,7 +1372,10 @@ mod tests {
 
     fn loopback_feed(addr: std::net::SocketAddr) -> Feed {
         Feed {
-            urls: ReleaseUrls(format!("http://{addr}/releases")),
+            urls: ReleaseUrls {
+                releases: format!("http://{addr}/releases"),
+                base_host: addr.ip().to_string(),
+            },
             agent: Feed::agent(false),
             stopped: Arc::default(),
         }

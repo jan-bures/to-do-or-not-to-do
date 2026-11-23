@@ -33,6 +33,7 @@ private const val MAX_CANDIDATES = 5
 private const val ATOM = "http://www.w3.org/2005/Atom"
 private val releaseId = Regex("tag:github\\.com,2008:Repository/[0-9]+/(v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-build\\.([1-9][0-9]*))")
 private const val MAX_REDIRECTS = 5
+private val githubReleaseHosts = setOf("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 private const val DOWNLOAD_TIMEOUT_MS = 3 * 60_000L
 // Release history and indexes are small; don't let a slow redirect target hold the worker.
 private const val METADATA_TIMEOUT_MS = 60_000L
@@ -52,13 +53,18 @@ internal fun assetUrl(base: String, release: UpdateManifest) =
 internal fun httpsUrl(value: URI): Boolean = value.scheme == "https" && value.host != null &&
     value.userInfo == null && value.fragment == null
 
+internal fun releaseRedirect(initial: URI, current: URI, location: String): URI? =
+    runCatching { current.resolve(location) }.getOrNull()?.takeIf { next ->
+        httpsUrl(next) && (next.host.equals(initial.host, ignoreCase = true) || next.host.lowercase() in githubReleaseHosts)
+    }
+
 /** The public assets never receive an Authorization header or have access to pairing state. */
 private suspend fun <T> get(
     initial: URI, optional: Boolean = false, network: Network? = null, deadline: DownloadDeadline? = null,
     read: suspend (InputStream) -> T,
 ): T? {
     var address = initial
-    repeat(MAX_REDIRECTS + 1) {
+    repeat(MAX_REDIRECTS + 1) { hops ->
         currentCoroutineContext().ensureActive()
         deadline?.remaining()
         if (!httpsUrl(address)) throw FeedProblem("The update address isn't secure.")
@@ -85,8 +91,9 @@ private suspend fun <T> get(
                         status == 200 -> Response.Body(connection.inputStream.use { read(it) })
                         status == 404 && optional -> Response.Body(null)
                         status in listOf(301, 302, 303, 307, 308) -> {
+                            if (hops == MAX_REDIRECTS) throw FeedProblem("The update server sent too many redirects.")
                             val next = connection.getHeaderField("Location")?.let { location ->
-                                runCatching { address.resolve(location) }.getOrNull()
+                                releaseRedirect(initial, address, location)
                             } ?: throw FeedProblem("The update server sent an invalid link.")
                             Response.Redirect(next)
                         }

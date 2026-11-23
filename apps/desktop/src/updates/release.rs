@@ -290,6 +290,69 @@ mod tests {
     }
 
     #[test]
+    fn python_signer_fixture_verifies_and_binds_manifest_setup_and_tag() {
+        const MANIFEST: &str =
+            include_str!("../../tests/fixtures/update-signing/releases.win.json");
+        const PROOF: &str =
+            include_str!("../../tests/fixtures/update-signing/desktop-update.sig.json");
+        const SETUP: &[u8] = include_bytes!("../../tests/fixtures/update-signing/Setup.exe");
+        const PUBLIC_KEY: &str = include_str!("../../tests/fixtures/update-signing/public-key.txt");
+        let mut pin = [0; 32];
+        hex::decode_to_slice(PUBLIC_KEY.trim(), &mut pin).expect("fixture key hex");
+        let key = VerifyingKey::from_bytes(&pin).expect("fixture key");
+        assert!(
+            keys().all(|configured| configured != key),
+            "the test key must never be trusted in production"
+        );
+        let verify = |manifest: &str, proof: &str| {
+            Receipt {
+                manifest: manifest.into(),
+                proof: proof.into(),
+            }
+            .verify_with([key])
+        };
+        let release = verify(MANIFEST, PROOF).expect("proof produced by the Python signer");
+        assert_eq!(release.version.to_string(), "0.1.0-build.9");
+        let mut proof: Value = serde_json::from_str(PROOF).expect("proof object");
+        assert_eq!(
+            proof["setup_sha256"],
+            json!(hex::encode(Sha256::digest(SETUP)))
+        );
+        assert_eq!(proof["setup_size"], json!(SETUP.len()));
+
+        for index in 0..MANIFEST.len() {
+            let mut changed = MANIFEST.as_bytes().to_vec();
+            changed[index] ^= 1;
+            assert!(
+                verify(std::str::from_utf8(&changed).expect("ASCII fixture"), PROOF).is_err(),
+                "manifest byte {index}"
+            );
+        }
+        for index in 0..SETUP.len() {
+            let mut changed = SETUP.to_vec();
+            changed[index] ^= 1;
+            // Rust receives the Setup identity in the proof, not the installer. Substituting
+            // the digest of different Setup bytes must invalidate the signature.
+            proof["setup_sha256"] = json!(hex::encode(Sha256::digest(changed)));
+            assert!(
+                verify(MANIFEST, &proof.to_string()).is_err(),
+                "Setup byte {index}"
+            );
+        }
+        let mut changed: Proof = serde_json::from_str(PROOF).expect("proof object");
+        changed.tag = "v0.1.0-build.8".into();
+        let signature =
+            Signature::from_slice(&hex::decode(&changed.signature).expect("signature hex"))
+                .expect("signature");
+        // Check the signature independently of the semantic tag/package version comparison.
+        assert!(
+            key.verify_strict(&signed_bytes(&changed, MANIFEST), &signature)
+                .is_err()
+        );
+        assert!(verify(MANIFEST, &PROOF.replace("v0.1.0-build.9", &changed.tag)).is_err());
+    }
+
+    #[test]
     fn package_hash_size_and_downgrade_are_checked() {
         let signing = key(3);
         let release = signed(&signing, "v0.1.0-build.10", &test_manifest())

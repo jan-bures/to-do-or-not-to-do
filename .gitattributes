@@ -6,3 +6,4 @@
 *.ttf binary
 *.bat text eol=crlf
 *.jar binary
+apps/desktop/tests/fixtures/update-signing/Setup.exe binary

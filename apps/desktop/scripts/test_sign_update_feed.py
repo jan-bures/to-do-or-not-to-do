@@ -17,6 +17,7 @@ SPEC = importlib.util.spec_from_file_location("release_signer", SIGNER)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 TAG = "v0.1.0-build.9"
+FIXTURE = SIGNER.parents[1] / "tests" / "fixtures" / "update-signing"
 
 
 class SignerTest(unittest.TestCase):
@@ -46,6 +47,16 @@ class SignerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0 if succeeds else 1, result.stderr)
         self.assertNotIn(b"PRIVATE KEY", result.stderr + result.stdout)
         self.assertNotIn(self.pem.name.encode(), result.stderr + result.stdout)
+
+    def test_regenerates_the_rust_verification_fixture_byte_for_byte(self):
+        # RFC 8410 PKCS#8 encoding with an intentionally public, test-only Ed25519 seed.
+        # Never use this key or add its public pin to the app's trusted keys.
+        self.pem.write_bytes(bytes.fromhex("302e020100300506032b657004220420") + bytes(range(32)))
+        self.keys = FIXTURE / "public-key.txt"
+        self.feed = FIXTURE / "releases.win.json"
+        self.setup = FIXTURE / "Setup.exe"
+        self.invoke("sign")
+        self.assertEqual(self.proof.read_bytes(), (FIXTURE / self.proof.name).read_bytes())
 
     def test_signs_exact_bytes_and_does_not_replace_a_proof(self):
         self.invoke("sign")
