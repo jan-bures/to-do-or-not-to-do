@@ -88,6 +88,7 @@ impl ReleaseUrls {
         let next = current.join(location).ok()?;
         let host = next.host_str()?;
         (next.scheme() == "https"
+            && next.port_or_known_default() == Some(443)
             && next.username().is_empty()
             && next.password().is_none()
             && next.fragment().is_none()
@@ -244,6 +245,10 @@ impl Feed {
                 progress(Some(percent));
                 reported = percent;
             }
+        }
+        // An early EOF can be a transient transfer failure, even with a valid HTTP body.
+        if bytes < asset.Size {
+            return Err(StageFailure::Download);
         }
         if !release::matches_bytes(asset, bytes, &hash.finalize()) {
             return Err(StageFailure::Mismatch);
@@ -1012,7 +1017,7 @@ mod tests {
             ),
             (
                 "https://todo.example.com/relative",
-                "https://GitHub.com/asset",
+                "https://GitHub.com:443/asset",
             ),
             (
                 "https://github.com/asset",
@@ -1044,13 +1049,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unlisted_hosts_and_non_https_before_requesting_the_target() {
+    fn rejects_unlisted_hosts_non_default_ports_and_non_https_redirects_before_requesting() {
         for bad in [
             "https://untrusted.example.com/asset",
             "https://release-assets.githubusercontent.com.example.com/asset",
             "https://raw.githubusercontent.com/asset",
             "http://release-assets.githubusercontent.com/asset",
             "https://you@github.com/asset",
+            "https://github.com:8443/x",
+            "https://todo.example.com:8443/x",
+            "https://GITHUB.COM./x",
+            "https://192.0.2.1/x",
+            "https://[2001:db8::1]/x",
         ] {
             let (feed, calls) = redirect_feed(vec![
                 (
@@ -1136,6 +1146,7 @@ mod tests {
         const FULL_ROUTE: &str =
             "/releases/download/v0.1.0-build.10/todo-desktop-0.1.0-build.10-full.nupkg";
         const PACKAGE: &[u8] = b"fixture package";
+        const CORRUPT: &[u8; PACKAGE.len()] = b"fixture tamper!";
         let dir = tempfile::tempdir().expect("packages directory");
         let installed = Version::parse("0.1.0-build.9").expect("installed version");
         let offered = Version::parse("0.1.0-build.10").expect("offered version");
@@ -1218,6 +1229,20 @@ mod tests {
         let package = dir.path().join(name);
         assert_eq!(
             check(
+                vec![offer(), valid_proof(), (FULL_ROUTE, 200, b"short".to_vec())],
+                &installed,
+                Check::Automatic,
+            ),
+            Err(Failure::Download),
+            "a complete HTTP response shorter than the signed size is retryable",
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("packages").count(),
+            0,
+            "a short response leaves neither a partial package nor a cooldown",
+        );
+        assert_eq!(
+            check(
                 vec![offer(), valid_proof(), (FULL_ROUTE, 200, PACKAGE.to_vec())],
                 &installed,
                 Check::Automatic
@@ -1230,11 +1255,11 @@ mod tests {
             check(vec![offer(), valid_proof()], &offered, Check::Manual),
             Ok(None)
         );
-        for (hour, bad) in [(0, b"fixture tamper!".as_slice()), (1, b"short")] {
+        for hour in [0, 1] {
             set_hours(hour);
             assert_eq!(
                 check(
-                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, bad.to_vec())],
+                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, CORRUPT.to_vec())],
                     &installed,
                     Check::Manual
                 ),
@@ -1288,10 +1313,14 @@ mod tests {
                 "no automatic download while cooling down",
             );
             set_hours(retry);
-            let body = if retry == 48 { PACKAGE } else { b"corrupt" };
+            let body = match retry {
+                6 => vec![0; PACKAGE.len() + 1],
+                24 => CORRUPT.to_vec(),
+                _ => PACKAGE.to_vec(),
+            };
             assert_eq!(
                 check(
-                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, body.to_vec())],
+                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, body)],
                     &installed,
                     Check::Automatic
                 ),

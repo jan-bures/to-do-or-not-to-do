@@ -9,6 +9,7 @@ import java.io.StringReader
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
+import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
 import javax.xml.parsers.SAXParserFactory
 import org.xml.sax.Attributes
@@ -53,10 +54,12 @@ internal fun assetUrl(base: String, release: UpdateManifest) =
 internal fun httpsUrl(value: URI): Boolean = value.scheme == "https" && value.host != null &&
     value.userInfo == null && value.fragment == null
 
-internal fun releaseRedirect(initial: URI, current: URI, location: String): URI? =
-    runCatching { current.resolve(location) }.getOrNull()?.takeIf { next ->
-        httpsUrl(next) && (next.host.equals(initial.host, ignoreCase = true) || next.host.lowercase() in githubReleaseHosts)
-    }
+internal fun releaseRedirect(initial: URI, current: URI, location: String): URI? {
+    val next = runCatching { current.resolve(location) }.getOrNull() ?: return null
+    if (!httpsUrl(next) || (next.port != -1 && next.port != 443)) return null
+    val host = next.host.lowercase(Locale.ROOT)
+    return next.takeIf { host == initial.host?.lowercase(Locale.ROOT) || host in githubReleaseHosts }
+}
 
 /** The public assets never receive an Authorization header or have access to pairing state. */
 private suspend fun <T> get(

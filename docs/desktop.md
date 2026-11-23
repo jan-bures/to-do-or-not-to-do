@@ -193,8 +193,8 @@ The public publisher always uses the repository default. The updater reads `/rel
 `/releases/download/<tag>/releases.win.json` returns HTTP 404. It fetches the proof and package under the
 same tag. If no Windows manifest is found, the app reports no update. These public URLs need no GitHub API
 calls or an access token. Windows verifies HTTPS certificates. The source follows at most five HTTPS
-redirects, only to the configured feed host, `github.com`, `objects.githubusercontent.com`, or
-`release-assets.githubusercontent.com`. No request uses the paired server's address or credentials.
+redirects on port 443, only to the configured feed host, `github.com`, `objects.githubusercontent.com`,
+or `release-assets.githubusercontent.com`. No request uses the paired server's address or credentials.
 
 The v2 proof signs `todo-desktop-update-v2`, the tag, the lowercase installer SHA-256, and the decimal
 installer size, each followed by a newline, then the exact bytes of `releases.win.json`. This binds the
@@ -205,10 +205,11 @@ it. Current clients download the signed full package: Velopack's native delta re
 produce a byte-identical full nupkg. The publisher still produces and signs the delta metadata.
 A signature, release identity, or checksum failure stages nothing and shows **Update couldn’t be verified**.
 A missing or invalid signature or a release identity mismatch always stops the update before download.
-When verified metadata passes but the package fails its size or hash check, the app remembers the exact
-signed offer across restarts. Automatic checks can retry that offer after six hours, then after 18 hours
-if it fails again, and at most once every 24 hours for further mismatches. **Check now** can retry during a
-cooldown, but it never bypasses verification.
+A download that ends early uses the normal network retry schedule. For an oversized package or a
+checksum mismatch at the expected size, the app remembers the exact signed offer across restarts.
+Automatic checks can retry that offer after six hours, then after 18 hours if it fails again, and at
+most once every 24 hours for further mismatches. **Check now** can retry during a cooldown, but it never
+bypasses verification.
 
 Anyone controlling the release assets can withhold updates or serve an older signed release that is
 still newer than the installed version. They cannot authorize changed bytes or downgrade an installed

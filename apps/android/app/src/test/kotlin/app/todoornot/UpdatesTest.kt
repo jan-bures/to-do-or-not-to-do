@@ -99,11 +99,11 @@ class UpdatesTest {
     }
 
     @Test fun redirects_allow_the_configured_host_and_known_github_release_hosts() {
-        val initial = URI("https://todo.example.com/owner/repo/releases.atom")
+        val initial = URI("https://TODO.EXAMPLE.COM/owner/repo/releases.atom")
         var current = initial
         for ((location, expectedHost) in listOf(
-            "/redirect" to "todo.example.com",
-            "https://GitHub.com/owner/repo/releases/download/tag/asset" to "GitHub.com",
+            "/redirect" to "TODO.EXAMPLE.COM",
+            "https://GITHUB.COM:443/owner/repo/releases/download/tag/asset" to "GITHUB.COM",
             "//objects.githubusercontent.com/asset" to "objects.githubusercontent.com",
             "https://release-assets.githubusercontent.com/asset?temporary=1" to "release-assets.githubusercontent.com",
             "https://todo.example.com/asset" to "todo.example.com",
@@ -113,7 +113,7 @@ class UpdatesTest {
         }
     }
 
-    @Test fun redirects_reject_other_hosts_and_non_https_hops_even_after_a_trusted_hop() {
+    @Test fun redirects_reject_other_hosts_ports_and_non_https_hops_even_after_a_trusted_hop() {
         val initial = URI("https://todo.example.com/owner/repo/releases.atom")
         val current = URI("https://release-assets.githubusercontent.com/asset")
         for (location in listOf(
@@ -122,8 +122,23 @@ class UpdatesTest {
             "https://raw.githubusercontent.com/asset",
             "http://release-assets.githubusercontent.com/asset",
             "https://you@github.com/asset",
+            "https://github.com:8443/x",
+            "https://todo.example.com:8443/x",
+            "https://GITHUB.COM./x",
+            "https://192.0.2.1/x",
+            "https://[2001:db8::1]/x",
         )) {
             assertNull(location, releaseRedirect(initial, current, location))
+        }
+    }
+
+    @Test fun redirects_allow_an_ip_literal_only_when_it_matches_the_configured_host() {
+        for ((base, host) in listOf("192.0.2.1" to "192.0.2.1", "[2001:DB8::1]" to "[2001:db8::1]")) {
+            val initial = URI("https://$base/fork/releases.atom")
+            val current = URI("https://github.com/asset")
+            val target = URI("https://$host:443/x")
+            assertEquals(target, releaseRedirect(initial, current, target.toString()))
+            assertNull(releaseRedirect(initial, current, "https://$host:8443/x"))
         }
     }
 
