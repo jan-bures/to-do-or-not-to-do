@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Cover — Timeline View (412 × 960 dp)</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="clay">
+    <!-- Non-interactive Living Daybreak Horizon Header -->
+    <header class="horizon-header" style="height:208px;">
+      <div class="horizon-canvas" data-horizon-header data-width="412" data-total-height="208" data-scene-height="72" data-done="2" data-total="10"></div>
+
+      <div class="horizon-status">
+        <span>10:35</span>
+        <div class="status-bar-right">
+          <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+          <span>5G</span>
+          <span class="battery-icon"><span class="battery-fill"></span></span>
+        </div>
+      </div>
+
+      <div class="horizon-text">
+        <div class="horizon-eyebrow">
+          <span class="eyebrow-day">Home</span>
+          <span class="eyebrow-meta">7 SCHEDULED · W47–W48</span>
+        </div>
+        <h1 class="horizon-title">Home renovation</h1>
+        <div class="horizon-sub">
+          <div class="room-summary">
+            <span class="fig accent">2</span><span>of</span><span class="fig">10</span><span>done</span>
+            <span class="dot"></span><span class="fig">8</span><span>open</span>
+          </div>
+          <span class="overdue-badge"><span class="diamond"></span>1 overdue</span>
+        </div>
+      </div>
+      <div style="height:72px;flex:0 0 72px;"></div>
+    </header>
+
+    <!-- Non-Interactive Sticky 6-Day Date Ruler (Thu 19 .. Tue 24 Nov; Today Sat 21 = col 2) -->
+    <div class="phone-tl-ruler" aria-label="Timeline dates">
+      <div class="tl-day-cell"><span class="tl-week-tag">W47</span><span class="tl-day-dow">Thu</span><span class="tl-day-num">19</span></div>
+      <div class="tl-day-cell"><span class="tl-day-dow">Fri</span><span class="tl-day-num">20</span></div>
+      <div class="tl-day-cell weekend today"><span class="tl-day-dow">Sat</span><span class="tl-day-num">21</span><span class="tl-today-dot"></span></div>
+      <div class="tl-day-cell weekend"><span class="tl-day-dow">Sun</span><span class="tl-day-num">22</span></div>
+      <div class="tl-day-cell"><span class="tl-week-tag">W48</span><span class="tl-day-dow">Mon</span><span class="tl-day-num">23</span></div>
+      <div class="tl-day-cell"><span class="tl-day-dow">Tue</span><span class="tl-day-num">24</span></div>
+    </div>
+
+    <!-- Vertically & Horizontally Pannable Timeline Lanes (48 dp rows, 32 dp bars) -->
+    <main class="phone-tl-lanes">
+      <div class="phone-tl-bg">
+        <div class="tl-bg-col"></div>
+        <div class="tl-bg-col"></div>
+        <div class="tl-bg-col weekend"></div>
+        <div class="tl-bg-col weekend"></div>
+        <div class="tl-bg-col"></div>
+        <div class="tl-bg-col"></div>
+      </div>
+      <!-- Today vertical hairline (centre of col 2 = 2.5 / 6 = 41.67%) -->
+      <div class="tl-today-line" style="left:41.67%;"></div>
+
+      <!-- Group: In progress -->
+      <div class="phone-tl-group">
+        <i class="ic xs" style="color:var(--color-accent-strong)" data-icon="status-progress"></i>
+        <span class="caps-label" style="color:var(--color-accent-strong);">In progress · 3</span>
+      </div>
+
+      <!-- Lane 1: Strip wallpaper (19–23 Nov = cols 0..4, 5/6 = 83.3%) -->
+      <div class="phone-tl-lane">
+        <div class="tl-bar progress selected" style="left:1.5%;width:80.5%;">
+          <span class="tl-bar-handle left"></span>
+          <span class="tl-bar-label" style="padding-left:4px;">Strip wallpaper &amp; prime hallway</span>
+          <span class="step-count" style="margin-left:auto;padding-right:6px;">2/4</span>
+          <span class="tl-bar-handle right"></span>
+        </div>
+      </div>
+
+      <!-- Lane 2: Overdue grout colour (due Fri 20 Nov = col 1) -->
+      <div class="phone-tl-lane">
+        <div class="tl-bar overdue" style="left:18%;width:14%;justify-content:center;padding:0;">
+          <span class="overdue-badge" style="background:transparent;padding:0;"><span class="diamond"></span></span>
+        </div>
+        <span class="tl-bar-outside" style="left:34%;top:15px;color:var(--color-danger-ink);font-weight:600;">Pick grout colour · 1d overdue</span>
+      </div>
+
+      <!-- Lane 3: Czech permit (20–26 Nov -> extends past right edge of viewport!) -->
+      <div class="phone-tl-lane">
+        <div class="tl-bar progress" style="left:18%;width:84%;border-top-right-radius:0;border-bottom-right-radius:0;border-right:none;">
+          <span class="tl-bar-label">Vyřídit ohlášení drobných stavebních úprav…</span>
+          <span class="agent-mark" data-agent="claude" style="margin-left:auto;">C</span>
+        </div>
+      </div>
+
+      <!-- Group: To do -->
+      <div class="phone-tl-group">
+        <i class="ic xs" style="color:var(--color-ink-2)" data-icon="status-todo"></i>
+        <span class="caps-label">To do · 3</span>
+      </div>
+
+      <!-- Lane 4: Flooring samples (23–25 Nov -> cols 4..5+) -->
+      <div class="phone-tl-lane">
+        <div class="tl-bar" style="left:68%;width:34%;border-top-right-radius:0;border-bottom-right-radius:0;border-right:none;">
+          <span class="tl-bar-label">Order matte oak…</span>
+        </div>
+      </div>
+
+      <!-- Lane 5: Electrician milestone (Tue 24 Nov = col 5) -->
+      <div class="phone-tl-lane">
+        <span class="tl-bar-outside" style="right:18%;top:15px;text-align:right;">Confirm electrician visit</span>
+        <div class="tl-bar" style="left:84.8%;width:13.5%;justify-content:center;background:var(--color-wash);border-color:var(--color-accent-strong);">
+          <i class="ic sm" style="color:var(--color-accent-strong)" data-icon="flag"></i>
+        </div>
+      </div>
+
+      <!-- Quiet hint for later items -->
+      <div style="margin:14px 16px 0;padding:8px 12px;border-radius:var(--radius-md);background:var(--color-pane);border:1px solid var(--color-line);font:400 12.5px/18px var(--font-ui);color:var(--color-ink-3);position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;">
+        <span>2 more tasks later in W48–W49</span>
+        <span style="font:500 12px/16px var(--font-mono);color:var(--color-accent-strong);">Swipe left →</span>
+      </div>
+    </main>
+
+    <!-- Bottom Thumb Dock (All timeline controls strictly in thumb zone!) -->
+    <footer class="bottom-dock">
+      <!-- Upper Dock: Today · Zoom · Unscheduled Tray · Quick Add -->
+      <div class="upper-strip">
+        <span class="col-tab" style="padding:0 10px;font-weight:600;color:var(--color-accent-strong);">Today</span>
+        <div class="view-switcher" style="height:36px;padding:3px;">
+          <span class="view-seg active" style="height:28px;padding:0 8px;">1W</span>
+          <span class="view-seg" style="height:28px;padding:0 8px;">2W</span>
+          <span class="view-seg" style="height:28px;padding:0 8px;">M</span>
+        </div>
+        <span class="col-tab" style="margin-left:auto;"><i class="ic xs" data-icon="calendar-range"></i>Unsched <span class="cnt">2</span></span>
+        <span class="fab-add" title="Add task"><i class="ic" data-icon="plus"></i></span>
+      </div>
+
+      <!-- Lower Dock: Rooms · Room Pills · View Switcher · Filter · Room Menu -->
+      <nav class="bottom-bar" aria-label="Room controls">
+        <span class="touch-btn" title="Rooms"><i class="ic" data-icon="menu"></i></span>
+        <div class="pills-scroll">
+          <span class="room-pill active" data-list-hue="clay"><i class="ic glyph" data-glyph="wrench"></i>Home renovation</span>
+          <span class="room-pill" data-list-hue="teal"><i class="ic glyph" data-glyph="basket"></i>Groceries</span>
+        </div>
+        <span class="touch-btn active-view" title="Switch view (Timeline)"><i class="ic" data-icon="gantt-chart"></i></span>
+        <span class="touch-btn" title="Filter"><i class="ic" data-icon="search"></i></span>
+        <span class="touch-btn" title="Room menu"><i class="ic" data-icon="ellipsis"></i></span>
+      </nav>
+      <div class="gesture-bar"><span class="gesture-pill"></span></div>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

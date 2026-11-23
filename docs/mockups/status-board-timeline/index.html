@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Status, Board &amp; Timeline — Interactive Mockup Gallery</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 32px;
+      background: #141210;
+      color: #f4efe9;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    p { color: #a89f96; margin: 0 0 28px; max-width: 760px; line-height: 1.5; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: #201d1a;
+      border: 1px solid #342f2a;
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card img {
+      width: 100%;
+      height: 220px;
+      object-fit: cover;
+      object-position: top;
+      display: block;
+      background: #181614;
+    }
+    .card-body {
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .card-title { font-weight: 600; font-size: 15px; }
+    .card-links { display: flex; gap: 12px; font-size: 13px; }
+    a { color: #e59f47; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Status, Board &amp; Timeline — UX Mockups</h1>
+  <p>
+    Visual companion to <code>docs/status-board-timeline-ux.md</code>. Built directly on
+    <code>crates/todo-design/generated/tokens.css</code>, bundled Geist / Geist Mono fonts, and authentic
+    Daybreak landscapes. Open any interactive HTML page to toggle Light / Dark themes.
+  </p>
+  <div class="grid">
+    <div class="card">
+      <img src="desktop-board-light.png" alt="Desktop Board (Light)" />
+      <div class="card-body">
+        <div class="card-title">Desktop Board (Light &amp; Dark)</div>
+        <div class="card-links">
+          <a href="desktop-board.html?theme=light">Interactive Light</a>
+          <a href="desktop-board.html?theme=dark">Interactive Dark</a>
+          <a href="desktop-board-light.png">PNG Light</a>
+          <a href="desktop-board-dark.png">PNG Dark</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="desktop-timeline-light.png" alt="Desktop Timeline" />
+      <div class="card-body">
+        <div class="card-title">Desktop Timeline</div>
+        <div class="card-links">
+          <a href="desktop-timeline.html?theme=light">Interactive Light</a>
+          <a href="desktop-timeline.html?theme=dark">Interactive Dark</a>
+          <a href="desktop-timeline-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="desktop-list-status-light.png" alt="Desktop List with Status" />
+      <div class="card-body">
+        <div class="card-title">Desktop List with Status &amp; Detail</div>
+        <div class="card-links">
+          <a href="desktop-list-status.html?theme=light">Interactive Light</a>
+          <a href="desktop-list-status.html?theme=dark">Interactive Dark</a>
+          <a href="desktop-list-status-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="desktop-list-settings-light.png" alt="Per-List Settings" />
+      <div class="card-body">
+        <div class="card-title">Per-List Settings Popover</div>
+        <div class="card-links">
+          <a href="desktop-list-settings.html?theme=light">Interactive Light</a>
+          <a href="desktop-list-settings.html?theme=dark">Interactive Dark</a>
+          <a href="desktop-list-settings-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="android-cover-board-light.png" alt="Android Cover Board" />
+      <div class="card-body">
+        <div class="card-title">Android Cover Board (412 × 960 dp)</div>
+        <div class="card-links">
+          <a href="android-cover-board.html?theme=light">Interactive Light</a>
+          <a href="android-cover-board.html?theme=dark">Interactive Dark</a>
+          <a href="android-cover-board-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="android-inner-board-light.png" alt="Android Inner Board" />
+      <div class="card-body">
+        <div class="card-title">Android Inner Board (876 × 970 dp)</div>
+        <div class="card-links">
+          <a href="android-inner-board.html?theme=light">Interactive Light</a>
+          <a href="android-inner-board.html?theme=dark">Interactive Dark</a>
+          <a href="android-inner-board-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <img src="android-cover-timeline-light.png" alt="Android Cover Timeline" />
+      <div class="card-body">
+        <div class="card-title">Android Cover Timeline (412 × 960 dp)</div>
+        <div class="card-links">
+          <a href="android-cover-timeline.html?theme=light">Interactive Light</a>
+          <a href="android-cover-timeline.html?theme=dark">Interactive Dark</a>
+          <a href="android-cover-timeline-light.png">PNG</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

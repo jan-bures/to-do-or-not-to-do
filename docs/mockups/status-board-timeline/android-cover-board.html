@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Cover — Board View (412 × 960 dp)</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="clay">
+    <!-- Non-interactive Living Daybreak Horizon Header (zero top buttons!) -->
+    <header class="horizon-header" style="height:208px;">
+      <div class="horizon-canvas" data-horizon-header data-width="412" data-total-height="208" data-scene-height="72" data-done="2" data-total="10"></div>
+
+      <div class="horizon-status">
+        <span>10:35</span>
+        <div class="status-bar-right">
+          <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+          <span>5G</span>
+          <span class="battery-icon"><span class="battery-fill"></span></span>
+        </div>
+      </div>
+
+      <div class="horizon-text">
+        <div class="horizon-eyebrow">
+          <span class="eyebrow-day">Home</span>
+          <span class="eyebrow-meta">8 OPEN · BOARD</span>
+        </div>
+        <h1 class="horizon-title">Home renovation</h1>
+        <div class="horizon-sub">
+          <div class="room-summary">
+            <span class="fig accent">2</span><span>of</span><span class="fig">10</span><span>done</span>
+            <span class="dot"></span><span class="fig">8</span><span>open</span>
+          </div>
+          <span class="overdue-badge"><span class="diamond"></span>1 overdue</span>
+        </div>
+      </div>
+      <div style="height:72px;flex:0 0 72px;"></div>
+    </header>
+
+    <!-- Single-Column Swipeable Board with Neighbour Peeks (To do ◀ [In progress] ▶ Done) -->
+    <main class="phone-board-pager">
+      <div class="phone-board-peek left" aria-hidden="true"></div>
+
+      <section class="phone-board-col">
+        <div class="board-col-head" style="height:40px;padding:0 14px;">
+          <span class="board-col-title progress"><i class="ic md" data-icon="status-progress"></i>In progress</span>
+          <span class="board-col-count" style="color:var(--color-accent-strong);font-weight:600;">3 of 8 open</span>
+        </div>
+
+        <div class="board-col-body" style="padding:12px 10px;gap:10px;">
+          <article class="board-card selected">
+            <div class="board-card-top">
+              <span class="check-ring"></span>
+              <span class="board-card-title">Strip wallpaper and prime hallway walls</span>
+              <i class="ic sm board-card-star" data-icon="star-filled"></i>
+            </div>
+            <div class="board-card-meta">
+              <div class="board-card-meta-left">
+                <span class="due-text soon">19–23 Nov</span>
+                <span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">2/4</span></span>
+                <span class="priority-text p2">!!</span>
+                <span class="tag-text">#hallway</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="board-card">
+            <div class="board-card-top">
+              <span class="check-ring overdue"></span>
+              <span class="board-card-title">Pick grout colour for bathroom tiles</span>
+            </div>
+            <div class="board-card-meta">
+              <div class="board-card-meta-left">
+                <span class="overdue-badge"><span class="diamond"></span>1d overdue</span>
+                <span class="tag-text">#bathroom</span>
+              </div>
+              <span class="agent-mark" data-agent="codex">X</span>
+            </div>
+          </article>
+
+          <article class="board-card">
+            <div class="board-card-top">
+              <span class="check-ring"></span>
+              <span class="board-card-title">Vyřídit ohlášení drobných stavebních úprav na úřadě</span>
+            </div>
+            <div class="board-card-meta">
+              <div class="board-card-meta-left">
+                <span class="due-text">20–26 Nov</span>
+                <span class="tag-text">#permits</span>
+              </div>
+              <span class="agent-mark" data-agent="claude">C</span>
+            </div>
+          </article>
+
+          <div class="board-col-add" style="margin:4px 0 0;height:44px;border:1px dashed var(--color-line-strong);justify-content:center;">
+            <i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>Add to In progress
+          </div>
+        </div>
+      </section>
+
+      <div class="phone-board-peek right" aria-hidden="true"></div>
+    </main>
+
+    <!-- Bottom Thumb Dock (All interactive controls strictly in thumb zone) -->
+    <footer class="bottom-dock">
+      <!-- Upper Dock: Thumb-reachable Column Switcher Strip + Quick Add -->
+      <div class="upper-strip">
+        <div class="col-tabs" role="tablist" aria-label="Board columns">
+          <span class="col-tab"><i class="ic xs" style="color:var(--color-ink-3)" data-icon="status-backlog"></i>Backlog <span class="cnt">2</span></span>
+          <span class="col-tab"><i class="ic xs" style="color:var(--color-ink-2)" data-icon="status-todo"></i>To do <span class="cnt">3</span></span>
+          <span class="col-tab active"><i class="ic xs" data-icon="status-progress"></i>In progress <span class="cnt">3</span></span>
+          <span class="col-tab"><i class="ic xs" style="color:var(--color-accent)" data-icon="status-done"></i>3</span>
+        </div>
+        <span class="fab-add" title="Add to In progress"><i class="ic" data-icon="plus"></i></span>
+      </div>
+
+      <!-- Lower Dock: Rooms · Room Pills · View Switcher · Filter · Room Menu -->
+      <nav class="bottom-bar" aria-label="Room controls">
+        <span class="touch-btn" title="Rooms"><i class="ic" data-icon="menu"></i></span>
+        <div class="pills-scroll">
+          <span class="room-pill active" data-list-hue="clay"><i class="ic glyph" data-glyph="wrench"></i>Home renovation</span>
+          <span class="room-pill" data-list-hue="teal"><i class="ic glyph" data-glyph="basket"></i>Groceries</span>
+        </div>
+        <span class="touch-btn active-view" title="Switch view (Board)"><i class="ic" data-icon="columns-3"></i></span>
+        <span class="touch-btn" title="Filter"><i class="ic" data-icon="search"></i></span>
+        <span class="touch-btn" title="Room menu"><i class="ic" data-icon="ellipsis"></i></span>
+      </nav>
+      <div class="gesture-bar"><span class="gesture-pill"></span></div>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

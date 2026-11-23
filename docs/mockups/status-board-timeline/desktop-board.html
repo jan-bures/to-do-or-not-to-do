@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Desktop — Board View (Home renovation)</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="desktop-window" data-theme="light" data-room-hue="clay">
+    <!-- 36 px Windows Title Bar -->
+    <div class="win-titlebar">
+      <div class="win-brand">
+        <span class="win-brand-tile">
+          <svg viewBox="0 0 18 18" width="18" height="18"><rect width="18" height="18" fill="#f9efe1"/><circle cx="9" cy="8.5" r="4.2" fill="#e5a031"/><path d="M0 18V13.5C5 11.5 13 15 18 12.5V18Z" fill="#e6cfa9"/><path d="M6.8 8.6l1.5 1.5 3-3.2" fill="none" stroke="#241c15" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span>To-Do or Not To-Do</span>
+      </div>
+      <div class="win-search-pill">
+        <span class="win-search-left"><i class="ic sm" data-icon="search"></i>Filter tasks…</span>
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="win-captions">
+        <span class="win-cap-btn"><i class="ic xs" data-icon="minus"></i></span>
+        <span class="win-cap-btn"><i class="ic xs" data-icon="square"></i></span>
+        <span class="win-cap-btn"><i class="ic xs" data-icon="x"></i></span>
+      </div>
+    </div>
+
+    <div class="desktop-body">
+      <!-- 248 px Sidebar -->
+      <aside class="desktop-sidebar">
+        <div class="sidebar-scroll">
+          <div class="nav-row"><i class="ic glyph" style="color:var(--color-sun-ink)" data-glyph="sun"></i><span class="nav-label">My Day</span><span class="nav-count">5</span></div>
+          <div class="nav-row"><i class="ic sm" style="color:var(--color-important-fill)" data-icon="star"></i><span class="nav-label">Important</span><span class="nav-count">2</span></div>
+          <div class="nav-row" data-list-hue="planned"><i class="ic sm" style="color:var(--list-glyph)" data-icon="calendar"></i><span class="nav-label">Planned</span><span class="nav-count">9</span></div>
+          <div class="nav-row"><i class="ic sm" data-icon="list"></i><span class="nav-label">All</span><span class="nav-count">18</span></div>
+          <div class="nav-row"><i class="ic sm" data-icon="circle-check"></i><span class="nav-label">Completed</span></div>
+          <div class="nav-row" data-list-hue="agent-activity"><i class="ic sm" style="color:var(--list-glyph)" data-icon="sparkles"></i><span class="nav-label">Agent activity</span><span class="nav-count">3</span></div>
+
+          <div class="nav-sep"></div>
+          <div class="nav-row" data-list-hue="agent-activity"><i class="ic sm" style="color:var(--list-glyph)" data-icon="clock"></i><span class="nav-label">Activity</span><span class="kbd">Ctrl H</span></div>
+          <div class="nav-row sub"><span class="agent-mark" data-agent="claude">C</span><span class="nav-label">Claude</span><span class="nav-sub-meta">2 edited today</span></div>
+          <div class="nav-row sub"><span class="agent-mark" data-agent="codex">X</span><span class="nav-label">Codex</span><span class="nav-sub-meta">1 added today</span></div>
+          <div class="nav-row" data-list-hue="agent-activity"><i class="ic sm" style="color:var(--list-glyph)" data-icon="trash-2"></i><span class="nav-label">Trash</span></div>
+
+          <div class="nav-sep"></div>
+          <div class="nav-collection" data-list-hue="fern"><i class="ic xs" data-icon="chevron-down"></i><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="house"></i><span class="nav-label">Home</span><span class="nav-count">14</span></div>
+          <div class="nav-row sub active" data-list-hue="clay"><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="wrench"></i><span class="nav-label">Home renovation</span><span class="nav-count">8</span></div>
+          <div class="nav-row sub" data-list-hue="teal"><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="basket"></i><span class="nav-label">Groceries</span><span class="nav-count">6</span></div>
+
+          <div class="nav-collection" data-list-hue="lagoon" style="margin-top:4px;"><i class="ic xs" data-icon="chevron-down"></i><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="briefcase"></i><span class="nav-label">Work</span><span class="nav-count">6</span></div>
+          <div class="nav-row sub" data-list-hue="azure"><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="flag"></i><span class="nav-label">Q4 Launch</span><span class="nav-count">4</span></div>
+          <div class="nav-row sub" data-list-hue="cornflower"><i class="ic glyph" style="color:var(--list-glyph)" data-glyph="document"></i><span class="nav-label">Admin</span><span class="nav-count">2</span></div>
+        </div>
+        <div class="sidebar-footer">
+          <span class="sidebar-new-btn"><i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>New</span>
+          <span class="sync-pill"><span class="sync-dot"></span>10:35</span>
+          <span class="icon-btn" style="width:28px;height:28px;"><i class="ic sm" data-icon="settings"></i></span>
+        </div>
+      </aside>
+
+      <!-- Main Room: Full-Width Board (1192 px) -->
+      <main class="desktop-main">
+        <header class="desktop-header">
+          <div class="desktop-header-inner">
+            <div class="desktop-eyebrow-row">
+              <div class="eyebrow-left">
+                <span class="eyebrow-day">Home</span>
+                <span class="eyebrow-meta">8 OPEN</span>
+              </div>
+              <div class="eyebrow-actions">
+                <div class="view-switcher" role="tablist" aria-label="Room view">
+                  <span class="view-seg"><i class="ic sm" data-icon="list"></i>List</span>
+                  <span class="view-seg active"><i class="ic sm" data-icon="columns-3"></i>Board</span>
+                  <span class="view-seg"><i class="ic sm" data-icon="gantt-chart"></i>Timeline</span>
+                </div>
+                <span class="icon-btn" title="Room menu"><i class="ic" data-icon="ellipsis"></i></span>
+              </div>
+            </div>
+            <div class="desktop-title-row">
+              <h1 class="desktop-room-title">Home renovation</h1>
+              <div class="desktop-summary">
+                <span class="fig">2</span><span>of 10 done</span>
+                <span class="sep"></span>
+                <span>8 open</span>
+              </div>
+            </div>
+          </div>
+          <div class="landscape-wrap" data-landscape data-width="1192" data-height="48" data-done="2" data-total="10"></div>
+        </header>
+
+        <!-- 4 Kanban Columns -->
+        <section class="board-stage">
+          <!-- Column 1: Backlog -->
+          <div class="board-col">
+            <div class="board-col-head">
+              <span class="board-col-title backlog"><i class="ic md" data-icon="status-backlog"></i>Backlog</span>
+              <span class="board-col-count">2</span>
+            </div>
+            <div class="board-col-body">
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Compare kitchen pendant lights</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="tag-text">#lighting</span>
+                  </div>
+                  <span class="agent-mark" data-agent="pi">π</span>
+                </div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Get quote for hallway built-in wardrobe</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text">3–7 Dec</span>
+                    <span class="tag-text">#carpentry</span>
+                  </div>
+                </div>
+              </article>
+
+              <div class="board-empty-slot" style="margin-top:4px;">Drop future ideas here</div>
+            </div>
+            <div class="board-col-add"><i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>Add to Backlog</div>
+          </div>
+
+          <!-- Column 2: To do -->
+          <div class="board-col">
+            <div class="board-col-head">
+              <span class="board-col-title"><i class="ic md" style="color:var(--color-ink-2)" data-icon="status-todo"></i>To do</span>
+              <span class="board-col-count">3</span>
+            </div>
+            <div class="board-col-body">
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Order matte oak flooring samples</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text">23–25 Nov</span>
+                    <span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">1/3</span></span>
+                    <span class="priority-text p2">!!</span>
+                  </div>
+                  <span class="agent-mark" data-agent="claude">C</span>
+                </div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Confirm electrician visit for kitchen outlets</span>
+                  <i class="ic sm board-card-star" data-icon="star-filled"></i>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text">Tue 24 Nov</span>
+                    <i class="ic sm" style="color:var(--color-ink-3)" data-icon="mail"></i>
+                    <span class="priority-text p3">!!!</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Measure bathroom vanity niche and mirror</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text">26–27 Nov</span>
+                    <span class="step-meter"><span class="step-bars"><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">0/2</span></span>
+                    <span class="tag-text">#bathroom</span>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <div class="board-col-add"><i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>Add to To do</div>
+          </div>
+
+          <!-- Column 3: In progress -->
+          <div class="board-col">
+            <div class="board-col-head">
+              <span class="board-col-title progress"><i class="ic md" data-icon="status-progress"></i>In progress</span>
+              <span class="board-col-count" style="color:var(--color-accent-strong);font-weight:600;">3</span>
+            </div>
+            <div class="board-col-body">
+              <article class="board-card selected">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Strip wallpaper and prime hallway walls</span>
+                  <i class="ic sm board-card-star" data-icon="star-filled"></i>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text soon">19–23 Nov</span>
+                    <span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">2/4</span></span>
+                    <span class="priority-text p2">!!</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring overdue"></span>
+                  <span class="board-card-title">Pick grout colour for bathroom tiles</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="overdue-badge"><span class="diamond"></span>1d overdue</span>
+                    <span class="tag-text">#bathroom</span>
+                  </div>
+                  <span class="agent-mark" data-agent="codex">X</span>
+                </div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-card-top">
+                  <span class="check-ring"></span>
+                  <span class="board-card-title">Vyřídit ohlášení drobných stavebních úprav na úřadě</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text">20–26 Nov</span>
+                    <span class="tag-text">#permits</span>
+                  </div>
+                  <span class="agent-mark" data-agent="claude">C</span>
+                </div>
+              </article>
+            </div>
+            <div class="board-col-add"><i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>Add to In progress</div>
+          </div>
+
+          <!-- Column 4: Done (recent 7 days) -->
+          <div class="board-col">
+            <div class="board-col-head">
+              <span class="board-col-title"><i class="ic md" style="color:var(--color-accent)" data-icon="status-done"></i>Done</span>
+              <span class="board-col-count">3 recent</span>
+            </div>
+            <div class="board-col-body">
+              <article class="board-card done-card">
+                <div class="board-card-top">
+                  <span class="check-ring done"><i class="ic xs" data-icon="check"></i></span>
+                  <span class="board-card-title struck">Deliver old sofa to charity depot</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text none">Today 09:15</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="board-card done-card">
+                <div class="board-card-top">
+                  <span class="check-ring done"><i class="ic xs" data-icon="check"></i></span>
+                  <span class="board-card-title struck">Shut off radiator valve in guest room</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text none">Today 08:40</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="board-card done-card">
+                <div class="board-card-top">
+                  <span class="check-ring done"><i class="ic xs" data-icon="check"></i></span>
+                  <span class="board-card-title struck">Send floor plan PDF to contractor</span>
+                </div>
+                <div class="board-card-meta">
+                  <div class="board-card-meta-left">
+                    <span class="due-text none">Yesterday</span>
+                    <span class="tag-text">#permits</span>
+                  </div>
+                  <span class="agent-mark" data-agent="claude">C</span>
+                </div>
+              </article>
+            </div>
+            <div class="board-done-footer">View all 14 in Completed →</div>
+          </div>
+        </section>
+
+        <!-- Reserved 56 px Undo Inset -->
+        <div class="desktop-footer-inset">
+          <span class="completed-pill-btn"><i class="ic sm" data-icon="columns-3"></i>Done shows last 7 days</span>
+          <div class="undo-toast">
+            <span>Moved "Strip wallpaper…" to In progress</span>
+            <span class="undo-toast-action">Undo</span>
+            <span class="undo-toast-bar"></span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- 28 px Status Bar -->
+    <div class="win-statusbar">
+      <span>8 open · 2 done today</span>
+      <div class="statusbar-hints">
+        <span class="statusbar-hint"><span class="kbd">H</span><span class="kbd">L</span> columns</span>
+        <span class="statusbar-hint"><span class="kbd">Alt ←/→</span> move status</span>
+        <span class="statusbar-hint"><span class="kbd">S</span> status</span>
+        <span class="statusbar-hint"><span class="kbd">V</span> view</span>
+        <span class="statusbar-hint"><span class="kbd">Space</span> done</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>
