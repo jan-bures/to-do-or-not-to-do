@@ -569,7 +569,33 @@ impl ShellView {
         // Activity right after Agent activity, followed by the agents active today.
         let after = sb.activity_at();
         let activity = self.activity_rows(cx);
+        let at = after + activity.len();
         smart.splice(after..after, activity);
+        let on = sb.selected == RoomKey::Trash;
+        let trash = div()
+            .h(px(desktop::NAV_ROW))
+            .flex()
+            .items_center()
+            .gap(px(space::S2))
+            .px(px(desktop::NAV_GAP))
+            .rounded(px(radius::MD))
+            .style(ty::NAV_COLLECTION)
+            .child(kit::icon(
+                Icon::TrashTwo,
+                component::ICON,
+                theme::list_colors(t, theme::hues::AGENT_ACTIVITY).glyph,
+            ))
+            .child(todo_client::trash::TITLE);
+        smart.insert(
+            at,
+            self.clickable(
+                self.nav_row(RoomKey::Trash, on, trash),
+                "nav-trash",
+                on,
+                cx,
+                |this, _, _, cx| this.select_room(RoomKey::Trash, cx),
+            ),
+        );
 
         let mut collections = Vec::new();
         for (i, c) in sb.collections.iter().enumerate() {

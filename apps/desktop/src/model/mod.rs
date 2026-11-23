@@ -166,12 +166,17 @@ pub enum RoomKey {
     List(ListId),
     /// Every confirmed change, or one agent's (`model::activity`).
     Activity(Option<AgentKey>),
+    Trash,
 }
 
 impl RoomKey {
     /// The Activity room, filtered or not.
     pub fn is_activity(self) -> bool {
         matches!(self, Self::Activity(_))
+    }
+
+    pub fn is_history(self) -> bool {
+        self.is_activity() || self == Self::Trash
     }
 
     /// A deleted room takes the owner back to My Day.
@@ -191,7 +196,8 @@ impl From<RoomKey> for commands::TaskRoom {
             RoomKey::Smart(Smart::Important) => Self::Important,
             RoomKey::Smart(Smart::Planned) => Self::Planned,
             RoomKey::Smart(Smart::All | Smart::Completed | Smart::AgentActivity)
-            | RoomKey::Activity(_) => Self::Other,
+            | RoomKey::Activity(_)
+            | RoomKey::Trash => Self::Other,
             RoomKey::Collection(id) => Self::Collection(id),
             RoomKey::List(id) => Self::List(id),
         }
@@ -411,6 +417,7 @@ pub struct Room {
     pub estimate: Option<SharedString>,
     /// Open tasks (plus tasks finishing their completion), in order.
     pub tasks: Vec<TaskRow>,
+    pub trash: Vec<todo_client::trash::Row>,
     /// The Completed section's rows (filled only when it is open).
     pub completed: Vec<TaskRow>,
     /// How many tasks the Completed section holds.
@@ -443,7 +450,7 @@ impl Room {
     /// The room leaves the detail column out while no task is open: the finished day, and Activity,
     /// which never opens a task.
     pub fn leaves_detail_out(&self) -> bool {
-        self.finished_day() || self.key.is_activity()
+        self.finished_day() || self.key.is_history()
     }
 
     /// What the finished day shows instead of rows: tomorrow's hand-over, unless the Completed section is

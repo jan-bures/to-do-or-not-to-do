@@ -259,6 +259,45 @@ pub fn activity() -> Vec<todo_client::activity::ActivityItem> {
     items
 }
 
+/// Trash over the gallery state, including a task and list that each need a parent restored first.
+#[cfg(feature = "fixtures")]
+pub fn trash_state() -> State {
+    let mut b = Builder {
+        state: state(),
+        at: at("2026-11-12T09:00:00Z"),
+        owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
+    };
+    b.run(todo_client::intent::create_collection(
+        coll(100),
+        "Spring fair",
+    ));
+    b.run(todo_client::intent::create_list(
+        list(100),
+        Some(coll(100)),
+        "Flyers",
+    ));
+    for (n, list, title) in [
+        (100, list(100), "Send the first draft to print"),
+        (101, list(3), "Return the paint samples"),
+    ] {
+        b.run(Command::CreateTask(Box::new(NewTask::new(
+            task(n),
+            list,
+            title,
+        ))));
+    }
+    for (id, at) in [
+        (task(100).into(), "2026-11-17T09:00:00Z"),
+        (list(100).into(), "2026-11-18T09:00:00Z"),
+        (coll(100).into(), "2026-11-19T09:00:00Z"),
+        (task(101).into(), "2026-11-21T09:20:00Z"),
+    ] {
+        b.at(at);
+        b.run(Command::Delete { id });
+    }
+    b.state
+}
+
 /// Tasks around local midnight before Prague's autumn clock change.
 #[cfg(feature = "fixtures")]
 pub fn fallback_state() -> State {

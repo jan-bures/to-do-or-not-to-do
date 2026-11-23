@@ -241,6 +241,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(activity(None))
         }
         "activity-agent" => Some(activity(Some("claude"))),
+        "trash" | "trash-empty" => Some(trash(name == "trash-empty")),
         "activity-empty" => {
             let mut f = activity(None);
             f.activity.clear();
@@ -1537,6 +1538,48 @@ pub fn activity(agent: Option<&str>) -> Fixture {
         task: None,
         ..f.ui
     };
+    f
+}
+
+fn trash(empty: bool) -> Fixture {
+    let mut f = my_day();
+    f.ui.room = RoomKey::Trash;
+    f.ui.task = None;
+    if !empty {
+        let (mut b, lists) = sample();
+        let archived = b.collection("Spring fair", "jade");
+        let flyers = b.list(archived, "Flyers", "clay");
+        let draft = TaskId::from_uuid(b.uuid());
+        let old = TaskId::from_uuid(b.uuid());
+        b.run(
+            &owner(),
+            "2026-11-12T09:00:00Z",
+            Command::CreateTask(Box::new(NewTask::new(
+                draft,
+                lists.errands,
+                "Return the paint samples",
+            ))),
+        );
+        b.run(
+            &owner(),
+            "2026-11-12T09:00:00Z",
+            Command::CreateTask(Box::new(NewTask::new(
+                old,
+                flyers,
+                "Send the first draft to print",
+            ))),
+        );
+        for (id, at) in [
+            (old.into(), "2026-11-17T09:00:00Z"),
+            (flyers.into(), "2026-11-18T09:00:00Z"),
+            (archived.into(), "2026-11-19T09:00:00Z"),
+            (draft.into(), "2026-11-21T09:20:00Z"),
+        ] {
+            b.run(&owner(), at, Command::Delete { id });
+        }
+        debug_assert!(b.errors.is_empty(), "{:?}", b.errors);
+        f.state = b.state;
+    }
     f
 }
 

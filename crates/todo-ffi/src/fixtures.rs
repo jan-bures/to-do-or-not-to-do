@@ -19,6 +19,8 @@ pub enum Fixture {
     World,
     /// The same world with every My Day task done: the dusk scene.
     Finished,
+    /// Several tombstones with and without live parents.
+    Trash,
     /// Nothing at all: the first start after pairing.
     Blank,
 }
@@ -29,6 +31,7 @@ impl Fixture {
         match name {
             "world" => Some(Self::World),
             "finished" => Some(Self::Finished),
+            "trash" => Some(Self::Trash),
             "blank" => Some(Self::Blank),
             _ => None,
         }
@@ -461,6 +464,27 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
             created: b.stamp(60, &b.owner),
             deleted: None,
         }));
+    }
+    if fixture == Fixture::Trash {
+        let fair = b.collection("Spring fair", "jade");
+        let flyers = b.list(Some(fair), "Flyers", "clay");
+        let draft = b.task(flyers, "Send the first draft to print", Spec::default());
+        let paint = b.task(errands, "Return the paint samples", Spec::default());
+        for (id, minutes) in [
+            (draft.into(), 4 * 1440),
+            (flyers.into(), 3 * 1440),
+            (fair.into(), 2 * 1440),
+            (paint.into(), 15),
+        ] {
+            let stamp = b.stamp(minutes, &b.owner);
+            let _ = b.state.set_tombstone(
+                id,
+                Some(todo_core::model::Tombstone {
+                    at: stamp.at,
+                    by: stamp.by,
+                }),
+            );
+        }
     }
     b.state
 }

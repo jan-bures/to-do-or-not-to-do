@@ -303,6 +303,17 @@ corrected. Adding a link can be undone like removing one. A link's remove button
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
 
+### Trash
+
+Open **Trash** below Activity and its agents. Directly deleted tasks, lists and collections appear newest
+first with their deletion age and original list or collection, where applicable. **Restore** puts an item
+back where it was; **Undo** (or **Ctrl+Z**) reverses the exact restore. Use **J/K** or the arrows to select an
+available item and **Enter** or **Space** to restore it. If the original list or collection is deleted, restore
+that parent first. Restoring a parent reveals its children that were only hidden, not the ones deleted
+separately. Tasks merged into another task are not individually restorable from Trash; undo the merge instead.
+Trash uses the local synced replica and has no automatic expiry or permanent-delete control. An attachment's
+file may have expired under the separate blob-retention policy.
+
 ## Quick-add syntax
 
 After at least one title word, all clients accept one trailing date and one priority, in either order:
@@ -636,7 +647,9 @@ tomorrow. The motion fixtures freeze a transition part way (see *Motion*): `comp
 hand-over, half way through its collapse), `dusk-50`, `dusk-75`, `dusk-one-task-50`, `room-switch-50`, `room-hue-50`,
 `detail-open-50`, `detail-dusk-50`, `collection-collapse-50`, `scrollbar-fade-50`, `undo-toast`,
 `narrow-undo-toast` and `toast-in-50`.
-These states are set by the fixture, not by moving the pointer or maximizing the capture window.
+`trash` shows a task with Restore, a deleted collection, and items blocked by an original parent;
+`trash-empty` shows the empty state. These states are set by the fixture, not by moving the pointer or
+maximizing the capture window.
 
 Before rendering quick add, the runner checks the hidden native popup at startup and moves it to a
 known work-area anchor, checking its origin and size at the destination DPI without moving the pointer.

@@ -110,6 +110,8 @@ pub enum RoomKey {
         /// Its ID.
         id: String,
     },
+    /// Explicitly deleted tasks, lists and collections.
+    Trash,
 }
 
 impl Default for RoomKey {
@@ -220,6 +222,8 @@ impl From<room_header::Eyebrow> for Eyebrow {
 /// The summary beside the sun, as every client words it (`todo_client::room_header::Summary`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum RoomSummary {
+    /// A history room has no score.
+    None,
     /// Nothing to measure: "2 finished this month", or "nothing yet".
     Empty {
         /// Tasks in the room finished this calendar month.
@@ -251,10 +255,7 @@ pub enum RoomSummary {
 impl From<room_header::Summary> for RoomSummary {
     fn from(s: room_header::Summary) -> Self {
         match s {
-            // Android's task rooms don't include Activity; an unscored room reads as empty.
-            room_header::Summary::None => Self::Empty {
-                finished_this_month: 0,
-            },
+            room_header::Summary::None => Self::None,
             room_header::Summary::Empty {
                 finished_this_month,
             } => Self::Empty {
@@ -394,6 +395,8 @@ pub struct RoomView {
     /// The finished day (not filtered): the next day's name ("Sunday") for *Plan Sunday*, even when
     /// nothing is due then and there is no hand-over.
     pub plan_weekday: Option<String>,
+    /// The Trash room's rows, from the same replica as the header.
+    pub trash: Option<crate::engine::trash::TrashView>,
 }
 
 /// Where the app's completion choreography keeps tasks while it plays (as the desktop's `UiState::holding`
@@ -761,6 +764,7 @@ fn shared_key(key: &RoomKey) -> Option<room_header::RoomKey<'static>> {
         RoomKey::Smart { list } => room_header::RoomKey::Smart(list.shared()),
         RoomKey::Collection { id } => room_header::RoomKey::Collection(parse_collection(id)?),
         RoomKey::List { id } => room_header::RoomKey::List(parse_list(id)?),
+        RoomKey::Trash => room_header::RoomKey::Trash,
     })
 }
 
@@ -775,7 +779,7 @@ fn resolve(state: &State, key: &RoomKey) -> RoomKey {
         {
             key.clone()
         }
-        RoomKey::Smart { .. } => key.clone(),
+        RoomKey::Smart { .. } | RoomKey::Trash => key.clone(),
         _ => RoomKey::default(),
     }
 }
@@ -827,11 +831,17 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
     let header = room_header::header_of(state, shared, &tasks, &holding, &now.local_time());
     let room_header::RoomTasks { open, done } = tasks;
 
-    let filtered = !filter_text.trim().is_empty();
+    let filtered = !filter_text.trim().is_empty() && !shared.is_history();
     let open = filter(state, filter_text, &ctx, open);
     let done = filter(state, filter_text, &ctx, done);
 
     let (title, hue, chips, placeholder) = match &key {
+        RoomKey::Trash => (
+            todo_client::trash::TITLE.into(),
+            "agent-activity".into(),
+            false,
+            String::new(),
+        ),
         RoomKey::Smart { list } => (
             list.builtin().name.to_owned(),
             list.hue().to_owned(),
@@ -900,6 +910,8 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         tomorrow,
         filtered,
         plan_weekday,
+        trash: (key == RoomKey::Trash)
+            .then(|| crate::engine::trash::TrashView::from_state(state, now.at)),
         key,
     }
 }

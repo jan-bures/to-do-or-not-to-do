@@ -245,6 +245,9 @@ private fun Screen(
             if (feed != null) {
                 BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
                 ActivityRoom(paneSurface, actions, menu)
+            } else if (state.room.key == RoomKey.Trash) {
+                BackHandler(enabled = drawer.isClosed) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
+                TrashRoom(paneSurface, actions, menu, wide)
             } else if (wide) {
                 Row(Modifier.fillMaxSize().background(r.pane)) {
                     RoomPane(

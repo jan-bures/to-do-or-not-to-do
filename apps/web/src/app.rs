@@ -12,6 +12,7 @@ mod repeat;
 mod room_actions;
 mod tags;
 mod task_actions;
+mod trash;
 
 use crate::backend::{self, Sync, UndoTarget};
 use crate::changes::{self, Failure};
@@ -114,6 +115,7 @@ pub struct Ctx {
     waiting_undo: RwSignal<BTreeMap<CommandId, WaitingUndo>>,
     activity_undos: activity::Undos,
     activity_feed: RwSignal<activity::FeedState>,
+    trash: Memo<Vec<todo_client::trash::Row>>,
     activity_revision: RwSignal<Option<(Option<todo_client::Epoch>, u64)>>,
     room_actions: room_actions::Controls,
     device_settings_open: RwSignal<bool>,
@@ -477,7 +479,7 @@ pub fn mount(now: Now, live: bool, notice: Option<String>) {
 fn current_route() -> (RoomId, Option<TaskId>) {
     let path = platform::path();
     let (room, task) = RoomId::from_path(&path);
-    if room.is_activity() {
+    if room.is_history() {
         let canonical = room.path();
         if canonical != path {
             platform::replace_path(&canonical);
@@ -578,6 +580,13 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         activity_undos: activity::Undos::new(),
         activity_feed: RwSignal::new(activity::FeedState::default()),
         activity_revision: RwSignal::new(None),
+        trash: Memo::new(move |_| {
+            if room.with(|r| *r == RoomId::Trash) {
+                state.with(|s| todo_client::trash::rows(s, now.get().at))
+            } else {
+                Vec::new()
+            }
+        }),
         room_actions: room_actions::Controls::new(),
         device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
@@ -740,7 +749,7 @@ fn track_overlay_focus(c: Ctx) {
         if !open
             && prev
                 .as_ref()
-                .is_some_and(|(_, old)| old != &room && (old.is_activity() || room.is_activity()))
+                .is_some_and(|(_, old)| old != &room && (old.is_history() || room.is_history()))
         {
             request_animation_frame(|| {
                 platform::focus("room-title");
@@ -830,9 +839,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
-    let activity = c.room.with_untracked(RoomId::is_activity);
+    let history = c.room.with_untracked(RoomId::is_history);
     if !typing
-        && !activity
+        && !history
         && !drawer
         && !modal
         && !ev.alt_key()
@@ -858,7 +867,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
-    if drawer || activity {
+    if drawer || history {
         // The history has no task selection or composer. Keep native scrolling and button keys.
         return;
     }
@@ -1123,6 +1132,7 @@ fn SidebarPane() -> impl IntoView {
                 (*id != "agent_activity").then_some(n.count),
             ),
             (RoomId::Activity(_), _) => (icon(Icon::Clock).into_any(), None),
+            (RoomId::Trash, _) => (icon(Icon::TrashTwo).into_any(), None),
             (_, Some(g)) => (glyph(g).into_any(), Some(n.count)),
             _ => (().into_any(), None),
         };
@@ -1205,6 +1215,10 @@ fn SidebarPane() -> impl IntoView {
                                     </ul>
                                 </section>
                             })}
+                            {item(model::NavItem {
+                                room: RoomId::Trash, name: todo_client::trash::TITLE.into(), count: 0,
+                                hue: "agent-activity", glyph: None,
+                            }, false, Vec::new(), 0)}
                         </div>
                         {(!sb.groups.is_empty()).then(|| view! {
                             <div class="nav-collections">
@@ -1524,7 +1538,7 @@ fn AppBar() -> impl IntoView {
                         .then(|| sync_presentation(&s, c.synced_at.get()).0.full)
                 }}
             </span>
-            <Show when=move || !c.room.with(RoomId::is_activity)>
+            <Show when=move || !c.room.with(RoomId::is_history)>
                 <button type="button" class="filter-trigger" id="open-filter" aria-label="Filter tasks"
                     aria-keyshortcuts="/ Control+K" title="Filter tasks (/ or Ctrl+K)"
                     aria-expanded=move || c.filter_open.get().to_string()
@@ -1635,13 +1649,16 @@ fn RoomPane() -> impl IntoView {
             <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
                 <FinishedHeader width=width/>
             </Show>
-            <Show when=move || !c.room.with(RoomId::is_activity)>
+            <Show when=move || !c.room.with(RoomId::is_history)>
                 <RoomPills/>
                 <QuickAdd/>
                 <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
                     <Handover/>
                 </Show>
                 <CompletedRows/>
+            </Show>
+            <Show when=move || c.room.with(|r| *r == RoomId::Trash)>
+                <trash::Trash/>
             </Show>
             <For each=move || c.room.with(|r| match r {
                 RoomId::Activity(agent) => vec![agent.clone()],
@@ -1669,7 +1686,7 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
                     <div class="room-title-group"><RoomTitle/><room_actions::RoomMenuButton/></div>
                     <p class="summary">
                         {move || match c.view_room.with(|r| r.header.summary) {
-                            // Activity keeps no score.
+                            // History rooms keep no score.
                             Summary::None => ().into_any(),
                             empty @ Summary::Empty { .. } => {
                                 view! { <span class="fig">{empty.text()}</span> }.into_any()
@@ -2990,6 +3007,7 @@ fn StatusBar() -> impl IntoView {
                     RoomId::Activity(agent) => Some(c.activity_feed.with(|f| {
                         f.counts(agent.as_ref(), &c.now.with(Now::local_time)).text()
                     })),
+                    RoomId::Trash => Some(c.trash.with(|rows| todo_client::trash::status(rows, &c.now.with(Now::local_time)).text())),
                     _ => c.view_room.with(|r| r.header.status.map(|s| s.text())),
                 })}
             </span>

@@ -554,6 +554,7 @@ proptest! {
         keys.extend(lists.iter().map(|l| RoomKey::List(*l)));
         keys.push(RoomKey::Collection(col));
         keys.push(RoomKey::Activity(None));
+        keys.push(RoomKey::Trash);
         let eval = now.eval();
         let query = Query::parse("keep").unwrap();
         let filter = query.matcher(&w.state, &eval);
@@ -576,7 +577,7 @@ proptest! {
                         RoomKey::Smart(AgentActivity) => g.changed_days_ago.is_some_and(|d| d <= 7),
                         RoomKey::Collection(_) => g.list < 2,
                         RoomKey::List(l) => lists[g.list] == l,
-                        RoomKey::Activity(_) => false,
+                        RoomKey::Activity(_) | RoomKey::Trash => false,
                     };
                     if !matches { continue; }
                     done += usize::from(done_days.is_some());
@@ -608,7 +609,7 @@ proptest! {
                     _ => done_today,
                 };
                 prop_assert_eq!((h.progress_done, h.progress_total), (expected_done, open + expected_done));
-                prop_assert_eq!(h.status, (!key.is_activity()).then(|| StatusCounts::tasks(open, done_today)));
+                prop_assert_eq!(h.status, (!key.is_history()).then(|| StatusCounts::tasks(open, done_today)));
                 if released && key == RoomKey::Smart(MyDay) {
                     prop_assert_eq!(my_day_progress(&w.state, today), (done, open + done));
                 }

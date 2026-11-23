@@ -123,9 +123,9 @@ fun RoomDrawer(
             val activityAt = activityAt(smart)
             smart.forEachIndexed { i, item ->
                 NavRow(item, item.key == current, indent = false, onOpen)
-                if (i + 1 == activityAt) ActivityRows(state, onActivity)
+                if (i + 1 == activityAt) HistoryRows(state, current, onActivity, onOpen)
             }
-            if (activityAt == 0) ActivityRows(state, onActivity)
+            if (activityAt == 0) HistoryRows(state, current, onActivity, onOpen)
             // Home supplies the display order: collection groups, then the loose lists.
             state.home.groups.forEach { g ->
                 val c = g.collection
@@ -405,7 +405,7 @@ internal fun activityAt(smart: List<NavItem>): Int {
  * letter marks and statuses ("2 added, 1 edited today"). Tap one to open Activity filtered to it.
  */
 @Composable
-private fun ActivityRows(state: UiState, onActivity: (String?) -> Unit) {
+private fun HistoryRows(state: UiState, current: RoomKey?, onActivity: (String?) -> Unit, onOpen: (RoomKey) -> Unit) {
     val d = LocalDesign.current
     DrawerRow(on = state.activity == "", indent = false, onClick = { onActivity(null) }) {
         Icon("clock", d.list("agent-activity").glyph)
@@ -413,6 +413,13 @@ private fun ActivityRows(state: UiState, onActivity: (String?) -> Unit) {
             weight = if (state.activity == "") Tokens.Type.BUTTON.weight else null)
     }
     state.home.agents.forEach { a -> AgentRow(a, state.activity == a.id) { onActivity(a.id) } }
+    val trash = current == RoomKey.Trash
+    val title = remember { app.todoornot.core.trashTitle() }
+    DrawerRow(on = trash, indent = false, onClick = { onOpen(RoomKey.Trash) }) {
+        Icon("trash-2", d.list("agent-activity").glyph)
+        Label(title, Tokens.Type.NAV, d.room.ink, Modifier.weight(1f),
+            weight = if (trash) Tokens.Type.BUTTON.weight else null)
+    }
 }
 
 /** An agent's row under Activity: its letter mark, its name and what it did today. */

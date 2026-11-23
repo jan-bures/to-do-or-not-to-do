@@ -303,6 +303,33 @@ test("a task move, delete and both exact undos reach another tab", async () => {
   await page.close();
 });
 
+test("Trash follows remote delete, restore and Undo through the synced replica", async () => {
+  const a = await openApp();
+  const b = await openApp();
+  const problems = [watch(a), watch(b)];
+  const title = "Water the saplings";
+  const list = "Nursery";
+  const restore = () => b.getByRole("button", { name: `Restore ${title}`, exact: true });
+  await createRoom(a, "list", list);
+  await add(a, title);
+  await b.getByRole("link", { name: "Trash", exact: true }).click();
+  await taskButton(a, title).press("Delete");
+  await expect(restore()).toBeVisible({ timeout: 15_000 });
+  await expect(b.locator(".trash-row").filter({ has: restore() })).toContainText(`from ${list}`);
+  await b.reload();
+  await expect(restore()).toBeVisible();
+  await restore().click();
+  await expect(taskButton(a, title)).toBeVisible({ timeout: 15_000 });
+  await b.locator(".toast").getByRole("button", { name: "Undo" }).click();
+  await expect(restore()).toBeVisible();
+  await expect(taskButton(a, title)).toHaveCount(0, { timeout: 15_000 });
+  await deleteRoom(a, "list");
+  await expect(restore()).toHaveCount(0, { timeout: 15_000 });
+  expect(problems.flat()).toEqual([]);
+  await b.close();
+  await a.close();
+});
+
 test("a source change on another tab invalidates the open move picker", async () => {
   const a = await openApp();
   const b = await openApp();

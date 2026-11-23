@@ -811,7 +811,16 @@ class GalleryTest {
         }
     }
 
-    /** Today's agents under Activity, then folded collections followed by a loose list. */
+    @Test
+    fun trash() {
+        for (dark in listOf(false, true)) {
+            val suffix = if (dark) "dark" else "light"
+            main("trash_$suffix", COVER, state(fixtureEngine("trash"), RoomKey.Trash), dark)
+            main("trash_empty_$suffix", COVER, state(fixtureEngine(), RoomKey.Trash), dark)
+        }
+    }
+
+    /** Today's agents under Activity, then Trash, folded collections and a loose list. */
     @Test
     fun agent_summary() {
         for (dark in listOf(false, true)) {

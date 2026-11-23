@@ -240,7 +240,7 @@ fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.C
 
 /** Shown only when there's something to say: offline, syncing changes, or a problem. */
 @Composable
-private fun SyncChip(status: SyncStatus, onClick: () -> Unit) {
+internal fun SyncChip(status: SyncStatus, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     val (icon, text) = when {
         status.state == SyncState.OFFLINE || status.problem != null ->
@@ -268,7 +268,7 @@ private fun SyncChip(status: SyncStatus, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Banner(text: String, action: String, onAction: () -> Unit) {
+internal fun Banner(text: String, action: String, onAction: () -> Unit) {
     val r = LocalDesign.current.room
     Row(
         Modifier.fillMaxWidth().background(r.dangerBg).hairline(r.line, top = true).padding(start = S.S5.dp, end = S.S2.dp),

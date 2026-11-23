@@ -37,6 +37,7 @@ use tokio::task::JoinHandle;
 pub mod activity;
 pub mod attachments;
 pub mod organize;
+pub mod trash;
 
 type Client = SyncClient<AppTransport, TokioClock>;
 
@@ -580,6 +581,7 @@ fn intent_room(room: RoomKey) -> TaskRoom {
     match room {
         RoomKey::List { id } => id.parse().map_or(TaskRoom::Other, TaskRoom::List),
         RoomKey::Collection { id } => id.parse().map_or(TaskRoom::Other, TaskRoom::Collection),
+        RoomKey::Trash => TaskRoom::Other,
         RoomKey::Smart { list } => match list {
             SmartList::MyDay => TaskRoom::MyDay,
             SmartList::Important => TaskRoom::Important,
@@ -1092,7 +1094,7 @@ impl TodoEngine {
         let entity: EntityId = match room {
             RoomKey::List { id } => self.live_list(&id)?.0.into(),
             RoomKey::Collection { id } => collection_id(&id)?.into(),
-            RoomKey::Smart { .. } => return Ok(false),
+            RoomKey::Smart { .. } | RoomKey::Trash => return Ok(false),
         };
         let state = self.client.view();
         if !state.is_live(entity) {

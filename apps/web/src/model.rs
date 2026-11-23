@@ -96,6 +96,8 @@ pub enum RoomId {
     List(ListId),
     /// History, optionally narrowed to a single agent.
     Activity(Option<todo_core::actor::AgentId>),
+    /// Explicitly deleted entities.
+    Trash,
 }
 
 impl Default for RoomId {
@@ -110,7 +112,7 @@ impl From<&RoomId> for TaskRoom {
             RoomId::Smart("my_day") => Self::MyDay,
             RoomId::Smart("important") => Self::Important,
             RoomId::Smart("planned") => Self::Planned,
-            RoomId::Smart(_) | RoomId::Activity(_) => Self::Other,
+            RoomId::Smart(_) | RoomId::Activity(_) | RoomId::Trash => Self::Other,
             RoomId::Collection(id) => Self::Collection(id),
             RoomId::List(id) => Self::List(id),
         }
@@ -127,6 +129,7 @@ impl RoomId {
             RoomId::Collection(c) => format!("/app/collection/{c}"),
             RoomId::List(l) => format!("/app/list/{l}"),
             RoomId::Activity(None) => "/app/activity".to_owned(),
+            RoomId::Trash => "/app/trash".to_owned(),
             RoomId::Activity(Some(agent)) => format!("/app/activity/agent/{agent}"),
         }
     }
@@ -144,6 +147,7 @@ impl RoomId {
                 );
             }
             ["activity", ..] => return (RoomId::Activity(None), None),
+            ["trash", ..] => return (RoomId::Trash, None),
             ["collection", id, ..] => (id.parse().map(RoomId::Collection).ok(), 2),
             ["list", id, ..] => (id.parse().map(RoomId::List).ok(), 2),
             ["task", ..] | [] => (Some(RoomId::default()), 0),
@@ -168,6 +172,10 @@ impl RoomId {
     /// Whether this room is the activity feed rather than a task list.
     pub fn is_activity(&self) -> bool {
         matches!(self, Self::Activity(_))
+    }
+
+    pub fn is_history(&self) -> bool {
+        self.is_activity() || *self == Self::Trash
     }
 }
 
@@ -721,6 +729,7 @@ pub fn shared_key(id: &RoomId) -> room_header::RoomKey<'_> {
         }
         RoomId::Collection(c) => room_header::RoomKey::Collection(*c),
         RoomId::List(l) => room_header::RoomKey::List(*l),
+        RoomId::Trash => room_header::RoomKey::Trash,
         RoomId::Activity(agent) => {
             room_header::RoomKey::Activity(agent.as_ref().map(|a| a.as_str()))
         }
@@ -774,6 +783,12 @@ fn unfiltered_room(
     let tasks = room_header::room_tasks_with_updates(state, shared, holding, updates, &ctx);
     let header = room_header::header_of(state, shared, &tasks, holding, &time);
     let (title, hue, mode, add) = match id {
+        RoomId::Trash => (
+            todo_client::trash::TITLE.into(),
+            "agent-activity",
+            ChipMode::Hidden,
+            None,
+        ),
         RoomId::Activity(_) => (
             "Activity".to_owned(),
             "agent-activity",
@@ -842,7 +857,7 @@ fn filter_room(
     updates: &BTreeMap<TaskId, Stamp>,
 ) -> Room {
     let text = text.trim();
-    if text.is_empty() || room.id.is_activity() {
+    if text.is_empty() || room.id.is_history() {
         return room.clone();
     }
     let query = Query::parse(text);
@@ -1267,6 +1282,7 @@ mod tests {
             RoomId::Smart("agent_activity"),
             RoomId::Smart("completed"),
             RoomId::Activity(None),
+            RoomId::Trash,
             RoomId::Activity(Some(
                 todo_core::actor::AgentId::new("sample_agent").unwrap(),
             )),

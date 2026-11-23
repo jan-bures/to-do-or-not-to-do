@@ -141,6 +141,7 @@ fn shared_key(key: RoomKey) -> room_header::RoomKey<'static> {
         RoomKey::Collection(c) => room_header::RoomKey::Collection(c),
         RoomKey::List(l) => room_header::RoomKey::List(l),
         RoomKey::Activity(agent) => room_header::RoomKey::Activity(agent.map(AgentKey::as_str)),
+        RoomKey::Trash => room_header::RoomKey::Trash,
     }
 }
 
@@ -212,7 +213,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     let room_header::RoomTasks { open, done } = tasks;
 
     // The filter narrows tasks; Activity has none to narrow.
-    let filtered = !ui.filter.trim().is_empty() && !key.is_activity();
+    let filtered = !ui.filter.trim().is_empty() && !key.is_history();
     let open = filter(state, &ui.filter, ctx, open, &ui.held_updates);
     let done = filter(state, &ui.filter, ctx, done, &ui.held_updates);
     let completed_count = done.len();
@@ -235,6 +236,12 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         }
         RoomKey::Activity(_) => (
             "Activity".into(),
+            hues::AGENT_ACTIVITY,
+            Chips::None,
+            "".into(),
+        ),
+        RoomKey::Trash => (
+            todo_client::trash::TITLE.into(),
             hues::AGENT_ACTIVITY,
             Chips::None,
             "".into(),
@@ -273,6 +280,11 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         status: header.status,
         estimate: None,
         tasks: open.iter().map(|t| row(state, ix, t, now)).collect(),
+        trash: if key == RoomKey::Trash {
+            todo_client::trash::rows(state, now.at)
+        } else {
+            Vec::new()
+        },
         completed: if ui.show_completed {
             done.iter().map(|t| row(state, ix, t, now)).collect()
         } else {
@@ -301,6 +313,7 @@ fn empty_hint(key: RoomKey, filtered: bool) -> &'static str {
         RoomKey::Smart(Smart::AgentActivity) => "Tasks your agents add or change show up here.",
         RoomKey::Activity(Some(_)) => "Clear the filter to see every change.",
         RoomKey::Activity(None) => "Changes from you, your agents and email show up here.",
+        RoomKey::Trash => "",
         _ => "Add one above; Ctrl+N takes you there.",
     }
 }

@@ -40,6 +40,7 @@ private val S = Tokens.Space
  */
 fun siblings(home: Home, key: RoomKey): List<NavItem> = when (key) {
     is RoomKey.Smart -> home.smart
+    RoomKey.Trash -> emptyList()
     is RoomKey.Collection -> home.groups.mapNotNull { it.collection }
     is RoomKey.List -> home.groups.firstOrNull { g -> g.lists.any { it.key == key } }?.lists ?: emptyList()
 }

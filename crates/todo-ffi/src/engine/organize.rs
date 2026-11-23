@@ -12,6 +12,12 @@ use todo_core::{
 #[derive(Debug, uniffi::Object)]
 pub struct OrganizeChange(TrackedCommand, Undone, String);
 
+impl OrganizeChange {
+    pub(super) fn new(tracked: TrackedCommand, undo: Undone, toast: String) -> Self {
+        Self(tracked, undo, toast)
+    }
+}
+
 #[uniffi::export]
 impl OrganizeChange {
     pub fn toast_text(&self) -> String {
@@ -182,7 +188,7 @@ impl TodoEngine {
             .map(|cmd| {
                 self.client
                     .submit_tracked(cmd)
-                    .map(|t| Arc::new(OrganizeChange(t, Undone::Change(what, noun), toast)))
+                    .map(|t| Arc::new(OrganizeChange::new(t, Undone::Change(what, noun), toast)))
             })
             .transpose()?)
     }

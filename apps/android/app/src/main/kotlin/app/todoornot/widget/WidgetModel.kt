@@ -22,6 +22,7 @@ internal fun RoomKey.widgetKey(): String = when (this) {
     is RoomKey.Smart -> "smart:${list.name}"
     is RoomKey.List -> "list:$id"
     is RoomKey.Collection -> "collection:$id"
+    RoomKey.Trash -> defaultWidgetRoom.widgetKey()
 }
 
 internal fun widgetRoom(key: String?): RoomKey? {

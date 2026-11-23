@@ -116,7 +116,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Reorder tasks in a list | `Reorder` | wired: Alt+Up/Down, with undo (`D/ui/shell.rs:1028`) | wired: Alt+Up/Down in a list, with undo (`W/app.rs`, `W/model.rs`) | wired: Move up/down past the adjacent visible open task in a manual list, with undo (`A/model/Menus.kt`, `F/engine.rs::reorder_task`) |
 | Move a task to another list | `MoveTask` `C/command.rs:206`; the event records the position too, so undoing it after a reorder in the new list conflicts | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | wired: the task menu or M opens a grouped, filterable list picker; with Undo (`W/app/task_actions.rs`) | wired: grouped, filterable Move to… picker, with undo (`A/ui/TaskActions.kt`, `F/engine.rs::move_task_to`) |
 | Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | wired: the task menu or Delete, without confirmation, with Undo (`W/app/task_actions.rs`) | wired: Delete task without confirmation, with undo (`F/engine.rs::delete_task`, `undo_deletion`) |
-| Trash and restore | `Restore` `C/command.rs:370` | missing | missing | missing |
+| Trash and restore | `Restore` (`C/command.rs`); explicit task, list and collection tombstones from normal sync, ordered and labeled in `T/trash.rs` | wired: sidebar Trash, Restore and tracked Undo (`D/ui/shell/trash.rs`) | wired: sidebar/drawer, `/app/trash`, Restore and tracked Undo (`W/app/trash.rs`) | wired: drawer Trash, Restore and tracked Undo (`A/ui/Trash.kt`, `F/engine/trash.rs`) |
 | Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Links…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:915`) | wired: right-click a row, use Shift+F10, or use ⋯ in detail; offers Move to… and Delete task (`W/app/task_actions.rs`) | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
@@ -185,8 +185,7 @@ The owner manages these on the server's own pages (`S/web/mod.rs`) or through th
 Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), and mostly over MCP too
 (`S/mcp/tools.rs`). No client offers it.
 
-- **Tasks.** Restore from the trash, `Restore` (desktop and Android Undo can restore a task just deleted).
-  Merge, `MergeTasks` (MCP `merge_tasks`).
+- **Tasks.** Merge, `MergeTasks` (MCP `merge_tasks`).
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
   (`GET /api/v1/tasks?q=`). Clients evaluate the same built-in queries locally. The core has no
   user-defined saved smart lists, so this is not a client gap.

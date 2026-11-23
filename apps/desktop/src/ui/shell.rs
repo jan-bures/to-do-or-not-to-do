@@ -10,6 +10,7 @@ mod menu;
 mod panes;
 mod reminders;
 mod sidebar;
+mod trash;
 mod undo;
 
 use std::cell::RefCell;
@@ -198,6 +199,10 @@ enum OutgoingBody {
         top: gpui::Pixels,
     },
     Plan(SharedString),
+    Trash {
+        rows: Vec<todo_client::trash::Row>,
+        cut: f32,
+    },
     /// The Activity room's changes, as painted, at the feed's scroll.
     Activity {
         days: Vec<model::activity::ActivityDay>,
@@ -234,6 +239,7 @@ pub struct ShellView {
     quick_add: Entity<TextInput>,
     list_focus: FocusHandle,
     rows: UniformListScrollHandle,
+    trash_selected: Option<todo_core::ids::EntityId>,
     /// The finished day's hand-over, which scrolls when it's taller than the pane.
     handover_scroll: ScrollHandle,
     handover_bar: kit::Scrollbar,
@@ -404,6 +410,7 @@ impl ShellView {
             quick_add,
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
+            trash_selected: None,
             handover_scroll: ScrollHandle::new(),
             handover_bar: kit::Scrollbar::default(),
             rows_bar: kit::Scrollbar::default(),
@@ -605,6 +612,13 @@ impl ShellView {
         if self.animate {
             self.aim_sidebar(&shell);
         }
+        self.trash_selected = self.trash_selected.filter(|id| {
+            shell
+                .room
+                .trash
+                .iter()
+                .any(|r| r.id == *id && r.blocked.is_none())
+        });
         self.shell = shell;
         if self.animate {
             self.aim_detail();
@@ -1353,6 +1367,7 @@ impl ShellView {
             .reset_to_top(&self.rows.0.borrow().base_handle);
         self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
         self.handover_bar.reset_to_top(&self.handover_scroll);
+        self.trash_selected = None;
     }
 
     fn begin_navigation(&mut self, next: &Shell, body: OutgoingBody) {
@@ -1874,58 +1889,60 @@ impl ShellView {
                             .child("To-do"),
                     ),
             )
-            .child(
-                div()
-                    // The search field is centred in the title bar at the mockup width.
-                    .w(px(440.))
-                    .h(px(desktop::TITLEBAR - space::S2 - space::S1 / 2.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S2))
-                    .pl(px(space::S2))
-                    .pr(px(space::S1))
-                    .rounded(px(radius::MD))
-                    .border(px(elevation::HAIRLINE))
-                    .border_color(if focused { p.accent_strong } else { p.control })
-                    .bg(if filtering { p.wash } else { p.pane })
-                    .when(focused, |d| {
-                        d.shadow(vec![gpui::BoxShadow {
-                            color: p.tint,
-                            offset: gpui::point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(elevation::FOCUS_RING),
-                            inset: false,
-                        }])
-                    })
-                    .child(kit::icon(
-                        Icon::Search,
-                        component::ICON_SMALL,
-                        if filtering { p.accent_strong } else { p.ink_3 },
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .style(ty::SUMMARY)
-                            .child(self.filter.clone()),
-                    )
-                    .child(if filtering {
-                        div()
-                            .id("clear-filter")
-                            .rounded(px(radius::SM))
-                            .hover(|s| s.bg(p.hover))
-                            .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.filter.update(cx, |i, cx| i.reset(window, cx));
-                                this.ui.filter.clear();
-                                this.refresh(cx);
-                            }))
-                            .into_any_element()
-                    } else {
-                        kit::kbd(p, "Ctrl K").into_any_element()
-                    }),
-            )
+            .when(self.shell.room.key != RoomKey::Trash, |bar| {
+                bar.child(
+                    div()
+                        // The search field is centred in the title bar at the mockup width.
+                        .w(px(440.))
+                        .h(px(desktop::TITLEBAR - space::S2 - space::S1 / 2.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S2))
+                        .pl(px(space::S2))
+                        .pr(px(space::S1))
+                        .rounded(px(radius::MD))
+                        .border(px(elevation::HAIRLINE))
+                        .border_color(if focused { p.accent_strong } else { p.control })
+                        .bg(if filtering { p.wash } else { p.pane })
+                        .when(focused, |d| {
+                            d.shadow(vec![gpui::BoxShadow {
+                                color: p.tint,
+                                offset: gpui::point(px(0.), px(0.)),
+                                blur_radius: px(0.),
+                                spread_radius: px(elevation::FOCUS_RING),
+                                inset: false,
+                            }])
+                        })
+                        .child(kit::icon(
+                            Icon::Search,
+                            component::ICON_SMALL,
+                            if filtering { p.accent_strong } else { p.ink_3 },
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .style(ty::SUMMARY)
+                                .child(self.filter.clone()),
+                        )
+                        .child(if filtering {
+                            div()
+                                .id("clear-filter")
+                                .rounded(px(radius::SM))
+                                .hover(|s| s.bg(p.hover))
+                                .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.filter.update(cx, |i, cx| i.reset(window, cx));
+                                    this.ui.filter.clear();
+                                    this.refresh(cx);
+                                }))
+                                .into_any_element()
+                        } else {
+                            kit::kbd(p, "Ctrl K").into_any_element()
+                        }),
+                )
+            })
             .child(kit::window_controls(p, window, self.caption_preview))
     }
 
@@ -2862,7 +2879,24 @@ impl ShellView {
 
     fn capture_body(&self, min_height: f32) -> OutgoingBody {
         let room = &self.shell.room;
-        if room.key.is_activity() && !self.activity.feed.is_empty_feed() {
+        if room.key == RoomKey::Trash && !room.trash.is_empty() {
+            let state = self.rows.0.borrow();
+            let viewport = f32::from(state.base_handle.bounds().size.height).max(min_height);
+            let scroll = (-f32::from(state.base_handle.offset().y)).max(0.);
+            let first = (scroll / desktop::ROW).floor() as usize;
+            let cut = scroll - first as f32 * desktop::ROW;
+            let visible = ((viewport + cut) / desktop::ROW).ceil() as usize;
+            OutgoingBody::Trash {
+                rows: room
+                    .trash
+                    .iter()
+                    .skip(first)
+                    .take(visible)
+                    .cloned()
+                    .collect(),
+                cut,
+            }
+        } else if room.key.is_activity() && !self.activity.feed.is_empty_feed() {
             OutgoingBody::Activity {
                 days: self.activity_days(),
                 top: self.activity_scroll.offset().y,
@@ -2954,6 +2988,11 @@ impl ShellView {
             OutgoingBody::Plan(weekday) => self
                 .plan_only(weekday.clone(), false, cx)
                 .into_any_element(),
+            OutgoingBody::Trash { rows, cut } => div()
+                .relative()
+                .top(px(-cut))
+                .children(rows.iter().map(|row| self.trash_row(row, None)))
+                .into_any_element(),
             OutgoingBody::Activity { days, top } => {
                 self.activity_snapshot(days, *top, cx).into_any_element()
             }
@@ -2974,10 +3013,12 @@ impl ShellView {
         let swap = self.motion.navigation.list(self.frame);
         let has_rows = self.list_is_visible()
             && !(room.finished_day() && room.completed.is_empty())
-            && self.shell.row_count() > 0;
+            && (self.shell.row_count() > 0 || !room.trash.is_empty());
         // The finished day hands over to tomorrow, unless the Completed section is open: then its rows show.
         let body: AnyElement = if room.key.is_activity() {
             self.activity_feed(window, cx)
+        } else if room.key == RoomKey::Trash {
+            self.trash_feed(cx)
         } else if let Some(next) = room.handover() {
             self.tomorrow(next, None, cx).into_any_element()
         } else if let Some(weekday) = room.plan_only() {
@@ -3058,6 +3099,8 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &NextTask, window, cx| {
                         if this.in_activity() {
                             this.feed_input(FeedInput::Next, false, window, cx);
+                        } else if this.shell.room.key == RoomKey::Trash {
+                            this.trash_step(1, cx);
                         } else {
                             this.move_selection(1, cx);
                         }
@@ -3065,6 +3108,8 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &PreviousTask, window, cx| {
                         if this.in_activity() {
                             this.feed_input(FeedInput::Previous, false, window, cx);
+                        } else if this.shell.room.key == RoomKey::Trash {
+                            this.trash_step(-1, cx);
                         } else {
                             this.move_selection(-1, cx);
                         }
@@ -3083,6 +3128,10 @@ impl ShellView {
                             }
                             return;
                         }
+                        if this.shell.room.key == RoomKey::Trash {
+                            this.trash_key(e, window, cx);
+                            return;
+                        }
                         let Some((key, act)) = list_key(e) else {
                             return;
                         };
@@ -3099,6 +3148,9 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
                         if this.in_activity() {
                             this.feed_input(FeedInput::Escape, false, window, cx);
+                        } else if this.shell.room.key == RoomKey::Trash {
+                            this.trash_selected = None;
+                            cx.notify();
                         } else {
                             this.select_task(None, cx);
                         }
@@ -3562,6 +3614,9 @@ impl ShellView {
         let p = &self.palette;
         // Activity counts the changes it shows, and today's among them; the rooms their tasks.
         let counts = match self.shell.room.status {
+            _ if self.shell.room.key == RoomKey::Trash => {
+                todo_client::trash::status(&self.shell.room.trash, &self.store.now().local())
+            }
             Some(counts) if !self.in_activity() => counts,
             _ => {
                 let (shown, today) = model::activity::counts(&self.activity, &self.store.now());
@@ -3569,7 +3624,7 @@ impl ShellView {
             }
         };
         let ((open, open_label), (done, done_label)) = (counts.first, counts.second);
-        let keys = hints::key_hints(hints::HintState {
+        let mut keys = hints::key_hints(hints::HintState {
             focus: self.focus_now(window, cx),
             rows: !self.nav_tasks().is_empty(),
             selected: self
@@ -3582,6 +3637,17 @@ impl ShellView {
                 || (!self.animate && self.toast.look(self.frame).is_some_and(|t| t.active)),
             activity: self.activity_hints(),
         });
+        if self.shell.room.key == RoomKey::Trash {
+            keys.retain(|(key, _)| *key != "Ctrl K");
+            if self.list_focus.is_focused(window)
+                && self.shell.room.trash.iter().any(|r| r.blocked.is_none())
+            {
+                keys.insert(0, ("↑ ↓", "select"));
+                if self.trash_selected.is_some() {
+                    keys.insert(1, ("Enter", "restore"));
+                }
+            }
+        }
         let hint = |key: &'static str, what: &'static str| {
             div()
                 .flex()
@@ -3862,6 +3928,13 @@ impl Render for ShellView {
         // Activity has no tasks to add: its toolbar takes the quick-add's place.
         let quick_add = if self.in_activity() {
             self.activity_toolbar(window, cx)
+        } else if self.shell.room.key == RoomKey::Trash {
+            div()
+                .px(px(desktop::LIST_PAD_X))
+                .py(px(space::S3))
+                .style(ty::BODY)
+                .text_color(p.ink_2)
+                .child(todo_client::trash::DESCRIPTION)
         } else {
             self.quick_add_field(window, cx)
         };
@@ -3896,13 +3969,16 @@ impl Render for ShellView {
                 }
             }))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
+                if this.shell.room.key == RoomKey::Trash {
+                    return;
+                }
                 let handle = this.filter.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusQuickAdd, window, cx| {
-                // Activity has no quick-add: adding a task goes to My Day's.
-                if this.in_activity() {
+                // History has no quick-add: adding a task goes to My Day's.
+                if this.shell.room.key.is_history() {
                     this.select_room(RoomKey::default(), cx);
                 }
                 let handle = this.quick_add.read(cx).focus_handle.clone();

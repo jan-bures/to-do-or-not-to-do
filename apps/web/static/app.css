@@ -1070,6 +1070,33 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   white-space: nowrap;
 }
 
+/* ---- trash --------------------------------------------------------------------------------------- */
+
+.trash-description {
+  margin: 0;
+  padding: var(--space-3) var(--desktop-list-pad-x);
+  border-bottom: var(--hairline) solid var(--color-line);
+  color: var(--color-ink-2);
+}
+.trash-rows { margin: 0; padding: 0; list-style: none; }
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--desktop-row);
+  padding-inline: var(--desktop-list-pad-x);
+  border-bottom: var(--hairline) solid var(--color-line);
+}
+.trash-lead { display: grid; place-items: center; flex: none; width: var(--component-icon); color: var(--color-ink-3); }
+.trash-text { flex: 1; min-width: 0; }
+.trash-text p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-title { font: var(--text-task-title); }
+.trash-meta, .trash-blocked { font: var(--text-meta); color: var(--color-ink-3); }
+.trash-blocked:empty { display: none; }
+.trash-restore { flex: none; border: var(--hairline) solid var(--color-control); color: var(--color-ink-2); }
+.trash-restore:hover:not(:disabled) { background: var(--color-hover); }
+.trash-restore:disabled { cursor: default; color: var(--color-ink-3); }
+
 /* ---- activity ------------------------------------------------------------------------------------ */
 
 .activity-body {
@@ -2801,6 +2828,13 @@ a.source:hover {
 
   .room-menu-trigger { inline-size: var(--phone-touch); }
 
+  .main:has(.trash-body) { padding-bottom: env(safe-area-inset-bottom); }
+  .trash-description, .trash-row { padding-inline: var(--phone-row-pad-left); }
+  .trash-body .empty-line { margin-inline: var(--phone-row-pad-left); }
+  .trash-row { min-height: var(--phone-row); gap: var(--space-2); }
+  .trash-title { font: var(--text-task-title-phone); }
+  .trash-meta, .trash-blocked { font: var(--text-meta-phone); }
+  .trash-restore { min-height: var(--phone-touch); }
   .activity-body { padding-inline: var(--phone-row-pad-left); }
   .activity-row { min-block-size: var(--phone-row); gap: var(--space-2); }
   .activity-summary { font: var(--text-task-title-phone); }

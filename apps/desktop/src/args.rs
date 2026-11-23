@@ -74,6 +74,8 @@ pub const FIXTURES: &[&str] = &[
     "activity",
     "activity-agent",
     "activity-empty",
+    "trash",
+    "trash-empty",
     "activity-pending",
     "activity-refused",
     "activity-menu",

@@ -834,6 +834,14 @@ class TodoModel(
         }
     }
 
+    override fun restoreTrash(row: app.todoornot.core.TrashRow) {
+        if (key != RoomKey.Trash) return
+        act {
+            val change = engine.restoreTrash(row)
+            show(Toast(++serial, change.toastText(), organize = change))
+        }
+    }
+
     override fun deleteTask(id: String) {
         noteDrafts[id]?.save(this)
         act {
@@ -858,7 +866,7 @@ class TodoModel(
                 val leaves = when (here) {
                     is RoomKey.List -> here != dest
                     is RoomKey.Collection -> group != null && group.collection?.key != here
-                    is RoomKey.Smart -> false
+                    is RoomKey.Smart, RoomKey.Trash -> false
                 }
                 val open = selected
                 if (key == here && leaves && open == id) selection.compareAndSet(open, null)
@@ -1108,7 +1116,7 @@ class TodoModel(
         when (room) {
             is RoomKey.List -> engine.renameList(room.id, name)
             is RoomKey.Collection -> engine.renameCollection(room.id, name)
-            is RoomKey.Smart -> Unit
+            is RoomKey.Smart, RoomKey.Trash -> Unit
         }
     }
 

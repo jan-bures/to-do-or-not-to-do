@@ -1840,6 +1840,32 @@ class TodoModelTest {
     }
 
     @Test
+    fun trash_restore_keeps_the_original_list_and_undo_restores_the_same_deletion() {
+        val s = Stepped(fixtureEngine("trash")) { time }
+        val m = s.model
+        m.open(RoomKey.Trash)
+        s.drain()
+        val room = m.ui.value.room
+        val rows = requireNotNull(room.trash).rows
+        assertEquals(app.todoornot.core.RoomSummary.None, room.summary)
+        assertTrue(room.tasks.isEmpty())
+        assertEquals(listOf("Return the paint samples", "Spring fair", "Flyers", "Send the first draft to print"), rows.map { it.title })
+        assertEquals("Restore its list first.", rows.last().blocked)
+        val first = rows.first()
+        assertNull(m.engine.task(first.id, FIXTURE_NOW))
+        m.restoreTrash(first)
+        s.drain()
+        assertEquals("Restored “${first.title}”", m.ui.value.toast?.text)
+        assertEquals(rows.drop(1), m.ui.value.room.trash?.rows)
+        val errands = m.ui.value.home.groups.flatMap { it.lists }.single { it.name == "Errands" }.key
+        assertTrue(m.engine.room(errands, FIXTURE_NOW).tasks.any { it.id == first.id })
+        m.undo(requireNotNull(m.ui.value.toast))
+        s.drain()
+        assertEquals(rows, m.ui.value.room.trash?.rows)
+        assertNull(m.engine.task(first.id, FIXTURE_NOW))
+    }
+
+    @Test
     fun move_picker_filters_list_and_collection_words_and_ticks_the_current_list() {
         val s = Stepped(fixtureEngine()) { time }
         val m = s.model

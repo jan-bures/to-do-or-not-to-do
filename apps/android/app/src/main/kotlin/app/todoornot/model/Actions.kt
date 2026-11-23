@@ -63,6 +63,7 @@ interface Actions {
     fun tagNamed(name: String): Boolean = false
     fun previewRepeat(id: String, draft: app.todoornot.core.CustomRepeat): app.todoornot.core.RepeatPreview =
         app.todoornot.core.RepeatPreview("No such task.", null, false)
+    fun restoreTrash(row: app.todoornot.core.TrashRow) = Unit
     fun openActivity(agent: String?) = Unit
     fun loadActivity(pagerId: Long, load: app.todoornot.core.ActivityLoad) = Unit
     fun undoEvent(pagerId: Long, event: app.todoornot.core.ActivityRow) = Unit

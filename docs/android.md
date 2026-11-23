@@ -40,6 +40,12 @@ What the first version does:
   uses the shared plain wording, never the server message. `todo_client::activity::Feed` owns each room’s pages;
   the engine keeps `Undos` for the pairing, so switching agents or leaving Activity does not unblock a pending
   batch. Compose draws the day groups and row actions returned by `todo-ffi`. The Agent activity smart list is still a list of tasks.
+- **Trash.** Open it in the drawer below Activity and its agents. Directly deleted tasks, lists and collections
+  are ordered newest first. **Restore** returns an item to its original place and offers tracked **Undo**.
+  A deleted list or collection must be restored first before a separately deleted child can return. Restoring
+  a parent also reveals children hidden with it that were not deleted themselves. Undo a merge in Activity
+  to recover a merge source. Trash reads the local synced replica, has no automatic expiry or permanent-delete
+  control, and does not change the server's separate attachment blob-retention policy.
 - **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
@@ -380,7 +386,7 @@ builds `arm64-v8a` and `x86_64`.
 The unit tests load a host build of `todo_ffi` from `target/debug`, which Gradle builds first. The
 gallery draws the real screens from invented fixture data (`TodoEngine.fixture`) through the real Rust view
 model, on the cover screen (412 × 920 dp) and the inner screen (900 × 1000 dp), light and dark. It
-includes the collapsed header, a short window and 1.3× text. Look at it after every UI change; the
+includes populated and empty Trash, the collapsed header, a short window and 1.3× text. Look at it after every UI change; the
 images are in `app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a device or emulator with the software keyboard enabled,

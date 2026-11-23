@@ -29,6 +29,22 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`trash populated and empty (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page, "/app/trash?fixture=trash");
+      await expect(page.getByRole("button", { name: "Restore Spring fair", exact: true })).toBeVisible();
+      await shot(page, `trash-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await shot(page, `trash-phone-${scheme}`);
+      await open(page, "/app/trash");
+      await expect(page.getByText("Nothing in Trash.")).toBeVisible();
+      await shot(page, `trash-empty-phone-${scheme}`);
+      await page.setViewportSize(DESKTOP);
+      await shot(page, `trash-empty-${scheme}`);
+      await w.check();
+    });
+
     for (const [fixture, viewport] of [
       ["detail-wide", DESKTOP],
       ["detail-wide-1920", { width: 1920, height: 1080 }],

@@ -27,7 +27,7 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   - **My Day** measures its whole plan: done of everything planned for today.
   - **Agent activity** measures the tasks agents changed this week: done of all of them.
   - **Completed** only counts: `12 done`, with the sun at the end of its arc.
-  - **Activity** shows changes, not tasks, and keeps no score.
+  - **Activity** and **Trash** are history rooms: they keep no progress score or sun.
   - A room with nothing to measure says `2 finished this month`, or `nothing yet`. The finished day says
     `12 of 12 done · all clear`.
   - A task still playing its completion counts as open until it has left the rows, so the count and the sun
@@ -40,6 +40,7 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
   | Collections | Collection `4 LISTS` |
   | Lists | the collection's name (or List) and what is still open: Work `9 OPEN` |
   | Activity | History `ALL CHANGES`, or `AGENT: CLAUDE` while filtered to one agent |
+  | Trash | History `DELETED ITEMS` |
 
   The lead is upright Geist in the room's `accent-strong`; the details are mono caps, set by the type
   token, not by the words.
@@ -239,9 +240,10 @@ bottom:
    **Ctrl H** hint), then indented sub-rows for up to four agents that added or edited tasks today, since
    local midnight. An agent without activity today has no row. There is no "Agents" or "Today" heading:
    each agent's status says it ("2 added today", "2 added, 1 edited today");
-3. the collections, each with its lists;
-4. the lists outside any collection;
-5. One pinned footer row below a hairline: **+ New** on the left, the sync status in the middle, and the
+3. **Trash**, a single row with the Trash icon in the `agent-activity` hue, after Activity and its agents;
+4. the collections, each with its lists;
+5. the lists outside any collection;
+6. One pinned footer row below a hairline: **+ New** on the left, the sync status in the middle, and the
    settings gear on the right. **+ New** opens a menu with **List** and **Collection**, their icons and any
    existing shortcut. Enter or Space opens the menu, arrows move between choices, and Escape closes it and
    returns focus to **+ New**. Sync shows its coloured dot and a short label (for example, **20:18**,
@@ -252,6 +254,12 @@ bottom:
 
 Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
 room rows are not Tab stops.
+
+**Trash.** The sky and hills use the Activity palette, without a sun. A short line explains where items
+return. Use a flat list with a kind icon, title and deletion metadata, plus a quiet **Restore** button.
+For an item whose original parent is deleted, replace the button with a line under the metadata that
+says what to restore first. There is no task composer, filter or detail pane. Restore uses the same
+reserved Undo strip as other changes.
 
 **Desktop rows** are 56 px tall on a fixed grid with 12 px gaps. The columns are checkbox, title (with the
 metadata line under it), agent mark, priority, due date and the Important toggle.

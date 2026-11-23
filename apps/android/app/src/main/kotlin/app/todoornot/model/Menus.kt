@@ -90,7 +90,7 @@ fun siblingPlace(home: Home, room: RoomKey): Pair<Boolean, Boolean>? {
     val siblings: List<RoomKey> = when (room) {
         is RoomKey.List -> home.groups.firstOrNull { g -> g.lists.any { it.key == room } }?.lists?.map { it.key }
         is RoomKey.Collection -> home.groups.mapNotNull { it.collection?.key }
-        is RoomKey.Smart -> null
+        is RoomKey.Smart, RoomKey.Trash -> null
     } ?: return null
     val i = siblings.indexOf(room)
     if (i < 0) return null
@@ -102,7 +102,7 @@ fun swappedWith(home: Home, room: RoomKey, by: Int): RoomKey? {
     val siblings: List<RoomKey> = when (room) {
         is RoomKey.List -> home.groups.firstOrNull { g -> g.lists.any { it.key == room } }?.lists?.map { it.key }
         is RoomKey.Collection -> home.groups.mapNotNull { it.collection?.key }
-        is RoomKey.Smart -> null
+        is RoomKey.Smart, RoomKey.Trash -> null
     } ?: return null
     val i = siblings.indexOf(room)
     return if (i < 0) null else siblings.getOrNull(i + by)
@@ -133,7 +133,7 @@ fun drawerMenu(home: Home, room: RoomKey): List<MenuEntry> = when (room) {
     } else {
         listOf(MenuEntry.Item("pencil", "Rename", MenuAction.Rename(room))) + moves(home, room) + collectionDelete(room)
     }
-    is RoomKey.Smart -> emptyList()
+    is RoomKey.Smart, RoomKey.Trash -> emptyList()
 }
 
 private fun collectionDelete(room: RoomKey.Collection) = listOf(MenuEntry.Separator, MenuEntry.Item("trash-2", "Delete collection…", MenuAction.DeleteCollection(room), danger = true))
@@ -165,6 +165,7 @@ fun roomMenu(home: Home, room: RoomKey, showCompleted: Boolean): List<MenuEntry>
             listOf(MenuEntry.Item("pencil", "Rename collection", MenuAction.Rename(room))) + moves(home, room) + completed + collectionDelete(room)
         }
         is RoomKey.Smart -> if (listsDoneAmongRows(room)) emptyList() else listOf(completed)
+        RoomKey.Trash -> emptyList()
     }
 }
 

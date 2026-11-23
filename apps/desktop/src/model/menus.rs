@@ -411,7 +411,7 @@ fn has_completed_section(room: RoomKey) -> bool {
     match room {
         RoomKey::Smart(s) => s.done_query().is_some(),
         RoomKey::List(_) | RoomKey::Collection(_) => true,
-        RoomKey::Activity(_) => false,
+        RoomKey::Activity(_) | RoomKey::Trash => false,
     }
 }
 
@@ -662,7 +662,7 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         match room {
             RoomKey::List(id) => id.into(),
             RoomKey::Collection(id) => id.into(),
-            RoomKey::Smart(_) | RoomKey::Activity(_) => {
+            RoomKey::Smart(_) | RoomKey::Activity(_) | RoomKey::Trash => {
                 return completed_only(room, show_completed);
             }
         },

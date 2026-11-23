@@ -350,6 +350,13 @@ change in plain words; the server is never asked to force the undo. Activity use
 sends its sequence and expected event ID, with the replica's log epoch when known, to compensate the
 original command's whole batch. The Activity read uses the same session and CSRF transport as sync.
 
+**Trash** (`/app/trash`) is below Activity and its agents in the sidebar and phone drawer. It shows
+explicitly deleted tasks, lists and collections from the synced replica, newest first. **Restore**
+returns an item to its original list or collection and offers tracked **Undo**. If that parent is deleted,
+restore the parent first. Restoring a list or collection reveals the items hidden with it, but not items
+deleted separately. Undo a merge from Activity to recover a merge source. Trash has no automatic expiry
+or permanent-delete control. Files are subject to the server's separate attachment blob-retention policy.
+
 Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
 and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
 `Sun 22 Nov`. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
@@ -486,7 +493,7 @@ The status bar shows shortcuts only when their actions are available.
   and its creation, management, rename, colour and delete views,
   the link field and removal, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
-  an empty list, Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
+  an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
   (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
   `apps/web/e2e/gallery/`, including `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)

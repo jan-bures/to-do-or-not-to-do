@@ -178,6 +178,7 @@ private fun Summary(room: RoomView, modifier: Modifier = Modifier) {
             Box(Modifier.padding(horizontal = S.S1.dp).size(Micro.separator).background(r.ink4, CircleShape))
         }
         when (val s = room.summary) {
+            RoomSummary.None -> Unit
             is RoomSummary.Empty ->
                 if (s.finishedThisMonth > 0u) {
                     Label("${s.finishedThisMonth}", figures, r.ink, weight = bold)

@@ -20,6 +20,7 @@ use crate::theme::TextStyled;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
     Complete,
+    Restore,
     Delete,
     Move,
     DeleteStep,
@@ -42,6 +43,7 @@ impl EditKind {
     pub(super) fn of(command: &Command) -> Option<(EntityId, Self)> {
         Some(match *command {
             Command::CompleteTask { id } => (id.into(), Self::Complete),
+            Command::Restore { id } => (id, Self::Restore),
             Command::Delete { id } => match id {
                 EntityId::Task(_) => (id, Self::Delete),
                 EntityId::Step(_) => (id, Self::DeleteStep),
@@ -82,6 +84,7 @@ impl EditKind {
     fn verb(self) -> &'static str {
         match self {
             Self::Complete => "Completed",
+            Self::Restore => "Restored",
             Self::Delete => "Deleted",
             Self::Move | Self::MoveList => "Moved",
             Self::DeleteStep => "Deleted step",
@@ -102,6 +105,7 @@ impl EditKind {
         task_label(
             match self {
                 Self::Complete => "Reopened",
+                Self::Restore => "Returned to Trash:",
                 Self::Delete => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
@@ -163,6 +167,9 @@ impl EditKind {
             }
             // Undoing an addition withdraws the link.
             (Self::AddLink, _) => before.is_live(entity) && !after.is_live(entity),
+            (Self::Restore, _) => {
+                before.tombstone(entity).is_none() && after.tombstone(entity).is_some()
+            }
             _ => !self.is_restored(entity, before) && self.is_restored(entity, after),
         }
     }

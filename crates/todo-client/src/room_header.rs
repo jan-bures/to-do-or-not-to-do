@@ -132,13 +132,15 @@ pub enum RoomKey<'a> {
     List(ListId),
     /// Every confirmed change, or one agent's (by its agent ID).
     Activity(Option<&'a str>),
+    /// Explicitly deleted tasks, lists and collections, not live tasks.
+    Trash,
 }
 
 impl RoomKey<'_> {
-    /// The Activity room, filtered or not.
+    /// A history room, with no task rows or progress score.
     #[must_use]
-    pub fn is_activity(self) -> bool {
-        matches!(self, Self::Activity(_))
+    pub fn is_history(self) -> bool {
+        matches!(self, Self::Activity(_) | Self::Trash)
     }
 }
 
@@ -328,14 +330,14 @@ fn room_tasks_impl<'s, 'u>(
             }
             rows
         }
-        RoomKey::Activity(_) => RoomTasks::default(),
+        RoomKey::Activity(_) | RoomKey::Trash => RoomTasks::default(),
         RoomKey::List(_) | RoomKey::Collection(_) => {
             let in_room = |t: &Task| match key {
                 RoomKey::List(l) => t.list == l,
                 RoomKey::Collection(c) => {
                     state.lists.get(&t.list).and_then(|l| l.collection) == Some(c)
                 }
-                RoomKey::Smart(_) | RoomKey::Activity(_) => false,
+                RoomKey::Smart(_) | RoomKey::Activity(_) | RoomKey::Trash => false,
             };
             let list_pos = |t: &Task| state.lists.get(&t.list).map(|l| &l.position);
             let mut open = Vec::new();
@@ -642,7 +644,7 @@ pub fn header_of(
     }
 
     let (progress_done, progress_total) = match key {
-        RoomKey::Activity(_) => (0, 0),
+        RoomKey::Activity(_) | RoomKey::Trash => (0, 0),
         RoomKey::Smart(SmartList::MyDay) => {
             let d = open.iter().filter(|t| counted_done(t)).count() + done.len();
             (d, open.len() + done.len())
@@ -659,7 +661,7 @@ pub fn header_of(
 
     let finishes_day = key == RoomKey::Smart(SmartList::MyDay);
     let summary = match key {
-        RoomKey::Activity(_) => Summary::None,
+        RoomKey::Activity(_) | RoomKey::Trash => Summary::None,
         _ if progress_total == 0 => Summary::Empty {
             finished_this_month,
         },
@@ -715,6 +717,13 @@ pub fn header_of(
             },
             activity::empty_line(agent.is_some()),
         ),
+        RoomKey::Trash => (
+            Eyebrow::Kind {
+                kind: "History".into(),
+                detail: "Deleted items".into(),
+            },
+            crate::trash::EMPTY,
+        ),
     };
 
     RoomHeader {
@@ -722,7 +731,7 @@ pub fn header_of(
         progress_done,
         progress_total,
         summary,
-        status: (!key.is_activity())
+        status: (!key.is_history())
             .then(|| StatusCounts::tasks(progress_total - progress_done, done_today)),
         done_today,
         finished_this_month,
