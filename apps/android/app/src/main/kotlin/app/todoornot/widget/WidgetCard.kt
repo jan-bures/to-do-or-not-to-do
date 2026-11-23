@@ -74,7 +74,10 @@ internal fun WidgetCard(data: WidgetData, clicks: WidgetClicks? = null, darkOver
         ImageProvider(R.drawable.todo_widget_card), colorFilter = ColorFilter.tint(design.room { it.pane }),
     )
     val inset = if (compact) S.S2 else S.S3
-    Column(if (data is WidgetData.Room) card.padding(inset.dp) else card) {
+    // The header and rows are touch-height and already centre their content, so the card only needs a hairline
+    // of vertical padding; more would push the list down and leave a tall band above the first row.
+    val padded = card.padding(horizontal = inset.dp, vertical = S.S1.dp)
+    Column(if (data is WidgetData.Room) padded else card) {
         if (data is WidgetData.Room) {
             // The narrowest launcher sizes need a compact toolbar to leave room for the name.
             val showSettings = width >= 6 * touch + S.S3
@@ -83,7 +86,6 @@ internal fun WidgetCard(data: WidgetData, clicks: WidgetClicks? = null, darkOver
             if (data.rows.isEmpty()) {
                 Message(data.empty, design, italic = true, inset = leadingIconInset)
             } else {
-                Spacer(GlanceModifier.height(S.S3.dp))
                 val rowHeight = widgetRowHeight(LocalContext.current.resources.configuration.fontScale)
                 LazyColumn(GlanceModifier.fillMaxWidth().defaultWeight()) {
                     items(data.rows, itemId = { it.itemId() }) { TaskLine(it, rowHeight, design, clicks) }
