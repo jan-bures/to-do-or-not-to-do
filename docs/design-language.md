@@ -105,8 +105,8 @@ there is no free-form colour.
 - **Priority is never colour.** It is `!` / `!!` / `!!!` in Geist Mono. Count, weight and ink step together from
   `ink-3` up to `ink`.
 - **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings), in neutral
-  modal scrims and in small desktop chrome overlays (caption button tints and scrollbar thumbs). UI surfaces
-  are opaque.
+  modal scrims, in small desktop chrome overlays (caption button tints and scrollbar thumbs), and in the
+  task list's file drop highlight. UI surfaces are opaque.
 
 ### Contrast
 
@@ -777,6 +777,12 @@ Completing a task is the one choreographed moment in the app.
     `HapticFeedbackType.LongPress` on pickup and `TextHandleMove` on slot crossing.
   - *Web:* Pointer Events driving GPU-composited `translateY` transforms during drag, committing DOM order once
     on pointer-up.
+
+**Dropping email files (desktop and web).** Highlight only the visible task list below quick-add, not the
+header, composer or footer. Keep the rows legible under a `wash` at `DROP_WASH_ALPHA` with an inset
+`accent-strong` outline. Centre an opaque `pane` card with a mail icon, the drop instruction and the list
+where quick-add would put the tasks. The card is feedback, not a button, and doesn't intercept the pointer
+or shift the rows. Fade the wash, outline and card over `HOVER` with `STANDARD`, including in reduced motion.
 
 #### 14. Android transitions (Compose)
 

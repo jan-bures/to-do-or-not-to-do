@@ -9,13 +9,21 @@ use todo_core::time::{Date, Timestamp};
 use todo_core::{Command, State};
 use uuid::Uuid;
 
-use super::{TaskRoom, add_task, quick_add::Parsed};
+use super::{DEFAULT_LIST, TaskRoom, add_task, quick_add::Parsed, task_destination};
 
 pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_FILES: usize = 20;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_EXCERPT_BYTES: usize = 4 * 1024;
 pub const DROP_LABEL: &str = "Drop .eml files to create tasks";
+
+/// The same list the drop will use, including the name of a list that would be created for it.
+pub fn drop_destination(state: &State, room: TaskRoom) -> String {
+    match task_destination(state, room).and_then(|id| state.lists.get(&id)) {
+        Some(list) => format!("into {}", one_line(&list.name, usize::MAX)),
+        None => format!("into a new {DEFAULT_LIST} list"),
+    }
+}
 
 pub fn is_eml_extension(extension: &str) -> bool {
     extension.eq_ignore_ascii_case("eml")

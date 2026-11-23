@@ -92,6 +92,8 @@ pub mod elevation {
     pub const FOCUS_RING: f32 = 3.0;
     /// Width of the selection bar on the left edge of the selected row, in `accent`.
     pub const SELECTION_BAR: f32 = 3.0;
+    /// Opacity of the room's `wash` over a file drop target, keeping the underlying rows legible.
+    pub const DROP_WASH_ALPHA: f32 = 0.40;
 
     /// One layer of a drop shadow.
     #[derive(Clone, Copy, Debug, PartialEq)]

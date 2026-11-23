@@ -1198,6 +1198,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 /* ---- room header --------------------------------------------------------------------------------- */
 
+.room-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .room {
   flex: 1;
   min-height: 0;
@@ -1205,19 +1213,57 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   overflow-x: hidden;
 }
 
-/* Paint the edge above selected rows. A sticky layer the size of the scroll viewport
-   stays in place at any scroll offset; its negative margin leaves the layout unchanged. */
-.room.email-drop-active { container-type: size; }
-.room.email-drop-active::before {
-  content: "";
-  display: block;
-  position: sticky;
-  inset-block-start: 0;
+.room.task-room { display: flex; flex-direction: column; }
+.task-room > * { flex-shrink: 0; }
+.task-list-area { flex: 1 0 auto; }
+
+/* Above the rows, but below the phone composer. The card never intercepts a drop or shifts layout. */
+.email-drop-feedback {
+  position: absolute;
+  inset: var(--email-drop-top, 0) var(--email-drop-scrollbar, 0) 0 0;
   z-index: 1;
-  block-size: 100cqh;
-  margin-block-end: -100cqh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  overflow: hidden;
   border: var(--focus-ring) solid var(--color-accent-strong);
+  background: rgb(from var(--color-wash) r g b / var(--drop-wash-alpha));
+  opacity: 0;
   pointer-events: none;
+  transition: opacity var(--duration-hover) var(--ease-standard);
+}
+.email-drop-feedback.active { opacity: 1; }
+
+.email-drop-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-inline-size: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: var(--hairline) solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-pane);
+}
+
+.email-drop-icon {
+  flex: none;
+  inline-size: var(--space-8);
+  block-size: var(--space-8);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  color: var(--color-accent-strong);
+  background: var(--color-wash);
+}
+
+.email-drop-text { min-inline-size: 0; }
+.email-drop-label { font: var(--text-task-title); color: var(--color-ink); }
+.email-drop-destination {
+  font: var(--text-body);
+  color: var(--color-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room-head {
@@ -1525,7 +1571,6 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 }
 
 .rows:first-child .row:first-child,
-.quick-add + .rows .row:first-child,
 .empty-line + .rows .row:first-child {
   border-top: var(--hairline) solid var(--color-line);
 }
@@ -1923,6 +1968,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 }
 
 .toast-announcement,
+.email-drop-announcement,
 .activity-announcement,
 .qa-date-announcement {
   position: absolute;

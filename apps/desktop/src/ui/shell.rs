@@ -300,6 +300,7 @@ pub struct ShellView {
     toast_without_undo: bool,
     email_importing: bool,
     preview_email_drop: bool,
+    email_drop_fade: model::motion::Track,
     pending_undo: Vec<undo::Pending>,
     clock: Clock,
     /// The time this frame draws (`clock` when the render started), so every row samples the same moment.
@@ -456,6 +457,7 @@ impl ShellView {
             toast_without_undo: false,
             email_importing: false,
             preview_email_drop: false,
+            email_drop_fade: model::motion::Track::rest(0.),
             pending_undo: Vec::new(),
             clock: Clock::Live(Instant::now()),
             frame: Duration::ZERO,
@@ -3972,6 +3974,7 @@ impl Render for ShellView {
         self.resize(Width::of(f32::from(window.viewport_size().width)));
         self.activity_read_ahead(cx);
         self.drive_motion(window, cx);
+        self.drive_email_drop(window, cx);
         self.task_toggles
             .retain(|_, a| self.frame.saturating_sub(a.start) < a.span);
         if !self.task_toggles.is_empty() {

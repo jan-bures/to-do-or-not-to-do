@@ -157,17 +157,30 @@ fn drops_target_the_list_you_dropped_into_or_the_shared_default() {
     let at = NOW.parse().unwrap();
     let first = ListId::from_uuid(uuid::Uuid::from_u128(100));
     let default = ListId::from_uuid(uuid::Uuid::from_u128(101));
-    for (list, name) in [(first, "Workshop"), (default, "Inbox")] {
-        let create = todo_client::intent::create_list(list, None, name);
+    let collection = todo_core::ids::CollectionId::from_uuid(uuid::Uuid::from_u128(103));
+    for create in [
+        todo_client::intent::create_collection(collection, "Events"),
+        todo_client::intent::create_list(first, Some(collection), "Workshop"),
+        todo_client::intent::create_list(default, None, "Inbox"),
+    ] {
         for event in decide(&state, &actor, &create, at).unwrap() {
             apply(&mut state, &event).unwrap();
         }
     }
-    for (room, expected) in [(TaskRoom::List(first), first), (TaskRoom::Planned, default)] {
+    for (room, expected, label) in [
+        (TaskRoom::List(first), first, "into Workshop"),
+        (TaskRoom::Collection(collection), first, "into Workshop"),
+        (TaskRoom::Planned, default, "into Inbox"),
+    ] {
+        assert_eq!(email::drop_destination(&state, room), label);
         let id = uuid::Uuid::from_u128(102);
         let cmds = parse(PLAIN).commands(&state, room, Date::constant(2026, 11, 21), || id);
         assert_eq!(task(&cmds).list, expected);
         assert_eq!(task(&cmds).id, TaskId::from_uuid(id));
         assert_eq!(cmds.len(), 2);
     }
+    assert_eq!(
+        email::drop_destination(&State::default(), TaskRoom::Other),
+        "into a new Tasks list"
+    );
 }

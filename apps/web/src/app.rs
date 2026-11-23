@@ -1685,14 +1685,17 @@ fn RoomPills() -> impl IntoView {
 #[component]
 fn RoomPane() -> impl IntoView {
     let c = ctx();
-    let drop = email_drop::Target::new();
     let finished = c.finished;
     let node = NodeRef::<html::Div>::new();
+    let drop = email_drop::Target::new(node);
     let width = RwSignal::new(0.0_f64);
     let reached_bottom = RwSignal::new(0u64);
     node.on_load(move |el| {
         width.set(f64::from(el.client_width()));
-        platform::observe_width(&el, move |w| width.set(w));
+        platform::observe_width(&el, move |w| {
+            width.set(w);
+            drop.position();
+        });
     });
     Effect::new(move |prev: Option<RoomId>| {
         let room = c.room.get();
@@ -1705,44 +1708,48 @@ fn RoomPane() -> impl IntoView {
         room
     });
     view! {
-        <div class="room" node_ref=node class:email-drop-active=move || drop.highlight(c)
-            on:dragenter=move |ev| drop.over(c, ev, true)
-            on:dragover=move |ev| drop.over(c, ev, false)
-            on:dragleave=move |_| drop.leave()
-            on:dragend=move |_| drop.clear()
-            on:drop=move |ev| drop.receive(c, ev)
-            on:scroll=move |_| {
-            c.room_actions.position_menu();
-            c.task_actions.position();
-            if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
-                let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
-                // Scroll metrics are rounded; also start before the last row leaves the viewport.
-                if remaining <= el.client_height() / 4 {
-                    reached_bottom.update(|n| *n += 1);
-                }
-            }
-        }>
-            <span class="toast-announcement" role="status">
-                {move || drop.highlight(c).then_some(intent::email::DROP_LABEL)}
-            </span>
-            <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
-                <FinishedHeader width=width/>
-            </Show>
-            <Show when=move || !c.room.with(RoomId::is_history)>
-                <RoomPills/>
-                <QuickAdd/>
-                <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
-                    <Handover/>
+        <div class="room-frame">
+            <div class="room" node_ref=node class:task-room=move || !c.room.with(RoomId::is_history)
+                on:dragover=email_drop::ignore_files on:drop=email_drop::ignore_files
+                on:scroll=move |_| {
+                    drop.position();
+                    c.room_actions.position_menu();
+                    c.task_actions.position();
+                    if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
+                        let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
+                        // Scroll metrics are rounded; also start before the last row leaves the viewport.
+                        if remaining <= el.client_height() / 4 {
+                            reached_bottom.update(|n| *n += 1);
+                        }
+                    }
+                }>
+                <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
+                    <FinishedHeader width=width/>
                 </Show>
-                <CompletedRows/>
-            </Show>
-            <Show when=move || c.room.with(|r| *r == RoomId::Trash)>
-                <trash::Trash/>
-            </Show>
-            <For each=move || c.room.with(|r| match r {
-                RoomId::Activity(agent) => vec![agent.clone()],
-                _ => Vec::new(),
-            }) key=Clone::clone children=move |agent| view! { <activity::Feed agent=agent reached_bottom=reached_bottom/> }/>
+                <Show when=move || !c.room.with(RoomId::is_history)>
+                    <RoomPills/>
+                    <QuickAdd/>
+                    <div class="task-list-area" node_ref=drop.list
+                        on:dragenter=move |ev| drop.over(c, ev, true)
+                        on:dragover=move |ev| drop.over(c, ev, false)
+                        on:dragleave=move |_| drop.leave()
+                        on:dragend=move |_| drop.clear()
+                        on:drop=move |ev| drop.receive(c, ev)>
+                        <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
+                            <Handover/>
+                        </Show>
+                        <CompletedRows/>
+                    </div>
+                </Show>
+                <Show when=move || c.room.with(|r| *r == RoomId::Trash)>
+                    <trash::Trash/>
+                </Show>
+                <For each=move || c.room.with(|r| match r {
+                    RoomId::Activity(agent) => vec![agent.clone()],
+                    _ => Vec::new(),
+                }) key=Clone::clone children=move |agent| view! { <activity::Feed agent=agent reached_bottom=reached_bottom/> }/>
+            </div>
+            <email_drop::Affordance target=drop c=c/>
         </div>
     }
 }

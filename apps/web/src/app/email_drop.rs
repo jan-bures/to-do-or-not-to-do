@@ -1,6 +1,6 @@
-//! The room's .eml drop target. Attachment drops on task detail use their own target.
+//! The task list's .eml drop target. Attachment drops on task detail use their own target.
 
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use todo_client::intent::{
     TaskRoom,
     email::{self, DroppedEmail, Feedback, ImportError, MAX_FILE_BYTES, MAX_FILES},
@@ -8,18 +8,24 @@ use todo_client::intent::{
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{DataTransfer, DragEvent, File};
 
-use super::{Ctx, RoomId, backend, platform};
+use super::{Ctx, Icon, RoomId, backend, icon, platform};
 
 #[derive(Clone, Copy)]
 pub(super) struct Target {
+    room: NodeRef<html::Div>,
+    pub list: NodeRef<html::Div>,
+    feedback: NodeRef<html::Div>,
     depth: RwSignal<u32>,
     over: RwSignal<bool>,
     reading: RwSignal<bool>,
 }
 
 impl Target {
-    pub fn new() -> Self {
+    pub fn new(room: NodeRef<html::Div>) -> Self {
         Self {
+            room,
+            list: NodeRef::new(),
+            feedback: NodeRef::new(),
             depth: RwSignal::new(0),
             over: RwSignal::new(false),
             reading: RwSignal::new(false),
@@ -36,6 +42,27 @@ impl Target {
 
     pub fn highlight(self, c: Ctx) -> bool {
         self.over.get() && self.enabled(c)
+    }
+
+    /// The room stays a single scroll surface, including on phones. Centre feedback on the
+    /// visible list viewport, not the full height of its rows or the header above it.
+    pub fn position(self) {
+        if !self.over.get_untracked() {
+            return;
+        }
+        let (Some(room), Some(list), Some(feedback)) = (
+            self.room.get_untracked(),
+            self.list.get_untracked(),
+            self.feedback.get_untracked(),
+        ) else {
+            return;
+        };
+        let top = list.get_bounding_client_rect().top() - room.get_bounding_client_rect().top();
+        let top = top.clamp(0., f64::from(room.client_height()));
+        let scrollbar = room.offset_width() - room.client_width();
+        let style = web_sys::HtmlElement::style(&feedback);
+        let _ = style.set_property("--email-drop-top", &format!("{top}px"));
+        let _ = style.set_property("--email-drop-scrollbar", &format!("{scrollbar}px"));
     }
 
     pub fn clear(self) {
@@ -57,6 +84,7 @@ impl Target {
             self.over.set(over);
         }
         data.set_drop_effect(if over { "copy" } else { "none" });
+        self.position();
     }
 
     pub fn leave(self) {
@@ -134,6 +162,41 @@ impl Target {
                 }
             }
         });
+    }
+}
+
+#[component]
+pub(super) fn Affordance(target: Target, c: Ctx) -> impl IntoView {
+    let destination = Memo::new(move |_| {
+        c.room.with(|room| {
+            c.state
+                .with(|state| email::drop_destination(state, room.into()))
+        })
+    });
+    view! {
+        <div class="email-drop-feedback" class:active=move || target.highlight(c)
+             node_ref=target.feedback aria-hidden="true">
+            <div class="email-drop-card">
+                <span class="email-drop-icon">{icon(Icon::Mail)}</span>
+                <div class="email-drop-text">
+                    <div class="email-drop-label">{email::DROP_LABEL}</div>
+                    <div class="email-drop-destination">{move || destination.get()}</div>
+                </div>
+            </div>
+        </div>
+        <span class="email-drop-announcement" role="status" aria-atomic="true">
+            {move || target.highlight(c).then(|| format!("{} {}", email::DROP_LABEL, destination.get()))}
+        </span>
+    }
+}
+
+/// Header and composer are not import targets, but a file must not navigate the tab away.
+pub(super) fn ignore_files(event: DragEvent) {
+    if !event.default_prevented()
+        && let Some(data) = file_data(&event)
+    {
+        event.prevent_default();
+        data.set_drop_effect("none");
     }
 }
 

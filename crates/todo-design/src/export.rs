@@ -150,6 +150,10 @@ pub fn css() -> String {
         "selection-bar".into(),
         format!("{}px", elevation::SELECTION_BAR),
     ));
+    root.push((
+        "drop-wash-alpha".into(),
+        elevation::DROP_WASH_ALPHA.to_string(),
+    ));
     for (k, v) in motion::DURATIONS {
         root.push((format!("duration-{k}"), format!("{v}ms")));
     }
@@ -395,6 +399,7 @@ pub fn json() -> String {
             "hairline": num(elevation::HAIRLINE),
             "focusRing": num(elevation::FOCUS_RING),
             "selectionBar": num(elevation::SELECTION_BAR),
+            "dropWashAlpha": num(elevation::DROP_WASH_ALPHA),
             "overlayShadow": { "light": shadow(Theme::Light), "dark": shadow(Theme::Dark) },
             "scrim": Theme::ALL.into_iter().map(|theme| {
                 let rooms = hues::rooms().map(|hue| {

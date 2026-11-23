@@ -40,11 +40,13 @@ for (const scheme of ["light", "dark"]) {
         data.items.add(new File([], "workshop.eml", { type: "message/rfc822" }));
         return data;
       });
-      const room = page.locator(".room");
-      await room.dispatchEvent("dragenter", { dataTransfer });
-      await expect(room).toHaveClass(/email-drop-active/);
+      const target = page.locator(".task-list-area");
+      await target.dispatchEvent("dragenter", { dataTransfer });
+      const feedback = page.locator(".email-drop-feedback");
+      await expect(feedback).toHaveCSS("opacity", "1");
+      await expect(feedback.getByText("into Inbox")).toBeVisible();
       await shot(page, `email-drop-${scheme}`);
-      await room.dispatchEvent("dragleave", { dataTransfer });
+      await target.dispatchEvent("dragleave", { dataTransfer });
       await dataTransfer.dispose();
       await w.check();
     });

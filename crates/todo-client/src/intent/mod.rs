@@ -91,6 +91,15 @@ pub fn list_collection(state: &State, room: TaskRoom) -> Option<CollectionId> {
     .filter(|id| state.is_live((*id).into()))
 }
 
+/// The existing destination for a new task in this room, or `None` if quick-add creates a list.
+pub fn task_destination(state: &State, room: TaskRoom) -> Option<ListId> {
+    match room {
+        TaskRoom::List(id) if state.is_live(id.into()) => Some(id),
+        TaskRoom::Collection(id) => sorted_lists(state, Some(Some(id))).first().map(|l| l.id),
+        _ => default_list(state),
+    }
+}
+
 /// Parses and builds a quick-add submission using the same local date for syntax and defaults.
 pub fn quick_add_task(
     state: &State,
@@ -116,12 +125,7 @@ pub fn add_task(
     }
     let room = room.into();
     let mut commands = Vec::new();
-    let existing = match room {
-        TaskRoom::List(l) if state.is_live(l.into()) => Some(l),
-        TaskRoom::Collection(c) => sorted_lists(state, Some(Some(c))).first().map(|l| l.id),
-        _ => default_list(state),
-    };
-    let list = existing.unwrap_or_else(|| {
+    let list = task_destination(state, room).unwrap_or_else(|| {
         let id = ListId::from_uuid(new_id());
         commands.push(create_list(id, list_collection(state, room), DEFAULT_LIST));
         id

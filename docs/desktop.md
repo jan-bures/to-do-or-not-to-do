@@ -336,7 +336,8 @@ file may have expired under the separate blob-retention policy.
 ## Drop an email onto the task list
 
 Drop saved `.eml` files from Explorer, or from a mail client that supplies them as real files, onto the
-highlighted task list. A drop creates one task per message in the same destination as quick-add:
+task list below quick-add. A light wash and a card with the mail icon show where the tasks will go.
+A drop creates one task per message in the same destination as quick-add:
 the current list, the first list in the current collection, or the default list in a smart room, with
 that room's defaults. Activity and Trash do not accept email drops. Classic Outlook's virtual `.msg`
 files are not supported.
@@ -677,7 +678,7 @@ collection picker and the colour swatches, the keyboard on the current choice. T
 the tag picker on the detail pane's Tags row, `tag-create` the same with a new name typed (Create
 first), `tag-edit` and `tag-colour` a tag's own page and its swatches, and `tag-rename` a tag being
 renamed in the row. `delete-tag-confirm` shows the task count before deleting a tag. Reminders: `reminder-menu` is the picker on the open task's reminder (Today 17:00, so Pick a day and time… is ticked, and Remove is offered), `reminder-custom` its custom page with tomorrow and 08:30 typed, `reminder-none` the row of a task without a reminder, and `reminder-focus` the row's keyboard focus ring. `repeat-menu` shows the undated-task notice; `repeat-custom` shows a fortnightly Mon/Thu draft. `repeat-none`, `repeat-weekly` and `repeat-monthly` show the row at rest; `repeat-focus` shows its keyboard focus ring. Links: `task-links` is a task's menu turned into its links, and `add-link` the
-link field with an address being typed. `email-drop` shows the list's drop highlight, without opening any file.
+link field with an address being typed. `email-drop` shows the list's drop highlight and destination card, without opening any file.
 `caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
 `sidebar-wide` and `detail-narrow` show the resize extremes, and `resize-handle-hover` shows the sidebar
 separator at the end of its hover fade.

@@ -140,6 +140,7 @@
   --hairline: 1px;
   --focus-ring: 3px;
   --selection-bar: 3px;
+  --drop-wash-alpha: 0.4;
   --duration-hover: 90ms;
   --duration-content-swap: 120ms;
   --duration-room-title-overlap: 40ms;
