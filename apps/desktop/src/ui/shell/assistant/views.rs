@@ -21,11 +21,14 @@ enum AccessTarget {
     Collection(CollectionId),
 }
 
-const ACCESS_CHOICES: [(ListAccess, &str); 3] = [
-    (ListAccess::Hidden, "Hidden"),
-    (ListAccess::PrivateOnly, "Private only"),
-    (ListAccess::AllModels, "All models"),
-];
+fn access_label(access: Option<ListAccess>) -> &'static str {
+    match access {
+        None => "Mixed",
+        Some(ListAccess::Hidden) => "Hidden",
+        Some(ListAccess::PrivateOnly) => "Private only",
+        Some(ListAccess::AllModels) => "All models",
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Tone {
@@ -2029,7 +2032,7 @@ impl ShellView {
                     .child(kit::icon(Icon::CloudOff, component::ICON_SMALL, p.ink_3))
                     .child(text(ty::META, p.ink_2, "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights.")))
                 .child(kit::label(&p, "Lists the assistant can see").flex_none())
-                .child(text(ty::META, p.ink_3, "Lists inherit their collection’s choice unless you set them individually. Without a choice, lists are hidden. Changes apply only to this device.").flex_none())
+                .child(text(ty::META, p.ink_3, "Select a row to change its access. Lists inherit their collection’s choice unless set individually. Without a choice, lists are hidden on this device.").flex_none())
                 .child(list_controls))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))
                 .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
@@ -2088,12 +2091,8 @@ impl ShellView {
                     .get(&group.id)
                     .copied()
                     .unwrap_or_default();
-                let inheritance = (effective != Some(default)).then(|| {
-                    let label = ACCESS_CHOICES
-                        .into_iter()
-                        .find_map(|(access, label)| (access == default).then_some(label));
-                    format!("New lists: {}", label.unwrap_or("Hidden"))
-                });
+                let inheritance = (effective != Some(default))
+                    .then(|| format!("New lists: {}", access_label(Some(default))));
                 rows.push(self.ai_access_row(
                     AccessTarget::Collection(group.id),
                     &group.name,
@@ -2152,17 +2151,14 @@ impl ShellView {
             AccessTarget::List(id) => id.as_uuid(),
         };
         let name = model::labels::one_line(name);
-        div()
+        let label = access_label(access);
+        let row = div()
             .w_full()
             .min_h(px(component::BUTTON))
-            .flex_none()
             .flex()
             .items_center()
             .gap(px(space::S2))
             .px(px(space::S3))
-            .border_b_1()
-            .border_color(p.line)
-            .when(group, |row| row.bg(p.canvas))
             .children(glyph)
             .child(
                 div()
@@ -2178,56 +2174,64 @@ impl ShellView {
                     )))
                     .children(inheritance.map(|label| one_line(text(ty::META, p.ink_3, label)))),
             )
-            .when(access.is_none(), |row| {
-                row.child(text(ty::META, p.ink_2, "Mixed").flex_none())
-            })
-            .children(
-                ACCESS_CHOICES
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (choice, label))| {
-                        let selected = access == Some(choice);
-                        self.ai_action(
-                            format!("assistant-access-{id}-{i}"),
-                            text(
-                                if selected {
-                                    ty::BUTTON_SMALL.with_weight(600)
-                                } else {
-                                    ty::BUTTON_SMALL
-                                },
-                                if selected { p.accent_strong } else { p.ink_2 },
-                                label,
-                            )
-                            .flex_none()
-                            .px(px(space::S2))
-                            .py(px(space::S1))
-                            .rounded(px(radius::SM))
-                            .when(selected, |button| button.bg(p.wash)),
-                            true,
-                            move |this, _, cx| {
-                                let state = this.ai_access_state();
-                                if let Some(setup) = this.ai.settings.as_mut() {
-                                    let policy = &mut setup.draft.access;
-                                    match target {
-                                        AccessTarget::Collection(id) => {
-                                            policy.set_collection(&state, id, choice)
-                                        }
-                                        AccessTarget::List(id) if state.is_live(id.into()) => {
-                                            policy.lists.insert(id, choice);
-                                        }
-                                        AccessTarget::List(_) => {}
-                                    }
-                                    cx.notify();
+            .children(access.map(|value| {
+                kit::icon(
+                    if value == ListAccess::Hidden {
+                        Icon::EyeOff
+                    } else {
+                        Icon::Eye
+                    },
+                    component::ICON_SMALL,
+                    if value == ListAccess::PrivateOnly {
+                        p.sun_ink
+                    } else {
+                        p.ink_3
+                    },
+                )
+            }))
+            .child(text(ty::META, p.ink_2, label).flex_none())
+            .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3));
+        div()
+            .flex_none()
+            .border_b_1()
+            .border_color(p.line)
+            .when(group, |row| row.bg(p.canvas))
+            .child(
+                self.ai_action(
+                    format!("assistant-access-{id}"),
+                    row,
+                    true,
+                    move |this, _, cx| {
+                        let state = this.ai_access_state();
+                        if let Some(setup) = this.ai.settings.as_mut() {
+                            let policy = &mut setup.draft.access;
+                            let current = match target {
+                                AccessTarget::Collection(id) => policy.collection(&state, id),
+                                AccessTarget::List(id) => Some(policy.list(&state, id)),
+                            };
+                            let next = match current {
+                                Some(ListAccess::Hidden) => ListAccess::PrivateOnly,
+                                Some(ListAccess::PrivateOnly) => ListAccess::AllModels,
+                                Some(ListAccess::AllModels) | None => ListAccess::Hidden,
+                            };
+                            match target {
+                                AccessTarget::Collection(id) => {
+                                    policy.set_collection(&state, id, next)
                                 }
-                            },
-                            cx,
-                        )
-                        .aria_label(format!(
-                            "{name}: {label}{}",
-                            if group { " for the collection" } else { "" }
-                        ))
-                        .aria_toggled(toggled(selected))
-                    }),
+                                AccessTarget::List(id) if state.is_live(id.into()) => {
+                                    policy.lists.insert(id, next);
+                                }
+                                AccessTarget::List(_) => {}
+                            }
+                            cx.notify();
+                        }
+                    },
+                    cx,
+                )
+                .aria_label(format!(
+                    "{name}: {label}. Activate to change access{}.",
+                    if group { " for the collection" } else { "" }
+                )),
             )
     }
 
