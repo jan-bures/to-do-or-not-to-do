@@ -32,6 +32,8 @@ import app.todoornot.session.Host
 import app.todoornot.session.KeystoreCipher
 import app.todoornot.session.PairingFiles
 import app.todoornot.session.PrefsKeyValues
+import app.todoornot.session.DateFormatPreference
+import app.todoornot.core.localNow
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
 import app.todoornot.session.signedOut
@@ -98,6 +100,9 @@ class AppGraph(private val app: Context) {
     internal val loaded = _loaded.asStateFlow()
 
     internal val widgets = WidgetRefresh(app)
+    private val dateFormat = DateFormatPreference(app)
+
+    internal fun displayNow() = localNow(dateFormat = dateFormat.load())
     internal val push = AndroidPush(app)
     internal val updates = AndroidUpdates(app)
 
@@ -233,6 +238,8 @@ class AppGraph(private val app: Context) {
                     e, ms, Dispatchers.IO, documents = AttachmentFiles(app), onUnpair = ::unpair,
                     pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() },
                     syncStatus = { host.status(paired) },
+                    now = ::displayNow,
+                    saveDateFormat = { key -> dateFormat.save(key).also { if (it) widgets.invalidate() } },
                 )
             }.also { m ->
                 withContext(Dispatchers.IO) { push.activate(paired.session) { host.isAuthorized(paired) } }

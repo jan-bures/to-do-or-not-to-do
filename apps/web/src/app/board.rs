@@ -264,7 +264,7 @@ fn move_card(c: Ctx, list: ListId, id: TaskId, target: DropSlot) {
     let Some((cmd, row, from)) = c.state.with_untracked(|s| {
         Some((
             drop_command(s, list, id, target.stage, target.placement())?,
-            model::board_row(s, id, c.now.get_untracked().today())?,
+            model::board_row(s, id, c.now.get_untracked().dates())?,
             QueryStatus::of(s.tasks.get(&id)?),
         ))
     }) else {
@@ -402,7 +402,7 @@ pub(super) fn key(c: Ctx, ev: &leptos::ev::KeyboardEvent, key: &str) -> bool {
                 }
             } else if let Some(row) = card.and_then(|id| {
                 c.state
-                    .with_untracked(|s| model::board_row(s, id, c.now.get_untracked().today()))
+                    .with_untracked(|s| model::board_row(s, id, c.now.get_untracked().dates()))
             }) {
                 c.toggle(&row);
             } else {
@@ -783,7 +783,7 @@ fn card_row(c: Ctx, id: TaskId) -> Option<Row> {
         return Some(row);
     }
     c.state
-        .with(|s| model::board_row(s, id, c.now.get().today()))
+        .with(|s| model::board_row(s, id, c.now.get().dates()))
 }
 
 #[component]
@@ -877,7 +877,7 @@ fn completed_label(c: Ctx, id: TaskId) -> Option<String> {
     let label = match (day - now.today()).get_days() {
         0 => "Today".into(),
         -1 => "Yesterday".into(),
-        _ => model::short_date(day, now.today()),
+        _ => now.dates().weekday(day),
     };
     Some(format!("{label}, {}", local.strftime("%H:%M")))
 }

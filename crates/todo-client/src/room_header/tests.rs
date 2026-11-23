@@ -213,7 +213,7 @@ fn important_counts_today_and_shows_the_day() {
         RoomKey::Smart(SmartList::Important),
         &utc("2026-11-22T10:00:00Z"),
     );
-    assert_eq!(h.eyebrow.text(), "Sunday · 22 Nov 2026 · W47");
+    assert_eq!(h.eyebrow.text(), "Sunday · 22.11. · W47");
     assert_eq!(h.summary.text(), "0 of 2 done · 2 open");
     assert_eq!(
         h.status.map(|s| s.text()).as_deref(),
@@ -369,7 +369,7 @@ fn my_day_counts_its_whole_plan_and_finishes_the_day() {
         h.status.map(|s| s.text()).as_deref(),
         Some("2 open · 0 done today")
     );
-    assert_eq!(h.eyebrow.text(), "Saturday · 21 Nov 2026 · W47");
+    assert_eq!(h.eyebrow.text(), "Saturday · 21.11. · W47");
     assert!(h.finishes_day && !h.finished_day());
 
     w.done_at(plan[1], "2026-11-21T09:00:00Z");
@@ -697,11 +697,11 @@ proptest! {
 #[test]
 fn the_day_eyebrow_reads_naturally() {
     assert_eq!(
-        day_eyebrow(day("2026-11-21")).text(),
-        "Saturday · 21 Nov 2026 · W47"
+        day_eyebrow(DateFormat::default().on(day("2026-11-21"))).text(),
+        "Saturday · 21.11. · W47"
     );
     assert_eq!(iso_week(day("2021-01-01")), "W53");
-    let e = day_eyebrow(day("2027-01-04"));
+    let e = day_eyebrow(DateFormat::Iso.on(day("2027-01-04")));
     assert_eq!(e.lead(), "Monday");
-    assert_eq!(e.details(), ["4 Jan 2027", "W1"]);
+    assert_eq!(e.details(), ["2027-01-04", "W1"]);
 }

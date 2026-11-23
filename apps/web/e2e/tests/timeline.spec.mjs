@@ -64,7 +64,7 @@ test("four scales keep the centre, Today jumps back, and zoom is remembered", as
   await open(page, ROOM);
   await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
   await expect(zoom(page, "Two weeks")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".timeline-range")).toHaveText(/19 Nov – 2 Dec 2026/);
+  await expect(page.locator(".timeline-range")).toHaveText(/19\.11\.–02\.12\./);
   expect(await visibleDates(page)).toHaveLength(14);
   await expect(day(page, "2026-11-21")).toHaveAttribute("aria-current", "date");
   await expect(page.locator(".timeline-today-line")).toBeInViewport();
@@ -78,10 +78,10 @@ test("four scales keep the centre, Today jumps back, and zoom is remembered", as
     expect(dates[0] <= "2026-11-26" && dates.at(-1) >= "2026-11-26").toBe(true);
   }
   await page.getByRole("button", { name: "Next dates" }).click();
-  await expect(page.locator(".timeline-range")).toHaveText(/3 Dec – 16 Dec 2026/);
+  await expect(page.locator(".timeline-range")).toHaveText(/03\.–16\.12\./);
   await page.locator("#room-title").focus();
   await page.keyboard.press("0");
-  await expect(page.locator(".timeline-range")).toHaveText(/19 Nov – 2 Dec 2026/);
+  await expect(page.locator(".timeline-range")).toHaveText(/19\.11\.–02\.12\./);
   await zoom(page, "Month").click();
   await page.reload();
   await expect(zoom(page, "Month")).toHaveAttribute("aria-pressed", "true");
@@ -95,7 +95,7 @@ test("bar moves and resizes snap to dates and leave one exact Undo", async ({ pa
   const milestone = bar(page, GROUT);
   const width = (await day(page, "2026-11-21").boundingBox()).width;
   await shiftPointer(page, span, width * 2, 0, false);
-  await expect(page.locator(".timeline-drag-readout")).toContainText("21–25 Nov");
+  await expect(page.locator(".timeline-drag-readout")).toContainText("21.–25.11.");
   await expectDates(span, "2026-11-19", "2026-11-23");
   await page.mouse.up();
   await expectDates(span, "2026-11-21", "2026-11-25");

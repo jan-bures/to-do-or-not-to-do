@@ -607,7 +607,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         task: task0,
         ..
     } = location;
-    let now = RwSignal::new(now);
+    let now = RwSignal::new(Now {
+        date_format: platform::load_date_format(),
+        ..now
+    });
     let room = RwSignal::new(room0);
     let lingering = RwSignal::new(Vec::<Linger>::new());
     let filter_text = RwSignal::new(String::new());
@@ -834,12 +837,27 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             }
         });
         platform::on_wake(move || {
-            c.now.set(platform::now());
+            c.now.update(|now| {
+                *now = Now {
+                    date_format: now.date_format,
+                    ..platform::now()
+                }
+            });
             backend::nudge();
         });
     }
     if now.with_untracked(|n| n.browser_time) {
-        set_interval(move || c.now.set(platform::now()), Duration::from_secs(30));
+        set_interval(
+            move || {
+                c.now.update(|now| {
+                    *now = Now {
+                        date_format: now.date_format,
+                        ..platform::now()
+                    }
+                })
+            },
+            Duration::from_secs(30),
+        );
     }
 
     track_overlay_focus(c);
@@ -1772,6 +1790,7 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
 #[component]
 fn SettingsMenu() -> impl IntoView {
     let c = ctx();
+    use todo_client::date_format::DateFormat;
     let csrf = backend::csrf();
     let menu = FooterMenu::new(
         "open-settings",
@@ -1781,6 +1800,7 @@ fn SettingsMenu() -> impl IntoView {
                 "sync-now",
                 "reminder-notification-setting",
                 "device-settings",
+                "date-format-setting",
                 "sign-out",
             ]
         } else {
@@ -1789,9 +1809,12 @@ fn SettingsMenu() -> impl IntoView {
                 "sync-now",
                 "reminder-notification-setting",
                 "device-settings",
+                "date-format-setting",
             ]
         },
     );
+    let dialog = NodeRef::<html::Dialog>::new();
+    let format_error = RwSignal::new(false);
     let origin = window().location().origin().unwrap_or_default();
     let sync_unavailable = |s: &Sync| {
         s.connection == Connection::Syncing || s.read_only || s.signed_out || s.offline_demo
@@ -1843,6 +1866,15 @@ fn SettingsMenu() -> impl IntoView {
                     <button type="button" id="device-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
                         on:click=move |_| { menu.close(); c.device_settings_open.set(true); }
                     >{icon(Icon::Link)}"Devices…"</button>
+                    <button type="button" id="date-format-setting" role="menuitem" tabindex="-1" aria-haspopup="dialog"
+                        on:click=move |_| {
+                            menu.close();
+                            format_error.set(false);
+                            if let Some(dialog) = dialog.get() { let _ = dialog.show_modal(); }
+                        }>
+                        {icon(Icon::Calendar)}"Date format"
+                        <span class="date-format-example">{move || c.now.with(|n| n.dates().date(n.today()))}</span>
+                    </button>
                     {csrf.clone().map(|token| view! {
                         <form method="post" action="/auth/logout" role="none" on:submit=move |_| {
                             // The token may have changed since the page loaded (see `backend::csrf`).
@@ -1857,6 +1889,25 @@ fn SettingsMenu() -> impl IntoView {
                 </div>
             </Show>
         </div>
+        <dialog class="room-dialog date-format-dialog" aria-labelledby="date-format-label" node_ref=dialog
+            on:close=move |_| { platform::focus(menu.trigger); }>
+            <label id="date-format-label" for="date-format-choice">"Date format"</label>
+            <select id="date-format-choice" autofocus
+                on:change=move |ev| {
+                    if let Some(format) = DateFormat::from_key(&event_target_value(&ev)) {
+                        c.now.update(|now| now.date_format = format);
+                        format_error.set(!platform::save_date_format(format));
+                    }
+                }>
+                {DateFormat::ALL.map(|format| view! {
+                    <option value=format.key() selected=move || c.now.with(|n| n.date_format == format)>
+                        {move || format.example(c.now.with(Now::today))}
+                    </option>
+                })}
+            </select>
+            <Show when=move || format_error.get()><p role="status">"This browser couldn't save the date format."</p></Show>
+            <form method="dialog"><button type="submit" class="button">"Done"</button></form>
+        </dialog>
     }
 }
 
@@ -2311,9 +2362,21 @@ struct Columns {
     agent: bool,
     priority: bool,
     due: bool,
+    due_chars: usize,
 }
 
 impl Columns {
+    // Select a stylesheet slot rather than emitting an inline style under the server CSP.
+    fn date_width(self) -> Option<&'static str> {
+        match self.due_chars {
+            0..=13 => None,
+            14..=16 => Some("16"),
+            17..=20 => Some("20"),
+            21..=24 => Some("24"),
+            _ => Some("32"),
+        }
+    }
+
     fn for_rows<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Self {
         let mut columns = Self::default();
         columns.include(rows);
@@ -2324,7 +2387,12 @@ impl Columns {
         for row in rows {
             self.agent |= row.agent.is_some();
             self.priority |= row.priority > 0;
-            self.due |= row.due.is_some();
+            if let Some(due) = &row.due {
+                self.due = true;
+                if due.tone != DueTone::Overdue {
+                    self.due_chars = self.due_chars.max(due.text.chars().count());
+                }
+            }
         }
     }
 }
@@ -2406,6 +2474,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             class:with-agent=move || c.columns.with(|cols| cols.agent)
             class:with-priority=move || c.columns.with(|cols| cols.priority)
             class:with-due=move || c.columns.with(|cols| cols.due)
+            data-date-width=move || c.columns.get().date_width()
             on:click=move |ev| c.click_task(id, &ev)
         >
             <button

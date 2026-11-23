@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -207,7 +208,8 @@ class GalleryTest {
         sidebarDrag: SidebarDragFrame? = null,
     ) = shot(name, device) {
         CompositionLocalProvider(LocalSheetAtRest provides true, LocalPushStatus provides push, LocalSidebarDragFrame provides sidebarDrag) {
-            MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
+            val actions = remember { object : Actions by Actions.None { override fun composerNow() = FIXTURE_NOW } }
+            MainScreen(state, actions, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
                 collapsed = collapsed, motion = motion, hand = hand, switcherFilter = switcherFilter,
                 settingsOpen = settings, roomMenuOpen = roomMenu, reachExpanded = reach)
         }
@@ -826,7 +828,7 @@ class GalleryTest {
         val s = state(engine, room, select = id)
         val detail = requireNotNull(s.detail)
         // An engine write uses the host's clock. Show the new task at the gallery's fixed instant.
-        return s.copy(detail = detail.copy(subtitle = "Created 21 Nov", activity = detail.activity.map { it.copy(relative = "Just now") }))
+        return s.copy(detail = detail.copy(subtitle = "Created 21.11.2026", activity = detail.activity.map { it.copy(relative = "Just now") }))
     }
 
     /** The warning above the Due row of a repeating task; no warning on an undated task. */
@@ -1106,7 +1108,7 @@ class GalleryTest {
             e.setSwatch(target, "fern")
             val read = state(e, list, select = id)
             val current = requireNotNull(read.detail)
-            val detail = current.copy(subtitle = "Created 21 Nov", activity = current.activity.map { it.copy(relative = "Just now") })
+            val detail = current.copy(subtitle = "Created 21.11.2026", activity = current.activity.map { it.copy(relative = "Just now") })
             val s = read.copy(detail = detail)
             main("rows_$suffix", COVER, s, dark)
             val change = e.removeLink(detail.sources.single().id)!!

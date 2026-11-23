@@ -80,7 +80,7 @@ test("list settings are reachable from both menus; default applies on next visit
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Status: In progress" })).toHaveCount(3);
-  await expect(page.locator(".col-due", { hasText: "19–23 Nov" })).toBeVisible();
+  await expect(page.locator(".col-due", { hasText: "19.–23.11." })).toBeVisible();
   await tab(page, "Board").click();
   await openSettings(page);
   await dialog.getByRole("switch", { name: "Workflow & Board" }).click();
@@ -110,22 +110,22 @@ test("row status, status shortcut, start-date reconciliation and composer suffix
   // A later date moves Due with it in the same undoable patch.
   await detail.getByRole("button", { name: "Edit start date" }).click();
   await calendar.getByRole("button", { name: /Friday,? 27 November 2026/ }).click();
-  await expect(detail.locator("#edit-task-start")).toHaveText("Fri 27 Nov");
-  await expect(detail.locator("#edit-task-due")).toHaveText("Fri 27 Nov");
+  await expect(detail.locator("#edit-task-start")).toHaveText("Fri 27.11.");
+  await expect(detail.locator("#edit-task-due")).toHaveText("Fri 27.11.");
   await undo(page).click();
-  await expect(detail.locator("#edit-task-due")).toHaveText("Mon 23 Nov");
+  await expect(detail.locator("#edit-task-due")).toHaveText("Mon 23.11.");
 
   const input = page.getByRole("textbox", { name: "Add a task" });
   await input.fill("Paint the door tomorrow..+4d !! stav:rozpracovano");
   await expect(page.getByRole("button", { name: "Remove status: In progress" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Remove dates: 22–25 Nov" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove dates: 22.–25.11." })).toBeVisible();
   await page.locator("#qa-status").click();
   await option(page, "Backlog").click();
   await expect(input).toHaveValue("Paint the door tomorrow..+4d !!");
   await input.press("Enter");
   const added = page.locator(".row", { has: card(page, "Paint the door") });
   await expect(added.getByRole("button", { name: "Status: Backlog" })).toBeVisible();
-  await expect(added.locator(".col-due")).toHaveText("22–25 Nov");
+  await expect(added.locator(".col-due")).toHaveText("22.–25.11.");
   await page.locator(".sidebar").getByRole("link", { name: /^All / }).click();
   await expect(page.getByRole("button", { name: "Status: To do" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Status: Backlog" })).toHaveCount(3);
@@ -282,7 +282,7 @@ for (const scheme of ["light", "dark"]) {
       await page.locator("#qa-status").click();
       await option(page, "In progress").click();
       await expect(page.getByRole("button", { name: "Remove status: In progress" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Remove dates: 26–28 Nov" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Remove dates: 26.–28.11." })).toBeVisible();
       await shot("list-status");
       await open(page, ROOM);
       await tab(page, "List").click();

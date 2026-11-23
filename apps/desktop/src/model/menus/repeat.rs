@@ -90,7 +90,12 @@ fn choice(
     }
 }
 
-pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
+pub fn entries(
+    t: &Task,
+    dates: todo_client::date_format::DateLabels,
+    draft: Option<Draft>,
+) -> Vec<MenuEntry> {
+    let today = dates.today;
     let mut entries = vec![];
     let mut starts = None;
     if let Some(d) = draft {
@@ -140,7 +145,7 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
             d.rule(),
             t.due,
             t.recurrence.as_ref().and_then(|r| r.until),
-            today,
+            dates,
         ) {
             Ok((description, first)) => {
                 starts = first;
@@ -196,7 +201,7 @@ pub fn entries(t: &Task, today: Date, draft: Option<Draft>) -> Vec<MenuEntry> {
     if t.due.is_none() {
         entries.push(MenuEntry::Note(
             starts
-                .map(|date| format!("Due will be {}.", crate::model::labels::long_date(date)))
+                .map(|date| format!("Due will be {}.", dates.full(date)))
                 .unwrap_or_else(|| UNDATED_NOTE.into())
                 .into(),
         ));
@@ -220,7 +225,11 @@ mod tests {
             day: 31,
         };
         t.recurrence = Some(Recurrence::new(rule.clone()));
-        let menu = entries(&t, april_end, None);
+        let menu = entries(
+            &t,
+            todo_client::date_format::DateFormat::default().on(april_end),
+            None,
+        );
         let monthly = super::super::items(&menu)
             .find(|i| i.key == "monthly")
             .expect("monthly");
@@ -251,7 +260,7 @@ mod tests {
         let day = Weekday::of(t.due.unwrap_or(f.now.today()));
         d.edit(Action::Day(day));
         let can_apply = |d| {
-            super::super::items(&entries(&t, f.now.today(), Some(d)))
+            super::super::items(&entries(&t, f.now.dates(), Some(d)))
                 .any(|i| i.action == MenuAction::Repeat(t.id, Action::Apply))
         };
         assert!(!can_apply(d));

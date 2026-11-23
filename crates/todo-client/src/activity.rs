@@ -219,15 +219,13 @@ pub fn relative_time(at: Timestamp, now: Timestamp) -> String {
     format!("{n} {unit}{plural} ago")
 }
 
-/// A day group's heading: “Today”, “Yesterday”, else the shared short date (`Thu 19 Nov`).
+/// A day group's heading: “Today”, “Yesterday”, or a weekday and date.
 #[must_use]
-pub fn day_label(day: Date, today: Date) -> String {
-    if day == today {
-        "Today".to_owned()
-    } else if today.yesterday().is_ok_and(|y| y == day) {
-        "Yesterday".to_owned()
+pub fn day_label(day: Date, dates: crate::date_format::DateLabels) -> String {
+    if day <= dates.today {
+        dates.relative(day)
     } else {
-        crate::intent::quick_add::short_date(day, today)
+        dates.weekday(day)
     }
 }
 
@@ -1000,11 +998,12 @@ mod tests {
                 ("2026-11-20".parse().unwrap(), vec![2, 1])
             ]
         );
-        assert_eq!(day_label(today, today), "Today");
-        assert_eq!(day_label(days[1].0, today), "Yesterday");
+        let dates = crate::date_format::DateFormat::default().on(today);
+        assert_eq!(day_label(today, dates), "Today");
+        assert_eq!(day_label(days[1].0, dates), "Yesterday");
         assert_eq!(
-            day_label("2026-11-19".parse().unwrap(), today),
-            "Thu 19 Nov"
+            day_label("2026-11-19".parse().unwrap(), dates),
+            "Thu 19.11."
         );
         assert_eq!(empty_line(true), "No activity from this agent.");
         assert_eq!(empty_line(false), "No activity yet.");

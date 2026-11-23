@@ -114,6 +114,7 @@ impl ShellView {
     pub(super) fn save_ui_preferences(&mut self) {
         if let Some(session) = self.store.session()
             && let Err(e) = session.data().save_ui(&UiPreferences {
+                date_format: self.store.now().date_format,
                 collapsed_collections: self.ui.collapsed_collections.clone(),
                 board_done: self.ui.board_done.clone(),
                 timeline: self.ui.timeline,

@@ -25,6 +25,7 @@ import java.time.ZoneId
  * reminder, and the other finds it shown.
  */
 class AndroidAlarms(private val context: Context) : AlarmSink {
+    private val dateFormat = app.todoornot.session.DateFormatPreference(context)
     private val alarms = context.getSystemService(AlarmManager::class.java)
     private val notifications = context.getSystemService(NotificationManager::class.java)
 
@@ -70,7 +71,7 @@ class AndroidAlarms(private val context: Context) : AlarmSink {
         val n = Notification.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(alarm.title)
-            .setContentText(reminderLabel(alarm.atMs, System.currentTimeMillis(), ZoneId.systemDefault()))
+            .setContentText(reminderLabel(alarm.atMs, System.currentTimeMillis(), ZoneId.systemDefault(), dateFormat.load()))
             .setWhen(alarm.atMs)
             .setShowWhen(true)
             .setCategory(Notification.CATEGORY_REMINDER)

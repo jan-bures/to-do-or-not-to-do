@@ -6,7 +6,7 @@ use todo_core::{model::Priority, query::QueryStatus, time::Date};
 use todo_design::Icon;
 
 use super::pickers::{DetailPicker, choice_focus};
-use super::{Ctx, backend, ctx, icon, model, platform, workflow};
+use super::{Ctx, backend, ctx, icon, platform, workflow};
 
 const INPUT: &str = "qa-input";
 
@@ -142,14 +142,8 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
     });
     let status_chip =
         move || features.get().workflow && status.get() != column.unwrap_or(QueryStatus::Todo);
-    let date = Memo::new(move |_| {
-        let today = c.now.get().today();
-        match (start.get(), due.get()) {
-            (Some(a), Some(b)) => Some(model::date_span(a, b, today)),
-            (Some(a), None) => Some(format!("Starts {}", quick_add::short_date(a, today))),
-            (None, day) => day.map(|d| quick_add::short_date(d, today)),
-        }
-    });
+    let date =
+        Memo::new(move |_| quick_add::date_preview(start.get(), due.get(), c.now.get().dates()));
     let chip_label = Memo::new(move |prev: Option<&String>| {
         date.get().or_else(|| prev.cloned()).unwrap_or_default()
     });
@@ -403,7 +397,7 @@ pub(super) fn CalendarPopover(
         <div class="qa-month-title">
             <button type="button" class="qa-tool" aria-label="Previous month" on:click=move |_| step(-1)
                 disabled=move || month.get().and_then(|m| m.shifted(-1)).is_none()>{icon(Icon::ChevronLeft)}</button>
-            <span id=month_label aria-live="polite">{move || days.get().map(calendar::Month::label)}</span>
+            <span id=month_label aria-live="polite">{move || days.get().map(|m| c.now.get().dates().month(m.cursor))}</span>
             <button type="button" class="qa-tool" aria-label="Next month" on:click=move |_| step(1)
                 disabled=move || month.get().and_then(|m| m.shifted(1)).is_none()>{icon(Icon::ChevronRight)}</button>
         </div>

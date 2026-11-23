@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDefaults
+import app.todoornot.core.localNow
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.TimeInput
@@ -72,7 +73,9 @@ fun ReminderCard(
     modifier: Modifier = Modifier,
     markToday: Boolean = true,
     inSheet: Boolean = false,
+    dateFormat: String? = null,
 ) {
+    val formatter = remember(nowMs, zone, dateFormat) { datePickerFormatter(localNow(nowMs, zone, dateFormat)) }
     val d = LocalDesign.current
     val r = d.room
     val start = remember(atMs, due, zone) { reminderStart(atMs, due, nowMs, zone) }
@@ -125,12 +128,13 @@ fun ReminderCard(
                     if (compact) timeRow()
                     DatePicker(
                         state = date,
+                        dateFormatter = formatter,
                         colors = datePickerColors(r, markToday),
                         title = if (compact) null else {
                             { Label("Reminder", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S6.dp, top = S.S4.dp)) }
                         },
                         headline = if (compact) null else {
-                            { DatePickerDefaults.DatePickerHeadline(date.selectedDateMillis, date.displayMode, DatePickerDefaults.dateFormatter(), Modifier.padding(start = S.S6.dp, end = S.S3.dp, bottom = S.S3.dp)) }
+                            { DatePickerDefaults.DatePickerHeadline(date.selectedDateMillis, date.displayMode, formatter, Modifier.padding(start = S.S6.dp, end = S.S3.dp, bottom = S.S3.dp)) }
                         },
                         showModeToggle = !compact,
                     )

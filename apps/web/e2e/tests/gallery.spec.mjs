@@ -400,10 +400,10 @@ for (const scheme of ["light", "dark"]) {
         await page.setViewportSize(size);
         await open(page);
         await page.getByRole("textbox", { name: "Add a task" }).fill("Water the plants zítra !!");
-        await expect(page.locator(".qa-date-chip")).toHaveText("Sun 22 Nov");
+        await expect(page.locator(".qa-date-chip")).toHaveText("Sun 22.11.");
         await shot(page, `${layout}-quick-add-chips-${scheme}`);
         await page.getByRole("button", { name: "Choose due date" }).click();
-        await expect(page.getByRole("grid", { name: "November 2026" }).getByRole("button", { name: "Sunday, 22 November 2026" })).toBeFocused();
+        await expect(page.getByRole("grid", { name: "11.2026" }).getByRole("button", { name: "Sunday, 22 November 2026" })).toBeFocused();
         await shot(page, `${layout}-quick-add-calendar-${scheme}`);
         await page.keyboard.press("Escape");
         await page.getByRole("button", { name: "Choose priority" }).click();

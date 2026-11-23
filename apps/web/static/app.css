@@ -911,6 +911,19 @@ a {
 }
 
 .room-dialog .action-error { color: var(--color-danger-ink); }
+.date-format-example { margin-inline-start: auto; color: var(--color-ink-2); font: var(--text-count); }
+.date-format-dialog[open] { display: grid; gap: var(--space-3); }
+.date-format-dialog select {
+  min-width: 0;
+  width: 100%;
+  padding: var(--space-2);
+  background: var(--color-pane);
+  color: var(--color-ink);
+  border: var(--hairline) solid var(--color-control);
+  border-radius: var(--radius-md);
+  font: inherit;
+}
+.date-format-dialog form { justify-self: end; }
 .pair-dialog .pair-actions, .pair-dialog form {
   display: flex;
   gap: var(--space-2);
@@ -2004,7 +2017,12 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 .row.with-agent { --row-agent: var(--desktop-col-agent); }
 .row.with-priority { --row-priority: var(--desktop-col-priority); }
-.row.with-due { --row-due: var(--desktop-col-due); }
+/* Reserve a shared slot for longer dates, in the same monospaced font as their labels. */
+.row.with-due { font: var(--text-due); --row-due: max(var(--desktop-col-due), var(--date-width, 0ch)); }
+.row[data-date-width="16"] { --date-width: 16ch; }
+.row[data-date-width="20"] { --date-width: 20ch; }
+.row[data-date-width="24"] { --date-width: 24ch; }
+.row[data-date-width="32"] { --date-width: 32ch; }
 
 .row:not(.with-agent) .col-agent,
 .row:not(.with-priority) .col-priority,
@@ -3513,7 +3531,7 @@ a.source:hover {
   .with-due .meta .due-slot {
     display: inline-flex;
     flex: none;
-    width: var(--phone-due-slot);
+    width: max(var(--phone-due-slot), var(--date-width, 0ch));
   }
 
   .meta .chip {

@@ -46,6 +46,7 @@ pub mod activity;
 pub mod assistant;
 pub mod board;
 pub mod client;
+pub mod date_format;
 pub mod device_pairing;
 pub mod failure;
 pub mod intent;

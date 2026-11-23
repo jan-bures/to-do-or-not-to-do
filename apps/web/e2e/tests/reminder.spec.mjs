@@ -118,7 +118,7 @@ test("custom reminder pre-fills the shown time, validates input and discards a c
   await time.fill("14:20");
   await save.press("Enter");
   await expect(reminder).toBeFocused();
-  await expect(reminder).toHaveText("Mon 23 Nov, 14:20");
+  await expect(reminder).toHaveText("Mon 23.11., 14:20");
   await undo(page).click();
   await expect(reminder).toHaveText("Today, 15:30");
   await w.check();

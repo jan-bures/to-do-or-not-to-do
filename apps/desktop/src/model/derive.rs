@@ -115,7 +115,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
         .then_some(task.start_date)
         .flatten()
         .zip(task.due)
-        .map(|(start, end)| super::workflow::span(start, end, now.today()));
+        .map(|(start, end)| now.dates().range(start, end));
     let due = match labels::due(task.due, ix.reminder.get(&task.id).copied(), now) {
         DueLabel::None => Due::None,
         DueLabel::Soon(s) => Due::Soon(span.unwrap_or(s).into()),
@@ -281,6 +281,15 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         .flatten()
         .map(|d| SharedString::from(labels::weekday(d)));
     let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let tasks: Vec<_> = open.iter().map(|t| row(state, ix, t, now)).collect();
+    let longest_due = tasks
+        .iter()
+        .filter_map(|row| match &row.due {
+            Due::Plain(label) | Due::Soon(label) => Some(label),
+            _ => None,
+        })
+        .max_by_key(|label| label.chars().count())
+        .cloned();
 
     Room {
         key,
@@ -299,7 +308,8 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         score: header.summary,
         status: header.status,
         estimate: None,
-        tasks: open.iter().map(|t| row(state, ix, t, now)).collect(),
+        tasks,
+        longest_due,
         trash: if key == RoomKey::Trash {
             todo_client::trash::rows(state, now.at)
         } else {
@@ -372,10 +382,10 @@ fn tomorrow(state: &State, ix: &Index, now: &Now, holding: &BTreeSet<TaskId>) ->
     let first_when = match ix.reminder.get(&first.id) {
         Some(at) if now.date_of(*at) == tomorrow => format!(
             "{}, {}",
-            labels::short_date(tomorrow, today),
+            now.dates().weekday(tomorrow),
             labels::clock(*at, &now.tz)
         ),
-        _ => labels::short_date(tomorrow, today),
+        _ => now.dates().weekday(tomorrow),
     };
     const ALSO: usize = 2;
     const WEEK: usize = 3;
@@ -543,7 +553,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
     let task = state.tasks.get(&id).filter(|t| task_live(state, t))?;
     let today = now.today();
     let created = now.date_of(task.created.at);
-    let mut subtitle = format!("Created {}", labels::day_month(created, today));
+    let mut subtitle = format!("Created {}", now.dates().full(created));
     if let Some(name) = lists::agent_name(&task.created.by) {
         subtitle = format!("{subtitle} by {name}");
     }
@@ -552,7 +562,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         let when = if day == today {
             "today".to_string()
         } else {
-            labels::day_month(day, today)
+            now.dates().full(day)
         };
         subtitle = format!(
             "{subtitle} / Edited {when} {}",
@@ -567,7 +577,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
     steps.sort_by(|a, b| (&a.position, a.id).cmp(&(&b.position, b.id)));
 
     let (due_value, due_kind) = match task.due {
-        Some(d) => (labels::short_date(d, today).into(), FieldKind::Date),
+        Some(d) => (now.dates().weekday(d).into(), FieldKind::Date),
         None => ("–".into(), FieldKind::Empty),
     };
     let (priority_name, _) = super::menus::priority_label(task.priority);
@@ -610,7 +620,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
                 label: "Starts",
                 value: task
                     .start_date
-                    .map_or_else(|| "–".into(), |d| labels::short_date(d, today).into()),
+                    .map_or_else(|| "–".into(), |d| now.dates().weekday(d).into()),
                 kind: if task.start_date.is_some() {
                     FieldKind::Date
                 } else {
@@ -653,7 +663,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         value: task
             .recurrence
             .as_ref()
-            .map(labels::describe_repeat)
+            .map(|r| labels::describe_repeat(r, now.dates()))
             .unwrap_or_else(|| "Doesn’t repeat".into())
             .into(),
         kind: if task.recurrence.is_some() {

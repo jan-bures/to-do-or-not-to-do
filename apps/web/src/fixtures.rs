@@ -28,6 +28,7 @@ pub fn now() -> Now {
         at: at("2026-11-21T09:35:00Z"),
         offset_s: OFFSET_S,
         browser_time: false,
+        date_format: Default::default(),
     }
 }
 
@@ -1051,10 +1052,7 @@ mod tests {
         let board = todo_client::board::project(&s, list(40), &now().eval()).unwrap();
         assert_eq!(board.columns.map(|c| c.cards.len()), [2, 3, 3, 3]);
         assert_eq!(board.total_done, 14);
-        assert_eq!(
-            crate::model::date_span(day(19), day(23), now().today()),
-            "19–23 Nov"
-        );
+        assert_eq!(now().dates().range(day(19), day(23)), "19.–23.11.");
     }
 
     #[test]

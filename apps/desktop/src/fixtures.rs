@@ -163,6 +163,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
         "account-menu"
+        | "date-format"
         | "device-settings"
         | "device-invite"
         | "device-approve"
@@ -2279,7 +2280,7 @@ mod tests {
         let next = shell.room.tomorrow.expect("tomorrow");
         assert_eq!(next.weekday.as_ref(), "Sunday");
         assert_eq!(next.first.title.as_ref(), "Renew passport appointment");
-        assert_eq!(next.first_when.as_ref(), "Sun 22 Nov, 09:00");
+        assert_eq!(next.first_when.as_ref(), "Sun 22.11., 09:00");
         assert_eq!(next.also.len(), 1);
         assert_eq!(next.week.len(), 3);
         assert_eq!(shell.sidebar.smart[0].count, Some(0));

@@ -16,9 +16,6 @@ const WEEKDAYS: [&str; 7] = [
     "Saturday",
     "Sunday",
 ];
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 fn weekday_index(d: Date) -> usize {
     Weekday::of(d).offset()
@@ -27,21 +24,6 @@ fn weekday_index(d: Date) -> usize {
 /// "Saturday".
 pub fn weekday(d: Date) -> &'static str {
     WEEKDAYS[weekday_index(d)]
-}
-
-fn month(d: Date) -> &'static str {
-    MONTHS[usize::try_from(d.month() - 1).unwrap_or(0).min(11)]
-}
-
-pub use todo_client::intent::quick_add::{long_date, short_date};
-
-/// "14 Nov" (or "14 Nov 2025" in another year): for creation dates and the like.
-pub fn day_month(d: Date, today: Date) -> String {
-    if d.year() == today.year() {
-        format!("{} {}", d.day(), month(d))
-    } else {
-        format!("{} {} {}", d.day(), month(d), d.year())
-    }
 }
 
 /// The local time of `ts`.
@@ -55,24 +37,10 @@ pub fn clock(ts: Timestamp, tz: &TimeZone) -> String {
     format!("{:02}:{:02}", z.hour(), z.minute())
 }
 
-/// "Today", "Tomorrow", "Yesterday" or "Mon 23 Nov".
-pub fn relative_day(d: Date, today: Date) -> String {
-    match days_between(today, d) {
-        0 => "Today".into(),
-        1 => "Tomorrow".into(),
-        -1 => "Yesterday".into(),
-        _ => short_date(d, today),
-    }
-}
-
 /// "Today, 15:30" or "Mon 23 Nov, 09:00".
 pub fn when(ts: Timestamp, now: &Now) -> String {
     let z = local(ts, &now.tz);
-    format!(
-        "{}, {}",
-        relative_day(z.date(), now.today()),
-        clock(ts, &now.tz)
-    )
+    format!("{}, {}", now.dates().relative(z.date()), clock(ts, &now.tz))
 }
 
 /// How a row shows its due date.
@@ -120,10 +88,10 @@ pub fn due(due: Option<Date>, reminder: Option<Timestamp>, now: &Now) -> DueLabe
         }
         (_, Some(at)) => DueLabel::Plain(format!(
             "{} {}",
-            relative_day(due, today),
+            now.dates().relative(due),
             clock(at, &now.tz)
         )),
-        (_, None) => DueLabel::Plain(relative_day(due, today)),
+        (_, None) => DueLabel::Plain(now.dates().relative(due)),
     }
 }
 
@@ -150,7 +118,9 @@ pub use todo_client::intent::confirm::one_line;
 
 #[cfg(test)]
 mod tests {
-    use super::describe_repeat as recurrence;
+    fn recurrence(r: &Recurrence) -> String {
+        describe_repeat(r, now().dates())
+    }
     use super::*;
     use std::collections::BTreeSet;
     use todo_core::recurrence::{Recurrence, Rule};
@@ -171,11 +141,12 @@ mod tests {
     fn dates_read_naturally() {
         let today = d("2026-11-21");
         assert_eq!(weekday(today), "Saturday");
-        assert_eq!(long_date(today), "21 Nov 2026");
-        assert_eq!(short_date(d("2026-11-23"), today), "Mon 23 Nov");
-        assert_eq!(short_date(d("2027-01-04"), today), "Mon 4 Jan 2027");
-        assert_eq!(relative_day(d("2026-11-22"), today), "Tomorrow");
-        assert_eq!(relative_day(d("2026-11-20"), today), "Yesterday");
+        let dates = now().dates();
+        assert_eq!(dates.full(today), "21.11.2026");
+        assert_eq!(dates.weekday(d("2026-11-23")), "Mon 23.11.");
+        assert_eq!(dates.weekday(d("2027-01-04")), "Mon 04.01.2027");
+        assert_eq!(dates.relative(d("2026-11-22")), "Tomorrow");
+        assert_eq!(dates.relative(d("2026-11-20")), "Yesterday");
     }
 
     #[test]
@@ -219,7 +190,7 @@ mod tests {
         // A reminder on another day than the due date is not the due time.
         assert_eq!(
             due(Some(d("2026-11-23")), Some(ts("2026-11-22T09:00:00Z")), &n),
-            DueLabel::Plain("Mon 23 Nov".into())
+            DueLabel::Plain("Mon 23.11.".into())
         );
         assert_eq!(when(ts("2026-11-21T15:30:00Z"), &n), "Today, 15:30");
     }

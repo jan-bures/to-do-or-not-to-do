@@ -48,6 +48,7 @@ use crate::theme::{Agent, Glyph, Hue, Icon, hues};
 pub struct Now {
     pub at: Timestamp,
     pub tz: TimeZone,
+    pub date_format: todo_client::date_format::DateFormat,
 }
 
 impl Now {
@@ -56,6 +57,7 @@ impl Now {
         Self {
             at: Timestamp::now(),
             tz: TimeZone::system(),
+            date_format: Default::default(),
         }
     }
 
@@ -64,6 +66,7 @@ impl Now {
         Self {
             at: at.parse().unwrap_or(Timestamp::UNIX_EPOCH),
             tz: TimeZone::UTC,
+            date_format: Default::default(),
         }
     }
 
@@ -84,7 +87,11 @@ impl Now {
 
     /// The same clock, as the shared room header takes it.
     pub fn local(&self) -> LocalTime {
-        LocalTime::new(self.at, self.tz.clone())
+        LocalTime::new(self.at, self.tz.clone()).with_date_format(self.date_format)
+    }
+
+    pub fn dates(&self) -> todo_client::date_format::DateLabels {
+        self.date_format.on(self.today())
     }
 }
 
@@ -446,6 +453,8 @@ pub struct Room {
     pub estimate: Option<SharedString>,
     /// Open tasks (plus tasks finishing their completion), in order.
     pub tasks: Vec<TaskRow>,
+    /// Longest plain date label, for the monospaced due column.
+    pub longest_due: Option<SharedString>,
     pub trash: Vec<todo_client::trash::Row>,
     /// The Completed section's rows (filled only when it is open).
     pub completed: Vec<TaskRow>,

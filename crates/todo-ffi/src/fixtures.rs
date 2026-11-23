@@ -751,6 +751,7 @@ mod tests {
             utc_offset_secs: 3600,
             zone_id: "Europe/Prague".into(),
             local_day: None,
+            date_format: None,
         })
     }
 
@@ -796,7 +797,7 @@ mod tests {
         {
             assert_eq!(
                 (weekday.as_str(), date.as_str(), week.as_str()),
-                ("Saturday", "21 Nov 2026", "W47")
+                ("Saturday", "21.11.", "W47")
             );
         } else {
             panic!("a smart list has a day eyebrow");

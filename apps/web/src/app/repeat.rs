@@ -6,9 +6,8 @@ use super::{
     platform,
 };
 use leptos::prelude::*;
-use todo_client::intent::{
-    quick_add,
-    repeat::{self, Preset, RepeatDraft, UNDATED_NOTE, Unit, describe_repeat, error_text},
+use todo_client::intent::repeat::{
+    self, Preset, RepeatDraft, UNDATED_NOTE, Unit, describe_repeat, error_text,
 };
 use todo_core::{
     ids::TaskId,
@@ -167,7 +166,9 @@ fn CustomEditor(
     apply: Callback<RepeatDraft>,
     back: Callback<()>,
 ) -> impl IntoView {
+    let c = ctx();
     let summary = Memo::new(move |_| {
+        let labels = c.now.get().dates();
         let draft = custom.get()?;
         let (due, repeat) = dates.get()?;
         let repeat = Recurrence {
@@ -179,12 +180,12 @@ fn CustomEditor(
                 repeat.first_due(today.get()).map(|day| {
                     format!(
                         "{}. Due will be {}.",
-                        describe_repeat(&repeat),
-                        quick_add::long_date(day)
+                        describe_repeat(&repeat, labels),
+                        labels.full(day)
                     )
                 })
             } else {
-                repeat.validate().map(|()| describe_repeat(&repeat))
+                repeat.validate().map(|()| describe_repeat(&repeat, labels))
             }
             .map_err(error_text),
         )

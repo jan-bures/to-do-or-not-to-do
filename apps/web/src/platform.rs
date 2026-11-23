@@ -79,6 +79,19 @@ pub fn is_fold_key(key: Option<&str>) -> bool {
     key.is_none_or(|key| key.starts_with(FOLD_PREFIX))
 }
 
+const DATE_FORMAT_KEY: &str = "todo-date-format";
+
+pub fn load_date_format() -> todo_client::date_format::DateFormat {
+    local_storage()
+        .and_then(|storage| storage.get_item(DATE_FORMAT_KEY).ok().flatten())
+        .and_then(|key| todo_client::date_format::DateFormat::from_key(&key))
+        .unwrap_or_default()
+}
+
+pub fn save_date_format(format: todo_client::date_format::DateFormat) -> bool {
+    local_storage().is_some_and(|storage| storage.set_item(DATE_FORMAT_KEY, format.key()).is_ok())
+}
+
 /// The real "now": the instant and the browser's local zone.
 #[must_use]
 pub fn now() -> Now {
@@ -87,6 +100,7 @@ pub fn now() -> Now {
         at,
         offset_s: utc_offset(at),
         browser_time: true,
+        date_format: Default::default(),
     }
 }
 

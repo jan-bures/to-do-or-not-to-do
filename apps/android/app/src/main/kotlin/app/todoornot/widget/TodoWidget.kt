@@ -21,7 +21,6 @@ import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.provideContent
 import app.todoornot.MainActivity
 import app.todoornot.core.RoomKey
-import app.todoornot.core.localNow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -62,7 +61,7 @@ class TodoWidget : GlanceAppWidget() {
 private suspend fun readWidget(context: Context, instance: Int): WidgetSnapshot = withContext(Dispatchers.IO) {
     val graph = context.todoGraph
     graph.loaded.first { it }
-    widgetSnapshot(graph.host, WidgetChoicesStore(context).get(instance), localNow())
+    widgetSnapshot(graph.host, WidgetChoicesStore(context).get(instance), graph.displayNow())
 }
 
 internal const val WIDGET_ADD = "app.todoornot.widget.ADD"

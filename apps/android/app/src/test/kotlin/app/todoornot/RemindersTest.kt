@@ -440,7 +440,7 @@ class RemindersTest {
         // Across a change of the clocks, the label reads as set, in the zone of the reminder's own day.
         val winter = Instant.parse("2026-03-20T10:00:00Z").toEpochMilli()
         val summerNine = LocalDateTime.of(2026, 4, 2, 9, 0).atZone(prague).toInstant().toEpochMilli()
-        assertEquals("Thu 2 Apr, 09:00", reminderLabel(summerNine, winter, prague))
-        assertEquals("Sun 29 Mar, 03:30", reminderLabel(skipped.atMs, winter, prague))
+        assertEquals("Thu 02.04., 09:00", reminderLabel(summerNine, winter, prague))
+        assertEquals("Sun 29.03., 03:30", reminderLabel(skipped.atMs, winter, prague))
     }
 }

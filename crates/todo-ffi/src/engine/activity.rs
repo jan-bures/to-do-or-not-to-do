@@ -234,7 +234,7 @@ impl TodoEngine {
             .days(|at| now.date_of(at))
             .into_iter()
             .map(|(day, seqs)| ActivityDay {
-                heading: activity::day_label(day, now.today()),
+                heading: activity::day_label(day, now.dates()),
                 is_today: day == now.today(),
                 rows: seqs
                     .into_iter()
@@ -327,6 +327,7 @@ mod tests {
             utc_offset_secs: 3600,
             zone_id: "Europe/Prague".into(),
             local_day: None,
+            date_format: None,
         };
         let e = TodoEngine::fixture("blank".into(), now.clone()).unwrap();
         let all = ActivityPager::new(None);
@@ -377,6 +378,7 @@ mod tests {
             utc_offset_secs: 0,
             zone_id: "UTC".into(),
             local_day: None,
+            date_format: None,
         };
         let engine = TodoEngine::fixture("blank".into(), now.clone()).unwrap();
         let pager = ActivityPager::new(None);

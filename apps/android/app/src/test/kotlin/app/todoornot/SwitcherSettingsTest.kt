@@ -97,6 +97,7 @@ class SwitcherSettingsTest {
         val admin = compose.onNodeWithText("Open admin pages")
         val sync = compose.onNodeWithText("Sync now")
         val devices = compose.onNodeWithText("Devices…")
+        val dateFormat = compose.onNodeWithText("Date format")
         val unpair = compose.onNodeWithText("Unpair this phone")
         settings.performSemanticsAction(SemanticsActions.RequestFocus)
         settings.performKeyInput { pressKey(Key.Enter) }
@@ -105,12 +106,14 @@ class SwitcherSettingsTest {
         admin.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
         sync.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
         devices.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
+        dateFormat.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
         unpair.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
-        devices.assertIsFocused().performKeyInput { pressKey(Key.Escape) }
+        dateFormat.assertIsFocused().performKeyInput { pressKey(Key.Escape) }
         devices.assertDoesNotExist()
         settings.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
         compose.waitUntilExactlyOneExists(hasText("Unpair this phone"), timeoutMillis = 5_000)
         unpair.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
+        dateFormat.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
         devices.assertIsFocused().performKeyInput { pressKey(Key.Spacebar) }
         val invite = compose.onNodeWithText("Pair a new device")
         compose.waitUntilExactlyOneExists(hasText("Pair a new device"), timeoutMillis = 5_000)
@@ -179,8 +182,11 @@ class SwitcherSettingsTest {
         settings.performKeyInput { pressKey(Key.Enter) }
         compose.waitUntilExactlyOneExists(hasText("Syncing…"), timeoutMillis = 5_000)
         compose.onNodeWithText("Syncing…").assertIsNotEnabled()
+        val dateFormat = compose.onNodeWithText("Date format")
         admin.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
+        dateFormat.assertIsFocused().performKeyInput { pressKey(Key.DirectionDown) }
         unpair.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
+        dateFormat.assertIsFocused().performKeyInput { pressKey(Key.DirectionUp) }
         admin.assertIsFocused()
         assertEquals(0, nudges)
 

@@ -74,7 +74,7 @@ test("custom repeat validates the interval and the selected weekdays; Escape dis
   await expect(custom.getByRole("status")).toHaveText("Choose at least one weekday.");
   await custom.getByRole("button", { name: "Tuesday" }).click();
   await custom.getByRole("button", { name: "Thursday" }).click();
-  await expect(custom.getByRole("status")).toContainText("Every 2 weeks on Tue, Thu. Due will be 1 Dec 2026.");
+  await expect(custom.getByRole("status")).toContainText("Every 2 weeks on Tue, Thu. Due will be 01.12.2026.");
   await apply.click();
   await expect(repeat).toHaveText("Every 2 weeks on Tue, Thu");
   await openCustom();

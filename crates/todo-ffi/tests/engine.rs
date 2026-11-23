@@ -98,6 +98,7 @@ fn now() -> LocalNow {
         utc_offset_secs: 0,
         zone_id: "UTC".into(),
         local_day: None,
+        date_format: None,
     }
 }
 
@@ -430,12 +431,13 @@ fn notes_and_quick_add_preview_use_the_submit_builders_semantics() {
         utc_offset_secs: 0,
         zone_id: "UTC".into(),
         local_day: None,
+        date_format: None,
     };
     let engine = TodoEngine::fixture("blank".into(), n.clone()).unwrap();
     let text = "Sow seeds zítra !!";
     assert_eq!(
         quick_add_date(text.into(), n.clone()).as_deref(),
-        Some("Sun 22 Nov")
+        Some("Sun 22.11.")
     );
     assert!(quick_add_date(r"Sow seeds \tomorrow".into(), n.clone()).is_none());
     assert!(quick_add_date("Sow seeds !!".into(), n.clone()).is_none());
@@ -1410,6 +1412,7 @@ fn the_drawer_lists_only_agents_active_today() {
         utc_offset_secs: 7200,
         zone_id: "+02:00".into(),
         local_day: None,
+        date_format: None,
     };
     let engine = TodoEngine::fixture("world".into(), local.clone()).unwrap();
     let agents = engine.home(local.clone()).agents;

@@ -44,20 +44,17 @@ pub struct Parsed {
     pub status: Option<WorkflowStatus>,
 }
 
-/// A full date in plain English, e.g. `21 Nov 2026`.
-pub fn long_date(date: Date) -> String {
-    date.strftime("%-d %b %Y").to_string()
-}
-
-/// The date chip shared by the clients: `Sun 22 Nov`, adding the year only outside this year.
-#[must_use]
-pub fn short_date(date: Date, today: Date) -> String {
-    let pattern = if date.year() == today.year() {
-        "%a %-d %b"
-    } else {
-        "%a %-d %b %Y"
-    };
-    date.strftime(pattern).to_string()
+/// The date chip shared by the clients. A start-only draft keeps its field name.
+pub fn date_preview(
+    start: Option<Date>,
+    due: Option<Date>,
+    dates: crate::date_format::DateLabels,
+) -> Option<String> {
+    match (start, due) {
+        (Some(start), Some(due)) => Some(dates.range(start, due)),
+        (Some(start), None) => Some(format!("Starts {}", dates.weekday(start))),
+        (None, due) => due.map(|d| dates.weekday(d)),
+    }
 }
 
 fn weekday(word: &str, abbreviated: bool) -> Option<Weekday> {
@@ -590,15 +587,10 @@ mod tests {
 
     #[test]
     fn chip_labels_show_the_weekday_and_disambiguate_other_years() {
-        let today = ctx().today;
-        assert_eq!(
-            short_date("2026-11-22".parse().expect("date"), today),
-            "Sun 22 Nov"
-        );
-        assert_eq!(
-            short_date("2027-01-04".parse().expect("date"), today),
-            "Mon 4 Jan 2027"
-        );
+        let dates = crate::date_format::DateFormat::default().on(ctx().today);
+        let label = |iso: &str| date_preview(None, Some(iso.parse().expect("date")), dates);
+        assert_eq!(label("2026-11-22").as_deref(), Some("Sun 22.11."));
+        assert_eq!(label("2027-01-04").as_deref(), Some("Mon 04.01.2027"));
     }
 
     #[test]

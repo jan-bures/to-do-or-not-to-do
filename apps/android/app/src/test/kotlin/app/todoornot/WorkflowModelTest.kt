@@ -77,7 +77,7 @@ class WorkflowModelTest {
         val rows = shown.board!!.visibleCards(shown.room)
         val inProgress = rows.getValue(WorkflowStage.IN_PROGRESS).single()
         assertEquals("Prepare samples", inProgress.title)
-        assertEquals("21–24 Nov", inProgress.dateSpan)
+        assertEquals("21.–24.11.", inProgress.dateSpan)
         assertEquals("Collect samples", rows.getValue(WorkflowStage.BACKLOG).single().title)
         model.setFilter("status:in_progress")
         shown = model.read()

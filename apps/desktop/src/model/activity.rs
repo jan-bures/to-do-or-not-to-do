@@ -261,13 +261,12 @@ pub fn days(
     now: &Now,
     flags: impl Fn(&Entry) -> (Option<(bool, bool)>, bool),
 ) -> Vec<ActivityDay> {
-    let today = now.today();
     state
         .feed
         .days(|at| now.date_of(at))
         .into_iter()
         .map(|(day, seqs)| ActivityDay {
-            label: activity::day_label(day, today).into(),
+            label: activity::day_label(day, now.dates()).into(),
             rows: seqs
                 .into_iter()
                 .filter_map(|seq| state.feed.entry(seq))
@@ -580,7 +579,7 @@ mod tests {
         state.selected = Some(8);
         let days = days(&state, &Undos::default(), &now, |_| (None, false));
         let labels: Vec<_> = days.iter().map(|d| d.label.to_string()).collect();
-        assert_eq!(labels, ["Today", "Yesterday", "Thu 19 Nov"]);
+        assert_eq!(labels, ["Today", "Yesterday", "Thu 19.11."]);
         let first = &days[0].rows[0];
         assert_eq!(first.what, "Change 9", "drawn on one line");
         assert_eq!(first.who, "Codex");

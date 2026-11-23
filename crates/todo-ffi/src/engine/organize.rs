@@ -208,17 +208,16 @@ impl TodoEngine {
             return invalid("No such task.".into());
         };
         let t = &s.tasks[&id];
-        let today = Now::new(now).today();
+        let dates = Now::new(now).dates();
         match repeat::preview(
-            draft.fields(t, today).rule(),
+            draft.fields(t, dates.today).rule(),
             t.due,
             t.recurrence.as_ref().and_then(|r| r.until),
-            today,
+            dates,
         ) {
             Ok((description, first)) => RepeatPreview {
                 description,
-                due_note: first
-                    .map(|day| format!("Due will be {}.", intent::quick_add::long_date(day))),
+                due_note: first.map(|day| format!("Due will be {}.", dates.full(day))),
                 valid: true,
             },
             Err(e) => invalid(repeat::error_text(e)),

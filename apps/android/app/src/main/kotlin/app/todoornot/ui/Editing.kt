@@ -18,6 +18,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDefaults
+import androidx.compose.material3.DatePickerFormatter
+import app.todoornot.core.DateStyle
+import app.todoornot.core.LocalNow
+import app.todoornot.core.displayDate
+import app.todoornot.core.localNow
+import java.util.Locale
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -97,9 +103,12 @@ fun DueDateCard(
     clearAvailable: Boolean = due != null,
     repeatNote: String = REPEAT_NOTE,
     inSheet: Boolean = false,
+    dateFormat: String? = null,
 ) {
     val d = LocalDesign.current
     val r = d.room
+    val now = localNow(today.takeIf(String::isNotEmpty)?.let(::isoToUtcMillis) ?: System.currentTimeMillis(), java.time.ZoneOffset.UTC, dateFormat)
+    val formatter = remember(now.localDay, dateFormat) { datePickerFormatter(now) }
     val opening = remember(due, today) { isoToUtcMillis(due ?: today.ifEmpty { LocalDate.now().toString() }) }
     val state = rememberDatePickerState(initialSelectedDateMillis = due?.let(::isoToUtcMillis), initialDisplayedMonthMillis = opening)
     val colors = datePickerColors(r, markToday)
@@ -115,12 +124,13 @@ fun DueDateCard(
             MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = tokenTypography()) {
                 DatePicker(
                     state = state,
+                    dateFormatter = formatter,
                     colors = colors,
                     title = if (compact) null else {
                         { Label("Due", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(start = S.S6.dp, top = S.S4.dp)) }
                     },
                     headline = if (compact) null else {
-                        { DatePickerDefaults.DatePickerHeadline(state.selectedDateMillis, state.displayMode, DatePickerDefaults.dateFormatter(), Modifier.padding(start = S.S6.dp, end = S.S3.dp, bottom = S.S3.dp)) }
+                        { DatePickerDefaults.DatePickerHeadline(state.selectedDateMillis, state.displayMode, formatter, Modifier.padding(start = S.S6.dp, end = S.S3.dp, bottom = S.S3.dp)) }
                     },
                     showModeToggle = !compact,
                 )
@@ -146,7 +156,20 @@ fun DueDateCard(
     }
 }
 
-/** The Material date picker in the room's colours; [markToday] rings today's date. */
+/** Format headings and the selected-date summary without changing grid accessibility labels. */
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun datePickerFormatter(now: LocalNow): DatePickerFormatter = object : DatePickerFormatter {
+    private val grid = DatePickerDefaults.dateFormatter()
+
+    override fun formatMonthYear(monthMillis: Long?, locale: Locale): String? =
+        monthMillis?.let { displayDate(utcMillisToIso(it), now, DateStyle.MONTH) }
+
+    override fun formatDate(dateMillis: Long?, locale: Locale, forContentDescription: Boolean): String? =
+        if (forContentDescription) grid.formatDate(dateMillis, locale, true)
+        else dateMillis?.let { displayDate(utcMillisToIso(it), now, DateStyle.DATE) }
+}
+
+/** The Material date picker in the room's colors; [markToday] rings today's date. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun datePickerColors(r: RoomColors, markToday: Boolean) = DatePickerDefaults.colors(

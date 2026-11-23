@@ -33,6 +33,7 @@ interface Actions {
     fun moveBoardCard(list: String, id: String, stage: WorkflowStage, slot: BoardSlot, generation: Long) = Unit
     fun setStartDate(id: String, date: String?) = Unit
     fun composerNow(): app.todoornot.core.LocalNow = app.todoornot.core.localNow()
+    fun setDateFormat(key: String): Boolean = false
     /**
      * Completes or reopens a task. A row tap and the detail pane pass the room [generation] they were read
      * in ([UiState.generation]); null (Undo) is the room on screen now. [row] says the tap was on the task's

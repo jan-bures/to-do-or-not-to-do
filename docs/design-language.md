@@ -36,7 +36,7 @@ Desktop and web use a slim strip of two hills. Android uses a full-bleed sky wit
 
   | Room | Eyebrow |
   |---|---|
-  | Smart lists | the day: Saturday `21 NOV 2026` `W47`, since they measure today's work |
+  | Smart lists | the day: Saturday `21.11.` `W47`, since they measure today's work |
   | Collections | Collection `4 LISTS` |
   | Lists | the collection's name (or List) and what is still open: Work `9 OPEN` |
   | Activity | History `ALL CHANGES`, or `AGENT: CLAUDE` while filtered to one agent |
@@ -366,7 +366,7 @@ the overdue badge and phone room pills. Tags are plain mono `#tag` text. Suggest
 The Calendar and Flag buttons sit at the trailing edge of the room composer, in that order. They open
 pickers, not toggles. An open button exposes its expanded state. A button with a pending value uses the
 stronger ink; the value itself is readable in a compact, removable chip. Date uses a calendar mark and
-short mono date (`Sun 22 Nov`); priority stays neutral and uses `!`, `!!` or `!!!`. Desktop and wide web
+short mono date (`Sun 22.11.`); priority stays neutral and uses `!`, `!!` or `!!!`. Desktop and wide web
 keep them in the field. Phone puts them in a second row inside the same field so they never crowd the title.
 
 The date picker uses the same opaque raised surface, radius and overlay shadow as a menu. It opens next to
@@ -383,6 +383,11 @@ detail pane, on the saved date or today. Choosing there saves
 immediately rather than staging a draft. For a repeating task only, an `ink-3` caption below the grid
 warns that **No date** also stops the repeat. The Flag opens the same four choices as task detail with
 the current choice ticked.
+
+**Date format** in Settings controls display on this device. The default is `dd.mm.` in the current year and
+`dd.mm.YYYY` otherwise. Keep existing weekday prefixes and relative words. ISO always shows the year; so do
+creation dates and both ends of a range that crosses a year. Calendar month headings show month and year,
+not a day. The setting does not change date input syntax or stored dates.
 
 A choice sets the pending field and takes out that field's typed suffix, not the title or the other suffix.
 Typing another valid suffix replaces the corresponding choice. Removing a chip clears that field; **No date**

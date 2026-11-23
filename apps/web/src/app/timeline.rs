@@ -290,7 +290,6 @@ fn px(n: f32) -> String {
 fn week(date: Date) -> String {
     format!("W{:02}", date.iso_week_date().week())
 }
-use model::month_day;
 fn weekend(day: Date) -> bool {
     matches!(Weekday::of(day), Weekday::Sat | Weekday::Sun)
 }
@@ -601,7 +600,7 @@ pub(super) fn key(c: Ctx, ev: &KeyboardEvent, key: &str) -> bool {
                 && untrack(|| completion_phase(c, id).is_none())
                 && let Some(row) = c
                     .state
-                    .with_untracked(|s| model::board_row(s, id, c.now.get_untracked().today()))
+                    .with_untracked(|s| model::board_row(s, id, c.now.get_untracked().dates()))
             {
                 c.toggle(&row);
             }
@@ -902,7 +901,7 @@ fn Toolbar() -> impl IntoView {
             </div>
             <span class="timeline-range">{move || {
                 let (first, last) = ui.axis().range();
-                format!("{} – {} {} · {}–{}", month_day(first), month_day(last), last.year(), week(first), week(last))
+                format!("{} · {}–{}", c.now.get().dates().range(first, last), week(first), week(last))
             }}</span>
             <div class="view-switcher timeline-zoom" role="group" aria-label="Timeline zoom">
                 {Zoom::ALL.into_iter().zip([("Week", "1W", "Week"), ("2W", "2W", "Two weeks"), ("Month", "M", "Month"), ("Quarter", "Q", "Quarter")]).map(|(z, (wide, short, name))| view! {
@@ -963,7 +962,7 @@ fn DateStrip(ruler: bool) -> impl IntoView {
                     let current = day <= today && days_between(day, today) < a.zoom.column_days();
                     let day_name = SHORT_DAY[Weekday::of(day).offset()];
                     let top = if quarter { week(day) } else if a.zoom == Zoom::Month { day_name[..1].into() } else { day_name.into() };
-                    let bottom = if quarter || day.day() == 1 && a.zoom != Zoom::Month { month_day(day) } else { day.day().to_string() };
+                    let bottom = if quarter || day.day() == 1 && a.zoom != Zoom::Month { c.now.get().dates().date(day) } else { day.day().to_string() };
                     view! {
                         <div class="timeline-date-cell" class:today=current class:weekend=!quarter && weekend(day)
                             style:left=px(x) style:width=px(width) data-date=ruler.then(|| day.to_string())
@@ -1009,7 +1008,7 @@ fn task_paint(c: Ctx, id: TaskId) -> Option<TaskPaint> {
             QueryStatus::Todo
         };
         Some(TaskPaint {
-            row: model::board_row(s, id, c.now.get().today())?,
+            row: model::board_row(s, id, c.now.get().dates())?,
             list: list.name.clone(),
             hue: model::swatch(list.color.as_deref(), list.id.as_uuid().as_bytes()),
             stage,
@@ -1138,9 +1137,7 @@ fn TaskLane(id: TaskId) -> impl IntoView {
             .get()
             .map(|b| b.span)
             .or_else(|| lane.get().map(|l| l.span));
-        let dates = span.map_or_else(String::new, |s| {
-            model::date_span(s.first, s.last, c.now.get().today())
-        });
+        let dates = span.map_or_else(String::new, |s| c.now.get().dates().range(s.first, s.last));
         let list = if cross() {
             task.with(|t| {
                 t.as_ref()
@@ -1216,7 +1213,7 @@ fn TaskLane(id: TaskId) -> impl IntoView {
                     class:before=move || bar.get().is_some_and(|b| !b.label_right)
                     on:pointerdown=move |_| ui.suppress_click.set_value(false) on:click=move |ev| click_task(c, id, &ev)>
                     {title}<span class="timeline-label-dates">{move || bar.get().map(|b| {
-                        let detail = overdue_label().unwrap_or_else(|| model::date_span(b.span.first, b.span.last, c.now.get().today()));
+                        let detail = overdue_label().unwrap_or_else(|| c.now.get().dates().range(b.span.first, b.span.last));
                         format!(" · {detail}")
                     })}</span>
                 </button>
@@ -1295,7 +1292,7 @@ fn DragReadout() -> impl IntoView {
             let g = g.as_ref()?;
             let dates = drag_edit(ui, g)?.preview(g.before)?;
             let span = Span::from_dates(dates.start, dates.due)?;
-            let range = model::date_span(span.first, span.last, c.now.get().today());
+            let range = c.now.get().dates().range(span.first, span.last);
             let label = match span.kind {
                 SpanKind::Milestone => format!("Due {range}"),
                 SpanKind::OpenEnded => format!("Starts {range}"),

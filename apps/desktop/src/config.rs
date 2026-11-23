@@ -238,6 +238,7 @@ pub struct UiPreferences {
     pub collapsed_collections: BTreeSet<CollectionId>,
     pub board_done: BTreeMap<todo_core::ids::ListId, bool>,
     pub timeline: crate::model::timeline::Preferences,
+    pub date_format: todo_client::date_format::DateFormat,
     #[serde(deserialize_with = "read_pane_widths")]
     pub panes: PaneWidths,
 }
@@ -649,6 +650,7 @@ mod tests {
         std::fs::create_dir_all(data.path()).expect("pairing directory");
         let id = CollectionId::from_uuid(todo_core::ids::uuid_v7(1, [0; 10]));
         let mut prefs = UiPreferences {
+            date_format: todo_client::date_format::DateFormat::Iso,
             collapsed_collections: BTreeSet::from([id]),
             panes: PaneWidths::default().with(Pane::Sidebar, desktop::SIDEBAR_MAX),
             board_done: BTreeMap::from([(

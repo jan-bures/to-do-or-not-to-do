@@ -49,10 +49,6 @@ impl Month {
         }
     }
 
-    pub fn label(self) -> String {
-        self.cursor.strftime("%B %Y").to_string()
-    }
-
     pub fn weekdays(self) -> [&'static str; 7] {
         const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
         std::array::from_fn(|i| NAMES[(i + self.first_weekday.offset()) % 7])
@@ -125,7 +121,6 @@ mod tests {
         assert_eq!(sunday.weekdays()[0], "Sun");
         assert_eq!(sunday.rows()[0][0], Some(date("2026-11-01")));
         assert_eq!(sunday.rows()[5], [None; 7]);
-        assert_eq!(monday.label(), "November 2026");
         assert_eq!(day_label(monday.cursor), "Saturday, 21 November 2026");
     }
 

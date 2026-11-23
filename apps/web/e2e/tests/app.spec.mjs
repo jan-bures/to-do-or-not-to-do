@@ -116,16 +116,16 @@ test("quick-add previews only parsed dates and clears the chip after submit", as
   const add = page.getByRole("textbox", { name: "Add a task" });
   const preview = page.locator(".qa-date-chip");
   await add.fill("Water the plants by fri !!");
-  await expect(preview).toHaveText("Fri 27 Nov");
+  await expect(preview).toHaveText("Fri 27.11.");
   await expect(preview).toBeVisible();
   await add.fill("Water the plants 2027-01-04");
-  await expect(preview).toHaveText("Mon 4 Jan 2027");
+  await expect(preview).toHaveText("Mon 04.01.2027");
   await add.fill("Water the plants today");
-  await expect(preview).toHaveText("Sat 21 Nov");
+  await expect(preview).toHaveText("Sat 21.11.");
   await add.fill(String.raw`Water the plants \tomorrow`);
   await expect(preview).toBeHidden();
   await add.fill("Water the plants zítra !!");
-  await expect(preview).toHaveText("Sun 22 Nov");
+  await expect(preview).toHaveText("Sun 22.11.");
   await add.press("Enter");
   await expect(preview).toBeHidden();
   await expect(add).toBeFocused();
@@ -142,7 +142,7 @@ test("quick-add keeps typed and picked values in agreement and navigates the cal
   const calendar = page.getByRole("dialog", { name: "Choose due date" });
   const priority = page.getByRole("listbox", { name: "Choose priority" });
   await add.fill("Water the plants tomorrow !!");
-  await expect(page.getByRole("button", { name: "Remove due date: Sun 22 Nov" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove due date: Sun 22.11." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove priority: Normal" })).toBeVisible();
 
   await calendarButton.focus();
@@ -151,7 +151,7 @@ test("quick-add keeps typed and picked values in agreement and navigates the cal
   await expect(calendar.getByRole("columnheader").first()).toHaveText("Mon");
   await expect(calendar.locator(".calendar-repeat-note")).toHaveCount(0);
   await page.keyboard.press("PageDown");
-  await expect(calendar.getByRole("grid", { name: "December 2026" })).toBeVisible();
+  await expect(calendar.getByRole("grid", { name: "12.2026" })).toBeVisible();
   await expect(calendar.getByRole("button", { name: "Tuesday, 22 December 2026" })).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await expect(calendar.getByRole("button", { name: "Wednesday, 23 December 2026" })).toBeFocused();
@@ -165,7 +165,7 @@ test("quick-add keeps typed and picked values in agreement and navigates the cal
   await expect(calendar.getByRole("button", { name: "Monday, 23 November 2026" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(add).toHaveValue("Water the plants !!");
-  await expect(page.getByRole("button", { name: "Remove due date: Mon 23 Nov" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove due date: Mon 23.11." })).toBeVisible();
 
   await flagButton.click();
   await expect(priority.getByRole("option", { name: "Normal", selected: true })).toBeFocused();
@@ -192,7 +192,7 @@ test("phone quick-add anchors the calendar above the composer and clears chips",
   await expect(calendar).toHaveClass(/above-anchor/);
   await calendar.getByRole("button", { name: "Next week" }).click();
   await expect(add).toHaveValue("Water the plants !!");
-  await page.getByRole("button", { name: "Remove due date: Mon 23 Nov" }).click();
+  await page.getByRole("button", { name: "Remove due date: Mon 23.11." }).click();
   await page.getByRole("button", { name: "Remove priority: Normal" }).click();
   await expect(add).toHaveValue("Water the plants");
   await expect(page.getByRole("button", { name: /^Remove (due date|priority):/ })).toHaveCount(0);
@@ -749,7 +749,7 @@ test("collection disclosure preserves navigation and new list creates in the cur
   await expect(rows(page).first().locator(".col-priority")).toHaveText("!!");
   await expect(rows(page).nth(1).locator(".row-title")).toHaveText("File a receipt");
   await rows(page).first().locator(".row-title").click();
-  await expect(page.locator(".props .prop").first()).toContainText("Fri 27 Nov");
+  await expect(page.locator(".props .prop").first()).toContainText("Fri 27.11.");
   await w.check();
 });
 
@@ -819,10 +819,10 @@ test("double-clicking a recurring hand-over checkbox spawns one occurrence, then
   await page.locator(".sidebar").getByRole("link", { name: /^All/ }).click();
   await expect(row(page, title)).toHaveCount(1);
   await expect(row(page, title).getByRole("checkbox")).not.toBeChecked();
-  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 30 Nov");
+  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 30.11.");
   await page.keyboard.press("Control+z");
   await expect(row(page, title)).toHaveCount(1);
-  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 23 Nov");
+  await expect(row(page, title).locator(".col-due")).toHaveText("Mon 23.11.");
   await w.check();
 });
 

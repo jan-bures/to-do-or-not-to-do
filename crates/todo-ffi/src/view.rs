@@ -766,7 +766,10 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
             .workflow
             .then(|| todo_core::query::QueryStatus::of(task).into()),
         date_span: if features.timeline && !task.is_done() {
-            labels::date_span(task.start_date, task.due, now.today())
+            task.start_date
+                .zip(task.due)
+                .filter(|(start, due)| start != due)
+                .map(|(start, due)| now.dates().range(start, due))
         } else {
             None
         },
@@ -1031,13 +1034,9 @@ fn tomorrow(state: &State, ix: &Index, now: &Now) -> Option<Tomorrow> {
     let first = tmrw.first()?;
     let first_when = match ix.reminder.get(&first.id) {
         Some(at) if now.date_of(*at) == tomorrow => {
-            format!(
-                "{}, {}",
-                labels::short_date(tomorrow, today),
-                now.clock(*at)
-            )
+            format!("{}, {}", now.dates().weekday(tomorrow), now.clock(*at))
         }
-        _ => labels::short_date(tomorrow, today),
+        _ => now.dates().weekday(tomorrow),
     };
     const ALSO: usize = 2;
     const WEEK: usize = 3;
@@ -1172,10 +1171,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
     let id: TaskId = id.parse().ok()?;
     let task = state.tasks.get(&id).filter(|t| task_live(state, t))?;
     let today = now.today();
-    let mut subtitle = format!(
-        "Created {}",
-        labels::day_month(now.date_of(task.created.at), today)
-    );
+    let mut subtitle = format!("Created {}", now.dates().full(now.date_of(task.created.at)));
     if let Some(a) = lists::agent(&task.created.by) {
         subtitle = format!("{subtitle} by {}", a.name);
     }
@@ -1184,7 +1180,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         let when = if day == today {
             "today".to_owned()
         } else {
-            labels::day_month(day, today)
+            now.dates().full(day)
         };
         subtitle = format!("{subtitle} / Edited {when} {}", now.clock(task.updated.at));
     }
@@ -1201,7 +1197,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
                 edit: Some(FieldEdit::Due),
                 icon: "calendar".into(),
                 label: "Due".into(),
-                value: labels::short_date(d, today),
+                value: now.dates().weekday(d),
                 mono: true,
                 empty: false,
             },
@@ -1244,7 +1240,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         value: task
             .recurrence
             .as_ref()
-            .map(todo_client::intent::repeat::describe_repeat)
+            .map(|r| todo_client::intent::repeat::describe_repeat(r, now.dates()))
             .unwrap_or_else(|| "Does not repeat".into()),
         mono: false,
         empty: task.recurrence.is_none(),
@@ -1284,7 +1280,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
                 subtitle: format!(
                     "{} · {}, {}",
                     m.sender,
-                    labels::short_date(now.date_of(m.received_at), today),
+                    now.dates().weekday(now.date_of(m.received_at)),
                     now.clock(m.received_at)
                 ),
                 icon: "mail".into(),
@@ -1321,7 +1317,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
     breadcrumb.extend(list_chip(state, task.list));
     Some(TaskDetail {
         workflow: TaskWorkflow::new(task, list.map(|l| l.features).unwrap_or_default()),
-        start_label: task.start_date.map(|d| labels::day_month(d, today)),
+        start_label: task.start_date.map(|d| now.dates().date(d)),
         id: id.to_string(),
         list: task.list.to_string(),
         title: task.title.clone(),

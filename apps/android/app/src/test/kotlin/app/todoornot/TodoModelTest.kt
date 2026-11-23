@@ -199,7 +199,8 @@ class TodoModelTest {
 
     @Test
     fun the_date_chip_uses_submit_syntax() {
-        assertEquals("Sun 22 Nov", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
+        assertEquals("Sun 22.11.", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
+        assertEquals("Sun 2026-11-22", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW.copy(dateFormat = "iso")))
         assertNull(quickAddDate("Buy seeds \\tomorrow", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds tomorrow at noon", FIXTURE_NOW))
     }
@@ -213,7 +214,7 @@ class TodoModelTest {
         assertEquals("2026-11-22", typed.due)
         assertEquals(2u.toUByte(), typed.priority)
         val month = quickAddMonth(FIXTURE_NOW, typed.due, null)
-        assertEquals("November 2026", month.label)
+        assertEquals("11.2026", month.label)
         assertEquals("Mon", month.weekdays.first())
         assertEquals("2026-11-22", month.rows.flatten().filterNotNull().single { it.selected }.date)
         val nextWeek = month.presets.single { it.label == "Next week" }.date
@@ -222,7 +223,7 @@ class TodoModelTest {
         val pickedBoth = quickAddPickPriority(pickedDate, 1u, FIXTURE_NOW)
         assertEquals("Buy seeds", pickedBoth.text)
         val preview = quickAddPreview(pickedBoth, FIXTURE_NOW)
-        assertEquals("Mon 23 Nov", preview.dueLabel)
+        assertEquals("Mon 23.11.", preview.dueLabel)
         val id = engine.addTaskDraft(room, pickedBoth, FIXTURE_NOW)
         val detail = requireNotNull(engine.task(id, FIXTURE_NOW))
         assertEquals(pickedBoth.text, detail.title)
@@ -818,7 +819,7 @@ class TodoModelTest {
         val preview = m.previewRepeat(id, monday)
         assertTrue(preview.valid)
         assertEquals("Every Monday", preview.description)
-        assertEquals("Due will be 23 Nov 2026.", preview.dueNote)
+        assertEquals("Due will be 23.11.2026.", preview.dueNote)
         val invalid = m.previewRepeat(id, monday.copy(weekdays = 0u))
         assertFalse(invalid.valid)
         assertEquals("Choose at least one weekday.", invalid.description)
@@ -2484,12 +2485,12 @@ class TodoModelTest {
         s.drain()
         val row = m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }
         // Not 08:00, as the phone's offset today would put it.
-        assertEquals("Thu 1 Apr 2027, 09:00", row.value)
-        assertEquals("Reminder set for Thu 1 Apr 2027, 09:00", m.ui.value.toast?.text)
+        assertEquals("Thu 01.04.2027, 09:00", row.value)
+        assertEquals("Reminder set for Thu 01.04.2027, 09:00", m.ui.value.toast?.text)
         // A reminder before the change reads in winter time, as before.
         val dec = java.time.LocalDateTime.of(2026, 12, 1, 9, 0).atZone(prague).toInstant().toEpochMilli()
         m.setReminder(id, m.ui.value.detail?.reminder, dec)
         s.drain()
-        assertEquals("Tue 1 Dec, 09:00", m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }.value)
+        assertEquals("Tue 01.12., 09:00", m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }.value)
     }
 }

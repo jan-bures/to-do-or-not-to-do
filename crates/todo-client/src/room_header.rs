@@ -28,9 +28,9 @@ use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Match
 use todo_core::time::{Date, Timestamp, Weekday};
 
 use crate::activity;
+use crate::date_format::{DateFormat, DateLabels};
 use crate::intent::confirm::one_line;
 pub use crate::intent::organize::{is_actionable as task_live, list_live};
-use crate::intent::quick_add::long_date;
 
 /// A built-in smart list, in sidebar order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,6 +150,7 @@ pub struct LocalTime {
     /// The instant.
     pub at: Timestamp,
     zone: LocalZone,
+    date_format: DateFormat,
 }
 
 impl LocalTime {
@@ -159,6 +160,7 @@ impl LocalTime {
         Self {
             at,
             zone: LocalZone::Jiff(tz),
+            date_format: DateFormat::default(),
         }
     }
 
@@ -168,7 +170,19 @@ impl LocalTime {
         Self {
             at,
             zone: LocalZone::Platform(offsets),
+            date_format: DateFormat::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_date_format(mut self, format: DateFormat) -> Self {
+        self.date_format = format;
+        self
+    }
+
+    #[must_use]
+    pub fn dates(&self) -> DateLabels {
+        self.date_format.on(self.today())
     }
 
     /// The owner's local date.
@@ -502,13 +516,13 @@ pub fn iso_week(d: Date) -> String {
     format!("W{}", d.iso_week_date().week())
 }
 
-/// The eyebrow of a dated room: `Saturday`, `21 Nov 2026`, `W47`.
+/// The eyebrow of a dated room: `Saturday`, `21.11.`, `W47`.
 #[must_use]
-pub fn day_eyebrow(today: Date) -> Eyebrow {
+pub fn day_eyebrow(dates: DateLabels) -> Eyebrow {
     Eyebrow::Day {
-        weekday: weekday(today).to_owned(),
-        date: long_date(today),
-        week: iso_week(today),
+        weekday: weekday(dates.today).to_owned(),
+        date: dates.date(dates.today),
+        week: iso_week(dates.today),
     }
 }
 
@@ -743,7 +757,7 @@ pub fn header_of(
     };
 
     let (eyebrow, empty_line) = match key {
-        RoomKey::Smart(s) => (day_eyebrow(today), s.empty_line()),
+        RoomKey::Smart(s) => (day_eyebrow(now.dates()), s.empty_line()),
         RoomKey::Collection(c) => {
             let n = state
                 .lists

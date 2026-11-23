@@ -135,12 +135,7 @@ impl ShellView {
     }
 
     pub(super) fn quick_date_label(&self, draft: &quick_add::Parsed) -> Option<String> {
-        let today = self.store.now().today();
-        match (draft.start_date, draft.due) {
-            (Some(start), Some(due)) => Some(crate::model::workflow::span(start, due, today)),
-            (Some(start), None) => Some(format!("Starts {}", quick_add::short_date(start, today))),
-            (None, due) => due.map(|d| quick_add::short_date(d, today)),
-        }
+        quick_add::date_preview(draft.start_date, draft.due, self.store.now().dates())
     }
 
     pub(super) fn quick_calendar(&self) -> Calendar {
@@ -522,7 +517,7 @@ impl ShellView {
                 div()
                     .text_color(p.ink)
                     .style(ty::BUTTON)
-                    .child(c.month.label()),
+                    .child(self.store.now().dates().month(c.month.cursor)),
             )
             .child(month_button(
                 1,

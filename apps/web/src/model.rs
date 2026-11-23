@@ -17,6 +17,7 @@ use leptos::prelude::{Get, Memo, RwSignal, With};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
+use todo_client::date_format::{DateFormat, DateLabels};
 use todo_client::intent::{
     self, TaskRoom,
     organize::{actionable_task, is_actionable, list_live},
@@ -39,6 +40,7 @@ pub struct Now {
     pub offset_s: i32,
     /// Use the browser's offset at each instant rather than a fixture's fixed offset.
     pub browser_time: bool,
+    pub date_format: DateFormat,
 }
 
 impl Now {
@@ -71,10 +73,15 @@ impl Now {
     pub fn local_time(&self) -> LocalTime {
         #[cfg(target_arch = "wasm32")]
         if self.browser_time {
-            return LocalTime::with_offsets(self.at, crate::platform::utc_offset);
+            return LocalTime::with_offsets(self.at, crate::platform::utc_offset)
+                .with_date_format(self.date_format);
         }
         let off = Offset::from_seconds(self.offset_s).unwrap_or(Offset::UTC);
-        LocalTime::new(self.at, TimeZone::fixed(off))
+        LocalTime::new(self.at, TimeZone::fixed(off)).with_date_format(self.date_format)
+    }
+
+    pub fn dates(&self) -> DateLabels {
+        self.date_format.on(self.today())
     }
 }
 
@@ -493,22 +500,6 @@ pub fn agent_mark(actor: &Actor) -> Option<AgentMark> {
     })
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-fn weekday_short(w: Weekday) -> &'static str {
-    match w {
-        Weekday::Monday => "Mon",
-        Weekday::Tuesday => "Tue",
-        Weekday::Wednesday => "Wed",
-        Weekday::Thursday => "Thu",
-        Weekday::Friday => "Fri",
-        Weekday::Saturday => "Sat",
-        Weekday::Sunday => "Sun",
-    }
-}
-
 fn weekday_long(w: Weekday) -> &'static str {
     match w {
         Weekday::Monday => "Monday",
@@ -535,32 +526,13 @@ pub fn core_weekday(w: todo_core::time::Weekday) -> &'static str {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn month_day(d: Date) -> String {
-    format!("{} {}", d.day(), month(d))
-}
-
-fn month(d: Date) -> &'static str {
-    MONTHS[usize::try_from(d.month() - 1).unwrap_or(0).min(11)]
-}
-
-/// `Mon 23 Nov` (with the year when it is not this year's).
-#[must_use]
-pub fn short_date(d: Date, today: Date) -> String {
-    if d.year() == today.year() {
-        format!("{} {} {}", weekday_short(d.weekday()), d.day(), month(d))
-    } else {
-        format!("{} {} {}", d.day(), month(d), d.year())
-    }
-}
-
 /// The parsed date displayed in the quick-add chip, using the shared client format.
 #[cfg(test)]
 pub fn date_preview(text: &str, now: &Now) -> Option<String> {
     let eval = now.eval();
     quick_add::parse(text, &eval)
         .due
-        .map(|d| quick_add::short_date(d, eval.today))
+        .map(|d| now.dates().weekday(d))
 }
 
 /// An empty due-date edit clears the date; invalid text is distinct from clearing it.
@@ -572,21 +544,21 @@ pub fn due_edit(text: &str, now: &Now) -> Result<Option<Date>, ()> {
     }
 }
 
-fn date_label(d: Date, today: Date) -> String {
-    match (d - today).get_days() {
+fn date_label(d: Date, dates: DateLabels) -> String {
+    match (d - dates.today).get_days() {
         0 => "Today".to_owned(),
         1 => "Tomorrow".to_owned(),
-        _ => short_date(d, today),
+        _ => dates.weekday(d),
     }
 }
 
-pub fn due(d: Date, today: Date) -> Due {
-    let days = (d - today).get_days();
+pub fn due(d: Date, dates: DateLabels) -> Due {
+    let days = (d - dates.today).get_days();
     let (text, tone) = match days {
         i32::MIN..=-1 => (format!("{}d overdue", -days), DueTone::Overdue),
         0 => ("Today".to_owned(), DueTone::Soon),
         1 => ("Tomorrow".to_owned(), DueTone::Later),
-        _ => (short_date(d, today), DueTone::Later),
+        _ => (dates.weekday(d), DueTone::Later),
     };
     Due { text, tone }
 }
@@ -611,32 +583,15 @@ enum ChipMode {
     Hidden,
 }
 
-pub fn date_span(start: Date, end: Date, today: Date) -> String {
-    let day_month = |d: Date| {
-        if d.year() == today.year() {
-            format!("{} {}", d.day(), month(d))
-        } else {
-            format!("{} {} {}", d.day(), month(d), d.year())
-        }
-    };
-    if start == end {
-        short_date(end, today)
-    } else if start.year() == end.year() && start.month() == end.month() {
-        format!("{}–{}", start.day(), day_month(end))
-    } else {
-        format!("{}–{}", day_month(start), day_month(end))
-    }
-}
-
 #[cfg(target_arch = "wasm32")]
-pub fn board_row(state: &State, id: TaskId, today: Date) -> Option<Row> {
+pub fn board_row(state: &State, id: TaskId, dates: DateLabels) -> Option<Row> {
     let task = state.tasks.get(&id)?;
-    let mut row = row(state, task, today, ChipMode::Hidden);
+    let mut row = row(state, task, dates, ChipMode::Hidden);
     row.agent = agent_mark(&task.updated.by).or(row.agent);
     Some(row)
 }
 
-fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
+fn row(state: &State, t: &Task, dates: DateLabels, mode: ChipMode) -> Row {
     let chip = state.lists.get(&t.list).and_then(|l| {
         let hue = swatch(l.color.as_deref(), l.id.as_uuid().as_bytes());
         match mode {
@@ -692,7 +647,7 @@ fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
             None
         } else {
             t.due.map(|d| {
-                let mut label = due(d, today);
+                let mut label = due(d, dates);
                 if label.tone != DueTone::Overdue
                     && state
                         .lists
@@ -700,7 +655,7 @@ fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
                         .is_some_and(|l| l.features.timeline)
                     && let Some(start) = t.start_date
                 {
-                    label.text = date_span(start, d, today);
+                    label.text = dates.range(start, d);
                 }
                 label
             })
@@ -867,7 +822,7 @@ fn unfiltered_room(
     let to_rows = |tasks: Vec<&Task>| {
         tasks
             .into_iter()
-            .map(|t| row(state, t, ctx.today, mode))
+            .map(|t| row(state, t, now.dates(), mode))
             .collect()
     };
     Room {
@@ -1012,12 +967,12 @@ pub fn tomorrow(
     let mut next = upcoming.iter().filter(|t| t.due == Some(tomorrow));
     let first = next.next().map(|t| {
         (
-            row(state, t, today, ChipMode::Full),
-            short_date(tomorrow, today),
+            row(state, t, now.dates(), ChipMode::Full),
+            now.dates().weekday(tomorrow),
         )
     });
     let also = next
-        .map(|t| row(state, t, today, ChipMode::ListOnly))
+        .map(|t| row(state, t, now.dates(), ChipMode::ListOnly))
         .collect();
     let week_all: Vec<&&Task> = upcoming
         .iter()
@@ -1026,7 +981,7 @@ pub fn tomorrow(
     let week = week_all
         .iter()
         .take(3)
-        .map(|t| row(state, t, today, ChipMode::ListOnly))
+        .map(|t| row(state, t, now.dates(), ChipMode::ListOnly))
         .collect();
     Tomorrow {
         weekday: weekday_long(tomorrow.weekday()).to_owned(),
@@ -1141,34 +1096,28 @@ fn when(at: Timestamp, now: &Now) -> String {
         format!("today {}", clock(dt))
     } else if Some(d) == today.yesterday().ok() {
         format!("yesterday {}", clock(dt))
-    } else if d.year() == today.year() {
-        format!("{} {}", d.day(), month(d))
     } else {
-        format!("{} {} {}", d.day(), month(d), d.year())
+        now.dates().full(d)
     }
 }
 
 /// `Sat 21 Nov, 17:00` or `Today, 15:30`.
 fn long_when(at: Timestamp, now: &Now) -> String {
-    local_date_time(now.civil_time_at(at), now.today())
+    local_date_time(now.civil_time_at(at), now.dates())
 }
 
 /// A civil date and time, relative to today.
-pub(crate) fn local_date_time(dt: DateTime, today: Date) -> String {
-    let day = match (dt.date() - today).get_days() {
-        0 => "Today".to_owned(),
-        1 => "Tomorrow".to_owned(),
-        _ => short_date(dt.date(), today),
-    };
+pub(crate) fn local_date_time(dt: DateTime, dates: DateLabels) -> String {
+    let day = date_label(dt.date(), dates);
     format!("{day}, {}", clock(dt))
 }
 
 /// The repeat rule in words.
 #[must_use]
-pub fn repeat_text(rule: Option<&todo_core::recurrence::Recurrence>) -> String {
+pub fn repeat_text(rule: Option<&todo_core::recurrence::Recurrence>, dates: DateLabels) -> String {
     rule.map_or_else(
         || "Does not repeat".to_owned(),
-        intent::repeat::describe_repeat,
+        |r| intent::repeat::describe_repeat(r, dates),
     )
 }
 
@@ -1258,7 +1207,14 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         title: t.title.clone(),
         done: t.is_done(),
         crumb: (crumb_chip, list.name.clone()),
-        stamps: format!("Created {}{edited}", when(t.created.at, now)),
+        stamps: {
+            let dt = now.civil_time_at(t.created.at);
+            format!(
+                "Created {}, {}{edited}",
+                now.dates().full(dt.date()),
+                clock(dt)
+            )
+        },
         steps: steps
             .into_iter()
             .map(|s| StepView {
@@ -1268,9 +1224,9 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
             })
             .collect(),
         notes: t.notes.clone(),
-        due: t.due.map(|d| (d, date_label(d, today))),
+        due: t.due.map(|d| (d, date_label(d, now.dates()))),
         reminder,
-        repeat: repeat_text(t.recurrence.as_ref()),
+        repeat: repeat_text(t.recurrence.as_ref(), now.dates()),
         tags,
         sources,
         attachments,
@@ -1416,15 +1372,15 @@ mod tests {
         let n = now();
         assert_eq!(
             date_preview("Mail it zítra !!", &n).as_deref(),
-            Some("Sun 22 Nov")
+            Some("Sun 22.11.")
         );
         assert_eq!(
             date_preview("Mail it today", &n).as_deref(),
-            Some("Sat 21 Nov")
+            Some("Sat 21.11.")
         );
         assert_eq!(
             date_preview("Mail it 2027-01-04", &n).as_deref(),
-            Some("Mon 4 Jan 2027")
+            Some("Mon 04.01.2027")
         );
         for text in ["tomorrow", r"See you \tomorrow", "Read on 2026-11-20"] {
             assert_eq!(date_preview(text, &n), None, "{text}");
@@ -1480,7 +1436,7 @@ mod tests {
         assert_eq!((r.header.progress_done, r.header.progress_total), (3, 12));
         assert_eq!(r.rows.len(), 9);
         assert_eq!(r.summary(), "3 of 12 done · 9 open");
-        assert_eq!(r.header.eyebrow.text(), "Saturday · 21 Nov 2026 · W47");
+        assert_eq!(r.header.eyebrow.text(), "Saturday · 21.11. · W47");
         assert_eq!(
             r.header.status.map(|s| s.text()).as_deref(),
             Some("9 open · 3 done today")
@@ -1583,21 +1539,21 @@ mod tests {
 
     #[test]
     fn overdue_and_today_rows_read_right() {
-        let today = now().today();
-        let d = |n: i64| today.checked_add(jiff::Span::new().days(n)).unwrap();
+        let dates = now().dates();
+        let d = |n: i64| dates.today.checked_add(jiff::Span::new().days(n)).unwrap();
         assert_eq!(
-            due(d(-2), today),
+            due(d(-2), dates),
             Due {
                 text: "2d overdue".into(),
                 tone: DueTone::Overdue
             }
         );
-        assert_eq!(due(d(0), today).tone, DueTone::Soon);
-        assert_eq!(due(d(1), today).text, "Tomorrow");
-        assert_eq!(due(d(2), today).text, "Mon 23 Nov");
+        assert_eq!(due(d(0), dates).tone, DueTone::Soon);
+        assert_eq!(due(d(1), dates).text, "Tomorrow");
+        assert_eq!(due(d(2), dates).text, "Mon 23.11.");
         assert_eq!(
-            short_date(Date::new(2027, 1, 4).unwrap(), today),
-            "4 Jan 2027"
+            dates.weekday(Date::new(2027, 1, 4).unwrap()),
+            "Mon 04.01.2027"
         );
     }
 
@@ -1726,6 +1682,7 @@ mod tests {
             at: "2026-11-01T12:00:00Z".parse().unwrap(),
             offset_s: -5 * 3600,
             browser_time: false,
+            date_format: DateFormat::default(),
         };
         let clock_change: Timestamp = "2026-11-01T06:00:00Z".parse().unwrap();
         let date_of = |at| {
@@ -1824,7 +1781,7 @@ mod tests {
         assert_eq!(d.steps.iter().filter(|s| s.done).count(), 2);
         assert_eq!(d.crumb.1, "Planning");
         assert_eq!(d.repeat, "Every Monday");
-        assert!(d.stamps.starts_with("Created 14 Nov"), "{}", d.stamps);
+        assert!(d.stamps.starts_with("Created 14.11.2026"), "{}", d.stamps);
         assert!(matches!(d.sources.first(), Some(Source::Email { .. })));
         assert!(d.my_day);
         assert_eq!(d.activity.last().unwrap().action, "created this");
@@ -1921,7 +1878,8 @@ mod tests {
 
     #[test]
     fn repeat_rules_read_as_words() {
-        assert_eq!(repeat_text(None), "Does not repeat");
+        let dates = now().dates();
+        assert_eq!(repeat_text(None, dates), "Does not repeat");
         use todo_core::recurrence::Recurrence;
         for pattern in [
             "FREQ=WEEKLY;BYDAY=MO",
@@ -1929,7 +1887,10 @@ mod tests {
             "FREQ=MONTHLY;BYMONTHDAY=31;UNTIL=20261231",
         ] {
             let r = Recurrence::from_rrule(pattern).unwrap();
-            assert_eq!(repeat_text(Some(&r)), intent::repeat::describe_repeat(&r));
+            assert_eq!(
+                repeat_text(Some(&r), dates),
+                intent::repeat::describe_repeat(&r, dates)
+            );
         }
     }
 }

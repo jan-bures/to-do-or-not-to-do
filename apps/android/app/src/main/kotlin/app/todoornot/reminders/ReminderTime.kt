@@ -1,6 +1,8 @@
 package app.todoornot.reminders
 
-import java.time.DayOfWeek
+import app.todoornot.core.DateStyle
+import app.todoornot.core.displayDate
+import app.todoornot.core.localNow
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -38,34 +40,18 @@ fun reminderStart(atMs: Long?, due: String?, nowMs: Long, zone: ZoneId): LocalDa
     return now.truncatedTo(ChronoUnit.HOURS).plusHours(1)
 }
 
-private val WEEKDAYS = mapOf(
-    DayOfWeek.MONDAY to "Mon", DayOfWeek.TUESDAY to "Tue", DayOfWeek.WEDNESDAY to "Wed", DayOfWeek.THURSDAY to "Thu",
-    DayOfWeek.FRIDAY to "Fri", DayOfWeek.SATURDAY to "Sat", DayOfWeek.SUNDAY to "Sun",
-)
-private val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-
-/** "Today", "Tomorrow", "Yesterday" or "Sun 29 Mar" ("Mon 4 Jan 2027" in another year), as the core words it. */
-fun dayLabel(day: LocalDate, today: LocalDate): String = when (ChronoUnit.DAYS.between(today, day)) {
-    0L -> "Today"
-    1L -> "Tomorrow"
-    -1L -> "Yesterday"
-    else -> {
-        val base = "${WEEKDAYS.getValue(day.dayOfWeek)} ${day.dayOfMonth} ${MONTHS[day.monthValue - 1]}"
-        if (day.year == today.year) base else "$base ${day.year}"
-    }
-}
-
 /** "15:30". */
 fun clockLabel(t: LocalDateTime): String = String.format(Locale.ROOT, "%02d:%02d", t.hour, t.minute)
 
 /**
  * When a reminder is, in words, in the zone that applies on its own day (so across a change of the clocks
- * it reads as set): "Today, 15:30", "Sun 29 Mar, 03:30".
+ * it reads as set): "Today, 15:30", "Sun 29.03., 03:30".
  */
-fun reminderLabel(atMs: Long, nowMs: Long, zone: ZoneId): String {
+fun reminderLabel(atMs: Long, nowMs: Long, zone: ZoneId, dateFormat: String? = null): String {
     val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(atMs), zone)
-    val today = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zone).toLocalDate()
-    return "${dayLabel(at.toLocalDate(), today)}, ${clockLabel(at)}"
+    val iso = at.toLocalDate().toString()
+    val date = displayDate(iso, localNow(nowMs, zone, dateFormat), DateStyle.RELATIVE) ?: iso
+    return "$date, ${clockLabel(at)}"
 }
 
 /**

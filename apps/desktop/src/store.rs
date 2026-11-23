@@ -28,6 +28,7 @@ use crate::session::Session;
 pub struct LocalStore {
     state: RefCell<Arc<State>>,
     now: Now,
+    date_format: Cell<todo_client::date_format::DateFormat>,
     sync: SyncInfo,
     /// The fixture's "couldn't sync" list, which Dismiss empties.
     failed: RefCell<Vec<FailedEntry>>,
@@ -68,12 +69,14 @@ impl LocalStore {
 pub struct LiveStore {
     pub session: Session,
     synced_at: Cell<Option<Timestamp>>,
+    date_format: Cell<todo_client::date_format::DateFormat>,
     undos: RefCell<Undos>,
 }
 
 impl LiveStore {
     pub fn new(session: Session) -> Self {
         Self {
+            date_format: Cell::new(session.data().load_ui().date_format),
             session,
             synced_at: Cell::new(None),
             undos: RefCell::default(),
@@ -92,6 +95,7 @@ impl Store {
         Self::Local(LocalStore {
             state: RefCell::new(Arc::new(f.state.clone())),
             now: f.now.clone(),
+            date_format: Cell::new(f.now.date_format),
             sync: f.sync.clone(),
             failed: RefCell::new(f.failed.clone()),
             activity: RefCell::new(f.activity.clone()),
@@ -400,11 +404,33 @@ impl Store {
         }
     }
 
-    pub fn now(&self) -> Now {
+    fn date_format(&self) -> &Cell<todo_client::date_format::DateFormat> {
         match self {
+            Self::Local(s) => &s.date_format,
+            Self::Live(s) => &s.date_format,
+        }
+    }
+
+    pub fn set_date_format(
+        &self,
+        format: todo_client::date_format::DateFormat,
+    ) -> anyhow::Result<()> {
+        if let Some(session) = self.session() {
+            let mut ui = session.data().load_ui();
+            ui.date_format = format;
+            session.data().save_ui(&ui)?;
+        }
+        self.date_format().set(format);
+        Ok(())
+    }
+
+    pub fn now(&self) -> Now {
+        let mut now = match self {
             Self::Local(s) => s.now.clone(),
             Self::Live(_) => Now::system(),
-        }
+        };
+        now.date_format = self.date_format().get();
+        now
     }
 
     /// The sync status for the footer.

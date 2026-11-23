@@ -5,9 +5,7 @@ use todo_core::command::{ListFeaturesPatch, Placement};
 use todo_core::ids::TaskId;
 use todo_core::model::{ListFeatures, ListView, WorkflowStatus};
 use todo_core::query::QueryStatus;
-use todo_core::time::Date;
 
-use super::labels;
 use crate::theme::Icon;
 
 pub const STAGES: [QueryStatus; 4] = [
@@ -95,21 +93,6 @@ pub fn slot(card: Option<(TaskId, bool)>) -> Placement {
         Some((id, true)) => Placement::After(id.into()),
         Some((id, false)) => Placement::Before(id.into()),
         None => Placement::Last,
-    }
-}
-
-pub fn span(start: Date, end: Date, today: Date) -> String {
-    if start == end {
-        return labels::short_date(end, today);
-    }
-    if start.year() == end.year() && start.month() == end.month() {
-        format!("{}–{}", start.day(), labels::day_month(end, today))
-    } else {
-        format!(
-            "{}–{}",
-            labels::day_month(start, today),
-            labels::day_month(end, today)
-        )
     }
 }
 

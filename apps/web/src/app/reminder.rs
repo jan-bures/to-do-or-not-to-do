@@ -1,7 +1,7 @@
 //! The task detail's reminder picker. The shared intent owns reminder selection and edits.
 
 use super::{
-    Detail, Now, backend, ctx, icon, model,
+    Ctx, Detail, Now, backend, ctx, icon, model,
     pickers::{self, DetailPicker},
     platform,
 };
@@ -37,7 +37,19 @@ fn preset_at(preset: Preset, now: Now, live: bool) -> Option<Timestamp> {
 }
 
 fn time_label(at: Timestamp, now: Now, live: bool) -> String {
-    model::local_date_time(platform::civil_time(at, now, live), now.today())
+    model::local_date_time(platform::civil_time(at, now, live), now.dates())
+}
+
+fn display_now(c: Ctx) -> Now {
+    let saved = c.now.get_untracked();
+    if c.live {
+        Now {
+            date_format: saved.date_format,
+            ..platform::now()
+        }
+    } else {
+        saved
+    }
 }
 
 #[component]
@@ -48,13 +60,7 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
     let custom = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let opened_at = RwSignal::new(c.now.get_untracked());
-    let now = move || {
-        if c.live {
-            platform::now()
-        } else {
-            c.now.get_untracked()
-        }
-    };
+    let now = move || display_now(c);
     let selected = move |p: Preset| {
         // In 1 hour is an action, not a saved rule; its target changes with the clock.
         matches!(p, Preset::AtNineInDays(_))
@@ -177,13 +183,7 @@ pub(super) fn ReminderEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl I
 #[component]
 fn CustomTime(seen: Option<Seen>, apply: Callback<Timestamp>, back: Callback<()>) -> impl IntoView {
     let c = ctx();
-    let now = move || {
-        if c.live {
-            platform::now()
-        } else {
-            c.now.get_untracked()
-        }
-    };
+    let now = move || display_now(c);
     let now_at_open = now();
     let start = seen
         .map(|s| s.at)

@@ -91,11 +91,10 @@ fn step_label(kind: StepKind) -> &'static str {
     }
 }
 
-fn date(d: Option<Date>) -> String {
-    d.map_or_else(
-        || "No date".into(),
-        |d| d.strftime("%a %d %b %Y").to_string(),
-    )
+impl ShellView {
+    fn ai_date(&self, date: Option<Date>) -> String {
+        date.map_or_else(|| "No date".into(), |d| self.store.now().dates().weekday(d))
+    }
 }
 fn completion(done: bool) -> String {
     if done { "Completed" } else { "Open" }.into()
@@ -1338,7 +1337,7 @@ impl ShellView {
                                     .items_center()
                                     .gap(px(space::S2))
                                     .child(self.ai_list_chip(&t.list))
-                                    .child(one_line(text(ty::COUNT, p.ink_3, date(t.due))))
+                                    .child(one_line(text(ty::COUNT, p.ink_3, self.ai_date(t.due))))
                             })),
                     )
                     .child(kit::icon(
@@ -1499,7 +1498,7 @@ impl ShellView {
                 .flex()
                 .flex_col()
                 .gap(px(space::S1))
-                .child(self.ai_field("Due", text(ty::COUNT, p.ink, date(task.due))))
+                .child(self.ai_field("Due", text(ty::COUNT, p.ink, self.ai_date(task.due))))
                 .child(self.ai_field("Priority", text(ty::COUNT, p.ink, priority.name())))
                 .child(self.ai_field(
                     "Placement",
@@ -1530,7 +1529,7 @@ impl ShellView {
                         model::labels::one_line(&task.title),
                     ))
                     .child(self.ai_field("List", self.ai_list_chip(&task.list)))
-                    .child(self.ai_field("Due", text(ty::COUNT, p.ink, date(task.due))))
+                    .child(self.ai_field("Due", text(ty::COUNT, p.ink, self.ai_date(task.due))))
                     .child(self.ai_field("Priority", text(ty::COUNT, p.ink, priority.name())))
                     .child(self.ai_field(
                         "Status",
@@ -1592,8 +1591,8 @@ impl ShellView {
                 model::labels::one_line(&c.old),
                 model::labels::one_line(&c.new),
             ),
-            Edit::Due(c) => ("Due", date(c.old), date(c.new)),
-            Edit::StartDate(c) => ("Starts", date(c.old), date(c.new)),
+            Edit::Due(c) => ("Due", self.ai_date(c.old), self.ai_date(c.new)),
+            Edit::StartDate(c) => ("Starts", self.ai_date(c.old), self.ai_date(c.new)),
             Edit::Priority(c) => ("Priority", c.old.name().into(), c.new.name().into()),
             Edit::Completed(c) => ("Status", completion(c.old), completion(c.new)),
         };

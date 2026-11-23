@@ -46,7 +46,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import app.todoornot.core.LocalNow
+import app.todoornot.core.dateFormatOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -535,6 +538,7 @@ internal fun SettingsPage(server: String?, syncing: Boolean, actions: Actions, h
             onUnpair = { actions.unpair() },
             hand = hand, onHand = onHand,
             push = LocalPushStatus.current.takeIf { server != null },
+            dateNow = actions.composerNow(), onDateFormat = actions::setDateFormat,
         )
         LocalUpdates.current?.let { UpdatesSection(it) }
     }
@@ -550,23 +554,29 @@ internal fun SettingsMenuContent(
     server: String?, syncing: Boolean, fromLast: Boolean?, onDismiss: () -> Unit,
     onAdmin: (() -> Unit)?, onSync: () -> Unit, onDevices: (() -> Unit)?, onUnpair: () -> Unit,
     hand: ThumbHand? = null, onHand: (ThumbHand) -> Unit = {}, push: PushStatus? = null,
+    dateNow: LocalNow, onDateFormat: (String) -> Boolean,
 ) {
     val r = LocalDesign.current.room
+    var selectedFormat by remember(dateNow.dateFormat) { mutableStateOf(dateNow.dateFormat) }
+    var choosingFormat by remember { mutableStateOf(false) }
     DropdownMenuItem(
         text = {
             Column {
                 Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
                 Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
-                push?.let { Label(it.label(), Tokens.Type.NAV_SUB, r.ink3) }
+                push?.let { Label(it.label(now = dateNow.copy(dateFormat = selectedFormat)), Tokens.Type.NAV_SUB, r.ink3) }
             }
         },
         onClick = {},
         enabled = false,
     )
+    val formats = remember(dateNow.localDay, dateNow.zoneId) { dateFormatOptions(dateNow) }
+    val selected = formats.firstOrNull { it.key == selectedFormat } ?: formats.first()
     val items = listOfNotNull(
         onAdmin?.let { SettingsItem("Open admin pages", "external-link", choose = it) },
         SettingsItem(if (syncing) "Syncing…" else "Sync now", "refresh-cw", server != null && !syncing, choose = onSync),
         onDevices?.let { SettingsItem("Devices…", "link", choose = it) },
+        SettingsItem("Date format", "calendar", choose = { choosingFormat = true }),
         SettingsItem("Unpair this phone", "log-out", danger = true, choose = onUnpair),
     )
     val focus = remember(items.size) { List(items.size) { FocusRequester() } }
@@ -578,24 +588,51 @@ internal fun SettingsMenuContent(
         if (item.danger) Spacer(Modifier.fillMaxWidth().height(Tokens.Elevation.HAIRLINE.dp).background(r.line))
         val ink = when { !item.enabled -> r.ink4; item.danger -> r.danger; else -> r.ink }
         val glyph = if (item.enabled && !item.danger) r.ink2 else ink
-        DropdownMenuItem(
-            text = { Label(item.label, Tokens.Type.BODY, ink) },
-            leadingIcon = { Icon(item.icon, glyph) },
-            enabled = item.enabled,
-            modifier = Modifier.focusRequester(focus[index]).onPreviewKeyEvent { ev ->
-                val key = ev.keyboardKey
-                if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) false else {
-                    if (ev.type == KeyEventType.KeyUp) when (key) {
-                        Key.DirectionUp -> focus[available.lastOrNull { it < index } ?: available.last()].requestFocus()
-                        Key.DirectionDown -> focus[available.firstOrNull { it > index } ?: available.first()].requestFocus()
-                        Key.Escape -> onDismiss()
-                        else -> if (item.enabled) item.choose() else Unit
+        val formatRow = item.icon == "calendar"
+        Box {
+            DropdownMenuItem(
+                text = { Label(item.label, Tokens.Type.BODY, ink) },
+                trailingIcon = if (formatRow) { { Label(selected.example, Tokens.Type.DUE, r.ink2) } } else null,
+                leadingIcon = { Icon(item.icon, glyph) },
+                enabled = item.enabled,
+                modifier = Modifier.focusRequester(focus[index]).onPreviewKeyEvent { ev ->
+                    val key = ev.keyboardKey
+                    if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) false else {
+                        if (ev.type == KeyEventType.KeyUp) when (key) {
+                            Key.DirectionUp -> focus[available.lastOrNull { it < index } ?: available.last()].requestFocus()
+                            Key.DirectionDown -> focus[available.firstOrNull { it > index } ?: available.first()].requestFocus()
+                            Key.Escape -> onDismiss()
+                            else -> if (item.enabled) item.choose() else Unit
+                        }
+                        true
                     }
-                    true
+                },
+                onClick = item.choose,
+            )
+            if (formatRow) DropdownMenu(
+                expanded = choosingFormat, onDismissRequest = { choosingFormat = false }, containerColor = r.raised,
+            ) {
+                Column(Modifier.selectableGroup()) {
+                    formats.forEach { format ->
+                        val on = format == selected
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
+                                .background(if (on) r.wash else r.raised)
+                                .selectable(on, role = Role.RadioButton) {
+                                    if (onDateFormat(format.key)) selectedFormat = format.key
+                                    choosingFormat = false
+                                    focus[index].requestFocus()
+                                }.padding(horizontal = S.S4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+                        ) {
+                            Label(format.label, Tokens.Type.BODY, if (on) r.accentStrong else r.ink, maxLines = 2)
+                            if (on) Icon("check", r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+                        }
+                    }
                 }
-            },
-            onClick = item.choose,
-        )
+            }
+        }
         if (hand != null && item.icon == "refresh-cw") HandSelector(hand, onHand)
     }
 }

@@ -74,6 +74,9 @@ pub enum MenuAction {
     /// Open the device settings dialog.
     AssistantSettings,
     DeviceSettings,
+    OpenDateFormat,
+    CloseDateFormat,
+    SetDateFormat(todo_client::date_format::DateFormat),
     OpenUpdates,
     CloseUpdates,
     CheckUpdates,
@@ -1222,6 +1225,46 @@ pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
         "Sign out…",
         MenuAction::AskSignOut,
     ));
+    entries
+}
+
+pub fn date_format_entry(dates: todo_client::date_format::DateLabels) -> MenuEntry {
+    with(
+        item(
+            "date-format",
+            Icon::Calendar,
+            "Date format",
+            MenuAction::OpenDateFormat,
+        ),
+        |i| MenuItem {
+            hint: Some(dates.date(dates.today).into()),
+            ..i
+        },
+    )
+}
+
+pub fn date_format_menu(dates: todo_client::date_format::DateLabels) -> Vec<MenuEntry> {
+    use todo_client::date_format::DateFormat;
+    let mut entries = vec![item(
+        "date-format-back",
+        Icon::ChevronLeft,
+        "Date format",
+        MenuAction::CloseDateFormat,
+    )];
+    entries.extend(DateFormat::ALL.map(|format| {
+        with(
+            item(
+                format.key(),
+                Icon::Calendar,
+                format.example(dates.today),
+                MenuAction::SetDateFormat(format),
+            ),
+            |i| MenuItem {
+                checked: format == dates.format,
+                ..i
+            },
+        )
+    }));
     entries
 }
 

@@ -79,6 +79,7 @@ pub(super) enum MenuKind {
         confirm: bool,
     },
     Updates,
+    DateFormat,
     /// A list's context menu, or the page one of its items turned it into.
     List {
         id: ListId,
@@ -143,6 +144,7 @@ impl MenuKind {
             Self::New
                 | Self::Account { .. }
                 | Self::Updates
+                | Self::DateFormat
                 | Self::SyncFailures
                 | Self::BulkMove
                 | Self::BulkStatus
@@ -157,7 +159,10 @@ impl MenuKind {
     /// The same menu, apart from its confirmation step (or the picker a task's menu turned into).
     pub(super) fn same_menu(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Account { .. } | Self::Updates, Self::Account { .. } | Self::Updates)
+            (
+                Self::Account { .. } | Self::Updates | Self::DateFormat,
+                Self::Account { .. } | Self::Updates | Self::DateFormat,
+            )
             | (Self::Room { .. }, Self::Room { .. }) => true,
             (Self::Date(a), Self::Date(b)) => {
                 a.task == b.task && (a.task.is_none() || a.starts == b.starts)
@@ -237,8 +242,17 @@ impl ShellView {
         match kind {
             MenuKind::New => menus::new_menu(),
             MenuKind::Account { confirm } => {
-                menus::account_menu(self.store.server().as_deref(), confirm)
+                let mut entries = menus::account_menu(self.store.server().as_deref(), confirm);
+                if !confirm {
+                    let before_updates = entries.iter().position(|entry| matches!(entry, MenuEntry::Item(i) if i.action == MenuAction::OpenUpdates)).unwrap_or(entries.len());
+                    entries.insert(
+                        before_updates,
+                        menus::date_format_entry(self.store.now().dates()),
+                    );
+                }
+                entries
             }
+            MenuKind::DateFormat => menus::date_format_menu(self.store.now().dates()),
             MenuKind::Updates => Self::update_entries(&self.update_snapshot()),
             MenuKind::List { id, page } => menus::list_menu(&state, id, page),
             MenuKind::Smart(smart) => menus::smart_context_menu(smart),
@@ -268,7 +282,7 @@ impl ShellView {
                 .tasks
                 .get(&task)
                 .filter(|_| state.is_live(task.into()))
-                .map(|t| repeat::entries(t, self.store.now().today(), draft))
+                .map(|t| repeat::entries(t, self.store.now().dates(), draft))
                 .unwrap_or_default(),
             MenuKind::Reminder {
                 task,
@@ -689,6 +703,9 @@ impl ShellView {
             "escape" if menu.kind.settings() => {
                 self.run_menu_action(MenuAction::CloseListSettings, true, window, cx)
             }
+            "escape" if menu.kind == MenuKind::DateFormat => {
+                self.run_menu_action(MenuAction::CloseDateFormat, true, window, cx)
+            }
             "escape" if menu.kind == MenuKind::Updates && menu.trigger == Some(Stop::Account) => {
                 self.run_menu_action(MenuAction::CloseUpdates, true, window, cx)
             }
@@ -733,6 +750,35 @@ impl ShellView {
                         window,
                         cx,
                     );
+                }
+                return;
+            }
+            MenuAction::OpenDateFormat
+            | MenuAction::CloseDateFormat
+            | MenuAction::SetDateFormat(_) => {
+                let opening = action == MenuAction::OpenDateFormat;
+                if let MenuAction::SetDateFormat(format) = action {
+                    match self.store.set_date_format(format) {
+                        Ok(()) => self.refresh(cx),
+                        Err(e) => {
+                            tracing::warn!(%e, "couldn't save date format");
+                            self.notice = Some(Notice::error("Couldn't save date format."));
+                        }
+                    }
+                }
+                let kind = if opening {
+                    MenuKind::DateFormat
+                } else {
+                    MenuKind::Account { confirm: false }
+                };
+                self.open_menu(kind, menu.at, menu.trigger, window, cx);
+                if keyboard {
+                    let key = if opening {
+                        self.store.now().date_format.key()
+                    } else {
+                        "date-format"
+                    };
+                    self.highlight(menus::index_of(&self.menu_entries(kind), key));
                 }
                 return;
             }
@@ -1089,6 +1135,9 @@ impl ShellView {
             | MenuAction::RestartToUpdate
             | MenuAction::OpenListSettings
             | MenuAction::CloseListSettings
+            | MenuAction::OpenDateFormat
+            | MenuAction::CloseDateFormat
+            | MenuAction::SetDateFormat(_)
             | MenuAction::ListSetting(..)
             | MenuAction::Cancel => {}
         }
@@ -1436,6 +1485,7 @@ impl ShellView {
             MenuKind::New => Some("New"),
             MenuKind::Account { confirm: false } => Some("Settings"),
             MenuKind::Updates => Some("Updates"),
+            MenuKind::DateFormat => Some("Date format"),
             MenuKind::QuickPriority => Some("Choose priority"),
             MenuKind::Status { .. } => Some("Choose status"),
             _ => None,
@@ -1680,7 +1730,7 @@ impl ShellView {
         let shift = if opens_up { shift } else { -shift };
         let width = if kind == MenuKind::New {
             component::NEW_MENU
-        } else if kind.settings() || kind == MenuKind::Updates {
+        } else if kind.settings() || matches!(kind, MenuKind::Updates | MenuKind::DateFormat) {
             desktop::CONFIRM + space::S4
         } else if matches!(kind, MenuKind::Date(_)) || menus::is_wide(&entries) {
             desktop::CONFIRM

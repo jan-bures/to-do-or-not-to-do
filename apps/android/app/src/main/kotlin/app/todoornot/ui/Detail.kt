@@ -508,7 +508,7 @@ internal fun DetailOverlays(state: UiState, actions: Actions, sheets: DetailShee
             // A sync may change this reminder while the sheet is up. Commit what was shown.
             val seen = sheets.seenReminder
             BottomSheet("Reminder", close) { overlay ->
-                ReminderCard(seen?.atMs, sheets.reminderDue, now, ZoneId.systemDefault(), onSave = { at ->
+                ReminderCard(seen?.atMs, sheets.reminderDue, now, ZoneId.systemDefault(), dateFormat = actions.composerNow().dateFormat, onSave = { at ->
                     overlay.choose {
                         actions.setReminder(detail.id, seen, at)
                         if (at != null) asking = access.toAsk()

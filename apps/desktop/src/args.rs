@@ -19,7 +19,7 @@ Options:
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, list-status, list-settings, board, board-detail,
-                    timeline, timeline-month, timeline-tray, timeline-planned, room-menu, account-menu, device-settings,
+                    timeline, timeline-month, timeline-tray, timeline-planned, room-menu, account-menu, date-format, device-settings,
                     device-invite, device-approve, updates-disabled, updates-up-to-date, updates-checking, updates-downloading,
                     updates-ready, updates-indicator, updates-failed, updates-unverified, priority-menu,
                     reminder-menu, reminder-custom, reminder-focus, reminder-none,
@@ -81,6 +81,7 @@ pub const FIXTURES: &[&str] = &[
     "timeline-planned",
     "room-menu",
     "account-menu",
+    "date-format",
     "device-settings",
     "device-invite",
     "device-approve",

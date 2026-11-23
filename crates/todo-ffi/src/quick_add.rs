@@ -68,9 +68,7 @@ pub fn quick_add_preview(draft: QuickAddDraft, now: LocalNow) -> QuickAddPreview
     let parsed = quick_add::Draft::from(draft).parsed(&now.eval());
     QuickAddPreview {
         due: parsed.due.map(|date| date.to_string()),
-        due_label: parsed
-            .due
-            .map(|date| quick_add::short_date(date, now.today())),
+        due_label: parsed.due.map(|date| now.dates().weekday(date)),
         priority: parsed.priority.map(|level| level as u8),
     }
 }
@@ -159,18 +157,7 @@ pub fn workflow_quick_add_preview(
     WorkflowQuickAddPreview {
         title: parsed.title,
         due: parsed.due.map(|d| d.to_string()),
-        date_label: crate::labels::date_span(parsed.start_date, parsed.due, now.today()).or_else(
-            || {
-                parsed
-                    .due
-                    .map(|d| quick_add::short_date(d, now.today()))
-                    .or_else(|| {
-                        parsed
-                            .start_date
-                            .map(|d| format!("Starts {}", quick_add::short_date(d, now.today())))
-                    })
-            },
-        ),
+        date_label: quick_add::date_preview(parsed.start_date, parsed.due, now.dates()),
         start_date: parsed.start_date.map(|d| d.to_string()),
         priority: parsed.priority.map(|p| p as u8),
         status: parsed.status.map(Into::into),
@@ -270,7 +257,8 @@ pub fn quick_add_month(
     selected: Option<String>,
     cursor: Option<String>,
 ) -> QuickAddMonth {
-    let today = Now::new(now).today();
+    let dates = Now::new(now).dates();
+    let today = dates.today;
     let selected = selected.and_then(|iso| iso.parse::<Date>().ok());
     let month = calendar::Month::new(
         cursor
@@ -279,7 +267,7 @@ pub fn quick_add_month(
             .unwrap_or(today),
     );
     QuickAddMonth {
-        label: month.label(),
+        label: dates.month(month.cursor),
         cursor: month.cursor.to_string(),
         weekdays: month.weekdays().into_iter().map(str::to_owned).collect(),
         rows: month
@@ -341,6 +329,7 @@ fn standalone_presets_match_the_calendar_in_device_time() {
         utc_offset_secs: -18_000,
         zone_id: "America/New_York".into(),
         local_day: None,
+        date_format: None,
     };
     let calendar = quick_add_month(now.clone(), None, Some("1971-01-01".into()));
     let presets = quick_add_presets(now);

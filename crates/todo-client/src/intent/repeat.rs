@@ -155,12 +155,15 @@ pub fn preview(
     rule: Rule,
     due: Option<Date>,
     until: Option<Date>,
-    today: Date,
+    dates: crate::date_format::DateLabels,
 ) -> Result<(String, Option<Date>), RecurrenceError> {
     let repeat = Recurrence { rule, until };
     repeat.validate()?;
-    let first = due.is_none().then(|| repeat.first_due(today)).transpose()?;
-    Ok((describe_repeat(&repeat), first))
+    let first = due
+        .is_none()
+        .then(|| repeat.first_due(dates.today))
+        .transpose()?;
+    Ok((describe_repeat(&repeat, dates), first))
 }
 
 pub const UNDATED_NOTE: &str = "Due starts today or on the next matching day.";
@@ -214,7 +217,7 @@ fn patch(
 }
 
 /// Plain English, including an optional inclusive end date.
-pub fn describe_repeat(r: &Recurrence) -> String {
+pub fn describe_repeat(r: &Recurrence, dates: crate::date_format::DateLabels) -> String {
     let every = |n: u32, unit: &str| {
         if n == 1 {
             format!("Every {unit}")
@@ -264,7 +267,7 @@ pub fn describe_repeat(r: &Recurrence) -> String {
         Rule::Yearly { interval } => every(*interval, "year"),
     };
     if let Some(date) = r.until {
-        text.push_str(&format!(", until {}", super::quick_add::long_date(date)));
+        text.push_str(&format!(", until {}", dates.full(date)));
     }
     text
 }
@@ -272,6 +275,10 @@ pub fn describe_repeat(r: &Recurrence) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dates() -> crate::date_format::DateLabels {
+        crate::date_format::DateFormat::default().on(MON)
+    }
     const MON: Date = Date::constant(2025, 3, 31);
     #[test]
     fn a_new_draft_uses_the_due_date_or_local_today() {
@@ -339,10 +346,10 @@ mod tests {
             days: [Weekday::Tue].into(),
         };
         assert_eq!(
-            error_text(preview(rule.clone(), None, Some(MON), MON).unwrap_err()),
+            error_text(preview(rule.clone(), None, Some(MON), dates()).unwrap_err()),
             "No future date matches this rule."
         );
-        let (description, first) = preview(rule, None, None, MON).unwrap();
+        let (description, first) = preview(rule, None, None, dates()).unwrap();
         assert_eq!(description, "Every Tuesday");
         assert_eq!(first, Some(MON.tomorrow().unwrap()));
     }
@@ -356,14 +363,17 @@ mod tests {
             (Preset::Monthly, "Every month on the 31st"),
             (Preset::Yearly, "Every year"),
         ] {
-            assert_eq!(describe_repeat(&Recurrence::new(preset.rule(MON))), words);
+            assert_eq!(
+                describe_repeat(&Recurrence::new(preset.rule(MON)), dates()),
+                words
+            );
         }
         let rule = Rule::Weekly {
             interval: 2,
             days: [Weekday::Thu, Weekday::Mon].into(),
         };
         assert_eq!(
-            describe_repeat(&Recurrence::new(rule)),
+            describe_repeat(&Recurrence::new(rule), dates()),
             "Every 2 weeks on Mon, Thu"
         );
         let r = Recurrence {
@@ -381,8 +391,8 @@ mod tests {
             until: Some(MON),
         };
         assert_eq!(
-            describe_repeat(&r),
-            "Every week on Mon, Tue, Wed, Thu, Sun, until 31 Mar 2025"
+            describe_repeat(&r, dates()),
+            "Every week on Mon, Tue, Wed, Thu, Sun, until 31.03.2025"
         );
     }
     #[test]
@@ -425,12 +435,15 @@ mod tests {
             (13, "13th"),
         ] {
             assert_eq!(
-                describe_repeat(&Recurrence::new(Rule::Monthly { interval: 1, day })),
+                describe_repeat(
+                    &Recurrence::new(Rule::Monthly { interval: 1, day }),
+                    dates()
+                ),
                 format!("Every month on the {suffix}")
             );
         }
         assert_eq!(
-            describe_repeat(&Recurrence::new(Rule::Yearly { interval: 3 })),
+            describe_repeat(&Recurrence::new(Rule::Yearly { interval: 3 }), dates()),
             "Every 3 years"
         );
     }

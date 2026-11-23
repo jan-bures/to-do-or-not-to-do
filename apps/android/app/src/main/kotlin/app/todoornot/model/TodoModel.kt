@@ -179,7 +179,7 @@ fun isoDay(t: LocalNow): String =
  */
 fun localReminder(detail: TaskDetail, now: LocalNow, zone: ZoneId): TaskDetail {
     val r = detail.reminder ?: return detail
-    val label = reminderLabel(r.atMs, now.epochMs, zone)
+    val label = reminderLabel(r.atMs, now.epochMs, zone, now.dateFormat)
     return detail.copy(fields = detail.fields.map { if (it.edit == FieldEdit.REMINDER) it.copy(value = label) else it })
 }
 
@@ -218,6 +218,7 @@ class TodoModel(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val now: () -> LocalNow = { localNow() },
+    private val saveDateFormat: (String) -> Boolean = { false },
     start: RoomKey = RoomKey.Smart(SmartList.MY_DAY),
     private val onUnpair: () -> Unit = {},
     private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
@@ -846,6 +847,15 @@ class TodoModel(
 
     override fun composerNow(): LocalNow = now()
 
+    override fun setDateFormat(key: String): Boolean {
+        if (!saveDateFormat(key)) {
+            notice("Couldn't save date format.")
+            return false
+        }
+        scope.launch { refresh() }
+        return true
+    }
+
     // Capture the room on the caller's thread, even if they switch before the IO action runs.
     override fun add(draft: QuickAddDraft) {
         val room = key
@@ -1250,7 +1260,7 @@ class TodoModel(
         } else {
             engine.setReminder(id, seen, atMs, now()) ?: return@act
         }
-        val text = if (atMs == null) "Reminder removed" else reminderSetText(reminderLabel(atMs, now().epochMs, zone()))
+        val text = if (atMs == null) "Reminder removed" else reminderSetText(now().let { reminderLabel(atMs, it.epochMs, zone(), it.dateFormat) })
         show(Toast(++serial, text, reminder = change))
     }
 

@@ -170,7 +170,7 @@ impl Ctx {
         if target == QueryStatus::Done {
             if let Some(row) = self
                 .state
-                .with_untracked(|s| model::board_row(s, id, self.now.get_untracked().today()))
+                .with_untracked(|s| model::board_row(s, id, self.now.get_untracked().dates()))
             {
                 self.complete(&row);
             }
@@ -370,7 +370,7 @@ fn Starts(id: TaskId) -> impl IntoView {
                     aria-label="Edit start date" aria-haspopup="dialog" aria-controls=popup.id
                     aria-expanded=move || popup.open.get().to_string() disabled=move || c.read_only()
                     on:click=move |_| calendar.toggle(if c.live { platform::now() } else { c.now.get_untracked() }.today(), day.get_untracked())>
-                    {move || day.get().map_or_else(|| "Set date".into(), |d| model::short_date(d, c.now.get().today()))}
+                    {move || day.get().map_or_else(|| "Set date".into(), |d| c.now.get().dates().weekday(d))}
                 </button>
                 <quick_add::CalendarPopover c=c picker=calendar choose=Callback::new(choose) starts=Signal::derive(|| true)/>
             </dd>

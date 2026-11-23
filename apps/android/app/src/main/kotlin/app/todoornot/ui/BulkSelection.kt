@@ -122,7 +122,7 @@ internal fun BulkSelectionPicker(picker: BulkPicker, state: UiState, actions: Ac
             }, overlay::close, inSheet = true)
         }
         BulkPicker.DUE -> BottomSheet("Set due date", close) { overlay ->
-            DueDateCard(null, state.today, bar.hasRepeat, onSave = { date ->
+            DueDateCard(null, state.today, bar.hasRepeat, dateFormat = actions.composerNow().dateFormat, onSave = { date ->
                 overlay.choose { actions.editBulk(BulkEdit.Due(date)) }
             }, onCancel = overlay::close, clearAvailable = bar.hasDue, markToday = !LocalSheetAtRest.current,
                 repeatNote = "Clearing dates also stops any repeats on these tasks.", inSheet = true)

@@ -394,11 +394,10 @@ pub fn entries(
         }
         return entries;
     };
-    let today = now.today();
     entries.push(MenuEntry::Heading("Pick a day and time".into()));
     entries.push(MenuEntry::Controls {
         label: "Day",
-        value: Some(labels::relative_day(d.day, today)),
+        value: Some(now.dates().relative(d.day)),
         buttons: vec![
             choice(task, "week-less", "−7", Action::Day(-7)),
             choice(task, "day-less", "−1", Action::Day(-1)),
@@ -496,6 +495,7 @@ mod tests {
         // Enter reads the page after both the hour and the system time zone have changed.
         let later = Now {
             at: ts(NOW_LATE),
+            date_format: Default::default(),
             tz: TimeZone::get("America/New_York").expect("bundled tz"),
         };
         let entered = super::entries(task(), None, None, &presets, &later);
@@ -540,12 +540,14 @@ mod tests {
         // Midnight EDT on 1 November 2026: two hours on is 01:00 EST, the second 01:00 that night.
         let n = Now {
             at: ts("2026-11-01T04:00:00Z"),
+            date_format: Default::default(),
             tz: tz.clone(),
         };
         assert_eq!(Preset::LaterToday.at(&n), Some(ts("2026-11-01T06:00:00Z")));
         // Half an hour later, two hours on is 01:30 EST, and the next whole hour 02:00 EST.
         let n = Now {
             at: ts("2026-11-01T04:30:00Z"),
+            date_format: Default::default(),
             tz: tz.clone(),
         };
         assert_eq!(Preset::LaterToday.at(&n), Some(ts("2026-11-01T07:00:00Z")));
@@ -553,7 +555,11 @@ mod tests {
         for q in 0..96 {
             let at = Timestamp::from_second(ts("2026-11-01T04:00:00Z").as_second() + q * 900)
                 .expect("ts");
-            let n = Now { at, tz: tz.clone() };
+            let n = Now {
+                at,
+                tz: tz.clone(),
+                date_format: Default::default(),
+            };
             if let Some(later) = Preset::LaterToday.at(&n) {
                 let gap = later.as_second() - at.as_second();
                 assert!((7200..7200 + 3600).contains(&gap), "{at}: {later}");
@@ -723,6 +729,7 @@ mod tests {
         let tz = TimeZone::get("Europe/Prague").expect("bundled tz");
         let n = Now {
             at: ts("2026-03-20T10:00:00Z"),
+            date_format: Default::default(),
             tz: tz.clone(),
         };
         // 29 March 2026, 02:30 doesn't exist in Prague: it saves 03:30 (CEST).
@@ -736,6 +743,7 @@ mod tests {
         // 25 October 2026, 02:30 happens twice: the first (CEST) is saved.
         let n = Now {
             at: ts("2026-10-20T10:00:00Z"),
+            date_format: Default::default(),
             tz,
         };
         let mut twice = Draft::new(None, Some(Date::constant(2026, 10, 25)), &n);

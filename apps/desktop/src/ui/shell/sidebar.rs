@@ -854,8 +854,10 @@ impl ShellView {
             .role(Role::Button)
             .aria_label("Settings")
             .aria_expanded(self.menu.as_ref().is_some_and(|m| {
-                matches!(m.kind, MenuKind::Account { .. } | MenuKind::Updates)
-                    && m.overlay.look(self.frame).open
+                matches!(
+                    m.kind,
+                    MenuKind::Account { .. } | MenuKind::Updates | MenuKind::DateFormat
+                ) && m.overlay.look(self.frame).open
             }))
             .relative()
             .size(px(component::ICON_BUTTON))
@@ -873,7 +875,12 @@ impl ShellView {
                 this.control_key(e, window, cx);
             }))
             .children(self.menu_anchor(
-                |k| matches!(k, MenuKind::Account { .. } | MenuKind::Updates),
+                |k| {
+                    matches!(
+                        k,
+                        MenuKind::Account { .. } | MenuKind::Updates | MenuKind::DateFormat
+                    )
+                },
                 cx,
             ));
         let account = ring(

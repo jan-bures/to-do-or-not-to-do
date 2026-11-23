@@ -14,8 +14,10 @@ import com.google.firebase.messaging.FirebaseMessaging
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
+import app.todoornot.core.DateStyle
+import app.todoornot.core.displayDate
+import app.todoornot.core.localNow
+import app.todoornot.reminders.clockLabel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,15 +30,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 data class PushStatus(val state: State = State.OFF, val lastWake: Instant? = null) {
     enum class State { OFF, NOT_CONFIGURED, ON }
 
-    fun label(zone: ZoneId = ZoneId.systemDefault()): String = when (state) {
+    fun label(zone: ZoneId = ZoneId.systemDefault(), now: app.todoornot.core.LocalNow = localNow(zone = zone)): String = when (state) {
         State.OFF -> "Push: Off"
         State.NOT_CONFIGURED -> "Push: Not configured"
         State.ON -> "Push: On"
-    } + (lastWake?.let { " · Last wake: ${format.withZone(zone).format(it)}" } ?: "")
-
-    private companion object {
-        val format = DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault())
-    }
+    } + (lastWake?.let {
+        val at = it.atZone(zone).toLocalDateTime()
+        val iso = at.toLocalDate().toString()
+        val date = displayDate(iso, now, DateStyle.DATE) ?: iso
+        " · Last wake: $date, ${clockLabel(at)}"
+    } ?: "")
 }
 
 /** Testable handshake; an unpaired or superseded worker must never upload a token. */

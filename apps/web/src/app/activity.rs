@@ -220,7 +220,7 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                     view! {
                         <section class="activity-day" aria-labelledby=format!("activity-day-{}", day.0)>
                             <h2 class="caps" id=format!("activity-day-{}", day.0)>{move || {
-                                activity::day_label(day.0, c.now.with(model::Now::today))
+                                activity::day_label(day.0, c.now.with(model::Now::dates))
                             }}</h2>
                             <ol>
                                 <For each=move || days.with(|groups| groups.get(&day).cloned().unwrap_or_default())
@@ -298,8 +298,9 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                     <span aria-hidden="true">"·"</span>
                     <time datetime=move || entry.with(|item| item.as_ref().map(|row| row.at.to_string()))
                         title=move || entry.with(|item| item.as_ref().map(|row| {
-                            let local = c.now.with(|now| now.civil_time_at(row.at));
-                            format!("{}, {:02}:{:02}", local.date(), local.hour(), local.minute())
+                            let now = c.now.get();
+                            let local = now.civil_time_at(row.at);
+                            format!("{}, {:02}:{:02}", now.dates().full(local.date()), local.hour(), local.minute())
                         }))>
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
                     </time>

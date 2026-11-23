@@ -311,7 +311,7 @@ pub fn quick_add_date(text: String, now: LocalNow) -> Option<String> {
     let now = Now::new(now);
     intent::quick_add::parse(&text, &now.eval())
         .due
-        .map(|d| intent::quick_add::short_date(d, now.today()))
+        .map(|d| now.dates().weekday(d))
 }
 
 /// The sync engine and view model.
@@ -1355,6 +1355,7 @@ mod tests {
             utc_offset_secs: 0,
             zone_id: "UTC".into(),
             local_day: None,
+            date_format: None,
         };
         let e = TodoEngine::fixture("world".into(), now.clone()).unwrap();
         let before = e.state();
@@ -1514,6 +1515,7 @@ mod tests {
             utc_offset_secs: 0,
             zone_id: "UTC".into(),
             local_day: None,
+            date_format: None,
         };
         let engine = TodoEngine::fixture("blank".into(), now.clone()).expect("fixture");
         let before = engine.state();
@@ -1600,6 +1602,7 @@ mod tests {
             utc_offset_secs: 0,
             zone_id: "UTC".into(),
             local_day: None,
+            date_format: None,
         }
     }
 

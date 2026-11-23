@@ -1514,6 +1514,7 @@ impl ShellView {
                 page: Page::Settings,
             }),
             "account-menu" => Some(MenuKind::Account { confirm: false }),
+            "date-format" => Some(MenuKind::DateFormat),
             "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
@@ -1578,6 +1579,7 @@ impl ShellView {
             "room-menu"
                 | "list-settings"
                 | "account-menu"
+                | "date-format"
                 | "sync-failures"
                 | "priority-menu"
                 | "reminder-custom"
@@ -3054,12 +3056,20 @@ impl ShellView {
         let show_agent = task.agent.is_some();
         let show_priority = show_agent || task.priority > 0;
         let full_due = show_priority || !matches!(task.due, Due::None);
+        let due_width = self
+            .shell
+            .room
+            .longest_due
+            .as_ref()
+            .map_or(desktop::COL_DUE, |label| {
+                desktop::COL_DUE.max(kit::text_width(window, ty::DUE, label).ceil())
+            });
         // The title column's width: the row less its padding, the checkbox and the trailing columns.
         let room_width = self.room_width(window);
         let mut title_width = room_width - 2. * desktop::LIST_PAD_X - desktop::COL_CHECK;
         title_width -= desktop::ROW_GAP
             + if full_due {
-                desktop::COL_DUE
+                due_width
             } else {
                 kit::text_width(window, ty::DUE, "–")
             };
@@ -3191,7 +3201,7 @@ impl ShellView {
             })
             .child(
                 div()
-                    .when(full_due, |d| d.w(px(desktop::COL_DUE)))
+                    .when(full_due, |d| d.w(px(due_width)))
                     .flex_none()
                     .flex()
                     .justify_end()

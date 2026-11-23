@@ -742,10 +742,8 @@ impl ShellView {
         let compact = self.room_width(window) < desktop::LIST_MIN;
         let (first, last) = axis.range();
         let range = format!(
-            "{} – {} {} · {}–{}",
-            labels::day_month(first, last),
-            labels::day_month(last, last),
-            last.year(),
+            "{} · {}–{}",
+            self.store.now().dates().range(first, last),
             week(first),
             week(last)
         );
@@ -1061,7 +1059,7 @@ impl ShellView {
                             weekday[..if axis.zoom == Zoom::Month { 1 } else { 3 }].to_uppercase()
                         };
                         let bottom = if quarter || day.day() == 1 && axis.zoom != Zoom::Month {
-                            labels::day_month(day, today)
+                            self.store.now().dates().date(day)
                         } else {
                             day.day().to_string()
                         };
@@ -1132,8 +1130,11 @@ impl ShellView {
             lane.stage
         };
         let (stage_name, stage_icon) = model::workflow::status(stage);
-        let range =
-            model::workflow::span(lane.span.first, lane.span.last, self.store.now().today());
+        let range = self
+            .store
+            .now()
+            .dates()
+            .range(lane.span.first, lane.span.last);
         let label = format!("{} · {stage_name} · {range}", row.title);
         let transition = self.motion.row(id, self.frame);
         let look = transition.unwrap_or_else(|| super::RowLook::rest(row.done));
@@ -1409,7 +1410,7 @@ impl ShellView {
             let detail = if let Due::Overdue(s) = &row.due {
                 s.to_string()
             } else {
-                model::workflow::span(span.first, span.last, self.store.now().today())
+                self.store.now().dates().range(span.first, span.last)
             };
             let padded = |width: f32| width.ceil() + 2. * space::S1 + elevation::HAIRLINE;
             let full = format!("{} · {detail}", row.title);
@@ -1504,14 +1505,14 @@ impl ShellView {
     }
 
     fn timeline_date_readout(&self, span: Span) -> String {
-        let today = self.store.now().today();
-        let first = labels::day_month(span.first, today);
+        let dates = self.store.now().dates();
+        let first = dates.date(span.first);
         match span.kind {
             SpanKind::Milestone => format!("Due {first}"),
             SpanKind::OpenEnded => format!("Starts {first}"),
             SpanKind::Range => format!(
-                "{first} → {} · {}d",
-                labels::day_month(span.last, today),
+                "{} · {}d",
+                dates.range(span.first, span.last),
                 days_between(span.first, span.last) + 1
             ),
         }
