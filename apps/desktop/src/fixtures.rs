@@ -224,7 +224,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(f)
         }
         "detail-wide" | "detail-wide-1920" => Some(wide_detail()),
-        "resize-handle-hover" => Some(my_day()),
+        "resize-handle-hover" | "email-drop" => Some(my_day()),
         "long-names" | "narrow-detail" => Some(long_names()),
         "long-names-narrow" => Some(long_names_narrow()),
         "long-task-list" => Some(long_task_list()),

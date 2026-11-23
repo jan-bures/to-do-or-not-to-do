@@ -244,6 +244,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                     );
                     shell.preview_caption(caption);
                     shell.preview_splitter_hover(opts.fixture == "resize-handle-hover");
+                    shell.preview_email_drop(opts.fixture == "email-drop");
                     shell.still();
                     if let Some(moment) = fixture.moment {
                         shell.freeze(moment, window, cx);

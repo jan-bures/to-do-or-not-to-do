@@ -1205,6 +1205,21 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   overflow-x: hidden;
 }
 
+/* Paint the edge above selected rows. A sticky layer the size of the scroll viewport
+   stays in place at any scroll offset; its negative margin leaves the layout unchanged. */
+.room.email-drop-active { container-type: size; }
+.room.email-drop-active::before {
+  content: "";
+  display: block;
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  block-size: 100cqh;
+  margin-block-end: -100cqh;
+  border: var(--focus-ring) solid var(--color-accent-strong);
+  pointer-events: none;
+}
+
 .room-head {
   background: var(--color-sky);
   color: var(--color-ink);

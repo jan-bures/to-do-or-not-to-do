@@ -29,6 +29,26 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`email drop target (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      await page.getByText("Prepare the November board update").first().click();
+      await page.locator(".detail .d-title").waitFor();
+      const dataTransfer = await page.evaluateHandle(() => {
+        const data = new DataTransfer();
+        data.items.add(new File([], "workshop.eml", { type: "message/rfc822" }));
+        return data;
+      });
+      const room = page.locator(".room");
+      await room.dispatchEvent("dragenter", { dataTransfer });
+      await expect(room).toHaveClass(/email-drop-active/);
+      await shot(page, `email-drop-${scheme}`);
+      await room.dispatchEvent("dragleave", { dataTransfer });
+      await dataTransfer.dispose();
+      await w.check();
+    });
+
     test(`task activity on desktop and phone (${scheme})`, async ({ page }) => {
       const w = watch(page);
       for (const [layout, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {

@@ -1,0 +1,11 @@
+From: Alice Example <alice@example.com>
+Subject: Read the workshop invitation
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+
+<html><head><title>Invisible title</title></head><body>
+<style>INVISIBLE CSS</style><script>INVISIBLE SCRIPT</script>
+<p>Hello &amp; welcome!<br title=">">Confirm with Alice.</p>
+<img src="https://example.com/pixel" onerror="INVISIBLE HANDLER">
+&lt;literal&gt; &check;
+</body></html>

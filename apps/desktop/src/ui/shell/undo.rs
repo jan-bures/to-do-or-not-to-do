@@ -19,6 +19,7 @@ use crate::theme::TextStyled;
 /// whole collection, or moving a list to another collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
+    ImportEmail,
     Complete,
     Restore,
     Delete,
@@ -85,6 +86,7 @@ impl EditKind {
 
     fn verb(self) -> &'static str {
         match self {
+            Self::ImportEmail => "Created email task",
             Self::Complete => "Completed",
             Self::Restore => "Restored",
             Self::Delete => "Deleted",
@@ -107,6 +109,7 @@ impl EditKind {
     fn undone_label(self, title: &str) -> SharedString {
         task_label(
             match self {
+                Self::ImportEmail => "Undid email import",
                 Self::Complete => "Reopened",
                 Self::Restore => "Returned to Trash:",
                 Self::Delete | Self::Merge => "Restored",
@@ -367,7 +370,8 @@ pub(super) fn touches_task(command: &Command, id: TaskId, state: &State) -> bool
 pub(super) struct Action {
     pub entity: EntityId,
     pub kind: EditKind,
-    pub target: UndoTarget,
+    /// In submission order: an email drop tracks each task and its optional link.
+    pub targets: Vec<UndoTarget>,
     pub room: RoomKey,
 }
 
@@ -391,6 +395,7 @@ impl ShellView {
         let (now, pace) = (self.now(), self.pace());
         self.toast.advance(now, pace);
         self.toast.show(label, now, pace);
+        self.toast_without_undo = false;
         self.last_undo = Some(action);
     }
 
@@ -403,6 +408,13 @@ impl ShellView {
         let Some(action) = self.last_undo.take() else {
             return;
         };
+        if action.kind == EditKind::ImportEmail {
+            self.undo_email_import(action, cx);
+            return;
+        }
+        let Some(target) = action.targets.last() else {
+            return;
+        };
         let (now, pace) = (self.now(), self.pace());
         self.toast.advance(now, pace);
         let toast_active = self.toast.look(now).is_some_and(|t| t.active);
@@ -410,7 +422,7 @@ impl ShellView {
         let Action { entity, kind, .. } = action;
         // Named as it is now: undoing an addition takes the link away with its name.
         let title = subject_title(&self.store.view(), entity);
-        let queued = match self.store.undo(&action.target) {
+        let queued = match self.store.undo(target) {
             Err(error) => {
                 // In particular a cache write failure must leave the action retryable.
                 self.notice = Some(Notice::error(error));
@@ -461,6 +473,44 @@ impl ShellView {
             })
         });
         self.toast.dismiss(now, pace);
+        self.refresh(cx);
+    }
+
+    fn undo_email_import(&mut self, mut action: Action, cx: &mut Context<Self>) {
+        let mut unavailable = false;
+        let mut pending = false;
+        // Withdraw links before their tasks; the domain refuses to withdraw a task with children.
+        while let Some(target) = action.targets.last() {
+            match self.store.undo(target) {
+                Ok(TrackedUndo::Cancelled) => (),
+                Ok(TrackedUndo::Unavailable) => unavailable = true,
+                Ok(TrackedUndo::Queued(undo_id)) => {
+                    pending = true;
+                    self.pending_undo.push(Pending {
+                        entity: action.entity,
+                        kind: EditKind::ImportEmail,
+                        undo_id,
+                        animated: true,
+                        reported: false,
+                    });
+                }
+                Err(_) => {
+                    self.last_undo = Some(action);
+                    self.notice = Some(Notice::error("Couldn't undo the email import."));
+                    self.refresh(cx);
+                    return;
+                }
+            }
+            action.targets.pop();
+        }
+        self.notice = Some(if unavailable {
+            Notice::error("Some email changes were no longer available to undo.")
+        } else if pending {
+            Notice::info("Undo queued.")
+        } else {
+            Notice::info("Email import undone.")
+        });
+        self.toast.dismiss(self.now(), self.pace());
         self.refresh(cx);
     }
 
@@ -579,7 +629,8 @@ impl ShellView {
         let look = self.toast.look(self.frame)?;
         let p = self.palette;
         let focus = self.undo_ring.at(self.frame);
-        let actionable = look.active && (self.last_undo.is_some() || !self.animate);
+        let actionable =
+            look.active && !self.toast_without_undo && (self.last_undo.is_some() || !self.animate);
         let label = |text, alpha| {
             div()
                 .min_w_0()
@@ -711,7 +762,7 @@ impl ShellView {
                                         .top_0()
                                 })),
                         )
-                        .child(button)
+                        .when(!self.toast_without_undo, |el| el.child(button))
                         .child(dismiss),
                 )
                 .child(
@@ -744,7 +795,7 @@ mod tests {
         let action = Action {
             entity: id.into(),
             kind: EditKind::Complete,
-            target,
+            targets: vec![target],
             room,
         };
         assert!(action.is_in(room));

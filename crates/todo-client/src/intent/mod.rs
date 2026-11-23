@@ -5,6 +5,7 @@
 //! quick-add needs to create a destination list, clients (including desktop) submit the list first
 //! and the task second. This is not atomic: the list can remain if the task is refused.
 
+pub mod email;
 pub mod merge;
 pub mod organize;
 pub mod quick_add;

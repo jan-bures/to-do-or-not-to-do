@@ -63,6 +63,7 @@ rusty-s3 = "0.12"
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 url = "2"
 qrcode = { version = "0.14", default-features = false }
+mail-parser = "1.0.1"
 zstd = "0.14"
 libc = "0.2"
 rustix = "1"

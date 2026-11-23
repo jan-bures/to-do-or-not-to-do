@@ -6,6 +6,7 @@ mod activity;
 mod attachments;
 mod detail;
 mod device_pairing;
+mod email_drop;
 mod menu;
 mod panes;
 mod reminders;
@@ -296,6 +297,9 @@ pub struct ShellView {
     undo_ring: Track,
     toast_hover: bool,
     last_undo: Option<undo::Action>,
+    toast_without_undo: bool,
+    email_importing: bool,
+    preview_email_drop: bool,
     pending_undo: Vec<undo::Pending>,
     clock: Clock,
     /// The time this frame draws (`clock` when the render started), so every row samples the same moment.
@@ -449,6 +453,9 @@ impl ShellView {
             undo_ring: Track::rest(0.),
             toast_hover: false,
             last_undo: None,
+            toast_without_undo: false,
+            email_importing: false,
+            preview_email_drop: false,
             pending_undo: Vec::new(),
             clock: Clock::Live(Instant::now()),
             frame: Duration::ZERO,
@@ -1457,7 +1464,7 @@ impl ShellView {
                         undo::Action {
                             entity,
                             kind,
-                            target,
+                            targets: vec![target],
                             room,
                         },
                         label,
@@ -1502,7 +1509,7 @@ impl ShellView {
                 let action = undo::Action {
                     entity,
                     kind,
-                    target,
+                    targets: vec![target],
                     room,
                 };
                 self.remember_undo(action, label);
@@ -3268,7 +3275,8 @@ impl ShellView {
                             .when(has_rows, |d| {
                                 d.child(self.rows_bar.for_list(&self.rows, &p, self.animate))
                             }),
-                    ),
+                    )
+                    .children(self.email_drop_target(cx)),
             )
     }
 
@@ -3864,7 +3872,8 @@ impl ShellView {
         use hints::Stop;
         match stop {
             Stop::Undo => {
-                self.toast.look(self.frame).is_some_and(|look| look.active)
+                !self.toast_without_undo
+                    && self.toast.look(self.frame).is_some_and(|look| look.active)
                     && (self.last_undo.is_some() || !self.animate)
             }
             Stop::RoomMenu => self.has_room_menu(),

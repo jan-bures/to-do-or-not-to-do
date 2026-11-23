@@ -333,6 +333,27 @@ separately. Tasks merged into another task are not individually restorable from 
 Trash uses the local synced replica and has no automatic expiry or permanent-delete control. An attachment's
 file may have expired under the separate blob-retention policy.
 
+## Drop an email onto the task list
+
+Drop saved `.eml` files from Explorer, or from a mail client that supplies them as real files, onto the
+highlighted task list. A drop creates one task per message in the same destination as quick-add:
+the current list, the first list in the current collection, or the default list in a smart room, with
+that room's defaults. Activity and Trash do not accept email drops. Classic Outlook's virtual `.msg`
+files are not supported.
+
+The subject becomes the title, without reply and forward prefixes. The notes include the sender and
+up to 4 KiB of the body as plain text. Unlike [forwarding mail](ingest-email.md), the drop itself asks to
+keep that excerpt. Agents with access to the destination list can read it; public share pages never
+show notes. An identifiable message
+gets the same Email source as forwarded mail, with the sender and `Message-ID`; no browser link is
+inferred. The app never renders the HTML, fetches its resources or uploads the original file and MIME
+attachments. To keep the original file, drop it onto an open task's **detail pane** instead.
+
+Drop up to 20 email files at a time, each at most 10 MiB. Other file types dropped on the list are
+ignored. The toast reports skipped or unreadable messages and offers one Undo for the imported tasks
+and their links. Undo leaves any automatically created destination list in place. The task and link
+commands sync separately and each Undo checks for conflicts, so later edits can prevent part of the Undo.
+
 ## Quick-add syntax
 
 After at least one title word, all clients accept one trailing date and one priority, in either order:
@@ -656,7 +677,8 @@ collection picker and the colour swatches, the keyboard on the current choice. T
 the tag picker on the detail pane's Tags row, `tag-create` the same with a new name typed (Create
 first), `tag-edit` and `tag-colour` a tag's own page and its swatches, and `tag-rename` a tag being
 renamed in the row. `delete-tag-confirm` shows the task count before deleting a tag. Reminders: `reminder-menu` is the picker on the open task's reminder (Today 17:00, so Pick a day and time… is ticked, and Remove is offered), `reminder-custom` its custom page with tomorrow and 08:30 typed, `reminder-none` the row of a task without a reminder, and `reminder-focus` the row's keyboard focus ring. `repeat-menu` shows the undated-task notice; `repeat-custom` shows a fortnightly Mon/Thu draft. `repeat-none`, `repeat-weekly` and `repeat-monthly` show the row at rest; `repeat-focus` shows its keyboard focus ring. Links: `task-links` is a task's menu turned into its links, and `add-link` the
-link field with an address being typed. `caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
+link field with an address being typed. `email-drop` shows the list's drop highlight, without opening any file.
+`caption-hover` shows the maximize hover tint; `caption-close-hover` shows the red close hover and restore glyph.
 `sidebar-wide` and `detail-narrow` show the resize extremes, and `resize-handle-hover` shows the sidebar
 separator at the end of its hover fade.
 `long-names-narrow` and `narrow-detail` are 960 px wide (the narrowest window): the first with nothing open,

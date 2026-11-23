@@ -73,6 +73,7 @@ browsers that accept gzip.
 | `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
+| `src/app/email_drop.rs` | The room's `.eml` drop target and browser file reads. Parsing and commands are shared with desktop. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
 | `src/fixtures.rs` | Invented gallery data with a fixed clock (Saturday 21 November 2026, 10:35). |
 | `static/app.css` | The layout. Every colour, size, radius, font and duration is a `tokens.css` variable. |
@@ -370,6 +371,12 @@ list's manual order. If there is no destination list, quick-add creates **Tasks*
 current collection when applicable. **Alt+Up/Down** moves the selected task one place among its live
 siblings in its own list, even when the list is filtered. Aggregate rooms don't support manual reordering.
 
+Drop `.eml` files onto the room to [create tasks from email](desktop.md#drop-an-email-onto-the-task-list).
+The room highlights while dragging, even if the browser withholds filenames and the file type is unknown.
+Only `.eml` files are imported when dropped; Activity, Trash and the read-only app don't accept them.
+The same limits, destination, plain-text excerpt, optional Email source and Undo apply as on desktop.
+Dropping the email on task detail instead attaches the file to that task.
+
 Right-click a task or press **Shift+F10** on its row, or open **Task actions** (⋯) in the detail pane.
 **Delete task** (also **Delete** on the row) acts at once, as on desktop and Android. **Move to…**
 (also **M**) puts the task first in another list's manual order. Type to filter by list or collection name,
@@ -500,7 +507,7 @@ The status bar shows shortcuts only when their actions are available.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, wide and narrow docked widths (including 1920 × 1080) and the hovered splitter, due-date editor,
   step controls and delete Undo, attachments (empty, uploading, failed, listed
-  and removed with Undo), a collapsed collection, sidebar and room menus,
+  and removed with Undo), the email drop highlight (`email-drop-{light,dark}.png`), a collapsed collection, sidebar and room menus,
   rename and delete dialogs, a delete Undo toast, collection creation, the desktop and phone task move picker,
   list moves, list and collection swatches,
   repeat presets and custom repeat, reminder presets and the phone custom reminder editor, the tag picker

@@ -5,6 +5,7 @@ mod activity;
 mod attachments;
 mod detail_splitter;
 mod device_pairing;
+mod email_drop;
 mod links;
 mod pickers;
 mod reminder;
@@ -78,15 +79,16 @@ pub struct Shown {
 }
 
 struct Undo {
-    target: UndoTarget,
+    targets: Vec<UndoTarget>,
     label: String,
     animated_task: Option<TaskId>,
 }
 
 #[derive(Clone)]
 struct WaitingUndo {
-    toast_seq: u64,
+    pending: Vec<CommandId>,
     label: String,
+    error: Option<String>,
 }
 
 /// The toast at the bottom of the list.
@@ -112,7 +114,7 @@ pub struct Ctx {
     toast: RwSignal<Option<Toast>>,
     toast_seq: RwSignal<u64>,
     undo: RwSignal<Option<Undo>>,
-    waiting_undo: RwSignal<BTreeMap<CommandId, WaitingUndo>>,
+    waiting_undo: RwSignal<BTreeMap<u64, WaitingUndo>>,
     activity_undos: activity::Undos,
     activity_feed: RwSignal<activity::FeedState>,
     trash: Memo<Vec<todo_client::trash::Row>>,
@@ -182,19 +184,35 @@ impl Ctx {
             self.activity_revision.set(revision);
         }
         self.activity_undos.settle();
-        for (id, undo) in self.waiting_undo.get_untracked() {
-            if let Some(outcome) = backend::undo_result(id) {
+        for (seq, mut undo) in self.waiting_undo.get_untracked() {
+            let count = undo.pending.len();
+            undo.pending.retain(|&id| match backend::undo_result(id) {
+                None => true,
+                Some(result) => {
+                    if let Err(error) = result
+                        && undo.error.is_none()
+                    {
+                        undo.error = Some(error.into());
+                    }
+                    false
+                }
+            });
+            if undo.pending.is_empty() {
                 self.waiting_undo.update(|pending| {
-                    pending.remove(&id);
+                    pending.remove(&seq);
                 });
                 // A late answer must not take the Undo button away from a newer change.
-                if undo.toast_seq == self.toast_seq.get_untracked() {
-                    let label = match outcome {
-                        Ok(()) => format!("Undid: {}", undo.label),
-                        Err(message) => format!("{message} ({})", undo.label),
+                if seq == self.toast_seq.get_untracked() {
+                    let label = match undo.error {
+                        Some(message) => format!("{message} ({})", undo.label),
+                        None => format!("Undid: {}", undo.label),
                     };
                     self.show_toast(label, false);
                 }
+            } else if undo.pending.len() != count {
+                self.waiting_undo.update(|pending| {
+                    pending.insert(seq, undo);
+                });
             }
         }
     }
@@ -236,13 +254,17 @@ impl Ctx {
         let Some(target) = self.submission(backend::submit_tracked(cmd)) else {
             return false;
         };
+        self.remember_undo(vec![target], label, animated_task);
+        true
+    }
+
+    fn remember_undo(self, targets: Vec<UndoTarget>, label: String, animated_task: Option<TaskId>) {
         self.undo.set(Some(Undo {
-            target,
+            targets,
             animated_task,
             label: label.clone(),
         }));
         self.show_toast(label, true);
-        true
     }
 
     fn undo(self) {
@@ -250,30 +272,42 @@ impl Ctx {
             return;
         };
         self.toast.set(None);
-        let result = backend::undo(&action.target);
-        if matches!(result, Ok(TrackedUndo::Cancelled | TrackedUndo::Queued(_)))
-            && let Some(id) = action.animated_task
-        {
+        let mut waiting = WaitingUndo {
+            pending: Vec::new(),
+            label: action.label,
+            error: None,
+        };
+        let mut applied = false;
+        // An email drop saves several commands. Undo dependents, including email links, first.
+        for target in action.targets.iter().rev() {
+            let error = match backend::undo(target) {
+                Ok(TrackedUndo::Cancelled) => {
+                    applied = true;
+                    None
+                }
+                Ok(TrackedUndo::Queued(id)) => {
+                    applied = true;
+                    waiting.pending.push(id);
+                    None
+                }
+                Ok(TrackedUndo::Unavailable) => Some(changes::undo_failure("undo_no_event").into()),
+                Err(message) => Some(message),
+            };
+            waiting.error = waiting.error.or(error);
+        }
+        if applied && let Some(id) = action.animated_task {
             self.lingering.update(|l| l.retain(|x| x.row.id != id));
         }
-        match result {
-            Ok(TrackedUndo::Cancelled) => self.show_toast("Change undone.".into(), false),
-            Ok(TrackedUndo::Queued(id)) => {
-                let toast_seq = self.toast_seq.get_untracked();
-                self.waiting_undo.update(|pending| {
-                    pending.insert(
-                        id,
-                        WaitingUndo {
-                            toast_seq,
-                            label: action.label,
-                        },
-                    );
-                });
-            }
-            Ok(TrackedUndo::Unavailable) => {
-                self.show_toast(changes::undo_failure("undo_no_event").into(), false)
-            }
-            Err(message) => self.show_toast(message, false),
+        if waiting.pending.is_empty() {
+            self.show_toast(
+                waiting.error.unwrap_or_else(|| "Change undone.".into()),
+                false,
+            );
+        } else {
+            let seq = self.toast_seq.get_untracked();
+            self.waiting_undo.update(|pending| {
+                pending.insert(seq, waiting);
+            });
         }
         self.refresh();
     }
@@ -1651,6 +1685,7 @@ fn RoomPills() -> impl IntoView {
 #[component]
 fn RoomPane() -> impl IntoView {
     let c = ctx();
+    let drop = email_drop::Target::new();
     let finished = c.finished;
     let node = NodeRef::<html::Div>::new();
     let width = RwSignal::new(0.0_f64);
@@ -1661,15 +1696,22 @@ fn RoomPane() -> impl IntoView {
     });
     Effect::new(move |prev: Option<RoomId>| {
         let room = c.room.get();
-        if prev.is_some_and(|old| old != room)
-            && let Some(el) = node.get_untracked()
-        {
-            el.set_scroll_top(0);
+        if prev.is_some_and(|old| old != room) {
+            drop.clear();
+            if let Some(el) = node.get_untracked() {
+                el.set_scroll_top(0);
+            }
         }
         room
     });
     view! {
-        <div class="room" node_ref=node on:scroll=move |_| {
+        <div class="room" node_ref=node class:email-drop-active=move || drop.highlight(c)
+            on:dragenter=move |ev| drop.over(c, ev, true)
+            on:dragover=move |ev| drop.over(c, ev, false)
+            on:dragleave=move |_| drop.leave()
+            on:dragend=move |_| drop.clear()
+            on:drop=move |ev| drop.receive(c, ev)
+            on:scroll=move |_| {
             c.room_actions.position_menu();
             c.task_actions.position();
             if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
@@ -1680,6 +1722,9 @@ fn RoomPane() -> impl IntoView {
                 }
             }
         }>
+            <span class="toast-announcement" role="status">
+                {move || drop.highlight(c).then_some(intent::email::DROP_LABEL)}
+            </span>
             <Show when=move || finished.get() fallback=move || view! { <RoomHeader width=width/> }>
                 <FinishedHeader width=width/>
             </Show>

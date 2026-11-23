@@ -1,0 +1,25 @@
+From: Alice Example <alice@example.com>
+Message-ID: <alternative-message@example.com>
+Subject: Fwd: #keep Re[2]: Check the workshop slides
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-test"
+
+--mixed-test
+Content-Type: multipart/alternative; boundary="alternative-test"
+
+--alternative-test
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Keep the plain version: =C5=BE=C3=A1dost.
+--alternative-test
+Content-Type: text/html; charset=UTF-8
+
+<p>Discard this alternative.</p>
+--alternative-test--
+--mixed-test
+Content-Type: text/plain; name="another.txt"
+Content-Disposition: attachment; filename="another.txt"
+
+Discard this attachment.
+--mixed-test--
