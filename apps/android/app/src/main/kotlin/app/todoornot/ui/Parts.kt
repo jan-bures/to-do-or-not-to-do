@@ -148,11 +148,11 @@ fun AgentBadge(agent: AgentMark, modifier: Modifier = Modifier, size: Dp = C.AGE
 
 /** `!`, `!!` or `!!!`: neutral, darker with each mark. */
 @Composable
-fun Priority(marks: Int, modifier: Modifier = Modifier) {
+fun Priority(marks: Int, modifier: Modifier = Modifier, quietInk: Color? = null) {
     if (marks <= 0) return
     val r = LocalDesign.current.room
     val color = when (marks) {
-        1 -> r.ink3
+        1 -> quietInk ?: r.ink3
         2 -> r.ink2
         else -> r.ink
     }
@@ -161,7 +161,7 @@ fun Priority(marks: Int, modifier: Modifier = Modifier) {
 
 /** The step meter: up to five bars, filled in proportion, then `2/5`. */
 @Composable
-fun StepMeter(steps: StepCount, modifier: Modifier = Modifier, showCount: Boolean = true) {
+fun StepMeter(steps: StepCount, modifier: Modifier = Modifier, showCount: Boolean = true, quietInk: Color? = null) {
     val r = LocalDesign.current.room
     val total = steps.total.toInt()
     val done = steps.done.toInt()
@@ -179,7 +179,7 @@ fun StepMeter(steps: StepCount, modifier: Modifier = Modifier, showCount: Boolea
         }
         if (showCount) {
             Spacer(Modifier.width(C.CHIP_GAP.dp))
-            Label("$done/$total", Tokens.Type.COUNT, r.ink3)
+            Label("$done/$total", Tokens.Type.COUNT, quietInk ?: r.ink3)
         }
     }
 }

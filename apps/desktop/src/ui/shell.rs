@@ -3296,7 +3296,9 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                        if this.ui.compact {
+                        if this.multi.cursor().is_some() {
+                            this.select_task(None, cx);
+                        } else if this.ui.compact {
                             this.close_popout(window);
                         } else if this.in_activity() {
                             this.feed_input(FeedInput::Escape, false, window, cx);

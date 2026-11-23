@@ -491,7 +491,7 @@ private fun HandoverRow(t: TaskRow, state: UiState, actions: Actions, enabled: B
     val r = LocalDesign.current.room
     val isSelected = t.id in state.bulkIds
     val toggle = { actions.toggleBulk(t.id, state.generation) }
-    Row(modifier.fillMaxWidth().then(if (isSelected) Modifier.background(r.wash).selectionBar(r.accentStrong) else Modifier)
+    Row(modifier.fillMaxWidth().then(if (isSelected) Modifier.background(r.selectionWash).selectionBar(r.accentStrong) else Modifier)
         .combinedClickable(enabled = enabled, onLongClickLabel = "Select task", onLongClick = toggle,
             onClick = { if (state.bulk != null) toggle() else actions.select(t.id) })
         .semantics { selected = isSelected }.then(inset), verticalAlignment = Alignment.CenterVertically,
@@ -507,7 +507,8 @@ private fun SmallRow(t: TaskRow, state: UiState, actions: Actions, i: Int, dusk:
         modifier = Modifier.handover(i, dusk).height(P.TOUCH.dp).hairline(r.line, top = true),
         inset = Modifier.padding(start = S.S3.dp, end = S.S5.dp),
     ) {
-        Check(t.done, { actions.setDone(t.id, it, state.generation) }, t.title, enabled = on && state.bulk == null, onWash = t.id in state.bulkIds)
+        Check(t.done, { actions.setDone(t.id, it, state.generation) }, t.title, enabled = on && state.bulk == null,
+            onSelectionWash = t.id in state.bulkIds)
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
             t.chip?.let { ListChip(it) }

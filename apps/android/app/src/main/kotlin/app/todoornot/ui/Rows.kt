@@ -63,6 +63,8 @@ fun TaskRowView(
     longClickLabel: String = "Select task",
 ) {
     val r = LocalDesign.current.room
+    val bulkSelected = selected && selecting
+    val quietInk = if (bulkSelected) r.ink2 else r.ink3
     val l = look ?: RowLook.rest(task.done)
     val live = !l.gone && !inert
     val titleLine = Tokens.Type.TASK_TITLE_PHONE.lineHeight.dp
@@ -73,7 +75,7 @@ fun TaskRowView(
         .then(if (inert) Modifier.clearAndSetSemantics { } else Modifier)
         .fillMaxWidth()
         .heightIn(min = P.ROW.dp)
-        .then(if (selected) Modifier.background(r.wash).selectionBar(r.accentStrong) else Modifier)
+        .then(if (selected) Modifier.background(if (bulkSelected) r.selectionWash else r.wash).selectionBar(r.accentStrong) else Modifier)
         .semantics { this.selected = selected }
         .hairline(r.line)
         .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = longClickLabel, onLongClick = onActions)
@@ -88,12 +90,13 @@ fun TaskRowView(
                 enabled = live && !selecting,
                 look = l,
                 onWash = selected,
+                onSelectionWash = bulkSelected,
             )
         }
         Column(Modifier.weight(1f)) {
             // Let the title's scaled text grow past the design line height; metadata uses the full width below.
             Row(Modifier.fillMaxWidth().heightIn(min = titleLine), horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
-                Box(Modifier.weight(1f)) { Title(task.title, lerp(r.ink, r.ink3, l.dim), l.strike) }
+                Box(Modifier.weight(1f)) { Title(task.title, lerp(r.ink, quietInk, l.dim), l.strike) }
                 if (showsAgent(task)) {
                     Box(Modifier.size(P.COL_AGENT.dp, titleLine), contentAlignment = Alignment.Center) {
                         task.agent?.let { AgentBadge(it) }
@@ -101,12 +104,12 @@ fun TaskRowView(
                 }
                 if (showsPriority(task)) {
                     Box(Modifier.widthIn(min = P.COL_PRIORITY.dp).height(titleLine), contentAlignment = Alignment.Center) {
-                        Priority(task.priority.toInt())
+                        Priority(task.priority.toInt(), quietInk = quietInk)
                     }
                 }
             }
             Spacer(Modifier.height(S.S1.dp))
-            MetaLine(task)
+            MetaLine(task, quietInk)
         }
         TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live && !selecting,
             label = "Important: ${task.title}", alignment = Alignment.TopCenter, onChange = onImportant)
@@ -140,8 +143,7 @@ fun showsPriority(task: TaskRow): Boolean = showsAgent(task) || task.priority > 
 private val metaLine = maxOf(Tokens.Type.DUE.lineHeight, Tokens.Metrics.Component.CHIP).dp
 
 @Composable
-private fun MetaLine(task: TaskRow) {
-    val r = LocalDesign.current.room
+private fun MetaLine(task: TaskRow, quietInk: Color) {
     Row(
         Modifier.heightIn(min = metaLine),
         verticalAlignment = Alignment.CenterVertically,
@@ -153,8 +155,8 @@ private fun MetaLine(task: TaskRow) {
             Box(Modifier.widthIn(min = P.DUE_SLOT.dp - S.S2.dp)) { Due(due) }
         }
         task.chip?.let { ListChip(it) }
-        if (task.fromMail) Icon("mail", r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp, label = "From an email")
-        task.steps?.let { StepMeter(it) }
-        for (tag in task.tags) Label(tag, Tokens.Type.TAG, r.ink3)
+        if (task.fromMail) Icon("mail", quietInk, size = Tokens.Metrics.Component.ICON_SMALL.dp, label = "From an email")
+        task.steps?.let { StepMeter(it, quietInk = quietInk) }
+        for (tag in task.tags) Label(tag, Tokens.Type.TAG, quietInk)
     }
 }

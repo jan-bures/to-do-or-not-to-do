@@ -165,7 +165,7 @@ token_struct! {
         hover = h(0.972, 0.010), h(0.226, 0.016);
         /// The selected row, the active step, the quick-add parse strip.
         wash = h(0.952, 0.028), h(0.262, 0.030);
-        /// A stronger wash for members of a multi-selection in the desktop and web lists.
+        /// A stronger wash for members of a multi-selection.
         selection_wash = h(0.935, 0.038), h(0.333, 0.051);
         /// Highlights for parsed quick-add text, the focus ring, the sunrise mark.
         tint = h(0.930, 0.045), h(0.300, 0.045);

@@ -180,7 +180,12 @@ impl ShellView {
     fn compact_keys(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(compact) = &self.compact else { return };
         if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
-            self.close_popout(window);
+            if self.multi.cursor().is_some() {
+                self.select_task(None, cx);
+                window.focus(&self.list_focus, cx);
+            } else {
+                self.close_popout(window);
+            }
             cx.stop_propagation();
         } else if super::navigation_tab(e) && !self.menu_focus.is_focused(window) {
             let mut stops = vec![
@@ -190,8 +195,17 @@ impl ShellView {
             ];
             if compact.unavailable {
                 stops = vec![compact.focus.clone()];
-            } else if self.has_stop(super::hints::Stop::Undo) {
-                stops.push(self.undo_focus.clone());
+            } else {
+                let bulk = self
+                    .bulk_focus
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| self.bulk_stop(*index))
+                    .map(|(_, handle)| handle.clone());
+                stops.splice(1..1, bulk);
+                if self.has_stop(super::hints::Stop::Undo) {
+                    stops.push(self.undo_focus.clone());
+                }
             }
             let index = stops.iter().position(|h| h.is_focused(window));
             let len = stops.len();
@@ -398,6 +412,7 @@ impl ShellView {
                 .child(header)
                 .child(self.quick_add_field(window, cx))
                 .child(self.list(window, cx))
+                .children(self.bulk_bar(window, cx))
                 .child(self.list_footer(true, cx))
                 .children(status)
                 .into_any_element()
@@ -446,7 +461,10 @@ impl ShellView {
                     .child(contents)
                     .child(self.press_counter(cx))
                     .children(self.confirmation_scrim())
-                    .children(self.popover(|k| matches!(k, super::MenuKind::Task { .. }), cx)),
+                    .children(self.popover(
+                        |k| matches!(k, super::MenuKind::Task { .. } | super::MenuKind::BulkMove),
+                        cx,
+                    )),
             )
     }
 }
@@ -501,6 +519,41 @@ mod tests {
                     .focus_handle
                     .is_focused(window)
             )
+        });
+    }
+
+    #[gpui::test]
+    fn compact_selection_has_keyboard_actions_and_escape_clears_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.bind_keys(super::super::key_bindings()));
+        let f = fixtures::by_name("popout-pinned").expect("pop-out fixture");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let mut view = ShellView::new(
+                Rc::new(Store::fixture(&f)),
+                f.ui,
+                theme::Theme::Dark,
+                None,
+                window,
+                cx,
+            );
+            view.preview_popout(true, cx);
+            view.still();
+            window.focus(&view.list_focus, cx);
+            view
+        });
+        cx.simulate_keystrokes("ctrl-a escape");
+        cx.update(|_, cx| assert!(shell.read(cx).bulk_ids().is_empty()));
+        cx.simulate_keystrokes("ctrl-a tab");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert_eq!(view.bulk_ids(), view.nav_tasks());
+            assert!(view.bulk_ids().len() >= 2);
+            assert!(view.bulk_focus[0].is_focused(window));
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert!(view.bulk_ids().is_empty());
+            assert!(view.list_focus.is_focused(window));
         });
     }
 

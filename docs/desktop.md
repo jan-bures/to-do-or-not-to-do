@@ -426,7 +426,8 @@ Choose **Don't keep on top** to unpin it, or **Keep on top** to pin it again.
 The main window and all list windows share one sync session and outbox, even offline. The window where a
 completion is made plays the normal row choreography; other windows show the optimistic change on their
 next refresh. **J/K** or the arrows select a task, **Space** completes or reopens it, **Ctrl+N** focuses
-quick-add, and **Esc** closes the window (or dismisses an open task menu first). Double-click a task,
+quick-add. Multi-selection uses the same shortcuts and bulk strip as the main window. **Esc** first
+closes an open menu or clears the selection; otherwise it closes the window. Double-click a task,
 press **Enter** on the selected task, or choose **Open in main window** from its menu to open its details
 in the main window, bringing that window back from the tray if needed.
 
