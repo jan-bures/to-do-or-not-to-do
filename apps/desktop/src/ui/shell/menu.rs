@@ -78,6 +78,7 @@ pub(super) enum MenuKind {
     Account {
         confirm: bool,
     },
+    Updates,
     /// A list's context menu, or the page one of its items turned it into.
     List {
         id: ListId,
@@ -141,6 +142,7 @@ impl MenuKind {
             self,
             Self::New
                 | Self::Account { .. }
+                | Self::Updates
                 | Self::SyncFailures
                 | Self::BulkMove
                 | Self::BulkStatus
@@ -155,7 +157,7 @@ impl MenuKind {
     /// The same menu, apart from its confirmation step (or the picker a task's menu turned into).
     pub(super) fn same_menu(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Account { .. }, Self::Account { .. })
+            (Self::Account { .. } | Self::Updates, Self::Account { .. } | Self::Updates)
             | (Self::Room { .. }, Self::Room { .. }) => true,
             (Self::Date(a), Self::Date(b)) => {
                 a.task == b.task && (a.task.is_none() || a.starts == b.starts)
@@ -237,6 +239,7 @@ impl ShellView {
             MenuKind::Account { confirm } => {
                 menus::account_menu(self.store.server().as_deref(), confirm)
             }
+            MenuKind::Updates => Self::update_entries(&self.update_snapshot()),
             MenuKind::List { id, page } => menus::list_menu(&state, id, page),
             MenuKind::Smart(smart) => menus::smart_context_menu(smart),
             MenuKind::Collection { id, page } => menus::collection_menu(
@@ -686,6 +689,9 @@ impl ShellView {
             "escape" if menu.kind.settings() => {
                 self.run_menu_action(MenuAction::CloseListSettings, true, window, cx)
             }
+            "escape" if menu.kind == MenuKind::Updates && menu.trigger == Some(Stop::Account) => {
+                self.run_menu_action(MenuAction::CloseUpdates, true, window, cx)
+            }
             "escape" | "tab" => self.close_menu(true, window, cx),
             _ => {}
         }
@@ -728,6 +734,30 @@ impl ShellView {
                         cx,
                     );
                 }
+                return;
+            }
+            MenuAction::OpenUpdates | MenuAction::CloseUpdates => {
+                let opening = action == MenuAction::OpenUpdates;
+                let kind = if opening {
+                    MenuKind::Updates
+                } else {
+                    MenuKind::Account { confirm: false }
+                };
+                self.open_menu(kind, menu.at, menu.trigger, window, cx);
+                if !opening && keyboard {
+                    self.highlight(menus::index_of(&self.menu_entries(kind), "updates"));
+                }
+                return;
+            }
+            MenuAction::CheckUpdates => {
+                if let Some(updates) = &self.updates {
+                    updates.check_now();
+                    cx.notify();
+                }
+                return;
+            }
+            MenuAction::RestartToUpdate => {
+                cx.emit(ShellEvent::RestartToUpdate);
                 return;
             }
             MenuAction::OpenListSettings | MenuAction::CloseListSettings => {
@@ -1049,6 +1079,10 @@ impl ShellView {
             | MenuAction::CreateTag(_)
             | MenuAction::QuickPriority(_)
             | MenuAction::Status(..)
+            | MenuAction::OpenUpdates
+            | MenuAction::CloseUpdates
+            | MenuAction::CheckUpdates
+            | MenuAction::RestartToUpdate
             | MenuAction::OpenListSettings
             | MenuAction::CloseListSettings
             | MenuAction::ListSetting(..)
@@ -1381,7 +1415,10 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let menu = self.menu.as_ref().filter(|m| belongs(&m.kind))?;
-        let entries = self.menu_entries(menu.kind);
+        let updates = (menu.kind == MenuKind::Updates).then(|| self.update_snapshot());
+        let entries = updates
+            .as_ref()
+            .map_or_else(|| self.menu_entries(menu.kind), Self::update_entries);
         if entries.is_empty() && !matches!(menu.kind, MenuKind::Date(_)) {
             return None;
         }
@@ -1394,6 +1431,7 @@ impl ShellView {
             MenuKind::BulkStatus => Some("Set status for selected tasks"),
             MenuKind::New => Some("New"),
             MenuKind::Account { confirm: false } => Some("Settings"),
+            MenuKind::Updates => Some("Updates"),
             MenuKind::QuickPriority => Some("Choose priority"),
             MenuKind::Status { .. } => Some("Choose status"),
             _ => None,
@@ -1401,6 +1439,19 @@ impl ShellView {
         let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
         let rows: Vec<AnyElement> = menus::scrolling(&entries)
             .map(|entry| match entry {
+                MenuEntry::Item(item)
+                    if kind == MenuKind::Updates
+                        && matches!(
+                            item.action,
+                            MenuAction::CheckUpdates | MenuAction::RestartToUpdate
+                        ) =>
+                {
+                    div()
+                        .px(px(space::S3))
+                        .pb(px(space::S2))
+                        .child(self.confirm_button(&p, item, on(item), live, cx))
+                        .into_any_element()
+                }
                 MenuEntry::Item(item) if applies(item.action) => div()
                     .px(px(space::S2))
                     .pb(px(space::S2))
@@ -1625,7 +1676,7 @@ impl ShellView {
         let shift = if opens_up { shift } else { -shift };
         let width = if kind == MenuKind::New {
             component::NEW_MENU
-        } else if kind.settings() {
+        } else if kind.settings() || kind == MenuKind::Updates {
             desktop::CONFIRM + space::S4
         } else if matches!(kind, MenuKind::Date(_)) || menus::is_wide(&entries) {
             desktop::CONFIRM
@@ -1672,6 +1723,13 @@ impl ShellView {
                 },
             )
             .children(filter)
+            .when_some(updates, |body, snapshot| {
+                body.child(self.update_header(&snapshot).opacity(look.content))
+                    .children(
+                        self.update_busy_button(&snapshot.state)
+                            .map(|button| button.opacity(look.content)),
+                    )
+            })
             .child(contents)
             .when(live, |el| match kind {
                 MenuKind::Date(c) => el.role(Role::Dialog).aria_label(if c.starts {
@@ -2050,6 +2108,17 @@ impl ShellView {
             .border(px(elevation::HAIRLINE))
             .border_color(if highlighted { p.accent } else { edge })
             .id(item.key.clone())
+            .when(
+                live && matches!(
+                    action,
+                    MenuAction::CheckUpdates | MenuAction::RestartToUpdate
+                ),
+                |d| {
+                    d.role(Role::MenuItem)
+                        .aria_label(item.label.clone())
+                        .when(highlighted, |d| d.aria_active_descendant())
+                },
+            )
             .when(live, |d| {
                 d.cursor_pointer().on_click(cx.listener(
                     move |this, e: &gpui::ClickEvent, window, cx| {
@@ -2074,6 +2143,7 @@ fn applies(action: MenuAction) -> bool {
         action,
         MenuAction::Repeat(_, repeat::Action::Apply)
             | MenuAction::Reminder(_, reminder::Action::Apply)
+            | MenuAction::RestartToUpdate
     )
 }
 

@@ -320,17 +320,17 @@ impl Session {
         if task.is_none() {
             let client = self.client.clone();
             *task = Some(self.rt.spawn(async move { client.run().await }));
-            let mut updates = self
-                .updates
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(token) = updates.token.take() {
-                updates.worker = crate::updates::Worker::start(
-                    self.server(),
-                    &token,
-                    self.client.revocation().clone(),
-                );
-            }
+        }
+    }
+
+    pub fn start_updates(&self, controller: &crate::updates::Controller) {
+        let mut updates = self
+            .updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(token) = updates.token.take() {
+            updates.worker =
+                controller.start(self.server(), &token, self.client.revocation().clone());
         }
     }
 

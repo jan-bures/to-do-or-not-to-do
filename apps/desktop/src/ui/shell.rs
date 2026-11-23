@@ -19,6 +19,7 @@ mod task_drag;
 mod timeline;
 mod trash;
 mod undo;
+mod updates;
 mod workflow;
 
 use std::cell::RefCell;
@@ -145,6 +146,7 @@ pub fn quick_add_colors(p: &Palette) -> InputColors {
 pub enum ShellEvent {
     /// Sign out: forget the token and the cache, and show pairing.
     SignOut,
+    RestartToUpdate,
     PopOut(model::popouts::Room),
 }
 
@@ -316,6 +318,9 @@ pub struct ShellView {
     detail_important_focus: FocusHandle,
     reminder_focus: FocusHandle,
     account_focus: FocusHandle,
+    updates: Option<crate::updates::Controller>,
+    update_focus: FocusHandle,
+    dismiss_update_focus: FocusHandle,
     pairing_panel: Option<Entity<device_pairing::Panel>>,
     invite_panel: Option<Entity<device_pairing::Panel>>,
     inline: Option<Inline>,
@@ -525,6 +530,9 @@ impl ShellView {
             detail_important_focus: cx.focus_handle(),
             reminder_focus: cx.focus_handle(),
             account_focus: cx.focus_handle(),
+            updates: None,
+            update_focus: cx.focus_handle(),
+            dismiss_update_focus: cx.focus_handle(),
             pairing_panel: None,
             invite_panel: None,
             inline: None,
@@ -4105,6 +4113,7 @@ impl ShellView {
             || on(&self.activity_refresh_focus)
             || on(&self.activity_more_focus)
             || on(&self.attachment_ui.add)
+            || on(&self.dismiss_update_focus)
             || self.bulk_focus.iter().any(on)
             || self.attachment_ui.rows.values().any(on)
         {
@@ -4116,6 +4125,7 @@ impl ShellView {
             || on(&self.detail_my_day_focus)
             || on(&self.detail_important_focus)
             || on(&self.account_focus)
+            || on(&self.update_focus)
             || on(&self.sync_focus)
             || on(&self.new_focus)
             || on(&self.workflow.status)
@@ -4388,6 +4398,8 @@ impl ShellView {
                 .get(&control)
                 .unwrap_or(&self.attachment_ui.add),
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
+            Stop::UpdateIndicator => &self.update_focus,
+            Stop::DismissUpdate => &self.dismiss_update_focus,
             Stop::New => &self.new_focus,
             Stop::SyncFailures => &self.sync_focus,
             Stop::Account => &self.account_focus,
@@ -4460,6 +4472,9 @@ impl ShellView {
             Stop::Attachment(control) => self.attachment_ui.rows.contains_key(&control),
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::SyncFailures => self.store.sync().failed > 0,
+            Stop::UpdateIndicator | Stop::DismissUpdate => {
+                self.update_snapshot().indicator_version().is_some()
+            }
             Stop::SidebarSplitter | Stop::List | Stop::New | Stop::Account => true,
         }
     }

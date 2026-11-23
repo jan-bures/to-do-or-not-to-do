@@ -137,12 +137,21 @@ then every six hours, on a Windows background-priority thread. After consecutive
 five minutes, thirty minutes, then six hours. The updater and sync both use Windows to verify HTTPS
 certificates. The server address is never compiled in. A missing/disabled feed, HTTP
 (including loopback), an offline server, or an unpaired app doesn't interrupt normal use. Updates download
-quietly and do not stop a running app. To pick up a staged update, choose **Quit** from the tray (closing the
-window usually just hides it), then open the app again. The next primary launch applies the package before
-opening the window; it keeps the local data and pairing. If the updater relaunches the app with a newer
+quietly and do not stop a running app.
+
+**Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
+the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately
+when no check, download or staged update is pending. It does not move the next automatic check or change its backoff.
+Development builds do not check for updates. Errors are shown without the feed address or credentials.
+
+When a package is ready, a quiet **Update ready** control above the sidebar footer opens Updates. Dismissing
+it hides the indicator for that version without removing the update from Settings or the tray. Select
+**Restart to update** in Settings or **Restart to update (<version>)** in the tray to exit normally and have
+Velopack apply the package and relaunch. Alternatively, choose **Quit** from the tray (closing the window
+usually just hides it), then open the app again: the next primary launch still applies the package before
+opening the window. Both paths keep local data and pairing. If Velopack relaunches the app with a newer
 package still pending, the app logs a warning and skips that version. A later release can still be staged.
-There is no update notification or new UI. Once an update is staged it belongs to the installation, not to a
-particular pairing.
+Once staged, an update belongs to the installation, not to a particular pairing.
 
 ## Vendored `gpui_windows`
 
@@ -784,7 +793,9 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 `list-status`, `list-settings`, `board` and `board-detail` show the same workflow list with a staged
 composer, the settings page, the full board, and the board with the collapsed Done rail beside Detail.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
-menu and the detail pane's priority picker. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
+menu and the detail pane's priority picker. `updates-up-to-date`, `updates-checking`, `updates-downloading`,
+`updates-ready` and `updates-failed` show the Updates page without checking a real feed; `updates-indicator`
+shows the ready control in the sidebar with Settings closed. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
 calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected
 one, as a right-click leaves it; `move-to-picker` is the selected task's list picker as M opens it, grouped by

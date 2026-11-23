@@ -1,16 +1,23 @@
 //! Unsigned Velopack updates are trusted only from the paired HTTPS server. They are staged by a
-//! low-priority worker and applied before GPUI on the next primary launch.
+//! low-priority worker and applied on restart or before GPUI on the next primary launch.
+
+mod state;
+
+use state::{Check, Schedule};
+pub use state::{Failure, Snapshot, State};
 
 use semver::Version;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use todo_client::Revocation;
 use todo_client::native::{Cleartext, server_origin_with};
+use todo_core::time::Timestamp;
+use tokio::sync::watch;
 use ureq::tls::{RootCerts, TlsConfig};
 use velopack::bundle::Manifest;
 use velopack::locator::{LocationContext, auto_locate_app_manifest};
@@ -19,13 +26,6 @@ use velopack::{Error, UpdateCheck, UpdateManager, VelopackAsset, VelopackAssetFe
 
 const APP_ID: &str = "todo-desktop";
 const CHANNEL: &str = "win";
-const INITIAL_CHECK_DELAY: Duration = Duration::from_mins(1);
-const CHECK_INTERVAL: Duration = Duration::from_hours(6);
-const RETRY_INTERVALS: [Duration; 3] = [
-    Duration::from_mins(5),
-    Duration::from_mins(30),
-    CHECK_INTERVAL,
-];
 const MAX_FEED: u64 = 1024 * 1024;
 const MAX_PACKAGE: u64 = 256 * 1024 * 1024;
 
@@ -70,7 +70,7 @@ impl Feed {
     }
 
     fn ensure_running(&self) -> Result<(), Error> {
-        if self.stopped.load(Ordering::Relaxed) {
+        if self.stopped.load(Ordering::Relaxed) || self.revocation.is_revoked() {
             return Err(Error::Other("update check stopped".into()));
         }
         Ok(())
@@ -155,7 +155,7 @@ impl UpdateSource for Feed {
         &self,
         asset: &VelopackAsset,
         local_file: &Path,
-        _progress: Option<Sender<i16>>,
+        progress: Option<Sender<i16>>,
     ) -> Result<(), Error> {
         if !valid_asset(asset) {
             return Err(Error::Other(
@@ -167,6 +167,8 @@ impl UpdateSource for Feed {
             .take(asset.Size + 1);
         let mut file = File::create(local_file)?;
         let mut buffer = vec![0; 64 * 1024];
+        let mut bytes = 0;
+        let mut reported = 0;
         loop {
             self.ensure_running()?;
             let n = reader.read(&mut buffer)?;
@@ -174,78 +176,283 @@ impl UpdateSource for Feed {
                 break;
             }
             file.write_all(&buffer[..n])?;
+            bytes += n as u64;
+            // Leave completion to Velopack's verification and staging, not the transfer.
+            let percent = (100 * bytes / asset.Size).min(99) as i16;
+            if percent > reported
+                && let Some(progress) = &progress
+            {
+                let _ = progress.send(percent);
+                reported = percent;
+            }
         }
         self.ensure_running()?;
         Ok(()) // Velopack checks the exact size and hash before staging the file.
     }
 }
 
-/// Owned by the live session. Dropping it wakes a sleeping worker and stops in-flight I/O on its
-/// next chunk (or timeout). Package files are install-wide and guarded by Velopack's update lock.
-pub struct Worker {
-    stopped: Arc<AtomicBool>,
-    _wake_on_drop: Sender<()>,
+#[derive(Clone, Debug)]
+pub struct Controller(Arc<Shared>);
+
+#[derive(Debug)]
+struct Shared {
+    status: watch::Sender<Snapshot>,
+    worker: Mutex<Option<Connection>>,
+    dismissal_marker: Option<PathBuf>,
 }
 
-impl Worker {
-    pub fn start(server: &str, token: &str, revocation: Revocation) -> Option<Self> {
-        let url = feed_url(server)?;
+#[derive(Debug)]
+struct Connection {
+    stopped: Arc<AtomicBool>,
+    revocation: Revocation,
+    wake: Sender<()>,
+}
+
+impl Controller {
+    pub fn new(enabled: bool) -> Self {
+        if enabled && let Some((manager, marker)) = installed_manager(NoneSource {}) {
+            let state = pending(&manager, &marker)
+                .ok()
+                .flatten()
+                .map_or(State::Unpaired, |a| State::Ready { version: a.Version });
+            return Self::with_state(
+                Some(manager.get_current_version_as_string()),
+                state,
+                Some(marker.with_file_name(".todo-dismissed-update")),
+            );
+        }
+        Self::with_state(None, State::NotInstalled, None)
+    }
+
+    fn with_state(
+        version: Option<String>,
+        state: State,
+        dismissal_marker: Option<PathBuf>,
+    ) -> Self {
+        let dismissed = dismissal_marker
+            .as_deref()
+            .and_then(|path| read_version_marker(path).ok().flatten())
+            .map(|version| version.to_string());
+        Self(Arc::new(Shared {
+            status: watch::Sender::new(Snapshot::new(version, state).with_dismissal(dismissed)),
+            worker: Mutex::default(),
+            dismissal_marker,
+        }))
+    }
+
+    pub fn fixture(state: State) -> Self {
+        let controller = Self::with_state(Some("0.1.0-build.146".into()), state.clone(), None);
+        controller.0.status.send_modify(|s| s.set(state, true));
+        controller
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<Snapshot> {
+        self.0.status.subscribe()
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut snapshot = self.0.status.borrow().clone();
+        if snapshot.ready_version().is_none()
+            && worker.as_ref().is_some_and(|w| w.revocation.is_revoked())
+        {
+            snapshot.set(State::Unpaired, false);
+        }
+        snapshot
+    }
+
+    pub fn check_now(&self) {
+        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(worker) = worker.as_ref().filter(|w| !w.revocation.is_revoked()) else {
+            return;
+        };
+        // Reserve Checking before waking the worker: a double click, or a timeout racing
+        // this click, cannot enqueue another check.
+        if self.0.status.send_if_modified(Snapshot::begin) && worker.wake.send(()).is_err() {
+            self.0
+                .status
+                .send_modify(|s| s.set(failed(Failure::Check), false));
+        }
+    }
+
+    pub fn dismiss(&self, version: &str) {
+        if self.0.status.send_if_modified(|s| s.dismiss(version))
+            && let Some(marker) = self.0.dismissal_marker.as_deref()
+            && write_version_marker(marker, version).is_err()
+        {
+            tracing::debug!("could not remember dismissal of desktop update indicator");
+        }
+    }
+
+    /// Launch Velopack, letting the caller do normal Quit cleanup before the process exits.
+    pub fn restart(&self) -> bool {
+        let Some(version) = self.snapshot().ready_version().map(str::to_owned) else {
+            return false;
+        };
+        let ready = installed_manager(NoneSource {}).and_then(|(manager, marker)| {
+            let asset = pending(&manager, &marker).ok().flatten()?;
+            (asset.Version == version).then_some((manager, asset))
+        });
+        if let Some((manager, asset)) = ready {
+            if launch_apply(&manager, asset).is_ok() {
+                return true;
+            }
+            // Velopack didn't launch. Keep the package and offer a retry.
+            self.0.status.send_modify(|s| s.restart_failed = true);
+        } else {
+            let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+            self.0
+                .status
+                .send_modify(|s| s.set(failed(Failure::Apply), worker.is_some()));
+        }
+        tracing::warn!("could not start the staged desktop update");
+        false
+    }
+
+    pub fn start(&self, server: &str, token: &str, revocation: Revocation) -> Option<Worker> {
+        let mut connection = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.0.status.borrow().installed_version.is_none() || connection.is_some() {
+            return None;
+        }
+        if revocation.is_revoked() {
+            return None;
+        }
+        let Some(url) = feed_url(server) else {
+            self.unless_ready(failed(Failure::SecureFeedRequired), false);
+            return None;
+        };
         let stopped = Arc::new(AtomicBool::new(false));
-        let feed = Feed::new(url, token, stopped.clone(), revocation);
-        let (tx, rx) = mpsc::channel();
-        std::thread::Builder::new()
+        let feed = Feed::new(url, token, stopped.clone(), revocation.clone());
+        let (wake, rx) = mpsc::channel();
+        let control = self.clone();
+        let run = stopped.clone();
+        let mut schedule = Schedule::new(Instant::now());
+        if std::thread::Builder::new()
             .name("todo-update".into())
             .spawn(move || {
-                if let Err(e) = crate::platform::win::background_thread() {
-                    tracing::debug!(error = %e, "could not lower update thread priority");
+                if crate::platform::win::background_thread().is_err() {
+                    control.disconnect(&run, failed(Failure::Check));
                     return;
                 }
-                // Let initial sync go first. Dropping the worker interrupts this wait as well as
-                // the waits between subsequent checks.
-                let mut delay = INITIAL_CHECK_DELAY;
-                let mut backoff = CheckBackoff::default();
+                let revocation = feed.revocation.clone();
                 let Some((manager, marker)) = installed_manager(feed) else {
-                    return; // Not installed (e.g. a cargo build or test).
+                    control.disconnect(&run, failed(Failure::Check));
+                    return;
                 };
-                while rx.recv_timeout(delay) == Err(mpsc::RecvTimeoutError::Timeout) {
-                    let result = stage_update(&manager, &marker);
-                    if let Err(e) = &result {
-                        tracing::debug!(error = %e, "desktop update check failed");
+                loop {
+                    let check = match rx
+                        .recv_timeout(schedule.due.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(()) => Check::Manual,
+                        Err(mpsc::RecvTimeoutError::Timeout) => Check::Automatic,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    if run.load(Ordering::Relaxed) || revocation.is_revoked() {
+                        control.disconnect(&run, State::Unpaired);
+                        break;
                     }
-                    delay = backoff.after_check(result.is_ok());
+                    if check == Check::Automatic {
+                        let began = control.for_worker(&run, Snapshot::begin);
+                        if !began {
+                            // A manual request beat this timeout, or the package is already staged.
+                            // Ready is stable: don't flash Checking or replace its package.
+                            if control.0.status.borrow().ready_version().is_some() {
+                                schedule.finished(check, true, Instant::now());
+                            }
+                            continue;
+                        }
+                    }
+                    let result = stage_update(&manager, &marker, |progress| {
+                        control.for_worker(&run, |s| {
+                            let state = State::Downloading { progress };
+                            let changed = s.state != state;
+                            s.set(state, true);
+                            changed
+                        });
+                    });
+                    schedule.finished(check, result.is_ok(), Instant::now());
+                    let state = match result {
+                        Ok(Some(version)) => State::Ready { version },
+                        Ok(None) => State::UpToDate {
+                            checked_at: Timestamp::now(),
+                        },
+                        Err(_) if revocation.is_revoked() => State::Unpaired,
+                        Err(kind) => {
+                            tracing::debug!(?kind, "desktop update check failed");
+                            failed(kind)
+                        }
+                    };
+                    control.for_worker(&run, |s| {
+                        s.set(state, true);
+                        true
+                    });
                 }
             })
-            .map_err(|e| tracing::debug!(error = %e, "could not start desktop updater"))
-            .ok()?;
-        Some(Self {
+            .is_err()
+        {
+            self.unless_ready(failed(Failure::Check), false);
+            return None;
+        }
+        *connection = Some(Connection {
+            stopped: stopped.clone(),
+            revocation,
+            wake,
+        });
+        self.unless_ready(State::Idle, true);
+        Some(Worker {
+            control: self.clone(),
             stopped,
-            _wake_on_drop: tx,
         })
     }
+
+    fn unless_ready(&self, state: State, has_worker: bool) {
+        self.0
+            .status
+            .send_if_modified(|s| set_unless_ready(s, state, has_worker));
+    }
+
+    fn disconnect(&self, id: &Arc<AtomicBool>, state: State) {
+        let mut worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        if worker.as_ref().is_some_and(|w| Arc::ptr_eq(id, &w.stopped)) {
+            *worker = None;
+            self.unless_ready(state, false);
+        }
+    }
+
+    fn for_worker(&self, id: &Arc<AtomicBool>, update: impl FnOnce(&mut Snapshot) -> bool) -> bool {
+        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        worker.as_ref().is_some_and(|w| Arc::ptr_eq(id, &w.stopped))
+            && self.0.status.send_if_modified(update)
+    }
+}
+
+/// Owned by the live session. Dropping it wakes a sleeping worker and stops in-flight I/O on its
+/// next chunk (or timeout). Late results from that session can't change the new session's state.
+pub struct Worker {
+    control: Controller,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Relaxed);
+        self.control.disconnect(&self.stopped, State::Unpaired);
     }
 }
 
-#[derive(Default)]
-struct CheckBackoff {
-    retries: usize,
+fn failed(kind: Failure) -> State {
+    State::Failed {
+        kind,
+        at: Timestamp::now(),
+    }
 }
 
-impl CheckBackoff {
-    fn after_check(&mut self, success: bool) -> Duration {
-        if success {
-            self.retries = 0;
-            CHECK_INTERVAL
-        } else {
-            let delay = RETRY_INTERVALS[self.retries];
-            self.retries = (self.retries + 1).min(RETRY_INTERVALS.len() - 1);
-            delay
-        }
+fn set_unless_ready(snapshot: &mut Snapshot, state: State, has_worker: bool) -> bool {
+    if snapshot.ready_version().is_some() {
+        return false;
     }
+    snapshot.set(state, has_worker);
+    true
 }
 
 fn installed_manager(source: impl UpdateSource + 'static) -> Option<(UpdateManager, PathBuf)> {
@@ -261,7 +468,7 @@ fn installed_manager(source: impl UpdateSource + 'static) -> Option<(UpdateManag
     ))
 }
 
-fn failed_version(marker: &Path) -> Result<Option<Version>, Error> {
+fn read_version_marker(marker: &Path) -> Result<Option<Version>, Error> {
     match std::fs::read_to_string(marker) {
         Ok(value) => Ok(Some(Version::parse(value.trim())?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -269,7 +476,7 @@ fn failed_version(marker: &Path) -> Result<Option<Version>, Error> {
     }
 }
 
-fn record_failed_version(marker: &Path, version: &str) -> Result<(), Error> {
+fn write_version_marker(marker: &Path, version: &str) -> Result<(), Error> {
     let dir = marker
         .parent()
         .ok_or_else(|| Error::Other("missing packages directory".into()))?;
@@ -285,24 +492,60 @@ fn is_candidate(asset: &VelopackAsset, failed: Option<&Version>) -> bool {
         .is_none_or(|failed| Version::parse(&asset.Version).is_ok_and(|version| version > *failed))
 }
 
-fn stage_update(manager: &UpdateManager, marker: &Path) -> Result<(), Error> {
-    let failed = failed_version(marker)?;
-    let pending = manager.get_update_pending_restart();
-    // Do not let a failed package block checking the feed, but do not re-stage it either.
-    if !pending
-        .as_ref()
-        .is_some_and(|asset| is_candidate(asset, failed.as_ref()))
-        && let UpdateCheck::UpdateAvailable(update) = manager.check_for_updates()?
-        && is_candidate(&update.TargetFullRelease, failed.as_ref())
+fn pending(manager: &UpdateManager, marker: &Path) -> Result<Option<VelopackAsset>, Error> {
+    let failed = read_version_marker(marker)?;
+    Ok(manager
+        .get_update_pending_restart()
+        .filter(|a| is_candidate(a, failed.as_ref())))
+}
+
+fn stage_update(
+    manager: &UpdateManager,
+    marker: &Path,
+    downloading: impl Fn(Option<u8>) + Sync,
+) -> Result<Option<String>, Failure> {
+    let failed = read_version_marker(marker).map_err(|_| Failure::Apply)?;
+    if let Some(asset) = manager
+        .get_update_pending_restart()
+        .filter(|a| is_candidate(a, failed.as_ref()))
     {
-        manager.download_updates(&update, None)?;
-        tracing::info!("desktop update staged for next launch");
+        return Ok(Some(asset.Version));
     }
-    Ok(())
+    let check = manager.check_for_updates().map_err(|_| Failure::Check)?;
+    // Do not let a failed package block checking the feed, but do not re-stage it either.
+    let UpdateCheck::UpdateAvailable(update) = check else {
+        return Ok(None);
+    };
+    if !is_candidate(&update.TargetFullRelease, failed.as_ref()) {
+        return Err(Failure::Apply);
+    }
+    downloading(None);
+    std::thread::scope(|scope| {
+        let (tx, rx) = mpsc::channel::<i16>();
+        let downloading = &downloading;
+        // Progress is best effort; if the relay can't start, the download still proceeds.
+        let _ = std::thread::Builder::new()
+            .name("todo-update-progress".into())
+            .spawn_scoped(scope, move || {
+                for percent in rx {
+                    if (0..=100).contains(&percent) {
+                        downloading(Some(percent as u8));
+                    }
+                }
+            });
+        manager.download_updates(&update, Some(tx))
+    })
+    .map_err(|_| Failure::Download)?;
+    let asset = manager
+        .get_update_pending_restart()
+        .filter(|a| is_candidate(a, failed.as_ref()))
+        .ok_or(Failure::Download)?;
+    tracing::info!("desktop update staged for next launch");
+    Ok(Some(asset.Version))
 }
 
 fn should_apply(asset: &VelopackAsset, restarted: bool, marker: &Path) -> bool {
-    let failed = match failed_version(marker) {
+    let failed = match read_version_marker(marker) {
         Ok(failed) => failed,
         Err(e) => {
             tracing::warn!(error = %e, "could not read the desktop update failure marker");
@@ -314,7 +557,7 @@ fn should_apply(asset: &VelopackAsset, restarted: bool, marker: &Path) -> bool {
     }
     if restarted {
         tracing::warn!(version = %asset.Version, "desktop update did not apply; skipping this version");
-        if let Err(e) = record_failed_version(marker, &asset.Version) {
+        if let Err(e) = write_version_marker(marker, &asset.Version) {
             tracing::warn!(error = %e, "could not record the failed desktop update");
         }
         return false;
@@ -334,7 +577,7 @@ pub fn apply_pending(restarted: bool) -> bool {
     if !should_apply(&asset, restarted, &marker) {
         return false;
     }
-    match manager.wait_exit_then_apply_updates(asset, true, true, std::env::args_os().skip(1)) {
+    match launch_apply(&manager, asset) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!(error = %e, "could not start the staged desktop update");
@@ -343,9 +586,83 @@ pub fn apply_pending(restarted: bool) -> bool {
     }
 }
 
+fn launch_apply(manager: &UpdateManager, asset: VelopackAsset) -> Result<(), Error> {
+    manager.wait_exit_then_apply_updates(asset, true, true, std::env::args_os().skip(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_now_publishes_before_waking_and_never_queues_a_second_check() {
+        let controller = Controller::fixture(State::Idle);
+        let (wake, requests) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let revocation = Revocation::default();
+        *controller.0.worker.lock().expect("updater lock") = Some(Connection {
+            stopped: stopped.clone(),
+            revocation: revocation.clone(),
+            wake,
+        });
+        let mut observer = controller.subscribe();
+        controller.check_now();
+        assert!(observer.has_changed().expect("watch is open"));
+        assert_eq!(observer.borrow_and_update().state, State::Checking);
+        assert_eq!(requests.try_recv(), Ok(()));
+        assert!(
+            !controller.for_worker(&stopped, Snapshot::begin),
+            "a due auto-check cannot race the click"
+        );
+        controller.check_now();
+        assert_eq!(requests.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        revocation.observe_status(401);
+        assert_eq!(controller.snapshot().state, State::Unpaired);
+        let worker = Worker {
+            control: controller.clone(),
+            stopped: stopped.clone(),
+        };
+        drop(worker);
+        assert_eq!(requests.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+        assert!(
+            !controller.for_worker(&stopped, |s| {
+                s.set(
+                    State::Ready {
+                        version: "0.1.0-build.147".into(),
+                    },
+                    false,
+                );
+                true
+            }),
+            "a cancelled worker cannot publish a late result"
+        );
+        assert_eq!(controller.snapshot().state, State::Unpaired);
+    }
+
+    #[test]
+    fn dismissal_survives_reopening_but_does_not_hide_a_new_version() {
+        let dir = tempfile::tempdir().expect("packages directory");
+        let marker = dir.path().join(".todo-dismissed-update");
+        let ready = |version: &str| {
+            Controller::with_state(
+                Some("0.1.0-build.9".into()),
+                State::Ready {
+                    version: version.into(),
+                },
+                Some(marker.clone()),
+            )
+        };
+        let controller = ready("0.1.0-build.10");
+        controller.dismiss("0.1.0-build.10");
+        let reopened = ready("0.1.0-build.10").snapshot();
+        assert_eq!(reopened.ready_version(), Some("0.1.0-build.10"));
+        assert_eq!(reopened.indicator_version(), None);
+        assert_eq!(
+            ready("0.1.0-build.11").snapshot().indicator_version(),
+            Some("0.1.0-build.11")
+        );
+    }
 
     #[test]
     fn a_failed_restart_skips_the_same_version_on_later_launches() {
@@ -359,7 +676,7 @@ mod tests {
         assert!(!marker.exists());
         assert!(!should_apply(&asset, true, &marker));
         assert!(!should_apply(&asset, false, &marker));
-        let failed = failed_version(&marker).expect("read persisted marker");
+        let failed = read_version_marker(&marker).expect("read persisted marker");
         assert!(!is_candidate(&asset, failed.as_ref()));
         asset.Version = "0.1.0-build.8".into();
         assert!(!is_candidate(&asset, failed.as_ref()));
@@ -368,18 +685,6 @@ mod tests {
         assert!(should_apply(&asset, false, &marker));
         assert!(!should_apply(&asset, true, &marker));
         assert!(!should_apply(&asset, false, &marker));
-    }
-
-    #[test]
-    fn check_backoff_caps_and_resets_after_success() {
-        let mut backoff = CheckBackoff::default();
-        assert_eq!(backoff.after_check(true), Duration::from_hours(6));
-        assert_eq!(backoff.after_check(false), Duration::from_mins(5));
-        assert_eq!(backoff.after_check(false), Duration::from_mins(30));
-        assert_eq!(backoff.after_check(false), Duration::from_hours(6));
-        assert_eq!(backoff.after_check(false), Duration::from_hours(6));
-        assert_eq!(backoff.after_check(true), Duration::from_hours(6));
-        assert_eq!(backoff.after_check(false), Duration::from_mins(5));
     }
 
     #[test]

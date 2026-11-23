@@ -1,4 +1,4 @@
-//! The tray icon and its menu: show/hide, quick add, Start with Windows, quit.
+//! The tray icon and its menu: show/hide, quick add, Start with Windows, update, quit.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -13,6 +13,7 @@ pub enum TrayAction {
     ToggleWindow,
     QuickAdd,
     ToggleAutostart,
+    RestartToUpdate,
     Quit,
 }
 
@@ -21,6 +22,7 @@ struct Ids {
     show: MenuId,
     quick_add: MenuId,
     autostart: MenuId,
+    restart: MenuId,
     quit: MenuId,
 }
 
@@ -32,6 +34,8 @@ impl Ids {
             Some(TrayAction::QuickAdd)
         } else if id == &self.autostart {
             Some(TrayAction::ToggleAutostart)
+        } else if id == &self.restart {
+            Some(TrayAction::RestartToUpdate)
         } else if id == &self.quit {
             Some(TrayAction::Quit)
         } else {
@@ -47,9 +51,33 @@ pub struct Tray {
     /// Reports scale changes to the closure that reloads the icon.
     _watch: Option<DpiWatch>,
     autostart: CheckMenuItem,
+    menu: Menu,
+    restart: MenuItem,
+    restart_visible: Cell<bool>,
 }
 
 impl Tray {
+    pub fn set_staged_update(&self, version: Option<&str>) {
+        match version {
+            Some(version) => {
+                self.restart
+                    .set_text(format!("Restart to update ({version})"));
+                if !self.restart_visible.get() {
+                    // Before Quit, in the same group.
+                    match self.menu.insert(&self.restart, 5) {
+                        Ok(()) => self.restart_visible.set(true),
+                        Err(e) => tracing::warn!("could not add tray update action: {e}"),
+                    }
+                }
+            }
+            None if self.restart_visible.get() => match self.menu.remove(&self.restart) {
+                Ok(()) => self.restart_visible.set(false),
+                Err(e) => tracing::warn!("could not remove tray update action: {e}"),
+            },
+            None => {}
+        }
+    }
+
     /// Reflects the Start with Windows setting in the menu.
     pub fn set_autostart_checked(&self, checked: bool) {
         self.autostart.set_checked(checked);
@@ -75,6 +103,7 @@ pub fn create(
     let quick_add = MenuItem::new(quick_add_label(hotkey_registered), true, None);
     let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled, None);
     let quit = MenuItem::new("Quit", true, None);
+    let restart = MenuItem::new("Restart to update", true, None);
     let menu = Menu::new();
     menu.append_items(&[
         &show,
@@ -88,6 +117,7 @@ pub fn create(
         show: show.id().clone(),
         quick_add: quick_add.id().clone(),
         autostart: autostart.id().clone(),
+        restart: restart.id().clone(),
         quit: quit.id().clone(),
     };
 
@@ -96,7 +126,7 @@ pub fn create(
         TrayIconBuilder::new()
             .with_tooltip("To-do")
             .with_icon(load_icon(size)?)
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .with_menu_on_left_click(false)
             .build()?,
     );
@@ -140,6 +170,9 @@ pub fn create(
         _icon: tray,
         _watch: watch,
         autostart,
+        menu,
+        restart,
+        restart_visible: Cell::new(false),
     })
 }
 

@@ -27,6 +27,7 @@ use crate::ui::kit::CaptionPreview;
 use crate::ui::pairing::PairingView;
 use crate::ui::quick_add::{self, QuickAddView};
 use crate::ui::shell::{self, ShellView};
+use crate::updates::{self, State as UpdateState};
 use crate::{fixtures, fonts, ui};
 
 /// The main window's size in the fixtures: the design's reference window, 1440 × 900 (the three panes side by
@@ -260,6 +261,12 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                         shell.freeze(moment, window, cx);
                     }
                     shell.preview_menu(&opts.fixture, window, cx);
+                    if let Some(state) = update_fixture(&opts.fixture, fixture.now.at) {
+                        shell.set_updates(updates::Controller::fixture(state), cx);
+                        if opts.fixture != "updates-indicator" {
+                            shell.open_updates(window, cx);
+                        }
+                    }
                     shell
                 });
                 // GPUI's own focus, inside the window: nothing is activated or shown.
@@ -292,6 +299,27 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     save(&image, &opts.out, opts.overwrite)?;
     println!("wrote {} ({}x{})", opts.out.display(), got.0, got.1);
     Ok(())
+}
+
+fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateState> {
+    use todo_core::time::Timestamp;
+    let earlier =
+        |minutes: i64| Timestamp::from_second(now.as_second() - 60 * minutes).unwrap_or(now);
+    Some(match name {
+        "updates-up-to-date" => UpdateState::UpToDate {
+            checked_at: earlier(5),
+        },
+        "updates-checking" => UpdateState::Checking,
+        "updates-downloading" => UpdateState::Downloading { progress: Some(42) },
+        "updates-ready" | "updates-indicator" => UpdateState::Ready {
+            version: "0.1.0-build.147".into(),
+        },
+        "updates-failed" => UpdateState::Failed {
+            kind: updates::Failure::Check,
+            at: earlier(2),
+        },
+        _ => return None,
+    })
 }
 
 /// Check the actual HWND before overriding the renderer's scale. The old capture-only

@@ -168,6 +168,7 @@ pub struct RootView {
     focus: FocusHandle,
     signing_out: bool,
     restore_popouts: bool,
+    updates: crate::updates::Controller,
     popouts: Option<Popouts>,
     _subscriptions: Vec<Subscription>,
 }
@@ -177,6 +178,7 @@ impl RootView {
         startup: Startup,
         theme: Theme,
         restore_popouts: bool,
+        updates: crate::updates::Controller,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -195,6 +197,7 @@ impl RootView {
             focus: cx.focus_handle(),
             signing_out: false,
             restore_popouts,
+            updates,
             popouts: None,
             _subscriptions: Vec::new(),
         };
@@ -341,9 +344,14 @@ impl RootView {
             ..UiState::default()
         };
         session.start();
+        session.start_updates(&self.updates);
         let store = Rc::new(Store::Live(LiveStore::new(session)));
         let theme = self.theme;
-        let view = cx.new(|cx| ShellView::new(store, ui, theme, None, window, cx));
+        let view = cx.new(|cx| {
+            let mut shell = ShellView::new(store, ui, theme, None, window, cx);
+            shell.set_updates(self.updates.clone(), cx);
+            shell
+        });
         // Reminder toasts, also while the window is hidden in the tray.
         view.update(cx, |s, cx| s.start_reminders(window, cx));
         let events =
@@ -352,6 +360,12 @@ impl RootView {
                 window,
                 |this, _, event: &ShellEvent, window, cx| match event {
                     ShellEvent::SignOut => this.sign_out(window, cx),
+                    ShellEvent::RestartToUpdate => {
+                        if this.restart_to_update(cx) {
+                            window.remove_window();
+                            cx.quit();
+                        }
+                    }
                     ShellEvent::PopOut(room) => {
                         if !this.signing_out
                             && let Some(popouts) = &mut this.popouts
@@ -470,6 +484,24 @@ impl RootView {
                 }
             }
             Err(e) => self.show_failed(format!("{text} ({e})").into(), None, window, cx),
+        }
+    }
+
+    /// Use the Quit cleanup only once Velopack is waiting for this process to exit.
+    pub fn restart_to_update(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.signing_out || !self.updates.restart() {
+            return false;
+        }
+        self.before_quit(cx);
+        true
+    }
+
+    /// A failed tray restart leaves the process running. Show the reason in Updates when available.
+    pub fn show_update_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.signing_out
+            && let Screen::Shell(shell) = &self.screen
+        {
+            shell.update(cx, |shell, cx| shell.open_updates(window, cx));
         }
     }
 

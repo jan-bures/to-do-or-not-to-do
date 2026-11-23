@@ -41,6 +41,7 @@ enum ShellEvent {
     QuickAddShown,
     /// The clock was changed or the computer woke up: reminders are planned again.
     ClockJumped,
+    UpdateChanged,
 }
 
 /// Native handles of the two windows.
@@ -123,6 +124,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
     if !standalone && bench.is_none() && crate::updates::apply_pending(restarted) {
         return Ok(());
     }
+    let updates = crate::updates::Controller::new(!standalone && bench.is_none());
     let mut metrics = Metrics::default();
     if bench.is_some() {
         metrics.ms("main_entered_ms", win::process_age_ms());
@@ -199,7 +201,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         let hotkey_ok = hotkey.is_some();
 
         let main = match cx.open_window(main_window_options(cx, !background), |window, cx| {
-            cx.new(|cx| RootView::new(startup, theme, bench.is_none(), window, cx))
+            cx.new(|cx| RootView::new(startup, theme, bench.is_none(), updates.clone(), window, cx))
         }) {
             Ok(w) => w,
             Err(e) => {
@@ -248,12 +250,31 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
             });
         }
 
+        if let Some(tray) = &tray {
+            let mut status = updates.subscribe();
+            tray.set_staged_update(status.borrow_and_update().ready_version());
+            let update_tx = tx.clone();
+            cx.spawn(async move |_: &mut AsyncApp| {
+                while status.changed().await.is_ok() {
+                    if update_tx.unbounded_send(ShellEvent::UpdateChanged).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         let exe_for_events = exe.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
             // The tray, the hotkey registration and the clock watch live as long as this loop.
             let _hotkey = hotkey;
             let _clock = clock;
             while let Some(event) = rx.next().await {
+                if event == ShellEvent::UpdateChanged {
+                    if let Some(tray) = &tray {
+                        tray.set_staged_update(updates.snapshot().ready_version());
+                    }
+                    continue;
+                }
                 // Positioning sends synchronous move/resize messages back into GPUI.
                 if event == ShellEvent::Tray(TrayAction::QuickAdd) {
                     quick_add::show(hwnds.quick);
@@ -384,14 +405,30 @@ fn handle_event(
                 tray.set_autostart_checked(autostart.is_enabled(exe));
             }
         }
-        ShellEvent::Tray(TrayAction::Quit) => {
-            let _ = main.update(cx, |root, window, cx| {
-                root.before_quit(cx);
-                window.remove_window();
-            });
-            cx.quit();
-            return true;
+        ShellEvent::Tray(action @ (TrayAction::Quit | TrayAction::RestartToUpdate)) => {
+            let quit = main
+                .update(cx, |root, window, cx| {
+                    if action == TrayAction::RestartToUpdate {
+                        if !root.restart_to_update(cx) {
+                            return false;
+                        }
+                    } else {
+                        root.before_quit(cx);
+                    }
+                    window.remove_window();
+                    true
+                })
+                .unwrap_or(action == TrayAction::Quit);
+            if quit {
+                cx.quit();
+                return true;
+            }
+            if action == TrayAction::RestartToUpdate {
+                win::show_and_focus(hwnds.main);
+                let _ = main.update(cx, |root, window, cx| root.show_update_error(window, cx));
+            }
         }
+        ShellEvent::UpdateChanged => {} // Handled before dispatch.
     }
     false
 }

@@ -73,6 +73,10 @@ pub enum MenuAction {
     OpenAdmin,
     /// Open the device settings dialog.
     DeviceSettings,
+    OpenUpdates,
+    CloseUpdates,
+    CheckUpdates,
+    RestartToUpdate,
     /// Retry syncing now instead of waiting out the backoff.
     SyncNow,
     /// Ask before signing out: the item turns into the confirmation.
@@ -256,7 +260,7 @@ impl MenuEntry {
     }
 }
 
-fn item(
+pub fn item(
     key: impl Into<SharedString>,
     icon: Icon,
     label: impl Into<SharedString>,
@@ -1149,7 +1153,7 @@ pub fn collection_menu(
 }
 
 /// The account menu (the sidebar footer's gear): the server the app is paired with, its admin pages,
-/// Sync now and Sign out. Without a server (the sample data) only Sign out is offered. Once Sign out was
+/// Sync now, Updates and Sign out. Without a server (the sample data) the account links are omitted. Once Sign out was
 /// chosen, the menu is its confirmation.
 pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
     if confirming {
@@ -1194,8 +1198,16 @@ pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
             "Devices…",
             MenuAction::DeviceSettings,
         ));
-        entries.push(MenuEntry::Separator);
     }
+    entries.extend([
+        item(
+            "updates",
+            Icon::ArrowUp,
+            "Updates…",
+            MenuAction::OpenUpdates,
+        ),
+        MenuEntry::Separator,
+    ]);
     entries.push(item(
         "sign-out",
         Icon::LogOut,
@@ -2480,6 +2492,7 @@ second line"
                 MenuAction::OpenAdmin,
                 MenuAction::SyncNow,
                 MenuAction::DeviceSettings,
+                MenuAction::OpenUpdates,
                 MenuAction::AskSignOut
             ]
         );
@@ -2499,9 +2512,12 @@ second line"
         assert_eq!(admin_url("http://todo.example.com"), None);
         assert_eq!(admin_url("javascript:alert(1)"), None);
         assert_eq!(admin_url("file:///C:/Windows"), None);
-        // The sample data has no server: only Sign out.
+        // The sample data has no server, but still has installation settings.
         let sample = account_menu(None, false);
-        assert_eq!(actions(&sample), [MenuAction::AskSignOut]);
+        assert_eq!(
+            actions(&sample),
+            [MenuAction::OpenUpdates, MenuAction::AskSignOut]
+        );
         // Confirming, the menu is only the question and its two buttons.
         let confirm = account_menu(Some("https://todo.example.com"), true);
         assert_eq!(actions(&confirm), [MenuAction::SignOut, MenuAction::Cancel]);

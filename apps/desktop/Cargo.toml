@@ -39,7 +39,7 @@ serde_json = "1"
 tempfile = "3"
 uuid = "1"
 # The sync engine's runtime (network I/O runs here, never on the UI thread).
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 anyhow = "1"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }

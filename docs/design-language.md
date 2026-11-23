@@ -257,7 +257,10 @@ whole logical pixels; the bar fades out over the same duration when neither hove
    minimum sidebar width, only the sync label can truncate. **Settings** uses the same menu keys. It
    shows the server above **Open admin pages** and **Sync now**. Its **Devices…** item sits above
    **Sign out** (Android: **Unpair this phone**), opens the device pairing dialog, and returns focus
-   to the gear when the dialog closes.
+   to the gear when the dialog closes. Desktop **Updates…** opens a settings page at the same anchor.
+   It shows version and state, with a quiet **Check now** and a primary **Restart to update** only when
+   ready. A staged update adds one quiet, dismissible strip above the desktop footer, outside the
+   rooms' scroll area. The strip opens Updates, never a modal; checking and downloading never animate.
 
 On **Android**, the room list moves from a top-anchored side drawer to a bottom-anchored **Room Switcher
 sheet** so every primary control stays in the thumb zone (`docs/android-thumb-zone.md`). Collections, their

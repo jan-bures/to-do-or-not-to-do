@@ -782,7 +782,8 @@ impl ShellView {
             .role(Role::Button)
             .aria_label("Settings")
             .aria_expanded(self.menu.as_ref().is_some_and(|m| {
-                matches!(m.kind, MenuKind::Account { .. }) && m.overlay.look(self.frame).open
+                matches!(m.kind, MenuKind::Account { .. } | MenuKind::Updates)
+                    && m.overlay.look(self.frame).open
             }))
             .relative()
             .size(px(component::ICON_BUTTON))
@@ -799,7 +800,10 @@ impl ShellView {
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 this.control_key(e, window, cx);
             }))
-            .children(self.menu_anchor(|k| matches!(k, MenuKind::Account { .. }), cx));
+            .children(self.menu_anchor(
+                |k| matches!(k, MenuKind::Account { .. } | MenuKind::Updates),
+                cx,
+            ));
         let account = ring(
             &p,
             self.account_focus.is_focused(window),
@@ -852,6 +856,7 @@ impl ShellView {
                             .overlay(&self.sidebar_scroll, &p, self.animate),
                     ),
             )
+            .children(self.update_indicator(window, cx))
             .child(
                 div()
                     .h(px(desktop::SIDEBAR_FOOTER))
