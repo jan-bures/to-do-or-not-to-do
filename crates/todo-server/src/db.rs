@@ -390,7 +390,18 @@ pub fn lock_database(db: &Path) -> Result<OwnerLock> {
 
 /// Opens (creating if needed) the database for writing, enables WAL and runs migrations.
 pub fn open_writer(path: &Path) -> Result<Connection> {
-    let mut conn = Connection::open(path)?;
+    configure_writer(Connection::open(path)?)
+}
+
+/// Opens an existing database for writing, enables WAL and runs migrations, without creating it.
+pub(crate) fn open_existing_writer(path: &Path) -> Result<Connection> {
+    configure_writer(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?)
+}
+
+fn configure_writer(mut conn: Connection) -> Result<Connection> {
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(StoreError::Corrupt(format!(

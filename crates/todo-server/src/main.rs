@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::path::PathBuf;
-use todo_server::auth::service::{AuthService, SETUP_CODE_FILE};
+use todo_server::auth::service::AuthService;
 use todo_server::config::CONFIG_ENV;
 use todo_server::{Config, Engine, Options, Server};
 
@@ -31,6 +31,12 @@ enum Cmd {
         /// Confirm deletion of all passkeys and sessions and revocation of all paired devices.
         #[arg(long)]
         yes: bool,
+        /// Also revoke all agent tokens. Recommended after a compromise.
+        #[arg(long)]
+        revoke_agents: bool,
+        /// Also revoke all share links. Recommended after a compromise.
+        #[arg(long)]
+        revoke_shares: bool,
     },
     /// Give the event log a new epoch, then exit. Run it, with the server stopped, after restoring
     /// the database from a backup: clients that followed the replaced log then resync from scratch
@@ -100,17 +106,33 @@ fn main() -> anyhow::Result<()> {
             tracing::info!(head, "projections rebuilt");
             Ok(())
         }
-        Cmd::ResetOwner { yes } => {
+        Cmd::ResetOwner {
+            yes,
+            revoke_agents,
+            revoke_shares,
+        } => {
             anyhow::ensure!(
                 yes,
                 "pass --yes to clear all owner sign-ins; task data is kept"
             );
             let config = Config::load(cli.config.as_deref())?;
-            AuthService::reset_owner(&config)?;
+            let report = AuthService::reset_owner(&config, revoke_agents, revoke_shares)?;
+            let counts = report.counts;
             println!(
-                "Owner sign-ins reset. Start the server and open /setup. The one-time code is in {} (readable only by this account).\n\
-                 Agent tokens and share links are unchanged. Review Agents and Shares after setup, or use the local admin API: GET /api/v1/admin/agents and GET /api/v1/admin/shares.",
-                config.data_dir.join(SETUP_CODE_FILE).display()
+                "Owner sign-ins reset in {}.\n\
+                 Passkeys removed: {}; browser sessions removed: {}; paired devices revoked: {}; invites removed: 0 (already cleared when the server stopped).\n\
+                 Start the server and open /setup. The one-time code is in {} (readable only by this account).\n\
+                 Active agent tokens remaining: {} (revoked: {}). Active share links remaining: {} (revoked: {}).\n\
+                 To revoke remaining credentials, use --revoke-agents and/or --revoke-shares on reset, Agents and Shares after setup, or the local admin API (POST /api/v1/admin/agents/{{id}}/revoke and POST /api/v1/admin/shares/{{id}}/revoke).",
+                report.database.display(),
+                counts.passkeys_removed,
+                counts.sessions_removed,
+                counts.devices_revoked,
+                report.setup_file.display(),
+                counts.agents_remaining,
+                counts.agents_revoked,
+                counts.shares_remaining,
+                counts.shares_revoked,
             );
             Ok(())
         }

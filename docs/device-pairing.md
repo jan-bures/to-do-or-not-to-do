@@ -27,7 +27,7 @@ never be revoked through the UI: there is no earlier passkey to verify with.
 
 If a device cascade is blocked and you cannot verify with the required passkey, revoke the issuing
 device from the server host with the [local admin token](admin-api.md#examples). That path is not
-subject to passkey ordering, but a revocation that would leave no passkeys is refused. Keep a
+subject to passkey ordering, but a cascade that would remove the last passkey is refused. Keep a
 recoverable copy of the first passkey. If it is lost or compromised, use [owner recovery](#owner-recovery).
 
 Agent tokens and share links created from a derived session are not removed by the cascade. Review
@@ -44,16 +44,21 @@ If you lose access to your passkeys or need to retire a compromised first passke
 server host. Use the same config, working directory and account as the running server:
 
 1. Stop `todo-server`. For a systemd service, see [the Linux commands](hosting-linux.md#recovering-owner-access).
-2. Run `todo-server --config <config-file> reset-owner --yes`. This requires the server's database
-   lock. It deletes all passkeys and browser sessions, revokes every paired device, and records an
-   `owner_reset` audit entry. Pending invites and pairing requests disappear when the server stops.
-   Tasks and their history are kept.
-3. Start the server. Read `setup-code.txt` in its data directory (the file is readable only by the
-   server account) and enter the code at `/setup` within 15 minutes of startup. A second restart
-   before registration replaces the code. If reset could not write the file, startup creates a new
-   code once the data directory is writable. Register a new passkey and pair your devices again.
-4. Review agent tokens and share links under **Agents** and **Shares**, or through the
-   [local admin API](admin-api.md#routes). These credentials are not changed by recovery.
+2. Check the database path with `todo-server --config <config-file> database-path`, then run
+   `todo-server --config <config-file> reset-owner --yes`. It requires an existing database and
+   its lock. It deletes all passkeys and browser sessions, revokes every paired device, and records
+   an `owner_reset` audit entry. It prints the canonical database and setup-code paths and the counts,
+   not the code. Pending invites and pairing requests disappear when the server stops. Tasks and
+   their history are kept. **After a compromise**, add `--revoke-agents --revoke-shares`. These revoke
+   agent tokens and share links in the same transaction and include those counts in the audit entry.
+3. Start the server with `public_origin` configured. Read `setup-code.txt` (readable only by the
+   server account) and enter the code at `/setup` within 15 minutes of startup and, for a code
+   generated offline, within 24 hours of reset. If the offline code has already expired or could not
+   be written, startup creates a new one. A second restart before registration replaces the code;
+   starting without `public_origin` discards it. Register a new passkey and pair your devices again.
+4. By default, agent tokens and share links survive recovery. The reset reports how many remain
+   active. Review and revoke them under **Agents** and **Shares**, or through the
+   [local admin API](admin-api.md#routes).
 
 ## Protocol and security
 

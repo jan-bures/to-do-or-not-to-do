@@ -341,8 +341,15 @@ sudo systemctl start todo-server
 sudo cat /var/lib/todo/setup-code.txt
 ```
 
-Open `/setup` on the server within 15 minutes of startup. Register a new passkey, pair your devices
-again, and review agent tokens and share links. Don't copy the setup code into a log or support message.
+After a compromise, add `--revoke-agents --revoke-shares` to the reset command. This revokes agent
+tokens and share links in the same audited transaction. Without the flags, the reset leaves them
+unchanged and reports how many remain active. Check the canonical database path printed by the
+reset before starting the service again.
+
+Open `/setup` within 15 minutes of startup. A code generated offline expires 24 hours after reset;
+if that deadline has passed at startup, the server writes a fresh code to the same file. Register
+a new passkey, pair your devices again, and review any remaining agent tokens and share links.
+Don't copy the setup code into a log or support message.
 
 ### An interrupted deploy
 
@@ -1019,7 +1026,7 @@ Only paths and modes are listed here; no value belongs in this repository.
 | R2 credentials for backups | `/etc/todo/r2-backups.json` | root:todo 0640 | `todo-backup` |
 | Email ingest HMAC secret | `/etc/todo/ingest-email-hmac.secret` | todo:todo 0600 | `todo-server`, which refuses it with any other owner or mode |
 | Attachment master key | `/var/lib/todo/attachments.key` | todo:todo 0600 | `todo-server`, which creates it on the first start. Keep a copy in the password manager. |
-| Setup code (first start only) | `/var/lib/todo/setup-code.txt` | todo:todo 0600 | you, once; the server removes it after setup |
+| Setup code (pending setup or recovery) | `/var/lib/todo/setup-code.txt` | todo:todo 0600 | you, once; the server removes it after setup |
 | Tunnel token | `/etc/cloudflared/todo-tunnel.token` | root:cloudflared 0640 | `todo-tunnel`. The file you pass to `provision.sh` must be root-only. |
 | Admin token | not on the VM | your PC, owner-only | you |
 | Backup identity (age secret key) | not on the VM | the password manager; `/run/todo-drill/identity` during a drill | `todo-backup restore` and `drill` |

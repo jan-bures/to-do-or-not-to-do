@@ -285,15 +285,21 @@ fn revocation_impact(conn: &Connection, root: CredentialRoot<'_>) -> Result<Revo
     )?)
 }
 
-/// Clears owner sign-ins, preserving task data and separately managed capabilities. Pending invites
-/// and device pairings are in memory only, so they are already gone when the server is stopped.
-pub(crate) fn reset_owner(conn: &mut Connection, setup_hash: &str, now: i64) -> Result<()> {
-    use super::service::{META_OWNER_READY, META_RECOVERY_CODE, audit};
+/// Clears owner sign-ins and optionally revokes separately managed capabilities, preserving task
+/// data. Pending invites and pairings are in memory only, already gone when the server stops.
+pub(crate) fn reset_owner(
+    conn: &mut Connection,
+    setup_hash: &str,
+    now: i64,
+    revoke_agents: bool,
+    revoke_shares: bool,
+) -> Result<super::service::OwnerResetCounts> {
+    use super::service::{META_OWNER_READY, META_RECOVERY_CODE, OwnerResetCounts, audit};
 
     let tx = conn.transaction()?;
-    let sessions = tx.execute("DELETE FROM sessions", [])?;
-    let passkeys = tx.execute("DELETE FROM passkeys", [])?;
-    let devices = tx.execute(
+    let sessions_removed = tx.execute("DELETE FROM sessions", [])?;
+    let passkeys_removed = tx.execute("DELETE FROM passkeys", [])?;
+    let devices_revoked = tx.execute(
         "UPDATE devices SET revoked_at = ?1 WHERE revoked_at IS NULL",
         [now],
     )?;
@@ -301,7 +307,33 @@ pub(crate) fn reset_owner(conn: &mut Connection, setup_hash: &str, now: i64) -> 
     tx.execute("DELETE FROM auth_meta WHERE key = ?1", [META_OWNER_READY])?;
     tx.execute(
         "INSERT INTO auth_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        params![META_RECOVERY_CODE, setup_hash],
+        params![META_RECOVERY_CODE, format!("{now}:{setup_hash}")],
+    )?;
+    let agents_revoked = if revoke_agents {
+        tx.execute(
+            "UPDATE agent_tokens SET revoked_at = ?1 WHERE revoked_at IS NULL",
+            [now],
+        )?
+    } else {
+        0
+    };
+    let shares_revoked = if revoke_shares {
+        tx.execute(
+            "UPDATE share_links SET revoked_at = ?1 WHERE revoked_at IS NULL",
+            [now],
+        )?
+    } else {
+        0
+    };
+    let agents_remaining = tx.query_row(
+        "SELECT count(*) FROM agent_tokens WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?1)",
+        [now],
+        |r| r.get(0),
+    )?;
+    let shares_remaining = tx.query_row(
+        "SELECT count(*) FROM share_links WHERE revoked_at IS NULL",
+        [],
+        |r| r.get(0),
     )?;
     insert_audit(
         &tx,
@@ -309,13 +341,23 @@ pub(crate) fn reset_owner(conn: &mut Connection, setup_hash: &str, now: i64) -> 
         audit::OWNER_RESET,
         None,
         &serde_json::json!({
-            "actor": "reset-owner CLI", "devices_revoked": devices, "passkeys_removed": passkeys,
-            "sessions_removed": sessions,
+            "actor": "reset-owner CLI", "devices_revoked": devices_revoked,
+            "passkeys_removed": passkeys_removed, "sessions_removed": sessions_removed,
+            "agents_revoked": agents_revoked, "shares_revoked": shares_revoked,
+            "agents_remaining": agents_remaining, "shares_remaining": shares_remaining,
         })
         .to_string(),
     )?;
     tx.commit()?;
-    Ok(())
+    Ok(OwnerResetCounts {
+        passkeys_removed,
+        sessions_removed,
+        devices_revoked,
+        agents_revoked,
+        shares_revoked,
+        agents_remaining,
+        shares_remaining,
+    })
 }
 
 fn insert_session(conn: &Connection, row: &SessionRow, passkey_id: i64) -> Result<()> {
@@ -791,11 +833,11 @@ impl AuthStore {
             }
         }
         let impact = revocation_impact(&tx, root)?;
-        let remaining = tx
-            .query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))?
-            - impact.passkeys
-            - i64::from(passkey.is_some());
-        if remaining == 0 {
+        let removed_passkeys = impact.passkeys + i64::from(passkey.is_some());
+        if removed_passkeys > 0
+            && removed_passkeys
+                == tx.query_row("SELECT count(*) FROM passkeys", [], |r| r.get::<_, i64>(0))?
+        {
             return Ok(RevokeCredentials::LastPasskey);
         }
         if matches!(authority, RevocationAuthority::DeviceSelf)
