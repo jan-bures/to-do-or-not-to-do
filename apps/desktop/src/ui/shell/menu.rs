@@ -64,6 +64,8 @@ pub(super) enum TaskPage {
     Main,
     Priority,
     Move,
+    PickMerge,
+    ConfirmMerge(TaskId),
     Links,
 }
 
@@ -160,7 +162,7 @@ impl MenuKind {
         matches!(
             self,
             Self::Task {
-                page: TaskPage::Move,
+                page: TaskPage::Move | TaskPage::PickMerge,
                 ..
             } | Self::Tags {
                 page: TagPage::Pick,
@@ -271,6 +273,21 @@ impl ShellView {
                 }
                 menus::move_menu(&state, id, menu.map_or("", |m| m.filter.as_str()))
             }
+            MenuKind::Task {
+                id,
+                page: TaskPage::PickMerge,
+            } => {
+                let filter = self
+                    .menu
+                    .as_ref()
+                    .filter(|m| m.kind == kind)
+                    .map_or("", |m| m.filter.as_str());
+                menus::merge_picker(&state, id, filter)
+            }
+            MenuKind::Task {
+                id,
+                page: TaskPage::ConfirmMerge(target),
+            } => menus::merge_confirmation(&state, id, target),
             MenuKind::SyncFailures => {
                 let shown = self
                     .menu
@@ -669,9 +686,15 @@ impl ShellView {
                 );
             }
             // A task's menu turns into the picker in place; the keyboard starts on the current choice.
-            MenuAction::AskPriority(id) | MenuAction::AskMove(id) | MenuAction::AskLinks(id) => {
+            MenuAction::AskPriority(id)
+            | MenuAction::AskMove(id)
+            | MenuAction::AskLinks(id)
+            | MenuAction::PickMerge(id)
+            | MenuAction::AskMerge(id, _) => {
                 let page = match action {
                     MenuAction::AskMove(_) => TaskPage::Move,
+                    MenuAction::PickMerge(_) => TaskPage::PickMerge,
+                    MenuAction::AskMerge(_, target) => TaskPage::ConfirmMerge(target),
                     MenuAction::AskLinks(_) => TaskPage::Links,
                     _ => TaskPage::Priority,
                 };
@@ -744,7 +767,10 @@ impl ShellView {
         // it was open, nothing is deleted and the new question is asked, the keyboard on Cancel.
         if matches!(
             action,
-            MenuAction::DeleteList(_) | MenuAction::DeleteCollection(_) | MenuAction::DeleteTag(_)
+            MenuAction::DeleteList(_)
+                | MenuAction::DeleteCollection(_)
+                | MenuAction::DeleteTag(_)
+                | MenuAction::Merge(..)
         ) {
             match menus::on_confirm(menu.asked.as_ref(), &self.live_menu_entries(menu.kind)) {
                 Confirmed::Gone => return self.close_menu(false, window, cx),
@@ -860,6 +886,11 @@ impl ShellView {
                 }
             }
             MenuAction::DeleteTask(task) => self.delete_task(task, cx),
+            MenuAction::Merge(source, target) => {
+                if let Some(asked) = menu.asked {
+                    self.merge_task(source, target, &asked.question, cx);
+                }
+            }
             MenuAction::DismissAllFailures => {
                 self.dismiss_failure(None, &menu);
                 self.refresh(cx);
@@ -879,6 +910,8 @@ impl ShellView {
             | MenuAction::Reminder(..)
             | MenuAction::AskPriority(_)
             | MenuAction::AskMove(_)
+            | MenuAction::PickMerge(_)
+            | MenuAction::AskMerge(..)
             | MenuAction::AskLinks(_)
             | MenuAction::EditTag(..)
             | MenuAction::AllTags(_)
@@ -1453,6 +1486,24 @@ impl ShellView {
             .relative()
             .top(px(shift))
             .opacity(look.alpha)
+            .when(
+                matches!(
+                    kind,
+                    MenuKind::Task {
+                        page: TaskPage::PickMerge,
+                        ..
+                    }
+                ),
+                |d| {
+                    d.child(
+                        div()
+                            .px(px(space::S3))
+                            .pt(px(space::S2))
+                            .opacity(look.content)
+                            .child(kit::label(&p, "Merge into…")),
+                    )
+                },
+            )
             .children(filter)
             .child(items)
             .when_some(footer_menu.filter(|_| live), |d, label| {
@@ -1591,11 +1642,14 @@ impl ShellView {
         };
         let action = item.action;
         let hover = if item.checked { p.tint } else { p.hover };
+        let merge_choice = matches!(action, MenuAction::AskMerge(..));
         div()
             .id(item.key.clone())
             .group(item.key.clone())
             .mx(px(space::S1))
-            .h(px(desktop::NAV_ROW))
+            .h(px(
+                desktop::NAV_ROW + if merge_choice { space::S3 } else { 0. }
+            ))
             .px(px(space::S2))
             .flex()
             .items_center()
@@ -1642,14 +1696,28 @@ impl ShellView {
                 )
                 .into_any_element(),
             })
-            .child(
+            .child(if merge_choice {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(item.label.clone()))
+                    .children(item.hint.clone().map(|hint| {
+                        div()
+                            .style(ty::META)
+                            .text_color(p.ink_3)
+                            .truncate()
+                            .child(hint)
+                    }))
+            } else {
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(item.label.clone()),
-            )
-            .children(item.hint.clone().map(|hint| {
+                    .child(item.label.clone())
+            })
+            .children(item.hint.clone().filter(|_| !merge_choice).map(|hint| {
                 div()
                     .flex_none()
                     .style(ty::PRIORITY)
@@ -1787,7 +1855,7 @@ impl ShellView {
                 small(kit::button(p, item.label.clone())).bg(p.danger),
                 p.danger,
             )
-        } else if applies(item.action) {
+        } else if applies(item.action) || matches!(item.action, MenuAction::Merge(..)) {
             (small(kit::button(p, item.label.clone())), p.accent_fill)
         } else {
             (

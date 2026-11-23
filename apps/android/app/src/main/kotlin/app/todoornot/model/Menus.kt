@@ -34,6 +34,7 @@ sealed interface MenuAction {
     data class Important(val on: Boolean) : MenuAction
     data object PickPriority : MenuAction
     data object PickList : MenuAction
+    data object PickMerge : MenuAction
     data object DeleteTask : MenuAction
     data class ReorderTask(val list: String, val neighbour: String?, val by: Int) : MenuAction
 
@@ -72,6 +73,7 @@ fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority
     add(MenuEntry.Item(if (important) "star-filled" else "star", if (important) "Remove importance" else "Mark as important", MenuAction.Important(!important)))
     add(MenuEntry.Item("flag", "Priority…", MenuAction.PickPriority, hint = "!".repeat(priority).ifEmpty { null }))
     add(MenuEntry.Item("list", "Move to…", MenuAction.PickList))
+    add(MenuEntry.Item("list-plus", "Merge into…", MenuAction.PickMerge))
     val list = room.key as? RoomKey.List
     if (list != null && !done) {
         val i = room.tasks.indexOfFirst { it.id == id }

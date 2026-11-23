@@ -961,6 +961,19 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
+.task-merge-picker[open] { display: flex; flex-direction: column; }
+.task-merge-picker .task-move-choices { min-block-size: 0; }
+.task-merge-picker .room-name-input, .task-merge-picker .dialog-actions { flex-shrink: 0; }
+.task-merge-picker .task-move-choices p { overflow-wrap: anywhere; }
+.merge-choice-text { display: grid; min-width: 0; }
+.merge-location {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-meta);
+  color: var(--color-ink-3);
+}
+
 .task-move-picker .room-name-input {
   min-height: var(--phone-touch);
   border-color: var(--color-control);

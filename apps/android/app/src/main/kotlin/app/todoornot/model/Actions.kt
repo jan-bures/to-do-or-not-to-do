@@ -1,6 +1,7 @@
 package app.todoornot.model
 
 import app.todoornot.core.DestinationGroup
+import app.todoornot.core.MergeCandidate
 import app.todoornot.core.ReminderRef
 import app.todoornot.core.RoomKey
 
@@ -19,6 +20,9 @@ interface Actions {
     fun deleteTask(id: String)
     suspend fun moveDestinations(id: String, filter: String): List<DestinationGroup>
     fun moveTaskTo(id: String, from: String, list: String)
+    suspend fun mergeCandidates(id: String, filter: String): List<MergeCandidate> = emptyList()
+    suspend fun mergeQuestion(id: String, target: String): String? = null
+    fun mergeTasks(id: String, target: String, asked: String, onResult: (String?) -> Unit) = Unit
     fun reorderTask(list: String, id: String, neighbour: String, by: Int)
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft

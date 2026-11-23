@@ -56,13 +56,18 @@ What the first version does:
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
 - **Task actions.** Long-press a task row or tap **⋯** in its detail header. The menu offers Complete or
-  Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to… and
-  Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
+  Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to…,
+  Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
   from a list or collection name to filter; case and accents don't matter. The task moves to the front
   of the chosen list. In a manual list, **Move up** and **Move down** move an open task past its visible
   neighbour. **Delete task** doesn't ask first and closes that task's detail. All three changes offer
   **Undo**. If another device reorders the moved task before Undo, the change stays and the failed-change
   banner explains: “Undo moving a task: Couldn't undo: the task was changed again.”
+- **Merge into…** finds other open tasks across lists. Filter by title (case and accents don't matter),
+  then pick a destination and confirm. Its list, title, priority and schedule stay as they were; the
+  source's notes, live steps, links, attachments and reminders move over, and tags are combined.
+  If either task changes name or list while the question is open, the app rechecks it on confirm.
+  **Undo** reverses the whole merge. The `merge_tasks` Paparazzi gallery shows the picker and confirmation.
 - **Due date and priority.** In the detail pane, the **Due** row opens the date picker: the Material date
   picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
   (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes

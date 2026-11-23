@@ -311,6 +311,17 @@ room. An owner device is shown as **You**, not by its device ID. Editing a compl
 who completed it; when the replica doesn't know the completer (for example a historical import), the row
 says **Unknown actor**. This section works offline and doesn't show every change or offer per-event Undo.
 
+### Merge two tasks
+
+Right-click a task row (or select it and press **Shift+F10**) and choose **Merge into…**. The picker
+lists other open tasks across lists, sorted by title with the list and collection beneath each title.
+Type title words (case and accents don't matter) to narrow the list. Use the arrows and Enter to pick
+one, or click it. The confirmation names both tasks and starts on **Cancel**. The destination keeps its
+own title, list, priority and schedule; source notes are appended and its live steps, links,
+attachments and reminders move over. Tags are combined. **Undo** (or **Ctrl+Z**) reverses the whole merge.
+If a task changes name or list before you confirm, the app checks the question again instead of merging
+on the old one. A destination that's no longer open cannot be used.
+
 ### Trash
 
 Open **Trash** below Activity and its agents. Directly deleted tasks, lists and collections appear newest
@@ -629,7 +640,8 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 menu and the detail pane's priority picker. `task-context-menu` is a task's menu on the row below the selected
 one, as a right-click leaves it; `move-to-picker` is the selected task's list picker as M opens it, grouped by
 collection with the keyboard on the task's own list; `sync-failures` is "3 couldn't sync" opened, with three
-refused changes in plain words. Activity: `activity` is the feed over the sample data,
+refused changes in plain words. `merge-task-picker` shows the destination search and list locations;
+`merge-task-confirm` shows the merge confirmation with Cancel selected. Activity: `activity` is the feed over the sample data,
 `activity-agent` the same filtered to Claude (opened from the sidebar's agent row), `activity-empty`
 the feed with nothing in it, `activity-pending` a change being undone from the keyboard (selected,
 Enter, waiting to be sent) and `activity-refused` an undo the server refused, its reason under the

@@ -148,7 +148,9 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         }
         // A task's context menu, opened on a row other than the selected one; the list picker that
         // moves the selected task (its menu's Move to…, or M), grouped by collection.
-        "task-context-menu" | "move-to-picker" => Some(my_day()),
+        "task-context-menu" | "move-to-picker" | "merge-task-picker" | "merge-task-confirm" => {
+            Some(my_day())
+        }
         // The sidebar's "3 couldn't sync", opened: each refused change in plain words, with Dismiss.
         "sync-failures" => {
             let mut f = my_day();

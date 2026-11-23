@@ -598,6 +598,68 @@ mod tests {
     }
 
     #[test]
+    fn merge_search_matches_open_live_titles_across_lists_in_stable_order() {
+        use crate::intent::merge;
+        let mut w = World::new();
+        let group = w.collection("Hobby");
+        let a = w.list(None, "Errands");
+        let b = w.list(Some(group), "Workshop");
+        let source = w.task(a, "Seřídit kolo");
+        let second = w.task(b, "Seřídit kolo");
+        let first = w.task(a, "Seřídit kolo");
+        let earlier = w.task(b, "Kolo seřídit");
+        let done = w.task(a, "Seřídit kolo znovu");
+        let hidden_group = w.collection("Old");
+        let hidden = w.list(Some(hidden_group), "Old list");
+        w.task(hidden, "Seřídit kolo dnes");
+        w.run(delete(hidden_group));
+        w.run(Command::CompleteTask { id: done });
+        assert_eq!(
+            merge::candidates(&w.state, source, "  KOLO serid ")
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+            [earlier, first, second]
+        );
+        assert!(
+            merge::candidates(&w.state, source, "workshop")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(merge::preview(&w.state, source, source).is_none());
+        assert!(merge::preview(&w.state, source, done).is_none());
+    }
+
+    #[test]
+    fn merge_rechecks_the_confirmation_and_cannot_reuse_a_tombstoned_source() {
+        use crate::intent::merge;
+        let mut w = World::new();
+        let list = w.list(None, "Errands");
+        let source = w.task(list, "Buy stamps");
+        let target = w.task(list, "Go to the post office");
+        let shown = merge::preview(&w.state, source, target).unwrap();
+        assert!(
+            shown
+                .question
+                .contains("notes, steps, tags, links, attachments and reminders")
+        );
+        assert!(
+            shown
+                .question
+                .contains("“Buy stamps” (Errands) into “Go to the post office” (Errands)")
+        );
+        w.state.tasks.get_mut(&target).unwrap().title = "Post the parcel".into();
+        assert!(merge::command(&w.state, source, target, &shown.question).is_none());
+        let shown = merge::preview(&w.state, source, target).unwrap();
+        let cmd = merge::command(&w.state, source, target, &shown.question).unwrap();
+        w.run(cmd);
+        assert_eq!(w.state.tasks[&source].merged_into, Some(target));
+        assert!(merge::candidates(&w.state, source, "").is_none());
+        assert!(merge::command(&w.state, source, target, &shown.question).is_none());
+    }
+
+    #[test]
     fn a_picker_cannot_move_from_a_stale_source_or_act_on_a_restored_merged_task() {
         let mut w = World::new();
         let first = w.list(None, "First");

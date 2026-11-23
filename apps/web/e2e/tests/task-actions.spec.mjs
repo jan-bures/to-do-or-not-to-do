@@ -99,7 +99,7 @@ test("keyboard move from a list filters grouped destinations, skips the current 
   const move = menu(page).getByRole("menuitem", { name: "Move to…" });
   await expect(move).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(menu(page).getByRole("menuitem", { name: "Delete task" })).toBeFocused();
+  await expect(menu(page).getByRole("menuitem", { name: "Merge into…" })).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
   const filter = picker(page).getByRole("textbox", { name: "Filter lists" });
@@ -126,6 +126,53 @@ test("keyboard move from a list filters grouped destinations, skips the current 
   expect(await page.evaluate(() => window.taskExits)).toEqual(["row-exit"]);
   await toast(page).getByRole("button", { name: "Undo" }).click();
   await expect(order).toHaveText(["Newest planning task", board, hiring]);
+  await w.check();
+});
+
+test("merge filters by title, asks first, moves detail content and offers exact Undo", async ({ page }) => {
+  const w = watch(page);
+  await planning(page);
+  await row(page, board).click();
+  const opener = page.getByRole("button", { name: "Task actions" });
+  const start = async () => {
+    await opener.click();
+    await menu(page).getByRole("menuitem", { name: "Merge into…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Merge into…" });
+    const input = dialog.getByRole("textbox", { name: "Filter open tasks" });
+    await expect(input).toBeFocused();
+    await input.fill(board);
+    await expect(dialog.getByRole("status")).toHaveText("No open tasks match.");
+    await input.fill("PŘIPRAVIT OBED");
+    await expect(dialog.getByRole("button", { name: /Připravit nedělní oběd/ })).toBeVisible();
+    await input.fill("HIRING 2027");
+    await input.press("ArrowDown");
+    await expect(dialog.getByRole("button", { name: /Outline the 2027 hiring plan/ })).toBeFocused();
+    await page.keyboard.press("Enter");
+    const confirm = page.getByRole("dialog", { name: "Merge tasks?" });
+    await expect(confirm).toContainText(`Merge “${board}” (Work / Planning) into “${hiring}” (Work / Planning)?`);
+    await expect(confirm).toContainText("notes, steps, tags, links, attachments and reminders");
+    await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+    return confirm;
+  };
+  await start();
+  await page.keyboard.press("Escape");
+  await expect(opener).toBeFocused();
+  await expect(row(page, board)).toBeVisible();
+
+  const confirm = await start();
+  await confirm.getByRole("button", { name: "Merge tasks" }).click();
+  await expect(row(page, hiring)).toBeFocused();
+  await expect(row(page, board)).toHaveCount(0);
+  await expect(toast(page)).toContainText(`Merged “${board}” into “${hiring}”`);
+  const detail = page.locator("#task-detail");
+  await expect(detail.locator(".step-title").filter({ hasText: "Collect numbers from finance" })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "Attachments" })).toContainText("board-pack-draft.pdf");
+  await toast(page).getByRole("button", { name: "Undo" }).click();
+  await expect(row(page, board)).toBeVisible();
+  await row(page, hiring).click();
+  await expect(detail.getByText("board-pack-draft.pdf")).toHaveCount(0);
+  await row(page, board).click();
+  await expect(detail.getByRole("region", { name: "Attachments" })).toContainText("board-pack-draft.pdf");
   await w.check();
 });
 

@@ -66,6 +66,8 @@ import app.todoornot.core.ColorTarget
 import app.todoornot.core.CustomRepeat
 import app.todoornot.core.RepeatChoice
 import app.todoornot.core.RepeatUnit
+import app.todoornot.ui.MergeConfirmCard
+import app.todoornot.ui.MergeTaskCard
 import app.todoornot.ui.MoveTaskCard
 import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.DeleteListCard
@@ -754,6 +756,26 @@ class GalleryTest {
             }
             m.deleteTask(id)
             main("task_deleted_$theme", COVER, m.ui.value, dark)
+        }
+    }
+
+    @Test
+    fun merge_tasks() {
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val (e, admin, source) = admin()
+            val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = admin, listen = {})
+            m.select(source)
+            val s = m.ui.value
+            val candidates = e.mergeCandidates(source, "review")
+            val target = candidates.first { it.title == "Prepare Q4 roadmap review" }
+            overlaid("merge_task_picker_$theme", COVER, s, dark) {
+                DialogBackdrop { MergeTaskCard("review", {}, candidates, {}, {}) }
+            }
+            val question = requireNotNull(e.mergeQuestion(source, target.id))
+            overlaid("merge_task_confirm_$theme", COVER, s, dark) {
+                DialogBackdrop { MergeConfirmCard(question, {}, {}, focus = false) }
+            }
         }
     }
 

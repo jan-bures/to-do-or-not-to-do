@@ -321,6 +321,27 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`task merge picker and confirmation (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      for (const [layout, size] of [["desktop", DESKTOP], ["phone", PHONE]]) {
+        await page.setViewportSize(size);
+        await open(page);
+        await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+        await page.getByRole("button", { name: "Task actions" }).click();
+        await page.getByRole("menuitem", { name: "Merge into…" }).click();
+        const picker = page.getByRole("dialog", { name: "Merge into…" });
+        const filter = picker.getByRole("textbox", { name: "Filter open tasks" });
+        await expect(filter).toBeFocused();
+        await filter.fill("plan");
+        await expect(picker.getByRole("button", { name: /Outline the 2027 hiring plan/ })).toBeVisible();
+        await shot(page, `${layout}-task-merge-picker-${scheme}`);
+        await picker.getByRole("button", { name: /Outline the 2027 hiring plan/ }).click();
+        await expect(page.getByRole("dialog", { name: "Merge tasks?" }).getByRole("button", { name: "Cancel" })).toBeFocused();
+        await shot(page, `${layout}-task-merge-confirm-${scheme}`);
+      }
+      await w.check();
+    });
+
     test(`detail organizers (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

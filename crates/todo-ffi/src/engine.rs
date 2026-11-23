@@ -36,6 +36,7 @@ use tokio::task::JoinHandle;
 
 pub mod activity;
 pub mod attachments;
+pub mod merge;
 pub mod organize;
 pub mod trash;
 

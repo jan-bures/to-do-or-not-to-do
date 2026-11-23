@@ -7,7 +7,7 @@ desktop's and Android's. `todo-server` serves it at `/app`, and it signs in with
 there is no token in the browser.
 
 The web app covers sign-in, smart lists, collections, lists, task detail, adding, completing (with the F2
-check animation), deleting and moving tasks, and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
+check animation), deleting, moving and merging tasks, and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
 reminders, tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
 and delete lists and collections, and move lists between collections. Activity shows confirmed changes
 and lets you undo past events.
@@ -70,7 +70,7 @@ browsers that accept gzip.
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
-| `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move picker, and focus hand-off when a row leaves. |
+| `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
@@ -379,6 +379,12 @@ Enter or Space to choose, and Escape or Cancel to return to the opener. If the t
 still in the current room after moving, it stays selected. If a row leaves, it collapses over
 `--duration-row-collapse` (instantly with reduced motion). Focus goes to the next surviving row, the
 previous row, or the room heading when neither remains. A modal detail closes so the next row is reachable.
+
+**Merge into…** searches other open tasks across lists by title, ignoring case and accents. Choose a task
+and confirm after reviewing both titles and their lists. The destination keeps its own title, list,
+priority and schedule, and takes the source's notes, live steps, links, attachments and reminders.
+Tags are combined. The confirmation rechecks both tasks before writing, and **Undo** reverses the
+whole merge. The gallery captures the picker and confirmation at desktop and phone widths.
 
 Completing a task runs the F2 choreography: the fill pops (`--duration-check-fill`, `--ease-pop`), the tick
 draws, the row holds in place struck through (`--duration-complete-hold`), then collapses

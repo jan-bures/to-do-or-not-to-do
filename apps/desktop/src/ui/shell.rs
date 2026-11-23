@@ -1041,6 +1041,17 @@ impl ShellView {
         let task_page = match fixture {
             "task-context-menu" => Some(TaskPage::Main),
             "move-to-picker" => Some(TaskPage::Move),
+            "merge-task-picker" => Some(TaskPage::PickMerge),
+            "merge-task-confirm" => self.ui.task.and_then(|source| {
+                todo_client::intent::merge::candidates(&self.store.view(), source, "").and_then(
+                    |choices| {
+                        choices
+                            .into_iter()
+                            .next()
+                            .map(|c| TaskPage::ConfirmMerge(c.id))
+                    },
+                )
+            }),
             "task-links" => Some(TaskPage::Links),
             _ => None,
         };
@@ -1726,13 +1737,49 @@ impl ShellView {
         self.change_task(id, cmd, cx);
     }
 
-    /// Submits a delete or a move of task `id` (nothing when `cmd` is `None`). If that takes its row out
-    /// of the room, the row keeps its place while it leaves (`Motion::leave`, `UiState::leaving`), and
-    /// a selected task hands the selection to its neighbour.
+    fn merge_task(
+        &mut self,
+        source: TaskId,
+        target: TaskId,
+        question: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use todo_client::intent::merge;
+        self.change_task_with(
+            source,
+            |this| {
+                let queued = merge::command(&this.store.view(), source, target, question).map_or(
+                    Ok(false),
+                    |cmd| {
+                        this.submit_if(cmd, |state| {
+                            merge::command(state, source, target, question).is_some()
+                        })
+                    },
+                );
+                if queued == Ok(false) {
+                    this.notice = Some(Notice::error(merge::CHANGED));
+                }
+                queued == Ok(true)
+            },
+            cx,
+        );
+    }
+
     fn change_task(&mut self, id: TaskId, cmd: Option<todo_core::Command>, cx: &mut Context<Self>) {
         let Some(cmd) = cmd else {
             return self.refresh(cx);
         };
+        self.change_task_with(id, |this| this.submit(vec![cmd]), cx);
+    }
+
+    /// If an edit takes `id` out of the room, keep its row in place while it leaves and hand
+    /// selection to its neighbour.
+    fn change_task_with(
+        &mut self,
+        id: TaskId,
+        submit: impl FnOnce(&mut Self) -> bool,
+        cx: &mut Context<Self>,
+    ) {
         // A draft of this task's title or notes is saved first, so Undo brings it back as it was typed.
         if !self.commit_edits(cx) {
             return self.keep_unsaved(cx);
@@ -1752,7 +1799,7 @@ impl ShellView {
             task
         });
         let neighbour = self.neighbour(id);
-        if !self.submit(vec![cmd]) {
+        if !submit(self) {
             return self.refresh(cx);
         }
         let after = model::derive(

@@ -876,6 +876,31 @@ class TodoModel(
         }
     }
 
+    override suspend fun mergeCandidates(id: String, filter: String) = withContext(io) { engine.mergeCandidates(id, filter) }
+
+    override suspend fun mergeQuestion(id: String, target: String) = withContext(io) { engine.mergeQuestion(id, target) }
+
+    override fun mergeTasks(id: String, target: String, asked: String, onResult: (String?) -> Unit) {
+        noteDrafts[id]?.save(this)
+        scope.launch {
+            var again: String? = null
+            writeEdit {
+                when (val result = engine.mergeTasks(id, target, asked)) {
+                    is app.todoornot.core.MergeResult.Merged -> {
+                        selection.compareAndSet(id, null)
+                        show(Toast(++serial, result.change.toastText(), organize = result.change))
+                    }
+                    is app.todoornot.core.MergeResult.Changed -> {
+                        again = result.question
+                        if (again == null) show(Toast(++serial, app.todoornot.core.mergeChangedText()))
+                    }
+                }
+            }?.let { show(Toast(++serial, it)) }
+            refresh()
+            onResult(again)
+        }
+    }
+
     override fun reorderTask(list: String, id: String, neighbour: String, by: Int) {
         val room = RoomKey.List(list)
         if (key != room) return

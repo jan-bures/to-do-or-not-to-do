@@ -7,7 +7,10 @@ use super::{
 use leptos::html;
 use leptos::prelude::*;
 use std::time::Duration;
-use todo_client::intent::{self, organize, organize::actionable_task, organize::confirm::one_line};
+use todo_client::intent::{
+    self, merge, organize, organize::actionable_task, organize::confirm::one_line,
+};
+use todo_core::Command;
 use todo_core::ids::{CollectionId, ListId, TaskId};
 use todo_core::query::fold;
 use todo_design::{Glyph, Icon, motion};
@@ -16,6 +19,9 @@ use wasm_bindgen::JsCast;
 const MENU: &str = "task-action-menu";
 const MOVE: &str = "task-move-picker";
 const FILTER: &str = "task-move-filter";
+const MERGE: &str = "task-merge-picker";
+const MERGE_FILTER: &str = "task-merge-filter";
+const MERGE_CANCEL: &str = "task-merge-cancel";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Origin {
@@ -64,6 +70,8 @@ pub(super) struct Controls {
     moving: RwSignal<Option<Move>>,
     dialog: NodeRef<html::Dialog>,
     filter: RwSignal<String>,
+    merging: RwSignal<Option<Origin>>,
+    merge_dialog: NodeRef<html::Dialog>,
 }
 
 impl Controls {
@@ -75,11 +83,15 @@ impl Controls {
             moving: RwSignal::new(None),
             dialog: NodeRef::new(),
             filter: RwSignal::new(String::new()),
+            merging: RwSignal::new(None),
+            merge_dialog: NodeRef::new(),
         }
     }
 
     pub(super) fn open(self) -> bool {
-        self.menu.with_untracked(Option::is_some) || self.moving.with_untracked(Option::is_some)
+        self.menu.with_untracked(Option::is_some)
+            || self.moving.with_untracked(Option::is_some)
+            || self.merging.with_untracked(Option::is_some)
     }
 
     fn show_menu(self, c: Ctx, origin: Origin, opener: Option<web_sys::HtmlElement>) {
@@ -136,6 +148,21 @@ impl Controls {
         }
     }
 
+    fn show_merge(self, c: Ctx, origin: Origin) {
+        let opener = self.close();
+        self.opener.set_value(opener);
+        self.merging.set(Some(origin));
+        if !self
+            .merge_dialog
+            .get_untracked()
+            .is_some_and(|el| el.show_modal().is_ok())
+        {
+            self.dismiss(c);
+            return;
+        }
+        merge_focus(self, origin, MERGE_FILTER);
+    }
+
     pub(super) fn position(self) {
         if let Some((origin, menu)) = self.menu.get_untracked().zip(self.popover.get_untracked())
             && !platform::place_room_menu(&menu, &origin.anchor())
@@ -154,6 +181,9 @@ impl Controls {
         if self.moving.try_update(Option::take).flatten().is_some() {
             super::room_actions::close_dialog(self.dialog);
         }
+        if self.merging.try_update(Option::take).flatten().is_some() {
+            super::room_actions::close_dialog(self.merge_dialog);
+        }
         opener
     }
 
@@ -161,7 +191,8 @@ impl Controls {
         let origin = self
             .menu
             .get_untracked()
-            .or_else(|| self.moving.get_untracked().map(|m| m.origin));
+            .or_else(|| self.moving.get_untracked().map(|m| m.origin))
+            .or_else(|| self.merging.get_untracked());
         let opener = self.close();
         if let Some(origin) = origin {
             origin.restore(c, opener);
@@ -295,10 +326,16 @@ fn change(c: Ctx, origin: Origin, destination: Option<(ListId, ListId)>) {
             None => Some((intent::delete_task(s, task)?, format!("Deleted “{title}”"))),
         }
     });
+    if let Some((cmd, label)) = cmd {
+        apply_change(c, origin, cmd, label);
+    } else {
+        origin.restore(c, c.task_actions.close());
+    }
+}
+
+fn apply_change(c: Ctx, origin: Origin, cmd: Command, label: String) {
+    let task = origin.task;
     let opener = c.task_actions.close();
-    let Some((cmd, label)) = cmd else {
-        return origin.restore(c, opener);
-    };
     let before = rows(c);
     if !c.submit_undoable(cmd, label, Some(task)) {
         return origin.restore(c, opener);
@@ -426,7 +463,12 @@ pub(super) fn Overlays() -> impl IntoView {
     on_cleanup(move || resize.remove());
     Effect::new(move |_| {
         let moving = controls.moving.get();
-        if let Some(origin) = controls.menu.get().or_else(|| moving.map(|m| m.origin)) {
+        if let Some(origin) = controls
+            .menu
+            .get()
+            .or_else(|| moving.map(|m| m.origin))
+            .or_else(|| controls.merging.get())
+        {
             if c.read_only()
                 || !c.state.with(|s| {
                     actionable_task(s, origin.task)
@@ -465,12 +507,133 @@ pub(super) fn Overlays() -> impl IntoView {
                 on:click=move |_| { if let Some(origin) = controls.menu.get_untracked() { controls.show_move(c, origin, None); } }>
                 {icon(Icon::List)}"Move to…"
             </button>
+            <button type="button" data-picker-option="" role="menuitem" aria-haspopup="dialog"
+                on:click=move |_| { if let Some(origin) = controls.menu.get_untracked() { controls.show_merge(c, origin); } }>
+                {icon(Icon::ListPlus)}"Merge into…"
+            </button>
             <button type="button" class="danger" data-picker-option="" role="menuitem"
                 on:click=move |_| { if let Some(origin) = controls.menu.get_untracked() { change(c, origin, None); } }>
                 {icon(Icon::TrashTwo)}"Delete task"
             </button>
         </div>
         <MovePicker/>
+        <MergePicker/>
+    }
+}
+
+fn merge_focus(controls: Controls, origin: Origin, id: &'static str) {
+    request_animation_frame(move || {
+        if controls.merging.get_untracked() == Some(origin) {
+            platform::focus(id);
+        }
+    });
+}
+
+#[component]
+fn MergePicker() -> impl IntoView {
+    let c = ctx();
+    let controls = c.task_actions;
+    let filter = RwSignal::new(String::new());
+    let asked = RwSignal::new(None::<(TaskId, merge::Preview)>);
+    let warning = RwSignal::new(false);
+    Effect::new(move |_| {
+        if controls.merging.get().is_none() {
+            filter.set(String::new());
+            asked.set(None);
+            warning.set(false);
+        }
+    });
+    let choices = Memo::new(move |_| {
+        controls.merging.get().map_or_else(Vec::new, |origin| {
+            filter.with(|text| {
+                c.state
+                    .with(|s| merge::candidates(s, origin.task, text).unwrap_or_default())
+            })
+        })
+    });
+    let confirming = move || asked.with(Option::is_some);
+    let confirm = move |_| {
+        let Some(origin) = controls.merging.get_untracked() else {
+            return;
+        };
+        let Some((target, shown)) = asked.get_untracked() else {
+            return;
+        };
+        // Check the live backend, not a UI snapshot that may not have redrawn after sync.
+        // The check and submission run in the same browser turn.
+        let state = super::backend::view();
+        if let Some(cmd) = merge::command(&state, origin.task, target, &shown.question) {
+            apply_change(c, origin, cmd, shown.toast);
+        } else {
+            let current = merge::preview(&state, origin.task, target);
+            let focus = if current.is_some() {
+                MERGE_CANCEL
+            } else {
+                MERGE_FILTER
+            };
+            asked.set(current.map(|p| (target, p)));
+            warning.set(true);
+            merge_focus(controls, origin, focus);
+        }
+    };
+    view! {
+        <dialog id=MERGE class="room-dialog task-move-picker task-merge-picker" node_ref=controls.merge_dialog
+            aria-labelledby="task-merge-heading"
+            aria-describedby=move || confirming().then_some("task-merge-description")
+            on:cancel=move |ev: web_sys::Event| { ev.prevent_default(); controls.dismiss(c); }
+            on:click=move |ev| { if super::room_actions::scrim_click(&ev) { controls.dismiss(c); } }
+            on:keydown=move |ev| {
+                ev.stop_propagation();
+                if ev.is_composing() { return; }
+                super::room_actions::block_dialog_repeat(&ev);
+                match ev.key().as_str() {
+                    "Escape" => { ev.prevent_default(); if !ev.repeat() { controls.dismiss(c); } }
+                    "Tab" => platform::contain_tab(MERGE, &ev),
+                    _ if !confirming() => pickers::choice_key_from_filter(MERGE, &ev),
+                    _ => {}
+                }
+            }>
+            <h2 id="task-merge-heading">{move || if confirming() { "Merge tasks?" } else { "Merge into…" }}</h2>
+            <Show when=move || !confirming() fallback=move || view! {
+                <div class="task-move-choices picker-page">
+                    <p id="task-merge-description">{move || asked.with(|a| a.as_ref().map(|(_, p)| p.question.clone()))}</p>
+                </div>
+            }>
+                <input type="text" id=MERGE_FILTER autofocus class="room-name-input" autocomplete="off"
+                    aria-label="Filter open tasks" placeholder="Filter open tasks" prop:value=move || filter.get()
+                    on:input=move |ev| filter.set(event_target_value(&ev)) />
+                <div class="task-move-choices" role="group" aria-label="Destination tasks">
+                    <Show when=move || choices.with(Vec::is_empty)>
+                        <p role="status">{move || if filter.with(|f| f.trim().is_empty()) { merge::EMPTY } else { merge::NO_MATCHES }}</p>
+                    </Show>
+                    <For each=move || choices.get() key=|choice| (choice.id, choice.title.clone(), choice.location.clone()) let:choice>
+                        <button type="button" class="move-choice" data-picker-option=""
+                            on:click=move |_| {
+                                if let Some(origin) = controls.merging.get_untracked()
+                                    && let Some(preview) = c.state.with_untracked(|s| merge::preview(s, origin.task, choice.id))
+                                {
+                                    asked.set(Some((choice.id, preview)));
+                                    warning.set(false);
+                                    merge_focus(controls, origin, MERGE_CANCEL);
+                                }
+                            }>
+                            {icon(Icon::ChevronRight)}
+                            <span class="merge-choice-text">
+                                <span class="picker-label">{choice.title}</span>
+                                <span class="merge-location">{choice.location}</span>
+                            </span>
+                        </button>
+                    </For>
+                </div>
+            </Show>
+            <Show when=move || warning.get()><p role="status">{merge::CHANGED}</p></Show>
+            <div class="dialog-actions">
+                <button id=MERGE_CANCEL type="button" class="button" on:click=move |_| controls.dismiss(c)>"Cancel"</button>
+                <Show when=confirming>
+                    <button type="button" class="button primary" on:click=confirm>"Merge tasks"</button>
+                </Show>
+            </div>
+        </dialog>
     }
 }
 

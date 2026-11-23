@@ -1857,6 +1857,46 @@ class TodoModelTest {
     }
 
     @Test
+    fun merge_filters_tasks_rechecks_the_confirmation_and_undoes_the_whole_change() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, source) = s.openAdmin()
+        val beforeSource = requireNotNull(m.ui.value.detail)
+        val errands = m.engine.list("Errands")
+        m.engine.addTask(errands, "Vyřídit dopis", FIXTURE_NOW)
+        val target = m.engine.room(errands, FIXTURE_NOW).tasks.first { it.title == "Vyřídit dopis" }.id
+        val asked = requireNotNull(m.engine.mergeQuestion(source, target))
+        assertEquals(target, m.engine.mergeCandidates(source, "DOPIS vyridit").single().id)
+        assertFalse(m.engine.mergeCandidates(source, "").any { it.id == source })
+
+        m.rename(target, "Mail the letter")
+        s.drain()
+        val beforeTarget = requireNotNull(m.engine.task(target, FIXTURE_NOW))
+        val pending = m.ui.value.status.pending
+        var again: String? = null
+        m.mergeTasks(source, target, asked) { again = it }
+        s.drain()
+        assertTrue(requireNotNull(again).contains("Mail the letter"))
+        assertEquals(pending, m.ui.value.status.pending)
+        assertEquals(source, m.ui.value.detail?.id)
+
+        m.mergeTasks(source, target, requireNotNull(again)) { assertNull(it) }
+        s.drain()
+        assertNull(m.ui.value.detail)
+        assertNull(m.engine.task(source, FIXTURE_NOW))
+        val joined = requireNotNull(m.engine.task(target, FIXTURE_NOW))
+        assertEquals(beforeTarget.title, joined.title)
+        assertEquals(beforeSource.steps.map { it.id }, joined.steps.map { it.id })
+        val toast = requireNotNull(m.ui.value.toast)
+        assertEquals("Merged “${beforeSource.title}” into “${beforeTarget.title}”", toast.text)
+        m.undo(toast)
+        s.drain()
+        assertTrue(m.engine.room(admin, FIXTURE_NOW).tasks.any { it.id == source })
+        assertEquals(beforeSource, m.engine.task(source, FIXTURE_NOW))
+        assertEquals(beforeTarget, m.engine.task(target, FIXTURE_NOW))
+    }
+
+    @Test
     fun trash_restore_keeps_the_original_list_and_undo_restores_the_same_deletion() {
         val s = Stepped(fixtureEngine("trash")) { time }
         val m = s.model
@@ -1929,7 +1969,7 @@ class TodoModelTest {
         s.drain()
         assertEquals(pending, m.ui.value.status.pending)
         val smart = taskMenu(m.ui.value.room, ids.first(), true, true, 3).filterIsInstance<MenuEntry.Item>()
-        assertEquals(listOf("Reopen", "Remove from My Day", "Remove importance", "Priority…", "Move to…", "Delete task"), smart.map { it.label })
+        assertEquals(listOf("Reopen", "Remove from My Day", "Remove importance", "Priority…", "Move to…", "Merge into…", "Delete task"), smart.map { it.label })
     }
 
     @Test

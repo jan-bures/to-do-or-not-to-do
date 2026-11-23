@@ -22,6 +22,7 @@ pub(super) enum EditKind {
     Complete,
     Restore,
     Delete,
+    Merge,
     Move,
     DeleteStep,
     DeleteTag,
@@ -63,6 +64,7 @@ impl EditKind {
                 },
             ),
             Command::MoveTask { id, .. } => (id.into(), Self::Move),
+            Command::MergeTasks { source, .. } => (source.into(), Self::Merge),
             Command::AddReminder { id, .. } | Command::UpdateReminder { id, .. } => {
                 (id.into(), Self::SetReminder)
             }
@@ -86,6 +88,7 @@ impl EditKind {
             Self::Complete => "Completed",
             Self::Restore => "Restored",
             Self::Delete => "Deleted",
+            Self::Merge => "Merged",
             Self::Move | Self::MoveList => "Moved",
             Self::DeleteStep => "Deleted step",
             Self::DeleteTag => "Deleted tag",
@@ -106,7 +109,7 @@ impl EditKind {
             match self {
                 Self::Complete => "Reopened",
                 Self::Restore => "Returned to Trash:",
-                Self::Delete => "Restored",
+                Self::Delete | Self::Merge => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
                 Self::DeleteStep => "Restored step",
                 Self::DeleteTag => "Restored tag",
@@ -124,7 +127,7 @@ impl EditKind {
 
     /// The change took a task's row away, and undoing it brings the row back with an entrance.
     fn needs_row_restore(self) -> bool {
-        matches!(self, Self::Complete | Self::Delete)
+        matches!(self, Self::Complete | Self::Delete | Self::Merge)
     }
 
     fn is_restored(self, entity: EntityId, state: &State) -> bool {
@@ -189,6 +192,7 @@ pub(super) fn hidden_by_parent(kind: EditKind, entity: EntityId, state: &State) 
     if !matches!(
         kind,
         EditKind::Delete
+            | EditKind::Merge
             | EditKind::DeleteStep
             | EditKind::DeleteLink
             | EditKind::DeleteAttachment
@@ -244,6 +248,10 @@ pub(super) fn toast_label(
         format!("Moved \u{201c}{}\u{201d} {to}", one_line(&title)).into()
     };
     match (command, kind) {
+        (Command::MergeTasks { source, target }, EditKind::Merge) => {
+            todo_client::intent::merge::preview(state, *source, *target)
+                .map_or_else(|| kind.label(&title), |p| p.toast.into())
+        }
         (Command::MoveTask { list, .. }, EditKind::Move) => match state.lists.get(list) {
             Some(list) => moved(&format!("to {}", one_line(&list.name))),
             None => kind.label(&title),
@@ -1210,9 +1218,44 @@ mod tests {
     }
 
     #[test]
-    fn only_a_completion_or_deletion_undo_restores_the_row() {
+    fn a_merge_undo_tracks_the_source_and_reverses_the_whole_batch() {
+        use crate::store::Store;
+        use todo_client::intent::merge;
+        let f = fixtures::my_day();
+        let source = f.ui.task.expect("selected task");
+        let target = merge::candidates(&f.state, source, "").expect("picker")[0].id;
+        let preview = merge::preview(&f.state, source, target).expect("confirmation");
+        let cmd = merge::command(&f.state, source, target, &preview.question).expect("command");
+        let (entity, kind) = EditKind::of(&cmd).expect("undoable");
+        assert_eq!((entity, kind), (source.into(), EditKind::Merge));
+        assert_eq!(
+            toast_label(&f.state, &cmd, entity, kind).as_ref(),
+            preview.toast
+        );
+        let store = Store::fixture(&f);
+        let tracked = store.submit_undoable(cmd).expect("merged");
+        let merged = store.view();
+        assert!(!merged.is_live(entity));
+        assert_eq!(merged.tasks[&source].merged_into, Some(target));
+        store.undo(&tracked).expect("restored");
+        let back = store.view();
+        assert!(kind.undo_changed_view(entity, &merged, &back));
+        assert!(back.tasks[&source].merged_into.is_none());
+        assert_eq!(back.tasks[&target].notes, f.state.tasks[&target].notes);
+        assert!(
+            f.state
+                .steps
+                .values()
+                .filter(|s| s.task == source)
+                .all(|s| back.steps[&s.id].task == source)
+        );
+    }
+
+    #[test]
+    fn undoing_completion_delete_or_merge_can_restore_a_row() {
         assert!(EditKind::Complete.needs_row_restore());
         assert!(EditKind::Delete.needs_row_restore());
+        assert!(EditKind::Merge.needs_row_restore());
         assert!(!EditKind::Move.needs_row_restore());
     }
 

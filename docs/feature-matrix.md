@@ -117,7 +117,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Move a task to another list | `MoveTask` `C/command.rs:206`; the event records the position too, so undoing it after a reorder in the new list conflicts | wired: the task's menu or M opens a list picker, grouped by collection, that filters as you type; with undo (`D/model/menus.rs:613`, `D/ui/shell.rs:1203`, `T/intent/mod.rs:332`) | wired: the task menu or M opens a grouped, filterable list picker; with Undo (`W/app/task_actions.rs`) | wired: grouped, filterable Move to… picker, with undo (`A/ui/TaskActions.kt`, `F/engine.rs::move_task_to`) |
 | Delete a task | `Delete` | wired: the task's menu or the Delete key, without asking, with undo (`D/ui/shell.rs:1196`, `T/intent/mod.rs:326`) | wired: the task menu or Delete, without confirmation, with Undo (`W/app/task_actions.rs`) | wired: Delete task without confirmation, with undo (`F/engine.rs::delete_task`, `undo_deletion`) |
 | Trash and restore | `Restore` (`C/command.rs`); explicit task, list and collection tombstones from normal sync, ordered and labeled in `T/trash.rs` | wired: sidebar Trash, Restore and tracked Undo (`D/ui/shell/trash.rs`) | wired: sidebar/drawer, `/app/trash`, Restore and tracked Undo (`W/app/trash.rs`) | wired: drawer Trash, Restore and tracked Undo (`A/ui/Trash.kt`, `F/engine/trash.rs`) |
-| Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Links…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:915`) | wired: right-click a row, use Shift+F10, or use ⋯ in detail; offers Move to… and Delete task (`W/app/task_actions.rs`) | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
+| Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Merge into…, Links…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:915`) | wired: right-click a row, use Shift+F10, or use ⋯ in detail; offers Move to…, Merge into… and Delete task (`W/app/task_actions.rs`) | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
 | Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, colour, move a list to another collection, show or hide completed, delete the list or collection (`D/ui/shell.rs:1382`, `D/model/menus.rs:549`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, recolour, reorder, move a list to another collection, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ menu offers rename, colour, move, Show or Hide completed and delete as applicable (`A/model/Menus.kt`); no sliders |
@@ -153,7 +153,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Attachments: remove | `Delete` | wired: each file's **Remove** button uses tracked Undo and queues offline (`D/ui/shell/attachments.rs`, `D/ui/shell/undo.rs`) | wired: **Remove** with Undo (`W/app/attachments.rs`) | wired: **Remove** with tracked Undo, including offline |
 | Created and edited stamps | stamps | shown `D/model/derive.rs:654` | shown `W/app.rs:1625` | shown `A/ui/Detail.kt:115` |
 | Per-task activity (who created, edited, completed it) | stamps and local completion provenance; shared names, actions, relative times and ordering (`T/task_activity.rs`) | shown below attachments (`D/ui/shell/detail.rs`) | shown below attachments (`W/app.rs`, `DetailActivity`) | shown below attachments (`A/ui/Detail.kt`, `F/view.rs`) |
-| Merge two tasks | `MergeTasks` `C/command.rs:248` | missing | missing | missing |
+| Merge two tasks | `MergeTasks` (`C/command.rs`); open destinations, title search and confirmation shared in `T/intent/merge.rs` | wired: **Merge into…** from the task's context menu, with confirmation and tracked Undo (`D/ui/shell/menu.rs`, `D/ui/shell/undo.rs`) | wired: row context or detail task menu, with confirmation and tracked Undo (`W/app/task_actions.rs`) | wired: row long-press or detail task menu, with confirmation and tracked Undo (`A/ui/TaskActions.kt`, `F/engine/merge.rs`) |
 | Close the detail | n/a | wired `D/ui/shell/detail.rs:752`, Esc | wired `W/app.rs:1699`, Esc | wired `A/ui/Detail.kt:81`, `:99`, Back |
 
 ### Undo, agents and activity
@@ -185,7 +185,6 @@ The owner manages these on the server's own pages (`S/web/mod.rs`) or through th
 Every item below exists in `todo-core` and over REST (`POST /api/v1/commands`), and mostly over MCP too
 (`S/mcp/tools.rs`). No client offers it.
 
-- **Tasks.** Merge, `MergeTasks` (MCP `merge_tasks`).
 - **Saved queries.** The read API serves smart lists (`GET /api/v1/smart-lists`) and queries
   (`GET /api/v1/tasks?q=`). Clients evaluate the same built-in queries locally. The core has no
   user-defined saved smart lists, so this is not a client gap.
@@ -222,7 +221,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 2.9 | Drop a `.eml` from Outlook to create a task. | M (New Outlook), L (classic Outlook) |
 | 2.10 | **Done in D1.** Settings: a link to the admin pages, Sync now. | S |
 | 2.11 | Installer and auto-update. | L |
-| 2.12 | Merge tasks. | S–M |
+| 2.12 | **Done on desktop, web and Android.** Search for another open task across lists, confirm the merge and undo it as one change. | S–M |
 
 ### 3. What the web lacks relative to the desktop
 
@@ -239,7 +238,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
 | 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |
 | 3.11 | **Done.** Upload attachments from the picker or by dropping files onto the task detail. The upload route accepts the owner's session with CSRF and a matching origin; removal offers Undo. | M |
-| 3.12 | **Done:** task delete and move (2.1), collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing (2.4); Activity (2.3) and attachments are also wired. Still missing: reminder alerts (2.4) and merging tasks (2.12). | — |
+| 3.12 | **Done:** task delete and move (2.1), collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing (2.4); Activity (2.3) and attachments are also wired. Merging tasks (2.12) is wired. Still missing: reminder alerts (2.4). | — |
 
 ### 4. What Android lacks relative to the desktop
 
@@ -255,7 +254,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 4.8 | **Done.** A live date chip in quick-add, using the submit parser. | S |
 | 4.9 | **Done.** Agent summary in the drawer. | S |
 | 4.10 | **Done.** Reminder notifications: local alarms from the synced reminders, with Complete and Snooze 10 min, and a Reminder row that sets, changes and removes a reminder. | L |
-| 4.11 | **Done.** Task actions, reminders (4.10), repeat, tags, links, collection management, list moves and colours. The drawer opens paged Activity with per-event Undo, optionally filtered to an agent. | — |
+| 4.11 | **Done.** Task actions, reminders (4.10), repeat, tags, links, collection management, list moves and colours, and task merges (2.12). The drawer opens paged Activity with per-event Undo, optionally filtered to an agent. | — |
 
 ## Shared gesture-to-command code
 

@@ -9,6 +9,7 @@ pub mod reminder;
 pub mod repeat;
 use gpui::SharedString;
 use todo_client::CommandId;
+use todo_client::intent::merge;
 use todo_client::outbox::FailedEntry;
 use todo_core::State;
 use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
@@ -84,6 +85,9 @@ pub enum MenuAction {
     AskMove(TaskId),
     /// Moves the task to the list (nothing when it's there already).
     MoveTask(TaskId, ListId),
+    PickMerge(TaskId),
+    AskMerge(TaskId, TaskId),
+    Merge(TaskId, TaskId),
     /// Deletes the task, without asking: Undo brings it back.
     DeleteTask(TaskId),
     /// Ask before deleting a collection: the menu turns into the confirmation.
@@ -354,7 +358,12 @@ pub fn is_wide(entries: &[MenuEntry]) -> bool {
             e,
             MenuEntry::Confirm { .. } | MenuEntry::Failure { .. } | MenuEntry::Controls { .. }
         )
-    }) || items(entries).any(|i| matches!(i.action, MenuAction::Reminder(..)))
+    }) || items(entries).any(|i| {
+        matches!(
+            i.action,
+            MenuAction::Reminder(..) | MenuAction::AskMerge(..)
+        )
+    })
 }
 
 /// The key of item `i`, as the keyboard counts them. The keyboard's highlight is kept as the item's key,
@@ -509,9 +518,13 @@ pub fn as_asked(entries: Vec<MenuEntry>, asked: &Asked) -> Vec<MenuEntry> {
                 };
                 MenuEntry::Confirm {
                     message: asked.question.clone(),
-                    note: asked
-                        .changed
-                        .then(|| commands::delete_recheck_text(what).into()),
+                    note: asked.changed.then(|| {
+                        if matches!(buttons[0].action, MenuAction::Merge(..)) {
+                            merge::CHANGED.into()
+                        } else {
+                            commands::delete_recheck_text(what).into()
+                        }
+                    }),
                     buttons,
                 }
             }
@@ -1119,6 +1132,12 @@ pub fn task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
             "Move to…",
             MenuAction::AskMove(task),
         ),
+        item(
+            "task-merge",
+            Icon::ListPlus,
+            "Merge into…",
+            MenuAction::PickMerge(task),
+        ),
         links,
         MenuEntry::Separator,
         danger(
@@ -1170,6 +1189,56 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
         ));
     }
     entries
+}
+
+pub fn merge_picker(state: &State, source: TaskId, filter: &str) -> Vec<MenuEntry> {
+    let Some(candidates) = merge::candidates(state, source, filter) else {
+        return Vec::new();
+    };
+    let mut entries = vec![MenuEntry::Filter {
+        typed: filter.to_string().into(),
+        hint: "Type to filter open tasks",
+    }];
+    if candidates.is_empty() {
+        entries.push(MenuEntry::Note(
+            if filter.trim().is_empty() {
+                merge::EMPTY
+            } else {
+                merge::NO_MATCHES
+            }
+            .into(),
+        ));
+    }
+    entries.extend(candidates.into_iter().map(|c| {
+        with(
+            item(
+                format!("merge-{}", c.id),
+                Icon::ChevronRight,
+                c.title,
+                MenuAction::AskMerge(source, c.id),
+            ),
+            |i| MenuItem {
+                hint: Some(c.location.into()),
+                ..i
+            },
+        )
+    }));
+    entries
+}
+
+pub fn merge_confirmation(state: &State, source: TaskId, target: TaskId) -> Vec<MenuEntry> {
+    merge::preview(state, source, target).map_or_else(Vec::new, |preview| {
+        vec![confirm(
+            preview.question,
+            item(
+                "merge-confirm",
+                Icon::ListPlus,
+                "Merge tasks",
+                MenuAction::Merge(source, target),
+            ),
+            "merge-cancel",
+        )]
+    })
 }
 
 /// A task's live links, oldest first, as the detail pane lists them.
@@ -2291,6 +2360,7 @@ second line"
                 MenuAction::ToggleImportant(id),
                 MenuAction::AskPriority(id),
                 MenuAction::AskMove(id),
+                MenuAction::PickMerge(id),
                 MenuAction::AskLinks(id),
                 MenuAction::DeleteTask(id),
             ]
@@ -2320,6 +2390,40 @@ second line"
         });
         assert!(task_menu(&gone, id, today).is_empty());
         assert!(move_menu(&gone, id, "").is_empty());
+    }
+
+    #[test]
+    fn merge_picker_rechecks_the_chosen_task_and_defaults_to_cancel() {
+        let mut f = fixtures::my_day();
+        let source = f.ui.task.expect("selected task");
+        let picker = merge_picker(&f.state, source, "");
+        assert!(is_wide(&picker));
+        let MenuAction::AskMerge(_, target) = items(&picker).next().expect("candidate").action
+        else {
+            panic!("missing merge destination");
+        };
+        assert_ne!(source, target);
+        let confirm = merge_confirmation(&f.state, source, target);
+        assert!(is_confirmation(&confirm));
+        assert_eq!(first_highlight(&confirm), Some(1));
+        assert_eq!(
+            actions(&confirm),
+            [MenuAction::Merge(source, target), MenuAction::Cancel]
+        );
+        let asked = Asked::of(&confirm);
+        f.state
+            .tasks
+            .get_mut(&target)
+            .expect("target")
+            .title
+            .push_str(" later");
+        assert!(matches!(
+            on_confirm(
+                asked.as_ref(),
+                &merge_confirmation(&f.state, source, target)
+            ),
+            Confirmed::AskAgain(_)
+        ));
     }
 
     #[test]
