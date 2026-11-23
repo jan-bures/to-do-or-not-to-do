@@ -93,6 +93,25 @@ fn ready_composer_accepts_multiline_drafts_and_escape_clears_before_closing() {
 }
 
 #[test]
+fn connection_health_tracks_active_probes_and_network_failures() {
+    let mut app = TestApp::new();
+    let mut window = shell(&mut app);
+    window
+        .update(|shell, _, _| assert_eq!(shell.ai.connection_health(), ConnectionHealth::Unknown));
+    window.update(|shell, window, cx| {
+        shell.preview_assistant("ai-settings-testing", window, cx);
+        assert_eq!(shell.ai.connection_health(), ConnectionHealth::Testing);
+        shell.close_ai_settings(window, cx);
+        assert_eq!(shell.ai.connection_health(), ConnectionHealth::Connected);
+        shell.preview_assistant("ai-error", window, cx);
+        shell.ai.connection = ConnectionHealth::Connected;
+        shell.observe_ai_error(cx);
+        assert_eq!(shell.ai.connection_health(), ConnectionHealth::Unreachable);
+        assert!(!unreachable(ProviderError::Unauthorized));
+    });
+}
+
+#[test]
 fn changing_destination_invalidates_probe_scope_and_saved_key_without_contacting_it() {
     let mut app = TestApp::new();
     let mut window = shell(&mut app);

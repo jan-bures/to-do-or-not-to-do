@@ -50,7 +50,7 @@ fn one_line(el: Div) -> Div {
     el.overflow_hidden().text_ellipsis().whitespace_nowrap()
 }
 
-fn dot(color: Hsla) -> Div {
+fn status_light(color: Hsla) -> Div {
     div()
         .flex_none()
         .size(px(component::PRIVACY_DOT))
@@ -243,7 +243,7 @@ impl ShellView {
                 .when(self.width == Width::Wide, |b| {
                     b.child(kit::kbd(&p, "Ctrl J"))
                 })
-                .when(pending, |b| b.child(dot(p.accent))),
+                .when(pending, |b| b.child(text(ty::COUNT, p.accent_strong, "1"))),
             true,
             |this, window, cx| this.toggle_ai(window, cx),
             cx,
@@ -673,11 +673,16 @@ impl ShellView {
             || "No model enabled".into(),
             |m| model::labels::one_line(&m.model),
         );
-        let failed = view
-            .turns
-            .last()
-            .is_some_and(|t| matches!(t.error, Some(AssistantError::Provider(_))));
-        let route = self.ai.route_label();
+        let (light, route, route_ink, model_ink) = match self.ai.connection_health() {
+            ConnectionHealth::Unknown => (None, self.ai.route_label(), p.ink_2, p.ink_3),
+            ConnectionHealth::Testing => (Some(p.accent), "Testing…", p.ink_2, p.ink_3),
+            ConnectionHealth::Connected => {
+                (Some(p.success), self.ai.route_label(), p.ink_2, p.ink_3)
+            }
+            ConnectionHealth::Unreachable => {
+                (Some(p.danger), "Unreachable", p.danger_ink, p.danger_ink)
+            }
+        };
         let privacy = self
             .ai_action(
                 "assistant-route",
@@ -686,23 +691,9 @@ impl ShellView {
                     .items_center()
                     .gap(px(space::S2))
                     .min_w_0()
-                    .child(kit::icon(
-                        if failed || blocked {
-                            Icon::CircleAlert
-                        } else if ready {
-                            Icon::CircleCheck
-                        } else {
-                            Icon::CloudOff
-                        },
-                        component::ICON_SMALL,
-                        if failed || blocked {
-                            p.danger_ink
-                        } else {
-                            p.ink_3
-                        },
-                    ))
-                    .child(text(ty::META, p.ink_2, route).flex_none())
-                    .child(one_line(text(ty::COUNT, p.ink_3, format!("· {model}"))))
+                    .children(light.map(status_light))
+                    .child(text(ty::META, route_ink, route).flex_none())
+                    .child(one_line(text(ty::COUNT, model_ink, format!("· {model}"))))
                     .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
                 true,
                 |this, w, cx| this.open_ai_settings(w, cx),
@@ -1000,13 +991,6 @@ impl ShellView {
     ) -> Stateful<Div> {
         let p = self.palette;
         let state = self.store.view();
-        let hue = state
-            .lists
-            .get(&task.list.id)
-            .map_or(self.shell.room.hue, |list| {
-                model::lists::hue(list.color.as_deref(), list.id.as_uuid().as_bytes())
-            });
-        let colors = theme::list_colors(self.theme, hue);
         let id = task.id;
         self.ai_action(
             format!("assistant-task-{prefix}-{id}"),
@@ -1020,7 +1004,6 @@ impl ShellView {
                 .border_1()
                 .border_color(p.line)
                 .bg(p.pane)
-                .child(dot(colors.dot))
                 .child(
                     one_line(text(ty::BODY, p.ink, model::labels::one_line(&task.title))).flex_1(),
                 )
@@ -1501,7 +1484,6 @@ impl ShellView {
             .px(px(component::CHIP_PAD_X))
             .rounded(px(radius::CHIP))
             .bg(c.tint)
-            .child(dot(c.dot))
             .child(one_line(text(
                 ty::META,
                 c.ink,
@@ -1719,26 +1701,43 @@ impl ShellView {
         let blocked = destination == Some(Destination::NotPrivate);
         let route = destination.map_or("No address", Destination::label);
         let allowed = !blocked && !running && self.retry_seconds() == 0;
-        let (status_icon, indicator, connection) = match &setup.check {
+        let (light, status_ink, connection) = match &setup.check {
             Check::NotTested if blocked => (
-                Icon::CircleAlert,
+                None,
                 p.danger_ink,
                 "Blocked · confirm ownership before testing or sending.".into(),
             ),
-            Check::NotTested => (Icon::Circle, p.ink_3, "Connection not tested".into()),
-            Check::Running(label) => (Icon::Clock, p.ink_3, (*label).into()),
+            Check::NotTested
+                if self.ai.same_destination(&setup.draft)
+                    && self.ai.connection == ConnectionHealth::Connected =>
+            {
+                (Some(p.success), p.ink_2, "Connected".into())
+            }
+            Check::NotTested
+                if self.ai.same_destination(&setup.draft)
+                    && self.ai.connection == ConnectionHealth::Unreachable =>
+            {
+                (Some(p.danger), p.danger_ink, "Unreachable".into())
+            }
+            Check::NotTested => (None, p.ink_3, "Connection not tested".into()),
+            Check::Running(label) => (Some(p.accent), p.ink_2, (*label).into()),
             Check::Catalog { count, elapsed } => (
-                Icon::CircleCheck,
-                p.success,
+                Some(p.success),
+                p.ink_2,
                 format!("Connected · {count} models · {} ms", elapsed.as_millis()),
             ),
             Check::NoCatalog => (
-                Icon::CircleAlert,
-                p.ink_3,
+                Some(p.success),
+                p.ink_2,
                 "Model listing not supported. Enter a model ID manually.".into(),
             ),
-            Check::Capable(support) => (Icon::CircleCheck, p.success, support.label().into()),
-            Check::Failed(message) => (Icon::CircleAlert, p.danger_ink, message.clone()),
+            Check::Capable(support) => (Some(p.success), p.ink_2, support.label().into()),
+            Check::Unreachable(message) => (
+                Some(p.danger),
+                p.danger_ink,
+                format!("Unreachable · {message}"),
+            ),
+            Check::Failed(message) => (None, p.danger_ink, message.clone()),
         };
         let picker = if setup.pick_model {
             Some(
@@ -1780,237 +1779,219 @@ impl ShellView {
             None
         };
         let provider = box_panel(&p).flex_none().border_color(p.accent).child(
-            div()
-                .flex()
-                .w_full()
-                .relative()
-                .pl(px(space::S1))
-                .child(kit::leading_rail(p.accent_strong, component::PROPOSAL_BAR))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .p(px(space::S3))
-                        .flex()
-                        .flex_col()
-                        .gap(px(space::S2))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap(px(space::S2))
-                                .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
-                                .child(
+            div().flex().w_full().child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .p(px(space::S3))
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::S2))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(space::S2))
+                            .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
+                            .child(text(ty::CAPS_LABEL, p.ink_3, route.to_uppercase())),
+                    )
+                    .child(self.ai_setting_field("Base URL", self.ai.url.clone(), None, window, cx))
+                    .when(endpoint.is_some_and(|info| info.tailnet_http), |form| {
+                        form.child(text(
+                            ty::META,
+                            p.sun_ink,
+                            "Unencrypted · relies on Tailscale",
+                        ))
+                    })
+                    .when(
+                        matches!(
+                            destination,
+                            Some(Destination::NotPrivate | Destination::YourServer)
+                        ),
+                        |form| {
+                            form.child(
+                                self.ai_action(
+                                    "assistant-attestation",
                                     div()
                                         .flex()
-                                        .items_center()
-                                        .gap(px(space::S1))
+                                        .items_start()
+                                        .gap(px(space::S2))
+                                        .p(px(space::S2))
+                                        .rounded(px(radius::MD))
+                                        .bg(if setup.draft.attested {
+                                            p.wash
+                                        } else {
+                                            p.canvas
+                                        })
                                         .child(kit::icon(
-                                            if blocked {
-                                                Icon::CircleAlert
-                                            } else if destination.is_some() {
+                                            if setup.draft.attested {
                                                 Icon::CircleCheck
                                             } else {
-                                                Icon::CloudOff
+                                                Icon::Circle
                                             },
                                             component::ICON_SMALL,
-                                            if blocked { p.danger_ink } else { p.ink_3 },
+                                            p.accent_strong,
                                         ))
-                                        .child(text(ty::CAPS_LABEL, p.ink_2, route.to_uppercase())),
-                                ),
-                        )
-                        .child(self.ai_setting_field("Base URL", self.ai.url.clone(), window, cx))
-                        .when(endpoint.is_some_and(|info| info.tailnet_http), |form| {
-                            form.child(text(
-                                ty::META,
-                                p.sun_ink,
-                                "Unencrypted · relies on Tailscale",
-                            ))
-                        })
-                        .when(
-                            matches!(
-                                destination,
-                                Some(Destination::NotPrivate | Destination::YourServer)
-                            ),
-                            |form| {
-                                form.child(
-                                    self.ai_action(
-                                        "assistant-attestation",
-                                        div()
-                                            .flex()
-                                            .items_start()
-                                            .gap(px(space::S2))
-                                            .p(px(space::S2))
-                                            .rounded(px(radius::MD))
-                                            .bg(if setup.draft.attested {
-                                                p.wash
-                                            } else {
-                                                p.canvas
-                                            })
-                                            .child(kit::icon(
-                                                if setup.draft.attested {
-                                                    Icon::CircleCheck
-                                                } else {
-                                                    Icon::Circle
-                                                },
-                                                component::ICON_SMALL,
-                                                p.accent_strong,
-                                            ))
-                                            .child(text(ty::META, p.ink, PRIVATE_ATTESTATION)),
-                                        true,
-                                        |this, _, cx| this.toggle_ai_attestation(cx),
-                                        cx,
-                                    )
-                                    .aria_label(PRIVATE_ATTESTATION)
-                                    .aria_toggled(toggled(setup.draft.attested)),
+                                        .child(text(ty::META, p.ink, PRIVATE_ATTESTATION)),
+                                    true,
+                                    |this, _, cx| this.toggle_ai_attestation(cx),
+                                    cx,
                                 )
-                            },
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(space::S2))
-                                .child(
-                                    self.ai_setting_field(
-                                        "API key",
-                                        self.ai.key.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                    .flex_1(),
+                                .aria_label(PRIVATE_ATTESTATION)
+                                .aria_toggled(toggled(setup.draft.attested)),
+                            )
+                        },
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S2))
+                            .child(
+                                self.ai_setting_field(
+                                    "API key",
+                                    self.ai.key.clone(),
+                                    None,
+                                    window,
+                                    cx,
                                 )
-                                .when(!setup.draft.key.is_empty(), |r| {
-                                    r.child(self.ai_button(
-                                        "assistant-remove-key",
-                                        "Remove",
-                                        Tone::Quiet,
-                                        true,
-                                        |this, _, cx| {
-                                            this.ai.key.update(cx, |i, cx| {
-                                                i.set_text("", cx);
-                                                i.placeholder = "Optional bearer key".into();
-                                            });
-                                            this.ai_setting_changed(Field::Key, cx);
-                                        },
-                                        cx,
-                                    ))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(space::S2))
-                                .child(
-                                    self.ai_setting_field(
-                                        "Model",
-                                        self.ai.model.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                    .flex_1(),
-                                )
-                                .child(self.ai_icon(
-                                    "assistant-catalog-toggle",
-                                    Icon::ChevronDown,
-                                    "Show discovered models",
-                                    !setup.models.is_empty(),
+                                .flex_1(),
+                            )
+                            .when(!setup.draft.key.is_empty(), |r| {
+                                r.child(self.ai_button(
+                                    "assistant-remove-key",
+                                    "Remove",
+                                    Tone::Quiet,
+                                    true,
                                     |this, _, cx| {
-                                        if let Some(setup) = this.ai.settings.as_mut() {
-                                            setup.pick_model = !setup.pick_model;
-                                            cx.notify();
-                                        }
+                                        this.ai.key.update(cx, |i, cx| {
+                                            i.set_text("", cx);
+                                            i.placeholder = "Optional bearer key".into();
+                                        });
+                                        this.ai_setting_changed(Field::Key, cx);
                                     },
                                     cx,
                                 ))
-                                .child(self.ai_button(
-                                    "assistant-test",
-                                    "Test connection",
-                                    Tone::Outline,
-                                    allowed,
-                                    |this, _, cx| this.test_ai(false, cx),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S2))
+                            .child(
+                                self.ai_setting_field(
+                                    "Model",
+                                    self.ai.model.clone(),
+                                    Some(
+                                        self.ai_icon(
+                                            "assistant-catalog-toggle",
+                                            Icon::ChevronDown,
+                                            "Show discovered models",
+                                            !setup.models.is_empty() && !running,
+                                            |this, _, cx| {
+                                                if let Some(setup) = this.ai.settings.as_mut() {
+                                                    setup.pick_model = !setup.pick_model;
+                                                    cx.notify();
+                                                }
+                                            },
+                                            cx,
+                                        )
+                                        .aria_expanded(setup.pick_model)
+                                        .into_any_element(),
+                                    ),
+                                    window,
                                     cx,
-                                )),
-                        )
-                        .children(picker)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(space::S2))
-                                .child(kit::icon(status_icon, component::ICON_SMALL, indicator))
-                                .child(text(ty::META, p.ink_2, connection)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap(px(space::S2))
-                                .child(
-                                    text(
-                                        ty::META,
-                                        p.ink_3,
-                                        "Tests model replies and tools with invented data only.",
-                                    )
-                                    .flex_1(),
                                 )
-                                .child(self.ai_button(
-                                    "assistant-test-tools",
-                                    "Test model",
-                                    Tone::Outline,
-                                    allowed && valid_model(&setup.draft.model),
-                                    |this, _, cx| this.test_ai(true, cx),
-                                    cx,
-                                )),
-                        )
-                        .child(line(&p))
-                        .child(
-                            self.ai_action(
-                                "assistant-enabled",
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(space::S2))
-                                    .p(px(space::S1))
-                                    .rounded(px(radius::MD))
-                                    .bg(if setup.draft.enabled {
-                                        p.wash
-                                    } else {
-                                        p.raised
-                                    })
-                                    .child(kit::icon(
-                                        if setup.draft.enabled {
-                                            Icon::CircleCheck
-                                        } else {
-                                            Icon::Circle
-                                        },
-                                        component::ICON_SMALL,
-                                        if setup.draft.enabled {
-                                            p.accent_strong
-                                        } else {
-                                            p.ink_3
-                                        },
-                                    ))
-                                    .child(text(
-                                        ty::BUTTON_SMALL,
-                                        p.ink,
-                                        "Enable assistant on this device",
-                                    )),
-                                true,
-                                |this, _, cx| {
-                                    if let Some(setup) = this.ai.settings.as_mut() {
-                                        setup.draft.enabled = !setup.draft.enabled;
-                                        cx.notify();
-                                    }
-                                },
-                                cx,
+                                .flex_1(),
                             )
-                            .aria_toggled(toggled(setup.draft.enabled)),
-                        ),
-                ),
+                            .child(self.ai_button(
+                                "assistant-test",
+                                "Test connection",
+                                Tone::Outline,
+                                allowed,
+                                |this, _, cx| this.test_ai(false, cx),
+                                cx,
+                            )),
+                    )
+                    .children(picker)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S2))
+                            .children(light.map(status_light))
+                            .child(text(ty::META, status_ink, connection)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(space::S2))
+                            .child(
+                                text(
+                                    ty::META,
+                                    p.ink_3,
+                                    "Tests model replies and tools with invented data only.",
+                                )
+                                .flex_1(),
+                            )
+                            .child(self.ai_button(
+                                "assistant-test-tools",
+                                "Test model",
+                                Tone::Outline,
+                                allowed && valid_model(&setup.draft.model),
+                                |this, _, cx| this.test_ai(true, cx),
+                                cx,
+                            )),
+                    )
+                    .child(line(&p))
+                    .child(
+                        self.ai_action(
+                            "assistant-enabled",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .p(px(space::S1))
+                                .rounded(px(radius::MD))
+                                .bg(if setup.draft.enabled {
+                                    p.wash
+                                } else {
+                                    p.raised
+                                })
+                                .child(kit::icon(
+                                    if setup.draft.enabled {
+                                        Icon::CircleCheck
+                                    } else {
+                                        Icon::Circle
+                                    },
+                                    component::ICON_SMALL,
+                                    if setup.draft.enabled {
+                                        p.accent_strong
+                                    } else {
+                                        p.ink_3
+                                    },
+                                ))
+                                .child(text(
+                                    ty::BUTTON_SMALL,
+                                    p.ink,
+                                    "Enable assistant on this device",
+                                )),
+                            true,
+                            |this, _, cx| {
+                                if let Some(setup) = this.ai.settings.as_mut() {
+                                    setup.draft.enabled = !setup.draft.enabled;
+                                    cx.notify();
+                                }
+                            },
+                            cx,
+                        )
+                        .aria_toggled(toggled(setup.draft.enabled)),
+                    ),
+            ),
         );
         let list_controls = self.ai_access_controls(setup, cx);
         let settings = div().id("assistant-settings-dialog").track_focus(&self.ai.dialog).tab_group().role(Role::Dialog).aria_label("AI Assistant settings")
@@ -2239,11 +2220,17 @@ impl ShellView {
         &self,
         label: &'static str,
         input: Entity<TextInput>,
+        trailing: Option<gpui::AnyElement>,
         window: &Window,
         cx: &App,
     ) -> Div {
         let p = self.palette;
-        let focused = input.read(cx).focus_handle.is_focused(window);
+        let focused = input.read(cx).focus_handle.is_focused(window)
+            || (trailing.is_some()
+                && self
+                    .ai
+                    .focus_handle("assistant-catalog-toggle", cx)
+                    .is_focused(window));
         div()
             .min_w_0()
             .flex()
@@ -2267,8 +2254,10 @@ impl ShellView {
                     .border_color(if focused { p.accent_strong } else { p.control })
                     .rounded(px(radius::MD))
                     .bg(p.pane)
+                    .gap(px(space::S1))
                     .style(ty::COUNT)
-                    .child(input),
+                    .child(div().flex_1().min_w_0().child(input))
+                    .children(trailing),
             )
     }
 }

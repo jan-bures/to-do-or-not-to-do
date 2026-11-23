@@ -101,8 +101,16 @@ pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
-        "ai-empty" | "ai-unconfigured" | "ai-typing" | "ai-proposal" | "ai-batch"
-        | "ai-settings" | "ai-error" | "ai-blocked" => {
+        "ai-empty"
+        | "ai-unconfigured"
+        | "ai-typing"
+        | "ai-proposal"
+        | "ai-batch"
+        | "ai-settings"
+        | "ai-settings-testing"
+        | "ai-settings-unreachable"
+        | "ai-error"
+        | "ai-blocked" => {
             let mut f = my_day();
             f.ui.task = None;
             if let Some(task) = f

@@ -150,7 +150,11 @@ animation, and without relying on hue alone.
 - **Leading rails** are inset by `space::S1` (4 px/dp) from the leading side, top and bottom, inside the
   border if present. Give the 3 px rail semicircular ends, not a square end or an edge-to-edge border.
   Use this treatment on Board cards, list and sidebar rows, Timeline lanes and bars, and assistant
-  provider and proposal cards. Leave the surrounding border and focus outline uninterrupted.
+  proposal cards. Leave the surrounding border and focus outline uninterrupted. Assistant settings
+  provider cards use only a full accent border; do not add a rail or a light to the network label.
+- **Live status lights** are for connection or sync health only. Show green when connected, accent
+  while testing, and red with explicit **Unreachable** wording when the assistant cannot connect.
+  Use no light for untested or static labels. Never add dots to list pills, tags, or counts.
 - **Contrast and focus:** Both the off outline and the on glyph must reach 3:1 on the surfaces they sit on,
   in light and dark, including a selected row. Keep labels at 4.5:1. A tinted background alone may be subtle;
   pair it with a contrast-checked tick, bar or equivalent state mark. Keyboard focus adds a distinct ring

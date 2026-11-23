@@ -68,7 +68,27 @@ enum Check {
     },
     NoCatalog,
     Capable(Support),
+    Unreachable(String),
     Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ConnectionHealth {
+    #[default]
+    Unknown,
+    Testing,
+    Connected,
+    Unreachable,
+}
+
+fn unreachable(error: ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::Unavailable
+            | ProviderError::Timeout
+            | ProviderError::Tls
+            | ProviderError::TailnetDisconnected
+    )
 }
 
 const PRIVATE_ATTESTATION: &str =
@@ -129,6 +149,7 @@ pub(super) struct Ai {
     fixture: Option<AssistantView>,
     rate_until: Option<Instant>,
     seen_error: Option<Uuid>,
+    connection: ConnectionHealth,
 }
 
 impl Ai {
@@ -219,11 +240,28 @@ impl Ai {
             fixture: None,
             rate_until: None,
             seen_error: None,
+            connection: ConnectionHealth::Unknown,
         }
     }
 
     fn destination(&self) -> Option<Destination> {
         self.profile.endpoint().map(|endpoint| endpoint.destination)
+    }
+
+    fn same_destination(&self, draft: &Profile) -> bool {
+        draft.url == self.profile.url
+            && draft.key == self.profile.key
+            && draft.attested == self.profile.attested
+    }
+
+    fn connection_health(&self) -> ConnectionHealth {
+        if self.settings.as_ref().is_some_and(|setup| {
+            self.same_destination(&setup.draft) && matches!(setup.check, Check::Running(_))
+        }) {
+            ConnectionHealth::Testing
+        } else {
+            self.connection
+        }
     }
 
     fn blocked(&self) -> bool {
@@ -618,6 +656,16 @@ impl ShellView {
         if self.ai.seen_error == Some(turn.id) {
             return;
         }
+        if matches!(view.composer, Composer::Streaming { .. }) {
+            return;
+        }
+        match turn.error {
+            Some(AssistantError::Provider(error)) if unreachable(error) => {
+                self.ai.connection = ConnectionHealth::Unreachable
+            }
+            None => self.ai.connection = ConnectionHealth::Connected,
+            _ => {}
+        }
         if let Some(AssistantError::Provider(error)) = turn.error {
             self.ai.seen_error = Some(turn.id);
             if self.ai.composer.read(cx).content.is_empty() {
@@ -1010,6 +1058,20 @@ impl ShellView {
                     return;
                 };
                 setup.abort = None;
+                if setup.draft.url == this.ai.profile.url
+                    && setup.draft.key == this.ai.profile.key
+                    && setup.draft.attested == this.ai.profile.attested
+                {
+                    match result {
+                        Ok(_) | Err(ProviderError::Unsupported) => {
+                            this.ai.connection = ConnectionHealth::Connected
+                        }
+                        Err(error) if unreachable(error) => {
+                            this.ai.connection = ConnectionHealth::Unreachable
+                        }
+                        _ => {}
+                    }
+                }
                 match result {
                     Ok(Tested::Support(support)) => {
                         setup.draft.support = Some(support);
@@ -1033,7 +1095,11 @@ impl ShellView {
                         setup.check = Check::NoCatalog
                     }
                     Err(error) => {
-                        setup.check = Check::Failed(problem(error));
+                        setup.check = if unreachable(error) {
+                            Check::Unreachable(problem(error))
+                        } else {
+                            Check::Failed(problem(error))
+                        };
                         if let ProviderError::RateLimited { retry_after } = error {
                             this.ai_rate_timer(retry_after, cx);
                         }
@@ -1075,7 +1141,8 @@ impl ShellView {
             || old.key != next.key
             || old.attested != next.attested
             || old.support != next.support;
-        let endpoint_changed = old.url != next.url;
+        let endpoint_changed =
+            old.url != next.url || old.key != next.key || old.attested != next.attested;
         let generation = self.ai.controller.view().generation;
         if changing {
             self.ai.controller.configure(next.selection());
@@ -1084,6 +1151,13 @@ impl ShellView {
         }
         if endpoint_changed {
             self.ai.rate_until = None;
+            self.ai.connection = match setup.check {
+                Check::Catalog { .. } | Check::Capable(_) | Check::NoCatalog => {
+                    ConnectionHealth::Connected
+                }
+                Check::Unreachable(_) => ConnectionHealth::Unreachable,
+                _ => ConnectionHealth::Unknown,
+            };
         }
         if self.ai.controller.view().generation != generation {
             self.ai.clear_chat_state();
@@ -1102,6 +1176,7 @@ impl ShellView {
         self.ai.clear_chat_state();
         self.ai.profile = Profile::default();
         self.ai.rate_until = None;
+        self.ai.connection = ConnectionHealth::Unknown;
         self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         self.ai.key.update(cx, |i, cx| {
             i.set_text("", cx);

@@ -240,7 +240,15 @@ impl ShellView {
                 input.set_text("What can I finish today?", cx)
             });
         }
-        if name == "ai-settings" {
+        self.ai.connection = match name {
+            "ai-error" | "ai-settings-unreachable" => ConnectionHealth::Unreachable,
+            "ai-blocked" => ConnectionHealth::Unknown,
+            _ => ConnectionHealth::Connected,
+        };
+        if matches!(
+            name,
+            "ai-settings" | "ai-settings-testing" | "ai-settings-unreachable"
+        ) {
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
             if let Some(collection) = state.lists[&errands.id].collection {
                 self.ai
@@ -261,9 +269,15 @@ impl ShellView {
             }
             self.open_ai_settings(window, cx);
             if let Some(setup) = self.ai.settings.as_mut() {
-                setup.check = Check::Catalog {
-                    count: 4,
-                    elapsed: Duration::from_millis(38),
+                setup.check = match name {
+                    "ai-settings-testing" => Check::Running("Checking connection…"),
+                    "ai-settings-unreachable" => {
+                        Check::Unreachable(problem(ProviderError::Unavailable))
+                    }
+                    _ => Check::Catalog {
+                        count: 4,
+                        elapsed: Duration::from_millis(38),
+                    },
                 };
                 setup.models = ["local-model", "another-local-model"]
                     .into_iter()

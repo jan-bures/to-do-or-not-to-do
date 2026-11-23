@@ -58,6 +58,8 @@ pub const FIXTURES: &[&str] = &[
     "ai-proposal",
     "ai-batch",
     "ai-settings",
+    "ai-settings-testing",
+    "ai-settings-unreachable",
     "ai-error",
     "ai-blocked",
     "multi-select",
