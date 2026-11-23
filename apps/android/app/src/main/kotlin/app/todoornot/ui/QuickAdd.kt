@@ -179,7 +179,8 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                         val mark = stage.workflowStage()
                         IconButton(mark.icon, "Choose status: ${mark.label}", mark.ink(), expanded = statusOpen) { statusOpen = true }
                         if (statusOpen) AnchoredPopup(onDismiss = { statusOpen = false }, above = true) { overlay ->
-                            Column(Modifier.widthIn(min = P.INNER_LIST.dp / 2).padding(S.S2.dp)) {
+                            Column(Modifier.padding(S.S2.dp).widthIn(min = P.INNER_LIST.dp / 2)
+                                .overlay(RoundedCornerShape(Tokens.Radius.LG.dp), LocalDesign.current).padding(S.S2.dp)) {
                                 Caps("Choose status")
                                 StatusOptions(mark, includeDone = false) { picked ->
                                     overlay.choose { pick(WorkflowQuickAddPick.Status(picked.openStage())) }

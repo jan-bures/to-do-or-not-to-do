@@ -137,7 +137,8 @@ internal fun ViewControl(state: UiState, actions: Actions, wide: Boolean, labels
                 else opened = true
             }
             if (opened) AnchoredPopup(onDismiss = { opened = false }, above = true) { overlay ->
-                Column(Modifier.widthIn(min = P.INNER_LIST.dp / 2).padding(S.S2.dp)) {
+                Column(Modifier.padding(S.S2.dp).widthIn(min = P.INNER_LIST.dp / 2)
+                    .overlay(RoundedCornerShape(Tokens.Radius.LG.dp), LocalDesign.current).padding(vertical = S.S1.dp)) {
                     views.forEach { view ->
                         WorkflowOption(view.label, view.icon, view == state.view, view != ListView.TIMELINE) {
                             overlay.choose { choose(view) }
