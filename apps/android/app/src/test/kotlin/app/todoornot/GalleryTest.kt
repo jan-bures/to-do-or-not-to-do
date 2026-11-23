@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.res.painterResource
 import kotlin.math.pow
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,7 +56,6 @@ import app.todoornot.session.EngineHost
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.model.taskMenu
-import app.todoornot.ui.ActivityRoom
 import app.todoornot.ui.AgentRow
 import app.todoornot.core.ActivityDay
 import app.todoornot.core.ActivityFooter
@@ -76,11 +77,22 @@ import app.todoornot.ui.CantOpenScreen
 import app.todoornot.ui.DeleteListCard
 import app.todoornot.ui.DetailPane
 import app.todoornot.ui.Button
+import app.todoornot.ui.DeviceInviteActions
 import app.todoornot.ui.DeviceInviteContent
+import app.todoornot.ui.DeviceReviewActions
 import app.todoornot.ui.DeviceReviewContent
 import app.todoornot.ui.Label
 import app.todoornot.session.ThumbHand
+import app.todoornot.ui.ActionSheetContent
+import app.todoornot.ui.BottomSheet
+import app.todoornot.ui.LocalSheetAtEnd
 import app.todoornot.ui.LocalSheetAtRest
+import app.todoornot.ui.LocalSheetWidth
+import app.todoornot.ui.LocalSwipeFrame
+import app.todoornot.ui.OverlayState
+import app.todoornot.ui.SwipeFrame
+import app.todoornot.ui.TaskActionsSheet
+import app.todoornot.ui.listPaneWidth
 import app.todoornot.ui.BulkPicker
 import app.todoornot.ui.BulkSelectionPicker
 import app.todoornot.ui.overlay
@@ -274,8 +286,26 @@ class GalleryTest {
         val e = fixtureEngine()
         val admin = e.list("Admin")
         val s = state(e, admin, select = e.taskId(admin, "Renew passport appointment"))
-        main("cover_detail_light", COVER, s, dark = false)
-        main("cover_detail_dark", COVER, s, dark = true)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            main("cover_detail_$theme", FOLD7_COVER, s, dark)
+            main("cover_detail_left_$theme", FOLD7_COVER, s, dark, hand = ThumbHand.LEFT)
+        }
+    }
+
+    @Test
+    fun row_swipe_frames() {
+        val state = state(fixtureEngine())
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val distance = Tokens.Metrics.Phone.SWIPE_THRESHOLD + Tokens.Space.S4
+            for ((label, frame) in listOf("complete" to SwipeFrame(state.room.tasks.first().id, distance),
+                "my_day" to SwipeFrame(state.room.tasks[1].id, -distance))) {
+                shot("cover_row_swipe_${label}_$theme", FOLD7_COVER) {
+                    CompositionLocalProvider(LocalSwipeFrame provides frame) { MainScreen(state, Actions.None, dark, false) }
+                }
+            }
+        }
     }
 
     @Test
@@ -309,11 +339,8 @@ class GalleryTest {
             val theme = if (dark) "dark" else "light"
             main("toggle_states_off_$theme", INNER, off, dark)
             main("toggle_states_on_$theme", INNER, on, dark)
-            val detail = requireNotNull(on.detail)
-            overlaid("toggle_states_menu_$theme", COVER, on, dark) {
-                Box(Modifier.fillMaxSize().padding(top = Tokens.Metrics.Phone.APP_BAR.dp, end = Tokens.Space.S2.dp), contentAlignment = Alignment.TopEnd) {
-                    MenuCard(taskMenu(on.room, id, detail.done, detail.myDay, detail.priority.toInt()), {})
-                }
+            overlaid("toggle_states_menu_$theme", FOLD7_COVER, on, dark) {
+                TaskActionsSheet(on, Actions.None, requireNotNull(on.detail)) {}
             }
         }
     }
@@ -346,14 +373,14 @@ class GalleryTest {
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
             for (surface in listOf("chips", "calendar", "priority")) {
-                shot("quick_add_${surface}_$theme", COVER) {
+                shot("quick_add_${surface}_$theme", FOLD7_COVER) {
                     Box(Modifier.fillMaxSize()) {
                         MainScreen(m.ui.value, m, dark, false, draft = "Water the plants zítra !!", collapsed = true)
                         if (surface != "chips") TodoTheme(dark, m.ui.value.room.hue) {
                             Box(Modifier.fillMaxSize().navigationBarsPadding()) {
                                 val anchor = Modifier.align(Alignment.BottomEnd).padding(
                                     end = if (surface == "calendar") s.S4.dp else s.S5.dp,
-                                    bottom = (2 * p.TOUCH + s.S5).dp,
+                                    bottom = (p.BOTTOM_BAR + p.TOUCH + s.S3).dp,
                                 )
                                 if (surface == "calendar") DateCalendar(month, selected, {}, {}, anchor)
                                 else MenuCard(priorityMenu(2) { MenuAction.QuickPriority(it) }, {}, anchor, title = "Choose priority")
@@ -478,8 +505,10 @@ class GalleryTest {
 
     @Test
     fun pairing() {
-        shot("pairing_address_light", COVER) {
-            PairingScreen(PairingState.Entering(), PairingActions.None, dark = false)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            shot("pairing_address_$theme", FOLD7_COVER) { PairingScreen(PairingState.Entering(), PairingActions.None, dark) }
+            shot("pairing_inner_$theme", FOLD7_INNER) { PairingScreen(PairingState.Entering(), PairingActions.None, dark) }
         }
         shot("pairing_error_dark", COVER) {
             PairingScreen(
@@ -492,8 +521,8 @@ class GalleryTest {
             PairingScreen(PairingState.SaveFailed, PairingActions.None, dark = false)
         }
         val waiting = PairingState.Waiting("https://todo.example.com", "WXYZ-2345", "https://todo.example.com/pair?code=WXYZ-2345", 0)
-        shot("pairing_code_light", COVER) { PairingScreen(waiting, PairingActions.None, dark = false, fixedRemainingSeconds = 285) }
-        shot("pairing_code_dark", COVER) { PairingScreen(waiting, PairingActions.None, dark = true, fixedRemainingSeconds = 285) }
+        shot("pairing_code_light", FOLD7_COVER) { PairingScreen(waiting, PairingActions.None, dark = false, fixedRemainingSeconds = 285) }
+        shot("pairing_code_dark", FOLD7_COVER) { PairingScreen(waiting, PairingActions.None, dark = true, fixedRemainingSeconds = 285) }
         val invite = DeviceInvitation("fixture", "ABCDEF-GHJKMN", "https://todo.example.com/pair/invite#" + "A".repeat(43), 300u)
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
@@ -502,7 +531,8 @@ class GalleryTest {
                     DialogBackdrop {
                         DialogCard("Pair a new device") {
                             Label("Pair a new device", Tokens.Type.DETAIL_TITLE, LocalDesign.current.room.ink)
-                            DeviceInviteContent(invite, 300, false) {}
+                            DeviceInviteContent(invite, 300)
+                            DeviceInviteActions(invite, false) {}
                             Button("Close", primary = false) {}
                         }
                     }
@@ -513,7 +543,8 @@ class GalleryTest {
                     DialogBackdrop {
                         DialogCard("Approve a device") {
                             Label("Approve a device", Tokens.Type.DETAIL_TITLE, LocalDesign.current.room.ink)
-                            DeviceReviewContent("New phone", "ABCD-EFGH", "203.0.113.7", false, {}, {})
+                            DeviceReviewContent("New phone", "ABCD-EFGH", "203.0.113.7")
+                            DeviceReviewActions(false, {}, {})
                             Button("Close", primary = false) {}
                         }
                     }
@@ -534,10 +565,7 @@ class GalleryTest {
     fun unpair_question() {
         fun card(unsent: Int?, dark: Boolean, changed: Boolean = false) = @Composable {
             TodoTheme(dark, "my-day") {
-                val r = LocalDesign.current.room
-                Box(Modifier.fillMaxSize().background(r.toast.copy(alpha = 0.32f)).padding(24.dp), contentAlignment = Alignment.Center) {
-                    UnpairCard(unsent, {}, {}, focusCancel = false, changed = changed)
-                }
+                DialogBackdrop { UnpairCard(unsent, {}, {}, focusCancel = false, changed = changed) }
             }
         }
         shot("unpair_with_unsent_light", COVER, card(3, dark = false))
@@ -608,14 +636,27 @@ class GalleryTest {
         state: UiState,
         dark: Boolean,
         drawer: Boolean = false,
-        wide: Boolean = device === INNER,
+        wide: Boolean = device === INNER || device === FOLD7_INNER,
         overlay: @Composable () -> Unit,
     ) = shot(name, device) {
         Box(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalSheetAtRest provides true) {
                 MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer)
             }
-            TodoTheme(dark, state.room.hue) { overlay() }
+            CompositionLocalProvider(LocalSheetAtRest provides true) {
+                TodoTheme(dark, state.room.hue) { overlay() }
+            }
+        }
+    }
+
+    private fun sheet(name: String, state: UiState, dark: Boolean, device: DeviceConfig = FOLD7_COVER,
+        content: @Composable ColumnScope.(OverlayState) -> Unit,
+    ) = overlaid(name, device, state, dark) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val width = listPaneWidth(maxWidth, device === FOLD7_INNER, null)?.let { maxWidth - it - Tokens.Elevation.HAIRLINE.dp }
+            CompositionLocalProvider(LocalSheetWidth provides width, LocalSheetAtEnd provides true) {
+                BottomSheet(name.substringBeforeLast('_').replace('_', ' '), {}, content = content)
+            }
         }
     }
 
@@ -648,7 +689,6 @@ class GalleryTest {
     /** The warning above the Due row of a repeating task; no warning on an undated task. */
     @Test
     fun detail_due_calendar() {
-        val spacing = Tokens.Space
         val (e, admin, id) = admin()
         val original = requireNotNull(state(e, admin, select = id).detail)
         e.setRepeat(id, RepeatChoice.Preset(RepeatPreset.DAILY), FIXTURE_NOW)
@@ -666,15 +706,19 @@ class GalleryTest {
             for ((label, state) in listOf("dated" to dated, "undated" to undated)) {
                 val detail = requireNotNull(state.detail)
                 val date = detail.due
-                overlaid("detail_due_calendar_${label}_$theme", COVER, state, dark) {
-                    Box(Modifier.fillMaxSize().navigationBarsPadding()) {
-                        val anchor = if (date == null) Modifier.align(Alignment.BottomEnd)
-                            .padding(bottom = (spacing.S10 + Tokens.Metrics.Phone.TOUCH - spacing.S1).dp)
-                        else Modifier.align(Alignment.TopEnd).padding(top = spacing.S10.dp + spacing.S8.dp)
-                        DateCalendar(quickAddMonth(FIXTURE_NOW, date, null), date, {}, {},
-                            anchor.padding(end = spacing.S6.dp), repeats = detail.repeats)
-                    }
+                sheet("detail_due_calendar_${label}_$theme", state, dark) { overlay ->
+                    DateCalendar(quickAddMonth(FIXTURE_NOW, date, null), date, {}, {},
+                        dismiss = overlay::close, repeats = detail.repeats, inSheet = true, focusCalendar = false)
                 }
+            }
+            val detail = requireNotNull(dated.detail)
+            sheet("inner_detail_due_$theme", dated, dark, FOLD7_INNER) { overlay ->
+                DateCalendar(quickAddMonth(FIXTURE_NOW, detail.due, null), detail.due, {}, {},
+                    dismiss = overlay::close, repeats = true, inSheet = true, focusCalendar = false)
+            }
+            sheet("cover_detail_due_sideways_$theme", dated, dark, COVER_SIDEWAYS) { overlay ->
+                DateCalendar(quickAddMonth(FIXTURE_NOW, detail.due, null), detail.due, {}, {},
+                    dismiss = overlay::close, repeats = true, inSheet = true, focusCalendar = false)
             }
         }
     }
@@ -705,21 +749,19 @@ class GalleryTest {
             val (e, admin, id) = admin()
             val s = state(e, admin, select = id)
             val detail = requireNotNull(s.detail)
-            overlaid("reminder_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
-                DialogBackdrop {
-                    ReminderCard(detail.reminder?.atMs, detail.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false)
-                }
+            sheet("reminder_picker_${if (dark) "dark" else "light"}", s, dark) {
+                ReminderCard(detail.reminder?.atMs, detail.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false, inSheet = true)
             }
         }
         val (e, admin, _) = admin()
         val s = freshCarService(e, admin)
-        overlaid("reminder_picker_new_light", COVER, s, dark = false) {
-            DialogBackdrop { ReminderCard(null, null, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
+        sheet("reminder_picker_new_light", s, dark = false) {
+            ReminderCard(null, null, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false, inSheet = true)
         }
         val (e2, admin2, id2) = admin()
         val s2 = state(e2, admin2, select = id2)
-        overlaid("reminder_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
-            DialogBackdrop { ReminderCard(s2.detail?.reminder?.atMs, s2.detail?.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
+        sheet("reminder_picker_sideways_light", s2, dark = false, COVER_SIDEWAYS) {
+            ReminderCard(s2.detail?.reminder?.atMs, s2.detail?.due, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false, inSheet = true)
         }
     }
 
@@ -746,10 +788,8 @@ class GalleryTest {
             val (e, admin, id) = admin()
             val s = state(e, admin, select = id)
             val detail = requireNotNull(s.detail)
-            overlaid("priority_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
-                Box(Modifier.fillMaxSize().padding(start = 24.dp, top = 600.dp)) {
-                    MenuCard(priorityMenu(detail.id, detail.priority.toInt()), {})
-                }
+            sheet("priority_picker_${if (dark) "dark" else "light"}", s, dark) {
+                ActionSheetContent(priorityMenu(detail.id, detail.priority.toInt()), "Priority", {})
             }
         }
     }
@@ -764,15 +804,12 @@ class GalleryTest {
             val (e, admin, id) = admin()
             val s = state(e, admin, select = id)
             val detail = requireNotNull(s.detail)
-            shot("step_actions_${if (dark) "dark" else "light"}", COVER) {
-                TodoTheme(dark, s.room.hue) {
-                    Box(Modifier.fillMaxSize()) {
-                        DetailPane(s, Actions.None, standalone = true, stepEditing = detail.steps[1].id)
-                        Box(Modifier.fillMaxSize().padding(start = 146.dp, top = 303.dp)) {
-                            MenuCard(stepMenu(detail.steps, detail.steps[2].id), {})
-                        }
-                    }
-                }
+            val theme = if (dark) "dark" else "light"
+            shot("step_editing_$theme", FOLD7_COVER) {
+                TodoTheme(dark, s.room.hue) { DetailPane(s, Actions.None, standalone = true, stepEditing = detail.steps[1].id) }
+            }
+            sheet("step_actions_$theme", s, dark) {
+                ActionSheetContent(stepMenu(detail.steps, detail.steps[2].id), "Step actions", {})
             }
         }
         val (e, admin, id) = admin()
@@ -797,15 +834,12 @@ class GalleryTest {
             m.select(id)
             val s = m.ui.value
             val detail = requireNotNull(s.detail)
-            overlaid("task_menu_$theme", COVER, s, dark) {
-                Box(Modifier.fillMaxSize().padding(top = Tokens.Metrics.Phone.APP_BAR.dp, end = Tokens.Space.S2.dp), contentAlignment = Alignment.TopEnd) {
-                    MenuCard(taskMenu(s.room, id, detail.done, detail.myDay, detail.priority.toInt()), {})
-                }
+            overlaid("task_menu_$theme", FOLD7_COVER, s, dark) { TaskActionsSheet(s, m, detail) {} }
+            sheet("inner_detail_actions_$theme", s, dark, FOLD7_INNER) {
+                ActionSheetContent(taskMenu(s.room, id, detail.done, detail.myDay, detail.priority.toInt()), "Task actions", {})
             }
             val groups = e.moveDestinations(id, "")
-            overlaid("move_task_$theme", COVER, s, dark) {
-                DialogBackdrop { MoveTaskCard("", {}, groups, {}, {}) }
-            }
+            sheet("move_task_$theme", s, dark) { MoveTaskCard("", {}, groups, {}, {}, inSheet = true) }
             m.deleteTask(id)
             main("task_deleted_$theme", COVER, m.ui.value, dark)
         }
@@ -866,13 +900,9 @@ class GalleryTest {
             val s = m.ui.value
             val candidates = e.mergeCandidates(source, "review")
             val target = candidates.first { it.title == "Prepare Q4 roadmap review" }
-            overlaid("merge_task_picker_$theme", COVER, s, dark) {
-                DialogBackdrop { MergeTaskCard("review", {}, candidates, {}, {}) }
-            }
+            sheet("merge_task_picker_$theme", s, dark) { MergeTaskCard("review", {}, candidates, {}, {}, inSheet = true) }
             val question = requireNotNull(e.mergeQuestion(source, target.id))
-            overlaid("merge_task_confirm_$theme", COVER, s, dark) {
-                DialogBackdrop { MergeConfirmCard(question, {}, {}, focus = false) }
-            }
+            sheet("merge_task_confirm_$theme", s, dark) { MergeConfirmCard(question, {}, {}, focus = false, inSheet = true) }
         }
     }
 
@@ -942,20 +972,21 @@ class GalleryTest {
             main("drawer_toast_$suffix", COVER, toastState.copy(detail = null), dark, drawer = true)
             main("landscape_toast_$suffix", COVER_SIDEWAYS, toastState, dark, wide = true)
             fun card(name: String, content: @Composable () -> Unit) = overlaid("${name}_$suffix", COVER, s, dark) { DialogBackdrop { content() } }
-            card("repeat") { RepeatCard(detail, false, {}, {}, {}) { e.previewRepeat(id, it, FIXTURE_NOW) } }
-            card("custom_repeat") { RepeatCard(detail, true, {}, {}, {}) { e.previewRepeat(id, it, FIXTURE_NOW) } }
-            card("tags") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed) }
-            card("create_tag") { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed, initialText = "seedlings") }
-            card("tag_options") { app.todoornot.ui.TagOptions(tag, {}, {}) }
-            card("swatches") { SwatchCard(target, "fern", {}, {}) }
-            card("rename_tag") { RenameCard("Rename tag", "garden", {}, {}, focus = false) }
+            sheet("repeat_$suffix", s, dark) { RepeatCard(detail, false, {}, {}, {}, inSheet = true) { e.previewRepeat(id, it, FIXTURE_NOW) } }
+            sheet("custom_repeat_$suffix", s, dark) { RepeatCard(detail, true, {}, {}, {}, inSheet = true) { e.previewRepeat(id, it, FIXTURE_NOW) } }
+            sheet("tags_$suffix", s, dark) { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed, inSheet = true) }
+            sheet("create_tag_$suffix", s, dark) { TagsCard(detail.tags, {}, {}, {}, {}, e::tagNamed, initialText = "seedlings", inSheet = true) }
+            sheet("tag_options_$suffix", s, dark) { app.todoornot.ui.TagOptions(tag, {}, {}, inSheet = true) }
+            sheet("swatches_$suffix", s, dark) { SwatchCard(target, "fern", {}, {}, inSheet = true) }
+            sheet("rename_tag_$suffix", s, dark) { RenameCard("Rename tag", "garden", {}, {}, focus = false, inSheet = true) }
             card("new_collection") { RenameCard("New collection", "Projects", {}, {}, focus = false) }
             card("add_link") { RenameCard("Add a web link", "todo.example.com/garden", {}, {}, focus = false, webAddress = true) }
-            card("move_list") { MoveListCard(s.home, list, {}, {}) }
+            sheet("move_list_$suffix", s.copy(detail = null), dark) { MoveListCard(s.home, list, {}, {}, inSheet = true) }
             val collection = e.collection("Personal") as RoomKey.Collection
             for ((noun, t) in listOf("tag" to target, "collection" to ColorTarget.Collection(collection.id))) {
                 val q = requireNotNull(e.organizeQuestion(t))
-                card("confirm_$noun") { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false) }
+                if (noun == "tag") sheet("confirm_tag_$suffix", s, dark) { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false, inSheet = true) }
+                else card("confirm_$noun") { DeleteListCard(q, {}, {}, noun = noun, focusCancel = false) }
             }
             val days = listOf(
                 ActivityDay("Today", listOf(ActivityRow("c", 3u, "Added Water herbs", "You", "Just now", null, "Undo"),
@@ -963,7 +994,9 @@ class GalleryTest {
                 ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo"))),
             )
             val feed = ActivityView(null, days, 0u, "Refresh activity •", false, ActivityFooter.None)
-            shot("activity_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityRoom(s.copy(feed = feed), Actions.None, {}) } }
+            main("activity_$suffix", FOLD7_COVER, s.copy(activity = "", feed = feed), dark)
+            val agent = s.home.agents.first()
+            main("activity_inner_$suffix", FOLD7_INNER, s.copy(activity = agent.id, feed = feed.copy(agent = agent.mark.name)), dark)
         }
     }
 
@@ -973,7 +1006,7 @@ class GalleryTest {
         val s = state(fixtureEngine()).copy(feed = feed)
         for (dark in listOf(false, true)) {
             val suffix = if (dark) "dark" else "light"
-            shot("activity_empty_$suffix", COVER) { TodoTheme(dark, s.room.hue) { ActivityRoom(s, Actions.None, {}) } }
+            main("activity_empty_$suffix", FOLD7_COVER, s.copy(activity = ""), dark)
         }
     }
 
@@ -981,8 +1014,10 @@ class GalleryTest {
     fun trash() {
         for (dark in listOf(false, true)) {
             val suffix = if (dark) "dark" else "light"
-            main("trash_$suffix", COVER, state(fixtureEngine("trash"), RoomKey.Trash), dark)
-            main("trash_empty_$suffix", COVER, state(fixtureEngine(), RoomKey.Trash), dark)
+            val populated = state(fixtureEngine("trash"), RoomKey.Trash)
+            main("trash_$suffix", FOLD7_COVER, populated, dark)
+            main("trash_inner_$suffix", FOLD7_INNER, populated, dark)
+            main("trash_empty_$suffix", FOLD7_COVER, state(fixtureEngine(), RoomKey.Trash), dark)
         }
     }
 

@@ -36,6 +36,7 @@ import app.todoornot.model.RowLook
 import app.todoornot.model.MenuAction
 import app.todoornot.model.MenuEntry
 import app.todoornot.model.taskMenu
+import app.todoornot.model.TaskSwipe
 import app.todoornot.model.TodoModel
 import app.todoornot.model.Wake
 import app.todoornot.model.ease
@@ -390,6 +391,59 @@ class TodoModelTest {
         m.frame(time + 5_000)
         assertNull(m.motion.row(task.id))
         assertEquals(Wake.Idle, m.motion.motion.wake(time))
+    }
+
+    @Test
+    fun row_swipes_undo_exactly_and_ignore_bulk_or_an_old_generation() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val model = s.model
+        s.drain()
+        val start = model.ui.value
+        val task = start.room.tasks.first()
+        model.toggleBulk(task.id, start.generation)
+        s.drain()
+        model.swipeTask(task.id, start.generation, TaskSwipe.COMPLETION)
+        s.drain()
+        assertEquals(false, engine.taskDone(task.id))
+        model.clearBulk()
+        model.swipeTask(task.id, start.generation, TaskSwipe.MY_DAY)
+        s.drain()
+        assertFalse(requireNotNull(engine.task(task.id, FIXTURE_NOW)).myDay)
+        model.undo(requireNotNull(model.ui.value.toast))
+        s.drain()
+        assertTrue(requireNotNull(engine.task(task.id, FIXTURE_NOW)).myDay)
+        model.open(RoomKey.Smart(SmartList.ALL))
+        s.drain()
+        model.swipeTask(task.id, start.generation, TaskSwipe.COMPLETION)
+        s.drain()
+        assertEquals(false, engine.taskDone(task.id))
+        model.swipeTask(task.id, model.ui.value.generation, TaskSwipe.COMPLETION)
+        s.drain()
+        assertEquals(true, engine.taskDone(task.id))
+        model.undo(requireNotNull(model.ui.value.toast))
+        s.drain()
+        assertEquals(false, engine.taskDone(task.id))
+    }
+
+    @Test
+    fun reopening_from_a_swipe_can_be_undone() {
+        val engine = fixtureEngine()
+        val s = Stepped(engine) { time }
+        val model = s.model
+        s.drain()
+        model.setShowCompleted(true)
+        s.drain()
+        val current = model.ui.value
+        val done = current.room.completed.first()
+        model.swipeTask(done.id, current.generation, TaskSwipe.COMPLETION)
+        s.drain()
+        assertEquals(false, engine.taskDone(done.id))
+        val toast = requireNotNull(model.ui.value.toast)
+        assertTrue(toast.text.startsWith("Reopened"))
+        model.undo(toast)
+        s.drain()
+        assertEquals(true, engine.taskDone(done.id))
     }
 
     @Test

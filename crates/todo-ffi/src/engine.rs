@@ -185,7 +185,7 @@ pub struct FailedChange {
 /// An opaque reference to the exact completion (including its generated next occurrence).
 /// Kept by the toast, never rebuilt from a task ID or timestamp.
 #[derive(Debug, uniffi::Object)]
-pub struct Completion(TrackedCommand);
+pub struct Completion(TrackedCommand, bool);
 
 /// An opaque reference to an exact deletion (a task, a step, or a list with its tasks), for its Undo. Kept by the
 /// toast, like [`Completion`].
@@ -899,25 +899,29 @@ impl TodoEngine {
         Ok(id.to_string())
     }
 
-    /// Completes or reopens a task. Only an actual completion gets an Undo action.
+    /// Completes or reopens a task, returning Undo only when something changed.
     pub fn set_done(&self, id: String, done: bool) -> Result<Option<Arc<Completion>>, FfiError> {
         let id = task_id(&id)?;
         let Some(command) = intent::set_done(&self.client.view(), id, done) else {
             return Ok(None);
         };
-        if done {
-            return Ok(Some(Arc::new(Completion(
-                self.client.submit_tracked(command)?,
-            ))));
-        }
-        self.client.submit(command)?;
-        Ok(None)
+        Ok(Some(Arc::new(Completion(
+            self.client.submit_tracked(command)?,
+            done,
+        ))))
     }
 
     /// Cancels an unsent completion or queues its checked inverse. A later server refusal is
     /// reported by `failed`, like other outbox failures, but never with raw server text.
     pub fn undo_completion(&self, completion: Arc<Completion>) -> Result<(), FfiError> {
-        self.undo_tracked(&completion.0, Undone::Completion)
+        self.undo_tracked(
+            &completion.0,
+            if completion.1 {
+                Undone::Completion
+            } else {
+                Undone::Change("Undo reopening a task", "task")
+            },
+        )
     }
 
     /// Sets the due date (ISO, `2026-11-22`) or clears it (`None`). Clearing it also clears a repeat
@@ -1213,12 +1217,32 @@ impl TodoEngine {
     }
 
     /// Puts a task in today's My Day or takes it out.
-    pub fn set_my_day(&self, id: String, on: bool, now: LocalNow) -> Result<(), FfiError> {
-        let id = task_id(&id)?;
+    pub fn set_my_day(
+        &self,
+        id: String,
+        on: bool,
+        now: LocalNow,
+    ) -> Result<Option<Arc<organize::OrganizeChange>>, FfiError> {
+        let (id, state) = self.live_task(&id)?;
         let today = Now::new(now).today();
-        self.client
-            .submit(intent::set_my_day(id, on.then_some(today)))?;
-        Ok(())
+        let task = &state.tasks[&id];
+        if (on && task.my_day == Some(today)) || (!on && task.my_day.is_none()) {
+            return Ok(None);
+        }
+        let tracked = self
+            .client
+            .submit_tracked(intent::set_my_day(id, on.then_some(today)))?;
+        let title = crate::labels::one_line(&task.title);
+        let toast = if on {
+            format!("Added “{title}” to My Day")
+        } else {
+            format!("Removed “{title}” from My Day")
+        };
+        Ok(Some(Arc::new(organize::OrganizeChange::new(
+            tracked,
+            Undone::Change("Undo changing My Day", "task"),
+            toast,
+        ))))
     }
 
     /// Marks a task important (high priority), or takes its priority away, as the desktop's star does.

@@ -67,14 +67,18 @@ internal fun pairingRemaining(expires: Long, now: Long): Long = (expires - now).
 internal fun pairTime(left: Long): String = "Expires in ${left / 60}:${(left % 60).toString().padStart(2, '0')}"
 
 @Composable
-internal fun DeviceInviteContent(invite: DeviceInvitation, left: Long, busy: Boolean, cancel: () -> Unit) {
+internal fun DeviceInviteContent(invite: DeviceInvitation, left: Long) {
     val r = LocalDesign.current.room
-    val context = LocalContext.current
     Label("Scan on the new device, type the code in its app, or open the link in its browser.", Tokens.Type.BODY, r.ink2, maxLines = 3)
     PairingQrTile(invite.link, "Invite QR code")
     Label(invite.code, Tokens.Type.DUE, r.ink)
     Label(invite.link, Tokens.Type.META_PHONE, r.ink2, maxLines = 4)
     Label(pairTime(left), Tokens.Type.DUE, r.ink3)
+}
+
+@Composable
+internal fun DeviceInviteActions(invite: DeviceInvitation, busy: Boolean, cancel: () -> Unit) {
+    val context = LocalContext.current
     Row(horizontalArrangement = Arrangement.spacedBy(Tokens.Space.S2.dp)) {
         Button("Copy link", primary = false, modifier = Modifier.weight(1f)) {
             val clip = ClipData.newPlainText("Device invitation", invite.link)
@@ -86,11 +90,15 @@ internal fun DeviceInviteContent(invite: DeviceInvitation, left: Long, busy: Boo
 }
 
 @Composable
-internal fun DeviceReviewContent(name: String, code: String, source: String?, busy: Boolean, approve: () -> Unit, back: () -> Unit) {
+internal fun DeviceReviewContent(name: String, code: String, source: String?) {
     val r = LocalDesign.current.room
     Label("Approve “$name”? Only continue if the code matches your own device.", Tokens.Type.BODY, r.ink2, maxLines = 4)
     Label(code, Tokens.Type.DUE, r.ink)
     Label("Source address: ${source ?: "Unknown"}", Tokens.Type.BODY, r.ink2, maxLines = 2)
+}
+
+@Composable
+internal fun DeviceReviewActions(busy: Boolean, approve: () -> Unit, back: () -> Unit) {
     Button("Approve", primary = true, enabled = !busy, onClick = approve)
     Button("Use another code", primary = false, enabled = !busy, onClick = back)
 }
@@ -118,6 +126,7 @@ internal fun DevicePairingDialog(
     val r = LocalDesign.current.room
     val scan = LocalScanPairing.current
     val current = if (page == DevicePairingPage.INVITE) model.invite else null
+    val pending = if (page == DevicePairingPage.APPROVE) model.answer else null
     val activityWindow = LocalActivity.current?.window
     if (current != null && activityWindow != null) {
         DisposableEffect(activityWindow) {
@@ -135,7 +144,7 @@ internal fun DevicePairingDialog(
                 true
             }
         }) {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.S3.dp)) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.S3.dp)) {
                 Label(page.title, Tokens.Type.DETAIL_TITLE, r.ink)
                 if (page == DevicePairingPage.SETTINGS) {
                     Button(DevicePairingPage.INVITE.title, primary = false, modifier = Modifier.focusRequester(first)) {
@@ -144,26 +153,27 @@ internal fun DevicePairingDialog(
                     Button(DevicePairingPage.APPROVE.title, primary = false) { onPage(DevicePairingPage.APPROVE) }
                 } else if (page == DevicePairingPage.INVITE) {
                     when {
-                        current != null -> DeviceInviteContent(current, model.left, model.busy, model::cancelInvite)
+                        current != null -> DeviceInviteContent(current, model.left)
                         model.checking -> Label("Checking whether the device joined…", Tokens.Type.BODY, r.ink)
                         else -> Button("Create invite", primary = true, enabled = !model.busy, onClick = model::create)
                     }
                 } else {
-                    val pending = model.answer
                     if (pending == null) {
                         OutlinedTextField(model.code, { model.code = it }, label = { Label("Code shown on the device", Tokens.Type.META_PHONE, r.ink2) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         Button("Review", primary = true, enabled = model.code.isNotBlank() && !model.busy) { model.review(model.code) }
                         Button("Scan QR code", primary = false, enabled = !model.busy) { scan(model) }
                     } else {
-                        DeviceReviewContent(pending.deviceName, pending.code, pending.source, model.busy, approve = model::approve, back = model::anotherCode)
+                        DeviceReviewContent(pending.deviceName, pending.code, pending.source)
                     }
                 }
                 if (page != DevicePairingPage.SETTINGS) {
                     model.error?.let { Label(it, Tokens.Type.META_PHONE, r.dangerInk) }
                     model.status?.let { Label(it, Tokens.Type.BODY, r.ink) }
                 }
-                Button("Close", primary = false, modifier = Modifier.focusRequester(close), onClick = overlay::close)
             }
+            if (current != null) DeviceInviteActions(current, model.busy, model::cancelInvite)
+            if (pending != null) DeviceReviewActions(model.busy, model::approve, model::anotherCode)
+            Button("Close", primary = false, modifier = Modifier.focusRequester(close), onClick = overlay::close)
         }
     }
 }

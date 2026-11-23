@@ -394,6 +394,8 @@ pub mod phone {
 
     /// Read-only collapsed room header.
     pub const COMPACT_HEADER: f32 = 36.0;
+    /// Read-only task detail breadcrumb.
+    pub const DETAIL_BREADCRUMB: f32 = 40.0;
     /// Bottom utility and detail action bars.
     pub const BOTTOM_BAR: f32 = 52.0;
     /// Visual height of the selection status strip (the clear target is still 48 dp).
@@ -420,7 +422,7 @@ pub mod phone {
     pub const SHEET_MAX_FRACTION: f32 = 0.92;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 33] = [
+    pub const ALL: [(&str, f32); 34] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -439,6 +441,7 @@ pub mod phone {
         ("landscape-inner", LANDSCAPE_INNER),
         ("inner-list", INNER_LIST),
         ("compact-header", COMPACT_HEADER),
+        ("detail-breadcrumb", DETAIL_BREADCRUMB),
         ("bottom-bar", BOTTOM_BAR),
         ("bulk-status-bar", BULK_STATUS_BAR),
         ("header-reach-expand", HEADER_REACH_EXPAND),

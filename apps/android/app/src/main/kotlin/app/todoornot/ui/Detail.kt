@@ -18,7 +18,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.runtime.Stable
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -60,7 +68,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DetailField
 import app.todoornot.core.FieldEdit
-import app.todoornot.core.LocalNow
 import app.todoornot.core.StepRow
 import app.todoornot.core.SourceLink
 import app.todoornot.core.StepCount
@@ -76,6 +83,7 @@ import app.todoornot.model.UiState
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.reminders.ReminderNeed
+import app.todoornot.session.ThumbHand
 import java.time.ZoneId
 import kotlinx.coroutines.delay
 
@@ -85,10 +93,7 @@ private val C = Tokens.Metrics.Component
 
 /**
  * A task's detail: breadcrumb, title (editable), steps (tick, rename, move or delete them, or add one),
- * notes, fields (the due date and the priority are edited from their rows) and sources. The bar's actions
- * are My Day (sun), Important (star), task actions (⋯), then Close. Beside the list on the unfolded
- * phone; on its own, with a back arrow and its own Undo strip, on the cover screen. Its checkbox
- * carries the room generation it was read in, so a tap after another room opens only writes.
+ * notes, fields and sources. The top is read-only; the bottom bar holds the thumb actions.
  * [stepEditing] starts with that step's title being renamed (the gallery).
  */
 @Composable
@@ -98,46 +103,52 @@ fun DetailPane(
     standalone: Boolean,
     modifier: Modifier = Modifier,
     stepEditing: String? = null,
+    hand: ThumbHand = ThumbHand.RIGHT,
+    sheets: DetailSheets? = null,
 ) {
     val detail = state.detail ?: return
     val generation = state.generation
-    val toast = state.toast
     val r = LocalDesign.current.room
-    Column(modifier.fillMaxSize().background(r.pane).then(if (standalone) Modifier.statusBarsPadding() else Modifier)) {
+    val editors = sheets ?: rememberDetailSheets(detail.id, generation, stepEditing)
+    val keyboard = WindowInsets.isImeVisible
+    val focus = LocalFocusManager.current
+    fun open(page: DetailPage, trigger: FocusRequester?) {
+        focus.clearFocus()
+        editors.returnFocus = trigger
+        if (page == DetailPage.Reminder) {
+            editors.seenReminder = detail.reminder
+            editors.reminderDue = detail.due
+        }
+        editors.page = page
+    }
+    LaunchedEffect(editors.page) {
+        if (editors.page == null) {
+            val trigger = editors.returnFocus
+            editors.returnFocus = null
+            runCatching { trigger?.requestFocus() }
+        }
+    }
+    val taskActions = remember { FocusRequester() }
+    Box(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().background(r.pane).then(if (standalone) Modifier.statusBarsPadding() else Modifier)
+        .navigationBarsPadding().imePadding()) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(P.APP_BAR.dp)
+                .heightIn(min = P.DETAIL_BREADCRUMB.dp)
                 .hairline(r.line)
-                .padding(start = if (standalone) S.S1.dp else S.S6.dp, end = S.S2.dp),
+                .padding(horizontal = S.S5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
         ) {
-            if (standalone) IconButton("chevron-left", "Back") { actions.select(null) }
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
-                detail.breadcrumb.forEachIndexed { i, c ->
-                    if (i > 0) Label("/", Tokens.Type.META_PHONE, r.ink4)
-                    if (i == 0) ListChip(c) else Label(c.label, Tokens.Type.BUTTON_SMALL, r.ink)
-                }
+            detail.breadcrumb.forEachIndexed { i, c ->
+                if (i > 0) Label("/", Tokens.Type.META_PHONE, r.ink4)
+                if (i == 0) ListChip(c) else Label(c.label, Tokens.Type.BUTTON_SMALL, r.ink)
             }
-            // A different task starts at its own state. Only changes to this task animate.
-            key(detail.id) {
-                TaskToggleButton(TaskToggle.MY_DAY, detail.myDay) { actions.setMyDay(detail.id, it) }
-                TaskToggleButton(TaskToggle.IMPORTANT, detail.priority == IMPORTANT) { actions.setImportant(detail.id, it) }
-            }
-            TaskActionsAnchor(state, actions, detail.id, detail.list, detail.done, detail.myDay, detail.priority.toInt(), row = false) { open ->
-                IconButton("ellipsis", "Task actions", onClick = open)
-            }
-            if (!standalone) IconButton("x", "Close") { actions.select(null) }
         }
-        Box(Modifier.weight(1f)) {
         Column(
-            Modifier
-                .fillMaxSize()
-                .imePadding()
-                .verticalScroll(rememberScrollState())
-                .padding(start = S.S6.dp, end = S.S6.dp, top = S.S4.dp + S.S1.dp / 2)
-                .navigationBarsPadding(),
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(start = S.S6.dp, end = S.S6.dp, top = S.S4.dp + S.S1.dp / 2),
         ) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
                 Box(Modifier.size(P.COL_CHECK.dp, Tokens.Type.DETAIL_TITLE_PHONE.lineHeight.dp), contentAlignment = Alignment.Center) {
@@ -160,35 +171,59 @@ fun DetailPane(
                     StepMeter(StepCount(detail.steps.count { it.done }.toUInt(), detail.steps.size.toUInt()))
                 }
             }
-            key(detail.id) { Steps(detail, actions, stepEditing) }
+            key(detail.id) { Steps(detail, actions, editors) { id, trigger -> open(DetailPage.Step(id), trigger) } }
             AddStep(detail.id, actions)
             key(detail.id) { TaskNotes(detail, actions) }
             if (detail.fields.isNotEmpty()) {
                 Spacer(Modifier.height(S.S4.dp))
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true))
-                key(detail.id) { Fields(detail, actions) }
+                key(detail.id) { Fields(detail, editors.page, ::open) }
             }
             if (detail.sources.isNotEmpty()) {
                 Caps("Source")
                 detail.sources.forEach { s -> SourceCard(s) { actions.organize(app.todoornot.model.OrganizeEdit.RemoveLink(s.id)) } }
             }
-            key(detail.id) {
-                var adding by rememberSaveable { mutableStateOf(false) }
-                Choice("Add link…") { adding = true }
-                if (adding) OverlayDialog({ adding = false }) { overlay ->
-                    RenameCard("Add a web link", "", { address ->
-                        overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.AddLink(detail.id, address)) }
-                    }, overlay::close, webAddress = true)
-                }
-            }
+            Choice("Add link…") { open(DetailPage.Link, null) }
             Attachments(state, actions)
             TaskActivity(detail.activity)
-            // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
-            Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
+            Spacer(Modifier.height(S.S8.dp))
         }
-        if (standalone) {
-            Box(Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding()) { ToastStrip(toast, actions) }
+        if (standalone) ToastStrip(state.toast, actions)
+        AnimatedVisibility(!keyboard, enter = expandVertically(tween(Tokens.Motion.PANEL)), exit = shrinkVertically(tween(Tokens.Motion.PANEL))) {
+            DetailActionBar(state, actions, standalone, hand, editors.page == DetailPage.Actions, Modifier.focusRequester(taskActions)) {
+                open(DetailPage.Actions, taskActions)
+            }
         }
+    }
+    if (sheets == null) DetailOverlays(state, actions, editors)
+    }
+}
+
+@Composable
+internal fun DetailActionBar(state: UiState, actions: Actions, standalone: Boolean, hand: ThumbHand,
+    menuOpen: Boolean = false, menuModifier: Modifier = Modifier, openMenu: () -> Unit,
+) {
+    val detail = state.detail ?: return
+    val r = LocalDesign.current.room
+    val left = standalone && hand == ThumbHand.LEFT
+    val complete: @Composable () -> Unit = {
+        Box(Modifier.size(P.TOUCH.dp), contentAlignment = Alignment.Center) {
+            Check(detail.done, { actions.setDone(detail.id, it, state.generation, row = false) }, "Task completion",
+                modifier = Modifier.size(P.TOUCH.dp), enabled = !state.signedOut)
+        }
+    }
+    val day: @Composable () -> Unit = { TaskToggleButton(TaskToggle.MY_DAY, detail.myDay, enabled = !state.signedOut) { actions.setMyDay(detail.id, it) } }
+    val star: @Composable () -> Unit = { TaskToggleButton(TaskToggle.IMPORTANT, detail.priority == IMPORTANT, enabled = !state.signedOut) { actions.setImportant(detail.id, it) } }
+    val more: @Composable () -> Unit = { IconButton("ellipsis", "Task actions", expanded = menuOpen, modifier = menuModifier, onClick = openMenu) }
+    val back: @Composable () -> Unit = { IconButton("chevron-left", "Back") { actions.select(null) } }
+    Row(Modifier.fillMaxWidth().height(P.BOTTOM_BAR.dp).background(r.canvas).hairline(r.line, top = true).padding(horizontal = S.S1.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+        key(detail.id) {
+            when {
+                left -> { more(); star(); day(); complete(); Spacer(Modifier.weight(1f)); back() }
+                standalone -> { back(); Spacer(Modifier.weight(1f)); complete(); day(); star(); more() }
+                else -> { complete(); Spacer(Modifier.weight(1f)); day(); star(); more(); IconButton("x", "Close") { actions.select(null) } }
+            }
         }
     }
 }
@@ -235,9 +270,7 @@ private fun TaskActivity(lines: List<TaskActivityLine>) {
  * and the one it swaps with glide to their places (`ROW_ENTER`, `STANDARD`); nothing else moves.
  */
 @Composable
-private fun Steps(detail: TaskDetail, actions: Actions, startEditing: String?) {
-    var editing by rememberSaveable { mutableStateOf(startEditing) }
-    var menu by remember { mutableStateOf<String?>(null) }
+private fun Steps(detail: TaskDetail, actions: Actions, editors: DetailSheets, onMenu: (String, FocusRequester) -> Unit) {
     // The steps a local move swaps: only they glide (a change from elsewhere never moves rows).
     var moving by remember { mutableStateOf(emptySet<String>()) }
     LaunchedEffect(moving) {
@@ -246,19 +279,10 @@ private fun Steps(detail: TaskDetail, actions: Actions, startEditing: String?) {
             moving = emptySet()
         }
     }
-    fun perform(action: MenuAction) {
-        when (action) {
-            is MenuAction.RenameStep -> editing = action.step
-            is MenuAction.MoveStep -> {
-                val i = detail.steps.indexOfFirst { it.id == action.step }
-                val other = detail.steps.getOrNull(i + action.by)
-                if (other != null) {
-                    moving = setOf(action.step, other.id)
-                    actions.moveStep(action.step, action.by)
-                }
-            }
-            is MenuAction.DeleteStep -> actions.deleteStep(action.step)
-            else -> Unit
+    LaunchedEffect(editors.movingSteps) {
+        if (editors.movingSteps.isNotEmpty()) {
+            moving = editors.movingSteps
+            editors.movingSteps = emptySet()
         }
     }
     detail.steps.forEachIndexed { i, step ->
@@ -266,17 +290,14 @@ private fun Steps(detail: TaskDetail, actions: Actions, startEditing: String?) {
             StepLine(
                 step,
                 i,
-                editing = editing == step.id,
-                onEdit = { on -> editing = if (on) step.id else null },
+                editing = editors.editingStep == step.id,
+                onEdit = { on -> editors.editingStep = if (on) step.id else null },
                 actions = actions,
                 modifier = Modifier.slideOnMove(step.id in moving),
             ) {
-                Box {
-                    IconButton("ellipsis", "Step actions: ${step.title}", tint = LocalDesign.current.room.ink3) { menu = step.id }
-                    if (menu == step.id) {
-                        MenuPopup(stepMenu(detail.steps, step.id), ::perform, onDismiss = { if (menu == step.id) menu = null }, title = "Step")
-                    }
-                }
+                val trigger = remember { FocusRequester() }
+                IconButton("ellipsis", "Step actions: ${step.title}", tint = LocalDesign.current.room.ink3,
+                    modifier = Modifier.focusRequester(trigger)) { onMenu(step.id, trigger) }
             }
         }
     }
@@ -367,61 +388,130 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
  * owner sets a reminder, the app asks for what reminders need, if anything ([LocalReminderAccess]).
  */
 @Composable
-private fun Fields(detail: TaskDetail, actions: Actions) {
-    var repeat by rememberSaveable { mutableStateOf(false) }
-    var custom by rememberSaveable { mutableStateOf(false) }
-    var tags by rememberSaveable { mutableStateOf(false) }
-    var calendarNow by remember { mutableStateOf<LocalNow?>(null) }
-    var pickingPriority by remember { mutableStateOf(false) }
-    var pickingReminder by rememberSaveable { mutableStateOf(false) }
-    var asking by remember { mutableStateOf<ReminderNeed?>(null) }
-    val access = LocalReminderAccess.current
-    detail.fields.forEach { f ->
+private fun Fields(detail: TaskDetail, page: DetailPage?, open: (DetailPage, FocusRequester?) -> Unit) {
+    detail.fields.forEach { f -> key(f.label) {
+        val focus = remember { FocusRequester() }
+        val target = Modifier.focusRequester(focus)
         when (f.edit) {
-            FieldEdit.DUE -> Box {
-                FieldRow(f, "Change the due date", expanded = calendarNow != null) { calendarNow = actions.composerNow() }
-                calendarNow?.let { opened ->
-                    CalendarPopup(opened, detail.due, onChoose = { actions.setDue(detail.id, it) },
-                        onDismiss = { calendarNow = null }, repeats = detail.repeats)
-                }
-            }
-            FieldEdit.PRIORITY -> Box {
-                FieldRow(f, "Change the priority") { pickingPriority = true }
-                if (pickingPriority) {
-                    MenuPopup(
-                        priorityMenu(detail.id, detail.priority.toInt()),
-                        { a -> if (a is MenuAction.SetPriority) actions.setPriority(a.task, a.marks) },
-                        onDismiss = { pickingPriority = false },
-                        start = true,
-                        title = "Priority",
-                    )
-                }
-            }
-            FieldEdit.REMINDER -> FieldRow(f, if (f.empty) "Add a reminder" else "Change the reminder") { pickingReminder = true }
-            FieldEdit.REPEAT -> FieldRow(f, "Change repeat") { custom = false; repeat = true }
-            FieldEdit.TAGS -> FieldRow(f, "Edit tags", tags = detail.tags.filter { it.selected }) { tags = true }
+            FieldEdit.DUE -> FieldRow(f, "Change the due date", expanded = page == DetailPage.Due, modifier = target) { open(DetailPage.Due, focus) }
+            FieldEdit.PRIORITY -> FieldRow(f, "Change the priority", modifier = target) { open(DetailPage.Priority, focus) }
+            FieldEdit.REMINDER -> FieldRow(f, if (f.empty) "Add a reminder" else "Change the reminder", modifier = target) { open(DetailPage.Reminder, focus) }
+            FieldEdit.REPEAT -> FieldRow(f, "Change repeat", modifier = target) { open(DetailPage.Repeat, focus) }
+            FieldEdit.TAGS -> FieldRow(f, "Edit tags", tags = detail.tags.filter { it.selected }, modifier = target) { open(DetailPage.Tags, focus) }
             null -> FieldRow(f)
         }
-    }
-    if (tags) TagsDialog(detail, actions) { tags = false }
-    if (repeat) OverlayDialog({ repeat = false }) { overlay ->
-        RepeatCard(detail, custom, { custom = true }, { choice -> overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.Repeat(detail.id, choice)) } }, overlay::close) { draft -> actions.previewRepeat(detail.id, draft) }
-    }
-    if (pickingReminder) {
-        val now = remember { System.currentTimeMillis() }
-        // The edit carries the reminder it was made on, as the picker opened on it.
-        val seen = remember { detail.reminder }
-        ReminderDialog(
-            seen?.atMs,
-            detail.due,
-            now,
-            ZoneId.systemDefault(),
-            onSave = { at ->
-                actions.setReminder(detail.id, seen, at)
-                if (at != null) asking = access.toAsk()
-            },
-            onDismiss = { pickingReminder = false },
-        )
+    } }
+}
+
+internal sealed interface DetailPage {
+    data object Actions : DetailPage
+    data object Due : DetailPage
+    data object Priority : DetailPage
+    data object Reminder : DetailPage
+    data object Repeat : DetailPage
+    data object Tags : DetailPage
+    data object Link : DetailPage
+    data class Step(val id: String) : DetailPage
+}
+
+@Stable
+class DetailSheets(step: String? = null) {
+    internal var page by mutableStateOf<DetailPage?>(null)
+    internal var editingStep by mutableStateOf(step)
+    internal var movingSteps by mutableStateOf(emptySet<String>())
+    internal var returnFocus: FocusRequester? = null
+    internal var seenReminder: app.todoornot.core.ReminderRef? = null
+    internal var reminderDue: String? = null
+}
+
+private val DetailEditorsSaver = listSaver<DetailSheets, String>(
+    save = { listOf(it.editingStep.orEmpty(), when (val page = it.page) {
+        DetailPage.Actions -> "actions"
+        DetailPage.Due -> "due"
+        DetailPage.Priority -> "priority"
+        DetailPage.Reminder -> "reminder"
+        DetailPage.Repeat -> "repeat"
+        DetailPage.Tags -> "tags"
+        DetailPage.Link -> "link"
+        is DetailPage.Step -> "step:${page.id}"
+        null -> ""
+    }, it.seenReminder?.id.orEmpty(), it.seenReminder?.atMs?.toString().orEmpty(), it.reminderDue.orEmpty()) },
+    restore = { saved -> DetailSheets(saved[0].ifEmpty { null }).apply {
+        val page = saved[1]
+        seenReminder = saved[2].takeIf { it.isNotEmpty() }?.let { id -> saved[3].toLongOrNull()?.let { app.todoornot.core.ReminderRef(id, it) } }
+        reminderDue = saved[4].ifEmpty { null }
+        this.page = when (page) {
+            "actions" -> DetailPage.Actions
+            "due" -> DetailPage.Due
+            "priority" -> DetailPage.Priority
+            "reminder" -> DetailPage.Reminder
+            "repeat" -> DetailPage.Repeat
+            "tags" -> DetailPage.Tags
+            "link" -> DetailPage.Link
+            else -> if (page.startsWith("step:")) DetailPage.Step(page.removePrefix("step:")) else null
+        }
+    } },
+)
+
+@Composable
+internal fun rememberDetailSheets(task: String?, generation: Long, step: String? = null) =
+    rememberSaveable(task, generation, saver = DetailEditorsSaver) { DetailSheets(step) }
+
+/** Rendered at the window root, outside the scrolling detail and pane constraints. */
+@Composable
+internal fun DetailOverlays(state: UiState, actions: Actions, sheets: DetailSheets) {
+    val detail = state.detail ?: return
+    val close = { sheets.page = null }
+    var asking by remember(detail.id) { mutableStateOf<ReminderNeed?>(null) }
+    val access = LocalReminderAccess.current
+    when (val page = sheets.page) {
+        DetailPage.Actions -> TaskActionsSheet(state, actions, detail, close)
+        DetailPage.Due -> DueDateSheet(detail, actions, close)
+        DetailPage.Priority -> BottomSheet("Priority", close) { overlay ->
+            ActionSheetContent(priorityMenu(detail.id, detail.priority.toInt()), "Priority") { action ->
+                if (action is MenuAction.SetPriority) overlay.choose { actions.setPriority(action.task, action.marks) }
+            }
+        }
+        DetailPage.Repeat -> RepeatSheet(detail, actions, close)
+        DetailPage.Tags -> TagsSheet(detail, actions, close)
+        DetailPage.Reminder -> {
+            val now = remember(detail.id) { System.currentTimeMillis() }
+            // A sync may change this reminder while the sheet is up. Commit what was shown.
+            val seen = sheets.seenReminder
+            BottomSheet("Reminder", close) { overlay ->
+                ReminderCard(seen?.atMs, sheets.reminderDue, now, ZoneId.systemDefault(), onSave = { at ->
+                    overlay.choose {
+                        actions.setReminder(detail.id, seen, at)
+                        if (at != null) asking = access.toAsk()
+                    }
+                }, onCancel = overlay::close, inSheet = true)
+            }
+        }
+        DetailPage.Link -> OverlayDialog(close) { overlay ->
+            RenameCard("Add a web link", "", { address ->
+                overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.AddLink(detail.id, address)) }
+            }, overlay::close, webAddress = true)
+        }
+        is DetailPage.Step -> BottomSheet("Step actions", close) { overlay ->
+            ActionSheetContent(stepMenu(detail.steps, page.id), "Step actions") { action ->
+                overlay.choose {
+                    when (action) {
+                        is MenuAction.RenameStep -> { sheets.returnFocus = null; sheets.editingStep = action.step }
+                        is MenuAction.MoveStep -> {
+                            val i = detail.steps.indexOfFirst { it.id == action.step }
+                            val other = detail.steps.getOrNull(i + action.by)
+                            if (i >= 0 && other != null) {
+                                sheets.movingSteps = setOf(action.step, other.id)
+                                actions.moveStep(action.step, action.by)
+                            }
+                        }
+                        is MenuAction.DeleteStep -> actions.deleteStep(action.step)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+        null -> Unit
     }
     asking?.let { need -> ReminderAccessDialog(need, access, onDone = { asking = null }) }
 }
@@ -570,11 +660,12 @@ private fun AddStep(task: String, actions: Actions) {
 
 /** A property row; one that edits ([onEdit]) is a full touch target with a chevron. */
 @Composable
-private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), expanded: Boolean? = null, onEdit: (() -> Unit)? = null) {
+private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), expanded: Boolean? = null,
+    modifier: Modifier = Modifier, onEdit: (() -> Unit)? = null,
+) {
     val r = LocalDesign.current.room
     Row(
-        Modifier
-            .fillMaxWidth()
+        modifier.fillMaxWidth()
             .heightIn(min = if (onEdit != null) P.TOUCH.dp else P.TOUCH.dp - S.S2.dp)
             .hairline(r.line)
             .then(if (expanded != null) Modifier.semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" } else Modifier)

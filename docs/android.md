@@ -8,7 +8,8 @@
 What the first version does:
 
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
-  on any device. The device token is sealed with a key in the Android Keystore.
+  on any device. The QR and status sit above the bottom actions. Address and invite fields scroll above
+  the keyboard. The device token is sealed with a key in the Android Keystore.
 - **Lists.** The bottom room pills show all siblings in a sideways-scrolling strip. Tap **Rooms** or
   swipe up on the bottom bar to open the room switcher. Its pinned **Find a room…** field searches
   names without regard to case or accents, including lists in folded collections. The six smart rooms
@@ -17,7 +18,7 @@ What the first version does:
   It creates a sibling from a list, a child from a collection, or a top-level list from a smart room.
   The pinned footer's sync status retries sync on tap. The settings gear opens a sheet with the paired
   server and a **Thumb-zone hand** choice. Left-handed mode mirrors the cover room bar and switcher
-  footer only; the unfolded list stays on the left. This choice is stored on the phone, not synced. **Open admin pages** opens that server's `/admin` in the
+  footer, plus the cover detail action bar; the unfolded list stays on the left. This choice is stored on the phone, not synced. **Open admin pages** opens that server's `/admin` in the
   browser, where you can sign in with your passkey if asked. **Sync now** retries without waiting for the
   next automatic attempt; it shows **Syncing…** and is disabled while the engine is busy. The menu also
   offers **Devices…** and **Unpair this phone**.
@@ -46,13 +47,15 @@ What the first version does:
   **Refresh activity •** without moving the reader. Switching agent or log epoch starts a new feed. If a
   change is too large, **Skip this change** continues at the server’s cursor. Undo names the event by
   sequence **and** event ID; “Undoing…” disables Undo for its whole batch. A refusal allows a retry and
-  uses the shared plain wording, never the server message. `todo_client::activity::Feed` owns each room’s pages;
+  uses the shared plain wording, never the server message. The bottom bar opens Rooms, filters by agent
+  and refreshes the feed; the sky remains read-only. `todo_client::activity::Feed` owns each room’s pages;
   the engine keeps `Undos` for the pairing, so switching agents or leaving Activity does not unblock a pending
   batch. Compose draws the day groups and row actions returned by `todo-ffi`. The Agent activity smart list is still a list of tasks.
 - **Trash.** Open it in the switcher below Activity and its agents. Directly deleted tasks, lists and collections
   are ordered newest first. **Restore** returns an item to its original place and offers tracked **Undo**.
   A deleted list or collection must be restored first before a separately deleted child can return. Restoring
-  a parent also reveals children hidden with it that were not deleted themselves. Undo a merge in Activity
+  a parent also reveals children hidden with it that were not deleted themselves. The bottom bar opens
+  Rooms and shows the deletion count and any sync issue. Undo a merge in Activity
   to recover a merge source. Trash reads the local synced replica, has no automatic expiry or permanent-delete
   control, and does not change the server's separate attachment blob-retention policy.
 - **Filter.** The search button in the bottom bar swaps the composer for a filter field right above the
@@ -81,20 +84,26 @@ What the first version does:
   highlight; letting go elsewhere cancels. A drop has one **Undo**. The detail menu still offers
   **Move up**, **Move down**, **Move to…**, and the My Day action without a drag. The `task_drag`
   gallery captures the lifted selection, insertion line and switcher highlight.
-- **Task actions.** Tap **⋯** in a task's detail header. The menu offers Complete or
+- **Swipe tasks.** Swipe a row at least 72 dp right to Complete or Reopen, or left to toggle My Day.
+  A tick marks crossing the threshold; releasing short of it cancels. Both actions offer Undo. Swipes
+  ignore touches that start within 24 dp of either outer edge and are off during bulk selection and drag.
+  The row checkbox, TalkBack actions and detail controls work without a swipe.
+- **Task actions.** The breadcrumb is read-only. The detail bottom bar holds Back or Close, Complete,
+  My Day, Important and **⋯**, and hides while the keyboard is open. On the inner screen, detail sheets
+  stay in the right pane. The actions sheet offers Complete or
   Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to…,
-  Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
-  from a list or collection name to filter; case and accents don't matter. The task moves to the front
+  Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked.
+  In the bottom filter field, type words from a list or collection name; case and accents don't matter. The task moves to the front
   of the chosen list. In a manual list, **Move up** and **Move down** move an open task past its visible
   neighbour. **Delete task** doesn't ask first and closes that task's detail. All three changes offer
   **Undo**. If another device reorders the moved task before Undo, the change stays and the failed-change
   banner explains: “Undo moving a task: Couldn't undo: the task was changed again.”
-- **Merge into…** finds other open tasks across lists. Filter by title (case and accents don't matter),
+- **Merge into…** finds other open tasks across lists. Filter by title in the bottom field (case and accents don't matter),
   then pick a destination and confirm. Its list, title, priority and schedule stay as they were; the
   source's notes, live steps, links, attachments and reminders move over, and tags are combined.
   If either task changes name or list while the question is open, the app rechecks it on confirm.
   **Undo** reverses the whole merge. The `merge_tasks` Paparazzi gallery shows the picker and confirmation.
-- **Due date and priority.** Tap **Due** to open the same calendar as quick-add, anchored to the row.
+- **Due date and priority.** Tap **Due** to open the shared quick-add calendar as a bottom sheet.
   It opens on the saved date or today. Choose **Today**, **Tomorrow**, **Next week** (next Monday), or
   any day in the Monday-first grid to save it immediately. **No date** removes the due date and any
   repeat rule (`intent::set_due`). For a repeating task, a note below the grid warns that **No date**
@@ -106,8 +115,8 @@ What the first version does:
 - **Repeat.** Tap Repeat for Daily, Weekdays, Weekly, Monthly, Yearly, Custom… or Don’t repeat. Custom
   takes an interval, a unit and (for weeks) the days. `intent::repeat::set_repeat` gives an undated task
   its first matching due date in the same undoable edit. The row uses `describe_repeat`.
-- **Tags and links.** Tags is always present. Pick a tag to add or remove it, or type a name to create
-  and apply it. The chevron beside a tag offers Rename, Colour… and Delete tag…. Add link… accepts a web
+- **Tags and links.** Tags is always present. Pick a tag to add or remove it, or type a name in the
+  sheet's bottom field to create and apply it. The chevron beside a tag offers Rename, Colour… and Delete tag…. Add link… accepts a web
   address through `intent::add_link`; a source opens in the browser, and its remove button offers Undo.
 - **Attachments.** Task detail lists file names, type icons and sizes from the replica, even offline.
   **Add file** opens the system document picker. An upload goes directly to the paired server, not into
@@ -134,8 +143,8 @@ What the first version does:
   The model words its time in the phone's time zone, at the offset of the reminder's own instant
   (`localReminder`), as the toast and the notification do: a reminder after the clocks change reads as
   set, not an hour off as the phone's offset today would put it. It
-  opens the reminder picker: the Material date picker and time input (24 hours, as the rest of the app) in
-  the room's colours and the tokens' type, on the overlay surface. It opens on the reminder's own day and
+  opens the reminder sheet: the Material date picker and a 24-hour input just above the bottom actions,
+  in the room's colours and the tokens' type. It opens on the reminder's own day and
   time; with none, on 09:00 of a later due date, else on the next whole hour. **Save** keeps a whole
   time still to come: not while an hour or minute is half typed, and not one that has passed (the engine
   refuses that too). **Remove** takes the reminder away, and the toast offers **Undo** for either,
@@ -174,11 +183,11 @@ What the first version does:
   keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
   priority and Planned defaults to due today. New tasks go first in their list's manual order. If no
   destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.
-  The Calendar button offers **Today**, **Tomorrow**, **Next week** (next Monday), **No date** and a
-  Monday-first month grid. The Flag button opens the same four priorities as the detail Priority row.
+  The Calendar button opens upward with a Monday-first month grid and, nearest the button, **Today**,
+  **Tomorrow**, **Next week** (next Monday), and **No date**. The Flag button opens the same four priorities as the detail Priority row.
   A choice takes out the matching typed suffix and leaves everything else alone; removing a chip, or
   choosing **No date** or **None**, clears even a room default. The `quick_add_pickers` gallery shows
-  both chips and both popovers in light and dark. The task detail Due row is unchanged.
+  both chips and both popovers in light and dark; task detail presents the same calendar as a sheet.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** Task and organization edits use a local SQLite cache and outbox, and sync
@@ -442,9 +451,11 @@ collapsed header, filtered and mirrored switchers, both themes, a short window a
 after every UI change; the
 images are in `app/src/test/snapshots/images/`.
 
-Paparazzi does not run the system keyboard. On a device or emulator with the software keyboard enabled,
-open **Rooms** and choose **New → List**. The focused name field must stay fully above the keyboard,
-including in landscape. Type a name and press the keyboard's **Done** key to confirm the new list opens.
+Paparazzi does not run the system keyboard. On a Fold7 or equivalent emulator, check that the room and
+detail action bars hide while typing, and that **Rooms → New → List** and **Tags** keep their focused
+fields above the keyboard in portrait and landscape. Press **Done** in the list-name field to confirm
+the new list opens. Check predictive Back at both outer edges with rows on screen, and open a detail
+sheet unfolded to check it stays clear of the hinge.
 
 CI builds the debug APK and runs the unit and screenshot tests. It uses no signing secrets: the debug APK
 is signed with the SDK's debug key, and the APK is uploaded as a build artifact.

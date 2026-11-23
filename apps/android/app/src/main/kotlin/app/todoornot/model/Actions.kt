@@ -8,11 +8,14 @@ import app.todoornot.core.RoomKey
 import app.todoornot.core.TaskDrag
 import app.todoornot.core.TaskDrop
 
+enum class TaskSwipe { COMPLETION, MY_DAY }
+
 /** What the main screen can ask for. [TodoModel] does the work; the screenshot gallery passes [None]. */
 interface Actions {
     fun open(room: RoomKey)
     fun select(id: String?)
     fun toggleBulk(id: String, generation: Long) = Unit
+    fun swipeTask(id: String, generation: Long, action: TaskSwipe) = Unit
     fun clearBulk() = Unit
     fun editBulk(edit: BulkEdit) = Unit
     suspend fun bulkDestinations(tasks: List<String>, filter: String): List<DestinationGroup> = emptyList()

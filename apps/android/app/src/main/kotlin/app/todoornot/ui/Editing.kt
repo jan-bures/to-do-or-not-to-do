@@ -183,7 +183,9 @@ const val REPEAT_NOTE = "This task repeats. Clearing the date also stops the rep
  * a blank name can't be saved.
  */
 @Composable
-fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: () -> Unit, focus: Boolean = true, webAddress: Boolean = false) {
+fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: () -> Unit, focus: Boolean = true,
+    webAddress: Boolean = false, inSheet: Boolean = false,
+) {
     val r = LocalDesign.current.room
     var text by rememberSaveable(name, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(name, TextRange(0, name.length)))
@@ -194,7 +196,7 @@ fun RenameCard(title: String, name: String, onSave: (String) -> Unit, onCancel: 
     fun save() {
         if (ok) onSave(text.text.trim())
     }
-    DialogCard(title) {
+    PanelCard(title, inSheet) {
         Label(title, Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         BasicTextField(
             value = text,
@@ -234,11 +236,12 @@ fun DeleteListCard(
     changed: Boolean = false,
     busy: Boolean = false,
     noun: String = "list",
+    inSheet: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     val cancel = remember { FocusRequester() }
     if (focusCancel) LaunchedEffect(Unit) { runCatching { cancel.requestFocus() } }
-    DialogCard("Delete $noun?", modifier = Modifier.verticalScroll(rememberScrollState())) {
+    PanelCard("Delete $noun?", inSheet, modifier = Modifier.verticalScroll(rememberScrollState())) {
         Label("Delete $noun?",  Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         Label(question, Tokens.Type.NOTES, r.ink2, maxLines = 8)
         if (changed) Label(app.todoornot.core.deleteRecheckText(noun), Tokens.Type.META_PHONE, r.dangerInk, maxLines = 3)

@@ -438,14 +438,15 @@ cd apps/web/e2e && npm ci && cd ../../.. && node docs/mockups/render.mjs
 
 ## 7. Prioritized implementation plan
 
-Implementation checklist for the first Android delivery:
+Implementation and verification checklist:
 
 - [x] Phase 1: generated tokens, shared room lookup and calendar presets, bottom sheets and bottom dialogs.
 - [x] Phase 2: read-only sky and cover reachability, thumb dock, room actions, and bulk sheets.
 - [x] Phase 3: room switcher, pane/hinge alignment, list/collection actions, and the local hand preference.
-- [x] Phase 5 dependency: existing task drag can drop on sibling pills or open Rooms for other destinations.
-- [x] Gallery subset: Fold7 cover and inner configurations and the Phase 1–3 states in both themes.
-- [ ] Phases 4–6 follow-up: detail controls and editors, row swipes, secondary rooms, and full emulator checks.
+- [x] Phase 4: detail action bar, pane-aligned editors, bottom unpair and secure pairing cards, and inverted quick-add presets.
+- [x] Phase 5: row swipes and Undo, cross-list drag through the dock, history room bars, and bottom-weighted pairing.
+- [x] Phase 6 automated: Fold7 cover and inner galleries in both themes, focused interaction tests, and screenshot verification.
+- [ ] Phase 6 manual: software keyboard, system edge-back, and fold posture checks on a Fold7 or equivalent emulator.
 
 ### Phase 1 — Design tokens & shared primitives *(foundation, low risk)*
 
@@ -476,7 +477,7 @@ Implementation checklist for the first Android delivery:
 - **`Detail.kt`:** Keep only the `40 dp` non-interactive breadcrumb at the top. Add the pinned `52 dp` **Detail Bottom Action Bar** (`[←]`, `[○/✓]`, `[☀]`, `[★]`, `[⋯]` on Cover; `[○/✓]` … `[☀]`, `[★]`, `[⋯]`, `[×]` on Unfolded right pane). Hide bar while keyboard is open. Convert step `⋯` menu to `BottomSheet`.
 - **`Editing.kt`, `Reminders.kt`, `Organize.kt`, `TaskActions.kt`, `QuickAdd.kt`:**
   - `QuickAdd.kt`: Invert `QuickAddCalendar` vertical order so 2×2 presets sit at the bottom edge directly above `📅`.
-  - `Editing.kt`: Convert `DueDateDialog` to `DueDateSheet` with quick-preset chips (`Today`, `Tomorrow`, `Next week`).
+  - `QuickAdd.kt`: Present the shared detail calendar as `DueDateSheet`, including the repeat warning, keyboard navigation, and the same bottom presets.
   - `Reminders.kt`: Convert `ReminderDialog` to `ReminderSheet` with Time Input placed directly above bottom action buttons.
   - `Organize.kt`: Convert `RepeatCard`, `MoveListCard`, `SwatchCard`, and `TagsDialog` to `BottomSheet`s with bottom-anchored filter/create input in `TagsSheet`.
   - `TaskActions.kt`: Convert `TaskActionsAnchor` menus, `MoveTaskCard`, and `MergeTaskDialog` to `BottomSheet`s with bottom-anchored filter inputs.
@@ -491,7 +492,7 @@ Implementation checklist for the first Android delivery:
 
 ### Phase 6 — Paparazzi gallery & verification
 
-Update `apps/android/app/src/test/kotlin/app/todoornot/GalleryTest.kt` and `DrawerOrderTest.kt` / `HeaderCollapseTest.kt`:
+Update `apps/android/app/src/test/kotlin/app/todoornot/GalleryTest.kt` and the relevant interaction tests:
 
 1. **Add Galaxy Z Fold7 device configs** (keep `COVER_SIDEWAYS` for short-window checks):
    - `FOLD7_COVER`: `412 × 960 dp` (`824 × 1920 px` at `Density.XHIGH` 320 dpi, `21:9` aspect ratio).

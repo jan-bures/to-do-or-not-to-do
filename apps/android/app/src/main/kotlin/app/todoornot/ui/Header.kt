@@ -3,6 +3,8 @@ package app.todoornot.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
 import app.todoornot.core.SyncState
@@ -131,7 +133,14 @@ private fun HeaderBody(
             }
             if (compact > 0.dp) Row(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(compact)
-                    .semantics { if (collapse.fraction <= 0.5f) hideFromAccessibility() }
+                    .clearAndSetSemantics {
+                        if (collapse.fraction <= 0.5f) hideFromAccessibility()
+                        else contentDescription = buildString {
+                            append(room.title)
+                            if (room.total > 0u) append(", ${room.done} of ${room.total} done")
+                            quiet?.let { append(", $it") }
+                        }
+                    }
                     .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) }
                     .then(sky).hairline(r.line).padding(horizontal = S.S5.dp),
                 verticalAlignment = Alignment.CenterVertically,

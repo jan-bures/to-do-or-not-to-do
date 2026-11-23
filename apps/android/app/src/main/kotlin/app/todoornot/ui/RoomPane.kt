@@ -345,21 +345,16 @@ internal fun SyncChip(status: SyncStatus, onClick: () -> Unit) {
         else -> return
     }
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
-    Row(
-        Modifier
-            .padding(end = S.S1.dp)
-            .height(Tokens.Metrics.Component.BUTTON_SMALL.dp)
-            .clip(shape)
-            .background(r.raised)
-            .border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, shape)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = "Sync: ${status.state.name.lowercase()}, ${status.pending} waiting" }
-            .padding(horizontal = S.S2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
-    ) {
-        Icon(icon, r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp)
-        Label(text, Tokens.Type.SUMMARY_FIGURES, r.ink2)
+    TouchTarget(onClick, Modifier.padding(horizontal = S.S1.dp)
+        .semantics { contentDescription = "Sync: ${status.state.name.lowercase()}, ${status.pending} waiting" },
+    ) { press ->
+        Row(Modifier.height(Tokens.Metrics.Component.BUTTON_SMALL.dp).clip(shape).background(r.raised)
+            .border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, shape).then(press).padding(horizontal = S.S2.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+        ) {
+            Icon(icon, r.ink3, size = Tokens.Metrics.Component.ICON_SMALL.dp)
+            Label(text, Tokens.Type.SUMMARY_FIGURES, r.ink2)
+        }
     }
 }
 
@@ -476,17 +471,23 @@ private fun LazyItemScope.MovingRow(
     } else null
     val dragRow = taskDragRow(t.id, manual && section == Section.ROWS && !done && !s.ghost)
     val toggle = { if (!s.ghost && l?.gone != true) { onTouchTask(); actions.toggleBulk(t.id, state.generation) } }
-    TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
+    val drag = LocalTaskDrag.current
+    val outer = dragRow.animateItem(
+        fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
+        placementSpec = if (swap) tween(M.ROW_ENTER, easing = M.EASE_STANDARD.cubic()) else null,
+        fadeOutSpec = null,
+    )
+    SwipeableTaskRow(t.id, done, t.myDay, enabled = !selecting && !s.ghost && l?.gone != true && !state.signedOut && drag?.picked == null,
+        onSwipe = { onTouchTask(); actions.swipeTask(t.id, state.generation, it) }, onSelect = toggle, modifier = outer,
+    ) { rowModifier ->
+        TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
         onCheck = { if (!s.ghost) { onTouchTask(); actions.setDone(t.id, it, state.generation) } },
         onImportant = { if (!s.ghost) { onTouchTask(); actions.setImportant(t.id, it) } },
         onOpen = { if (selecting) toggle() else if (!s.ghost) { onTouchTask(); actions.select(t.id) } },
         onActions = toggle, look = l, inert = s.ghost, selecting = selecting, dragHandle = dragHandle,
-        modifier = dragRow.animateItem(
-            fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
-            placementSpec = if (swap) tween(M.ROW_ENTER, easing = M.EASE_STANDARD.cubic()) else null,
-            fadeOutSpec = null,
-        ),
-    )
+            modifier = rowModifier,
+        )
+    }
 }
 
 @Composable

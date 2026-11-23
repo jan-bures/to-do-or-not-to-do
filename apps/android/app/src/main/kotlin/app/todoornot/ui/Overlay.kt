@@ -2,6 +2,8 @@ package app.todoornot.ui
 
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.EnterTransition
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -27,7 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -63,6 +64,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.draw.dropShadow
@@ -140,7 +148,7 @@ fun MenuCard(entries: List<MenuEntry>, onChoose: (MenuAction) -> Unit, modifier:
 
 /** One item: icon, label, an optional hint (`!!!`) and a tick for the current choice. 48 dp to touch. */
 @Composable
-internal fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
+internal fun MenuItemRow(item: MenuEntry.Item, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     val ink = when {
         !item.enabled -> r.ink4
@@ -149,8 +157,7 @@ internal fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
         else -> r.ink
     }
     Row(
-        Modifier
-            .fillMaxWidth()
+        modifier.fillMaxWidth()
             .height(Tokens.Metrics.Phone.TOUCH.dp)
             .then(if (item.checked) Modifier.background(r.wash) else Modifier)
             .clickable(enabled = item.enabled, onClick = onClick)
@@ -242,7 +249,8 @@ fun MenuPopup(
     onDismiss: () -> Unit,
     start: Boolean = false,
     title: String? = null,
-) = AnchoredPopup(onDismiss, start) { overlay ->
+    above: Boolean = false,
+) = AnchoredPopup(onDismiss, start, above) { overlay ->
     MenuCard(entries, { action -> overlay.choose { onChoose(action) } }, Modifier.padding(S.S2.dp), title)
 }
 
@@ -278,6 +286,7 @@ private val Phone = Tokens.Metrics.Phone
 
 /** The left pane's live width (including a separating fold's actual position, when present). */
 internal val LocalSheetWidth = staticCompositionLocalOf<Dp?> { null }
+internal val LocalSheetAtEnd = staticCompositionLocalOf { false }
 /** Freeze the initial sheet motion at rest for visual fixtures. */
 internal val LocalSheetAtRest = staticCompositionLocalOf { false }
 
@@ -304,15 +313,16 @@ internal fun BottomSheet(
     val reduced = reducedMotion()
     val keyboard = WindowInsets.isImeVisible
     val duration = if (reduced) 0 else M.PANEL
+    val anchor = if (LocalSheetAtEnd.current) Alignment.BottomEnd else Alignment.BottomStart
     BackHandler(onBack = overlay::close)
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomStart) {
+    Box(Modifier.fillMaxSize(), contentAlignment = anchor) {
         AnimatedVisibility(overlay.shown, enter = fadeIn(tween(duration)), exit = fadeOut(tween(duration))) {
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (gestureReveal == null) 1f else (gestureReveal / Phone.HEADER_REACH_EXPAND.dp.toPx()).coerceIn(0f, 1f) }
                     .background(d.scrim).clickable(
                 remember { MutableInteractionSource() }, indication = null, onClickLabel = "Dismiss $title", onClick = overlay::close,
             ))
         }
-        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().imePadding(), contentAlignment = Alignment.BottomStart) {
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().imePadding(), contentAlignment = anchor) {
             val viewport = maxHeight
             // Fit the pinned actions and search results in the reduced space above the IME.
             val base = if (keyboard) viewport else viewport * Phone.SHEET_DEFAULT_FRACTION
@@ -347,6 +357,12 @@ internal fun BottomSheet(
                         awaitEachGesture { awaitFirstDown(requireUnconsumed = false) }
                     }
                     .semantics { paneTitle = title }
+                    .onPreviewKeyEvent {
+                        if (it.key != Key.Escape) false else {
+                            if (it.type == KeyEventType.KeyUp) overlay.close()
+                            true
+                        }
+                    }
                     .navigationBarsPadding(),
                 ) {
                     Box(Modifier.fillMaxWidth().draggable(
@@ -370,13 +386,23 @@ internal fun BottomSheet(
 }
 
 @Composable
+internal fun <T> SheetPages(page: T, content: @Composable (T) -> Unit) {
+    AnimatedContent(page, modifier = Modifier.fillMaxWidth(), transitionSpec = {
+        fadeIn(tween(M.CONTENT_SWAP)) togetherWith fadeOut(tween(M.CONTENT_SWAP))
+    }, label = "sheet page") { content(it) }
+}
+
+@Composable
 internal fun ActionSheetContent(entries: List<MenuEntry>, title: String, onChoose: (MenuAction) -> Unit) {
     val r = LocalDesign.current.room
+    val first = entries.indexOfFirst { it is MenuEntry.Item && it.enabled }
+    val target = remember { FocusRequester() }
+    if (first >= 0 && !LocalSheetAtRest.current) LaunchedEffect(title) { target.requestFocus() }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = S.S2.dp)) {
         Label(title, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(horizontal = S.S3.dp, vertical = S.S2.dp))
-        entries.forEach { entry ->
+        entries.forEachIndexed { index, entry ->
             when (entry) {
-                is MenuEntry.Item -> MenuItemRow(entry) { onChoose(entry.action) }
+                is MenuEntry.Item -> MenuItemRow(entry, if (index == first) Modifier.focusRequester(target) else Modifier) { onChoose(entry.action) }
                 MenuEntry.Separator -> Box(Modifier.fillMaxWidth().height(Tokens.Elevation.HAIRLINE.dp).background(r.line))
             }
         }
@@ -393,6 +419,13 @@ fun DialogBackdrop(modifier: Modifier = Modifier, content: @Composable () -> Uni
     Box(modifier.fillMaxSize().background(d.scrim).systemBarsPadding().imePadding().padding(Tokens.Metrics.Phone.DIALOG_INSET.dp), contentAlignment = Alignment.BottomCenter) {
         content()
     }
+}
+
+@Composable
+internal fun PanelCard(title: String, inSheet: Boolean, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    if (inSheet) Column(modifier.fillMaxWidth().padding(S.S4.dp).semantics { paneTitle = title },
+        verticalArrangement = Arrangement.spacedBy(S.S3.dp), content = content)
+    else DialogCard(title, modifier, content)
 }
 
 /** A dialog's card: the opaque pane, as wide as the inner screen's list at most. */
@@ -422,7 +455,8 @@ fun DialogCard(title: String, modifier: Modifier = Modifier, content: @Composabl
 fun OverlayDialog(
     onDismiss: () -> Unit,
     securePolicy: SecureFlagPolicy = SecureFlagPolicy.Inherit,
-    paneWidth: Dp? = null,
+    paneWidth: Dp? = LocalSheetWidth.current,
+    atEnd: Boolean = LocalSheetAtEnd.current,
     content: @Composable (OverlayState) -> Unit,
 ) {
     val overlay = rememberOverlay(onDismiss)
@@ -450,7 +484,7 @@ fun OverlayDialog(
                         .clickable(remember { MutableInteractionSource() }, indication = null, onClick = overlay::close),
                 )
             }
-            Box(Modifier.fillMaxSize().systemBarsPadding().imePadding(), contentAlignment = Alignment.BottomStart) {
+            Box(Modifier.fillMaxSize().systemBarsPadding().imePadding(), contentAlignment = if (atEnd) Alignment.BottomEnd else Alignment.BottomStart) {
                 Box((paneWidth?.let { Modifier.width(it) } ?: Modifier.fillMaxWidth()).padding(Phone.DIALOG_INSET.dp),
                     contentAlignment = Alignment.BottomCenter,
                 ) {

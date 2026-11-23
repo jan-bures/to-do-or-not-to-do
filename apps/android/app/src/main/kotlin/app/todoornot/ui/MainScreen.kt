@@ -129,7 +129,7 @@ fun MainScreen(
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val paneWidth = listPaneWidth(maxWidth, wide, fold)
             Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus,
-                hand, onHand, fold, paneWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded)
+                hand, onHand, fold, paneWidth, maxWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded)
         }
     }
 }
@@ -149,13 +149,14 @@ private fun Screen(
     onHand: (ThumbHand) -> Unit,
     fold: PaneFold?,
     paneWidth: Dp?,
+    windowWidth: Dp,
     switcherFilter: String,
     settingsOpen: Boolean,
     roomMenuOpen: Boolean,
     navMenuOpen: NavItem?,
     reachExpanded: Boolean,
 ) {
-    TodoTheme(dark, state.room.hue) {
+    TodoTheme(dark, if (state.activity != null) "agent-activity" else state.room.hue) {
         val r = LocalDesign.current.room
         var switcher by rememberSaveable { mutableStateOf(drawerOpen) }
         var reveal by remember { mutableStateOf<Float?>(null) }
@@ -175,8 +176,10 @@ private fun Screen(
         var roomActionsOpen by remember(state.generation) { mutableStateOf(roomMenuOpen) }
         var navMenu by remember { mutableStateOf(navMenuOpen) }
         var bulkPicker by remember(state.generation, state.bulkIds) { mutableStateOf<BulkPicker?>(null) }
-        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null
-        state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed) }
+        val detail = state.detail
+        val detailSheets = rememberDetailSheets(detail?.id, state.generation)
+        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null || detailSheets.page != null
+        state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed, paneWidth) }
         // Room and switcher actions: rename and delete ask in a
         // dialog; a move glides the rows it swaps.
         var renaming by rememberSaveable(stateSaver = RoomSaver) { mutableStateOf<RoomKey?>(null) }
@@ -263,7 +266,7 @@ private fun Screen(
             Box(Modifier.fillMaxSize()) {
                 val divider = Tokens.Elevation.HAIRLINE.dp
                 val separated = fold?.takeIf { wide && it.start == paneWidth && it.end > it.start }
-                val detail = state.detail
+                val gap = separated?.let { it.end - it.start } ?: divider
                 val feed = state.activity
                 BackHandler(enabled = !sheetOpen && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
                 @Composable
@@ -283,22 +286,23 @@ private fun Screen(
                     .then(if (sheetOpen) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier)) {
                     if (feed != null) {
                         BackHandler(enabled = !sheetOpen) { actions.open(state.room.key) }
-                        ActivityRoom(paneSurface, actions, menu)
+                        ActivityRoom(paneSurface, actions, menu, wide, hand)
                     } else if (state.room.key == RoomKey.Trash) {
                         BackHandler(enabled = !sheetOpen) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
-                        TrashRoom(paneSurface, actions, menu, wide)
+                        TrashRoom(paneSurface, actions, menu, wide, hand)
                     } else if (paneWidth != null) {
                         Row(Modifier.fillMaxSize()) {
                             Tasks(Modifier.width(paneWidth))
-                            Spacer(Modifier.fillMaxHeight().width(separated?.let { it.end - it.start } ?: divider).background(r.line))
-                            if (detail != null) DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
+                            Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
+                            if (detail != null) DetailPane(paneSurface, actions, standalone = false,
+                                Modifier.weight(1f).statusBarsPadding(), hand = hand, sheets = detailSheets)
                             else NoDetail(Modifier.weight(1f).navigationBarsPadding(), selection = state.bulk?.label)
                         }
                     } else {
-                        Tasks(Modifier.fillMaxSize())
+                        Tasks(Modifier.fillMaxSize().then(if (detail != null) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier))
                         if (detail != null) {
                             BackHandler(enabled = !sheetOpen) { actions.select(null) }
-                            DetailPane(paneSurface, actions, standalone = true)
+                            DetailPane(paneSurface, actions, standalone = true, hand = hand, sheets = detailSheets)
                         }
                     }
                 }
@@ -315,6 +319,11 @@ private fun Screen(
                     if (roomActionsOpen) RoomActionsSheet(state.room.title, roomMenu(state.home, state.room.key, state.showCompleted), state, actions,
                         onRoomMenu, close = { roomActionsOpen = false })
                     bulkPicker?.let { BulkSelectionPicker(it, state, actions) { bulkPicker = null } }
+                }
+                if (detail != null && feed == null) CompositionLocalProvider(
+                    LocalSheetWidth provides paneWidth?.let { windowWidth - it - gap }, LocalSheetAtEnd provides true,
+                ) {
+                    DetailOverlays(state, actions, detailSheets)
                 }
             }
         }

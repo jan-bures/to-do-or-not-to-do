@@ -365,7 +365,8 @@ Monday-first ISO convention as the room's week number and the same English weekd
 Days outside the month are blank. The selected date has a wash and a stronger label; today's outline and
 the keyboard focus edge are separate. The picker opens on the pending date or today. The arrow keys move by
 one day or one week, Page Up/Down move by a month, Enter chooses, and Esc dismisses without changing the
-draft. Task detail's Due row opens this same picker on the saved date or today. Choosing there saves
+draft. On Android, task detail's Due row opens this same calendar in a bottom sheet aligned to the
+detail pane, on the saved date or today. Choosing there saves
 immediately rather than staging a draft. For a repeating task only, an `ink-3` caption below the grid
 warns that **No date** also stops the repeat. The Flag opens the same four choices as task detail with
 the current choice ticked.

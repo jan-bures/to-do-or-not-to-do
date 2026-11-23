@@ -5,12 +5,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -79,7 +81,9 @@ interface PairingActions {
 @Composable
 fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, fixedRemainingSeconds: Long? = null) {
     // No tasks yet, so nothing to measure: the hills only, no sun (`docs/design-language.md`).
-    Welcome("Welcome", "Pair this phone", Scene(0, 0, finished = false), dark) {
+    Welcome("Welcome", "Pair this phone", Scene(0, 0, finished = false), dark,
+        footer = (state as? PairingState.Waiting)?.let { waiting -> { WaitingActions(waiting, actions) } },
+    ) {
         when (state) {
             is PairingState.Entering -> Entering(state, actions)
             is PairingState.Starting -> {
@@ -98,7 +102,7 @@ fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, f
                 Button("Try saving again", primary = true, onClick = actions::retrySave)
                 Button("Discard and start over", primary = false, onClick = actions::discardSave)
             }
-            is PairingState.Waiting -> Waiting(state, actions, fixedRemainingSeconds)
+            is PairingState.Waiting -> Waiting(state, fixedRemainingSeconds)
         }
     }
 }
@@ -134,10 +138,14 @@ fun CantOpenScreen(
 
 /** The sky header with an eyebrow, a title and a landscape, over a scrolling column of content. */
 @Composable
-private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean, content: @Composable () -> Unit) {
+private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
+    footer: (@Composable () -> Unit)? = null, content: @Composable () -> Unit,
+) {
     TodoTheme(dark, "my-day") {
         val r = LocalDesign.current.room
-        Column(Modifier.fillMaxSize().background(r.pane)) {
+        Column(Modifier.fillMaxSize().background(r.pane).navigationBarsPadding().imePadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Column(Modifier.fillMaxWidth().background(r.sky).statusBarsPadding()) {
                 Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, top = S.S8.dp, bottom = S.S1.dp)) {
                     Label(eyebrow, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
@@ -146,18 +154,15 @@ private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
                 Landscape(scene, Tokens.Landscape.HEIGHT_COVER.dp)
             }
             Box(Modifier.fillMaxWidth().height(Tokens.Elevation.HAIRLINE.dp).background(r.line))
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .imePadding()
-                    .navigationBarsPadding()
-                    .padding(S.S5.dp)
-                    .widthIn(max = P.INNER_LIST.dp),
-                verticalArrangement = Arrangement.spacedBy(S.S4.dp),
-            ) {
-                content()
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                Column(Modifier.widthIn(max = P.INNER_LIST.dp).fillMaxWidth().verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight).padding(S.S5.dp),
+                    verticalArrangement = Arrangement.spacedBy(S.S4.dp, if (footer == null) Alignment.Bottom else Alignment.CenterVertically),
+                ) { content() }
             }
+            if (footer != null) Column(Modifier.widthIn(max = P.INNER_LIST.dp).fillMaxWidth().padding(S.S5.dp),
+                verticalArrangement = Arrangement.spacedBy(S.S3.dp),
+            ) { footer() }
         }
     }
 }
@@ -206,7 +211,7 @@ private fun Entering(state: PairingState.Entering, actions: PairingActions) {
 }
 
 @Composable
-private fun Waiting(state: PairingState.Waiting, actions: PairingActions, fixedRemainingSeconds: Long?) {
+private fun Waiting(state: PairingState.Waiting, fixedRemainingSeconds: Long?) {
     val r = LocalDesign.current.room
     var left by remember(state.expiresAtMs) { mutableStateOf(pairingRemaining(state.expiresAtMs, System.currentTimeMillis())) }
     LaunchedEffect(state.expiresAtMs, fixedRemainingSeconds) {
@@ -225,7 +230,7 @@ private fun Waiting(state: PairingState.Waiting, actions: PairingActions, fixedR
             .padding(S.S5.dp),
         verticalArrangement = Arrangement.spacedBy(S.S2.dp),
     ) {
-        PairingQrTile(state.approvalUrl, "Approval QR code")
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { PairingQrTile(state.approvalUrl, "Approval QR code") }
         Label("Code", Tokens.Type.CAPS_LABEL, r.ink3)
         Label(state.userCode, Tokens.Type.PAIRING_CODE, r.ink)
         Spacer(Modifier.height(S.S1.dp))
@@ -234,6 +239,10 @@ private fun Waiting(state: PairingState.Waiting, actions: PairingActions, fixedR
         Label(pairTime(fixedRemainingSeconds ?: left), Tokens.Type.META_PHONE, r.ink3)
     }
     if (state.retrying) Label("Can’t reach the server right now. Still trying…", Tokens.Type.META_PHONE, r.dangerInk)
+}
+
+@Composable
+private fun WaitingActions(state: PairingState.Waiting, actions: PairingActions) {
     Row(horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
         Button("Open link", primary = true, modifier = Modifier.weight(1f)) { actions.openLink(state.approvalUrl) }
         Button("Copy link", primary = false, modifier = Modifier.weight(1f)) { actions.copyLink(state.approvalUrl) }

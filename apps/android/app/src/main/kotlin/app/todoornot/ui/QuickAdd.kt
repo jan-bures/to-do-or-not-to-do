@@ -164,7 +164,7 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                         if (priorityOpen) {
                             MenuPopup(priorityMenu(priority) { MenuAction.QuickPriority(it) }, { action ->
                                 if (action is MenuAction.QuickPriority) choosePriority(action.marks)
-                            }, { priorityOpen = false }, title = "Choose priority")
+                            }, { priorityOpen = false }, title = "Choose priority", above = true)
                         }
                     }
                 }
@@ -204,13 +204,13 @@ private fun QuickChip(label: String, description: String, date: Boolean, onClick
     }
 }
 
-/** The same anchored date picker, whether a choice edits a draft or saves a task. */
+/** Quick-add calendar opens above its button, with the shared presets nearest the dock. */
 @Composable
 internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit, repeats: Boolean = false) {
     val selected = remember { date }
     var cursor by remember { mutableStateOf<String?>(null) }
     val month = remember(now, cursor) { quickAddMonth(now, selected, cursor) }
-    AnchoredPopup(onDismiss = onDismiss) { overlay ->
+    AnchoredPopup(onDismiss = onDismiss, above = true) { overlay ->
         DateCalendar(month, selected, { day -> overlay.choose { onChoose(day) } }, { cursor = it },
             Modifier.padding(S.S2.dp), dismiss = overlay::close, repeats = repeats)
     }
@@ -226,12 +226,14 @@ internal fun DateCalendar(
     modifier: Modifier = Modifier,
     dismiss: (() -> Unit)? = null,
     repeats: Boolean = false,
+    inSheet: Boolean = false,
+    focusCalendar: Boolean = dismiss != null,
 ) {
     val design = LocalDesign.current
     val r = design.room
     val dayFocus = remember { FocusRequester() }
     // A single day is in Tab order. Keyboard navigation follows it even when the grid changes month.
-    var focusDay by remember { mutableStateOf(if (dismiss != null) month.cursor else null) }
+    var focusDay by remember { mutableStateOf(if (focusCalendar) month.cursor else null) }
     LaunchedEffect(month.cursor, focusDay) {
         if (focusDay == month.cursor) {
             dayFocus.requestFocus()
@@ -239,8 +241,9 @@ internal fun DateCalendar(
         }
     }
     Column(
-        modifier.width((7 * P.TOUCH + 2 * S.S2).dp).overlay(RoundedCornerShape(Tokens.Radius.LG.dp), design)
-            .verticalScroll(rememberScrollState()).padding(S.S2.dp).semantics { paneTitle = "Choose due date" }
+        modifier.then(if (inSheet) Modifier.fillMaxWidth() else Modifier.width((7 * P.TOUCH + 2 * S.S2).dp)
+            .overlay(RoundedCornerShape(Tokens.Radius.LG.dp), design))
+            .padding(S.S2.dp).semantics { paneTitle = "Choose due date" }
             .onPreviewKeyEvent { event ->
                 if (event.key != Key.Escape || dismiss == null) false else {
                     if (event.type == KeyEventType.KeyUp) dismiss()
@@ -248,14 +251,9 @@ internal fun DateCalendar(
                 }
             },
     ) {
-        month.presets.chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth()) {
-                row.forEach { preset ->
-                    CalendarCell(preset.label, preset.label, preset.date == selectedDate, false, false, Modifier.weight(1f)) { choose(preset.date) }
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth().hairline(r.line, top = true), verticalAlignment = Alignment.CenterVertically) {
+        if (inSheet) Label("Due date", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(horizontal = S.S2.dp))
+        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton("chevron-left", "Previous month", enabled = month.previous != null) { month.previous?.let(shift) }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Label(month.label, Tokens.Type.BUTTON, r.ink) }
             IconButton("chevron-right", "Next month", enabled = month.next != null) { month.next?.let(shift) }
@@ -301,12 +299,31 @@ internal fun DateCalendar(
                 }
             }
         }
-        if (repeats) {
-            val note = remember { calendarRepeatClearNote() }
-            Label(note, Tokens.Type.META_PHONE, r.ink3,
-                Modifier.fillMaxWidth().padding(top = S.S1.dp).hairline(r.line, top = true).padding(top = S.S2.dp),
-                maxLines = Int.MAX_VALUE)
         }
+        Column(Modifier.fillMaxWidth().hairline(r.line, top = true).padding(top = S.S1.dp)) {
+            if (repeats) Label(remember { calendarRepeatClearNote() }, Tokens.Type.META_PHONE, r.ink3,
+                Modifier.padding(horizontal = S.S2.dp, vertical = S.S1.dp), maxLines = Int.MAX_VALUE)
+            month.presets.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth()) {
+                    row.forEach { preset ->
+                        CalendarCell(preset.label, preset.label, preset.date == selectedDate, false, false, Modifier.weight(1f)) { choose(preset.date) }
+                    }
+                }
+            }
+            if (inSheet && dismiss != null) Button("Cancel", false, onClick = dismiss)
+        }
+    }
+}
+
+@Composable
+internal fun DueDateSheet(detail: app.todoornot.core.TaskDetail, actions: Actions, close: () -> Unit) {
+    val now = remember { actions.composerNow() }
+    val selected = rememberSaveable { detail.due.orEmpty() }.ifEmpty { null }
+    var cursor by rememberSaveable { mutableStateOf<String?>(null) }
+    val month = remember(now, selected, cursor) { quickAddMonth(now, selected, cursor) }
+    BottomSheet("Due date", close) { overlay ->
+        DateCalendar(month, selected, { day -> overlay.choose { actions.setDue(detail.id, day) } }, { cursor = it },
+            dismiss = overlay::close, repeats = detail.repeats, inSheet = true, focusCalendar = !LocalSheetAtRest.current)
     }
 }
 

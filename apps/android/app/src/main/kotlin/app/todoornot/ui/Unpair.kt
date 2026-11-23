@@ -1,6 +1,5 @@
 package app.todoornot.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
@@ -15,7 +14,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.Dp
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 
@@ -27,9 +26,10 @@ private val S = Tokens.Space
  * and discard" in the danger colours. [unsent] is null when it can't be counted (the cache won't open).
  */
 @Composable
-fun UnpairDialog(unsent: Int?, onCancel: () -> Unit, onConfirm: () -> Unit, changed: Boolean = false) {
-    Dialog(onDismissRequest = onCancel) {
-        UnpairCard(unsent, onCancel, onConfirm, changed = changed)
+fun UnpairDialog(unsent: Int?, onCancel: () -> Unit, onConfirm: () -> Unit, changed: Boolean = false, paneWidth: Dp? = null) {
+    // Keep the confirmation up when the outbox changed and the model asks again.
+    OverlayDialog(onCancel, paneWidth = paneWidth) { overlay ->
+        UnpairCard(unsent, overlay::close, { if (overlay.open) onConfirm() }, changed = changed)
     }
 }
 
@@ -49,7 +49,7 @@ fun UnpairCard(
     Column(
         Modifier
             .widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp)
-            .background(r.raised, RoundedCornerShape(Tokens.Radius.LG.dp))
+            .overlay(RoundedCornerShape(Tokens.Radius.XL.dp), LocalDesign.current)
             .padding(S.S5.dp)
             .semantics { paneTitle = "Unpair this phone?" },
         verticalArrangement = Arrangement.spacedBy(S.S4.dp),

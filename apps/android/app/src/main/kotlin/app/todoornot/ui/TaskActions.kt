@@ -53,51 +53,47 @@ import kotlinx.coroutines.launch
 
 private enum class Picker { ACTIONS, PRIORITY, LIST, MERGE }
 
-/** Anchor shared by the task row's long press and the detail header's overflow button. */
 @Composable
-fun TaskActionsAnchor(
-    state: UiState, actions: Actions, id: String, list: String, done: Boolean, myDay: Boolean, priority: Int,
-    row: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable (open: () -> Unit) -> Unit,
-) {
-    // A move elsewhere invalidates the old picker, including its pending choice.
-    var picker by remember(id, list, state.generation, enabled) { mutableStateOf<Picker?>(null) }
+internal fun TaskActionsSheet(state: UiState, actions: Actions, detail: app.todoornot.core.TaskDetail, close: () -> Unit) {
+    val id = detail.id
+    val priority = detail.priority.toInt()
+    var picker by rememberSaveable(id, detail.list, state.generation) { mutableStateOf(Picker.ACTIONS) }
     val focus = LocalFocusManager.current
-    Box(modifier) {
-        content {
-            if (enabled) {
-                focus.clearFocus()
-                picker = Picker.ACTIONS
-            }
-        }
-        when (picker) {
-            Picker.ACTIONS -> MenuPopup(taskMenu(state.room, id, done, myDay, priority), { a ->
-                when (a) {
-                    is MenuAction.Done -> actions.setDone(id, a.on, state.generation, row = row)
-                    is MenuAction.MyDay -> actions.setMyDay(id, a.on)
-                    is MenuAction.Important -> actions.setImportant(id, a.on)
-                    MenuAction.PickPriority -> picker = Picker.PRIORITY
-                    MenuAction.PickList -> picker = Picker.LIST
-                    MenuAction.PickMerge -> picker = Picker.MERGE
-                    MenuAction.DeleteTask -> actions.deleteTask(id)
-                    is MenuAction.ReorderTask -> a.neighbour?.let { actions.reorderTask(a.list, id, it, a.by) }
-                    else -> Unit
+    fun back() { focus.clearFocus(); picker = Picker.ACTIONS }
+    BottomSheet("Task actions", close) { overlay ->
+        androidx.activity.compose.BackHandler(picker != Picker.ACTIONS) { back() }
+        SheetPages(picker) { page ->
+            when (page) {
+                Picker.ACTIONS -> ActionSheetContent(taskMenu(state.room, id, detail.done, detail.myDay, priority), "Task actions") { a ->
+                    if (overlay.open) when (a) {
+                        MenuAction.PickPriority -> picker = Picker.PRIORITY
+                        MenuAction.PickList -> picker = Picker.LIST
+                        MenuAction.PickMerge -> picker = Picker.MERGE
+                        else -> overlay.choose {
+                            when (a) {
+                                is MenuAction.Done -> actions.setDone(id, a.on, state.generation, row = false)
+                                is MenuAction.MyDay -> actions.setMyDay(id, a.on)
+                                is MenuAction.Important -> actions.setImportant(id, a.on)
+                                MenuAction.DeleteTask -> actions.deleteTask(id)
+                                is MenuAction.ReorderTask -> a.neighbour?.let { actions.reorderTask(a.list, id, it, a.by) }
+                                else -> Unit
+                            }
+                        }
+                    }
                 }
-            }, onDismiss = { picker = null }, start = row, title = "Task actions")
-            Picker.PRIORITY -> MenuPopup(priorityMenu(id, priority), { a ->
-                if (a is MenuAction.SetPriority) actions.setPriority(a.task, a.marks)
-            }, onDismiss = { picker = null }, start = row, title = "Priority")
-            Picker.LIST -> OverlayDialog(onDismiss = { picker = null }) { overlay ->
-                var filter by rememberSaveable(id) { mutableStateOf("") }
-                // Never offer another query's results. Re-read on sync too: deleted lists go away,
-                // and a renamed destination appears under its new name.
-                var groups by remember(id, filter) { mutableStateOf<List<DestinationGroup>?>(null) }
-                LaunchedEffect(state, filter) { groups = actions.moveDestinations(id, filter) }
-                MoveTaskCard(filter, { filter = it }, groups, { to -> overlay.choose { actions.moveTaskTo(id, list, to) } }, overlay::close, focus = true)
+                Picker.PRIORITY -> ActionSheetContent(priorityMenu(id, priority), "Priority") { a ->
+                    if (a is MenuAction.SetPriority) overlay.choose { actions.setPriority(a.task, a.marks) }
+                }
+                Picker.LIST -> {
+                    var filter by rememberSaveable(id) { mutableStateOf("") }
+                    var groups by remember(id, filter) { mutableStateOf<List<DestinationGroup>?>(null) }
+                    LaunchedEffect(state.home, filter) { groups = actions.moveDestinations(id, filter) }
+                    MoveTaskCard(filter, { filter = it }, groups, { to ->
+                        overlay.choose { actions.moveTaskTo(id, detail.list, to) }
+                    }, ::back, inSheet = true)
+                }
+                Picker.MERGE -> MergeTaskPages(state, actions, id, overlay, ::back)
             }
-            Picker.MERGE -> OverlayDialog(onDismiss = { picker = null }) { overlay ->
-                MergeTaskDialog(state, actions, id, overlay)
-            }
-            null -> Unit
         }
     }
 }
@@ -163,7 +159,7 @@ private fun TaskPickerCard(
 }
 
 @Composable
-private fun MergeTaskDialog(state: UiState, actions: Actions, source: String, overlay: OverlayState) {
+private fun MergeTaskPages(state: UiState, actions: Actions, source: String, overlay: OverlayState, back: () -> Unit) {
     var filter by rememberSaveable(source) { mutableStateOf("") }
     var candidates by remember(source, filter) { mutableStateOf<List<MergeCandidate>?>(null) }
     var asked by remember(source) { mutableStateOf<Pair<String, String>?>(null) }
@@ -171,8 +167,10 @@ private fun MergeTaskDialog(state: UiState, actions: Actions, source: String, ov
     var changed by remember(source) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val focus = LocalFocusManager.current
+    androidx.activity.compose.BackHandler(asked != null && !busy) { asked = null }
+    SheetPages(asked != null) { confirming ->
     val showing = asked
-    if (showing == null) {
+    if (!confirming) {
         LaunchedEffect(state, filter) { candidates = actions.mergeCandidates(source, filter) }
         MergeTaskCard(filter, { filter = it; changed = false }, candidates, { target ->
             if (overlay.open && !busy) {
@@ -189,8 +187,8 @@ private fun MergeTaskDialog(state: UiState, actions: Actions, source: String, ov
                     busy = false
                 }
             }
-        }, overlay::close, focus = true, changed = changed)
-    } else {
+        }, back, changed = changed, inSheet = true)
+    } else if (showing != null) {
         MergeConfirmCard(showing.second, onMerge = {
             if (overlay.open && !busy) {
                 busy = true
@@ -202,18 +200,19 @@ private fun MergeTaskDialog(state: UiState, actions: Actions, source: String, ov
                     busy = false
                 }
             }
-        }, cancel = overlay::close, busy = busy, changed = changed)
+        }, cancel = { if (!busy) asked = null }, busy = busy, changed = changed, inSheet = true)
+    }
     }
 }
 
 @Composable
 internal fun MergeTaskCard(
     filter: String, onFilter: (String) -> Unit, choices: List<MergeCandidate>?,
-    onChoose: (String) -> Unit, cancel: () -> Unit, focus: Boolean = false, changed: Boolean = false,
+    onChoose: (String) -> Unit, cancel: () -> Unit, focus: Boolean = false, changed: Boolean = false, inSheet: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     val s = Tokens.Space
-    TaskPickerCard("Merge into…", "Filter open tasks", filter, onFilter, cancel, focus) { body ->
+    TaskPickerCard("Merge into…", "Filter open tasks", filter, onFilter, cancel, focus, inSheet) { body ->
         LazyColumn(body) {
             if (changed) item { Label(mergeChangedText(), Tokens.Type.BODY, r.dangerInk, maxLines = 4) }
             if (choices?.isEmpty() == true) item { Label(mergeEmptyText(filter.isNotBlank()), Tokens.Type.BODY, r.ink3) }
@@ -236,12 +235,12 @@ internal fun MergeTaskCard(
 @Composable
 internal fun MergeConfirmCard(
     question: String, onMerge: () -> Unit, cancel: () -> Unit,
-    focus: Boolean = true, busy: Boolean = false, changed: Boolean = false,
+    focus: Boolean = true, busy: Boolean = false, changed: Boolean = false, inSheet: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     val initial = remember { FocusRequester() }
     if (focus) LaunchedEffect(question) { runCatching { initial.requestFocus() } }
-    DialogCard("Merge tasks?") {
+    val content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
         Label("Merge tasks?", Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Label(question, Tokens.Type.NOTES, r.ink2, maxLines = Int.MAX_VALUE)
@@ -250,4 +249,7 @@ internal fun MergeConfirmCard(
         Button("Cancel", primary = false, modifier = Modifier.focusRequester(initial), onClick = cancel)
         Button("Merge tasks", primary = true, enabled = !busy, onClick = onMerge)
     }
+    if (inSheet) Column(Modifier.fillMaxWidth().padding(Tokens.Space.S4.dp),
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.S3.dp), content = content)
+    else DialogCard("Merge tasks?", content = content)
 }

@@ -71,6 +71,7 @@ fun ReminderCard(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     markToday: Boolean = true,
+    inSheet: Boolean = false,
 ) {
     val d = LocalDesign.current
     val r = d.room
@@ -108,17 +109,18 @@ fun ReminderCard(
         val compact = maxHeight < COMPACT_BELOW
         Column(
             Modifier
-                .widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp)
-                .overlay(shape, d)
+                .then(if (inSheet) Modifier.fillMaxWidth() else Modifier.widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp).overlay(shape, d))
                 .semantics { paneTitle = "Reminder" },
         ) {
+            val timeRow = @Composable {
+                MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = tokenTypography()) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = S.S6.dp, vertical = S.S2.dp), contentAlignment = Alignment.Center) {
+                        TimeInput(state = time, colors = timeColors)
+                    }
+                }
+            }
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                 MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = tokenTypography()) {
-                    val timeRow = @Composable {
-                        Box(Modifier.fillMaxWidth().padding(horizontal = S.S6.dp, vertical = if (compact) S.S3.dp else 0.dp), contentAlignment = Alignment.Center) {
-                            TimeInput(state = time, colors = timeColors)
-                        }
-                    }
                     // In a short window the time comes first, so it is in view without scrolling.
                     if (compact) timeRow()
                     DatePicker(
@@ -132,9 +134,9 @@ fun ReminderCard(
                         },
                         showModeToggle = !compact,
                     )
-                    if (!compact) timeRow()
                 }
             }
+            if (!compact) timeRow()
             Column(
                 (if (compact) Modifier.hairline(r.line, top = true) else Modifier)
                     .padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S5.dp, top = if (compact) S.S3.dp else 0.dp),
@@ -152,14 +154,6 @@ fun ReminderCard(
                 }
             }
         }
-    }
-}
-
-/** The reminder picker in its dialog. */
-@Composable
-fun ReminderDialog(atMs: Long?, due: String?, nowMs: Long, zone: ZoneId, onSave: (Long?) -> Unit, onDismiss: () -> Unit) {
-    OverlayDialog(onDismiss) { overlay ->
-        ReminderCard(atMs, due, nowMs, zone, onSave = { at -> overlay.choose { onSave(at) } }, onCancel = overlay::close)
     }
 }
 

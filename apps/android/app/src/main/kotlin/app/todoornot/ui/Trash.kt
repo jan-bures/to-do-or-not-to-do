@@ -8,11 +8,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -25,32 +23,26 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
 import app.todoornot.model.UiState
+import app.todoornot.session.ThumbHand
 
 @Composable
-internal fun TrashRoom(state: UiState, actions: Actions, drawer: () -> Unit, wide: Boolean) {
+internal fun TrashRoom(state: UiState, actions: Actions, drawer: () -> Unit, wide: Boolean, hand: ThumbHand = ThumbHand.RIGHT) {
     val trash = state.room.trash ?: return
-    val r = LocalDesign.current.room
     val space = Tokens.Space
     val phone = Tokens.Metrics.Phone
-    val collapse = remember(state.generation) { HeaderCollapse() }
     val pad = (if (wide) Tokens.Metrics.Desktop.LIST_PAD_X else phone.ROW_PAD_LEFT).dp
-    Column(Modifier.fillMaxSize().background(r.pane).systemBarsPadding().nestedScroll(collapse.connection)) {
-        Row(Modifier.fillMaxWidth().background(r.sky).padding(horizontal = space.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton("menu", "Rooms", onClick = drawer)
-            Label(state.room.title, Tokens.Type.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f)
-                .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) })
-            SyncChip(state.status, actions::nudge)
-        }
-        val landscape = if (wide) Tokens.Landscape.HEIGHT_INNER else Tokens.Landscape.HEIGHT_COVER
-        RoomHeader(state.room, landscape.dp, collapse, state.status, compact = 0.dp) {}
-        Label(trash.description, Tokens.Type.BODY, r.ink2,
-            Modifier.fillMaxWidth().hairline(r.line).padding(horizontal = pad, vertical = space.S3.dp),
-            maxLines = Int.MAX_VALUE)
-        state.failed.firstOrNull()?.let { f ->
-            Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
-        }
-        if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+    HistoryFrame(state, actions, state.room, wide, hand, drawer, footer = { left ->
+        val r = LocalDesign.current.room
+        val count = trash.rows.size
+        if (left) SyncChip(state.status, actions::nudge)
+        Label("$count deleted ${if (count == 1) "item" else "items"}", Tokens.Type.COUNT, r.ink2, Modifier.weight(1f))
+        if (!left) SyncChip(state.status, actions::nudge)
+    }) { collapse ->
+        val r = LocalDesign.current.room
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().nestedScroll(collapse.connection)) {
+            item("description") { Label(trash.description, Tokens.Type.BODY, r.ink2,
+                Modifier.fillMaxWidth().hairline(r.line).padding(horizontal = pad, vertical = space.S3.dp),
+                maxLines = Int.MAX_VALUE) }
             if (trash.rows.isEmpty()) item {
                 Label(state.room.emptyLine, Tokens.Type.EMPTY_LINE, r.ink2,
                     Modifier.padding(horizontal = pad, vertical = space.S6.dp))
@@ -88,6 +80,5 @@ internal fun TrashRoom(state: UiState, actions: Actions, drawer: () -> Unit, wid
                 }
             }
         }
-        ToastStrip(state.toast, actions)
     }
 }

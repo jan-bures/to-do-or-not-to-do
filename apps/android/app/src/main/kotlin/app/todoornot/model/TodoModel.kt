@@ -64,7 +64,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** The task ID drives only the row animation; the handle identifies exactly which event to undo. */
-data class CompletionAction(val task: String, val target: Completion)
+data class CompletionAction(val task: String, val target: Completion, val done: Boolean = true)
 
 /**
  * A short message above the composer, with an optional undo: of a completion (which plays the row's
@@ -854,12 +854,11 @@ class TodoModel(
                 if (undo != null) {
                     engine.undoCompletion(undo)
                 } else {
-                    val title = if (done) engine.task(id, now())?.title else null
+                    val title = engine.task(id, now())?.title
                     val target = engine.setDone(id, done)
                     if (target != null && title != null) {
-                        show(Toast(++serial, "Completed “$title”", CompletionAction(id, target)))
-                    } else if (!done && toast?.completion?.task == id) {
-                        show(null)
+                        val verb = if (done) "Completed" else "Reopened"
+                        show(Toast(++serial, "$verb “$title”", CompletionAction(id, target, done)))
                     }
                 }
             } finally {
@@ -906,7 +905,7 @@ class TodoModel(
         }
         val action = t.completion ?: return
         show(null)
-        toggle(action.task, false, generation = null, row = false, undo = action.target)
+        toggle(action.task, !action.done, generation = null, row = false, undo = action.target)
     }
 
     override fun dismissToast(t: Toast) {
@@ -1030,7 +1029,21 @@ class TodoModel(
 
     override fun rename(id: String, title: String) = act { engine.rename(id, title) }
 
-    override fun setMyDay(id: String, on: Boolean) = act { engine.setMyDay(id, on, now()) }
+    override fun swipeTask(id: String, generation: Long, action: TaskSwipe) {
+        val ui = _ui.value
+        if (generation != ui.generation || ui.bulkIds.isNotEmpty() || ui.signedOut || ui.activity != null) return
+        val task = ui.room.tasks.firstOrNull { it.id == id }
+            ?: ui.room.completed.takeIf { ui.showCompleted }?.firstOrNull { it.id == id }
+            ?: return
+        when (action) {
+            TaskSwipe.COMPLETION -> setDone(id, !(motion.checked(id) ?: task.done), generation)
+            TaskSwipe.MY_DAY -> setMyDay(id, !task.myDay)
+        }
+    }
+
+    override fun setMyDay(id: String, on: Boolean) = act {
+        engine.setMyDay(id, on, now())?.let { show(Toast(++serial, it.toastText(), organize = it)) }
+    }
 
     override fun setImportant(id: String, on: Boolean) = act { engine.setImportant(id, on) }
 
