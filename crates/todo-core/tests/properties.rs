@@ -10,10 +10,14 @@ use todo_core::command::{BulkTaskAction, Command, NewTask, Placement, TaskPatch}
 use todo_core::error::{ApplyError, DomainError, UndoError};
 use todo_core::event::{Event, EventPayload, FieldChange, FieldKey};
 use todo_core::ids::{EntityId, EventId, TaskId};
-use todo_core::model::{EmailLink, Entity, LinkKind, List, Priority, Stamp, Task};
+use todo_core::model::{
+    EmailLink, Entity, LinkKind, List, ListFeatures, ListView, Priority, Stamp, Task,
+    WorkflowStatus,
+};
 use todo_core::ordering::{MAX_KEY_LEN, OrderError, PosKey};
 use todo_core::query::*;
 use todo_core::recurrence::{MAX_INTERVAL, Recurrence, Rule};
+use todo_core::time::add_days;
 use todo_core::time::{Date, Weekday};
 use todo_core::undo::{UndoOptions, undo_batch, undo_with};
 use todo_core::{Actor, AgentId, State, apply};
@@ -23,7 +27,7 @@ use todo_core::{Actor, AgentId, State, apply};
 type Op = (u8, u16, u16, u8);
 
 /// Number of op kinds [`build`] understands.
-const OP_KINDS: u8 = 28;
+const OP_KINDS: u8 = 30;
 /// The op kind that imports an entity with historical times.
 const IMPORT_OP: u8 = 27;
 /// The op kind that tries to create a task with the ID of an earlier task (which must fail).
@@ -54,6 +58,14 @@ fn placement(w: &World, scope_ids: &[EntityId], n: u16, c: u8) -> Placement {
             Placement::After(x)
         }
     }
+}
+
+fn status(c: u8) -> WorkflowStatus {
+    [
+        WorkflowStatus::Backlog,
+        WorkflowStatus::Todo,
+        WorkflowStatus::InProgress,
+    ][usize::from(c % 3)]
 }
 
 /// Builds a command from a random op, reading targets from the current state.
@@ -124,6 +136,13 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
             if c % 3 == 0 {
                 n.due = Date::new(2026, 1 + (c % 12) as i8, 1 + (b % 28) as i8).ok();
             }
+            n.status = status(c);
+            if b % 2 == 0 {
+                n.start_date = n
+                    .due
+                    .and_then(|due| add_days(due, -i64::from(c % 21)))
+                    .or(Some(Date::constant(2026, 1, 1)));
+            }
             if c % 7 == 0 && n.due.is_some() {
                 n.recurrence = Some(Recurrence::new(Rule::Daily {
                     interval: 1 + u32::from(c % 3),
@@ -147,6 +166,9 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                     .then(|| (b % 2 == 0).then(|| Date::constant(2026, 6, 1 + (b % 28) as i8))),
                 priority: (c % 4 == 0).then_some(Priority::Low),
                 recurrence: None,
+                status: Some(status(c)),
+                start_date: (c % 4 != 0)
+                    .then(|| (b % 2 == 0).then_some(Date::constant(2026, 1, 1))),
             },
         },
         6 => {
@@ -300,6 +322,12 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
             id: pick(&live_lists, a)?,
             name: Some(name),
             color: Some(None),
+            features: Some(ListFeatures {
+                workflow: c % 2 == 0,
+                timeline: c % 3 == 0,
+                default_view: [ListView::List, ListView::Board, ListView::Timeline]
+                    [usize::from(b % 3)],
+            }),
         },
         23 => {
             let id = pick(&live_lists, a)?;
@@ -358,6 +386,8 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                         title: format!("imported {c}"),
                         notes: String::new(),
                         due,
+                        status: status(c),
+                        start_date: (b % 2 == 0).then_some(Date::constant(2025, 2, 28)),
                         priority: Priority::High,
                         my_day: None,
                         completed_at: done,
@@ -391,6 +421,11 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                         collection,
                         name: format!("imported list {c}"),
                         color: Some("#123456".into()),
+                        features: ListFeatures {
+                            workflow: true,
+                            default_view: ListView::Board,
+                            ..ListFeatures::default()
+                        },
                         position: key(s.siblings(todo_core::state::Scope::Lists(collection)))?,
                         created: stamp,
                         deleted: None,
@@ -401,6 +436,24 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                 entity: Box::new(entity),
             }
         }
+        28 => {
+            let id = pick(&live_tasks, a)?;
+            let list = s.tasks[&id].list;
+            Command::MoveTaskStatus {
+                id,
+                list,
+                status: status(c),
+                placement: if b % 2 == 0 {
+                    Placement::First
+                } else {
+                    Placement::Last
+                },
+            }
+        }
+        29 => Command::BulkTasks {
+            tasks: live_tasks,
+            action: BulkTaskAction::Status { status: status(c) },
+        },
         _ => Command::AddAttachment {
             id: w.ids.attachment(),
             task: pick(&live_tasks, a)?,

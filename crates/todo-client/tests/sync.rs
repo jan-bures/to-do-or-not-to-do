@@ -257,7 +257,10 @@ async fn restart_resumes(storage: impl todo_client::Storage + Clone + 'static) {
         .unwrap();
     assert_eq!(
         first_stream,
-        format!("/api/v1/events?since={cursor}&epoch={}", server.epoch())
+        format!(
+            "/api/v1/events?since={cursor}&epoch={}&workflow_fields=true",
+            server.epoch()
+        )
     );
     stop(&a, h).await;
     server.stop().await;

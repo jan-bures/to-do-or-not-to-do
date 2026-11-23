@@ -12,10 +12,14 @@ match the line icons in the approved mockups. Two edits were made to each file:
 - `stroke-width` is changed from 2 to 1.6, the weight the mockups use at 18 px;
 - the `class` attribute is removed.
 
-Only the icons that M1 needs are bundled. To add one, copy it from the same release, apply the same two edits, and
+Only the icons the app needs are bundled. To add one, copy it from the same release, apply the same two edits, and
 add a variant to `todo_design::Icon` (`crates/todo-design/src/icons.rs`). The `assets` test checks that every file
 is listed there, and that every icon is a single-colour SVG. For a filled toggle variant, keep the same outline
 and add `fill="currentColor"` only to the closed shape (not to open strokes).
+
+The four `status-*` marks are app drawings under the repository license. They use a 1.8 stroke on the
+same grid for legibility at 14 px, except the filled Done mark. Backlog uses explicit arcs and Done
+cuts out its tick by winding the path in the opposite direction, so both survive Android's path export.
 
 ## `glyphs/`: hand-drawn list glyphs
 

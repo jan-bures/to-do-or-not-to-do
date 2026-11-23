@@ -87,7 +87,7 @@ use todo_core::access::{Target, level_on};
 use todo_core::command::Command;
 use todo_core::event::EventPayload;
 use todo_core::ids::{ListId, TaskId};
-use todo_core::model::Entity;
+use todo_core::model::{Entity, ListFeatures};
 use todo_core::query::fold;
 use todo_core::time::Timestamp;
 use uuid::Uuid;
@@ -99,7 +99,8 @@ A personal to-do list. You act with the levels the owner granted your token, per
 My Day, tags, reminders and repeat rules). Lists you cannot read do not exist for you. Create tasks in the Inbox unless told otherwise. Before \
 creating a task, query for an existing one (query_tasks) to avoid duplicates. Pass the same command_id \
 when retrying a write, so it is not applied twice. Every write is attributed to you, shows in the \
-owner's activity feed and can be undone.";
+owner's activity feed and can be undone. Check list_lists for features.workflow; with plan access, \
+set status to in_progress when starting work on a workflow list. Use complete_task for Done.";
 
 // ---- arguments --------------------------------------------------------------------------------------
 
@@ -134,8 +135,9 @@ pub struct GetTaskArgs {
 #[serde(deny_unknown_fields)]
 pub struct QueryArgs {
     /// Query in the smart-list language, for example `list:inbox and not done`, `due<=today sort:due`,
-    /// `priority>=high tag:work`, `my_day`, or free words matched against titles, notes and steps
-    /// (`milk`). Empty matches every live task. At most 1024 bytes, 64 nodes and 32 terms.
+    /// `status:in_progress start<=today sort:start`, `priority>=high tag:work`, `my_day`, or free
+    /// words matched against titles, notes and steps (`milk`). Empty matches every live task.
+    /// At most 1024 bytes, 64 nodes and 32 terms.
     #[serde(default)]
     pub query: Option<String>,
     /// Page size, 1–500 (default 100).
@@ -269,6 +271,12 @@ pub struct CreateTaskArgs {
     /// Due date, `YYYY-MM-DD`.
     #[serde(default)]
     pub due: Option<String>,
+    /// Initial open stage: `backlog`, `todo` (default), or `in_progress`.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Start date, `YYYY-MM-DD`; must be on or before `due` when both are set.
+    #[serde(default)]
+    pub start_date: Option<String>,
     /// Priority. Default none.
     #[serde(default)]
     pub priority: Option<PriorityArg>,
@@ -316,6 +324,12 @@ pub struct UpdateTaskArgs {
     /// New due date `YYYY-MM-DD`, or `null` to clear it.
     #[serde(default, deserialize_with = "double_option")]
     pub due: Option<Option<String>>,
+    /// Open stage: `backlog`, `todo`, or `in_progress`. Use `complete_task` for Done.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Start date, `YYYY-MM-DD`, or `null` to clear. Cannot be after the due date.
+    #[serde(default, deserialize_with = "double_option")]
+    pub start_date: Option<Option<String>>,
     /// New priority.
     #[serde(default)]
     pub priority: Option<PriorityArg>,
@@ -609,6 +623,26 @@ fn to_value(v: &impl Serialize) -> Result<Value, ApiError> {
     })
 }
 
+fn status_arg(status: &str) -> Result<&str, ApiError> {
+    match status {
+        "backlog" | "todo" | "in_progress" => Ok(status),
+        "done" => Err(invalid("use complete_task to mark a task done")),
+        _ => Err(invalid("status must be backlog, todo, or in_progress")),
+    }
+}
+
+/// MCP presents the effective status and explicit defaults, rather than the stored open stage.
+fn project_task(task: &mut Value) {
+    if let Some(task) = task.as_object_mut() {
+        if task.get("completed_at").is_some_and(|at| !at.is_null()) {
+            task.insert("status".into(), json!("done"));
+        } else {
+            task.entry("status").or_insert(json!("todo"));
+        }
+        task.entry("start_date").or_insert(Value::Null);
+    }
+}
+
 async fn body_json(res: Response) -> Result<Value, ApiError> {
     // The handlers already cap their bodies at MAX_PAGE_BYTES.
     let bytes = axum::body::to_bytes(res.into_body(), MAX_PAGE_BYTES + 1024)
@@ -848,7 +882,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "List the lists you can see (with their IDs and collections), in display order. Paginated: pass next_cursor back as cursor.",
+        description = "List the lists you can see, with IDs, collections and features (workflow, timeline, default_view), in display order. Paginated: pass next_cursor back as cursor.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_lists(
@@ -868,7 +902,16 @@ impl TodoMcp {
                 }),
             )
             .await?;
-            to_value(&page.0)
+            let mut page = to_value(&page.0)?;
+            if let Some(items) = page["items"].as_array_mut() {
+                for list in items {
+                    if let Some(list) = list.as_object_mut() {
+                        list.entry("features")
+                            .or_insert(json!(ListFeatures::default()));
+                    }
+                }
+            }
+            Ok(page)
         })
         .await
     }
@@ -900,7 +943,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Get one task with its steps, links, attachments, reminders and tags.",
+        description = "Get one task with its workflow status (including Done), start date, steps, links, attachments, reminders and tags.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_task(
@@ -919,7 +962,11 @@ impl TodoMcp {
                 }),
             )
             .await?;
-            body_json(res).await
+            let mut detail = body_json(res).await?;
+            if let Some(task) = detail.get_mut("task") {
+                project_task(task);
+            }
+            Ok(detail)
         })
         .await
     }
@@ -945,13 +992,17 @@ impl TodoMcp {
                 }),
             )
             .await?;
-            to_value(&page.0)
+            let mut page = to_value(&page.0)?;
+            if let Some(items) = page["items"].as_array_mut() {
+                items.iter_mut().for_each(project_task);
+            }
+            Ok(page)
         })
         .await
     }
 
     #[tool(
-        description = "Create a task (capture level; plan level to make it repeat). Goes to the Inbox unless list_id is given. Optional due date, priority and repeat rule (recurrence, which needs a due date). Returns task_id and the event. Query first to avoid duplicates; retry with the same command_id.",
+        description = "Create a task (capture level; plan level to make it repeat). Goes to the Inbox unless list_id is given. Optional due date, start date, open status, priority and repeat rule (which needs a due date). Returns task_id and the event. Query first to avoid duplicates; retry with the same command_id.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -985,6 +1036,12 @@ impl TodoMcp {
             }
             if let Some(d) = a.due {
                 cmd["due"] = json!(d);
+            }
+            if let Some(start) = a.start_date {
+                cmd["start_date"] = json!(start);
+            }
+            if let Some(status) = a.status {
+                cmd["status"] = json!(status_arg(&status)?);
             }
             if let Some(p) = a.priority {
                 cmd["priority"] = json!(p);
@@ -1053,7 +1110,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Change a task's title, notes, due date, priority or repeat rule (plan level). Omitted fields stay as they are; due: null clears the due date, recurrence: null stops it repeating. A repeat rule needs a due date.",
+        description = "Change a task's title, notes, open status, start date, due date, priority or repeat rule (plan level). Omitted fields stay as they are. Null clears start_date, due or recurrence; a repeat rule needs a due date. Use complete_task for Done.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1077,6 +1134,12 @@ impl TodoMcp {
             if let Some(d) = a.due {
                 patch.insert("due".into(), json!(d));
             }
+            if let Some(start) = a.start_date {
+                patch.insert("start_date".into(), json!(start));
+            }
+            if let Some(status) = a.status {
+                patch.insert("status".into(), json!(status_arg(&status)?));
+            }
             if let Some(p) = a.priority {
                 patch.insert("priority".into(), json!(p));
             }
@@ -1085,7 +1148,7 @@ impl TodoMcp {
             }
             if patch.is_empty() {
                 return Err(invalid(
-                    "nothing to change: give title, notes, due, priority or recurrence",
+                    "nothing to change: give title, notes, due, start_date, status, priority or recurrence",
                 ));
             }
             let cmd = json!({ "cmd": "update_task", "id": a.task_id, "patch": patch });
@@ -1434,6 +1497,7 @@ impl TodoMcp {
                     before: a.before,
                     limit: a.limit,
                     agent: None,
+                    workflow_fields: true,
                 }),
             )
             .await?;

@@ -13,13 +13,14 @@ pub mod quick_add;
 pub mod reminder;
 pub mod repeat;
 pub mod suggest;
+pub mod workflow;
 
 pub use organize::*;
 
 use todo_core::State;
 use todo_core::command::{Command, NewTask, Placement, TaskPatch};
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TaskId};
-use todo_core::model::{List, Priority};
+use todo_core::model::{List, ListFeatures, Priority};
 use todo_core::query::{EvalContext, fold};
 use todo_core::time::Date;
 use uuid::Uuid;
@@ -101,6 +102,13 @@ pub fn task_destination(state: &State, room: TaskRoom) -> Option<ListId> {
     }
 }
 
+/// Feature flags for the list that will receive the composer submission.
+pub fn quick_add_features(state: &State, room: TaskRoom) -> ListFeatures {
+    task_destination(state, room)
+        .and_then(|id| state.lists.get(&id))
+        .map_or_else(ListFeatures::default, |l| l.features)
+}
+
 /// Parses and builds a quick-add submission using the same local date for syntax and defaults.
 pub fn quick_add_task(
     state: &State,
@@ -109,10 +117,12 @@ pub fn quick_add_task(
     ctx: &EvalContext,
     new_id: impl FnMut() -> Uuid,
 ) -> (Option<TaskId>, Vec<Command>) {
-    add_task(state, room, &quick_add::parse(text, ctx), ctx.today, new_id)
+    let room = room.into();
+    let parsed = quick_add::parse_with_features(text, ctx, quick_add_features(state, room));
+    add_task(state, room, &parsed, ctx.today, new_id)
 }
 
-/// Builds a quick-add submission from the same draft that supplies the live chips.
+/// Builds a submission for the legacy composer (due date and priority only).
 pub fn submit_draft(
     state: &State,
     room: impl Into<TaskRoom>,
@@ -124,6 +134,26 @@ pub fn submit_draft(
     build_task(
         state,
         room.into(),
+        &parsed,
+        ctx.today,
+        draft.due == quick_add::DueChoice::Clear,
+        new_id,
+    )
+}
+
+/// Builds a submission from the same feature-aware draft that supplies the live chips.
+pub fn submit_workflow_draft(
+    state: &State,
+    room: impl Into<TaskRoom>,
+    draft: &quick_add::Draft,
+    ctx: &EvalContext,
+    new_id: impl FnMut() -> Uuid,
+) -> (Option<TaskId>, Vec<Command>) {
+    let room = room.into();
+    let parsed = draft.parsed_with_features(ctx, quick_add_features(state, room));
+    build_task(
+        state,
+        room,
         &parsed,
         ctx.today,
         draft.due == quick_add::DueChoice::Clear,
@@ -164,11 +194,23 @@ fn build_task(
     let mut task = NewTask::new(id, list, parsed.title.trim());
     task.placement = Placement::First;
     task.due = parsed.due;
+    let features = state
+        .lists
+        .get(&list)
+        .map_or_else(ListFeatures::default, |l| l.features);
+    if features.workflow {
+        task.status = parsed.status.unwrap_or_default();
+    }
+    if features.timeline {
+        task.start_date = parsed.start_date;
+    }
     task.priority = parsed.priority.unwrap_or_default();
     match room {
         TaskRoom::MyDay => task.my_day = Some(today),
         TaskRoom::Important if parsed.priority.is_none() => task.priority = Priority::High,
-        TaskRoom::Planned if parsed.due.is_none() && !clear_due => task.due = Some(today),
+        TaskRoom::Planned if parsed.due.is_none() && !clear_due => {
+            task.due = Some(task.start_date.map_or(today, |start| start.max(today)));
+        }
         _ => {}
     }
     commands.push(Command::CreateTask(Box::new(task)));
@@ -347,6 +389,7 @@ pub fn rename_list(state: &State, id: ListId, name: &str) -> Option<Command> {
         id,
         name: Some(name.to_string()),
         color: None,
+        features: None,
     })
 }
 
@@ -634,8 +677,7 @@ mod tests {
     fn parsed(title: &str) -> Parsed {
         Parsed {
             title: title.into(),
-            due: None,
-            priority: None,
+            ..Parsed::default()
         }
     }
 

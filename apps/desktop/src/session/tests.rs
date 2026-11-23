@@ -160,8 +160,7 @@ fn activity_revocation_survives_reopening_the_same_pairing_offline() {
         RoomKey::Smart(Smart::MyDay),
         &Parsed {
             title: "Keep this unsent edit".into(),
-            due: None,
-            priority: None,
+            ..Parsed::default()
         },
         today(),
         || session.client().new_uuid(),
@@ -220,8 +219,7 @@ fn space_twice_after_a_held_completion_queues_undo_then_recompletion_offline() {
         RoomKey::Smart(Smart::MyDay),
         &Parsed {
             title: "Milk".into(),
-            due: None,
-            priority: None,
+            ..Parsed::default()
         },
         today(),
         || session.client().new_uuid(),
@@ -244,8 +242,7 @@ fn space_twice_after_a_held_completion_queues_undo_then_recompletion_offline() {
         RoomKey::Smart(Smart::MyDay),
         &Parsed {
             title: "Bread".into(),
-            due: None,
-            priority: None,
+            ..Parsed::default()
         },
         today(),
         || store.new_uuid(),
@@ -595,6 +592,7 @@ fn undoing_an_acknowledged_list_delete_restores_it_and_keeps_an_edit_made_meanwh
                 id: d.lists[0],
                 name: Some("Errands and shopping".into()),
                 color: None,
+                features: None,
             },
             Command::CreateList {
                 id: added,
@@ -794,6 +792,7 @@ fn undoing_an_acknowledged_task_delete_restores_it_and_keeps_an_edit_made_meanwh
             id: d.lists[1],
             name: Some("Garden beds".into()),
             color: None,
+            features: None,
         }],
     );
     eventually("A sees B's rename", || {
@@ -2350,8 +2349,7 @@ fn make_a_bench_home() {
         let list = lists[i % lists.len()];
         let parsed = Parsed {
             title: format!("Sample task number {i}"),
-            due: None,
-            priority: None,
+            ..Parsed::default()
         };
         let room = RoomKey::List(list);
         let (id, cmds) = commands::add_task(&s.client().view(), room, &parsed, today(), || {

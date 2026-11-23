@@ -894,8 +894,12 @@ pub async fn activity(
                 } else {
                     head != event.event.id
                 };
+                let summary = summary::event(&s, &event.event);
+                if !q.workflow_fields {
+                    visibility::legacy_workflow_projection(&mut event.event);
+                }
                 ActivityItem {
-                    summary: summary::event(&s, &event.event),
+                    summary,
                     undone,
                     can_undo: head == event.event.id,
                     event,

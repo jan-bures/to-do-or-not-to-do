@@ -306,6 +306,7 @@ pub struct ListFeatures {
   - **Backward compatibility:** Every new field uses `#[serde(default)]` so existing SQLite/IndexedDB snapshots, old event logs, and `ImportEntity` payloads replay identically with zero migration downtime.
   - **`MergeTasks`:** Target keeps its own `status` and `start_date` (if target has `start_date == None` and source has `start_date <= target.due`, optionally leave target unchanged to stay predictable — simplest & least surprising rule).
   - **`spawn_next` (recurrence):** Always sets `status: WorkflowStatus::Todo`. If `t.start_date` and `t.due` are both `Some`, shifts `start_date` by `days_between(due, next)` using `add_days`.
+  - **Legacy sync clients:** JSON/SSE event reads and REST activity reads omit the new field-change variants unless `workflow_fields=true` is requested. A projected event keeps the same sequence, ID and batch markers, even if it has no legacy field changes. Updated clients replay the confirmed cache once on upgrade, keeping their outbox, receipts and log epoch. The server database needs no schema migration.
   - **Column ordering (`PosKey`):** Reuse the list's single `Task.position: PosKey`! Filtering a list's tasks by `status` preserves their relative `PosKey` order inside every column with zero second-sort-key sync conflicts. When dragging a card between columns, `Placement::Before/After(sibling_in_target_column)` computes a valid `PosKey` cleanly in the shared list scope!
 
 ### 8.3 Query DSL & MCP changes
@@ -352,7 +353,7 @@ Add these 19 layout/icon tokens to `crates/todo-design/src/layout.rs` and `icons
 | `layout::timeline` | `RESIZE_HIT` | `--timeline-resize-hit` | `8.0` (px) | Hit width of left/right date-resize handles on a timeline bar. |
 | `layout::timeline` | `TRAY_COLLAPSED` / `TRAY_EXPANDED` | `--timeline-tray-collapsed` / `--timeline-tray-expanded` | `36.0` / `148.0` (px) | Unscheduled tray collapsed header and expanded height. |
 | `layout::component` | `VIEW_SWITCHER` | `--component-view-switcher` | `28.0` (px) | Height of segmented view switcher in desktop/web header eyebrow. |
-| `icons::Icon` | `CircleDashed`, `Circle`, `CircleProgress`, `Columns3`, `GanttChart`, `CalendarRange` | `status-*` / Lucide keys | 24-unit SVG, stroke 1.6–1.8 | 4 geometric status marks + Board, Timeline, and Start-date icons (`currentColor`, zero multicolour). |
+| `icons::Icon` | `CircleDashed`, `Circle`, `CircleProgress`, `StatusDone`, `Columns3`, `GanttChart`, `CalendarRange` | `status-*` / Lucide keys | 24-unit SVG, stroke 1.6–1.8 | 4 geometric status marks + Board, Timeline, and Start-date icons (`currentColor`, zero multicolour). |
 
 ### 9.2 Motion
 
@@ -400,17 +401,17 @@ node docs/mockups/status-board-timeline/render.mjs
 
 ## 11. Phased implementation checklist
 
-- [ ] **Phase 0 — Design tokens (`crates/todo-design`):** Add `layout::board`, `layout::timeline`, `component::VIEW_SWITCHER`, and the 6 single-colour SVGs (`assets/icons/lucide/`); regenerate exports with `TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated` and verify contrast & portable target checks (`wasm32`, `aarch64-linux-android`).
-- [ ] **Phase 1 — Domain, Query DSL & MCP (`crates/todo-core`, `crates/todo-server`):**
-  - [ ] Add `WorkflowStatus`, `ListView`, `ListFeatures` on `List`, and `status` + `start_date` on `Task` (`#[serde(default)]`).
-  - [ ] Enforce `start_date <= due` and `default_view` invariants in `decide::validate_entity`; update `spawn_next` (reset status to `Todo`, shift `start_date` by recurrence `delta`).
-  - [ ] Add `FieldChange` / `FieldKey` variants and property tests verifying event replay & undo round-trips.
-  - [ ] Extend query parser/evaluator with `status:`, `start:`, `sort:status`, `sort:start`.
-  - [ ] Expose `features`, `status`, and `start_date` in REST + MCP tools (`list_lists`, `get_task`, `query_tasks`, `create_task`, `update_task`) with `capture`/`plan` access checks.
-- [ ] **Phase 2 — Shared client intent & view models (`crates/todo-client`, `crates/todo-ffi`):**
-  - [ ] Extend `intent::quick_add` with workflow-gated `status:`/`stav:` suffix, `start..due` range syntax, and `Draft` reconciliation.
-  - [ ] Add shared pure board grouping (4 columns, 7-day recent `Done` cap), column drag placement resolver, and timeline layout/span/unscheduled projection helpers.
-  - [ ] Expose list settings, status updates, start-date edits, and board/timeline projections through `todo-ffi` for Android.
+- [x] **Phase 0 — Design tokens (`crates/todo-design`):** Add `layout::board`, `layout::timeline`, `component::VIEW_SWITCHER`, and the single-colour status and view SVGs (`assets/icons/lucide/`); regenerate exports with `TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated` and verify contrast & portable target checks (`wasm32`, `aarch64-linux-android`).
+- [x] **Phase 1 — Domain, Query DSL & MCP (`crates/todo-core`, `crates/todo-server`):**
+  - [x] Add `WorkflowStatus`, `ListView`, `ListFeatures` on `List`, and `status` + `start_date` on `Task` (`#[serde(default)]`).
+  - [x] Enforce `start_date <= due` and `default_view` invariants in `decide::validate_entity`; update `spawn_next` (reset status to `Todo`, shift `start_date` by recurrence `delta`).
+  - [x] Add `FieldChange` / `FieldKey` variants and property tests verifying event replay & undo round-trips.
+  - [x] Extend query parser/evaluator with `status:`, `start:`, `sort:status`, `sort:start`.
+  - [x] Expose `features`, `status`, and `start_date` in REST + MCP tools (`list_lists`, `get_task`, `query_tasks`, `create_task`, `update_task`) with `capture`/`plan` access checks.
+- [x] **Phase 2 — Shared client intent & view models (`crates/todo-client`, `crates/todo-ffi`):**
+  - [x] Extend `intent::quick_add` with workflow-gated `status:`/`stav:` suffix, `start..due` range syntax, and `Draft` reconciliation.
+  - [x] Add shared pure board grouping (4 columns, 7-day recent `Done` cap), column drag placement resolver, and timeline layout/span/unscheduled projection helpers.
+  - [x] Expose list settings, status updates, start-date edits, and board/timeline projections through `todo-ffi` for Android.
 - [ ] **Phase 3 — Desktop client (`apps/desktop`):**
   - [ ] Add `List settings…` in-place sub-page in `menu.rs` and eyebrow segmented view switcher (`V`, `1`–`3`).
   - [ ] Render non-pill status marks in List rows, Quick-Add status picker/chip, and `Status` (`S`) + `Starts` (`⇧D`) rows in Detail.

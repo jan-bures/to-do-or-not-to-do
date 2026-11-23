@@ -816,7 +816,7 @@ pub(crate) fn ordered_lists(state: &State) -> Vec<&List> {
 }
 
 /// The shared room key for a resolved room; `None` for an ID that doesn't parse.
-fn shared_key(key: &RoomKey) -> Option<room_header::RoomKey<'static>> {
+pub(crate) fn shared_key(key: &RoomKey) -> Option<room_header::RoomKey<'static>> {
     Some(match key {
         RoomKey::Smart { list } => room_header::RoomKey::Smart(list.shared()),
         RoomKey::Collection { id } => room_header::RoomKey::Collection(parse_collection(id)?),

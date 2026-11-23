@@ -223,7 +223,15 @@ pub async fn get_events(
             .clone()
             .try_acquire_owned()
             .map_err(|_| ApiError::too_many_streams())?;
-        return Ok(stream(&app, auth.principal, auth.actor, since, permit).into_response());
+        return Ok(stream(
+            &app,
+            auth.principal,
+            auth.actor,
+            since,
+            permit,
+            q.workflow_fields,
+        )
+        .into_response());
     }
     check_epoch(&app.engine, q.epoch)?;
     let since = q.since.unwrap_or(0);
@@ -254,6 +262,11 @@ pub async fn get_events(
             });
             for e in &mut page.events {
                 e.command_len = None;
+            }
+        }
+        if !q.workflow_fields {
+            for e in &mut page.events {
+                visibility::legacy_workflow_projection(&mut e.event);
             }
         }
         Ok::<_, crate::db::StoreError>((page, next_since, scanned))
@@ -434,6 +447,7 @@ struct Pump {
     stall: Duration,
     max_events: usize,
     max_bytes: usize,
+    workflow_fields: bool,
 }
 
 impl Pump {
@@ -572,8 +586,11 @@ impl Pump {
                     self.last = seq;
                     continue;
                 }
-                let data = match serde_json::to_string(&visibility::log_event_for(&self.actor, ev))
-                {
+                let data = match serde_json::to_string(&visibility::log_event_for(
+                    &self.actor,
+                    ev,
+                    self.workflow_fields,
+                )) {
                     Ok(d) => d,
                     Err(err) => {
                         tracing::error!(error = %err, seq, "cannot encode event");
@@ -686,7 +703,7 @@ impl Pump {
                             self.last = seq;
                             continue;
                         }
-                        let data = match serde_json::to_string(&visibility::log_event_for(&self.actor, ev)) {
+                        let data = match serde_json::to_string(&visibility::log_event_for(&self.actor, ev, self.workflow_fields)) {
                             Ok(d) => d,
                             Err(err) => {
                                 tracing::error!(error = %err, seq, "cannot encode event");
@@ -729,6 +746,7 @@ fn stream(
     actor: Actor,
     since: u64,
     slot: OwnedSemaphorePermit,
+    workflow_fields: bool,
 ) -> impl IntoResponse + use<> {
     let (tx, rx) = mpsc::channel(CLIENT_BUFFER);
     // Subscribe before replaying so nothing committed in between is missed, and to revocations before
@@ -762,6 +780,7 @@ fn stream(
         stall: app.limits.sse_stall_timeout(),
         max_events: app.limits.max_replay_events,
         max_bytes: app.limits.max_replay_bytes,
+        workflow_fields,
     };
     let epoch = app.engine.epoch();
     tokio::spawn(pump.run(live, app.limits.sse_heartbeat()));
@@ -885,6 +904,7 @@ mod tests {
             stall,
             max_events: 1000,
             max_bytes: 64 * 1024 * 1024,
+            workflow_fields: true,
         };
         (pump, revoked, live)
     }
@@ -1031,7 +1051,7 @@ mod tests {
                 continue;
             }
             let check = Some(Box::new((ev.event.clone(), scope.cloned().unwrap())));
-            let data = serde_json::to_string(&visibility::log_event_for(&actor, ev)).unwrap();
+            let data = serde_json::to_string(&visibility::log_event_for(&actor, ev, true)).unwrap();
             tx.send(Queued {
                 frame: frame(seq, data),
                 check,

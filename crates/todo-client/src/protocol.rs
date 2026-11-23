@@ -198,7 +198,7 @@ fn epoch_param(epoch: Option<Epoch>) -> String {
 #[must_use]
 pub fn events_page_request(since: u64, limit: usize, epoch: Option<Epoch>) -> Request {
     Request::get(format!(
-        "/api/v1/events?since={since}&limit={limit}{}",
+        "/api/v1/events?since={since}&limit={limit}{}&workflow_fields=true",
         epoch_param(epoch)
     ))
 }
@@ -207,7 +207,7 @@ pub fn events_page_request(since: u64, limit: usize, epoch: Option<Epoch>) -> Re
 #[must_use]
 pub fn stream_request(since: u64, epoch: Option<Epoch>) -> Request {
     Request::get(format!(
-        "/api/v1/events?since={since}{}",
+        "/api/v1/events?since={since}{}&workflow_fields=true",
         epoch_param(epoch)
     ))
 }
@@ -402,14 +402,17 @@ mod tests {
     #[test]
     fn requests_name_the_epoch_when_known() {
         let e = uuid::Uuid::from_u128(5);
-        assert_eq!(stream_request(4, None).path, "/api/v1/events?since=4");
+        assert_eq!(
+            stream_request(4, None).path,
+            "/api/v1/events?since=4&workflow_fields=true"
+        );
         assert_eq!(
             stream_request(4, Some(e)).path,
-            format!("/api/v1/events?since=4&epoch={e}")
+            format!("/api/v1/events?since=4&epoch={e}&workflow_fields=true")
         );
         assert_eq!(
             events_page_request(4, 10, Some(e)).path,
-            format!("/api/v1/events?since=4&limit=10&epoch={e}")
+            format!("/api/v1/events?since=4&limit=10&epoch={e}&workflow_fields=true")
         );
     }
 

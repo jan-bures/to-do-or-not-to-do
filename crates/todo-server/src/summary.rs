@@ -65,6 +65,9 @@ fn field_name(c: &FieldChange) -> Option<&'static str> {
         FieldChange::Title(_) => "title",
         FieldChange::Notes(_) | FieldChange::NoteAdded(_) => "notes",
         FieldChange::Due(_) => "due date",
+        FieldChange::StartDate(_) => "start date",
+        FieldChange::Status(_) => "status",
+        FieldChange::ListFeatures(_) => "list settings",
         FieldChange::Priority(_) => "priority",
         FieldChange::MyDay(_) => "My Day",
         FieldChange::CompletedAt(_) => "completion",
@@ -181,6 +184,7 @@ pub fn command(state: &State, cmd: &Command, events: &[Event]) -> String {
         C::UpdateCollection { .. }
         | C::UpdateList { .. }
         | C::UpdateTask { .. }
+        | C::MoveTaskStatus { .. }
         | C::UpdateStep { .. }
         | C::UpdateTag { .. }
         | C::UpdateReminder { .. } => event(state, &events[0]),

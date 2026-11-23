@@ -6,7 +6,7 @@
 
 use crate::actor::Actor;
 use crate::ids::{CollectionId, EntityId, EventId, ListId, TagId, TaskId};
-use crate::model::{Entity, Priority, Stamp, Tombstone};
+use crate::model::{Entity, ListFeatures, Priority, Stamp, Tombstone, WorkflowStatus};
 use crate::ordering::PosKey;
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
@@ -61,6 +61,13 @@ pub enum FieldChange {
     /// Due date of a task.
     #[cfg_attr(feature = "openapi", schema(value_type = Change<Option<String>>))]
     Due(Change<Option<Date>>),
+    /// Start date of a task.
+    #[cfg_attr(feature = "openapi", schema(value_type = Change<Option<String>>))]
+    StartDate(Change<Option<Date>>),
+    /// Open workflow stage of a task.
+    Status(Change<WorkflowStatus>),
+    /// Optional capabilities and default view of a list.
+    ListFeatures(Change<ListFeatures>),
     /// Priority of a task.
     Priority(Change<Priority>),
     /// My Day date of a task.
@@ -115,6 +122,12 @@ pub enum FieldKey {
     Notes,
     /// `due`
     Due,
+    /// `start_date`
+    StartDate,
+    /// `status`
+    Status,
+    /// `features`
+    ListFeatures,
     /// `priority`
     Priority,
     /// `my_day`
@@ -144,6 +157,9 @@ impl FieldChange {
             Self::Title(_) => FieldKey::Title,
             Self::Notes(_) | Self::NoteAdded(_) => FieldKey::Notes,
             Self::Due(_) => FieldKey::Due,
+            Self::StartDate(_) => FieldKey::StartDate,
+            Self::Status(_) => FieldKey::Status,
+            Self::ListFeatures(_) => FieldKey::ListFeatures,
             Self::Priority(_) => FieldKey::Priority,
             Self::MyDay(_) => FieldKey::MyDay,
             Self::CompletedAt(_) => FieldKey::CompletedAt,
@@ -166,6 +182,9 @@ impl FieldChange {
             Self::Title(_) => "title",
             Self::Notes(_) | Self::NoteAdded(_) => "notes",
             Self::Due(_) => "due",
+            Self::StartDate(_) => "start_date",
+            Self::Status(_) => "status",
+            Self::ListFeatures(_) => "features",
             Self::Priority(_) => "priority",
             Self::MyDay(_) => "my_day",
             Self::CompletedAt(_) => "completed_at",
@@ -191,6 +210,9 @@ impl FieldChange {
             Self::Notes(c) => Self::Notes(c.inverted()),
             Self::NoteAdded(c) => Self::NoteAdded(c.inverted()),
             Self::Due(c) => Self::Due(c.inverted()),
+            Self::StartDate(c) => Self::StartDate(c.inverted()),
+            Self::Status(c) => Self::Status(c.inverted()),
+            Self::ListFeatures(c) => Self::ListFeatures(c.inverted()),
             Self::Priority(c) => Self::Priority(c.inverted()),
             Self::MyDay(c) => Self::MyDay(c.inverted()),
             Self::CompletedAt(c) => Self::CompletedAt(c.inverted()),

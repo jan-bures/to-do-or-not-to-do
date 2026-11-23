@@ -281,6 +281,7 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
             v
         }
         C::UpdateTask { id, .. }
+        | C::MoveTaskStatus { id, .. }
         | C::CompleteTask { id }
         | C::UncompleteTask { id }
         | C::SetMyDay { id, .. } => vec![(Need::Plan, on_task(id))],
@@ -568,6 +569,7 @@ mod tests {
     fn import_is_for_the_owner_alone() {
         let mut st = State::new();
         let list = crate::model::List {
+            features: Default::default(),
             id: lid(1),
             name: "l".into(),
             collection: None,

@@ -162,6 +162,7 @@ impl Tool {
             Self::Move | Self::Apply(BulkTaskAction::Move { .. }) => "Move to…",
             Self::Due | Self::Apply(BulkTaskAction::Due { .. }) => "Set due…",
             Self::Apply(BulkTaskAction::Reorder { .. }) => "Reorder",
+            Self::Apply(BulkTaskAction::Status { .. }) => "Status",
             Self::Apply(BulkTaskAction::Delete) => "Delete",
         }
     }
@@ -258,6 +259,7 @@ pub fn batch(
         BulkTaskAction::Reorder { .. } => format!("Reordered {count}"),
         BulkTaskAction::Due { date: Some(_) } => format!("Set due date for {count}"),
         BulkTaskAction::Due { date: None } => format!("Cleared due date for {count}"),
+        BulkTaskAction::Status { .. } => format!("Changed status of {count}"),
         BulkTaskAction::Delete => format!("Deleted {count}"),
     };
     Ok(Some((Command::BulkTasks { tasks, action }, label)))

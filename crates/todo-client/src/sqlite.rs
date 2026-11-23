@@ -6,7 +6,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
 use std::fmt;
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS snapshot (
@@ -139,13 +139,16 @@ impl SqliteStorage {
         .map_err(backend)
     }
 
-    fn init(conn: Connection) -> Result<Self, StorageError> {
+    fn init(mut conn: Connection) -> Result<Self, StorageError> {
         // WAL with full sync: a submitted command survives a power cut once `submit` returned.
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(backend)?;
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(backend)?;
-        let version: i64 = conn
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let version: i64 = tx
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(backend)?;
         if version > SCHEMA_VERSION {
@@ -153,9 +156,16 @@ impl SqliteStorage {
                 "the database has schema version {version}, newer than this client's {SCHEMA_VERSION}"
             )));
         }
-        conn.execute_batch(SCHEMA).map_err(backend)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-            .map_err(backend)?;
+        tx.execute_batch(SCHEMA).map_err(backend)?;
+        // Replicas of earlier versions received legacy projections. Replay the full log on upgrade;
+        // pending commands and their acknowledgements still belong to the same log epoch.
+        if version < 2 {
+            tx.execute_batch("DELETE FROM snapshot; DELETE FROM events;")
+                .map_err(backend)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
         Ok(Self { conn })
     }
 }
@@ -321,5 +331,79 @@ impl Storage for SqliteStorage {
             }
         }
         tx.commit().map_err(backend)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outbox::{Operation, Rejection};
+    use todo_core::{
+        Command, State,
+        ids::{EventId, ListId},
+        time::Timestamp,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn upgrade_discards_only_confirmed_cache_once() {
+        let mut old = SqliteStorage::open_in_memory().unwrap();
+        let epoch = Uuid::from_u128(1);
+        let at = Timestamp::UNIX_EPOCH;
+        let entry = OutboxEntry {
+            command_id: Uuid::from_u128(2),
+            op: Operation::Command {
+                command: Command::UpdateList {
+                    id: ListId::from_uuid(Uuid::from_u128(3)),
+                    name: Some("Local rename".into()),
+                    color: None,
+                    features: None,
+                },
+            },
+            submitted_at: at,
+            attempts: 1,
+            acked: Some(vec![EventId::from_uuid(Uuid::from_u128(4))]),
+            acked_epoch: Some(epoch),
+        };
+        let failed = FailedEntry {
+            entry: OutboxEntry {
+                command_id: Uuid::from_u128(5),
+                ..entry.unacknowledged()
+            },
+            failed_at: at,
+            rejection: Rejection {
+                status: 403,
+                code: "forbidden".into(),
+                message: String::new(),
+            },
+        };
+        let state = State::new();
+        old.write(&[
+            StorageOp::SetEpoch(epoch),
+            StorageOp::PutOutbox(&entry),
+            StorageOp::PutFailed(&failed),
+            StorageOp::Snapshot {
+                state: &state,
+                cursor: 10,
+            },
+        ])
+        .unwrap();
+        old.conn.pragma_update(None, "user_version", 1).unwrap();
+        old.conn
+            .execute("INSERT INTO events VALUES (11, 'legacy projection')", [])
+            .unwrap();
+        let mut new = SqliteStorage::init(old.conn).unwrap();
+        let loaded = new.load().unwrap();
+        assert!(loaded.snapshot.is_none() && loaded.events.is_empty());
+        assert_eq!(loaded.epoch, Some(epoch));
+        assert_eq!(loaded.outbox, [entry]);
+        assert_eq!(loaded.failed, [failed]);
+        new.write(&[StorageOp::Snapshot {
+            state: &state,
+            cursor: 11,
+        }])
+        .unwrap();
+        let mut reopened = SqliteStorage::init(new.conn).unwrap();
+        assert_eq!(reopened.load().unwrap().snapshot, Some((state, 11)));
     }
 }

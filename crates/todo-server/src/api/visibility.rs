@@ -22,7 +22,7 @@ use crate::scope::{EventScope, Whereabouts, current_location, readable};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use todo_core::access::{Target, level_on, undo_requirements};
-use todo_core::event::Event;
+use todo_core::event::{Event, EventPayload};
 use todo_core::ids::{CollectionId, ListId, TagId};
 use todo_core::model::{Collection, List, Tag, Task};
 use todo_core::{AccessLevel, Actor, State};
@@ -131,17 +131,43 @@ pub fn event_visible(
             .all(|(_, t)| can_read(state, actor, t))
 }
 
+fn is_workflow_change(change: &todo_core::event::FieldChange) -> bool {
+    use todo_core::event::FieldChange::{ListFeatures, StartDate, Status};
+    matches!(change, ListFeatures(_) | StartDate(_) | Status(_))
+}
+
+/// Older replicas reject any unknown `FieldChange` variant, but can apply an empty update.
+/// Keep every event ID, sequence and batch boundary, including for feature-only updates.
+/// Created/withdrawn entities need no projection: older clients ignore unknown object fields.
+pub fn legacy_workflow_projection(event: &mut Event) {
+    if let EventPayload::Updated { changes, .. } = &mut event.payload {
+        changes.retain(|change| !is_workflow_change(change));
+    }
+}
+
 /// A visible event as `actor` receives it. An agent may not see every event of a command, so it is
 /// not told how many there are ([`LogEvent::command_len`]).
 #[must_use]
-pub fn log_event_for<'a>(actor: &Actor, event: &'a LogEvent) -> Cow<'a, LogEvent> {
-    if sees_all(actor) || event.command_len.is_none() {
+pub fn log_event_for<'a>(
+    actor: &Actor,
+    event: &'a LogEvent,
+    workflow_fields: bool,
+) -> Cow<'a, LogEvent> {
+    let hide_len = !sees_all(actor) && event.command_len.is_some();
+    let project = !workflow_fields
+        && matches!(&event.event.payload,
+        EventPayload::Updated { changes, .. } if changes.iter().any(is_workflow_change));
+    if !hide_len && !project {
         return Cow::Borrowed(event);
     }
-    Cow::Owned(LogEvent {
-        command_len: None,
-        ..event.clone()
-    })
+    let mut event = event.clone();
+    if hide_len {
+        event.command_len = None;
+    }
+    if project {
+        legacy_workflow_projection(&mut event.event);
+    }
+    Cow::Owned(event)
 }
 
 #[cfg(test)]

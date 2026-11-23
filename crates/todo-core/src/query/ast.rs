@@ -1,8 +1,9 @@
 //! Query AST and its canonical text form.
 
 use crate::actor::AgentId;
-use crate::model::Priority;
+use crate::model::{Priority, Task, WorkflowStatus};
 use crate::time::Date;
+use serde::Serialize;
 use std::fmt::{self, Write as _};
 
 /// Comparison operator.
@@ -81,6 +82,8 @@ impl fmt::Display for DateExpr {
 pub enum DateField {
     /// Due date.
     Due,
+    /// Start date.
+    Start,
     /// Creation date.
     Created,
     /// Last update date.
@@ -93,6 +96,7 @@ impl DateField {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Due => "due",
+            Self::Start => "start",
             Self::Created => "created",
             Self::Updated => "updated",
             Self::Completed => "completed",
@@ -128,6 +132,52 @@ pub enum ActorSpec {
     System,
 }
 
+/// Effective stage, including Done for completed tasks. The variant order is board order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryStatus {
+    /// Future work.
+    Backlog,
+    /// Ready to work on.
+    Todo,
+    /// Work under way.
+    InProgress,
+    /// Completed.
+    Done,
+}
+
+impl QueryStatus {
+    /// The stage presented to users, regardless of a list's view settings.
+    #[must_use]
+    pub fn of(task: &Task) -> Self {
+        if task.is_done() {
+            return Self::Done;
+        }
+        match task.status {
+            WorkflowStatus::Backlog => Self::Backlog,
+            WorkflowStatus::Todo => Self::Todo,
+            WorkflowStatus::InProgress => Self::InProgress,
+        }
+    }
+
+    /// Canonical name in the query language.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Backlog => "backlog",
+            Self::Todo => "todo",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        [Self::Backlog, Self::Todo, Self::InProgress, Self::Done]
+            .into_iter()
+            .find(|s| name.eq_ignore_ascii_case(s.name()))
+    }
+}
+
 /// An atomic condition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Predicate {
@@ -137,6 +187,15 @@ pub enum Predicate {
     Collection(String),
     /// `due:overdue`, `due:none`, `due:any`.
     DueState(DueState),
+    /// `start:any` (`true`) or `start:none` (`false`).
+    HasStart(bool),
+    /// `status:in_progress` or `status!=done`.
+    Status {
+        /// Equality or inequality.
+        op: CmpOp,
+        /// The stage to test.
+        value: QueryStatus,
+    },
     /// `due<=today`, `created>=-7d`, ...
     Date {
         /// The compared field.
@@ -187,6 +246,10 @@ pub enum Expr {
 pub enum SortKey {
     /// Due date (tasks without one last).
     Due,
+    /// Start date (tasks without one last).
+    Start,
+    /// Effective workflow stage, Backlog through Done.
+    Status,
     /// Priority.
     Priority,
     /// Creation time.
@@ -202,8 +265,10 @@ pub enum SortKey {
 }
 
 impl SortKey {
-    pub(crate) const ALL: [(&'static str, SortKey); 7] = [
+    pub(crate) const ALL: [(&'static str, SortKey); 9] = [
         ("due", SortKey::Due),
+        ("start", SortKey::Start),
+        ("status", SortKey::Status),
         ("priority", SortKey::Priority),
         ("created", SortKey::Created),
         ("updated", SortKey::Updated),
@@ -308,6 +373,10 @@ impl Predicate {
                 DueState::None => "due:none",
                 DueState::Any => "due:any",
             }),
+            Self::HasStart(any) => out.push_str(if *any { "start:any" } else { "start:none" }),
+            Self::Status { op, value } => {
+                let _ = write!(out, "status{}{}", op.symbol(), value.name());
+            }
             Self::Date { field, op, value } => {
                 let _ = write!(out, "{}{}{value}", field.name(), op.symbol());
             }

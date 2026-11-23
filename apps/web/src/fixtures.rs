@@ -632,6 +632,7 @@ pub fn wide_detail_state() -> State {
         owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
     };
     b.run(Command::UpdateList {
+        features: None,
         id: list(10),
         name: Some("Planning the quarterly roadmap and every review meeting".into()),
         color: None,

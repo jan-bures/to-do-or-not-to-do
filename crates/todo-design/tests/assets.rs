@@ -117,13 +117,22 @@ fn icons_are_listed_and_single_colour() {
             icon.svg().matches("fill=\"currentColor\"").count(),
             usize::from(matches!(
                 icon,
-                Icon::PinFilled | Icon::SunFilled | Icon::StarFilled
+                Icon::PinFilled
+                    | Icon::SunFilled
+                    | Icon::StarFilled
+                    | Icon::CircleProgress
+                    | Icon::StatusDone
             )),
             "{}",
             icon.key()
         );
+        let stroke = match icon {
+            Icon::StatusDone => "0",
+            Icon::CircleDashed | Icon::CircleProgress | Icon::Circle => "1.8",
+            _ => "1.6",
+        };
         assert!(
-            icon.svg().contains("stroke-width=\"1.6\""),
+            icon.svg().contains(&format!("stroke-width=\"{stroke}\"")),
             "{}",
             icon.key()
         );

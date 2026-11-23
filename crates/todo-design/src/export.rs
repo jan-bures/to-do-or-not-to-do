@@ -16,7 +16,7 @@ use crate::fonts;
 use crate::hues::{self, NamedHue};
 use crate::icons::{Glyph, Icon};
 use crate::landscape;
-use crate::layout::{component, desktop, elevation, phone, radius, space};
+use crate::layout::{board, component, desktop, elevation, phone, radius, space, timeline};
 use crate::motion;
 use crate::palette::{
     AgentColors, Dusk, GUARD_STEP, GUARDS, LIST_DARK_HUE_SHIFT, LIST_ON_STRONG_DARK, ListColors,
@@ -180,6 +180,8 @@ pub fn css() -> String {
         ("desktop", &desktop::ALL[..]),
         ("phone", &phone::ALL[..]),
         ("component", &component::ALL[..]),
+        ("board", &board::ALL[..]),
+        ("timeline", &timeline::ALL[..]),
     ] {
         for &(k, v) in all {
             let unit = if (group, k) == ("desktop", "detail-text-measure") {
@@ -429,6 +431,8 @@ pub fn json() -> String {
             "desktop": desktop_metrics,
             "phone": numbers_json(&phone::ALL),
             "component": numbers_json(&component::ALL),
+            "board": numbers_json(&board::ALL),
+            "timeline": numbers_json(&timeline::ALL),
         },
         "landscape": numbers_json(&LANDSCAPE),
         "icons": {

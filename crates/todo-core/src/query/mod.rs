@@ -16,7 +16,8 @@ mod fold;
 pub mod parse;
 
 pub use ast::{
-    ActorSpec, CmpOp, DateExpr, DateField, DueState, Expr, Predicate, Query, Sort, SortKey,
+    ActorSpec, CmpOp, DateExpr, DateField, DueState, Expr, Predicate, Query, QueryStatus, Sort,
+    SortKey,
 };
 pub use eval::{EvalContext, KeyPart, KeyValue, LocalZone, Matcher, OrderKey, Stop};
 pub use fold::fold;

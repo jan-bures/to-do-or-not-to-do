@@ -1,6 +1,8 @@
 //! Query evaluation over the in-memory state.
 
-use super::ast::{ActorSpec, DateExpr, DateField, DueState, Expr, Predicate, Query, SortKey};
+use super::ast::{
+    ActorSpec, DateExpr, DateField, DueState, Expr, Predicate, Query, QueryStatus, SortKey,
+};
 use super::fold::fold;
 use crate::actor::Actor;
 use crate::ids::TaskId;
@@ -231,9 +233,12 @@ impl Predicate {
                 DueState::None => task.due.is_none(),
                 DueState::Any => task.due.is_some(),
             },
+            Self::HasStart(any) => task.start_date.is_some() == *any,
+            Self::Status { op, value } => op.test(QueryStatus::of(task).cmp(value)),
             Self::Date { field, op, value } => {
                 let lhs = match field {
                     DateField::Due => task.due,
+                    DateField::Start => task.start_date,
                     DateField::Created => Some(ctx.local_date(task.created.at)),
                     DateField::Updated => Some(ctx.local_date(task.updated.at)),
                     DateField::Completed => task.completed_at.map(|t| ctx.local_date(t)),
@@ -501,6 +506,10 @@ impl Query {
             let d = s.descending;
             match s.key {
                 SortKey::Due => k.push_opt(t.due.map(date_value), d),
+                SortKey::Start => k.push_opt(t.start_date.map(date_value), d),
+                SortKey::Status => {
+                    k.push_int(QueryStatus::of(t) as i64, d);
+                }
                 SortKey::Priority => {
                     k.push_int(priority_rank(t.priority), d);
                 }

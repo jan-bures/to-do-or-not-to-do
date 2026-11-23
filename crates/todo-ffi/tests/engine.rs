@@ -115,6 +115,85 @@ fn my_day() -> RoomKey {
     }
 }
 
+#[test]
+fn workflow_bindings_share_preview_projection_and_tracked_changes() {
+    use todo_ffi::engine::workflow::{
+        BoardSlot, ListFeatures, ListView, OpenStage, TimelineBar, WorkflowStage,
+    };
+    use todo_ffi::quick_add::{QuickAddDraft, WorkflowQuickAddDraft, workflow_quick_add_preview};
+
+    let now = now();
+    let engine = TodoEngine::fixture("blank".into(), now.clone()).unwrap();
+    let room = engine.create_list("Project".into(), my_day()).unwrap();
+    let RoomKey::List { id: list } = &room else {
+        panic!("expected a list")
+    };
+    let features = ListFeatures {
+        workflow: true,
+        timeline: true,
+        default_view: ListView::Board,
+    };
+    assert!(engine.board(list.clone(), now.clone()).is_none());
+    engine
+        .set_list_features(list.clone(), features)
+        .unwrap()
+        .unwrap();
+    let draft = WorkflowQuickAddDraft {
+        base: QuickAddDraft {
+            text: "Prepare report status:wip today..+3d".into(),
+            picked_due: None,
+            cleared_due: false,
+            picked_priority: None,
+        },
+        start_date: None,
+        status: None,
+    };
+    let preview = workflow_quick_add_preview(
+        draft.clone(),
+        now.clone(),
+        engine.workflow_quick_add_features(room.clone()),
+    );
+    assert_eq!(preview.title, "Prepare report");
+    assert_eq!(preview.status, Some(OpenStage::InProgress));
+    let task = engine
+        .add_workflow_task(room.clone(), draft, now.clone())
+        .unwrap();
+    let workflow = engine.task_workflow(task.clone()).unwrap();
+    assert_eq!(workflow.start_date, preview.start_date);
+    assert_eq!(workflow.features, features);
+    let timeline = engine.timeline(room.clone(), now.clone()).unwrap();
+    assert_eq!(timeline.lanes[0].bar, TimelineBar::Range);
+    assert_eq!(timeline.lanes[0].task_id, task);
+    let done = engine
+        .drop_board_card(
+            list.clone(),
+            task.clone(),
+            WorkflowStage::Done,
+            BoardSlot::Last,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine.board(list.clone(), now.clone()).unwrap().total_done,
+        1
+    );
+    engine.undo_organize(done).unwrap();
+    assert_eq!(
+        engine.board(list.clone(), now.clone()).unwrap().columns[2].task_ids,
+        std::slice::from_ref(&task)
+    );
+    engine
+        .set_task_status(task.clone(), OpenStage::Backlog)
+        .unwrap()
+        .unwrap();
+    engine.set_start_date(task.clone(), None).unwrap().unwrap();
+    assert_eq!(
+        engine.task_workflow(task).unwrap().stage,
+        WorkflowStage::Backlog
+    );
+    assert_eq!(engine.board(list.clone(), now).unwrap().total_done, 0);
+}
+
 #[derive(Default)]
 struct Counter(AtomicUsize);
 
@@ -1591,7 +1670,7 @@ async fn skipping_an_oversized_change_does_not_stop_at_an_empty_page() {
         http::{StatusCode, Uri},
         routing::get,
     };
-    let router = Router::new().route("/api/v1/activity",get(|uri:Uri|async move {match uri.query() {
+    let router = Router::new().route("/api/v1/activity",get(|uri:Uri|async move {match uri.query().and_then(|q| q.split('&').find(|p| p.starts_with("before="))) {
         None => (StatusCode::INTERNAL_SERVER_ERROR,r#"{"error":{"code":"item_too_large","message":"internal detail","details":{"next_before":15}}}"#),
         Some("before=15") => (StatusCode::OK,r#"{"items":[],"next_before":7}"#),
         Some("before=7") => (StatusCode::OK,r#"{"items":[],"next_before":null}"#),

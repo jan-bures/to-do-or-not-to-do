@@ -111,6 +111,81 @@ fn names(page: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn workflow_tools_respect_grants_and_present_done_as_completion() {
+    let env = Env::start().await;
+    let inbox = env.t.create_list("Inbox").await;
+    let plain = env.t.create_list("Plain").await;
+    env.t
+        .ok(json!({ "cmd": "update_list", "id": inbox, "features": {
+            "workflow": true, "timeline": true, "default_view": "board"
+        }}))
+        .await;
+    let (_, read) = env.agent("reader", &Grants::with_default(AccessLevel::Read), None);
+    let (_, capture) = env.agent("capture", &Grants::with_default(AccessLevel::Capture), None);
+    let (_, plan) = env.agent("planner", &Grants::with_default(AccessLevel::Plan), None);
+    let reader = env.connect(&read).await;
+    let capture = env.connect(&capture).await;
+    let plan = env.connect(&plan).await;
+    let lists = ok(&reader, "list_lists", json!({})).await;
+    assert_eq!(
+        lists["items"][0]["features"],
+        json!({ "workflow": true, "timeline": true, "default_view": "board" })
+    );
+    assert_eq!(lists["items"][1]["id"], plain);
+    assert_eq!(
+        lists["items"][1]["features"],
+        json!({ "workflow": false, "timeline": false, "default_view": "list" })
+    );
+    let args = json!({ "title": "Draft", "list_id": inbox, "status": "backlog", "start_date": "2030-06-01", "due": "2030-06-03" });
+    assert_eq!(
+        fails(&reader, "create_task", args.clone()).await["code"],
+        "forbidden"
+    );
+    let created = ok(&capture, "create_task", args).await;
+    let task = &created["task_id"];
+    let changes = json!({ "task_id": task, "status": "in_progress" });
+    assert_eq!(
+        fails(&capture, "update_task", changes.clone()).await["code"],
+        "forbidden"
+    );
+    ok(&plan, "update_task", changes).await;
+    let error = fails(
+        &plan,
+        "update_task",
+        json!({ "task_id": task, "status": "done" }),
+    )
+    .await;
+    assert!(error["message"].as_str().unwrap().contains("complete_task"));
+    let found = ok(
+        &reader,
+        "query_tasks",
+        json!({ "query": "status:in_progress start>=2030-06-01 sort:status sort:start" }),
+    )
+    .await;
+    assert_eq!(found["items"][0]["id"], *task);
+    assert_eq!(found["items"][0]["start_date"], "2030-06-01");
+    ok(&plan, "complete_task", json!({ "task_id": task })).await;
+    let detail = ok(&reader, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["task"]["status"], "done");
+    assert!(!detail["task"]["completed_at"].is_null());
+    ok(
+        &plan,
+        "complete_task",
+        json!({ "task_id": task, "completed": false }),
+    )
+    .await;
+    ok(
+        &plan,
+        "update_task",
+        json!({ "task_id": task, "start_date": null }),
+    )
+    .await;
+    let detail = ok(&reader, "get_task", json!({ "task_id": task })).await;
+    assert_eq!(detail["task"]["status"], "in_progress");
+    assert_eq!(detail["task"].get("start_date"), Some(&Value::Null));
+}
+
+#[tokio::test]
 async fn an_agent_initializes_lists_tools_and_captures_into_the_inbox() {
     let env = Env::start().await;
     let inbox = env.t.create_list("Inbox").await;

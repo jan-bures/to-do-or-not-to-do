@@ -86,7 +86,7 @@ pub fn what(entry: &OutboxEntry) -> &'static str {
         Command::MoveList { .. } => "Move a list",
         Command::CreateTask(_) => "Add a task",
         Command::UpdateTask { .. } => "Edit a task",
-        Command::MoveTask { .. } => "Move a task",
+        Command::MoveTask { .. } | Command::MoveTaskStatus { .. } => "Move a task",
         Command::CompleteTask { .. } => "Complete a task",
         Command::UncompleteTask { .. } => "Reopen a task",
         Command::SetMyDay { .. } => "Change My Day",
@@ -126,6 +126,7 @@ pub fn subject(entry: &OutboxEntry) -> Option<EntityId> {
         Command::UpdateList { id, .. } | Command::MoveList { id, .. } => (*id).into(),
         Command::UpdateTask { id, .. }
         | Command::MoveTask { id, .. }
+        | Command::MoveTaskStatus { id, .. }
         | Command::CompleteTask { id }
         | Command::UncompleteTask { id }
         | Command::SetMyDay { id, .. } => (*id).into(),
@@ -421,6 +422,7 @@ mod tests {
             id: list,
             name: Some("Shops".into()),
             color: None,
+            features: None,
         });
         assert_eq!(name(&rename, &state), Some("Errands"));
         let step = command(Command::UpdateStep {

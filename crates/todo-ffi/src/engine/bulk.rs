@@ -114,7 +114,7 @@ impl BulkTool {
                     BulkTaskAction::Move { list } => BulkEdit::Move {
                         list: list.to_string(),
                     },
-                    BulkTaskAction::Reorder { .. } => return None,
+                    BulkTaskAction::Reorder { .. } | BulkTaskAction::Status { .. } => return None,
                     BulkTaskAction::Due { date } => BulkEdit::Due {
                         date: date.map(|d| d.to_string()),
                     },

@@ -35,6 +35,7 @@ fn list(e: &mut List, c: &FieldChange) -> bool {
         FieldChange::Color(c) => e.color.clone_from(&c.new),
         FieldChange::Position(c) => e.position.clone_from(&c.new),
         FieldChange::ListCollection(c) => e.collection = c.new,
+        FieldChange::ListFeatures(c) => e.features = c.new,
         _ => return false,
     }
     true
@@ -45,6 +46,8 @@ fn task(e: &mut Task, c: &FieldChange) -> bool {
         FieldChange::Title(c) => e.title.clone_from(&c.new),
         FieldChange::Notes(c) | FieldChange::NoteAdded(c) => e.notes.clone_from(&c.new),
         FieldChange::Due(c) => e.due = c.new,
+        FieldChange::StartDate(c) => e.start_date = c.new,
+        FieldChange::Status(c) => e.status = c.new,
         FieldChange::Priority(c) => e.priority = c.new,
         FieldChange::MyDay(c) => e.my_day = c.new,
         FieldChange::CompletedAt(c) => e.completed_at = c.new,

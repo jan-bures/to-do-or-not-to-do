@@ -41,6 +41,7 @@ pub mod merge;
 pub mod organize;
 pub mod task_drag;
 pub mod trash;
+pub mod workflow;
 
 type Client = SyncClient<AppTransport, TokioClock>;
 
@@ -348,7 +349,7 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn invalid(detail: impl Into<String>) -> FfiError {
+pub(crate) fn invalid(detail: impl Into<String>) -> FfiError {
     FfiError::Invalid {
         detail: detail.into(),
     }

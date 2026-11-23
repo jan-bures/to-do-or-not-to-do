@@ -334,8 +334,7 @@ impl DroppedEmail {
             room,
             &Parsed {
                 title: self.title,
-                due: None,
-                priority: None,
+                ..Parsed::default()
             },
             today,
             &mut new_id,

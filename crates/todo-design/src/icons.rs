@@ -1,6 +1,6 @@
 //! Icons. One set, used consistently: [Lucide](https://lucide.dev) (ISC), stroke icons on a 24-unit grid, bundled
-//! in `assets/icons/lucide/` with the stroke width set to 1.6 to match the mockups. Only the icons M1 needs are
-//! bundled; add more from the same Lucide release (see `assets/icons/README.md`).
+//! in `assets/icons/lucide/` with the stroke width set to 1.6 to match the mockups. The four custom
+//! `status-*` marks use a 1.8 stroke for small sizes (see `assets/icons/README.md`).
 //!
 //! The hand-drawn list glyphs ([`Glyph`]) are the app's own: slightly irregular single-stroke drawings that give
 //! lists character without colour blocks. They are drawn in the list's `glyph` colour.
@@ -57,6 +57,8 @@ svg_set! {
         Bell => "bell",
         /// Planned; due date.
         Calendar => "calendar",
+        /// Start date or date range.
+        CalendarRange => "calendar-range",
         /// Done; confirm.
         Check => "check",
         /// Expand; menus.
@@ -75,6 +77,8 @@ svg_set! {
         Clock => "clock",
         /// Offline.
         CloudOff => "cloud-off",
+        /// Board view.
+        Columns3 => "columns-3",
         /// Copy; window restore.
         Copy => "copy",
         /// Enter.
@@ -93,6 +97,8 @@ svg_set! {
         Flag => "flag",
         /// New collection.
         FolderPlus => "folder-plus",
+        /// Timeline view.
+        GanttChart => "gantt-chart",
         /// Reorder handle.
         GripVertical => "grip-vertical",
         /// Tags.
@@ -151,6 +157,14 @@ svg_set! {
         Star => "star",
         /// Important toggle, on.
         StarFilled => "star-filled",
+        /// Open task in Backlog (dashed ring).
+        CircleDashed => "status-backlog",
+        /// Completed workflow card (filled disk with a cutout tick).
+        StatusDone => "status-done",
+        /// Work under way (half-filled circle).
+        CircleProgress => "status-progress",
+        /// Open task in To do (solid ring).
+        Circle => "status-todo",
         /// My Day; light theme.
         Sun => "sun",
         /// My Day toggle, on; only the disc is filled.

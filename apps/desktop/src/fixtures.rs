@@ -1239,6 +1239,7 @@ fn long_list_room() -> Fixture {
             id: l.planning,
             name: Some(LONG_LIST.into()),
             color: None,
+            features: None,
         },
     );
     fixture(
@@ -1332,6 +1333,7 @@ fn long_names_data() -> (Builder, Lists) {
             id: l.planning,
             name: Some(LONG_LIST.into()),
             color: None,
+            features: None,
         },
     );
     for name in ["roadmap", "leadership", "quarterly-review"] {

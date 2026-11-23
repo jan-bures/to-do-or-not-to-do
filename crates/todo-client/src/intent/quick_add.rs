@@ -25,10 +25,12 @@
 //! Only standalone `!!` (normal) and `!!!` (high) are priority markers; `!` and `Wow!` stay literal.
 //! A leading backslash on the final title token stops parsing there and is removed: `Plan \today !!`
 //! keeps `Plan today` as the title but still sets priority.
+//! Workflow lists also accept `status:wip` / `stav:rozpracováno`; timeline lists accept
+//! `today..+4d` / `24 Nov..28 Nov`. These suffixes are opt-in and can also be escaped.
 
 use std::ops::Range;
 
-use todo_core::model::Priority;
+use todo_core::model::{ListFeatures, Priority, WorkflowStatus};
 use todo_core::query::{EvalContext, fold, parse_date};
 use todo_core::time::{Date, Weekday, add_days};
 
@@ -37,7 +39,9 @@ use todo_core::time::{Date, Weekday, add_days};
 pub struct Parsed {
     pub title: String,
     pub due: Option<Date>,
+    pub start_date: Option<Date>,
     pub priority: Option<Priority>,
+    pub status: Option<WorkflowStatus>,
 }
 
 /// A full date in plain English, e.g. `21 Nov 2026`.
@@ -86,10 +90,14 @@ fn calendar_date(word: &str, ctx: &EvalContext) -> Option<Date> {
     }
 }
 
-fn next_weekday(target: Weekday, ctx: &EvalContext) -> Option<Date> {
-    let from = Weekday::of(ctx.today).offset() as i64;
+fn weekday_from(target: Weekday, date: Date) -> Option<Date> {
+    let from = Weekday::of(date).offset() as i64;
     let ahead = (target.offset() as i64 - from).rem_euclid(7);
-    add_days(ctx.today, ahead)
+    add_days(date, ahead)
+}
+
+fn next_weekday(target: Weekday, ctx: &EvalContext) -> Option<Date> {
+    weekday_from(target, ctx.today)
 }
 
 fn priority_word(word: &str) -> Option<Priority> {
@@ -242,7 +250,57 @@ fn day_month(day: &str, month: &str, today: Date) -> Option<Date> {
 
 /// Parses quick-add text. The title is trimmed; it is empty only if the text was.
 pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
-    parse_parts(text, ctx).0
+    parse_with_features(text, ctx, ListFeatures::default())
+}
+
+/// Parses a composer whose destination list supplies the opt-in capabilities.
+pub fn parse_with_features(text: &str, ctx: &EvalContext, features: ListFeatures) -> Parsed {
+    parse_parts(text, ctx, features).0
+}
+
+fn status_word(word: &str) -> Option<WorkflowStatus> {
+    let word = fold(word);
+    let (key, value) = word.split_once(':')?;
+    if !matches!(key, "status" | "stav") {
+        return None;
+    }
+    Some(match value {
+        "backlog" => WorkflowStatus::Backlog,
+        "todo" => WorkflowStatus::Todo,
+        "in_progress" | "wip" | "rozpracovano" => WorkflowStatus::InProgress,
+        _ => return None,
+    })
+}
+
+// An ordinary date phrase takes at most four words with an introducer. Try the entire suffix,
+// including spaces inside either endpoint, without scanning the whole title for separators.
+fn range_suffix(words: &[&str], ctx: &EvalContext) -> Option<(Date, Date, usize)> {
+    for count in (1..=words.len().saturating_sub(1).min(8)).rev() {
+        let suffix = &words[words.len() - count..];
+        if !suffix.iter().any(|w| w.contains("..")) || suffix.iter().any(|w| w.starts_with('\\')) {
+            continue;
+        }
+        let text = suffix.join(" ");
+        // The separator can follow a Czech date's trailing dot (`1.12...4.12.`).
+        let Some(sep) = text.find("..") else { continue };
+        let after_dot = text[sep..].starts_with("...").then_some(sep + 1);
+        for i in [Some(sep), after_dot].into_iter().flatten() {
+            let Some(start) = due_text(&text[..i], ctx).filter(|d| *d >= ctx.today) else {
+                continue;
+            };
+            let end = &text[i + 2..];
+            // Plain weekday endpoints belong to the week of the start (or the next one),
+            // while explicit dates and relative offsets keep their usual meaning.
+            let end = match weekday(&fold(end.trim()), true) {
+                Some(day) => weekday_from(day, start),
+                None => due_text(end, ctx),
+            };
+            if let Some(end) = end.filter(|d| *d >= start) {
+                return Some((start, end, count));
+            }
+        }
+    }
+    None
 }
 
 #[derive(Default)]
@@ -250,9 +308,10 @@ struct Suffixes {
     title_end: usize,
     due: Option<Range<usize>>,
     priority: Option<Range<usize>>,
+    status: Option<Range<usize>>,
 }
 
-fn parse_parts(text: &str, ctx: &EvalContext) -> (Parsed, Suffixes) {
+fn parse_parts(text: &str, ctx: &EvalContext, features: ListFeatures) -> (Parsed, Suffixes) {
     let mut words: Vec<&str> = text.split_whitespace().collect();
     let mut suffixes = Suffixes::default();
     let span = |start: usize, end: usize| {
@@ -261,9 +320,11 @@ fn parse_parts(text: &str, ctx: &EvalContext) -> (Parsed, Suffixes) {
     };
     let mut end = words.len();
     let mut due = None;
+    let mut start_date = None;
     let mut priority = None;
-    // Up to one date and one priority, in either order, at the end.
-    for _ in 0..2 {
+    let mut status = None;
+    // At most one of each field, in any order, at the end.
+    for _ in 0..3 {
         let Some(last) = end.checked_sub(1).map(|i| words[i]) else {
             break;
         };
@@ -276,11 +337,33 @@ fn parse_parts(text: &str, ctx: &EvalContext) -> (Parsed, Suffixes) {
             priority = Some(p);
             suffixes.priority = Some(span(end - 1, end));
             end -= 1;
+        } else if features.workflow
+            && status.is_none()
+            && let Some(stage) = status_word(last)
+        {
+            status = Some(stage);
+            suffixes.status = Some(span(end - 1, end));
+            end -= 1;
+        } else if due.is_none()
+            && let Some((start, d, count)) = range_suffix(&words[..end], ctx)
+        {
+            if !features.timeline {
+                break;
+            }
+            start_date = Some(start);
+            due = Some(d);
+            suffixes.due = Some(span(end - count, end));
+            end -= count;
         } else if due.is_none()
             && let Some((d, count)) = date_suffix(&words[..end], ctx)
         {
-            // Never take only part of a phrase to save a title word.
-            if count == end {
+            // Never take only part of a date phrase or the trailing half of a range.
+            if count == end
+                || (features.timeline
+                    && words[end.saturating_sub(count + 1)..end]
+                        .iter()
+                        .any(|w| w.contains("..") && !w.contains("...")))
+            {
                 break;
             }
             due = Some(d);
@@ -301,7 +384,9 @@ fn parse_parts(text: &str, ctx: &EvalContext) -> (Parsed, Suffixes) {
         Parsed {
             title: words.join(" "),
             due,
+            start_date,
             priority,
+            status,
         },
         suffixes,
     )
@@ -321,49 +406,96 @@ pub enum DueChoice {
 pub struct Draft {
     pub text: String,
     pub due: DueChoice,
+    /// Picked start date; hidden when Timeline is disabled.
+    pub start_date: Option<Date>,
     /// `None` keeps the room default; `Some(Priority::None)` explicitly clears it.
     pub priority: Option<Priority>,
+    /// Picked open stage; hidden when Workflow is disabled.
+    pub status: Option<WorkflowStatus>,
+}
+
+/// A picker change, reconciled with the typed suffixes for the same fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Due(Option<Date>),
+    Start(Option<Date>),
+    Priority(Priority),
+    Status(Option<WorkflowStatus>),
 }
 
 impl Draft {
-    /// Newly typed suffixes supersede a picked value of the same kind, not the other kind.
+    /// Edit the legacy two-field composer.
     pub fn edit(&mut self, text: String, ctx: &EvalContext) {
-        let typed = parse(&text, ctx);
+        self.edit_with_features(text, ctx, ListFeatures::default());
+    }
+
+    /// Newly typed suffixes supersede picked values of the same fields.
+    pub fn edit_with_features(&mut self, text: String, ctx: &EvalContext, features: ListFeatures) {
+        let typed = parse_with_features(&text, ctx, features);
         if typed.due.is_some() {
             self.due = DueChoice::Default;
         }
+        if typed.start_date.is_some() {
+            self.start_date = None;
+        }
         if typed.priority.is_some() {
             self.priority = None;
+        }
+        if typed.status.is_some() {
+            self.status = None;
         }
         self.text = text;
     }
 
     pub fn pick_due(&mut self, date: Option<Date>, ctx: &EvalContext) {
-        self.remove_suffix(ctx, true);
-        self.due = date.map_or(DueChoice::Clear, DueChoice::Date);
+        self.pick(Pick::Due(date), ctx, ListFeatures::default());
     }
 
     pub fn pick_priority(&mut self, level: Priority, ctx: &EvalContext) {
-        self.remove_suffix(ctx, false);
-        self.priority = Some(level);
+        self.pick(Pick::Priority(level), ctx, ListFeatures::default());
     }
 
-    /// Removing one suffix must not change the remaining title or re-interpret it as a second
-    /// suffix. Keep the other token verbatim and use the existing literal escape if needed.
-    fn remove_suffix(&mut self, ctx: &EvalContext, due: bool) {
-        let (mut expected, parts) = parse_parts(&self.text, ctx);
-        let (removed, kept) = if due {
-            expected.due = None;
-            (parts.due, parts.priority)
-        } else {
-            expected.priority = None;
-            (parts.priority, parts.due)
+    /// Remove just the relevant suffix, preserving the other date if the suffix was a range.
+    pub fn pick(&mut self, pick: Pick, ctx: &EvalContext, features: ListFeatures) {
+        let (mut expected, mut parts) = parse_parts(&self.text, ctx, features);
+        let removed = match pick {
+            Pick::Due(date) => {
+                self.start_date = expected.start_date.or(self.start_date);
+                self.due = date.map_or(DueChoice::Clear, DueChoice::Date);
+                expected.start_date = None;
+                expected.due = None;
+                parts.due.take()
+            }
+            Pick::Start(start) if features.timeline => {
+                // A single typed due date can remain in the text.
+                self.start_date = start;
+                if expected.start_date.take().is_some() {
+                    if let Some(due) = expected.due.take() {
+                        self.due = DueChoice::Date(due);
+                    }
+                    parts.due.take()
+                } else {
+                    None
+                }
+            }
+            Pick::Priority(level) => {
+                self.priority = Some(level);
+                expected.priority = None;
+                parts.priority.take()
+            }
+            Pick::Status(status) if features.workflow => {
+                self.status = status;
+                expected.status = None;
+                parts.status.take()
+            }
+            Pick::Start(_) | Pick::Status(_) => return,
         };
         let Some(removed) = removed else { return };
         let mut rewritten = self.text.clone();
         let start = self.text[..removed.start].trim_end().len();
         rewritten.replace_range(start..removed.end, "");
-        if parse(&rewritten, ctx) != expected {
+        if parse_with_features(&rewritten, ctx, features) != expected {
+            // Avoid exposing a second suffix in the title. Keep retained suffixes in input order.
             let title = &self.text[..parts.title_end];
             rewritten = title.to_owned();
             if let Some(last) = title.split_whitespace().last()
@@ -371,21 +503,40 @@ impl Draft {
             {
                 rewritten.insert(title.len() - last.len(), '\\');
             }
-            if let Some(kept) = kept {
+            let mut kept: Vec<_> = [parts.due, parts.priority, parts.status]
+                .into_iter()
+                .flatten()
+                .collect();
+            kept.sort_by_key(|range| range.start);
+            for range in kept {
                 rewritten.push(' ');
-                rewritten.push_str(&self.text[kept]);
+                rewritten.push_str(&self.text[range]);
             }
         }
         self.text = rewritten;
     }
 
-    /// Preview exactly the fields the draft supplies, before room defaults.
+    /// Preview exactly the fields the legacy draft supplies, before room defaults.
     pub fn parsed(&self, ctx: &EvalContext) -> Parsed {
-        let mut parsed = parse(&self.text, ctx);
+        self.parsed_with_features(ctx, ListFeatures::default())
+    }
+
+    /// Preview the same fields that an enabled composer will submit.
+    pub fn parsed_with_features(&self, ctx: &EvalContext, features: ListFeatures) -> Parsed {
+        let mut parsed = parse_with_features(&self.text, ctx, features);
         if parsed.due.is_none()
             && let DueChoice::Date(date) = self.due
         {
             parsed.due = Some(date);
+        }
+        if features.timeline {
+            parsed.start_date = parsed.start_date.or(self.start_date);
+            if let (Some(start), Some(due)) = (parsed.start_date, parsed.due) {
+                parsed.due = Some(due.max(start));
+            }
+        }
+        if features.workflow {
+            parsed.status = parsed.status.or(self.status);
         }
         parsed.priority = parsed.priority.or(self.priority);
         parsed
@@ -500,7 +651,8 @@ mod tests {
                 Parsed {
                     title: title.into(),
                     due: None,
-                    priority: Some(Priority::Normal)
+                    priority: Some(Priority::Normal),
+                    ..Parsed::default()
                 }
             );
         }
@@ -597,6 +749,7 @@ mod tests {
                 title: normalized,
                 due: d("2026-11-22"),
                 priority: Some(Priority::Normal),
+                ..Parsed::default()
             });
         }
     }
@@ -729,6 +882,7 @@ mod tests {
                         title: "Task".into(),
                         due: d(date),
                         priority: Some(Priority::Normal),
+                        ..Parsed::default()
                     },
                     "{suffix}"
                 );
@@ -785,7 +939,7 @@ mod tests {
                 Parsed {
                     title: "Meeting".into(),
                     due: d(date),
-                    priority: None,
+                    ..Parsed::default()
                 }
             );
         }
@@ -822,10 +976,103 @@ mod tests {
                 Parsed {
                     title: title.into(),
                     due,
-                    priority
+                    priority,
+                    ..Parsed::default()
                 }
             );
         }
+    }
+
+    const BOTH: ListFeatures = ListFeatures {
+        workflow: true,
+        timeline: true,
+        default_view: todo_core::model::ListView::List,
+    };
+
+    #[test]
+    fn workflow_suffixes_are_opt_in_escaped_and_work_in_either_language() {
+        for (text, first, last) in [
+            ("Plan mon..fri", "2026-11-23", "2026-11-27"),
+            ("Plán po..pá", "2026-11-23", "2026-11-27"),
+            ("Plan 24 Nov..28 Nov", "2026-11-24", "2026-11-28"),
+            ("Plan 2026-11-24..2026-11-28", "2026-11-24", "2026-11-28"),
+            ("Plán dnes..+4d", "2026-11-21", "2026-11-25"),
+            ("Plan fri..mon", "2026-11-27", "2026-11-30"),
+            ("Plán 1.12...4.12.", "2026-12-01", "2026-12-04"),
+        ] {
+            assert_eq!(parse(text, &ctx()).title, text);
+            let p = parse_with_features(&format!("{text} stav:rozpracováno !!!"), &ctx(), BOTH);
+            assert_eq!(p.status, Some(WorkflowStatus::InProgress));
+            assert_eq!(p.start_date, d(first));
+            assert_eq!(p.due, d(last));
+            assert_eq!(p.priority, Some(Priority::High));
+        }
+        assert_eq!(parse("Plan status:wip", &ctx()).title, "Plan status:wip");
+        for text in [
+            "Read status:done",
+            "Read status:is",
+            "Read status:unknown",
+            "Read 24 Nov..23 Nov",
+            "Read +3d..today",
+            "Read v1-2",
+            "status:todo",
+        ] {
+            let p = parse_with_features(text, &ctx(), BOTH);
+            assert_eq!(
+                p,
+                Parsed {
+                    title: text.into(),
+                    ..Parsed::default()
+                }
+            );
+        }
+        for (text, title) in [
+            (r"Plan \status:wip", "Plan status:wip"),
+            (r"Plan \today..+4d", "Plan today..+4d"),
+        ] {
+            assert_eq!(
+                parse_with_features(text, &ctx(), BOTH),
+                Parsed {
+                    title: title.into(),
+                    ..Parsed::default()
+                }
+            );
+        }
+        let workflow_only = ListFeatures {
+            timeline: false,
+            ..BOTH
+        };
+        let p = parse_with_features("Plan 24 Nov..28 Nov status:backlog", &ctx(), workflow_only);
+        assert_eq!(p.title, "Plan 24 Nov..28 Nov");
+        assert_eq!(p.status, Some(WorkflowStatus::Backlog));
+        assert!(p.due.is_none() && p.start_date.is_none());
+    }
+
+    #[test]
+    fn workflow_draft_removes_only_the_chosen_suffix_and_preserves_the_other_date() {
+        let mut draft = Draft {
+            text: "Plan status:todo status:wip 24 Nov..28 Nov !!".into(),
+            ..Draft::default()
+        };
+        let ctx = ctx();
+        draft.pick(Pick::Status(Some(WorkflowStatus::Backlog)), &ctx, BOTH);
+        assert_eq!(draft.text, r"Plan \status:todo 24 Nov..28 Nov !!");
+        draft.pick(Pick::Due(None), &ctx, BOTH);
+        let parsed = draft.parsed_with_features(&ctx, BOTH);
+        assert_eq!(parsed.title, "Plan status:todo");
+        assert_eq!(parsed.start_date, d("2026-11-24"));
+        assert_eq!(parsed.status, Some(WorkflowStatus::Backlog));
+        assert_eq!(parsed.priority, Some(Priority::Normal));
+        assert_eq!(parsed.due, None);
+        draft.edit_with_features("Plan +5d..+6d status:todo".into(), &ctx, BOTH);
+        assert_eq!(draft.status, None);
+        assert_eq!(draft.start_date, None);
+        draft.pick(Pick::Start(d("2026-12-01")), &ctx, BOTH);
+        let p = draft.parsed_with_features(&ctx, BOTH);
+        assert_eq!(p.title, "Plan");
+        assert_eq!(p.start_date, d("2026-12-01"));
+        assert_eq!(p.due, p.start_date);
+        assert_eq!(p.status, Some(WorkflowStatus::Todo));
     }
 
     #[test]

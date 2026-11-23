@@ -8,17 +8,18 @@
 //! and     := unary ( [ "and" ] unary | sort )*      -- juxtaposition means "and"
 //! unary   := ( "not" | "!" ) unary | "(" or ")" | atom
 //! atom    := "done" | "my_day" | field op value | word | quoted
-//! field   := list | collection | tag | due | created | updated | completed
-//!          | priority | created_by | updated_by
+//! field   := list | collection | tag | due | start | created | updated | completed
+//!          | priority | status | created_by | updated_by
 //! op      := ":" | "=" | "!=" | "<" | "<=" | ">" | ">="
-//! sort    := "sort:" [ "-" ] ( due | priority | created | updated | completed | title | manual )
+//! sort    := "sort:" [ "-" ] ( due | start | status | priority | created | updated | completed | title | manual )
 //! ```
 //!
 //! A value runs to the next whitespace or parenthesis and may contain `"quoted parts"` with `\"` and `\\`
 //! escapes. `sort:` clauses are only allowed at the top level, not inside parentheses.
 
 use super::ast::{
-    ActorSpec, CmpOp, DateExpr, DateField, DueState, Expr, Predicate, Query, Sort, SortKey,
+    ActorSpec, CmpOp, DateExpr, DateField, DueState, Expr, Predicate, Query, QueryStatus, Sort,
+    SortKey,
 };
 use crate::actor::AgentId;
 use crate::model::Priority;
@@ -377,7 +378,7 @@ impl Parser {
                     value_pos,
                     value.len(),
                     "sort",
-                    "due, priority, created, updated, completed, title or manual (optionally prefixed by -)",
+                    "due, start, status, priority, created, updated, completed, title or manual (optionally prefixed by -)",
                     &value,
                 );
             };
@@ -562,6 +563,22 @@ impl Parser {
                     None => date_field(DateField::Due),
                 }
             }
+            "start" => match value.to_ascii_lowercase().as_str() {
+                "any" => only_eq(Predicate::HasStart(true)),
+                "none" => only_eq(Predicate::HasStart(false)),
+                _ => date_field(DateField::Start),
+            },
+            "status" => match QueryStatus::from_name(value) {
+                Some(value) if op == CmpOp::Ne => Ok(Predicate::Status { op, value }),
+                Some(value) => only_eq(Predicate::Status { op, value }),
+                None => invalid(
+                    vpos,
+                    vlen,
+                    name,
+                    "backlog, todo, in_progress or done",
+                    value,
+                ),
+            },
             "created" => date_field(DateField::Created),
             "updated" => date_field(DateField::Updated),
             "completed" => date_field(DateField::Completed),

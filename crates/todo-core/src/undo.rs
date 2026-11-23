@@ -122,6 +122,9 @@ fn restore_value(e: &Entity, c: &FieldChange) -> Result<FieldChange, UndoError> 
         (F::NoteAdded(x), E::Task(v)) if v.notes == x.new => back!(NoteAdded, v.notes, x),
         (F::NoteAdded(x), E::Task(v)) => back!(Notes, v.notes, x),
         (F::Due(x), E::Task(v)) => back!(Due, v.due, x),
+        (F::StartDate(x), E::Task(v)) => back!(StartDate, v.start_date, x),
+        (F::Status(x), E::Task(v)) => back!(Status, v.status, x),
+        (F::ListFeatures(x), E::List(v)) => back!(ListFeatures, v.features, x),
         (F::Priority(x), E::Task(v)) => back!(Priority, v.priority, x),
         (F::MyDay(x), E::Task(v)) => back!(MyDay, v.my_day, x),
         (F::CompletedAt(x), E::Task(v)) => back!(CompletedAt, v.completed_at, x),
@@ -278,6 +281,7 @@ fn differing_fields(a: &Entity, b: &Entity) -> Vec<FieldKey> {
         (E::List(x), E::List(y)) => {
             cmp(x.name != y.name, FieldKey::Name);
             cmp(x.color != y.color, FieldKey::Color);
+            cmp(x.features != y.features, FieldKey::ListFeatures);
         }
         (E::Tag(x), E::Tag(y)) => {
             cmp(x.name != y.name, FieldKey::Name);
@@ -287,6 +291,8 @@ fn differing_fields(a: &Entity, b: &Entity) -> Vec<FieldKey> {
             cmp(x.title != y.title, FieldKey::Title);
             cmp(x.notes != y.notes, FieldKey::Notes);
             cmp(x.due != y.due, FieldKey::Due);
+            cmp(x.start_date != y.start_date, FieldKey::StartDate);
+            cmp(x.status != y.status, FieldKey::Status);
             cmp(x.priority != y.priority, FieldKey::Priority);
             cmp(x.my_day != y.my_day, FieldKey::MyDay);
             cmp(x.completed_at != y.completed_at, FieldKey::CompletedAt);

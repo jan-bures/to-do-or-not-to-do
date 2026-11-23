@@ -101,15 +101,15 @@ A JSON-RPC `result` means it works. `401` means the token is missing, wrong, rev
 | Tool | Level needed | What it does |
 |---|---|---|
 | `list_collections` | read | Collections you can see |
-| `list_lists` | read | Lists you can see, with their IDs |
+| `list_lists` | read | Visible lists with IDs and `features` (workflow, timeline, default view) |
 | `list_tags` | read | Tags you can see, with their IDs |
-| `get_task` | read | One task with steps, links, attachments, reminders and tags |
-| `query_tasks` | read | Tasks matching a smart-list query |
+| `get_task` | read | One task with effective status, start date, steps, links, attachments, reminders and tags |
+| `query_tasks` | read | Tasks matching a smart-list query, including `status:` and `start:` filters |
 | `get_activity` | read | Recent changes in lists you can see, newest first |
-| `create_task` | capture (plan with `recurrence`) | New task (in the Inbox unless `list_id` is given), optionally with a due date, priority and repeat rule |
+| `create_task` | capture (plan with `recurrence`) | New task (in the Inbox unless `list_id` is given), optionally with an open status, start and due dates, priority and repeat rule |
 | `add_note` | capture | Append to a task's notes |
 | `add_link` | capture | Add a web link to a task |
-| `update_task` | plan | Title, notes, due date, priority, repeat rule |
+| `update_task` | plan | Title, notes, open status, start and due dates, priority, repeat rule. Use `complete_task` for Done. |
 | `complete_task` | plan | Complete or reopen (`completed: false`) |
 | `move_task` | plan (both lists) | Move to another list. Pass the current list ID as `from_list` to refuse the move if the task changed lists or was merged (`move_source_changed`). Without it, move from the task's current list. |
 | `add_step` | plan | New checklist step |

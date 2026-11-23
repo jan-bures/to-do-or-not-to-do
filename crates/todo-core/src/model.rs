@@ -93,6 +93,77 @@ pub struct Collection {
     pub deleted: Option<Tombstone>,
 }
 
+/// Stored open stage. Completion is represented only by a task's `completed_at`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStatus {
+    /// Future work.
+    Backlog,
+    /// Ready to work on.
+    #[default]
+    Todo,
+    /// Work under way.
+    InProgress,
+}
+
+impl WorkflowStatus {
+    /// Whether this is the historical default (also used for wire compatibility).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Todo
+    }
+}
+
+/// Default room presentation for a list.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListView {
+    /// Ordinary task list.
+    #[default]
+    List,
+    /// Workflow columns.
+    Board,
+    /// Calendar lanes.
+    Timeline,
+}
+
+/// Opt-in capabilities. Disabling one never removes data from tasks.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ListFeatures {
+    /// Show workflow controls and offer Board view.
+    #[serde(default)]
+    pub workflow: bool,
+    /// Show start-date controls and offer Timeline view.
+    #[serde(default)]
+    pub timeline: bool,
+    /// Which view opens by default on all clients.
+    #[serde(default)]
+    pub default_view: ListView,
+}
+
+impl ListFeatures {
+    /// Whether the given view is available.
+    #[must_use]
+    pub const fn allows(self, view: ListView) -> bool {
+        match view {
+            ListView::List => true,
+            ListView::Board => self.workflow,
+            ListView::Timeline => self.timeline,
+        }
+    }
+
+    /// Whether these are the historical defaults.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A list of tasks, optionally inside a collection.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +176,9 @@ pub struct List {
     pub name: String,
     /// Optional colour.
     pub color: Option<String>,
+    /// Optional list capabilities and the default presentation.
+    #[serde(default, skip_serializing_if = "ListFeatures::is_default")]
+    pub features: ListFeatures,
     /// Sort key among the lists of the same collection.
     pub position: PosKey,
     /// Creation stamp.
@@ -128,6 +202,13 @@ pub struct Task {
     /// Due date.
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Date>,
+    /// Open stage, retained when the task is completed.
+    #[serde(default, skip_serializing_if = "WorkflowStatus::is_default")]
+    pub status: WorkflowStatus,
+    /// Optional beginning of a scheduled span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
+    pub start_date: Option<Date>,
     /// Priority.
     pub priority: Priority,
     /// The date this task is in My Day; it counts as My Day only while that date is today.

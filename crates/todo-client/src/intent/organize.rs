@@ -256,6 +256,7 @@ pub fn set_color(state: &State, id: EntityId, key: &str) -> Option<Command> {
                 id,
                 name: None,
                 color,
+                features: None,
             })
         }
         EntityId::Tag(id) => (!same(&state.tags.get(&id)?.color)).then_some(Command::UpdateTag {
@@ -552,8 +553,7 @@ mod tests {
             let state = self.state.clone();
             let parsed = Parsed {
                 title: title.into(),
-                due: None,
-                priority: None,
+                ..Parsed::default()
             };
             let today = "2026-11-21".parse().expect("date");
             let (id, cmds) = add_task(&state, TaskRoom::List(list), &parsed, today, || self.id());

@@ -133,6 +133,7 @@ impl<'a> Builder<'a> {
         let position = self.next_pos();
         let created = self.stamp(60 * 24 * 30, &self.owner.clone());
         self.insert(Entity::List(List {
+            features: Default::default(),
             id,
             collection,
             name: name.into(),
@@ -175,6 +176,8 @@ impl<'a> Builder<'a> {
             title: title.into(),
             notes: spec.notes.into(),
             due,
+            start_date: None,
+            status: Default::default(),
             priority: spec.priority.unwrap_or_default(),
             my_day: spec.my_day.then_some(self.today),
             completed_at: spec.done.then(|| self.stamp(30, &by).at),

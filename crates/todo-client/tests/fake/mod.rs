@@ -384,7 +384,7 @@ impl Transport for MockTransport {
         {
             return Ok(error(401, "unauthorized", Value::Null));
         }
-        if request.path == "/api/v1/activity"
+        if request.path.split('?').next() == Some("/api/v1/activity")
             && std::mem::take(&mut self.script.lock().unwrap().revoke_activity)
         {
             return Ok(error(401, "unauthorized", Value::Null));

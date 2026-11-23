@@ -6,7 +6,7 @@
 use crate::ids::{
     AttachmentId, CollectionId, EntityId, LinkId, ListId, ReminderId, StepId, TagId, TaskId,
 };
-use crate::model::{Entity, LinkKind, Priority, Task};
+use crate::model::{Entity, LinkKind, ListFeatures, Priority, Task, WorkflowStatus};
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,8 @@ pub enum BulkTaskAction {
     Move { list: ListId },
     /// Place open tasks from a single list together, in the supplied order.
     Reorder { list: ListId, placement: Placement },
+    /// Change the open stage of open tasks; completed tasks are left alone.
+    Status { status: WorkflowStatus },
     /// Set due, or clear both due and repeat.
     Due {
         #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
@@ -101,6 +103,15 @@ impl BulkTaskAction {
                     placement,
                 }
             }
+            Self::Status { status } if !task.is_done() && status != task.status => {
+                Command::UpdateTask {
+                    id,
+                    patch: TaskPatch {
+                        status: Some(status),
+                        ..TaskPatch::default()
+                    },
+                }
+            }
             Self::Due { date } if date != task.due => Command::UpdateTask {
                 id,
                 patch: TaskPatch {
@@ -132,6 +143,13 @@ pub struct NewTask {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Date>,
+    /// Initial open stage.
+    #[serde(default, skip_serializing_if = "WorkflowStatus::is_default")]
+    pub status: WorkflowStatus,
+    /// Optional start date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
+    pub start_date: Option<Date>,
     /// Priority.
     #[serde(default)]
     pub priority: Priority,
@@ -160,6 +178,8 @@ impl NewTask {
             title: title.into(),
             notes: String::new(),
             due: None,
+            status: WorkflowStatus::Todo,
+            start_date: None,
             priority: Priority::None,
             my_day: None,
             recurrence: None,
@@ -187,6 +207,17 @@ pub struct TaskPatch {
     )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub due: Option<Option<Date>>,
+    /// New open stage. Does not change completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<WorkflowStatus>,
+    /// New start date, or `Some(None)` to clear it.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
+    pub start_date: Option<Option<Date>>,
     /// New priority.
     #[serde(default)]
     pub priority: Option<Priority>,
@@ -248,7 +279,7 @@ pub enum Command {
         #[serde(default)]
         placement: Placement,
     },
-    /// Rename or recolour a list.
+    /// Rename or recolour a list, or change its optional features.
     UpdateList {
         /// The list.
         id: ListId,
@@ -262,6 +293,9 @@ pub enum Command {
             skip_serializing_if = "Option::is_none"
         )]
         color: Option<Option<String>>,
+        /// Replacement feature settings; omitted leaves them alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        features: Option<ListFeatures>,
     },
     /// Move a list into another collection (or to the top level).
     MoveList {
@@ -293,6 +327,17 @@ pub enum Command {
         from_list: Option<ListId>,
         /// Position among the new siblings.
         #[serde(default)]
+        placement: Placement,
+    },
+    /// Place a card in an open board column, reopening it if completed. One undoable update.
+    MoveTaskStatus {
+        /// The card.
+        id: TaskId,
+        /// The list the board was built from; reject a stale drop after a move.
+        list: ListId,
+        /// Destination open stage.
+        status: WorkflowStatus,
+        /// Destination in the list's shared ordering, relative to an open card in this stage.
         placement: Placement,
     },
     /// Complete a task. A recurring task spawns its next occurrence.

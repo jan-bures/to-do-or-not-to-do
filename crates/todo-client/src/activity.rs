@@ -41,11 +41,8 @@ impl ActivityQuery {
             // AgentId validates its URL-safe alphabet.
             params.push(format!("agent={agent}"));
         }
-        if params.is_empty() {
-            Request::get("/api/v1/activity")
-        } else {
-            Request::get(format!("/api/v1/activity?{}", params.join("&")))
-        }
+        params.push("workflow_fields=true".to_owned());
+        Request::get(format!("/api/v1/activity?{}", params.join("&")))
     }
 }
 
@@ -708,7 +705,10 @@ mod tests {
 
     #[test]
     fn query_sends_only_supplied_fields() {
-        assert_eq!(ActivityQuery::default().request().path, "/api/v1/activity");
+        assert_eq!(
+            ActivityQuery::default().request().path,
+            "/api/v1/activity?workflow_fields=true"
+        );
         let query = ActivityQuery {
             before: Some(50),
             limit: Some(20),
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(query.request().method, Method::Get);
         assert_eq!(
             query.request().path,
-            "/api/v1/activity?before=50&limit=20&agent=sample_agent-1"
+            "/api/v1/activity?before=50&limit=20&agent=sample_agent-1&workflow_fields=true"
         );
     }
 

@@ -11,13 +11,13 @@ use crate::apply::apply;
 use crate::command::{BulkTaskAction, Command, NewTask, Placement, TaskPatch};
 use crate::error::DomainError;
 use crate::event::{Change, Event, EventPayload, FieldChange};
-use crate::ids::{EntityId, EventId, ReminderId, StepId, TagId, TaskId};
+use crate::ids::{EntityId, EventId, ListId, ReminderId, StepId, TagId, TaskId};
 use crate::model::{
-    AttachmentRef, Collection, Entity, Link, LinkKind, List, Reminder, Stamp, Step, Tag, Task,
-    Tombstone,
+    AttachmentRef, Collection, Entity, Link, LinkKind, List, ListView, Reminder, Stamp, Step, Tag,
+    Task, Tombstone, WorkflowStatus,
 };
 use crate::state::{Scope, State};
-use crate::time::{Timestamp, days_between, shift_days};
+use crate::time::{Date, Timestamp, add_days, days_between, shift_days};
 
 /// Longest accepted task or step title, in characters.
 pub const MAX_TITLE: usize = 500;
@@ -158,13 +158,33 @@ fn stored_text(field: &'static str, s: &str, max: usize) -> Result<(), DomainErr
     }
 }
 
-/// Checks the invariants that [`decide`] enforces on an entity value: text limits, colours, links, and
-/// that a recurrence is valid and has a due date. Used by [`undo`](crate::undo::undo) to refuse
+fn validate_span(start: Option<Date>, due: Option<Date>) -> Result<(), DomainError> {
+    if start.zip(due).is_some_and(|(start, due)| start > due) {
+        return Err(DomainError::invalid(
+            "start_date",
+            "must be on or before due date",
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the invariants that [`decide`] enforces on an entity value. Used by
+/// [`undo`](crate::undo::undo) to refuse
 /// compensations that would leave an invalid entity behind.
 pub fn validate_entity(entity: &Entity) -> Result<(), DomainError> {
     match entity {
+        Entity::List(l) => {
+            stored_text("name", &l.name, MAX_NAME)?;
+            color(&l.color)?;
+            if !l.features.allows(l.features.default_view) {
+                return Err(DomainError::invalid(
+                    "default_view",
+                    "requires its feature to be enabled",
+                ));
+            }
+            Ok(())
+        }
         Entity::Collection(Collection { name, color: c, .. })
-        | Entity::List(List { name, color: c, .. })
         | Entity::Tag(Tag { name, color: c, .. }) => {
             stored_text("name", name, MAX_NAME)?;
             color(c)
@@ -172,6 +192,7 @@ pub fn validate_entity(entity: &Entity) -> Result<(), DomainError> {
         Entity::Task(t) => {
             stored_text("title", &t.title, MAX_TITLE)?;
             notes(&t.notes)?;
+            validate_span(t.start_date, t.due)?;
             if let Some(r) = &t.recurrence {
                 r.validate()?;
                 if t.due.is_none() {
@@ -320,6 +341,7 @@ impl<'a> Decider<'a> {
         self.require_live(n.list.into())?;
         let title = text("title", &n.title, MAX_TITLE)?;
         notes(&n.notes)?;
+        validate_span(n.start_date, n.due)?;
         if let Some(r) = &n.recurrence {
             r.validate()?;
             if n.due.is_none() {
@@ -340,6 +362,8 @@ impl<'a> Decider<'a> {
                 title,
                 notes: n.notes.clone(),
                 due: n.due,
+                status: n.status,
+                start_date: n.start_date,
                 priority: n.priority,
                 my_day: n.my_day,
                 completed_at: None,
@@ -371,6 +395,17 @@ impl<'a> Decider<'a> {
             }
         }
         let due = p.due.unwrap_or(t.due);
+        let start_date = p.start_date.unwrap_or(t.start_date);
+        validate_span(start_date, due)?;
+        if start_date != t.start_date {
+            ch.push(FieldChange::StartDate(Change::new(
+                t.start_date,
+                start_date,
+            )));
+        }
+        if let Some(status) = p.status.filter(|s| *s != t.status) {
+            ch.push(FieldChange::Status(Change::new(t.status, status)));
+        }
         let rec = p.recurrence.clone().unwrap_or_else(|| t.recurrence.clone());
         if let Some(r) = &rec {
             r.validate()?;
@@ -433,6 +468,43 @@ impl<'a> Decider<'a> {
         Ok(())
     }
 
+    fn move_task_status(
+        &mut self,
+        id: TaskId,
+        list: ListId,
+        status: WorkflowStatus,
+        placement: Placement,
+    ) -> Result<(), DomainError> {
+        let t = self.task(id)?;
+        if t.list != list {
+            return Err(DomainError::MoveSourceChanged);
+        }
+        if let Placement::Before(anchor) | Placement::After(anchor) = placement
+            && !matches!(anchor, EntityId::Task(other)
+                if self.state.tasks.get(&other).is_some_and(|s| !s.is_done() && s.status == status))
+        {
+            return Err(DomainError::invalid(
+                "placement",
+                "card is not in the destination column",
+            ));
+        }
+        let pos = self
+            .state
+            .resolve_placement(Scope::Tasks(list), Some(id.into()), &placement)?;
+        let mut changes = Vec::new();
+        if t.is_done() {
+            changes.push(FieldChange::CompletedAt(Change::new(t.completed_at, None)));
+        }
+        if t.status != status {
+            changes.push(FieldChange::Status(Change::new(t.status, status)));
+        }
+        if t.position != pos {
+            changes.push(FieldChange::Position(Change::new(t.position.clone(), pos)));
+        }
+        self.update_task(t, changes);
+        Ok(())
+    }
+
     fn set_completed(&mut self, id: TaskId, done: bool) -> Result<(), DomainError> {
         let t = self.task(id)?;
         if t.is_done() == done {
@@ -457,6 +529,7 @@ impl<'a> Decider<'a> {
         let Some(next) = rec.next_after(due) else {
             return Ok(());
         };
+        let delta = days_between(due, next);
         let new_id: TaskId = self.derived("spawn", TaskId::derive);
         let position = self.state.resolve_placement(
             Scope::Tasks(t.list),
@@ -471,6 +544,8 @@ impl<'a> Decider<'a> {
                 title: t.title.clone(),
                 notes: t.notes.clone(),
                 due: Some(next),
+                status: WorkflowStatus::Todo,
+                start_date: t.start_date.and_then(|start| add_days(start, delta)),
                 priority: t.priority,
                 my_day: None,
                 completed_at: None,
@@ -506,7 +581,6 @@ impl<'a> Decider<'a> {
                 }),
             });
         }
-        let delta = days_between(due, next);
         let mut reminders: Vec<_> = self
             .state
             .reminders
@@ -834,6 +908,7 @@ impl<'a> Decider<'a> {
                         collection: *collection,
                         name,
                         color: col.clone(),
+                        features: Default::default(),
                         position,
                         created: stamp,
                         deleted: None,
@@ -844,6 +919,7 @@ impl<'a> Decider<'a> {
                 id,
                 name,
                 color: col,
+                features,
             } => {
                 self.require_live((*id).into())?;
                 let l = self
@@ -851,7 +927,23 @@ impl<'a> Decider<'a> {
                     .lists
                     .get(id)
                     .ok_or(DomainError::NotFound((*id).into()))?;
-                let ch = self.name_changes(&l.name, &l.color, name, col, MAX_NAME)?;
+                let mut ch = self.name_changes(&l.name, &l.color, name, col, MAX_NAME)?;
+                if let Some(mut next) = *features {
+                    if !next.allows(next.default_view) {
+                        if l.features.default_view == next.default_view {
+                            // Switching off the current default view falls back in the same event.
+                            next.default_view = ListView::List;
+                        } else {
+                            return Err(DomainError::invalid(
+                                "default_view",
+                                "requires its feature to be enabled",
+                            ));
+                        }
+                    }
+                    if next != l.features {
+                        ch.push(FieldChange::ListFeatures(Change::new(l.features, next)));
+                    }
+                }
                 self.update((*id).into(), ch);
             }
             C::MoveList {
@@ -900,6 +992,12 @@ impl<'a> Decider<'a> {
                 from_list,
                 placement,
             } => self.move_task(*id, *list, *from_list, placement)?,
+            C::MoveTaskStatus {
+                id,
+                list,
+                status,
+                placement,
+            } => self.move_task_status(*id, *list, *status, *placement)?,
             C::CompleteTask { id } => self.set_completed(*id, true)?,
             C::UncompleteTask { id } => self.set_completed(*id, false)?,
             C::SetMyDay { id, date } => {

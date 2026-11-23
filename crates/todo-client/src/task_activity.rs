@@ -91,6 +91,8 @@ mod tests {
         state.tasks.insert(
             id,
             Task {
+                start_date: None,
+                status: Default::default(),
                 id,
                 list: ListId::from_uuid(Uuid::from_u128(2)),
                 title: "Write a draft".into(),

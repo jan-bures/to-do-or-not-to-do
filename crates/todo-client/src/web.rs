@@ -540,7 +540,8 @@ impl Entropy for BrowserEntropy {
 /// and added the damaged area. 3 has the same stores but retires older senders before a tab can
 /// queue a guarded move: older builds deserialize `MoveTask` without `from_list` and drop the guard.
 /// 4 retires senders that cannot decode bulk task commands; 5 adds bulk reorder.
-const DB_VERSION: u32 = 5;
+/// 6 adds workflow commands and resets the confirmed cache to replay workflow fields.
+const DB_VERSION: u32 = 6;
 const KV: &str = "kv";
 const EVENTS: &str = "events";
 const OUTBOX: &str = Area::Outbox.name();
@@ -650,12 +651,25 @@ async fn open_db(name: &str, version: u32, hooks: &OpenHooks) -> Result<IdbDatab
         .map_err(|e| idb_err(&e))?;
     let o = open.clone();
     let upgrade = Closure::once_into_js(move || {
-        if let Ok(db) = o.result().and_then(|r| r.dyn_into::<IdbDatabase>()) {
-            let names = db.object_store_names();
-            for store in STORES {
-                if !names.contains(store) {
-                    let _ = db.create_object_store(store);
+        if let Ok(db) = o.result().and_then(|r| r.dyn_into::<IdbDatabase>())
+            && let Some(tx) = o.transaction()
+        {
+            let migrate = || -> Result<(), JsValue> {
+                let names = db.object_store_names();
+                for store in STORES {
+                    if !names.contains(store) {
+                        db.create_object_store(store)?;
+                    }
                 }
+                // v6 clients read full workflow events. Discard only the old projection, not the
+                // outbox, receipts or log epoch. The upgrade transaction excludes older tabs.
+                tx.object_store(KV)?
+                    .delete(&JsValue::from_str(Key::Snapshot.name()))?;
+                tx.object_store(EVENTS)?.clear()?;
+                Ok(())
+            };
+            if migrate().is_err() {
+                let _ = tx.abort();
             }
         }
     });

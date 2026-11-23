@@ -41,6 +41,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod activity;
+pub mod board;
 pub mod client;
 pub mod device_pairing;
 pub mod failure;
@@ -62,6 +63,7 @@ pub mod storage;
 pub mod sync_label;
 pub mod task_activity;
 pub mod task_drag;
+pub mod timeline;
 pub mod trash;
 
 #[cfg(feature = "native")]

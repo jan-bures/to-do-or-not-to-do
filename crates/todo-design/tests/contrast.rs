@@ -128,6 +128,28 @@ fn android_panorama_keeps_text_and_progress_legible_at_each_gradient_stop() {
     }
 }
 
+#[test]
+fn workflow_marks_and_labels_hold_across_the_hue_wheel() {
+    for theme in Theme::ALL {
+        for hue in (0..360).map(f64::from) {
+            let t = palette(theme, hue);
+            for bg in [t.pane, t.canvas, t.raised, t.wash] {
+                for fg in [t.ink_2, t.ink_3, t.accent_strong] {
+                    assert!(fg.contrast(bg) >= 4.5, "{theme:?}, {hue}, {fg:?} on {bg:?}");
+                }
+            }
+            assert!(
+                t.accent.contrast(t.pane) >= 3.0,
+                "{theme:?}, {hue}, Done on pane"
+            );
+            assert!(
+                t.check_selected.contrast(t.wash) >= 3.0,
+                "{theme:?}, {hue}, Done on wash"
+            );
+        }
+    }
+}
+
 const PLANNED: f64 = 150.0;
 const HEALTH: f64 = 352.0;
 const CLAUDE: f64 = 38.0;

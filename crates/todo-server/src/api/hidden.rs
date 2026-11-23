@@ -120,6 +120,12 @@ pub fn referenced(cmd: &Command) -> Vec<EntityId> {
             list,
             placement,
             ..
+        }
+        | C::MoveTaskStatus {
+            id,
+            list,
+            placement,
+            ..
         } => {
             v.push(EntityId::Task(*id));
             v.push(EntityId::List(*list));

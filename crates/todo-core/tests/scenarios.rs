@@ -500,7 +500,8 @@ fn agents_follow_grants_and_undo_only_their_own_events() {
             Command::UpdateList {
                 id: proj,
                 name: Some("x".into()),
-                color: None
+                color: None,
+                features: None,
             }
         ),
         Err(DomainError::Denied(_))
@@ -1683,6 +1684,8 @@ mod import {
             title: "  old task ".into(),
             notes: "from elsewhere".into(),
             due: Some(d(2024, 5, 1)),
+            start_date: None,
+            status: Default::default(),
             priority: Priority::High,
             my_day: None,
             completed_at: Some(ts(-300)),

@@ -74,6 +74,19 @@ it; tell the owner what you wanted to do instead.
   no unarchive tool. The task leaves every list and query (`get_task` with `include_deleted: true` still
   finds it), nothing is erased, and `undo_event` on its event brings it back.
 
+## Workflow and start dates
+
+- `list_lists` returns `features: {workflow, timeline, default_view}` for each list. Prefer to set
+  `status: "in_progress"` when starting work on a workflow-enabled list and use `complete_task`
+  when finished. Turning a feature off does not erase the fields.
+- `create_task` (capture) and `update_task` (plan) accept `status` (`backlog`, `todo`, or
+  `in_progress`) and `start_date` (`YYYY-MM-DD`). The start date cannot be after the due date.
+  Omitted patch fields are left alone; `start_date: null` clears the start date.
+- `get_task` and `query_tasks` return the effective status: `done` exactly when `completed_at` is
+  set. Use `complete_task` with `completed: false` to reopen and reveal the stored open stage again.
+  REST task reads expose the stored open stage instead; missing `status`, `start_date` or list
+  `features` mean `todo`, no start date or both features off with the List view, respectively.
+
 ## Repeating tasks, due dates and reminders
 
 - A due date is a day, `YYYY-MM-DD`; there's no due time. Use a reminder for a time of day.
@@ -82,8 +95,9 @@ it; tell the owner what you wanted to do instead.
   `daily`, `weekly` (with `days`, such as `["mon", "thu"]`), `monthly` (with `day`, 1–31) or `yearly`.
   `interval` (1–999) defaults to 1 and `until` (inclusive) is optional. For example, every other Friday:
   `{"rule": {"freq": "weekly", "interval": 2, "days": ["fri"]}}`.
-- Completing a repeating task creates the next one, due on the rule's next date after the completed
-  task's due date. `recurrence: null` stops a task repeating.
+- Completing a repeating task creates the next one, with open status `todo` and due on the rule's
+  next date. Its start date, if set, shifts by the same number of days as the due date.
+  `recurrence: null` stops a task repeating.
 - A bad rule fails with `invalid_recurrence`, and a rule without a due date with `invalid`.
 - `add_reminder` and `update_reminder` take `at` as an RFC 3339 time with an offset
   (`2030-01-02T09:00:00+01:00`), or as a local time (`2030-01-02T09:00`) in the owner's time zone. The
@@ -124,7 +138,15 @@ the REST API. The ones you'll meet:
 list:inbox and not done          open tasks in the Inbox
 due<=today and not done sort:due overdue and due today
 priority>=high tag:work          important work tasks
+status:in_progress sort:start    work under way, ordered by start date
+status!=done start<=today        open tasks scheduled to start by today
+start:any sort:status            tasks with start dates, in board-stage order
 my_day                           today's My Day
 created_by:agent updated>=-7d    what agents created this week
 passport                         free text: titles, notes and steps
 ```
+
+`status:` and `status!=` use `backlog`, `todo`, `in_progress` and `done`, including for checklist
+lists. `sort:status` uses that order. `start:` accepts a date, `any` or `none`; date comparisons
+accept the same relative and absolute dates as `due`. `sort:start` puts undated starts last in
+ascending order; `sort:-start` reverses the order.

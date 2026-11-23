@@ -502,6 +502,79 @@ pub mod phone {
     ];
 }
 
+/// Kanban board geometry, in px/dp.
+pub mod board {
+    /// Preferred column width.
+    pub const COL_WIDTH: f32 = 280.0;
+    /// Minimum readable column width.
+    pub const COL_MIN: f32 = 248.0;
+    /// Maximum flexible column width.
+    pub const COL_MAX: f32 = 320.0;
+    /// Collapsed Done rail width.
+    pub const COL_COLLAPSED: f32 = 44.0;
+    /// Gap between columns.
+    pub const COL_GAP: f32 = super::space::S3;
+    /// Default inner padding of a card.
+    pub const CARD_PAD: f32 = super::space::S3;
+    /// Gap between cards.
+    pub const CARD_GAP: f32 = super::space::S2;
+    /// Column header strip height.
+    pub const HEADER_HEIGHT: f32 = 36.0;
+
+    /// Every metric, for the exports.
+    pub const ALL: [(&str, f32); 8] = [
+        ("col-width", COL_WIDTH),
+        ("col-min", COL_MIN),
+        ("col-max", COL_MAX),
+        ("col-collapsed", COL_COLLAPSED),
+        ("col-gap", COL_GAP),
+        ("card-pad", CARD_PAD),
+        ("card-gap", CARD_GAP),
+        ("header-height", HEADER_HEIGHT),
+    ];
+}
+
+/// Timeline geometry, in px/dp.
+pub mod timeline {
+    /// Desktop toolbar height.
+    pub const TOOLBAR_HEIGHT: f32 = 40.0;
+    /// Sticky date ruler height.
+    pub const RULER_HEIGHT: f32 = 44.0;
+    /// Desktop sticky task rail width.
+    pub const RAIL_WIDTH: f32 = 224.0;
+    /// Desktop lane height.
+    pub const LANE_ROW: f32 = 40.0;
+    /// Touch-safe phone lane height.
+    pub const LANE_ROW_PHONE: f32 = super::phone::TOUCH;
+    /// Desktop task bar height.
+    pub const BAR_HEIGHT: f32 = 28.0;
+    /// Phone task bar height.
+    pub const BAR_HEIGHT_PHONE: f32 = 32.0;
+    /// Today marker width.
+    pub const TODAY_LINE: f32 = 2.0;
+    /// Hit width of a bar's resize handle.
+    pub const RESIZE_HIT: f32 = 8.0;
+    /// Collapsed Unscheduled tray height.
+    pub const TRAY_COLLAPSED: f32 = 36.0;
+    /// Expanded Unscheduled tray height.
+    pub const TRAY_EXPANDED: f32 = 148.0;
+
+    /// Every metric, for the exports.
+    pub const ALL: [(&str, f32); 11] = [
+        ("toolbar-height", TOOLBAR_HEIGHT),
+        ("ruler-height", RULER_HEIGHT),
+        ("rail-width", RAIL_WIDTH),
+        ("lane-row", LANE_ROW),
+        ("lane-row-phone", LANE_ROW_PHONE),
+        ("bar-height", BAR_HEIGHT),
+        ("bar-height-phone", BAR_HEIGHT_PHONE),
+        ("today-line", TODAY_LINE),
+        ("resize-hit", RESIZE_HIT),
+        ("tray-collapsed", TRAY_COLLAPSED),
+        ("tray-expanded", TRAY_EXPANDED),
+    ];
+}
+
 /// Sizes of small components, shared by every platform.
 pub mod component {
     /// Checkbox diameter in desktop rows. Phone rows use 22; compact lists use 18.
@@ -542,8 +615,11 @@ pub mod component {
     /// Status dot diameter in the AI model and privacy indicator.
     pub const PRIVACY_DOT: f32 = CHIP_DOT;
 
+    /// Height of the desktop/web segmented view switcher.
+    pub const VIEW_SWITCHER: f32 = 28.0;
+
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 18] = [
+    pub const ALL: [(&str, f32); 19] = [
         ("checkbox", CHECKBOX),
         ("checkbox-ring", CHECKBOX_RING),
         ("checkbox-tick", CHECKBOX_TICK),
@@ -562,5 +638,6 @@ pub mod component {
         ("new-menu", NEW_MENU),
         ("proposal-bar", PROPOSAL_BAR),
         ("privacy-dot", PRIVACY_DOT),
+        ("view-switcher", VIEW_SWITCHER),
     ];
 }

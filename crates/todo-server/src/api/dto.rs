@@ -230,6 +230,9 @@ pub struct EventsParams {
     /// 409 `epoch_mismatch` and the client must resync from 0.
     #[serde(default)]
     pub epoch: Option<Uuid>,
+    /// Include workflow event changes. Omit for clients that only understand legacy fields.
+    #[serde(default)]
+    pub workflow_fields: bool,
 }
 
 /// Paging for the activity feed.
@@ -245,4 +248,7 @@ pub struct ActivityParams {
     /// Only events performed by this agent. Normal visibility rules still apply.
     #[serde(default)]
     pub agent: Option<todo_core::actor::AgentId>,
+    /// Include workflow event changes. Omit for clients that only understand legacy fields.
+    #[serde(default)]
+    pub workflow_fields: bool,
 }
