@@ -49,6 +49,9 @@ interface Actions {
     fun startTaskDrag(id: String, generation: Long): TaskDrag? = null
     fun taskDropValid(drag: TaskDrag, target: TaskDrop, generation: Long): Boolean = false
     fun dropTasks(drag: TaskDrag, target: TaskDrop, generation: Long) = Unit
+    fun startSidebarDrag(source: RoomKey, generation: Long): app.todoornot.core.SidebarDrag? = null
+    fun sidebarDropTarget(drag: app.todoornot.core.SidebarDrag, hit: RoomKey, after: Boolean, generation: Long): app.todoornot.core.SidebarDrop? = null
+    fun dropSidebarRow(drag: app.todoornot.core.SidebarDrag, target: app.todoornot.core.SidebarDrop, generation: Long) = Unit
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft
     fun setNotes(id: String, notes: String, onResult: (String?) -> Unit)

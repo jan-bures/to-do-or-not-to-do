@@ -135,6 +135,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             quick_add_text: Some("Water the plants zítra !!"),
             ..my_day()
         }),
+        "sidebar-drag-list" | "sidebar-drag-target" | "sidebar-drag-collection" => Some(my_day()),
         "drag-reorder" | "drag-destination" => {
             let (mut b, l) = sample();
             b.task(t(l.planning, "Sketch the workshop agenda"));

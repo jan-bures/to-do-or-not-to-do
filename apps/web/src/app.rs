@@ -16,6 +16,7 @@ mod reminder;
 mod reminder_alerts;
 mod repeat;
 mod room_actions;
+mod sidebar_drag;
 mod tags;
 mod task_actions;
 mod task_drag;
@@ -138,6 +139,8 @@ pub struct Ctx {
     device_settings_open: RwSignal<bool>,
     task_actions: task_actions::Controls,
     task_drag: RwSignal<Option<task_drag::Gesture>>,
+    sidebar_drag: RwSignal<Option<sidebar_drag::Gesture>>,
+    sidebar_click_blocked: RwSignal<bool>,
     board_ui: board::Ui,
     board: Memo<Option<todo_client::board::Board>>,
     timeline_ui: timeline::Ui,
@@ -377,6 +380,7 @@ impl Ctx {
 
     fn reset_room_controls(self) {
         self.cancel_task_drag();
+        self.cancel_sidebar_drag();
         self.board_ui.reset_view();
         self.timeline_ui.reset();
         self.view_override.set(None);
@@ -722,6 +726,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
         task_drag: RwSignal::new(None),
+        sidebar_drag: RwSignal::new(None),
+        sidebar_click_blocked: RwSignal::new(false),
         board_ui: board::Ui::new(),
         board,
         timeline_ui: timeline::Ui::new(now.get_untracked().today()),
@@ -801,6 +807,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
     let _drag_blur = window_event_listener(leptos::ev::blur, move |_| {
         c.cancel_task_drag();
+        c.cancel_sidebar_drag();
         c.timeline_ui.cancel();
     });
     let _folds = window_event_listener(leptos::ev::storage, move |ev| {
@@ -880,6 +887,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         <task_actions::Overlays/>
         <workflow::StatusPopover/>
         <task_drag::Lift/>
+        <sidebar_drag::Lift/>
         <bulk::DueDialog/>
     }
 }
@@ -970,7 +978,13 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
-    if untrack(|| c.drag_active() || c.board_ui.dragging() || c.timeline_ui.dragging()) {
+    if key == "escape" && c.cancel_sidebar_drag() {
+        ev.prevent_default();
+        return;
+    }
+    if untrack(|| {
+        c.sidebar_active() || c.drag_active() || c.board_ui.dragging() || c.timeline_ui.dragging()
+    }) {
         if key == "escape" {
             c.cancel_task_drag();
             c.board_ui.cancel();
@@ -1311,6 +1325,8 @@ fn sync_presentation(
 
 #[component]
 fn SidebarPane() -> impl IntoView {
+    use todo_client::sidebar_drag::{Row, Target};
+    use wasm_bindgen::JsCast;
     let c = ctx();
     let item = move |n: model::NavItem, nested: bool, children: Vec<RoomId>, pip: usize| {
         let room = n.room.clone();
@@ -1325,6 +1341,9 @@ fn SidebarPane() -> impl IntoView {
         };
         let href = room.path();
         let destination = task_drag::destination(&room);
+        let reorder = sidebar_drag::row(&room);
+        let drag_item = n.clone();
+        let link_room = link_room(c, room.clone());
         let origin = room_actions::Subject::of(&room)
             .map(|s| room_actions::Origin(s, room_actions::Anchor::Link));
         let collection = match room {
@@ -1366,21 +1385,47 @@ fn SidebarPane() -> impl IntoView {
                 aria-current=move || active().then_some("page")
                 href=href
                 data-list-hue=n.hue
-                on:click=link_room(c, room)
+                aria-keyshortcuts=reorder.map(|_| "Alt+ArrowUp Alt+ArrowDown")
+                draggable=reorder.map(|_| "false")
+                on:pointerdown=move |ev: web_sys::PointerEvent| {
+                    if reorder.is_some() && (ev.pointer_type() != "touch" || ev.target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                        .is_some_and(|el| el.closest(".sidebar-touch-grip").ok().flatten().is_some()))
+                    {
+                        c.start_sidebar_drag(drag_item.clone(), &ev);
+                    }
+                }
+                on:click=move |ev: web_sys::MouseEvent| {
+                    if c.sidebar_click_blocked.get_untracked() && ev.detail() > 0 {
+                        c.sidebar_click_blocked.set(false);
+                        ev.prevent_default();
+                    } else {
+                        link_room(ev);
+                    }
+                }
                 on:contextmenu=move |ev| {
+                    if c.sidebar_active() { ev.prevent_default(); return; }
                     if let Some(origin) = origin.filter(|_| !c.read_only()) {
                         ev.prevent_default();
                         c.room_actions.open_menu(c, origin);
                     }
                 }
                 on:keydown=move |ev| {
-                    if let Some(origin) = origin.filter(|_| room_actions::context_key(&ev) && !c.read_only()) {
+                    if let Some(row) = reorder.filter(|_| ev.alt_key() && !ev.ctrl_key() && !ev.shift_key()
+                        && !ev.meta_key() && !ev.is_composing() && !c.read_only() && !c.sidebar_active())
+                        && matches!(ev.key().as_str(), "ArrowUp" | "ArrowDown")
+                    {
+                        ev.prevent_default();
+                        c.nudge_sidebar(row, ev.key() == "ArrowDown");
+                    } else if let Some(origin) = origin.filter(|_| room_actions::context_key(&ev) && !c.read_only()) {
                         ev.prevent_default();
                         if !ev.repeat() { c.room_actions.open_menu(c, origin); }
                     }
                 }
             >
-                {lead}
+                {if reorder.is_some() {
+                    view! { <span class="sidebar-touch-grip" aria-hidden="true">{lead}</span> }.into_any()
+                } else { lead }}
                 <span class="nav-name">{n.name.clone()}</span>
                 {count.map(|n| view! { <span class="count">{n.to_string()}</span> })}
                 {(pip > 0).then(|| view! {
@@ -1390,7 +1435,12 @@ fn SidebarPane() -> impl IntoView {
         };
         if let Some(room_actions::Origin(subject, _)) = origin {
             view! {
-                <div class="nav-entry" class:nav-collection=collection.is_some()>
+                <div class="nav-entry" class:nav-collection=collection.is_some()
+                    data-sidebar-row=reorder.map(sidebar_drag::attr)
+                    class:sidebar-drag-source=move || reorder.is_some_and(|row| c.sidebar_source(row))
+                    class:sidebar-into=move || collection.is_some_and(|id| c.sidebar_target(Target::Into(id)))
+                    class:sidebar-before=move || reorder.is_some_and(|row| c.sidebar_target(Target::Before(row)))
+                    class:sidebar-after=move || reorder.filter(|_| collection.is_none()).is_some_and(|row| c.sidebar_target(Target::After(row)))>
                     {disclosure}
                     {link}
                     <room_actions::MenuButton origin=room_actions::Origin(subject, room_actions::Anchor::Sidebar)
@@ -1402,7 +1452,17 @@ fn SidebarPane() -> impl IntoView {
         }
     };
     let navigation = view! {
-            <nav class="nav" on:scroll=move |_| c.room_actions.position_menu()>
+            <nav class="nav" id="room-navigation"
+                on:pointerdown=move |_| c.sidebar_click_blocked.set(false)
+                on:pointermove=move |ev| c.move_sidebar_drag(&ev)
+                on:pointerleave=move |_| c.leave_sidebar_drag()
+                on:pointerup=move |ev| c.end_sidebar_drag(&ev)
+                on:pointercancel=move |_| { c.cancel_sidebar_drag(); }
+                on:lostpointercapture=move |ev: web_sys::PointerEvent| {
+                    // Touch starts with implicit capture on the icon before we transfer it to nav.
+                    if ev.target() == ev.current_target() { c.cancel_sidebar_drag(); }
+                }
+                on:scroll=move |_| c.room_actions.position_menu()>
                 {move || {
                     let sb = c.sidebar.get();
                     view! {
@@ -1446,7 +1506,8 @@ fn SidebarPane() -> impl IntoView {
                                     let children = g.lists.iter().map(|n| n.room.clone()).collect();
                                     let folded = move || c.collapsed.with(|ids| ids.contains(&id));
                                     Some(view! {
-                                        <div class="nav-section nav-group" class:folded=folded>
+                                        <div class="nav-section nav-group" class:folded=folded
+                                            class:sidebar-after=move || c.sidebar_target(Target::After(Row::Collection(id)))>
                                             {item(g.head, false, children, 0)}
                                             <div id=format!("collection-{id}") hidden=folded>
                                                 {g.lists.into_iter().map(|n| item(n, true, Vec::new(), 0)).collect_view()}

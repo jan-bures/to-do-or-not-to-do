@@ -17,6 +17,7 @@ mod popout;
 mod quick_pickers;
 mod reminders;
 mod sidebar;
+mod sidebar_drag;
 mod task_drag;
 mod timeline;
 mod trash;
@@ -274,6 +275,10 @@ pub struct ShellView {
     multi: todo_client::selection::Selection,
     task_drag: Option<task_drag::Gesture>,
     task_settle: Option<task_drag::Settle>,
+    sidebar_drag: Option<sidebar_drag::Gesture>,
+    sidebar_eat_release: bool,
+    sidebar_row_foci: HashMap<RoomKey, FocusHandle>,
+    sidebar_group_bounds: Rc<RefCell<HashMap<CollectionId, Bounds<Pixels>>>>,
     bulk_focus: [FocusHandle; 8],
     rows: UniformListScrollHandle,
     trash_selected: Option<todo_core::ids::EntityId>,
@@ -507,6 +512,10 @@ impl ShellView {
             rows: UniformListScrollHandle::new(),
             multi: todo_client::selection::Selection::default(),
             task_drag: None,
+            sidebar_drag: None,
+            sidebar_eat_release: false,
+            sidebar_row_foci: HashMap::new(),
+            sidebar_group_bounds: Rc::default(),
             task_settle: None,
             bulk_focus: std::array::from_fn(|_| cx.focus_handle()),
             trash_selected: None,
@@ -1277,6 +1286,15 @@ impl ShellView {
             self.preview_task_drag(fixture, window, cx);
             return;
         }
+        if fixture.starts_with("sidebar-drag-") {
+            let view = cx.entity().downgrade();
+            let fixture = fixture.to_string();
+            window.on_next_frame(move |_, cx| {
+                view.update(cx, |this, cx| this.preview_sidebar_drag(&fixture, cx))
+                    .ok();
+            });
+            return;
+        }
         if fixture == "multi-select" {
             self.change_selection(
                 |selection, rows, _| {
@@ -1929,6 +1947,7 @@ impl ShellView {
 
     pub fn select_room(&mut self, room: RoomKey, cx: &mut Context<Self>) {
         self.cancel_task_drag(cx);
+        self.cancel_sidebar_drag(cx);
         if !self.commit_edits(cx) && self.ui.room != room {
             self.keep_unsaved(cx);
             return;
@@ -4670,6 +4689,7 @@ impl Render for ShellView {
         self.drive_ai_flash(window);
         self.drive_email_drop(window, cx);
         self.drive_task_drag(window);
+        self.drive_sidebar_drag(window, cx);
         self.drive_board(window);
         self.drive_timeline(window);
         self.board.clear_geometry();
@@ -4838,10 +4858,12 @@ impl Render for ShellView {
             .child(self.press_counter(cx))
             .child(self.history_mouse(cx))
             .child(self.drag_events(cx))
+            .child(self.sidebar_drag_events(cx))
             .child(self.board_capture(cx))
             .child(self.timeline_capture(cx))
             .children(self.timeline_preview(window))
             .children(self.drag_preview(window))
+            .children(self.sidebar_lift(window))
             .children(self.board_preview(window, cx))
             .children(self.confirmation_scrim())
             .children(self.pairing_overlay())

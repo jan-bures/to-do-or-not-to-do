@@ -543,7 +543,7 @@ impl ShellView {
     }
 }
 
-fn edge_scroll(handle: &ScrollHandle, pointer: Point<Pixels>, window: &mut Window) {
+pub(super) fn edge_scroll(handle: &ScrollHandle, pointer: Point<Pixels>, window: &mut Window) {
     let view = handle.bounds();
     if !view.contains(&pointer) {
         return;

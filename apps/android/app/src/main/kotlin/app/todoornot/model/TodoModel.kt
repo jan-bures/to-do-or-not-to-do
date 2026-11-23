@@ -1144,6 +1144,22 @@ class TodoModel(
         }
     }
 
+    private fun sidebarCurrent(generation: Long): Boolean = generation == this.generation &&
+        _ui.value.generation == generation && !_ui.value.signedOut
+
+    override fun startSidebarDrag(source: RoomKey, generation: Long): app.todoornot.core.SidebarDrag? =
+        if (sidebarCurrent(generation)) engine.startSidebarDrag(source) else null
+
+    override fun sidebarDropTarget(drag: app.todoornot.core.SidebarDrag, hit: RoomKey, after: Boolean, generation: Long): app.todoornot.core.SidebarDrop? =
+        if (sidebarCurrent(generation)) engine.sidebarDropTarget(drag, hit, after) else null
+
+    override fun dropSidebarRow(drag: app.todoornot.core.SidebarDrag, target: app.todoornot.core.SidebarDrop, generation: Long) = act {
+        if (!sidebarCurrent(generation)) return@act
+        val change = engine.dropSidebarRow(drag, target) ?: return@act
+        if (target is app.todoornot.core.SidebarDrop.Into && target.collection in collapsed) toggleCollection(target.collection)
+        show(Toast(++serial, change.toastText(), organize = change))
+    }
+
     override fun rename(id: String, title: String) = act { engine.rename(id, title) }
 
     override fun swipeTask(id: String, generation: Long, action: TaskSwipe) {

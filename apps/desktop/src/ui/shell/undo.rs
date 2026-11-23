@@ -42,6 +42,7 @@ pub(super) enum EditKind {
     DeleteAttachment,
     DeleteList,
     MoveList,
+    ReorderRoom,
     DeleteCollection,
 }
 
@@ -83,6 +84,10 @@ impl EditKind {
                 (id.into(), Self::SetReminder)
             }
             Command::MoveList { id, .. } => (id.into(), Self::MoveList),
+            Command::Reorder {
+                id: id @ (EntityId::List(_) | EntityId::Collection(_)),
+                ..
+            } => (id, Self::ReorderRoom),
             // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
             Command::AddLink { id, .. } => (id.into(), Self::AddLink),
             Command::Reorder {
@@ -110,6 +115,7 @@ impl EditKind {
             Self::Delete => "Deleted",
             Self::Merge => "Merged",
             Self::Move | Self::MoveList => "Moved",
+            Self::ReorderRoom => "Reordered",
             Self::DeleteStep => "Deleted step",
             Self::DeleteTag => "Deleted tag",
             Self::Repeat => "Changed schedule for",
@@ -138,7 +144,7 @@ impl EditKind {
                 Self::Start | Self::Schedule => "Restored dates for",
                 Self::Restore => "Returned to Trash:",
                 Self::Delete | Self::Merge => "Restored",
-                Self::Move | Self::MoveList => "Moved back",
+                Self::Move | Self::MoveList | Self::ReorderRoom => "Moved back",
                 Self::DeleteStep => "Restored step",
                 Self::DeleteTag => "Restored tag",
                 Self::Repeat | Self::ClearDue => "Restored schedule for",
@@ -189,14 +195,19 @@ impl EditKind {
                 .get(&id)
                 .zip(after.tasks.get(&id))
                 .is_some_and(|(old, new)| old.list != new.list || old.position != new.position),
-            (Self::MoveList, EntityId::List(id)) => before
+            (Self::ReorderRoom, EntityId::Collection(id)) => before
+                .collections
+                .get(&id)
+                .zip(after.collections.get(&id))
+                .is_some_and(|(old, new)| old.position != new.position),
+            (Self::MoveList | Self::ReorderRoom, EntityId::List(id)) => before
                 .lists
                 .get(&id)
                 .zip(after.lists.get(&id))
                 .is_some_and(|(old, new)| {
                     old.collection != new.collection || old.position != new.position
                 }),
-            (Self::Move | Self::MoveList, _) => false,
+            (Self::Move | Self::MoveList | Self::ReorderRoom, _) => false,
             // Its time back, or the reminder taken away again (undoing one added).
             (Self::SetReminder, EntityId::Reminder(id)) => {
                 let at = |s: &State| {

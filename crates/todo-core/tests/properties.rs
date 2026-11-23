@@ -322,6 +322,7 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                 .iter()
                 .map(|x| (*x).into())
                 .chain(live_lists.iter().map(|x| (*x).into()))
+                .chain(live_cols.iter().map(|x| (*x).into()))
                 .chain(live_steps.iter().map(|x| (*x).into()))
                 .collect();
             let id = pick(&all, a)?;
@@ -403,14 +404,21 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
         }
         23 => {
             let id = pick(&live_lists, a)?;
+            let collection = if c % 2 == 0 {
+                None
+            } else {
+                pick(&live_cols, b)
+            };
+            let siblings = s.siblings(todo_core::state::Scope::Lists(collection));
+            let siblings: Vec<_> = siblings
+                .into_iter()
+                .map(|(_, sibling)| sibling)
+                .filter(|&sibling| sibling != id.into())
+                .collect();
             Command::MoveList {
                 id,
-                collection: if c % 2 == 0 {
-                    None
-                } else {
-                    pick(&live_cols, b)
-                },
-                placement: Placement::First,
+                collection,
+                placement: placement(w, &siblings, b, c),
             }
         }
         24 => Command::UpdateTag {

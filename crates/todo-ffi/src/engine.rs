@@ -40,6 +40,7 @@ pub mod bulk;
 pub mod merge;
 pub mod organize;
 pub mod push;
+pub mod sidebar_drag;
 pub mod task_drag;
 pub mod trash;
 pub mod workflow;

@@ -7,10 +7,11 @@ use gpui::{
     ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Role,
     SharedString, Stateful, Subscription, Window, div, prelude::*, px,
 };
+use todo_client::sidebar_drag::{Row, Target};
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TagId};
 
 use super::menu::{MenuKind, ring};
-use super::{Notice, ShellView, quick_add_colors};
+use super::{Notice, ShellView, quick_add_colors, sidebar_drag::Badge};
 use crate::model::hints::Stop;
 use crate::model::layout::{self, Pane};
 use crate::model::menus::Page;
@@ -279,7 +280,8 @@ impl ShellView {
             .when(on, |el| {
                 el.text_color(p.ink).font_weight(FontWeight::SEMIBOLD)
             })
-            .when(self.drop_glow(key), |el| {
+            .when(self.sidebar_source(key), |el| el.opacity(1. - elevation::DROP_WASH_ALPHA))
+            .when(self.drop_glow(key) || matches!(key, RoomKey::Collection(id) if self.sidebar_target(Target::Into(id))), |el| {
                 el.bg(p.selection_wash)
                     .border_color(p.accent_strong)
                     .text_color(p.ink)
@@ -352,24 +354,48 @@ impl ShellView {
         if !live {
             return row.id(element_id);
         }
-        let row = row.child(self.nav_bounds_probe(RoomKey::List(id)));
-        self.clickable(row, element_id, on, cx, move |this, e, window, cx| {
-            if e.click_count() >= 2 {
-                this.start_inline(InlineTarget::List(id), name.clone(), window, cx);
-            } else {
-                this.select_room(RoomKey::List(id), cx);
-            }
-        })
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                let kind = MenuKind::List {
-                    id,
-                    page: Page::Main,
-                };
-                this.open_menu(kind, Some(e.position), None, window, cx);
-            }),
-        )
+        let key = Row::List(id);
+        let row = row
+            .child(self.nav_bounds_probe(RoomKey::List(id)))
+            .when(self.sidebar_target(Target::Before(key)), |d| {
+                d.child(self.sidebar_line(false, indent))
+            })
+            .when(self.sidebar_target(Target::After(key)), |d| {
+                d.child(self.sidebar_line(true, indent))
+            });
+        let el = self
+            .clickable(row, element_id, on, cx, move |this, e, window, cx| {
+                if e.click_count() >= 2 {
+                    this.start_inline(InlineTarget::List(id), name.clone(), window, cx);
+                } else {
+                    this.select_room(RoomKey::List(id), cx);
+                }
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    let kind = MenuKind::List {
+                        id,
+                        page: Page::Main,
+                    };
+                    this.open_menu(kind, Some(e.position), None, window, cx);
+                }),
+            );
+        if self.inline_for(InlineTarget::List(id)).is_some() {
+            el
+        } else {
+            self.sidebar_reorder_input(
+                el,
+                key,
+                Badge {
+                    title: nav.list.name.clone(),
+                    glyph: nav.glyph,
+                    hue: nav.list.hue,
+                    count: nav.count,
+                },
+                cx,
+            )
+        }
     }
 
     /// Activity (**Ctrl+H**), with a sub-row for each agent active today. Each opens Activity
@@ -509,9 +535,25 @@ impl ShellView {
     pub(super) fn sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         self.reveal_inline_after_layout(window, cx);
         self.nav_bounds.borrow_mut().clear();
+        self.sidebar_group_bounds.borrow_mut().clear();
         let p = self.palette;
         let t = self.theme;
         let sb = &self.shell.sidebar;
+        let keys: std::collections::HashSet<_> = sb
+            .collections
+            .iter()
+            .flat_map(|c| {
+                std::iter::once(RoomKey::Collection(c.id))
+                    .chain(c.lists.iter().map(|l| RoomKey::List(l.id)))
+            })
+            .chain(sb.lists.iter().map(|l| RoomKey::List(l.id)))
+            .collect();
+        self.sidebar_row_foci.retain(|key, _| keys.contains(key));
+        for key in keys {
+            self.sidebar_row_foci
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle());
+        }
         let count = |n: u32| {
             div()
                 .style(ty::COUNT)
@@ -650,6 +692,7 @@ impl ShellView {
                 .pl(px(space::S1))
                 .cursor_pointer()
                 .child(chevron)
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.toggle_collection(cid, cx);
@@ -669,13 +712,17 @@ impl ShellView {
                 .child(kit::glyph(c.glyph, theme::list_colors(t, c.hue).glyph))
                 .child(name)
                 .child(count(c.count))
-                .child(self.nav_bounds_probe(RoomKey::Collection(cid)));
+                .child(self.nav_bounds_probe(RoomKey::Collection(cid)))
+                .when(
+                    self.sidebar_target(Target::Before(Row::Collection(cid))),
+                    |d| d.child(self.sidebar_line(false, space::S2)),
+                );
             let cname = c.name.clone();
             let head = self
                 .clickable(
                     self.nav_row(RoomKey::Collection(cid), on, head),
                     SharedString::from(format!("collection-{cid}")),
-                    on,
+                    on || self.sidebar_target(Target::Into(cid)),
                     cx,
                     move |this, e, window, cx| {
                         if e.click_count() >= 2 {
@@ -700,6 +747,21 @@ impl ShellView {
                         this.open_menu(kind, Some(e.position), None, window, cx);
                     }),
                 );
+            let head = if self.inline_for(InlineTarget::Collection(cid)).is_none() {
+                self.sidebar_reorder_input(
+                    head,
+                    Row::Collection(cid),
+                    Badge {
+                        title: c.name.clone(),
+                        glyph: c.glyph,
+                        hue: c.hue,
+                        count: c.count,
+                    },
+                    cx,
+                )
+            } else {
+                head
+            };
             let lists = self
                 .closing_groups
                 .get(&cid)
@@ -718,13 +780,29 @@ impl ShellView {
                         ),
                     )
             });
+            let group_bounds = self.sidebar_group_bounds.clone();
             collections.push(
                 div()
+                    .relative()
                     .flex_none()
                     .flex()
                     .flex_col()
                     .child(head)
-                    .children(group),
+                    .children(group)
+                    .child(
+                        gpui::canvas(
+                            move |b, _, _| {
+                                group_bounds.borrow_mut().insert(cid, b);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .when(
+                        self.sidebar_target(Target::After(Row::Collection(cid))),
+                        |d| d.child(self.sidebar_line(true, space::S2)),
+                    ),
             );
         }
         let top: Vec<_> = sb

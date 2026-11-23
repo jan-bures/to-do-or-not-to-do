@@ -113,6 +113,9 @@ import app.todoornot.reminders.ReminderNeed
 import app.todoornot.ui.MainScreen
 import app.todoornot.ui.DragFrame
 import app.todoornot.ui.LocalTaskDragFrame
+import app.todoornot.ui.LocalSidebarDragFrame
+import app.todoornot.ui.SidebarDragFrame
+import app.todoornot.core.SidebarDrop
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
@@ -201,8 +204,9 @@ class GalleryTest {
         roomMenu: Boolean = false,
         reach: Boolean = false,
         push: PushStatus = PushStatus(),
+        sidebarDrag: SidebarDragFrame? = null,
     ) = shot(name, device) {
-        CompositionLocalProvider(LocalSheetAtRest provides true, LocalPushStatus provides push) {
+        CompositionLocalProvider(LocalSheetAtRest provides true, LocalPushStatus provides push, LocalSidebarDragFrame provides sidebarDrag) {
             MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
                 collapsed = collapsed, motion = motion, hand = hand, switcherFilter = switcherFilter,
                 settingsOpen = settings, roomMenuOpen = roomMenu, reachExpanded = reach)
@@ -553,6 +557,28 @@ class GalleryTest {
             main("cover_switcher_$theme", FOLD7_COVER, expanded, dark, drawer = true)
             main("cover_switcher_filtered_$theme", FOLD7_COVER, expanded.copy(collapsed = setOf(personal)), dark, drawer = true, switcherFilter = "errands")
             main("inner_switcher_$theme", FOLD7_INNER, inner, dark, drawer = true)
+        }
+    }
+
+    @Test
+    fun sidebar_drag() {
+        fixtureEngine().use { e ->
+            val s = state(e, e.list("Planning"))
+            val work = s.home.groups.first { it.collection?.name == "Work" }
+            val personal = s.home.groups.first { it.collection?.name == "Personal" }
+            val planning = work.lists.first { it.name == "Planning" }
+            val workHead = requireNotNull(work.collection)
+            val personalHead = requireNotNull(personal.collection)
+            val personalId = (personalHead.key as RoomKey.Collection).id
+            for (dark in listOf(false, true)) {
+                val theme = if (dark) "dark" else "light"
+                main("sidebar_drag_list_$theme", FOLD7_COVER, s, dark, drawer = true, sidebarDrag =
+                    SidebarDragFrame(planning, SidebarDrop.Beside(work.lists.first { it.name == "Events" }.key, false), 116f, 110f))
+                main("sidebar_drag_target_$theme", FOLD7_COVER, s.copy(collapsed = setOf(personalId)), dark, drawer = true,
+                    sidebarDrag = SidebarDragFrame(planning, SidebarDrop.Into(personalId), 116f, 205f))
+                main("sidebar_drag_collection_$theme", FOLD7_COVER, s, dark, drawer = true, sidebarDrag =
+                    SidebarDragFrame(personalHead, SidebarDrop.Beside(workHead.key, false), 116f, 0f))
+            }
         }
     }
 

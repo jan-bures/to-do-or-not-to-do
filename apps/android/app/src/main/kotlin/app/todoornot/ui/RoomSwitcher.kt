@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -69,7 +70,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -79,6 +83,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
+import app.todoornot.core.SidebarDrop
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.SyncTone
@@ -88,6 +93,8 @@ import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
+import app.todoornot.design.cubic
+import kotlinx.coroutines.delay
 import app.todoornot.model.Actions
 import app.todoornot.model.MenuAction
 import app.todoornot.model.drawerMenu
@@ -195,8 +202,25 @@ private fun SwitcherRooms(state: UiState, text: String, keyboard: Boolean, actio
             list.scrollToItem((currentIndex - above).coerceAtLeast(0))
         } else if (targets.isNotEmpty()) list.scrollToItem(targets.lastIndex)
     }
-    Column(modifier) {
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = S.S3.dp)
+    val sidebar = remember(state.generation) { SidebarInput() }
+    val fixture = LocalSidebarDragFrame.current
+    val target = fixture?.target ?: sidebar.target
+    val source = fixture?.item?.key ?: sidebar.picked?.item?.key
+    val into = (target as? SidebarDrop.Into)?.collection
+    val slot = target as? SidebarDrop.Beside
+    val reorder = !filtering && drag?.picked == null
+    val input = sidebarInputModifier(sidebar, reorder, actions, state.generation, state.collapsed,
+        { list.dispatchRawDelta(it) }, onMenu)
+    LaunchedEffect(sidebar.settle, state.home) {
+        if (sidebar.settle != 0) {
+            delay(Tokens.Motion.ROW_ENTER.toLong() * 2)
+            sidebar.settle = 0
+        }
+    }
+    var root by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    Box(modifier.onGloballyPositioned { root = it }) {
+      Column(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = S.S3.dp).then(input)
             .onGloballyPositioned { coords ->
                 drag?.drawer = DragInput.ScrollPane(coords.boundsInRoot()) { list.dispatchRawDelta(it) }
             }, state = list, verticalArrangement = Arrangement.Bottom) {
@@ -204,8 +228,14 @@ private fun SwitcherRooms(state: UiState, text: String, keyboard: Boolean, actio
                 val id = (g.collection?.key as? RoomKey.Collection)?.id
                 val folded = !filtering && id in state.collapsed
                 g.collection?.let { room -> item(room.key.toString()) {
-                    Row(Modifier.slideOnMove(room.key in moving), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { NavRow(room, room.key == current, false, onOpen, heading = true, onLongPress = { onMenu(room) }) }
+                    val line = slot?.takeIf { it.row == room.key && (!it.after || folded || g.lists.isEmpty()) }
+                    val placement = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null,
+                        placementSpec = tween(if (sidebar.settle != 0) Tokens.Motion.ROW_ENTER else 0, easing = Tokens.Motion.EASE_STANDARD.cubic()))
+                    Row(placement.then(insertionLine(line, false)).slideOnMove(room.key in moving), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f).then(sidebarRowProbe(sidebar, room))) {
+                            NavRow(room, room.key == current, false, onOpen, heading = true, onLongPress = { onMenu(room) },
+                                sidebarGesture = reorder, sidebarPicked = source == room.key, sidebarTarget = id != null && into == id)
+                        }
                         if (!filtering && id != null) IconButton(if (folded) "chevron-right" else "chevron-down",
                             if (folded) "Show ${room.name}" else "Hide ${room.name}", tint = r.ink3, expanded = !folded, highlight = false) {
                             actions.toggleCollection(id)
@@ -213,8 +243,14 @@ private fun SwitcherRooms(state: UiState, text: String, keyboard: Boolean, actio
                     }
                 } }
                 if (!folded) for (room in g.lists) item(room.key.toString()) {
-                    Box(Modifier.slideOnMove(room.key in moving)) {
-                        NavRow(room, room.key == current, id != null, onOpen, onLongPress = { onMenu(room) })
+                    val own = slot?.takeIf { it.row == room.key }
+                    val groupTail = slot?.takeIf { it.after && it.row == g.collection?.key && room.key == g.lists.last().key }
+                    val placement = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null,
+                        placementSpec = tween(if (sidebar.settle != 0) Tokens.Motion.ROW_ENTER else 0, easing = Tokens.Motion.EASE_STANDARD.cubic()))
+                    Box(placement.then(insertionLine(own ?: groupTail, own != null && id != null))
+                        .slideOnMove(room.key in moving).then(sidebarRowProbe(sidebar, room))) {
+                        NavRow(room, room.key == current, id != null, onOpen, onLongPress = { onMenu(room) },
+                            sidebarGesture = reorder, sidebarPicked = source == room.key)
                     }
                 }
             }
@@ -239,6 +275,8 @@ private fun SwitcherRooms(state: UiState, text: String, keyboard: Boolean, actio
                 }
             }
         }
+      }
+      SidebarLift(sidebar, root)
     }
 }
 
@@ -668,6 +706,9 @@ internal fun NavRow(
     onOpen: (RoomKey) -> Unit,
     heading: Boolean = false,
     onLongPress: (() -> Unit)? = null,
+    sidebarGesture: Boolean = false,
+    sidebarPicked: Boolean = false,
+    sidebarTarget: Boolean = false,
 ) {
     val d = LocalDesign.current
     val r = d.room
@@ -676,10 +717,13 @@ internal fun NavRow(
     DrawerRow(
         on = on,
         indent = indent,
-        modifier = probe,
-        drop = drop,
+        modifier = probe.then(if (sidebarPicked) Modifier.alpha(1f - Tokens.Elevation.DROP_WASH_ALPHA) else Modifier)
+            .then(if (sidebarGesture && onLongPress != null) Modifier.semantics {
+                onLongClick(label = "Options for ${item.name}") { onLongPress(); true }
+            } else Modifier),
+        drop = drop || sidebarTarget,
         onClick = { onOpen(item.key) },
-        onLongPress = onLongPress,
+        onLongPress = onLongPress.takeUnless { sidebarGesture },
         longClickLabel = if (onLongPress != null) "Options for ${item.name}" else null,
     ) {
         when {

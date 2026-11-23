@@ -489,6 +489,7 @@ touch tracking; it has no custom curve token.
 | `STAGGER` | `stagger` | 25 ms | offset | Per-item delay for small entering groups, capped at `STAGGER_MAX_ITEMS` (5 items / 125 ms max total). |
 | `REDUCED_FADE` | `reduced-fade` | 100 ms | cap | Longest opacity or colour fade permitted under reduced motion. |
 | `COMPLETE_HOLD` | `complete-hold` | 450 ms | timer | Pause after the tick lands so the eye sees the struck-through row before it exits. Unchanged under reduced motion. |
+| `SIDEBAR_EXPAND_DWELL` | `sidebar-expand-dwell` | 420 ms | timer | Holding a list over a collapsed collection opens it. Unchanged under reduced motion. |
 | `SCROLLBAR_HOLD` | `scrollbar-hold` | 1000 ms | timer | Idle wait after scrolling stops before an overlay scrollbar fades out. Unchanged under reduced motion. |
 | `UNDO_WINDOW` | `undo-window` | 6000 ms | timer | Undo toast lifetime and linear countdown line (`Ctrl+Z` still works afterwards). Unchanged under reduced motion. |
 
@@ -850,6 +851,15 @@ Completing a task is the one choreographed moment in the app.
     `HapticFeedbackType.LongPress` on pickup and `TextHandleMove` on slot crossing.
   - *Web:* Pointer Events driving GPU-composited `translateY` transforms during drag, committing DOM order once
     on pointer-up.
+
+**Reordering rooms.** Drag a list beside another list to take that slot, or onto a collection header to
+append it. A collection always moves with its lists; its insertion line marks the edge of the whole collection.
+Smart rooms are neither sources nor destinations for room drags. Use a 3 px `selection-bar` in `accent-strong`
+with rounded ends and no dots. Inset it to the row's icon column (the collection's leading edge for a collection
+slot). Highlight an eligible destination header with `selection-wash` and an `accent-strong` border. Hold over a
+collapsed destination for `SIDEBAR_EXPAND_DWELL` to reveal it. Scroll the rooms region at its edges while dragging.
+On Android, long-press to pick up a row; releasing without moving still opens its menu. On desktop and web,
+Escape cancels and Alt+Up/Down moves the focused sidebar row among its siblings. One drop creates one Undo.
 
 **Dropping email files (desktop and web).** Highlight only the visible task list below quick-add, not the
 header, composer or footer. Keep the rows legible under a `wash` at `DROP_WASH_ALPHA` with an inset

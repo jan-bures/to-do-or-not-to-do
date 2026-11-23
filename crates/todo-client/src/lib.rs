@@ -62,6 +62,7 @@ pub mod room_header;
 pub mod room_switcher;
 pub mod selection;
 pub mod session;
+pub mod sidebar_drag;
 pub mod sse;
 pub mod storage;
 pub mod sync_label;

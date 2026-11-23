@@ -199,12 +199,15 @@ pub const DIALOG_RISE: f32 = 6.0;
 pub const DIALOG_DROP: f32 = 4.0;
 /// Time to hold a dragged card at the board pager's edge before advancing a column.
 pub const BOARD_EDGE_DWELL: u32 = 350;
+/// Time to hold a list over a collapsed collection before revealing its children.
+pub const SIDEBAR_EXPAND_DWELL: u32 = 420;
 /// A lifted task on touch scales to this value over [`HOVER`]; pointer drags stay at 1.0.
 pub const DRAG_TOUCH_SCALE: f32 = 1.01;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 26] = [
+pub const DURATIONS: [(&str, u32); 27] = [
     ("board-edge-dwell", BOARD_EDGE_DWELL),
+    ("sidebar-expand-dwell", SIDEBAR_EXPAND_DWELL),
     ("hover", HOVER),
     ("content-swap", CONTENT_SWAP),
     ("swipe-settle", SWIPE_SETTLE),
@@ -252,9 +255,12 @@ pub const CUES: [(&str, f32); 12] = [
 
 /// The duration to use with reduced motion: movement, scale, rotation and stagger become instant (`0 ms`),
 /// pure opacity and colour fades shrink to at most [`REDUCED_FADE`]. Functional timers that aren't animations
-/// ([`UNDO_WINDOW`], [`COMPLETE_HOLD`], [`SCROLLBAR_HOLD`]) are unchanged.
+/// ([`UNDO_WINDOW`], [`COMPLETE_HOLD`], [`SCROLLBAR_HOLD`], [`SIDEBAR_EXPAND_DWELL`]) are unchanged.
 pub const fn reduced(duration_ms: u32, is_fade: bool) -> u32 {
-    if duration_ms == UNDO_WINDOW || duration_ms == COMPLETE_HOLD || duration_ms == SCROLLBAR_HOLD {
+    if matches!(
+        duration_ms,
+        UNDO_WINDOW | COMPLETE_HOLD | SCROLLBAR_HOLD | SIDEBAR_EXPAND_DWELL
+    ) {
         duration_ms
     } else if is_fade {
         if duration_ms < REDUCED_FADE {
@@ -305,6 +311,7 @@ mod tests {
         assert_eq!(reduced(UNDO_WINDOW, false), UNDO_WINDOW);
         assert_eq!(reduced(COMPLETE_HOLD, false), COMPLETE_HOLD);
         assert_eq!(reduced(SCROLLBAR_HOLD, false), SCROLLBAR_HOLD);
+        assert_eq!(reduced(SIDEBAR_EXPAND_DWELL, false), SIDEBAR_EXPAND_DWELL);
     }
 
     #[test]
@@ -335,11 +342,20 @@ mod tests {
             assert!(ms > 0, "duration token {name} must be > 0");
         }
         // Functional timers must not collide numerically with non-timer durations so `reduced()` stays exact.
-        let timers = [UNDO_WINDOW, COMPLETE_HOLD, SCROLLBAR_HOLD];
+        let timers = [
+            UNDO_WINDOW,
+            COMPLETE_HOLD,
+            SCROLLBAR_HOLD,
+            SIDEBAR_EXPAND_DWELL,
+        ];
         for (name, ms) in DURATIONS {
             if !matches!(
                 name,
-                "undo-window" | "complete-hold" | "scrollbar-hold" | "pairing-tick"
+                "undo-window"
+                    | "complete-hold"
+                    | "scrollbar-hold"
+                    | "pairing-tick"
+                    | "sidebar-expand-dwell"
             ) {
                 assert!(
                     !timers.contains(&ms),

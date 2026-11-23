@@ -418,7 +418,46 @@ a {
   color: var(--list-glyph);
 }
 
-.nav-entry { position: relative; }
+.nav-entry, .nav-group { position: relative; }
+
+.sidebar-touch-grip {
+  display: flex;
+  flex: none;
+  align-self: stretch;
+  align-items: center;
+  touch-action: none;
+}
+
+:is(.nav-entry, .nav-group):is(.sidebar-before, .sidebar-after)::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset-inline: var(--space-2);
+  height: var(--selection-bar);
+  border-radius: var(--radius-button);
+  background: var(--color-accent-strong);
+  pointer-events: none;
+}
+.nav-entry:has(> .sub):is(.sidebar-before, .sidebar-after)::after {
+  inset-inline-start: calc(var(--space-6) + var(--space-1));
+}
+.sidebar-before::after { inset-block-start: 0; }
+.sidebar-after::after { inset-block-end: 0; }
+.nav-entry.sidebar-into > .nav-item {
+  --nav-hover: var(--color-selection-wash);
+  background: var(--nav-hover);
+  border-color: var(--color-accent-strong);
+}
+.sidebar-drag-source > .nav-item { opacity: calc(1 - var(--drop-wash-alpha)); }
+
+.sidebar-drag-lift .glyph { flex: none; color: var(--list-glyph); }
+.sidebar-drag-lift .count { flex: none; }
+@media (min-width: 760px) {
+  .sidebar-drag-lift { --task-drag-min-x: calc(var(--desktop-sidebar) + var(--space-2)); }
+}
+@media (max-width: 759px) {
+  .sidebar-drag-lift { --task-drag-offset-y: var(--space-6); }
+}
 
 .nav-entry .room-menu-trigger {
   position: absolute;
@@ -494,7 +533,7 @@ a {
 
 .nav-item:not(.active, .contains-active):hover,
 .nav-entry:hover > .nav-item:not(.active, .contains-active) {
-  background: var(--color-hover);
+  background: var(--nav-hover, var(--color-hover));
 }
 
 .nav-item.active,
@@ -1741,7 +1780,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 }
 
 .task-drag-grip:active { cursor: grabbing; }
-.task-drag-grip svg, .task-drag-lift svg { width: var(--component-icon); height: var(--component-icon); }
+.task-drag-grip svg, :is(.task-drag-lift, .sidebar-drag-lift) svg { width: var(--component-icon); height: var(--component-icon); }
 .task-dragging > :not(.task-drag-grip, .task-insertion-line) {
   opacity: calc(1 - var(--drop-wash-alpha));
 }
@@ -1764,7 +1803,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   outline-offset: calc(-1 * var(--hairline));
 }
 
-.task-drag-lift:not([hidden]) {
+:is(.task-drag-lift, .sidebar-drag-lift):not([hidden]) {
   position: fixed;
   inset: 0 auto auto 0;
   z-index: 20;
@@ -1810,14 +1849,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   .with-due:has(> .task-drag-grip) .meta .due-slot { width: auto; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .task-drag-lift.task-drag-touch:not([hidden]) {
+  :is(.task-drag-lift, .sidebar-drag-lift).task-drag-touch:not([hidden]) {
     scale: var(--drag-touch-scale);
     animation-name: task-lift-touch;
   }
   @keyframes task-lift-touch { from { opacity: 0; scale: 1; } }
 }
 @media (prefers-reduced-motion: reduce) {
-  .task-drag-lift { outline: var(--hairline) solid var(--color-accent); }
+  :is(.task-drag-lift, .sidebar-drag-lift) { outline: var(--hairline) solid var(--color-accent); }
 }
 
 
