@@ -5,7 +5,6 @@ use std::sync::Arc;
 use todo_client::{
     board,
     intent::{self, workflow},
-    timeline,
 };
 use todo_core::{command, command::Placement, model, query::QueryStatus, time::Date};
 
@@ -17,7 +16,7 @@ use crate::{
     FfiError,
     labels::{LocalNow, Now},
     quick_add::WorkflowQuickAddDraft,
-    view::{self, RoomKey},
+    view::RoomKey,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -192,29 +191,6 @@ impl BoardSlot {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum TimelineBar {
-    Range,
-    Milestone,
-    OpenEnded,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct TimelineLane {
-    pub task_id: String,
-    pub list_id: String,
-    pub stage: WorkflowStage,
-    pub first_date: String,
-    pub last_date: String,
-    pub bar: TimelineBar,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct TimelineView {
-    pub lanes: Vec<TimelineLane>,
-    pub unscheduled: Vec<String>,
-}
-
 #[uniffi::export]
 impl TodoEngine {
     pub fn list_features(&self, id: String) -> Option<ListFeatures> {
@@ -341,37 +317,6 @@ impl TodoEngine {
                 "Card moved".into(),
             ))
         }))
-    }
-
-    pub fn timeline(&self, room: RoomKey, now: LocalNow) -> Option<TimelineView> {
-        let timeline = timeline::room(
-            &self.client.view(),
-            view::shared_key(&room)?,
-            &Now::new(now).eval(),
-        )?;
-        Some(TimelineView {
-            lanes: timeline
-                .lanes
-                .into_iter()
-                .map(|lane| TimelineLane {
-                    task_id: lane.task.to_string(),
-                    list_id: lane.list.to_string(),
-                    stage: lane.stage.into(),
-                    first_date: lane.span.first.to_string(),
-                    last_date: lane.span.last.to_string(),
-                    bar: match lane.span.kind {
-                        timeline::SpanKind::Range => TimelineBar::Range,
-                        timeline::SpanKind::Milestone => TimelineBar::Milestone,
-                        timeline::SpanKind::OpenEnded => TimelineBar::OpenEnded,
-                    },
-                })
-                .collect(),
-            unscheduled: timeline
-                .unscheduled
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect(),
-        })
     }
 
     pub fn workflow_quick_add_features(&self, room: RoomKey) -> ListFeatures {

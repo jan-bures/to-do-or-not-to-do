@@ -66,9 +66,8 @@ What the first version does:
   room, even the same one, clears the filter and closes its field.
 - **Workflow & Board.** In a list, open **⋯ → List settings…** (also in its Rooms action sheet) to turn on
   **Workflow & Board**, **Timeline & Start dates**, or both. Both switches start off. Turning them off
-  hides the controls without clearing saved values. **Default view** syncs with other clients; choosing a
-  view in the dock changes only this visit. Android opens a synced Timeline default as List for now and
-  leaves the setting intact. Timeline view itself is not available on Android yet.
+  hides the controls without clearing saved values. **Default view** syncs with other clients; choosing
+  List, Board, or Timeline in the dock changes only this visit.
   Workflow lists show the four status shapes under task titles; other rooms only show Backlog and In progress
   marks from workflow lists. Detail offers **Status** and, when enabled, **Starts** just before **Due**.
   Choosing Done completes the task. Choosing an open status for a done task reopens it in that stage.
@@ -87,6 +86,21 @@ What the first version does:
   Long-press a card and drop it into another column, onto Done, or onto a cover column tab. A short dwell at the
   pager edge turns the page during a drag. Without dragging, use **Task actions → Move to column…** or
   change **Status** in Detail. Column moves offer one Undo, including completion and reopening.
+- **Timeline.** Open it from **View** in an enabled list, an eligible collection, or **Planned**. Swipe
+  across the dates or page with the arrows; **Today** returns to the vertical marker. **Week**, **2 weeks**
+  (default), **Month**, and **Quarter** zoom around the center date. Month and Quarter label ISO weeks;
+  edits always snap to calendar days. The task names stay pinned while you pan. Tap an off-screen task's
+  name to reveal its dates, or a visible name or bar to open Detail. On the inner screen the chart takes
+  the full width when Detail is closed and there is no separating hinge. **Room menu → Show completed on
+  Timeline** reveals dated completed tasks. Planned shows dated open tasks, including start-only tasks,
+  and has no **Unscheduled** tray; its List view still shows the usual due-date membership.
+  Long-press and drag a bar to move its dates, or drag a visible grip on a wide bar to resize it.
+  For a short bar, long-press the task name and choose **Drag start edge** or **Drag end edge**; then the
+  whole bar acts as that edge. A due-only task can grow a start; a start-only task can grow a due date.
+  The same menu offers calendars for editing without dragging. Open **Unscheduled** to drag a task
+  onto a day or choose **Schedule**. Pickup and day changes use the Board's haptics. The date readout
+  previews the edit, a drop outside the grid cancels, and a valid drop offers one **Undo**. If a task's
+  dates change while you drag, Android does not overwrite them. Labels follow **Date format**.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
 - **Select several tasks.** Long-press a task row, then tap other rows to add or remove them. The app
@@ -489,7 +503,8 @@ model. The thumb-zone gallery uses Fold7 cover (412 × 960 dp) and inner (876 ×
 older fixtures also use the F2 sizes (412 × 920 and 900 × 1000 dp). It includes reachability, the
 collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. The
 `workflow_board` gallery covers List and its settings, Board, Detail, and the quick-add status and date
-chips in both Fold7 postures and themes. Look at the gallery after every UI change; images are in
+chips. The `timeline` gallery covers Week, Month with the Unscheduled tray open, a resize preview, and
+Planned. Both use the two Fold7 postures and themes. Look at the gallery after every UI change; images are in
 `app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a Fold7 or equivalent emulator, check that the room and

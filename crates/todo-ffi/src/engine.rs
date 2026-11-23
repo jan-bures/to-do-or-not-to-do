@@ -42,6 +42,7 @@ pub mod organize;
 pub mod push;
 pub mod sidebar_drag;
 pub mod task_drag;
+pub mod timeline;
 pub mod trash;
 pub mod workflow;
 

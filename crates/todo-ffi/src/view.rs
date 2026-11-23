@@ -747,7 +747,7 @@ impl Index {
     }
 }
 
-fn list_chip(state: &State, list: ListId) -> Option<Chip> {
+pub(crate) fn list_chip(state: &State, list: ListId) -> Option<Chip> {
     let l = state.lists.get(&list)?;
     Some(Chip {
         label: todo_client::task_labels::list_chip(&l.name, None),
@@ -873,7 +873,12 @@ pub fn room(state: &State, key: &RoomKey, now: &Now) -> RoomView {
 
 /// The filter, as on the desktop: the query language when it parses (`tag:docs`, `due<=friday`), else
 /// every word must appear in the title (case and accents folded).
-fn filter<'a>(state: &State, text: &str, ctx: &EvalContext, tasks: Vec<&'a Task>) -> Vec<&'a Task> {
+pub(crate) fn filter<'a>(
+    state: &State,
+    text: &str,
+    ctx: &EvalContext,
+    tasks: Vec<&'a Task>,
+) -> Vec<&'a Task> {
     let text = text.trim();
     if text.is_empty() {
         return tasks;

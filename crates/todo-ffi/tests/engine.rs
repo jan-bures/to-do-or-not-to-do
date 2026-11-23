@@ -118,8 +118,9 @@ fn my_day() -> RoomKey {
 
 #[test]
 fn workflow_bindings_share_preview_projection_and_tracked_changes() {
+    use todo_ffi::engine::timeline::TimelineBar;
     use todo_ffi::engine::workflow::{
-        BoardSlot, ListFeatures, ListFeaturesPatch, ListView, OpenStage, TimelineBar, WorkflowStage,
+        BoardSlot, ListFeatures, ListFeaturesPatch, ListView, OpenStage, WorkflowStage,
     };
     use todo_ffi::quick_add::{QuickAddDraft, WorkflowQuickAddDraft, workflow_quick_add_preview};
 
@@ -194,7 +195,10 @@ fn workflow_bindings_share_preview_projection_and_tracked_changes() {
         .unwrap();
     assert_eq!(nav.features, Some(features));
     let timeline = engine.timeline(room.clone(), now.clone()).unwrap();
-    assert_eq!(timeline.lanes[0].bar, TimelineBar::Range);
+    assert_eq!(
+        timeline.lanes[0].span.as_ref().unwrap().bar,
+        TimelineBar::Range
+    );
     assert_eq!(timeline.lanes[0].task_id, task);
     let RoomKey::List { id: other } = engine.create_list("Other".into(), my_day()).unwrap() else {
         panic!("expected a list")

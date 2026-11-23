@@ -39,6 +39,7 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
 import app.todoornot.model.UiState
+import app.todoornot.model.availableViews
 import app.todoornot.model.label
 
 private val S = Tokens.Space
@@ -114,16 +115,10 @@ private val ListView.icon: String get() = when (this) {
     ListView.TIMELINE -> "gantt-chart"
 }
 
-private fun ListFeatures.views(): List<ListView> = buildList {
-    add(ListView.LIST)
-    if (workflow) add(ListView.BOARD)
-    if (timeline) add(ListView.TIMELINE)
-}
-
 @Composable
 internal fun ViewControl(state: UiState, actions: Actions, wide: Boolean, labels: Boolean = false, settings: () -> Unit) {
-    val features = state.listFeatures ?: return
-    val views = features.views()
+    val features = state.listFeatures
+    val views = availableViews(features, state.timelineAvailable)
     if (views.size < 2) return
     val choose = { view: ListView -> actions.setRoomView(view, state.generation) }
     if (wide) {
@@ -131,20 +126,20 @@ internal fun ViewControl(state: UiState, actions: Actions, wide: Boolean, labels
     } else {
         var opened by remember(state.generation) { mutableStateOf(false) }
         Box {
-            IconButton(if (features.workflow) ListView.BOARD.icon else ListView.TIMELINE.icon,
+            IconButton(if (features?.workflow == true) ListView.BOARD.icon else ListView.TIMELINE.icon,
                 "View: ${state.view.label}", expanded = opened || state.view != ListView.LIST) {
-                if (views.size == 2 && features.workflow) choose(if (state.view == ListView.BOARD) ListView.LIST else ListView.BOARD)
+                if (views.size == 2 && features?.workflow == true) choose(if (state.view == ListView.BOARD) ListView.LIST else ListView.BOARD)
                 else opened = true
             }
             if (opened) AnchoredPopup(onDismiss = { opened = false }, above = true) { overlay ->
                 Column(Modifier.padding(S.S2.dp).widthIn(min = P.INNER_LIST.dp / 2)
                     .overlay(RoundedCornerShape(Tokens.Radius.LG.dp), LocalDesign.current).padding(vertical = S.S1.dp)) {
                     views.forEach { view ->
-                        WorkflowOption(view.label, view.icon, view == state.view, view != ListView.TIMELINE) {
+                        WorkflowOption(view.label, view.icon, view == state.view) {
                             overlay.choose { choose(view) }
                         }
                     }
-                    Box(Modifier.fillMaxWidth().hairline(LocalDesign.current.room.line, top = true)) {
+                    if (features != null) Box(Modifier.fillMaxWidth().hairline(LocalDesign.current.room.line, top = true)) {
                         WorkflowOption("List settings…", "settings", false) { overlay.choose(settings) }
                     }
                 }
@@ -160,17 +155,16 @@ private fun ViewSegments(views: List<ListView>, current: ListView, labels: Boole
     Row(Modifier.selectableGroup(), verticalAlignment = Alignment.CenterVertically) {
         views.forEach { view ->
             val selected = current == view
-            val enabled = view != ListView.TIMELINE
             Box(Modifier.widthIn(min = P.TOUCH.dp).heightIn(min = P.TOUCH.dp)
-                .selectable(selected, enabled = enabled, role = Role.Tab) { choose(view) }
+                .selectable(selected, role = Role.Tab) { choose(view) }
                 .semantics { if (!labels) contentDescription = view.label }, contentAlignment = Alignment.Center) {
                 Row(Modifier.heightIn(min = Tokens.Metrics.Board.HEADER_HEIGHT.dp)
                     .background(if (selected) r.raised else r.canvas, shape)
                     .border(Tokens.Elevation.HAIRLINE.dp, if (selected) r.lineStrong else r.line, shape)
                     .padding(horizontal = if (labels) S.S2.dp else S.S3.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-                    Icon(view.icon, if (enabled) r.ink else r.ink3, size = C.ICON_SMALL.dp)
-                    if (labels) Label(view.label, Tokens.Type.BUTTON_SMALL, if (enabled) r.ink else r.ink3)
+                    Icon(view.icon, r.ink, size = C.ICON_SMALL.dp)
+                    if (labels) Label(view.label, Tokens.Type.BUTTON_SMALL, r.ink)
                 }
             }
         }
@@ -186,14 +180,14 @@ internal fun ListSettings(features: ListFeatures, update: (ListFeaturesPatch) ->
         FeatureSwitch("Workflow & Board", "Track Backlog, To do, In progress and Done, and unlock Board view.", features.workflow) {
             update(ListFeaturesPatch(it, null, null))
         }
-        FeatureSwitch("Timeline & Start dates", "Add start dates to tasks. Timeline view is not yet available on Android.", features.timeline) {
+        FeatureSwitch("Timeline & Start dates", "Add start dates to tasks and unlock Timeline view.", features.timeline) {
             update(ListFeaturesPatch(null, it, null))
         }
         if (features.workflow || features.timeline) {
             Column(Modifier.fillMaxWidth().hairline(r.line, top = true).padding(top = S.S3.dp)) {
                 Label("Default view", Tokens.Type.BUTTON, r.ink)
                 Label("Opens this view when you visit the list.", Tokens.Type.META_PHONE, r.ink3)
-                ViewSegments(features.views(), features.defaultView, labels = true) { update(ListFeaturesPatch(null, null, it)) }
+                ViewSegments(availableViews(features, features.timeline), features.defaultView, labels = true) { update(ListFeaturesPatch(null, null, it)) }
             }
         }
         Label("Turning a feature off keeps your task statuses and start dates.", Tokens.Type.META_PHONE, r.ink3, maxLines = Int.MAX_VALUE)

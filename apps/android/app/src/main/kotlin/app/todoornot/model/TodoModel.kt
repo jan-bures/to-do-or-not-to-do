@@ -41,6 +41,9 @@ import app.todoornot.core.TaskMove
 import app.todoornot.core.TaskDrag
 import app.todoornot.core.TaskDrop
 import app.todoornot.core.TaskDetail
+import app.todoornot.core.TimelineEdit
+import app.todoornot.core.TimelineTask
+import app.todoornot.core.TimelineView
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
 import app.todoornot.core.QuickAddDraft
@@ -132,6 +135,9 @@ data class UiState(
     val view: ListView = ListView.LIST,
     val board: BoardView? = null,
     val boardReopening: Set<String> = emptySet(),
+    val timelineAvailable: Boolean = false,
+    val timeline: TimelineView? = null,
+    val timelineNow: LocalNow? = null,
 ) {
     val listFeatures get() = home.featuresFor(room.key)
     val selected: String? get() = detail?.id
@@ -435,7 +441,15 @@ class TodoModel(
         val readingActivity = activity
         val home = engine.homePlaced(place.rows, n)
         val room = roomRead(k, f, place, ids, seen, n)
-        val view = androidView(home.featuresFor(room.key), requestedView)
+        val features = home.featuresFor(room.key)
+        val timelineAvailable = readingActivity == null && when (room.key) {
+            is RoomKey.List -> features?.timeline == true
+            is RoomKey.Collection -> engine.timelineAvailable(room.key)
+            RoomKey.Smart(SmartList.PLANNED) -> true
+            else -> false
+        }
+        val view = androidView(features, timelineAvailable, requestedView.takeIf { room.key == k })
+        val timeline = if (view == ListView.TIMELINE) engine.timelinePlaced(room.key, f, showDone, place.rows, n) else null
         val board = if (view == ListView.BOARD && readingActivity == null) {
             (room.key as? RoomKey.List)?.let { engine.board(it.id, n) }
         } else null
@@ -445,6 +459,9 @@ class TodoModel(
             view = view,
             board = board,
             boardReopening = if (board == null) emptySet() else place.rows.reopening.map { it.id }.toSet(),
+            timelineAvailable = timelineAvailable,
+            timeline = timeline,
+            timelineNow = n.takeIf { timeline != null },
             detail = detail,
             attachment = transfers.status(detail?.id),
             attachmentTaskConfirmed = detail != null && engine.attachmentTaskConfirmed(detail.id),
@@ -715,7 +732,7 @@ class TodoModel(
             synchronized(publishing) {
                 val present = _ui.value
                 if (generation != this.generation || present.generation != generation ||
-                    view == ListView.TIMELINE || androidView(present.listFeatures, view) != view) return
+                    view !in availableViews(present.listFeatures, present.timelineAvailable)) return
                 viewOverride = view
                 if (showCompleted) this.showCompleted = true
                 bulkSelection.clear()
@@ -876,7 +893,8 @@ class TodoModel(
                     // Explicit defaults are for the next visit, as on desktop. Disabling the
                     // current mode, however, must take effect even with a temporary override.
                     if (patch.defaultView != null) viewOverride = seen.view
-                    else if (patch.workflow == false && viewOverride == ListView.BOARD) viewOverride = null
+                    else if ((patch.workflow == false && seen.view == ListView.BOARD) ||
+                        (patch.timeline == false && seen.view == ListView.TIMELINE)) viewOverride = ListView.LIST
                     inputs++
                 }
             }
@@ -919,6 +937,18 @@ class TodoModel(
                 if (this.generation == generation) reorder = swap
                 show(Toast(n, "Moved “${task.title}” to ${stage.label}", organize = it, swap = swap))
             }
+        }
+    }
+
+    override fun scheduleTimeline(task: TimelineTask, edit: TimelineEdit, today: String, generation: Long) {
+        val present = _ui.value
+        val room = present.room.key
+        if (generation != this.generation || generation != present.generation ||
+            present.view != ListView.TIMELINE || key != room) return
+        act {
+            val change = engine.scheduleTimelineTask(room, task.listId, task.taskId, task.dates, edit, today)
+            if (change == null) show(Toast(++serial, "The schedule changed. Check the dates and try again."))
+            else show(Toast(++serial, change.toastText(), organize = change))
         }
     }
 

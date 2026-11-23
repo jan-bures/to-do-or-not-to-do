@@ -15,9 +15,15 @@ internal val ChecklistFeatures = ListFeatures(false, false, ListView.LIST)
 internal fun Home.featuresFor(list: RoomKey): ListFeatures? =
     groups.firstNotNullOfOrNull { group -> group.lists.firstOrNull { it.key == list }?.features }
 
-/** A synced Timeline default is preserved, but this Android release opens it as List. */
-internal fun androidView(features: ListFeatures?, override: ListView?): ListView =
-    if (features?.workflow == true && (override ?: features.defaultView) == ListView.BOARD) ListView.BOARD else ListView.LIST
+internal fun availableViews(features: ListFeatures?, timeline: Boolean): List<ListView> = buildList {
+    add(ListView.LIST)
+    if (features?.workflow == true) add(ListView.BOARD)
+    if (timeline) add(ListView.TIMELINE)
+}
+
+/** Lists can sync a default. Cross-list Timeline rooms enter in List unless explicitly switched. */
+internal fun androidView(features: ListFeatures?, timeline: Boolean, override: ListView?): ListView =
+    (override ?: features?.defaultView)?.takeIf { it in availableViews(features, timeline) } ?: ListView.LIST
 
 internal val WorkflowStage.label: String get() = when (this) {
     WorkflowStage.BACKLOG -> "Backlog"

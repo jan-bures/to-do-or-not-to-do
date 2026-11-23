@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.Dp
 import app.todoornot.core.NavItem
 import app.todoornot.model.MenuEntry
 import app.todoornot.model.drawerMenu
-import app.todoornot.model.roomMenu
 import app.todoornot.session.ThumbHand
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -133,6 +132,7 @@ fun MainScreen(
     reachExpanded: Boolean = false,
     listSettingsOpen: Boolean = false,
     boardInitialStage: WorkflowStage = WorkflowStage.TODO,
+    timelineGallery: TimelineGallery? = null,
 ) {
     LaunchedEffect(motion) { motion.drive() }
     CompositionLocalProvider(LocalMotion provides motion) {
@@ -140,7 +140,7 @@ fun MainScreen(
             val paneWidth = listPaneWidth(maxWidth, wide, fold)
             Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus,
                 hand, onHand, fold, paneWidth, maxWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded,
-                listSettingsOpen, boardInitialStage)
+                listSettingsOpen, boardInitialStage, timelineGallery)
         }
     }
 }
@@ -168,6 +168,7 @@ private fun Screen(
     reachExpanded: Boolean,
     listSettingsOpen: Boolean,
     boardInitialStage: WorkflowStage,
+    timelineGallery: TimelineGallery?,
 ) {
     TodoTheme(dark, if (state.activity != null) "agent-activity" else state.room.hue) {
         val r = LocalDesign.current.room
@@ -204,6 +205,7 @@ private fun Screen(
         val detail = state.detail
         val boardInput = if (state.board == null) null else androidx.compose.runtime.key(state.generation) { rememberBoardInput(boardInitialStage) }
         val detailSheets = rememberDetailSheets(detail?.id, state.generation)
+        val timelineSheets = remember(state.generation, state.view) { TimelineSheets() }
         state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed, paneWidth) }
         // Room and switcher actions: rename and delete ask in a
         // dialog; a move glides the rows it swaps.
@@ -218,7 +220,8 @@ private fun Screen(
         }
         var deleteCollection by rememberSaveable { mutableStateOf<String?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
-        val sheetOpen = switcherVisible || (updatesOpen && updates != null) || roomActionsOpen || bulkPicker != null || detailSheets.page != null ||
+        val sheetOpen = switcherVisible || (updatesOpen && updates != null) || roomActionsOpen || bulkPicker != null ||
+            detailSheets.page != null || timelineSheets.open ||
             renaming != null || deleting != null || deleteCollection != null || newCollection || state.unpairing != null
         if (newCollection) OverlayDialog({ newCollection = false }, paneWidth = paneWidth) { overlay ->
             RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); switcher = false } }, overlay::close)
@@ -296,6 +299,7 @@ private fun Screen(
                 val gap = separated?.let { it.end - it.start } ?: divider
                 val feed = state.activity
                 val fullBoard = paneWidth != null && state.board != null && detail == null
+                val fullTimeline = paneWidth != null && separated == null && state.timeline != null && detail == null
                 BackHandler(enabled = !sheetOpen && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
                 @Composable
                 fun Tasks(modifier: Modifier) {
@@ -306,6 +310,7 @@ private fun Screen(
                         composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
                         onListSettings = { roomActionsSettings = true; roomActionsOpen = true }, fullBoard = fullBoard,
                         boardFold = separated, boardInput = boardInput, listWidth = paneWidth,
+                        timelineSheets = timelineSheets, timelineGallery = timelineGallery,
                         onOpenUpdates = if (!sheetOpen && (wide || detail == null)) {{ updatesOpen = true }} else null,
                         reachExpanded = reachExpanded, onSwipeRooms = { progress ->
                             if (progress == null && !switcher && reveal != null) returningGesture = true
@@ -323,8 +328,8 @@ private fun Screen(
                         TrashRoom(paneSurface, actions, menu, wide, hand)
                     } else if (paneWidth != null) {
                         Row(Modifier.fillMaxSize()) {
-                            Tasks(if (fullBoard) Modifier.fillMaxSize() else Modifier.width(paneWidth))
-                            if (!fullBoard) {
+                            Tasks(if (fullBoard || fullTimeline) Modifier.fillMaxSize() else Modifier.width(paneWidth))
+                            if (!fullBoard && !fullTimeline) {
                                 Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
                                 // Android sets status-icon contrast for the whole window, so the right
                                 // status inset shares dusk's zenith while the detail keeps its own theme.
@@ -358,11 +363,12 @@ private fun Screen(
                     }
                     navMenu?.let { item -> RoomActionsSheet(item.name, drawerMenu(state.home, item.key), state, actions,
                         onRoomMenu, close = { navMenu = null }) }
-                    if (roomActionsOpen) RoomActionsSheet(state.room.title, roomMenu(state.home, state.room.key, state.showCompleted), state, actions,
+                    if (roomActionsOpen) RoomActionsSheet(state.room.title, timelineRoomMenu(state), state, actions,
                         onRoomMenu, close = { roomActionsOpen = false },
                         initialPage = if (roomActionsSettings) (state.room.key as? RoomKey.List)?.let { MenuAction.ListSettings(it) } else null)
                     bulkPicker?.let { BulkSelectionPicker(it, state, actions) { bulkPicker = null } }
                     if (updatesOpen && updates != null) UpdatesSheet(updates) { updatesOpen = false }
+                    if (timelineSheets.open) TimelineOverlays(state, timelineSheets, actions)
                 }
                 if (detail != null && feed == null) CompositionLocalProvider(
                     LocalSheetWidth provides paneWidth?.let { windowWidth - it - gap }, LocalSheetAtEnd provides true,

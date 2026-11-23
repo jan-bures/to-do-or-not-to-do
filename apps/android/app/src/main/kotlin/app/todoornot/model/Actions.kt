@@ -12,6 +12,8 @@ import app.todoornot.core.ReminderRef
 import app.todoornot.core.RoomKey
 import app.todoornot.core.TaskDrag
 import app.todoornot.core.TaskDrop
+import app.todoornot.core.TimelineEdit
+import app.todoornot.core.TimelineTask
 
 enum class TaskSwipe { COMPLETION, MY_DAY }
 
@@ -32,6 +34,7 @@ interface Actions {
     fun setTaskStage(list: String, id: String, stage: WorkflowStage, generation: Long) = Unit
     fun moveBoardCard(list: String, id: String, stage: WorkflowStage, slot: BoardSlot, generation: Long) = Unit
     fun setStartDate(id: String, date: String?) = Unit
+    fun scheduleTimeline(task: TimelineTask, edit: TimelineEdit, today: String, generation: Long) = Unit
     fun composerNow(): app.todoornot.core.LocalNow = app.todoornot.core.localNow()
     fun setDateFormat(key: String): Boolean = false
     /**

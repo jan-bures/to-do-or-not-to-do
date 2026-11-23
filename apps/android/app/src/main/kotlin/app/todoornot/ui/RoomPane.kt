@@ -99,7 +99,6 @@ import app.todoornot.design.cubic
 import app.todoornot.design.style
 import kotlinx.coroutines.delay
 import app.todoornot.model.Actions
-import app.todoornot.model.roomMenu
 import app.todoornot.model.DuskLook
 import app.todoornot.model.Ghost
 import app.todoornot.model.MotionFrame
@@ -154,6 +153,8 @@ internal fun RoomPane(
     fullBoard: Boolean = false,
     boardFold: PaneFold? = null,
     boardInput: BoardInput? = null,
+    timelineSheets: TimelineSheets? = null,
+    timelineGallery: TimelineGallery? = null,
     listWidth: Dp? = null,
     onOpenUpdates: (() -> Unit)? = null,
 ) {
@@ -220,16 +221,25 @@ internal fun RoomPane(
         Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             val resetReach = { if (collapse.reach > 0f) scope.launch { collapse.resetReach() }; Unit }
             RoomHeader(room, wide, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp,
-                selected = state.bulk != null, onResetReach = resetReach, viewLabel = if (board != null) "Board" else null)
+                selected = state.bulk != null, onResetReach = resetReach, viewLabel = when {
+                    board != null -> "Board"
+                    state.timeline != null -> "Timeline"
+                    else -> null
+                })
             Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(collapse.connection)) {
                 androidx.compose.runtime.key(state.generation) {
                     AnimatedContent(RoomBody(state, board), transitionSpec = {
                         val duration = if (reduced) M.REDUCED_FADE else M.CONTENT_SWAP
                         fadeIn(tween(duration, easing = M.EASE_STANDARD.cubic())) togetherWith
                             fadeOut(tween(duration, easing = M.EASE_STANDARD.cubic()))
-                    }, contentKey = { it.board != null }, modifier = Modifier.fillMaxSize(), label = "room view") { body ->
-                        if (body.board != null) BoardBody(body.state, actions, body.board, wide, fullBoard, boardFold, Modifier.fillMaxSize())
-                        else TaskList(body.state, actions, resetReach)
+                    }, contentKey = { it.state.view }, modifier = Modifier.fillMaxSize(), label = "room view") { body ->
+                        when {
+                            body.board != null -> BoardBody(body.state, actions, body.board, wide, fullBoard, boardFold, Modifier.fillMaxSize())
+                            body.state.timeline != null && timelineSheets != null -> TimelineBody(body.state, actions,
+                                sheetOpen || keyboard || (!wide && state.detail != null) || state.timeline == null,
+                                timelineSheets, timelineGallery)
+                            else -> TaskList(body.state, actions, resetReach)
+                        }
                     }
                 }
             }
@@ -316,7 +326,7 @@ private fun BottomRoomBar(
 ) {
     val r = LocalDesign.current.room
     val drag = LocalTaskDrag.current
-    val hasMenu = roomMenu(state.home, state.room.key, state.showCompleted).isNotEmpty()
+    val hasMenu = timelineRoomMenu(state).isNotEmpty()
     val dot = when {
         state.status.failed > 0u || state.status.revoked -> r.danger
         state.status.state == SyncState.OFFLINE -> r.ink4

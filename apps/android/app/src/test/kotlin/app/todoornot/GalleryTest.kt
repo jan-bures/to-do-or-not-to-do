@@ -112,6 +112,7 @@ import app.todoornot.ui.ReminderAccessCard
 import app.todoornot.ui.ReminderCard
 import app.todoornot.reminders.ReminderNeed
 import app.todoornot.ui.MainScreen
+import app.todoornot.ui.TimelineGallery
 import app.todoornot.ui.DragFrame
 import app.todoornot.ui.LocalTaskDragFrame
 import app.todoornot.ui.LocalSidebarDragFrame
@@ -128,6 +129,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import app.todoornot.core.ListView
+import app.todoornot.core.QuickAddDraft
+import app.todoornot.core.TimelineEdit
+import app.todoornot.core.TimelineZoom
+import app.todoornot.core.WorkflowQuickAddDraft
 import app.todoornot.core.WorkflowStage
 import app.todoornot.ui.StartDateSheet
 import kotlinx.coroutines.runBlocking
@@ -299,6 +304,35 @@ class GalleryTest {
                 workflowShot("start_date_sheet", detail, starts = true)
                 workflowShot("quick_add_status", list, draft = "Check seals mon..fri status:wip !!")
                 if (device === FOLD7_INNER) workflowShot("board_detail", detail.copy(view = ListView.BOARD, board = board.board))
+            }
+        }
+    }
+
+    @Test
+    fun timeline() {
+        val engine = fixtureEngine("workflow")
+        val room = engine.list("Home renovation")
+        val hallway = engine.taskId(room, "Strip wallpaper and prime hallway walls")
+        engine.addWorkflowTask(room, WorkflowQuickAddDraft(QuickAddDraft("Prepare window sills", null, false, null),
+            "2026-11-22", null), FIXTURE_NOW)
+        engine.addTaskDraft(engine.list("Groceries"), QuickAddDraft("Restock the pantry", "2026-11-23", false, null), FIXTURE_NOW)
+        val model = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = room)
+        model.setRoomView(ListView.TIMELINE, model.read().generation)
+        val own = model.read()
+        model.open(RoomKey.Smart(SmartList.PLANNED))
+        model.setRoomView(ListView.TIMELINE, model.read().generation)
+        val planned = model.read()
+        val actions = object : Actions by Actions.None { override fun composerNow() = FIXTURE_NOW }
+        for ((posture, device) in listOf("cover" to FOLD7_COVER, "inner" to FOLD7_INNER)) {
+            for (dark in listOf(false, true)) {
+                val theme = if (dark) "dark" else "light"
+                fun timelineShot(name: String, state: UiState, frame: TimelineGallery) = shot("${posture}_${name}_$theme", device) {
+                    MainScreen(state, actions, dark, wide = device === FOLD7_INNER, timelineGallery = frame)
+                }
+                timelineShot("week", own, TimelineGallery(TimelineZoom.WEEK))
+                timelineShot("month_tray", own, TimelineGallery(TimelineZoom.MONTH, tray = true))
+                timelineShot("drag", own, TimelineGallery(TimelineZoom.TWO_WEEKS, preview = hallway to TimelineEdit.DueEdge(3)))
+                timelineShot("planned", planned, TimelineGallery(TimelineZoom.TWO_WEEKS))
             }
         }
     }
