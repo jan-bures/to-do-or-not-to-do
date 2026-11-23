@@ -74,7 +74,6 @@
 
         <receiver android:name=".widget.WidgetTaskReceiver" android:exported="false" />
         <receiver android:name=".updates.UpdateInstallReceiver" android:exported="false" />
-        <activity android:name=".updates.UpdateInstallActivity" android:exported="false" />
 
         <!-- A reminder's alarm and notification actions (explicit intents from this app), and the system's
              word that alarms must be set again. -->

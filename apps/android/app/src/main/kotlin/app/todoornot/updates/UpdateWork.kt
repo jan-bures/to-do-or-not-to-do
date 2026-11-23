@@ -29,10 +29,11 @@ internal enum class UpdateMode(val check: Boolean, val userAsked: Boolean) {
 class AppUpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val mode = inputData.getString(MODE)?.let(UpdateMode::valueOf) ?: UpdateMode.AUTOMATIC
+        val mayRetry = runAttemptCount < RETRIES
         val retry = applicationContext.todoGraph.updates.run(
-            mode, inputData.getLong(VERSION, -1L).takeIf { it > 0 }, runAttemptCount > 0,
+            mode, inputData.getLong(VERSION, -1L).takeIf { it > 0 }, retrying = runAttemptCount > 0, mayRetry = mayRetry,
         )
-        if (retry && runAttemptCount < RETRIES) Result.retry() else Result.success()
+        if (retry && mayRetry) Result.retry() else Result.success()
     }
 }
 

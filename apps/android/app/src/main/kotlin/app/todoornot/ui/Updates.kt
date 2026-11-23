@@ -80,6 +80,7 @@ internal fun UpdatesSection(controls: UpdateControls) {
             state.checking -> "Checking for updates…"
             progress != null -> "Downloading update · $progress%"
             state.ready -> "Update ready. Save your work before installing."
+            state.downloadBlocked -> "Check now to try again."
             offer != null -> "Waiting for an unmetered connection. Download now to use your current connection."
             else -> state.status
         }
@@ -99,7 +100,7 @@ internal fun UpdatesSection(controls: UpdateControls) {
         }
         if (offer != null && !state.installing && !state.checking && progress == null) {
             if (state.ready) Button("Install update (${offer.versionName})", primary = !state.permissionNeeded, onClick = controls.install)
-            else Button("Download now", primary = true, onClick = controls.download)
+            else if (!state.downloadBlocked) Button("Download now", primary = true, onClick = controls.download)
         }
     }
 }

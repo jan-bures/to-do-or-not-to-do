@@ -34,6 +34,7 @@ internal data class UpdateState(
     val offer: UpdateManifest? = null,
     val progress: Int? = null,
     val ready: Boolean = false,
+    val downloadBlocked: Boolean = false,
     val dismissed: Boolean = false,
     val installing: Boolean = false,
     val permissionNeeded: Boolean = false,
@@ -76,6 +77,8 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             prefs.edit().clear().putString("feed", feed).commit()
         }
         val offer = prefs.getString("manifest", null)?.let(::parse)?.takeIf { newer(it.versionCode, installed) }
+        val blocked = failureFor(offer)
+        if (blocked != null) apk.delete()
         if (offer == null) {
             apk.delete()
             prefs.edit().remove("manifest").apply()
@@ -84,7 +87,9 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             currentVersion = own.versionName ?: BuildConfig.VERSION_NAME,
             checkedAt = prefs.getLong("checked", 0),
             offer = offer,
-            ready = offer != null && apk.isFile,
+            ready = offer != null && blocked == null && apk.isFile,
+            downloadBlocked = blocked != null,
+            problem = blocked,
             dismissed = offer?.versionCode == prefs.getLong("dismissed", 0),
         )
         // A still-live PackageInstaller session from a prior process can deliver a result. If
@@ -99,7 +104,7 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
     fun startupDue(now: Long) = enabled && checkDue(now, prefs.getLong("attempt", 0))
 
     /** True to ask WorkManager to retry with backoff. No installer is ever started by a worker. */
-    suspend fun run(mode: UpdateMode, expectedCode: Long?, retrying: Boolean): Boolean = lock.withLock {
+    suspend fun run(mode: UpdateMode, expectedCode: Long?, retrying: Boolean, mayRetry: Boolean): Boolean = lock.withLock {
         if (!enabled) return@withLock false
         restore()
         if (mode.check && (mode.userAsked || retrying || startupDue(System.currentTimeMillis()))) {
@@ -116,9 +121,12 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
                     UpdateAlerts.clear(app)
                 }
                 val keep = offer == view.offer && view.ready
-                prefs.edit().putString("manifest", raw.takeIf { offer != null }).putLong("checked", now).apply()
+                val editor = prefs.edit().putString("manifest", raw.takeIf { offer != null }).putLong("checked", now)
+                if (mode.userAsked && failureFor(offer) != null) editor.remove("failed").remove("failedMessage")
+                editor.apply()
+                val blocked = failureFor(offer)
                 view = view.copy(
-                    checkedAt = now, offer = offer, ready = keep,
+                    checkedAt = now, offer = offer, ready = keep, downloadBlocked = blocked != null, problem = blocked,
                     dismissed = offer?.versionCode == prefs.getLong("dismissed", 0),
                     permissionNeeded = keep && view.permissionNeeded,
                     status = when {
@@ -139,7 +147,7 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             }
         }
         val offer = view.offer ?: return@withLock false
-        if (view.ready || view.installing) return@withLock false
+        if (view.ready || view.installing || view.downloadBlocked) return@withLock false
         if (mode.check) {
             UpdateWork.enqueue(app, UpdateMode.WIFI)
             return@withLock false
@@ -168,11 +176,14 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             UpdateAlerts.ready(app, offer)
             false
         } catch (problem: FeedProblem) {
-            view = view.copy(problem = problem.messageForOwner)
-            problem.retry
+            val retry = problem.retry && mayRetry
+            if (!retry && problem.rememberFailure) reject(offer, problem.messageForOwner)
+            else view = view.copy(problem = problem.messageForOwner)
+            retry
         } catch (_: IOException) {
-            view = view.copy(problem = "Couldn't download the update. Check your connection and free space.")
-            true
+            val problem = "Couldn't download the update. Check your connection and free space."
+            if (mayRetry) view = view.copy(problem = problem) else reject(offer, problem)
+            mayRetry
         } finally {
             part.delete()
             view = view.copy(progress = null)
@@ -192,14 +203,26 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             app.packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)?.identity()
         }
         if (failure == null) return true
-        file.delete()
-        UpdateAlerts.clear(app)
-        view = view.copy(ready = false, problem = when (failure) {
-            VerificationFailure.SIZE, VerificationFailure.HASH -> "The download didn't match the published update."
-            VerificationFailure.PACKAGE, VerificationFailure.VERSION, VerificationFailure.SDK -> "The file isn't a compatible update for this app."
-            VerificationFailure.SIGNATURE -> "The update wasn't signed with a trusted key for this app."
-        })
+        reject(release, failureMessage(failure))
         return false
+    }
+
+    private fun failureFor(offer: UpdateManifest?): String? =
+        if (offer != null && offer.fingerprint == prefs.getString("failed", null))
+            prefs.getString("failedMessage", "This download failed. Check now to try again.")
+        else null
+
+    private fun reject(release: UpdateManifest, problem: String) {
+        prefs.edit().putString("failed", release.fingerprint).putString("failedMessage", problem).apply()
+        apk.delete()
+        UpdateAlerts.clear(app)
+        view = view.copy(ready = false, downloadBlocked = true, permissionNeeded = false, problem = problem)
+    }
+
+    private fun failureMessage(failure: VerificationFailure): String = when (failure) {
+        VerificationFailure.SIZE, VerificationFailure.HASH -> "The download didn't match the published update."
+        VerificationFailure.PACKAGE, VerificationFailure.VERSION, VerificationFailure.SDK -> "The file isn't a compatible update for this app."
+        VerificationFailure.SIGNATURE -> "The update wasn't signed with a trusted key for this app."
     }
 
     suspend fun dismiss(code: Long) = withContext(Dispatchers.IO) {
@@ -210,7 +233,7 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
         }
     }
 
-    /** Only called from an explicit Install action. An old notification cannot install a later release. */
+    /** Only called from the app's explicit Install button. */
     suspend fun install(expectedCode: Long) = withContext(Dispatchers.IO) {
         lock.withLock {
             if (!enabled) return@withLock
@@ -240,30 +263,44 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
                 }
                 id = installer.createSession(params)
                 installer.openSession(id).use { staged ->
-                    staged.openWrite("base.apk", 0, release.size).use { output ->
-                        apk.inputStream().use { it.copyTo(output) }
-                        staged.fsync(output)
+                    val job = currentCoroutineContext()
+                    val failure = staged.openWrite("base.apk", 0, release.size).use { output ->
+                        val result = apk.inputStream().use { verifyBytes(it, release, output) { job.ensureActive() } }
+                        if (result == null) staged.fsync(output)
+                        result
                     }
-                    currentCoroutineContext().ensureActive()
+                    if (failure != null) {
+                        abandon(id)
+                        clearSession()
+                        reject(release, failureMessage(failure))
+                        view = view.copy(installing = false)
+                        return@withLock
+                    }
+                    job.ensureActive()
                     val result = Intent(app, UpdateInstallReceiver::class.java)
                         .setData(Uri.parse("todo-update://install/$id"))
                     val pending = PendingIntent.getBroadcast(app, id, result, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-                    if (!prefs.edit().putInt("session", id).commit()) throw IOException()
+                    if (!prefs.edit().putInt("session", id).putString("sessionFingerprint", release.fingerprint).commit()) throw IOException()
                     installId = id
                     staged.commit(pending.intentSender)
                 }
             } catch (error: Exception) {
                 id?.let(::abandon)
-                prefs.edit().remove("session").apply()
-                installId = null
+                clearSession()
                 view = view.copy(installing = false, problem = "Android couldn't start the installation. Try again.")
                 if (error is CancellationException) throw error
             }
         }
     }
 
+    private fun clearSession() {
+        prefs.edit().remove("session").remove("sessionFingerprint").apply()
+        installId = null
+    }
+
     suspend fun installationResult(intent: Intent) = withContext(Dispatchers.IO) {
         lock.withLock {
+            restore()
             val id = intent.data?.lastPathSegment?.toIntOrNull() ?: return@withLock
             if (id != prefs.getInt("session", -1)) return@withLock
             when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
@@ -282,13 +319,20 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
                     prefs.edit().remove("manifest").apply()
                     UpdateAlerts.clear(app)
                 }
+                PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+                PackageInstaller.STATUS_FAILURE_CONFLICT,
+                PackageInstaller.STATUS_FAILURE_INVALID -> {
+                    abandon(id)
+                    val problem = "Android couldn't use this update. Check for a newer release."
+                    val offer = view.offer
+                    if (offer != null && offer.fingerprint == prefs.getString("sessionFingerprint", null)) reject(offer, problem)
+                }
                 else -> {
                     abandon(id)
                     view = view.copy(problem = "The update wasn't installed. You can try again.")
                 }
             }
-            prefs.edit().remove("session").apply()
-            installId = null
+            clearSession()
             view = view.copy(installing = false, confirmation = null)
         }
     }

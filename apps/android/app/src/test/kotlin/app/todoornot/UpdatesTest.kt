@@ -13,6 +13,10 @@ import app.todoornot.updates.mayDownload
 import app.todoornot.updates.newer
 import app.todoornot.updates.sha256
 import app.todoornot.updates.verifyApk
+import app.todoornot.updates.verifyBytes
+import java.io.ByteArrayOutputStream
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertNotEquals
 import app.todoornot.updates.verifyIdentity
 import java.io.File
 import java.net.URI
@@ -47,7 +51,7 @@ class UpdatesTest {
         listOf(
             raw.replace("\"versionCode\":12", "\"versionCode\":\"12\""),
             raw.replace("\"size\":3", "\"size\":3.1"),
-            raw.replace("\"size\":3", "\"size\":134217729"),
+            raw.replace("\"size\":3", "\"size\":67108865"),
             raw.replace("build.12", "build.11"),
             raw.replace("todo-android-0.1.0-build.12.apk", "../todo-android-0.1.0-build.12.apk"),
             raw.replace("todo-android-0.1.0-build.12.apk", "https://todo.example.com/x.apk"),
@@ -56,6 +60,25 @@ class UpdatesTest {
             raw.replace("[\"$rotated\"]", "[]"),
             raw.replace("[\"$rotated\"]", "[\"$rotated\",\"$rotated\"]"),
         ).forEach { assertTrue(it, runCatching { UpdateManifest.parse(it) }.isFailure) }
+    }
+
+    @Test fun apk_size_is_capped_and_the_failure_key_names_exact_bytes() {
+        assertEquals(67_108_864L, UpdateManifest.parse(raw.replace("\"size\":3", "\"size\":67108864")).size)
+        assertEquals("12:$digest", index.fingerprint)
+        assertEquals(index.fingerprint, index.copy(versionName = "ignored change").fingerprint)
+        assertNotEquals(index.fingerprint, index.copy(sha256 = old).fingerprint)
+        assertNotEquals(index.fingerprint, index.copy(versionCode = 13).fingerprint)
+    }
+
+    @Test fun staging_verifies_the_exact_bytes_copied_and_does_not_write_excess_bytes() {
+        val exact = ByteArrayOutputStream()
+        assertNull(verifyBytes(body.inputStream(), index, exact))
+        assertArrayEquals(body, exact.toByteArray())
+        assertEquals(VerificationFailure.HASH, verifyBytes(byteArrayOf(1, 2, 4).inputStream(), index, ByteArrayOutputStream()))
+        assertEquals(VerificationFailure.SIZE, verifyBytes(byteArrayOf(1, 2).inputStream(), index, ByteArrayOutputStream()))
+        val oversized = ByteArrayOutputStream()
+        assertEquals(VerificationFailure.SIZE, verifyBytes(byteArrayOf(1, 2, 3, 4).inputStream(), index, oversized))
+        assertTrue(oversized.size() <= index.size)
     }
 
     @Test fun asset_urls_are_public_https_and_version_pinned() {

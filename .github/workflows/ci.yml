@@ -205,24 +205,13 @@ jobs:
       - run: ./gradlew --no-daemon -p buildSrc test
       # Debug is signed with the SDK's debug key; R8 and resource shrinking run in the unsigned release build.
       - run: ./gradlew --no-daemon :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:verifyPaparazziDebug
-      - name: Test and run the public APK privacy scan with a throwaway key
+      - name: Test the public APK privacy scan
+        run: python3 -B scripts/test_scan_release_apk.py
+      - name: Rotate throwaway keys, then sign, verify and scan the release APK
         shell: pwsh
         run: |
-          python3 -B scripts/test_scan_release_apk.py
-          if ($LASTEXITCODE -ne 0) { throw 'APK scan tests failed.' }
-          $scratch = Join-Path $env:RUNNER_TEMP ('android-ota-' + [Guid]::NewGuid().ToString('N'))
-          $null = New-Item -ItemType Directory -Path $scratch
-          try {
-              $env:TODO_ANDROID_KEYSTORE = Join-Path $scratch 'test.p12'
-              $env:TODO_ANDROID_KEY_ALIAS = 'ci-test'
-              $env:TODO_ANDROID_STORE_PASSWORD = [Guid]::NewGuid().ToString('N')
-              $env:TODO_ANDROID_KEY_PASSWORD = $env:TODO_ANDROID_STORE_PASSWORD
-              keytool -genkeypair -keystore $env:TODO_ANDROID_KEYSTORE -storetype PKCS12 -alias ci-test `
-                  -keyalg RSA -keysize 2048 -validity 1 -dname 'CN=Throwaway Android CI' -storepass:env TODO_ANDROID_STORE_PASSWORD
-              if ($LASTEXITCODE -ne 0) { throw 'Throwaway key creation failed.' }
-              ./scripts/release-apk.ps1 -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0" `
-                  -UnsignedApk app/build/outputs/apk/release/app-release-unsigned.apk -OutputDir (Join-Path $scratch 'output')
-          } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
+          ./scripts/test-release-signing.ps1 -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0" `
+              -UnsignedApk app/build/outputs/apk/release/app-release-unsigned.apk -TempRoot $env:RUNNER_TEMP
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: android-debug-apk

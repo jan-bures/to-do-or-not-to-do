@@ -498,8 +498,9 @@ fields above the keyboard in portrait and landscape. Press **Done** in the list-
 the new list opens. Check predictive Back at both outer edges with rows on screen, and open a detail
 sheet unfolded to check it stays clear of the hinge.
 
-CI builds the debug and unsigned release APKs and runs the unit and screenshot tests. It also signs a
-copy with a throwaway key to run the public APK privacy scan, then deletes that copy. Only the debug
+CI builds the debug and unsigned release APKs and runs the unit and screenshot tests. It rotates
+between two throwaway keys, signs a copy, verifies the embedded lineage and runs the public APK
+privacy scan, then deletes that copy. Only the debug
 APK (signed with the SDK's debug key) is uploaded as a CI artifact. CI never needs release signing secrets.
 
 ## Sideloading and updates
@@ -534,10 +535,11 @@ keytool -genkeypair -keystore $env:TODO_ANDROID_KEYSTORE -storetype PKCS12 `
 
 If migrating earlier debug installs, use the **original debug key that signed those installs**. Compare
 its fingerprint with `apksigner verify --print-certs -v <old-debug.apk>` before rotating. Set
-`TODO_ANDROID_OLD_STORE_PASSWORD` and `TODO_ANDROID_OLD_KEY_PASSWORD` outside the repo, then create
-the lineage **once**:
+`TODO_ANDROID_OLD_CERT_SHA256` to that 64-digit SHA-256 digest (no separators), and set the old store
+and key passwords outside the repo. Create the lineage **once**:
 
 ```powershell
+$env:TODO_ANDROID_OLD_CERT_SHA256 = '<debug-certificate-sha256>'
 $env:TODO_ANDROID_LINEAGE = '<offline-signing-dir>/debug-to-release.lineage'
 & $apksigner rotate --out $env:TODO_ANDROID_LINEAGE `
     --old-signer --ks '<original-debug-keystore>' --ks-key-alias androiddebugkey `
@@ -554,13 +556,30 @@ pwsh apps/android/scripts/release-apk.ps1 -BuildTools $buildTools -OutputDir '<r
 ```
 
 The script signs and verifies the already-aligned APK with APK Signature Scheme v3, then writes
-`android-update.json` next to `todo-android-<versionName>.apk`. It does not publish unless you pass `-Publish`. With a lineage, it sets the rotation floor to API 28, so all supported
-phones see the release signer and Android can preserve installed data. Without a lineage the APK is
-suitable for new installs or same-key updates, **not** for replacing the old debug build. Keep using
-the lineage on later releases so phones that missed the first one can still update. Keep the debug
-key out of day-to-day signing; do not use a shared or compromised debug key to establish trust.
-The manifest's certificate digests describe the current APK signer(s); the verified rotation history
-comes from the APK, not the manifest.
+`android-update.json` next to `todo-android-<versionName>.apk`. It does not publish unless you pass
+`-Publish`. With a lineage, it sets the rotation floor to API 28, so all supported phones see the
+release signer and Android can preserve installed data. Without a lineage a dry-run APK is suitable
+for new installs or same-key updates, **not** for replacing the old debug build. Use the migration
+lineage until all installations have migrated. Keep the debug keystore offline, out of day-to-day
+signing; do not use a shared or compromised debug key to establish trust. The manifest's certificate
+digest describes the current APK signer; the verified rotation history comes from the APK.
+
+**After every installation has migrated**, publish a new build with a hardened lineage. On the
+offline signing machine, use the old key once to turn off its remaining capabilities:
+
+```powershell
+$hardenedLineage = '<offline-signing-dir>/debug-to-release-hardened.lineage'
+& $apksigner lineage --in $env:TODO_ANDROID_LINEAGE --out $hardenedLineage `
+    --signer --ks '<original-debug-keystore>' --ks-key-alias androiddebugkey `
+    --ks-pass env:TODO_ANDROID_OLD_STORE_PASSWORD --key-pass env:TODO_ANDROID_OLD_KEY_PASSWORD `
+    --set-installed-data false --set-shared-uid false --set-permission false `
+    --set-rollback false --set-auth false
+$env:TODO_ANDROID_LINEAGE = $hardenedLineage
+```
+
+Verify the disabled capabilities with `apksigner lineage --in <hardened-lineage> --print-certs -v`
+and keep using the hardened lineage for later releases. Keep the debug keystore offline. Do not ship
+this early: it removes the debug-signed installation's ability to migrate with its data intact.
 
 ### First install or migration
 
@@ -583,15 +602,20 @@ loopback HTTP test pairing).
 In **Rooms → Settings → Updates**, see the installed version and when the app last checked.
 The app checks GitHub Releases at startup if it hasn't attempted a check in six hours, and in the
 background on a six-hour WorkManager schedule when connected. Failed network requests back off.
-Checking and downloading don't need a pairing and never send its address, token or other credentials. **Check now** checks without waiting. Newer compatible releases download on unmetered networks;
-**Download now** allows this release on the current connection, including metered networks. Interrupted
-downloads restart with backoff; partial files are not reused. Before installing, the app verifies the
-private APK again against its size, SHA-256, package, version, SDK and current signer or forward
-signing lineage. Android separately verifies the update when it installs it.
+Checking and downloading don't need a pairing and never send its address, token or other credentials.
+Newer compatible releases of up to 64 MiB download on unmetered networks; **Download now** allows this
+release on the current connection, including metered networks. Each download attempt has a three-minute
+deadline and can retry with backoff. Partial files are not reused. A failed build (identified by version
+code and SHA-256) is not automatically downloaded again after verification fails or retries run out.
+**Check now** can retry it. Before installing, the app verifies the private APK again against its size,
+SHA-256, package, version, SDK and signer lineage, and checks the exact bytes it copies into the installer.
+Android separately verifies the update and the app discards the APK if Android rejects its compatibility,
+signing identity or format.
 
 A dismissible **Update ready** strip above the bottom dock opens Updates. If notifications are
 allowed, the **App updates** channel also shows one low-priority **Update ready** notification with an
-**Install** action. Installation always follows an explicit tap; save any open edit first. The first
+**Install** action that opens the Updates sheet without installing. Save any open edit before tapping
+**Install update** in the sheet. The first
 in-app install opens Android's **Install unknown apps** setting if needed. Allow this app, return and
 tap **Install update** again, then **Continue in Android** to confirm. On Android 12+, when this app
 is already the installer of record it requests an install without a second Android confirmation;
@@ -601,12 +625,13 @@ Android may still require one. WorkManager never installs a package.
 
 **These APKs are public.** No deployment host, private identity, credentials or local paths may be
 compiled into them. The Rust release build remaps Cargo (`/cargo`), Rustup/sysroot (`/rustc`), workspace
-(`/src`), Gradle and SDK/NDK paths. The signing script checks every decompressed APK entry, including
-native libraries and DEX, for the home path, local username and user-directory prefixes such as
-`C:\Users` and `/home/`. Set `TODO_ANDROID_DENYLIST` to an optional private UTF-8 file with more names,
-paths or other values to reject, one per line. Blank lines and `#` comments are ignored. This is a
-release gate, not a substitute for reviewing resources and certificate subjects. Never upload a
-keystore, signing lineage file or signing passwords.
+(`/src`), Gradle and SDK/NDK paths. The signing script scans the raw APK (including its signing block),
+decompressed entries and nested ZIPs/JARs for local build paths, temp paths, home paths and user-directory
+prefixes such as `C:\Users` and `/home/`, as well as local usernames, Git identity and machine hostname.
+Set `TODO_ANDROID_DENYLIST` to a private UTF-8 file with more names, paths or values to reject, one per line.
+Blank lines and `#` comments are ignored; publishing requires at least one active line. Dry runs warn if
+no denylist is set. Review release assets and certificate subjects even if the scan passes. Never upload
+a keystore, signing lineage file or signing passwords.
 
 Run the command above as a dry run first. When you're ready, check out a clean copy of the current
 `origin/main`, sign in to `gh`, and use a new output directory:
@@ -617,7 +642,10 @@ pwsh apps/android/scripts/release-apk.ps1 -BuildTools $buildTools -OutputDir '<n
 ```
 
 The script refuses a dirty worktree, a stale commit or an existing `v<version>-build.<count>` tag.
-`gh release create` creates the tag at that exact `main` commit and marks the release Latest. The
+`-Publish` also requires `TODO_ANDROID_LINEAGE` and `TODO_ANDROID_OLD_CERT_SHA256`: the lineage must
+start with the expected old certificate and end with the manifest signer, and the final APK must
+carry that lineage. `gh release create` creates the tag at that exact `main` commit and marks the
+release Latest. The script checks GitHub's Latest release afterward and warns if it can't confirm it. The
 assets are the signed APK and an `android-update.json` with `versionCode`, `versionName`, `size`,
 `sha256`, `fileName`, `minSdk` and `signingCertSha256`. Publish only one Android build per version;
 keep its assets available for clients that already read its manifest. A release marked Latest must

@@ -1,13 +1,15 @@
 package app.todoornot.updates
 
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 import org.json.JSONObject
 
 internal const val CHECK_HOURS = 6L
 internal const val CHECK_INTERVAL_MS = CHECK_HOURS * 60 * 60 * 1_000
 internal const val MAX_INDEX = 16 * 1024
-private const val MAX_APK = 128L * 1024 * 1024
+private const val MAX_APK = 64L * 1024 * 1024
 private val digestPattern = Regex("[a-f0-9]{64}")
 
 internal fun checkDue(now: Long, lastAttempt: Long) =
@@ -25,6 +27,8 @@ internal data class UpdateManifest(
     val minSdk: Int,
     val signingCertSha256: Set<String>,
 ) {
+    val fingerprint get() = "$versionCode:$sha256"
+
     companion object {
         fun parse(raw: String): UpdateManifest {
             require(raw.length <= MAX_INDEX)
@@ -83,15 +87,29 @@ internal fun verifyApk(
     file: File, manifest: UpdateManifest, installed: ApkIdentity, archive: () -> ApkIdentity?,
 ): VerificationFailure? {
     if (file.length() != manifest.size) return VerificationFailure.SIZE
+    val failure = file.inputStream().use { verifyBytes(it, manifest) }
+    return failure ?: verifyIdentity(manifest, installed, archive())
+}
+
+/** Verify the exact bytes sent to the installer, not a separate read of a file that may have changed. */
+internal fun verifyBytes(
+    input: InputStream, manifest: UpdateManifest, output: OutputStream? = null, checkpoint: () -> Unit = {},
+): VerificationFailure? {
     val digest = MessageDigest.getInstance("SHA-256")
-    file.inputStream().buffered().use { input ->
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            digest.update(buffer, 0, count)
-        }
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var size = 0L
+    while (true) {
+        checkpoint()
+        val count = input.read(buffer)
+        if (count < 0) break
+        size += count
+        if (size > manifest.size) return VerificationFailure.SIZE
+        digest.update(buffer, 0, count)
+        output?.write(buffer, 0, count)
     }
-    if (digest.digest().hex() != manifest.sha256) return VerificationFailure.HASH
-    return verifyIdentity(manifest, installed, archive())
+    return when {
+        size != manifest.size -> VerificationFailure.SIZE
+        digest.digest().hex() != manifest.sha256 -> VerificationFailure.HASH
+        else -> null
+    }
 }

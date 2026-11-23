@@ -9,6 +9,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+$denylist = $env:TODO_ANDROID_DENYLIST
+if ($denylist) {
+    if (-not (Test-Path -LiteralPath $denylist -PathType Leaf) -or
+        -not (Get-Content -Encoding utf8 -LiteralPath $denylist | Where-Object { $_ -match '^\s*[^\s#]' } | Select-Object -First 1)) {
+        throw 'TODO_ANDROID_DENYLIST must point to a readable file with at least one active pattern.'
+    }
+} elseif ($Publish) {
+    throw 'Publishing requires a private denylist (TODO_ANDROID_DENYLIST).'
+} else {
+    Write-Warning 'No private denylist configured; this dry run only checks built-in privacy patterns.'
+}
+$expectedOld = $env:TODO_ANDROID_OLD_CERT_SHA256
+$lineage = $env:TODO_ANDROID_LINEAGE
+if ($Publish -and (-not $lineage -or -not $expectedOld)) {
+    throw 'Publishing requires TODO_ANDROID_LINEAGE and TODO_ANDROID_OLD_CERT_SHA256.'
+}
+if ($expectedOld -and ($expectedOld -notmatch '^[0-9a-fA-F]{64}$' -or -not $lineage)) {
+    throw 'TODO_ANDROID_OLD_CERT_SHA256 must be a 64-digit certificate SHA-256 with a lineage configured.'
+}
 if ($Publish) {
     if ($UnsignedApk) { throw 'Publishing must build the APK from main; do not pass -UnsignedApk.' }
     $repositoryLine = Get-Content (Join-Path $repo 'Cargo.toml') | Where-Object { $_ -match '^repository = "https://[^"/]+/[^"/]+/[^"/]+"$' }
@@ -36,13 +55,33 @@ $aapt = Join-Path $BuildTools $(if ($IsWindows) { 'aapt2.exe' } else { 'aapt2' }
 if (-not (Test-Path -LiteralPath $signer -PathType Leaf) -or -not (Test-Path -LiteralPath $aapt -PathType Leaf)) {
     throw 'Pass the Android SDK build-tools directory (37.0.0 or later).'
 }
+function Read-Lineage([string] $Path) {
+    $lines = & $signer lineage --in $Path --print-certs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read signing lineage.' }
+    $digests = @($lines | ForEach-Object {
+        if ($_ -match '^Signer #([0-9]+) in lineage certificate SHA-256 digest: ([0-9a-fA-F]{64})$') {
+            [pscustomobject]@{ Number = [int]$Matches[1]; Digest = $Matches[2].ToLowerInvariant() }
+        }
+    } | Sort-Object Number)
+    if ($digests.Count -lt 2) { throw 'Expected a signing lineage with at least two certificates.' }
+    for ($i = 0; $i -lt $digests.Count; $i++) {
+        if ($digests[$i].Number -ne $i + 1) { throw 'Unexpected signing lineage order.' }
+        $digests[$i].Digest
+    }
+}
+$expectedLineage = @()
+if ($lineage) {
+    $expectedLineage = @(Read-Lineage $lineage)
+    if ($expectedOld -and $expectedLineage[0] -ne $expectedOld) { throw 'The lineage does not start with the expected old certificate.' }
+}
+
 if (-not $UnsignedApk) {
     $signingVars = @{}
     $argsForGradle = @(':app:assembleRelease')
     if ($Publish) { $argsForGradle += "-Ptodo.updateFeed=$repositoryUrl" }
     Push-Location (Join-Path $PSScriptRoot '..')
     try {
-        foreach ($name in @('TODO_ANDROID_KEYSTORE', 'TODO_ANDROID_KEY_ALIAS', 'TODO_ANDROID_STORE_PASSWORD', 'TODO_ANDROID_KEY_PASSWORD', 'TODO_ANDROID_LINEAGE')) {
+        foreach ($name in @('TODO_ANDROID_KEYSTORE', 'TODO_ANDROID_KEY_ALIAS', 'TODO_ANDROID_STORE_PASSWORD', 'TODO_ANDROID_KEY_PASSWORD', 'TODO_ANDROID_LINEAGE', 'TODO_ANDROID_OLD_CERT_SHA256', 'TODO_ANDROID_DENYLIST')) {
             $signingVars[$name] = [Environment]::GetEnvironmentVariable($name)
             [Environment]::SetEnvironmentVariable($name, $null)
         }
@@ -73,10 +112,10 @@ $null = New-Item -ItemType Directory -Path $OutputDir
 $file = "todo-android-$version.apk"
 $apk = Join-Path $OutputDir $file
 $rotation = @()
-if ($env:TODO_ANDROID_LINEAGE) {
+if ($lineage) {
     # Apply rotation on every supported OS (API 29+) rather than the default of API 33+.
     # v3-only signing needs only the final key, even on the first rotated release.
-    $rotation = @('--lineage', $env:TODO_ANDROID_LINEAGE, '--rotation-min-sdk-version', '28')
+    $rotation = @('--lineage', $lineage, '--rotation-min-sdk-version', '28')
 }
 try {
     & $signer sign --out $apk --ks $env:TODO_ANDROID_KEYSTORE --ks-key-alias $env:TODO_ANDROID_KEY_ALIAS `
@@ -96,11 +135,21 @@ try {
     $certs = @($verification | ForEach-Object {
         if ($_ -match '^(?:Signer #[0-9]+|V3\.0 Signer:) certificate SHA-256 digest: ([0-9a-fA-F]{64})$') { $Matches[1].ToLowerInvariant() }
     } | Select-Object -Unique)
-    if ($certs.Count -eq 0) { throw 'No signing certificates found.' }
+    if ($certs.Count -ne 1) { throw 'Expected one current APK v3 signer.' }
+    if ($lineage) {
+        if ($expectedLineage[-1] -ne $certs[0]) { throw 'The lineage must end with the manifest signer.' }
+        $embedded = @(Read-Lineage $apk)
+        if (($embedded -join ',') -ne ($expectedLineage -join ',')) {
+            throw 'The APK does not carry the expected v3 signing lineage, including the old certificate.'
+        }
+        if ($expectedOld -and $embedded -notcontains $expectedOld) { throw 'The APK lineage is missing the expected old certificate.' }
+    }
+    $size = (Get-Item -LiteralPath $apk).Length
+    if ($size -gt 64MB) { throw 'The APK exceeds the updater limit of 64 MiB.' }
     $manifest = [ordered]@{
         versionCode = $code
         versionName = $version
-        size = (Get-Item -LiteralPath $apk).Length
+        size = $size
         sha256 = (Get-FileHash -LiteralPath $apk).Hash.ToLowerInvariant()
         fileName = $file
         minSdk = 29
@@ -122,6 +171,11 @@ if ($Publish) {
     if ($LASTEXITCODE -ne 0 -or $nowHead -ne $head) { throw 'HEAD changed during the build.' }
     & gh release create $tag --repo $repoTarget --target $head $apk $index --title "Android $version" --notes $Notes --latest
     if ($LASTEXITCODE -ne 0) { throw 'GitHub did not publish the release.' }
+    # `gh release view` does not expose isLatest on every CLI version. Ask GitHub's Latest endpoint.
+    $latestTag = & gh api --hostname $hostName "repos/$slug/releases/latest" --jq '.tag_name'
+    if ($LASTEXITCODE -ne 0 -or $latestTag -cne $tag) {
+        Write-Warning 'RELEASE PUBLISHED BUT NOT CONFIRMED AS LATEST. Android clients may not see it. Check GitHub before retrying.'
+    }
 } else {
     Write-Output "Dry run: $version ($($manifest.size) bytes). Nothing published."
 }
