@@ -1,9 +1,6 @@
 //! Multi-selection for the task list; the shared client owns membership and action policy.
 
-use super::{
-    Ctx, DUE_DATE_ERROR, Icon, Phase, TaskId, ctx, due_field, handover_row_phase, icon, model,
-    platform,
-};
+use super::{Ctx, Icon, Phase, TaskId, ctx, handover_row_phase, icon, model, platform};
 use leptos::prelude::*;
 use todo_client::selection::{self, BulkTaskAction, Selection, Tool};
 use wasm_bindgen::JsCast;
@@ -294,9 +291,13 @@ pub(super) fn DueDialog() -> impl IntoView {
             }>
             <form on:submit=move |ev| { ev.prevent_default(); save(false); }>
                 <h2 id="bulk-due-heading">"Due date for selected tasks"</h2>
-                {due_field(c, true, NodeRef::new(), draft, invalid, |_| {}, |_| {})}
+                <input class="room-name-input" type="text" aria-label="Due date" autocomplete="off"
+                    autofocus disabled=move || c.read_only() placeholder="tomorrow, fri, +3d…"
+                    aria-invalid=move || invalid.get().to_string() aria-describedby="bulk-due-help"
+                    prop:value=move || draft.get()
+                    on:input=move |ev| { draft.set(event_target_value(&ev)); invalid.set(false); }/>
                 <p id="bulk-due-help" class:prop-error=move || invalid.get()>
-                    {move || if invalid.get() { DUE_DATE_ERROR } else { "Clearing a date also clears its repeat rule." }}
+                    {move || if invalid.get() { "Try tomorrow, fri, +3d or a date like 2026-12-01." } else { "Clearing a date also clears its repeat rule." }}
                 </p>
                 <div class="dialog-actions">
                     <button type="button" class="button" on:click=move |_| c.close_bulk_due(true)>"Cancel"</button>

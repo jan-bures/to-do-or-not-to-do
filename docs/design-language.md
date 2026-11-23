@@ -365,7 +365,9 @@ Monday-first ISO convention as the room's week number and the same English weekd
 Days outside the month are blank. The selected date has a wash and a stronger label; today's outline and
 the keyboard focus edge are separate. The picker opens on the pending date or today. The arrow keys move by
 one day or one week, Page Up/Down move by a month, Enter chooses, and Esc dismisses without changing the
-draft. The Flag opens the same four choices as task detail with the current choice ticked.
+draft. Task detail's Due row opens this same picker on the saved date or today. Choosing there saves
+immediately rather than staging a draft. The Flag opens the same four choices as task detail with the
+current choice ticked.
 
 A choice sets the pending field and takes out that field's typed suffix, not the title or the other suffix.
 Typing another valid suffix replaces the corresponding choice. Removing a chip clears that field; **No date**

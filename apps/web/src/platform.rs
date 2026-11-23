@@ -220,7 +220,12 @@ pub fn place_room_menu(menu: &web_sys::HtmlElement, anchor: &str) -> bool {
         f64::from(viewport.client_width()),
         f64::from(viewport.client_height()),
     );
-    let rect = trigger.get_bounding_client_rect();
+    // Calendars use the trailing edge of their icon or full Due row, like the desktop picker.
+    let calendar_anchor = trigger.closest("[data-calendar-anchor]").ok().flatten();
+    let rect = calendar_anchor
+        .as_ref()
+        .unwrap_or(&trigger)
+        .get_bounding_client_rect();
     let clip = trigger
         // On phones the fixed composer sits outside the room's scrollable content.
         .closest(".quick-add, .detail-scroll, .nav, .room")
@@ -246,12 +251,24 @@ pub fn place_room_menu(menu: &web_sys::HtmlElement, anchor: &str) -> bool {
         f64::from(menu.offset_width()),
         f64::from(menu.offset_height()),
     );
-    let end = rect.left() + w > vw;
-    let above = rect.bottom() + h > vh && rect.top() > vh - rect.bottom();
+    let (gap, margin) = if calendar_anchor.is_some() {
+        (
+            f64::from(todo_design::layout::space::S1),
+            f64::from(todo_design::layout::space::S2),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let end = calendar_anchor.is_some() || rect.left() + w > vw;
+    let above = rect.bottom() + gap + h > vh - margin && rect.top() > vh - rect.bottom();
     let x = if end { rect.right() - w } else { rect.left() };
-    let y = if above { rect.top() - h } else { rect.bottom() };
-    let x = x.clamp(0.0, (vw - w).max(0.0));
-    let y = y.clamp(0.0, (vh - h).max(0.0));
+    let y = if above {
+        rect.top() - gap - h
+    } else {
+        rect.bottom() + gap
+    };
+    let x = x.clamp(margin, (vw - w - margin).max(margin));
+    let y = y.clamp(margin, (vh - h - margin).max(margin));
     let style = menu.style();
     let _ = style.set_property("--room-menu-x", &format!("{x}px"));
     let _ = style.set_property("--room-menu-y", &format!("{y}px"));

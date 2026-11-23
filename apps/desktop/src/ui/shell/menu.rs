@@ -99,7 +99,7 @@ pub(super) enum MenuKind {
         task: TaskId,
         page: TagPage,
     },
-    QuickDue(super::quick_pickers::Calendar),
+    Date(super::quick_pickers::Calendar),
     QuickPriority,
     /// The detail pane's priority picker.
     Priority {
@@ -147,8 +147,8 @@ impl MenuKind {
     pub(super) fn same_menu(self, other: Self) -> bool {
         match (self, other) {
             (Self::Account { .. }, Self::Account { .. })
-            | (Self::Room { .. }, Self::Room { .. })
-            | (Self::QuickDue(_), Self::QuickDue(_)) => true,
+            | (Self::Room { .. }, Self::Room { .. }) => true,
+            (Self::Date(a), Self::Date(b)) => a.task == b.task,
             (Self::List { id: a, .. }, Self::List { id: b, .. }) => a == b,
             (Self::Collection { id: a, .. }, Self::Collection { id: b, .. }) => a == b,
             (Self::Task { id: a, .. }, Self::Task { id: b, .. }) => a == b,
@@ -260,7 +260,7 @@ impl ShellView {
                 id,
                 page: TaskPage::Links,
             } => menus::links_menu(&state, id),
-            MenuKind::QuickDue(_) => Vec::new(),
+            MenuKind::Date(_) => Vec::new(),
             MenuKind::QuickPriority => menus::priority_entries(
                 self.quick_preview().priority.unwrap_or_default(),
                 MenuAction::QuickPriority,
@@ -552,8 +552,8 @@ impl ShellView {
             return;
         }
         cx.stop_propagation();
-        if let MenuKind::QuickDue(calendar) = menu.kind {
-            self.quick_calendar_key(calendar, e, window, cx);
+        if let MenuKind::Date(calendar) = menu.kind {
+            self.calendar_key(calendar, e, window, cx);
             return;
         }
         let entries = self.menu_entries(menu.kind);
@@ -1262,10 +1262,10 @@ impl ShellView {
         cx.notify();
     }
 
-    /// Keep the repeat or reminder row visible while editing: hang the picker on the roomier side of
-    /// the row.
+    /// Keep a detail field visible while editing: hang its picker on the roomier side of the row.
     fn menu_opens_up(&self, kind: MenuKind) -> bool {
         let probe = match kind {
+            MenuKind::Date(c) if c.task.is_some() => Some("due-row"),
             MenuKind::Repeat { .. } => Some("repeat-row"),
             MenuKind::Reminder { .. } => Some("reminder-row"),
             _ => None,
@@ -1287,7 +1287,7 @@ impl ShellView {
     ) -> Option<AnyElement> {
         let menu = self.menu.as_ref().filter(|m| belongs(&m.kind))?;
         let entries = self.menu_entries(menu.kind);
-        if entries.is_empty() && !matches!(menu.kind, MenuKind::QuickDue(_)) {
+        if entries.is_empty() && !matches!(menu.kind, MenuKind::Date(_)) {
             return None;
         }
         let p = self.palette;
@@ -1512,7 +1512,7 @@ impl ShellView {
         let shift = if opens_up { shift } else { -shift };
         let width = if kind == MenuKind::New {
             component::NEW_MENU
-        } else if matches!(kind, MenuKind::QuickDue(_)) || menus::is_wide(&entries) {
+        } else if matches!(kind, MenuKind::Date(_)) || menus::is_wide(&entries) {
             desktop::CONFIRM
         } else {
             desktop::MENU
@@ -1527,6 +1527,10 @@ impl ShellView {
             .overflow_y_scroll()
             .track_scroll(&self.menu_scroll)
             .children(rows);
+        let contents = match kind {
+            MenuKind::Date(calendar) => self.calendar_body(calendar, live, cx).into_any_element(),
+            _ => items.into_any_element(),
+        };
         // A closing menu is paint-only: it neither blocks nor takes the clicks meant for what's behind.
         let body = kit::overlay(&p)
             .id("menu")
@@ -1553,16 +1557,10 @@ impl ShellView {
                 },
             )
             .children(filter)
-            .when(matches!(kind, MenuKind::QuickDue(_)), |el| {
-                let MenuKind::QuickDue(calendar) = kind else {
-                    return el;
-                };
-                el.child(self.quick_calendar_body(calendar, live, cx))
-                    .when(live, |el| {
-                        el.role(Role::Dialog).aria_label("Choose due date")
-                    })
+            .child(contents)
+            .when(live && matches!(kind, MenuKind::Date(_)), |el| {
+                el.role(Role::Dialog).aria_label("Choose due date")
             })
-            .when(!matches!(kind, MenuKind::QuickDue(_)), |el| el.child(items))
             .when_some(footer_menu.filter(|_| live), |d, label| {
                 d.role(Role::Menu).aria_label(label)
             })

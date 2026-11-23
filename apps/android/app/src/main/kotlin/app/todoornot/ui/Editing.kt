@@ -76,8 +76,8 @@ internal fun tokenTypography(): Typography {
 }
 
 /**
- * The due date picker: the Material date picker in our colours and type, on the overlay surface. It opens
- * on the task's date (or today's month), takes a tap on a day (or a typed date), and saves with **Save**.
+ * The bulk due date picker: the Material date picker in our colours and type, on the overlay surface.
+ * It takes a tap on a day (or a typed date) and saves with **Save**.
  * **Clear** takes the date away, and with it a repeat, which the note says. [markToday] rings today's
  * date; the gallery turns it off, as the picker reads the device's clock for it.
  *
@@ -177,14 +177,6 @@ internal val COMPACT_BELOW = Tokens.Metrics.Phone.INNER_LIST.dp + Tokens.Space.S
 
 /** Under the picker when the task repeats: what Clear also does. */
 const val REPEAT_NOTE = "This task repeats. Clearing the date also stops the repeat."
-
-/** The due date picker in its dialog. */
-@Composable
-fun DueDateDialog(due: String?, today: String, repeats: Boolean, onSave: (String?) -> Unit, onDismiss: () -> Unit) {
-    OverlayDialog(onDismiss) { overlay ->
-        DueDateCard(due, today, repeats, onSave = { d -> overlay.choose { onSave(d) } }, onCancel = overlay::close)
-    }
-}
 
 /**
  * Renames a list or a collection: the name, selected, with the keyboard up. Done or **Save** keeps it;

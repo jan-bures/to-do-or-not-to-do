@@ -377,6 +377,10 @@ Page Up/Down by months, Enter chooses, and Esc closes the picker and returns to 
 offers the four priority levels. Picking a value removes the matching typed suffix, leaving the other one
 alone. Clearing a chip (or choosing **No date** or **None**) overrides the corresponding room default.
 
+In task detail, click **Due** or press **D** to open the same calendar on the task's due date (or today).
+Choosing a day or preset saves it right away. **No date** also clears any repeat rule. **Esc** closes
+without saving and returns focus to Due.
+
 Drop `.eml` files onto the task list to [create tasks from email](desktop.md#drop-an-email-onto-the-task-list).
 The area below quick-add highlights and names the destination while dragging, even if the browser
 withholds filenames and the file type is unknown. The room header and quick-add are not drop targets.
@@ -566,7 +570,8 @@ The status bar shows shortcuts only when their actions are available.
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered,
   empty and refused undo), task detail activity on desktop and phone, the desktop and phone quick-add
-  chips, calendar and priority pickers, the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
+  chips, calendar and priority pickers, the detail Due calendar (`{desktop,phone}-detail-due-calendar-{light,dark}.png`),
+  the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
   list, detail and drawer. Settings menus are captured on desktop (`sidebar-settings-{light,dark}.png`)
   and phone (`phone-settings-{light,dark}.png`). Reminder permission states are in
   `reminder-settings-{not-enabled,allowed,blocked,unsupported}-{light,dark}.png` and fallback toasts in

@@ -85,12 +85,12 @@ What the first version does:
   source's notes, live steps, links, attachments and reminders move over, and tags are combined.
   If either task changes name or list while the question is open, the app rechecks it on confirm.
   **Undo** reverses the whole merge. The `merge_tasks` Paparazzi gallery shows the picker and confirmation.
-- **Due date and priority.** In the detail pane, the **Due** row opens the date picker: the Material date
-  picker in the room's colours and the tokens' type, on the overlay surface. It opens on the task's date
-  (or today's month), takes a tap on a day or a typed date, and keeps it with **Save**. **Clear** takes
-  the date away, and with it a repeat, which needs a date (`intent::set_due`); when the task repeats, a
-  note under the picker says so. In a short window (the cover screen on its side) the picker drops its
-  headline and mode toggle, and the calendar scrolls under the buttons, which stay in view. The **Priority** row opens a picker with all four levels, highest first
+- **Due date and priority.** Tap **Due** to open the same calendar as quick-add, anchored to the row.
+  It opens on the saved date or today. Choose **Today**, **Tomorrow**, **Next week** (next Monday), or
+  any day in the Monday-first grid to save it immediately. **No date** removes the due date and any
+  repeat rule (`intent::set_due`). Back or **Esc** closes without saving. On a hardware keyboard,
+  arrows move by day or week, **Page Up/Down** move by month and **Enter** chooses. The **Priority** row
+  opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
   high priority or none, as on the desktop.
 - **Repeat.** Tap Repeat for Daily, Weekdays, Weekly, Monthly, Yearly, Custom… or Don’t repeat. Custom
@@ -372,14 +372,14 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 The gallery draws everything at rest, and freezes the motion at chosen moments (`GalleryTest.motion_frames`:
 the fill, the hold, the collapse half way, the sun half way, dusk half way and the hand-over entering).
 Popups and dialogs are windows of their own, which Paparazzi can't draw, so the overlay shots draw their
-cards in place over the screen, at rest: the date picker (`due_date_picker`, drawn with today's ring off,
-since the picker reads the device's clock for it), the priority picker, a step being renamed and a step's
+cards in place over the screen, at rest: the shared calendar (`detail_due_calendar`, on dated and undated
+tasks in both themes), the priority picker, a step being renamed and a step's
 menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
 rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
 Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
 drawer with every collection folded, Activity and its agents after Agent activity (`agent_summary`), and
-Settings with the admin link and idle/busy sync (`settings_menu_light`, `settings_menu_dark`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
+Settings with the admin link and idle/busy sync (`settings_menu_light`, `settings_menu_dark`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes. The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon

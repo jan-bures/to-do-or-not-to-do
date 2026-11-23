@@ -91,6 +91,8 @@ pub enum Stop {
     DetailMyDay,
     /// Important toggle in the detail toolbar.
     DetailImportant,
+    /// The Due row, when a task is open.
+    Due,
     /// Reminder, when a task is open.
     Reminder,
     /// Repeat, when a task is open.
@@ -117,7 +119,7 @@ pub const QUICK_ADD_STOPS: [Stop; 5] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 28] = [
+pub const TAB_ORDER: [Stop; 29] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -140,6 +142,7 @@ pub const TAB_ORDER: [Stop; 28] = [
     Stop::DetailSplitter,
     Stop::DetailMyDay,
     Stop::DetailImportant,
+    Stop::Due,
     Stop::Reminder,
     Stop::Repeat,
     Stop::Attachment(FileControl::Add),
@@ -162,6 +165,7 @@ pub enum ScrollPane {
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
         Stop::DetailMyDay | Stop::DetailImportant => Some((ScrollPane::Detail, "detail-toolbar")),
+        Stop::Due => Some((ScrollPane::Detail, "due-row")),
         Stop::Reminder => Some((ScrollPane::Detail, "reminder-row")),
         Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
         // Load older activity (or Try again) ends the feed, below the last change read.
@@ -625,6 +629,7 @@ mod tests {
                 DetailSplitter,
                 DetailMyDay,
                 DetailImportant,
+                Due,
                 Reminder,
                 Repeat,
                 Attachment(FileControl::Add),
@@ -645,6 +650,7 @@ mod tests {
                 Attachment(FileControl::Add),
                 Repeat,
                 Reminder,
+                Due,
                 DetailImportant,
                 DetailMyDay,
                 DetailSplitter,
@@ -678,8 +684,10 @@ mod tests {
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
         let extra_detail_control = |s| {
-            matches!(s, DetailMyDay | DetailImportant | Attachment(_) | Bulk(_))
-                || QUICK_ADD_STOPS.contains(&s)
+            matches!(
+                s,
+                DetailMyDay | DetailImportant | Due | Attachment(_) | Bulk(_)
+            ) || QUICK_ADD_STOPS.contains(&s)
         };
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New is always there). (Below, nothing couldn't
@@ -850,12 +858,16 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_from_reminder_reveals_the_detail_toolbar() {
+    fn shift_tab_from_reminder_reveals_due_then_the_detail_toolbar() {
         let mut from = Stop::Reminder;
-        for expected in [Stop::DetailImportant, Stop::DetailMyDay] {
+        for (expected, probe) in [
+            (Stop::Due, "due-row"),
+            (Stop::DetailImportant, "detail-toolbar"),
+            (Stop::DetailMyDay, "detail-toolbar"),
+        ] {
             let next = tab_stop(from, false, |_| true);
             assert_eq!(next, expected);
-            assert_eq!(reveal(next), Some((ScrollPane::Detail, "detail-toolbar")));
+            assert_eq!(reveal(next), Some((ScrollPane::Detail, probe)));
             from = next;
         }
     }
@@ -871,6 +883,7 @@ mod tests {
                     Undo | DetailSplitter
                         | DetailMyDay
                         | DetailImportant
+                        | Due
                         | Reminder
                         | Repeat
                         | Attachment(_)

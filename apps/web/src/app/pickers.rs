@@ -282,6 +282,7 @@ pub(super) fn focus_unmoved(before: Option<&web_sys::Element>) -> bool {
 
 pub(super) fn position_detail_pickers() {
     for (id, anchor) in [
+        (super::DUE_PICKER, super::DUE_ANCHOR),
         ("repeat-picker", "edit-task-repeat"),
         ("tag-picker", "edit-task-tags"),
         (super::reminder::PICKER, super::reminder::ANCHOR),

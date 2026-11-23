@@ -313,37 +313,45 @@ test("steps, important and My Day toggles work from the detail pane", async ({ p
   await w.check();
 });
 
-test("the due date accepts relative and past dates, rejects bad input, and can be cleared", async ({ page }) => {
+test("detail due uses the calendar for presets, past dates and clearing a repeat", async ({ page }) => {
   const w = watch(page);
   await open(page);
   const board = row(page, "Prepare the November board update");
   await board.locator(".row-title").click();
-  const input = page.getByRole("textbox", { name: "Due date" });
   const due = page.getByRole("button", { name: /^Edit due date/ });
+  const calendar = page.getByRole("dialog", { name: "Choose due date" });
+  const day = (name) => calendar.getByRole("button", { name, exact: true });
+  const today = day("Saturday, 21 November 2026");
   await page.keyboard.press("d");
-  await expect(input).toBeFocused();
-  await expect(input).toHaveValue("2026-11-21");
-  await input.fill("next week maybe");
-  await input.press("Enter");
-  await expect(input).toHaveAttribute("aria-invalid", "true");
-  await expect(input).toHaveValue("next week maybe");
-  await input.press("Escape");
+  await expect(due).toHaveAttribute("aria-expanded", "true");
+  await expect(today).toBeFocused();
+  await expect(calendar.getByRole("gridcell", { selected: true })).toContainText("21");
+  await page.keyboard.press("PageDown");
+  await expect(day("Monday, 21 December 2026")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(due).toBeFocused();
   await expect(due).toHaveText("Today");
   await due.click();
-  await input.fill("zítra");
-  await input.press("Enter");
+  await day("Tomorrow").click();
   await expect(due).toHaveText("Tomorrow");
   await expect(board.locator(".col-due")).toHaveText("Tomorrow");
   await due.click();
-  await input.fill("2026-11-20");
-  await input.press("Enter");
+  await expect(day("Sunday, 22 November 2026")).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(day("Friday, 20 November 2026")).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(board.locator(".col-due")).toHaveText("1d overdue");
   await due.click();
-  await input.fill("");
-  await input.press("Enter");
+  await day("No date").click();
   await expect(due).toHaveText("Set date");
   await expect(board.locator(".col-due")).toBeEmpty();
   await expect(page.getByRole("button", { name: "Repeat", exact: true })).toHaveText("Does not repeat");
+  await due.click();
+  await expect(today).toBeFocused();
+  await expect(today).toHaveAttribute("aria-current", "date");
+  await expect(day("No date")).toHaveAttribute("aria-current", "true");
+  await page.keyboard.press("Escape");
   await w.check();
 });
 
@@ -441,7 +449,7 @@ test("holding P cycles the priority only once", async ({ page }) => {
   await w.check();
 });
 
-test("task shortcuts stay out of the quick-add and due-date inputs", async ({ page }) => {
+test("task shortcuts stay out of the composer and the open detail calendar", async ({ page }) => {
   const w = watch(page);
   await open(page);
   await page.locator(".sidebar").getByRole("link", { name: /^Team/ }).click();
@@ -452,24 +460,26 @@ test("task shortcuts stay out of the quick-add and due-date inputs", async ({ pa
   const detail = page.locator(".detail .d-title");
   const priority = page.getByRole("combobox", { name: "Priority" });
   const dueButton = page.getByRole("button", { name: /^Edit due date/ });
-  const dueInput = page.getByRole("textbox", { name: "Due date" });
+  const calendar = page.getByRole("dialog", { name: "Choose due date" });
   const add = page.getByRole("textbox", { name: "Add a task" });
-  for (const input of [add, dueInput]) {
-    if (input === add) await add.focus();
-    else await dueButton.click();
-    await expect(input).toBeFocused();
-    await input.fill("");
-    for (const key of ["p", "d", "Space", "Alt+ArrowUp", "Alt+ArrowDown"]) {
-      await page.keyboard.press(key);
-      await expect(input).toBeFocused();
-      await expect(detail).toHaveText(order[1]);
-      await expect(titles).toHaveText(order);
-      await expect(priority).toHaveValue("Low");
-      if (input === add) await expect(dueInput).toHaveCount(0);
-    }
-    await expect(input).toHaveValue("pd ");
+  await add.fill("");
+  for (const key of ["p", "d", "Space", "Alt+ArrowUp", "Alt+ArrowDown"]) {
+    await page.keyboard.press(key);
+    await expect(calendar).toBeHidden();
   }
-  await dueInput.press("Escape");
+  await expect(add).toBeFocused();
+  await expect(add).toHaveValue("pd ");
+  await dueButton.click();
+  await expect(calendar).toBeVisible();
+  for (const key of ["p", "d", "Alt+ArrowUp", "Alt+ArrowDown"]) {
+    await page.keyboard.press(key);
+    await expect(calendar).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await expect(dueButton).toBeFocused();
+  await expect(detail).toHaveText(order[1]);
+  await expect(titles).toHaveText(order);
+  await expect(priority).toHaveValue("Low");
   await expect(dueButton).toHaveText("Set date");
   await w.check();
 });

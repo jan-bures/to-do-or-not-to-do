@@ -36,7 +36,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -48,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import app.todoornot.core.LocalNow
 import app.todoornot.core.QuickAddDraft
 import app.todoornot.core.QuickAddMonth
+import app.todoornot.core.calendarMoveDays
 import app.todoornot.core.quickAddEdit
 import app.todoornot.core.quickAddMonth
 import app.todoornot.core.quickAddPickDue
@@ -131,11 +139,7 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                             calendarNow = actions.composerNow()
                         }
                         calendarNow?.let { opened ->
-                            var cursor by remember(opened) { mutableStateOf<String?>(null) }
-                            val month = remember(opened, preview.due, cursor) { quickAddMonth(opened, preview.due, cursor) }
-                            AnchoredPopup(onDismiss = { calendarNow = null }) { overlay ->
-                                QuickAddCalendar(month, preview.due, { day -> overlay.choose { chooseDate(day) } }, { cursor = it }, Modifier.padding(S.S2.dp))
-                            }
+                            CalendarPopup(opened, preview.due, onChoose = ::chooseDate, onDismiss = { calendarNow = null })
                         }
                     }
                     Box {
@@ -183,20 +187,48 @@ private fun QuickChip(label: String, description: String, date: Boolean, onClick
     }
 }
 
-/** The popup card at rest; used by the real composer and the Paparazzi gallery. */
+/** The same anchored date picker, whether a choice edits a draft or saves a task. */
 @Composable
-internal fun QuickAddCalendar(
+internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit) {
+    val selected = remember { date }
+    var cursor by remember { mutableStateOf<String?>(null) }
+    val month = remember(now, cursor) { quickAddMonth(now, selected, cursor) }
+    AnchoredPopup(onDismiss = onDismiss) { overlay ->
+        DateCalendar(month, selected, { day -> overlay.choose { onChoose(day) } }, { cursor = it },
+            Modifier.padding(S.S2.dp), dismiss = overlay::close)
+    }
+}
+
+/** The calendar card at rest, also used by the Paparazzi gallery. */
+@Composable
+internal fun DateCalendar(
     month: QuickAddMonth,
     selectedDate: String?,
     choose: (String?) -> Unit,
     shift: (String) -> Unit,
     modifier: Modifier = Modifier,
+    dismiss: (() -> Unit)? = null,
 ) {
     val design = LocalDesign.current
     val r = design.room
+    val dayFocus = remember { FocusRequester() }
+    // A single day is in Tab order. Keyboard navigation follows it even when the grid changes month.
+    var focusDay by remember { mutableStateOf(if (dismiss != null) month.cursor else null) }
+    LaunchedEffect(month.cursor, focusDay) {
+        if (focusDay == month.cursor) {
+            dayFocus.requestFocus()
+            focusDay = null
+        }
+    }
     Column(
         modifier.width((7 * P.TOUCH + 2 * S.S2).dp).overlay(RoundedCornerShape(Tokens.Radius.LG.dp), design)
-            .verticalScroll(rememberScrollState()).padding(S.S2.dp).semantics { paneTitle = "Choose due date" },
+            .verticalScroll(rememberScrollState()).padding(S.S2.dp).semantics { paneTitle = "Choose due date" }
+            .onPreviewKeyEvent { event ->
+                if (event.key != Key.Escape || dismiss == null) false else {
+                    if (event.type == KeyEventType.KeyUp) dismiss()
+                    true
+                }
+            },
     ) {
         month.presets.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
@@ -218,8 +250,36 @@ internal fun QuickAddCalendar(
         month.rows.forEach { week ->
             Row(Modifier.fillMaxWidth()) {
                 week.forEach { cell ->
-                    if (cell == null) Box(Modifier.weight(1f).heightIn(min = P.TOUCH.dp))
-                    else CalendarCell(cell.day, cell.label, cell.selected, cell.today, true, Modifier.weight(1f)) { choose(cell.date) }
+                    if (cell == null) {
+                        Box(Modifier.weight(1f).heightIn(min = P.TOUCH.dp))
+                    } else {
+                        val active = cell.date == month.cursor
+                        val navigation = Modifier.focusProperties { canFocus = active }
+                            .then(if (active) Modifier.focusRequester(dayFocus) else Modifier)
+                            .onPreviewKeyEvent { event ->
+                                val next = when (event.key) {
+                                    Key.DirectionLeft -> -1
+                                    Key.DirectionRight -> 1
+                                    Key.DirectionUp -> -7
+                                    Key.DirectionDown -> 7
+                                    Key.PageUp, Key.PageDown -> 0
+                                    else -> return@onPreviewKeyEvent false
+                                }
+                                if (event.type == KeyEventType.KeyDown) {
+                                    val date = when (event.key) {
+                                        Key.PageUp -> month.previous
+                                        Key.PageDown -> month.next
+                                        else -> calendarMoveDays(cell.date, next)
+                                    }
+                                    if (date != null && date != cell.date) {
+                                        focusDay = date
+                                        shift(date)
+                                    }
+                                }
+                                true
+                            }
+                        CalendarCell(cell.day, cell.label, cell.selected, cell.today, true, Modifier.weight(1f).then(navigation)) { choose(cell.date) }
+                    }
                 }
             }
         }
@@ -230,10 +290,12 @@ internal fun QuickAddCalendar(
 private fun CalendarCell(label: String, description: String, selected: Boolean, today: Boolean, day: Boolean, modifier: Modifier, choose: () -> Unit) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.SM.dp)
+    var focused by remember { mutableStateOf(false) }
     Box(
         modifier.heightIn(min = P.TOUCH.dp).clip(shape)
+            .onFocusChanged { focused = it.isFocused }
             .then(if (selected) Modifier.background(r.wash) else Modifier)
-            .then(if (today) Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.control, shape) else Modifier)
+            .then(if (focused || today) Modifier.border(Tokens.Elevation.HAIRLINE.dp, if (focused) r.accent else r.control, shape) else Modifier)
             .selectable(selected = selected, role = Role.Button, onClick = choose).semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {

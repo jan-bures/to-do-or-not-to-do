@@ -251,7 +251,7 @@ impl ShellView {
                             );
                             this.highlight_first();
                         }
-                        Tool::Due => this.start_due_editor(None, window, cx),
+                        Tool::Due => this.start_bulk_due(window, cx),
                     }),
                 )
                 .when(tool == Tool::Move, |el| el.child(self.probe("bulk-move")))

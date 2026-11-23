@@ -2,8 +2,7 @@
 //!
 //! Title and notes are edited directly in the pane and saved when editing ends (Enter or leaving the
 //! title, Escape or leaving the notes). Steps can be added, completed, renamed (click the title), moved and
-//! deleted. The due date is edited by typing a date; the priority, the reminder, the repeat schedule and
-//! the tags are picked from menus anchored to their rows. Web links are
+//! deleted. Due, priority, reminders, repeat and tags use pickers anchored to their rows. Web links are
 //! added by typing or pasting an address, removed (Undo brings one back) and open in the browser
 //! (anything else is shown as text). An attachment is saved where the owner chooses; documents and
 //! images can also be opened, from this pairing's attachments directory and marked as downloaded from
@@ -13,11 +12,14 @@ use gpui::{
     AnyElement, AsyncApp, Context, Div, Entity, FontWeight, SharedString, Subscription, WeakEntity,
     Window, div, prelude::*, px,
 };
-use todo_core::ids::{AttachmentId, TaskId};
+use todo_core::{
+    ids::{AttachmentId, TaskId},
+    time::Date,
+};
 
-use super::menu::MenuKind;
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellView, quick_add_colors};
+use super::{menu::MenuKind, quick_pickers::Calendar};
 use crate::model::activity::Mark;
 use crate::model::draft::Draft;
 use crate::model::files;
@@ -95,7 +97,7 @@ pub(super) struct Editors {
     pub step: Entity<TextInput>,
     /// The field that adds a web link (L).
     pub link: Entity<TextInput>,
-    /// The due-date field while it is being edited.
+    /// The bulk due-date field while it is being edited.
     pub due: Option<(Entity<TextInput>, [Subscription; 2])>,
     /// The task whose title and notes the editors hold.
     pub loaded: Option<TaskId>,
@@ -339,63 +341,51 @@ impl ShellView {
         self.refresh(cx);
     }
 
-    /// Opens the due-date editor (the D key, or a click on the field).
+    pub(super) fn detail_calendar(&self, task: TaskId) -> MenuKind {
+        let due = self.store.view().tasks.get(&task).and_then(|t| t.due);
+        MenuKind::Date(Calendar::new(Some(task), self.store.now().today(), due))
+    }
+
+    /// D opens the calendar and reveals its anchor if the detail pane is scrolled.
     pub(super) fn start_due(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.ui.task {
-            self.start_due_editor(Some(id), window, cx);
+        if let Some(task) = self.repeat_target() {
+            self.scroll_into_view(&self.detail_scroll, "due-row");
+            self.open_menu(
+                self.detail_calendar(task),
+                None,
+                Some(Stop::Due),
+                window,
+                cx,
+            );
         }
     }
 
-    pub(super) fn start_due_editor(
-        &mut self,
-        id: Option<TaskId>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current = id
-            .and_then(|id| self.store.view().tasks.get(&id).and_then(|t| t.due))
-            .map(|d| d.to_string());
+    pub(super) fn start_bulk_due(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let colors = quick_add_colors(&self.palette);
-        let input = cx.new(|cx| {
-            let mut i = TextInput::new("tomorrow, fri, +3d or 2026-12-01", colors, cx);
-            if let Some(c) = current {
-                i.set_text(c, cx);
-                i.select_everything(cx);
-            }
-            i
-        });
-        let events = cx.subscribe_in(
-            &input,
-            window,
-            move |this, input, e: &InputEvent, window, cx| match e {
-                InputEvent::Submit => {
-                    let text = input.read(cx).content.to_string();
-                    if let Some(id) = id {
-                        this.set_due_text(id, &text, cx);
-                    } else {
-                        let Some(date) = this.parse_due_text(&text, cx) else {
-                            return;
-                        };
-                        if !this.apply_bulk(
-                            todo_client::selection::BulkTaskAction::Due { date },
-                            window,
-                            cx,
-                        ) {
-                            return;
+        let input = cx.new(|cx| TextInput::new("tomorrow, fri, +3d or 2026-12-01", colors, cx));
+        let events =
+            cx.subscribe_in(
+                &input,
+                window,
+                |this, input, e: &InputEvent, window, cx| match e {
+                    InputEvent::Submit => {
+                        let text = input.read(cx).content.to_string();
+                        if let Some(date) = this.parse_due_text(&text, cx) {
+                            this.apply_bulk(
+                                todo_client::selection::BulkTaskAction::Due { date },
+                                window,
+                                cx,
+                            );
                         }
                     }
-                    this.edit.due = None;
-                    window.focus(&this.list_focus, cx);
-                    cx.notify();
-                }
-                InputEvent::Cancel => {
-                    this.edit.due = None;
-                    window.focus(&this.list_focus, cx);
-                    cx.notify();
-                }
-                InputEvent::Changed => {}
-            },
-        );
+                    InputEvent::Cancel => {
+                        this.edit.due = None;
+                        window.focus(&this.list_focus, cx);
+                        cx.notify();
+                    }
+                    InputEvent::Changed => {}
+                },
+            );
         let handle = input.read(cx).focus_handle.clone();
         let blur = cx.on_blur(&handle, window, |this, _, cx| {
             this.edit.due = None;
@@ -427,12 +417,20 @@ impl ShellView {
         Some(due)
     }
 
-    fn set_due_text(&mut self, id: TaskId, text: &str, cx: &mut Context<Self>) {
-        let Some(due) = self.parse_due_text(text, cx) else {
+    pub(super) fn choose_task_due(
+        &mut self,
+        task: TaskId,
+        due: Option<Date>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.repeat_target() != Some(task) {
+            self.close_menu(false, window, cx);
             return;
-        };
-        if let Some(cmd) = commands::set_due(&self.store.view(), id, due) {
-            self.submit(vec![cmd]);
+        }
+        let command = commands::set_due(&self.store.view(), task, due);
+        if command.is_none_or(|cmd| self.submit(vec![cmd])) {
+            self.close_menu(true, window, cx);
         }
         self.refresh(cx);
     }
@@ -929,13 +927,7 @@ impl ShellView {
                 let renaming = (self.inline.as_ref())
                     .filter(|i| tags && live && i.target.tag().is_some())
                     .map(|i| i.input.clone());
-                let value = match (&self.edit.due, due) {
-                    (Some((input, _)), true) => div()
-                        .flex_1()
-                        .style(ty::DUE.with_weight(600))
-                        .text_color(p.ink)
-                        .child(input.clone())
-                        .into_any_element(),
+                let value = match f.edit {
                     _ if renaming.is_some() => div()
                         .flex_1()
                         .min_w_0()
@@ -983,11 +975,23 @@ impl ShellView {
                             .child(f.label),
                     )
                     .child(value)
-                    .when(due && self.edit.due.is_none(), |el| {
-                        el.hover(|s| s.bg(p.hover))
+                    .when(due && live, |el| {
+                        let belongs = |kind: &MenuKind| matches!(kind, MenuKind::Date(c) if c.task == Some(task));
+                        let open = self.menu.as_ref().is_some_and(|m| belongs(&m.kind) && m.overlay.look(self.frame).open);
+                        el.track_focus(&self.due_focus)
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Edit due date: {}", f.value))
+                            .aria_expanded(open)
+                            .hover(|s| s.bg(p.hover))
+                            .cursor_pointer()
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "D"))
-                            .on_click(cx.listener(|this, _, window, cx| this.start_due(window, cx)))
+                            .child(self.probe("due-row"))
+                            .on_key_down(cx.listener(|this, e, window, cx| this.control_key(e, window, cx)))
+                            .on_click(cx.listener(move |this, e, window, cx| {
+                                this.toggle_menu(this.detail_calendar(task), Stop::Due, e, window, cx);
+                            }))
+                            .children(self.menu_anchor(belongs, cx))
                     })
                     // The four levels to pick from (Shift+P from the list); P cycles them.
                     .when(priority && live, |el| {
@@ -1093,6 +1097,7 @@ impl ShellView {
                         el.tooltip(kit::tooltip(p, "Shown here; not editable in this app yet"))
                     });
                 let focus = match f.edit {
+                    Some(FieldEdit::Due) => Some(&self.due_focus),
                     Some(FieldEdit::Repeat) => Some(&self.repeat_focus),
                     Some(FieldEdit::Reminder) => Some(&self.reminder_focus),
                     _ => None,

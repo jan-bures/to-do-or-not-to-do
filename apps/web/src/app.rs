@@ -28,7 +28,7 @@ use crate::model::{
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
-use quick_add::QuickAdd;
+use quick_add::{CalendarPopover, DatePicker, QuickAdd};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1045,9 +1045,10 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             };
             ev.prevent_default();
             if key == "d" {
-                if let Some(button) = document()
-                    .get_element_by_id("edit-task-due")
-                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+                if platform::focus(DUE_ANCHOR)
+                    && let Some(button) = document()
+                        .get_element_by_id(DUE_ANCHOR)
+                        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
                 {
                     button.click();
                 }
@@ -2796,101 +2797,48 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
     }
 }
 
-const DUE_DATE_ERROR: &str = "Try tomorrow, fri, +3d or a date like 2026-12-01.";
-
-// A task and a selection both use the same typed date control and parser.
-fn due_field(
-    c: Ctx,
-    bulk: bool,
-    input: NodeRef<html::Input>,
-    draft: RwSignal<String>,
-    invalid: RwSignal<bool>,
-    on_blur: impl FnMut(leptos::ev::FocusEvent) + 'static,
-    on_key: impl FnMut(leptos::ev::KeyboardEvent) + 'static,
-) -> impl IntoView {
-    view! {
-        <input class=if bulk { "room-name-input" } else { "prop-input" }
-            type="text" node_ref=input aria-label="Due date" autocomplete="off"
-            autofocus=bulk disabled=move || c.read_only() placeholder="tomorrow, fri, +3d…"
-            aria-invalid=move || invalid.get().to_string()
-            aria-describedby=move || if bulk { Some("bulk-due-help") } else { invalid.get().then_some("due-date-error") }
-            prop:value=move || draft.get()
-            on:input=move |ev| { draft.set(event_target_value(&ev)); invalid.set(false); }
-            on:blur=on_blur on:keydown=on_key/>
-    }
-}
+const DUE_ANCHOR: &str = "edit-task-due";
+const DUE_PICKER: &str = "detail-due-calendar";
 
 #[component]
 fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
     let due = Memo::new(move |_| detail.with(|d| d.as_ref().and_then(|d| d.due.clone())));
-    let editing = RwSignal::new(false);
-    let invalid = RwSignal::new(false);
-    let draft = RwSignal::new(String::new());
-    let input = NodeRef::<html::Input>::new();
+    let popup = pickers::DetailPicker::new(c, id, DUE_ANCHOR, DUE_PICKER);
+    let calendar = DatePicker::new(popup, "detail-active-day", "detail-month-label");
     let start = move |_| {
-        draft.set(due.with_untracked(|d| {
-            d.as_ref()
-                .map(|(date, _)| date.to_string())
-                .unwrap_or_default()
-        }));
-        invalid.set(false);
-        editing.set(true);
-    };
-    let close = move || {
-        editing.set(false);
-        request_animation_frame(|| {
-            platform::focus("edit-task-due");
-        });
-    };
-    let save = move || {
+        if c.read_only() {
+            return;
+        }
         let now = if c.live {
             platform::now()
         } else {
             c.now.get_untracked()
         };
-        let Ok(date) = model::due_edit(&draft.get_untracked(), &now) else {
-            invalid.set(true);
-            return;
-        };
-        let cmd = c.state.with_untracked(|s| intent::set_due(s, id, date));
-        if cmd.is_none_or(|cmd| c.submit(cmd)) {
-            close();
+        calendar.toggle(
+            now.today(),
+            due.with_untracked(|value| value.as_ref().map(|(day, _)| *day)),
+        );
+    };
+    let choose = move |date| {
+        if c.selected.get_untracked() == Some(id)
+            && c.submit_intent(|s| intent::set_due(s, id, date))
+        {
+            popup.close(true);
         }
     };
-    Effect::new(move |_| {
-        if editing.get()
-            && let Some(input) = input.get()
-        {
-            let _ = input.focus();
-            input.select();
-        }
-    });
     view! {
-        <div class="prop">
+        <div class="prop" data-calendar-anchor="">
             <dt>{icon(Icon::Calendar)}"Due"</dt>
             <dd class="mono">
-                <Show when=move || editing.get() fallback=move || view! {
-                    <button id="edit-task-due" type="button" class="prop-edit"
-                        aria-label=move || format!("Edit due date: {}", due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "not set".into())))
-                        title="Edit due date (D)" aria-keyshortcuts="D" disabled=move || c.read_only()
-                        on:click=start>
-                        {move || due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "Set date".into()))}
-                    </button>
-                }>
-                    {due_field(c, false, input, draft, invalid, move |_| editing.set(false), move |ev| {
-                        if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            if !ev.repeat() {
-                                if ev.key() == "Enter" { save(); } else { close(); }
-                            }
-                        }
-                    })}
-                    <Show when=move || invalid.get()>
-                        <p id="due-date-error" class="prop-error" role="alert">{DUE_DATE_ERROR}</p>
-                    </Show>
-                </Show>
+                <button id=DUE_ANCHOR type="button" class="prop-edit"
+                    aria-label=move || format!("Edit due date: {}", due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "not set".into())))
+                    title="Edit due date (D)" aria-keyshortcuts="D" disabled=move || c.read_only()
+                    aria-haspopup="dialog" aria-controls=DUE_PICKER aria-expanded=move || popup.open.get().to_string()
+                    on:click=start>
+                    {move || due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "Set date".into()))}
+                </button>
+                <CalendarPopover c=c picker=calendar choose=Callback::new(choose)/>
             </dd>
         </div>
     }

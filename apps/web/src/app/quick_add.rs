@@ -1,4 +1,4 @@
-//! The room composer and its two anchored pickers.
+//! The room composer, its priority picker and the date picker shared with task detail.
 
 use leptos::prelude::*;
 use todo_client::intent::{self, calendar, quick_add};
@@ -6,19 +6,60 @@ use todo_core::{model::Priority, time::Date};
 use todo_design::Icon;
 
 use super::pickers::{DetailPicker, choice_focus};
-use super::{backend, ctx, icon, platform};
+use super::{Ctx, backend, ctx, icon, platform};
 
 const INPUT: &str = "qa-input";
-const ACTIVE_DAY: &str = "qa-active-day";
+
+#[derive(Clone, Copy)]
+pub(super) struct DatePicker {
+    pub(super) popup: DetailPicker,
+    month: RwSignal<Option<calendar::Month>>,
+    today: RwSignal<Option<Date>>,
+    due: RwSignal<Option<Date>>,
+    active_day: &'static str,
+    month_label: &'static str,
+}
+
+impl DatePicker {
+    pub(super) fn new(
+        popup: DetailPicker,
+        active_day: &'static str,
+        month_label: &'static str,
+    ) -> Self {
+        Self {
+            popup,
+            month: RwSignal::new(None),
+            today: RwSignal::new(None),
+            due: RwSignal::new(None),
+            active_day,
+            month_label,
+        }
+    }
+
+    pub(super) fn toggle(self, today: Date, due: Option<Date>) {
+        if self.popup.open.get_untracked() {
+            self.popup.close(true);
+        } else {
+            self.today.set(Some(today));
+            self.due.set(due);
+            self.month
+                .set(Some(calendar::Month::new(due.unwrap_or(today))));
+            self.popup.show(self.active_day);
+        }
+    }
+}
 
 #[component]
 pub(super) fn QuickAdd() -> impl IntoView {
     let c = ctx();
     let draft = RwSignal::new(quick_add::Draft::default());
-    let date_picker = DetailPicker::anchored("qa-date", "qa-calendar");
+    let calendar = DatePicker::new(
+        DetailPicker::anchored("qa-date", "qa-calendar"),
+        "qa-active-day",
+        "qa-month-label",
+    );
+    let date_picker = calendar.popup;
     let priority_picker = DetailPicker::anchored("qa-priority", "qa-priority-menu");
-    let month = RwSignal::<Option<calendar::Month>>::new(None);
-    let opened_today = RwSignal::<Option<Date>>::new(None);
     let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
     let room = Memo::new(move |_| c.view_room.with(|r| r.id.clone()));
     Effect::new(move |_| {
@@ -84,16 +125,9 @@ pub(super) fn QuickAdd() -> impl IntoView {
         platform::focus(INPUT);
     };
     let show_date = move || {
-        if date_picker.open.get_untracked() {
-            date_picker.close(true);
-        } else if !c.read_only() {
+        if !c.read_only() {
             let eval = now().eval();
-            opened_today.set(Some(eval.today));
-            let day = draft
-                .with_untracked(|d| d.parsed(&eval).due)
-                .unwrap_or(eval.today);
-            month.set(Some(calendar::Month::new(day)));
-            date_picker.show(ACTIVE_DAY);
+            calendar.toggle(eval.today, draft.with_untracked(|d| d.parsed(&eval).due));
         }
     };
     let show_priority = move || {
@@ -136,7 +170,7 @@ pub(super) fn QuickAdd() -> impl IntoView {
                     </Show>
                 </div>
                 <div class="qa-tools">
-                    <button type="button" id=date_picker.anchor class="qa-tool" class:has-value=move || due.get().is_some()
+                    <button type="button" id=date_picker.anchor data-calendar-anchor="" class="qa-tool" class:has-value=move || due.get().is_some()
                         title="Choose due date" aria-label="Choose due date" aria-haspopup="dialog" aria-controls=date_picker.id
                         aria-expanded=move || date_picker.open.get().to_string() disabled=move || c.read_only()
                         on:click=move |_| show_date()>{icon(Icon::Calendar)}</button>
@@ -148,11 +182,7 @@ pub(super) fn QuickAdd() -> impl IntoView {
                 <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
                     <span class="keycap">"N"</span>
                 </span>
-                <div class="room-action-menu qa-calendar" popover="auto" id=date_picker.id node_ref=date_picker.node
-                    role="dialog" aria-label="Choose due date" on:toggle=move |_| date_picker.toggle_event()
-                    on:keydown=move |ev| date_picker.key(c, None, &ev)>
-                    <Calendar month=month today=opened_today due=due choose=Callback::new(choose_due) />
-                </div>
+                <CalendarPopover c=c picker=calendar choose=Callback::new(choose_due)/>
                 <div class="room-action-menu qa-priority-menu" popover="auto" id=priority_picker.id node_ref=priority_picker.node
                     role="listbox" aria-label="Choose priority" on:toggle=move |_| priority_picker.toggle_event()
                     on:focusin=choice_focus on:keydown=move |ev| priority_picker.key(c, Some(1), &ev)>
@@ -172,12 +202,19 @@ pub(super) fn QuickAdd() -> impl IntoView {
 }
 
 #[component]
-fn Calendar(
-    month: RwSignal<Option<calendar::Month>>,
-    today: RwSignal<Option<Date>>,
-    due: Memo<Option<Date>>,
+pub(super) fn CalendarPopover(
+    c: Ctx,
+    picker: DatePicker,
     choose: Callback<Option<Date>>,
 ) -> impl IntoView {
+    let DatePicker {
+        popup,
+        month,
+        today,
+        due,
+        active_day,
+        month_label,
+    } = picker;
     // Moving within the month changes only the roving tab stop, not the DOM rows.
     let days = Memo::new(move |_| {
         month.get().map(|mut month| {
@@ -216,14 +253,27 @@ fn Calendar(
             });
         }
         request_animation_frame(move || {
-            if super::pickers::focused().is_none_or(|el| {
-                el.tag_name() == "BODY" || el.closest(".qa-calendar-grid").ok().flatten().is_some()
-            }) {
-                platform::focus(ACTIVE_DAY);
+            if popup.open.try_get_untracked() == Some(true)
+                && super::pickers::focused().is_none_or(|el| {
+                    el.tag_name() == "BODY"
+                        || el
+                            .closest(".qa-calendar-grid")
+                            .ok()
+                            .flatten()
+                            .is_some_and(|grid| {
+                                grid.get_attribute("aria-labelledby").as_deref()
+                                    == Some(month_label)
+                            })
+                })
+            {
+                platform::focus(active_day);
             }
         });
     };
     view! {
+        <div class="room-action-menu qa-calendar" popover="auto" id=popup.id node_ref=popup.node
+            role="dialog" aria-label="Choose due date" on:toggle=move |_| popup.toggle_event()
+            on:keydown=move |ev| popup.key(c, None, &ev)>
         <div class="qa-presets">{move || today.get().map(|today| calendar::presets(today).into_iter().map(|preset| view! {
             <button type="button" class="qa-preset" class:current=move || due.get() == preset.date
                 aria-current=move || (due.get() == preset.date).then_some("true")
@@ -234,11 +284,11 @@ fn Calendar(
         <div class="qa-month-title">
             <button type="button" class="qa-tool" aria-label="Previous month" on:click=move |_| step(-1)
                 disabled=move || month.get().and_then(|m| m.shifted(-1)).is_none()>{icon(Icon::ChevronLeft)}</button>
-            <span id="qa-month-label" aria-live="polite">{move || days.get().map(calendar::Month::label)}</span>
+            <span id=month_label aria-live="polite">{move || days.get().map(calendar::Month::label)}</span>
             <button type="button" class="qa-tool" aria-label="Next month" on:click=move |_| step(1)
                 disabled=move || month.get().and_then(|m| m.shifted(1)).is_none()>{icon(Icon::ChevronRight)}</button>
         </div>
-        <div class="qa-calendar-grid" role="grid" aria-labelledby="qa-month-label" on:keydown=grid_key>
+        <div class="qa-calendar-grid" role="grid" aria-labelledby=month_label on:keydown=grid_key>
             {move || days.get().map(|m| view! {
                 <div class="qa-week" role="row">
                     {m.weekdays().into_iter().map(|label| view! { <span role="columnheader">{label}</span> }).collect_view()}
@@ -251,7 +301,7 @@ fn Calendar(
                                     <button type="button" class="qa-day" class:current=move || due.get() == Some(day)
                                         aria-label=calendar::day_label(day)
                                         aria-current=move || (today.get() == Some(day)).then_some("date")
-                                        id=move || month.get().is_some_and(|m| m.cursor == day).then_some(ACTIVE_DAY)
+                                        id=move || month.get().is_some_and(|m| m.cursor == day).then_some(active_day)
                                         tabindex=move || if month.get().is_some_and(|m| m.cursor == day) { "0" } else { "-1" }
                                         on:click=move |_| choose.run(Some(day))>{day.day().to_string()}</button>
                                 </div>
@@ -261,6 +311,7 @@ fn Calendar(
                     </div>
                 }).collect_view()}
             })}
+        </div>
         </div>
     }
 }

@@ -1,10 +1,10 @@
-//! The calendar and priority controls on the main and pop-out room composers.
+//! The shared calendar for room composers and task detail, and the composer priority control.
 
 use gpui::{
     ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Role, Window, div, prelude::*, px,
 };
 use todo_client::intent::{calendar, quick_add};
-use todo_core::{model::Priority, time::Date};
+use todo_core::{ids::TaskId, model::Priority, time::Date};
 
 use super::{ShellView, menu::MenuKind};
 use crate::model::hints::Stop;
@@ -50,16 +50,21 @@ pub(super) enum Pick {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Calendar {
+    /// None for a composer draft; otherwise the task whose due date is being edited.
+    pub(super) task: Option<TaskId>,
     today: Date,
+    selected: Option<Date>,
     month: calendar::Month,
     focus: usize,
 }
 
 impl Calendar {
-    fn new(today: Date, due: Option<Date>) -> Self {
+    pub(super) fn new(task: Option<TaskId>, today: Date, selected: Option<Date>) -> Self {
         Self {
+            task,
             today,
-            month: calendar::Month::new(due.unwrap_or(today)),
+            selected,
+            month: calendar::Month::new(selected.unwrap_or(today)),
             focus: 0,
         }
     }
@@ -116,7 +121,7 @@ impl ShellView {
 
     pub(super) fn quick_calendar(&self) -> Calendar {
         let now = self.store.now().eval();
-        Calendar::new(now.today, self.quick_draft.parsed(&now).due)
+        Calendar::new(None, now.today, self.quick_draft.parsed(&now).due)
     }
 
     pub(super) fn quick_pick(&mut self, pick: Pick, window: &mut Window, cx: &mut Context<Self>) {
@@ -161,7 +166,7 @@ impl ShellView {
             )
         };
         let belongs = |kind: &MenuKind| match kind {
-            MenuKind::QuickDue(_) => date,
+            MenuKind::Date(c) => date && c.task.is_none(),
             MenuKind::QuickPriority => !date,
             _ => false,
         };
@@ -198,7 +203,7 @@ impl ShellView {
             ))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 let kind = if date {
-                    MenuKind::QuickDue(this.quick_calendar())
+                    MenuKind::Date(this.quick_calendar())
                 } else {
                     MenuKind::QuickPriority
                 };
@@ -301,7 +306,7 @@ impl ShellView {
             .on_click(cx.listener(move |this, _, window, cx| this.quick_pick(pick, window, cx)))
     }
 
-    pub(super) fn quick_calendar_key(
+    pub(super) fn calendar_key(
         &mut self,
         mut calendar: Calendar,
         e: &KeyDownEvent,
@@ -316,7 +321,7 @@ impl ShellView {
             key => {
                 calendar.navigate(key, e.keystroke.modifiers.shift);
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.kind = MenuKind::QuickDue(calendar);
+                    menu.kind = MenuKind::Date(calendar);
                 }
                 cx.notify();
             }
@@ -329,27 +334,34 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(menu) = self
+            .menu
+            .as_mut()
+            .filter(|m| m.overlay.look(self.frame).open)
+        else {
+            return;
+        };
+        let MenuKind::Date(ref mut calendar) = menu.kind else {
+            return;
+        };
         match action {
-            CalendarAction::Pick(date) => self.quick_pick(Pick::Due(date), window, cx),
-            CalendarAction::Shift(by) => {
-                if let Some(menu) = self.menu.as_mut()
-                    && let MenuKind::QuickDue(ref mut calendar) = menu.kind
-                {
-                    calendar.shift(by);
+            CalendarAction::Pick(date) => {
+                if let Some(task) = calendar.task {
+                    self.choose_task_due(task, date, window, cx);
+                } else {
+                    self.quick_pick(Pick::Due(date), window, cx);
                 }
+            }
+            CalendarAction::Shift(by) => {
+                calendar.shift(by);
                 cx.notify();
             }
         }
     }
 
-    pub(super) fn quick_calendar_body(
-        &self,
-        c: Calendar,
-        live: bool,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    pub(super) fn calendar_body(&self, c: Calendar, live: bool, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let selected = self.quick_preview().due;
+        let selected = c.selected;
         let presets = calendar::presets(c.today);
         let preset_count = presets.len();
         let presets = presets
@@ -525,6 +537,13 @@ impl ShellView {
 mod tests {
     use super::*;
 
+    fn press(cx: &mut gpui::VisualTestContext, key: &'static str) {
+        cx.simulate_keystrokes(key);
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).expect("key"),
+        });
+    }
+
     #[gpui::test]
     fn picker_keys_change_only_the_draft_until_quick_add_submits(cx: &mut gpui::TestAppContext) {
         cx.update(|app| app.bind_keys(crate::ui::input::key_bindings()));
@@ -542,12 +561,6 @@ mod tests {
             view.still();
             view
         });
-        let press = |cx: &mut gpui::VisualTestContext, key: &'static str| {
-            cx.simulate_keystrokes(key);
-            cx.simulate_event(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse(key).expect("key"),
-            });
-        };
         let task_count = cx.update(|window, cx| {
             let view = shell.read(cx);
             let count = view.store.view().tasks.len();
@@ -599,9 +612,76 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn detail_calendar_keeps_the_draft_separate_and_undo_restores_the_schedule(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|app| app.bind_keys(super::super::key_bindings()));
+        let fixture = crate::fixtures::by_name("detail-due-calendar").expect("detail fixture");
+        let task = fixture.ui.task.expect("selected task");
+        let due = fixture.state.tasks[&task].due.expect("initial due");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let mut view = ShellView::new(
+                std::rc::Rc::new(crate::store::Store::fixture(&fixture)),
+                fixture.ui,
+                crate::theme::Theme::Light,
+                None,
+                window,
+                cx,
+            );
+            view.still();
+            view
+        });
+        cx.update(|window, cx| window.focus(&shell.read(cx).list_focus.clone(), cx));
+        press(cx, "d");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert!(view.menu_focus.is_focused(window));
+            let MenuKind::Date(calendar) = view.menu.as_ref().expect("date picker").kind else {
+                panic!("expected the calendar");
+            };
+            assert_eq!(calendar.task, Some(task));
+            assert_eq!(calendar.month.cursor, due);
+            assert_eq!(calendar.selected, Some(due));
+        });
+        press(cx, "pagedown");
+        press(cx, "escape");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert!(view.due_focus.is_focused(window));
+            assert_eq!(view.store.view().tasks[&task].due, Some(due));
+        });
+        press(cx, "enter");
+        press(cx, "right");
+        press(cx, "enter");
+        let changed = todo_core::time::add_days(due, 1);
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert_eq!(view.store.view().tasks[&task].due, changed);
+            assert_eq!(view.quick_draft, quick_add::Draft::default());
+        });
+        press(cx, "enter");
+        for _ in 0..4 {
+            press(cx, "tab");
+        }
+        press(cx, "enter");
+        cx.update(|_, cx| {
+            let state = shell.read(cx).store.view();
+            assert_eq!(state.tasks[&task].due, None);
+            assert_eq!(state.tasks[&task].recurrence, None);
+        });
+        press(cx, "ctrl-z");
+        cx.update(|_, cx| {
+            let state = shell.read(cx).store.view();
+            assert_eq!(state.tasks[&task].due, changed);
+            assert!(state.tasks[&task].recurrence.is_some());
+        });
+    }
+
     #[test]
     fn calendar_arrows_page_keys_and_preset_activation_are_separate() {
         let mut c = Calendar::new(
+            None,
             Date::constant(2026, 11, 21),
             Some(Date::constant(2026, 11, 30)),
         );

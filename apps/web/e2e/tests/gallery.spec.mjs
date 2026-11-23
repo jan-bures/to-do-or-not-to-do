@@ -285,17 +285,28 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
-    test(`editing due date and steps (${scheme})`, async ({ page }) => {
+    test(`detail due calendar (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      for (const [layout, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
+        await page.setViewportSize(viewport);
+        await open(page);
+        await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
+        const due = page.getByRole("button", { name: /^Edit due date:/ });
+        await due.click();
+        await expect(page.getByRole("dialog", { name: "Choose due date" })
+          .getByRole("button", { name: "Saturday, 21 November 2026" })).toBeFocused();
+        await shot(page, `${layout}-detail-due-calendar-${scheme}`);
+        await page.keyboard.press("Escape");
+        await expect(due).toBeFocused();
+      }
+      await w.check();
+    });
+
+    test(`editing steps (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);
       await open(page);
       await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
-      await page.keyboard.press("d");
-      const due = page.getByRole("textbox", { name: "Due date" });
-      await due.fill("tomorrow");
-      await expect(due).toBeFocused();
-      await shot(page, `desktop-due-editor-${scheme}`);
-      await due.press("Escape");
       await page.locator(".step-title").nth(2).hover();
       await expect(page.locator(".step-actions").nth(2)).toHaveCSS("opacity", "1");
       await shot(page, `desktop-step-actions-${scheme}`);

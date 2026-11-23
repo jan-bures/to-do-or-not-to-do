@@ -300,6 +300,7 @@ pub struct ShellView {
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
     repeat_focus: FocusHandle,
+    due_focus: FocusHandle,
     detail_my_day_focus: FocusHandle,
     detail_important_focus: FocusHandle,
     reminder_focus: FocusHandle,
@@ -483,6 +484,7 @@ impl ShellView {
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
             repeat_focus: cx.focus_handle(),
+            due_focus: cx.focus_handle(),
             detail_my_day_focus: cx.focus_handle(),
             detail_important_focus: cx.focus_handle(),
             reminder_focus: cx.focus_handle(),
@@ -613,8 +615,10 @@ impl ShellView {
             MenuKind::Room { .. }
             | MenuKind::Task { .. }
             | MenuKind::BulkMove
-            | MenuKind::QuickDue(_)
             | MenuKind::QuickPriority => room_changed,
+            MenuKind::Date(c) => {
+                room_changed || c.task.is_some_and(|task| self.ui.task != Some(task))
+            }
             MenuKind::Priority { task }
             | MenuKind::Tags { task, .. }
             | MenuKind::Repeat { task, .. }
@@ -1021,8 +1025,11 @@ impl ShellView {
     fn keep_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A menu whose subject went away (a list or task deleted on another device) has nothing left to
         // offer: it closes at once, and the keyboard goes back to the list, so Escape and Tab still work.
-        if self.menu.as_ref().is_some_and(|m| {
-            !matches!(m.kind, MenuKind::QuickDue(_)) && self.menu_entries(m.kind).is_empty()
+        if self.menu.as_ref().is_some_and(|m| match m.kind {
+            MenuKind::Date(c) => c
+                .task
+                .is_some_and(|task| self.repeat_target() != Some(task)),
+            _ => self.menu_entries(m.kind).is_empty(),
         }) {
             self.menu = None;
             self.menu_dropped = true;
@@ -1035,6 +1042,7 @@ impl ShellView {
         let menu_focused = self.menu_focus.is_focused(window);
         if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
             || (menu_focused && !menu_open)
+            || (self.due_focus.is_focused(window) && !self.has_stop(hints::Stop::Due))
             || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
             || (self.reminder_focus.is_focused(window) && !self.has_stop(hints::Stop::Reminder))
             || (self.detail_my_day_focus.is_focused(window)
@@ -1290,7 +1298,8 @@ impl ShellView {
             "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
-            "quick-add-calendar" => Some(MenuKind::QuickDue(self.quick_calendar())),
+            "quick-add-calendar" => Some(MenuKind::Date(self.quick_calendar())),
+            "detail-due-calendar" => task.map(|task| self.detail_calendar(task)),
             "quick-add-priority" => Some(MenuKind::QuickPriority),
             "repeat-menu" => task.map(|task| MenuKind::Repeat { task, draft: None }),
             "repeat-custom" => task.and_then(|task| {
@@ -3845,6 +3854,7 @@ impl ShellView {
             Focus::Button
         } else if on(&self.room_menu_focus)
             || on(&self.repeat_focus)
+            || on(&self.due_focus)
             || on(&self.reminder_focus)
             || on(&self.detail_my_day_focus)
             || on(&self.detail_important_focus)
@@ -4050,6 +4060,7 @@ impl ShellView {
             Stop::ActivityFilter => &self.activity_filter_focus,
             Stop::ActivityRefresh => &self.activity_refresh_focus,
             Stop::ActivityMore => &self.activity_more_focus,
+            Stop::Due => &self.due_focus,
             Stop::Repeat => &self.repeat_focus,
             Stop::Reminder => &self.reminder_focus,
             Stop::DetailMyDay => &self.detail_my_day_focus,
@@ -4098,7 +4109,8 @@ impl ShellView {
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }
-            Stop::Repeat
+            Stop::Due
+            | Stop::Repeat
             | Stop::Reminder
             | Stop::DetailMyDay
             | Stop::DetailImportant

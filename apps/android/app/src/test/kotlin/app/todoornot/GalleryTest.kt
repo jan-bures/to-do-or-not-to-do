@@ -84,7 +84,7 @@ import app.todoornot.ui.SettingsMenuContent
 import app.todoornot.ui.overlay
 import app.todoornot.ui.DialogBackdrop
 import app.todoornot.ui.DialogCard
-import app.todoornot.ui.DueDateCard
+import app.todoornot.ui.DateCalendar
 import app.todoornot.ui.MenuCard
 import app.todoornot.ui.RenameCard
 import app.todoornot.ui.ReminderAccessCard
@@ -96,7 +96,6 @@ import app.todoornot.ui.LocalTaskDragFrame
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
-import app.todoornot.ui.QuickAddCalendar
 import app.todoornot.ui.RoomPill
 import app.todoornot.ui.UnpairCard
 import com.android.resources.Density
@@ -342,7 +341,7 @@ class GalleryTest {
                                     end = if (surface == "calendar") s.S4.dp else s.S5.dp,
                                     bottom = (2 * p.TOUCH + s.S5).dp,
                                 )
-                                if (surface == "calendar") QuickAddCalendar(month, selected, {}, {}, anchor)
+                                if (surface == "calendar") DateCalendar(month, selected, {}, {}, anchor)
                                 else MenuCard(priorityMenu(2) { MenuAction.QuickPriority(it) }, {}, anchor, title = "Choose priority")
                             }
                         }
@@ -628,30 +627,29 @@ class GalleryTest {
         return s.copy(detail = detail.copy(subtitle = "Created 21 Nov", activity = detail.activity.map { it.copy(relative = "Just now") }))
     }
 
-    /** The due date picker over the task, on its date, drawn as for a repeating task: the note says what Clear does. */
+    /** The shared calendar at rest above the Due row on a dated task, and below it on an undated task. */
     @Test
-    fun due_date_picker() {
-        for (dark in listOf(false, true)) {
-            val (e, admin, id) = admin()
-            val s = state(e, admin, select = id)
+    fun detail_due_calendar() {
+        val spacing = Tokens.Space
+        val (e, admin, id) = admin()
+        val dated = state(e, admin, select = id).let { s ->
             val detail = requireNotNull(s.detail)
-            overlaid("due_date_picker_${if (dark) "dark" else "light"}", COVER, s, dark) {
-                DialogBackdrop {
-                    DueDateCard(detail.due, s.today, repeats = true, onSave = {}, onCancel = {}, markToday = false)
+            s.copy(detail = detail.copy(notes = detail.notes + "\nBring a copy of the form."))
+        }
+        val undated = freshCarService(e, admin)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            for ((label, state) in listOf("dated" to dated, "undated" to undated)) {
+                val date = requireNotNull(state.detail).due
+                overlaid("detail_due_calendar_${label}_$theme", COVER, state, dark) {
+                    Box(Modifier.fillMaxSize().navigationBarsPadding()) {
+                        val anchor = if (date == null) Modifier.align(Alignment.BottomEnd)
+                            .padding(bottom = (spacing.S10 + Tokens.Metrics.Phone.TOUCH - spacing.S1).dp)
+                        else Modifier.align(Alignment.TopEnd).padding(top = spacing.S10.dp + spacing.S3.dp)
+                        DateCalendar(quickAddMonth(FIXTURE_NOW, date, null), date, {}, {}, anchor.padding(end = spacing.S6.dp))
+                    }
                 }
             }
-        }
-        // An undated task opens on today's month, with nothing to clear.
-        val (e, admin, _) = admin()
-        val s = freshCarService(e, admin)
-        overlaid("due_date_picker_undated_light", COVER, s, dark = false) {
-            DialogBackdrop { DueDateCard(null, s.today, repeats = false, onSave = {}, onCancel = {}, markToday = false) }
-        }
-        // A short window (the cover screen on its side): no headline, the calendar scrolls, the buttons stay.
-        val (e2, admin2, id2) = admin()
-        val s2 = state(e2, admin2, select = id2)
-        overlaid("due_date_picker_sideways_light", COVER_SIDEWAYS, s2, dark = false, wide = false) {
-            DialogBackdrop { DueDateCard(s2.detail?.due, s2.today, repeats = true, onSave = {}, onCancel = {}, markToday = false) }
         }
     }
 

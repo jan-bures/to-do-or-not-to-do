@@ -53,12 +53,14 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.DetailField
 import app.todoornot.core.FieldEdit
+import app.todoornot.core.LocalNow
 import app.todoornot.core.StepRow
 import app.todoornot.core.SourceLink
 import app.todoornot.core.StepCount
@@ -98,7 +100,6 @@ fun DetailPane(
     stepEditing: String? = null,
 ) {
     val detail = state.detail ?: return
-    val today = state.today
     val generation = state.generation
     val toast = state.toast
     val r = LocalDesign.current.room
@@ -165,7 +166,7 @@ fun DetailPane(
             if (detail.fields.isNotEmpty()) {
                 Spacer(Modifier.height(S.S4.dp))
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true))
-                key(detail.id) { Fields(detail, today, actions) }
+                key(detail.id) { Fields(detail, actions) }
             }
             if (detail.sources.isNotEmpty()) {
                 Caps("Source")
@@ -366,18 +367,23 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
  * owner sets a reminder, the app asks for what reminders need, if anything ([LocalReminderAccess]).
  */
 @Composable
-private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
+private fun Fields(detail: TaskDetail, actions: Actions) {
     var repeat by rememberSaveable { mutableStateOf(false) }
     var custom by rememberSaveable { mutableStateOf(false) }
     var tags by rememberSaveable { mutableStateOf(false) }
-    var pickingDue by rememberSaveable { mutableStateOf(false) }
+    var calendarNow by remember { mutableStateOf<LocalNow?>(null) }
     var pickingPriority by remember { mutableStateOf(false) }
     var pickingReminder by rememberSaveable { mutableStateOf(false) }
     var asking by remember { mutableStateOf<ReminderNeed?>(null) }
     val access = LocalReminderAccess.current
     detail.fields.forEach { f ->
         when (f.edit) {
-            FieldEdit.DUE -> FieldRow(f, "Change the due date") { pickingDue = true }
+            FieldEdit.DUE -> Box {
+                FieldRow(f, "Change the due date", expanded = calendarNow != null) { calendarNow = actions.composerNow() }
+                calendarNow?.let { opened ->
+                    CalendarPopup(opened, detail.due, onChoose = { actions.setDue(detail.id, it) }, onDismiss = { calendarNow = null })
+                }
+            }
             FieldEdit.PRIORITY -> Box {
                 FieldRow(f, "Change the priority") { pickingPriority = true }
                 if (pickingPriority) {
@@ -399,9 +405,6 @@ private fun Fields(detail: TaskDetail, today: String, actions: Actions) {
     if (tags) TagsDialog(detail, actions) { tags = false }
     if (repeat) OverlayDialog({ repeat = false }) { overlay ->
         RepeatCard(detail, custom, { custom = true }, { choice -> overlay.choose { actions.organize(app.todoornot.model.OrganizeEdit.Repeat(detail.id, choice)) } }, overlay::close) { draft -> actions.previewRepeat(detail.id, draft) }
-    }
-    if (pickingDue) {
-        DueDateDialog(detail.due, today, detail.repeats, onSave = { actions.setDue(detail.id, it) }, onDismiss = { pickingDue = false })
     }
     if (pickingReminder) {
         val now = remember { System.currentTimeMillis() }
@@ -566,13 +569,14 @@ private fun AddStep(task: String, actions: Actions) {
 
 /** A property row; one that edits ([onEdit]) is a full touch target with a chevron. */
 @Composable
-private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), onEdit: (() -> Unit)? = null) {
+private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), expanded: Boolean? = null, onEdit: (() -> Unit)? = null) {
     val r = LocalDesign.current.room
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = if (onEdit != null) P.TOUCH.dp else P.TOUCH.dp - S.S2.dp)
             .hairline(r.line)
+            .then(if (expanded != null) Modifier.semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" } else Modifier)
             .then(if (onEdit != null) Modifier.clickable(onClickLabel = editLabel, onClick = onEdit) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {

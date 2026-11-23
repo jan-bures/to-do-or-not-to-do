@@ -1614,7 +1614,12 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   width: min(var(--desktop-confirm), calc(100vw - 2 * var(--space-2)));
   max-height: calc(100dvh - 2 * var(--space-2));
   overflow: auto;
+  background: var(--color-raised);
+  border-color: var(--color-line);
+  padding-block-start: var(--space-1);
 }
+
+[data-theme="dark"] .qa-calendar { border-color: var(--color-line-strong); }
 
 .qa-presets {
   display: grid;
@@ -1629,7 +1634,10 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 }
 
 .qa-calendar button.qa-tool { width: var(--component-icon-button); }
-.qa-calendar button.qa-preset { position: relative; }
+.qa-calendar button.qa-preset {
+  position: relative;
+  font: var(--text-button-small);
+}
 .qa-preset .picker-tick { position: absolute; inset-inline-end: var(--space-2); }
 .qa-preset .picker-tick .icon { width: var(--component-icon-small); height: var(--component-icon-small); }
 .qa-preset:not(.current) .picker-tick { visibility: hidden; }
@@ -3404,8 +3412,12 @@ a.source:hover {
     border-radius: var(--radius-sm);
     background: var(--color-wash);
   }
-  .qa-calendar { width: min(calc(7 * var(--phone-touch) + 2 * var(--space-2)), calc(100vw - 2 * var(--space-2))); }
+  .qa-calendar {
+    width: min(calc(7 * var(--phone-touch) + 2 * var(--space-2)), calc(100vw - 2 * var(--space-2)));
+    padding-block-start: var(--space-2);
+  }
   .qa-calendar button, .qa-priority-menu button { min-height: var(--phone-touch); }
+  .qa-calendar button.qa-preset { font: var(--text-button); }
 
   .qa-hints {
     display: none;

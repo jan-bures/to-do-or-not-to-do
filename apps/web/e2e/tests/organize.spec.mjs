@@ -35,9 +35,9 @@ test("repeat presets set the first date atomically; clearing repeat keeps its du
   await expect(repeat).toHaveText("Every weekday");
   // Saturday fixture: first matching date is Monday.
   await due.click();
-  const date = detail(page).getByRole("textbox", { name: "Due date" });
-  await expect(date).toHaveValue("2026-11-23");
-  await date.press("Escape");
+  const date = dialog(page, "Choose due date").getByRole("button", { name: "Monday, 23 November 2026" });
+  await expect(date).toBeFocused();
+  await page.keyboard.press("Escape");
   await expect(due).toBeFocused();
   await page.keyboard.press("Control+z");
   await expect(repeat).toHaveText("Does not repeat");

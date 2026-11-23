@@ -126,6 +126,7 @@ pub struct QuickAddDay {
 #[derive(Debug, uniffi::Record)]
 pub struct QuickAddMonth {
     pub label: String,
+    pub cursor: String,
     pub weekdays: Vec<String>,
     pub rows: Vec<Vec<Option<QuickAddDay>>>,
     pub previous: Option<String>,
@@ -150,6 +151,7 @@ pub fn quick_add_month(
     );
     QuickAddMonth {
         label: month.label(),
+        cursor: month.cursor.to_string(),
         weekdays: month.weekdays().into_iter().map(str::to_owned).collect(),
         rows: month
             .rows()
@@ -178,6 +180,28 @@ pub fn quick_add_month(
             })
             .collect(),
     }
+}
+
+/// Move the calendar's keyboard cursor by a day or week, including across a month boundary.
+#[uniffi::export]
+pub fn calendar_move_days(cursor: String, days: i32) -> Option<String> {
+    let mut month = calendar::Month::new(cursor.parse().ok()?);
+    month.move_days(i64::from(days));
+    Some(month.cursor.to_string())
+}
+
+#[cfg(test)]
+#[test]
+fn calendar_cursor_crosses_month_boundaries() {
+    assert_eq!(
+        calendar_move_days("2026-11-30".into(), 1).as_deref(),
+        Some("2026-12-01")
+    );
+    assert_eq!(
+        calendar_move_days("2026-12-01".into(), -7).as_deref(),
+        Some("2026-11-24")
+    );
+    assert_eq!(calendar_move_days("not a date".into(), 1), None);
 }
 
 #[derive(Debug, uniffi::Record)]
