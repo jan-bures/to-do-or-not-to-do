@@ -234,14 +234,14 @@
   <div class="sheet">
     <div class="sheet-header">
       <h1 class="sheet-title">Assistant settings, provider card &amp; footer</h1>
-      <p class="sheet-subtitle">My Day · Light · Keeping the existing structure; fixing only status dots &amp; clipped left rail</p>
+      <p class="sheet-subtitle">My Day · Light · Keeping live connection lights; removing static/pending dots &amp; clipped rail</p>
     </div>
 
     <div class="compare-grid">
       <!-- BEFORE -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag">Before — 2 green dots in card, clipped rail, dotted footer &amp; trigger</span>
+          <span class="state-tag">Before — dot on static label, clipped rail, pending dot, vague error</span>
         </div>
         <div class="modal-shell">
           <div class="modal-top">
@@ -322,7 +322,7 @@
       <!-- AFTER -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag after">After — same structure; no status dots, clean accent border, fault alert</span>
+          <span class="state-tag after">After — live connection lights kept; static &amp; pending dots removed</span>
         </div>
         <div class="modal-shell">
           <div class="modal-top">
@@ -355,7 +355,7 @@
                 </div>
               </div>
               <div class="status-line">
-                <span class="status-left"><span class="ic ic-14" data-lucide="check" style="color:var(--ink-2)"></span><span class="mono">Connected · 4 models · 38 ms</span></span>
+                <span class="status-left"><span class="led green"></span><span class="mono">Connected · 4 models · 38 ms</span></span>
               </div>
               <div class="enable-strip">
                 <span class="ic ic-16" data-lucide="circle-check" style="color:var(--accent-strong)"></span>
@@ -383,13 +383,13 @@
         </div>
 
         <div class="sub-strip">
-          <div class="sub-strip-label">Assistant footer (healthy &amp; unreachable) + titlebar trigger</div>
+          <div class="sub-strip-label">Assistant footer (live connection light) + titlebar trigger</div>
           <div class="assistant-footer-row">
-            <span class="status-left"><span>Private network · <span class="mono">local-model</span></span><span class="ic ic-14" data-lucide="chevron-down" style="color:var(--ink-3)"></span></span>
+            <span class="status-left"><span class="led green"></span><span>Private network · <span class="mono">local-model</span></span><span class="ic ic-14" data-lucide="chevron-down" style="color:var(--ink-3)"></span></span>
             <span class="status-left" style="color:var(--ink-3)"><span class="ic ic-14" data-lucide="eye-off"></span>1 list hidden</span>
           </div>
           <div class="assistant-footer-row">
-            <span class="status-left" style="color:var(--danger-ink);font-weight:500"><span class="ic ic-14" data-lucide="circle-alert"></span><span>Unreachable · <span class="mono">local-model</span></span></span>
+            <span class="status-left" style="color:var(--danger-ink);font-weight:500"><span class="led red"></span><span>Unreachable · <span class="mono">local-model</span></span></span>
             <span class="ask-btn active">
               <span class="ic ic-14" data-lucide="sparkles" style="color:var(--accent-strong)"></span>
               <span>Ask AI</span>
