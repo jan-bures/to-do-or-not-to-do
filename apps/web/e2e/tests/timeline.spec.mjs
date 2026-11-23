@@ -146,12 +146,21 @@ test("keyboard selects lanes, reschedules by day and week, resizes, and opens bo
   await expectDates(span, "2026-11-27", "2026-11-30");
   await page.keyboard.press("]");
   await expectDates(span, "2026-11-27", "2026-12-01");
-  await page.keyboard.press("Control+z");
+  // Undo queues a focus return for the next frame. Open Due in that same frame, before
+  // the queued return runs, to exercise fast keyboard input even on a slow browser.
+  await page.evaluate(() => {
+    for (const keys of [{ key: "z", ctrlKey: true }, { key: "d" }]) {
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { ...keys, bubbles: true, cancelable: true }));
+    }
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  });
   await expectDates(span, "2026-11-27", "2026-11-30");
   await expect(page.locator("#task-detail")).not.toBeVisible();
-  await page.keyboard.press("D");
-  await expect(page.getByRole("dialog", { name: "Choose due date" })).toBeVisible();
+  const due = page.getByRole("dialog", { name: "Choose due date" });
+  await expect(due).toBeVisible();
+  await expect(due.locator("#timeline-active-day")).toBeFocused();
   await page.keyboard.press("Escape");
+  await expect(due).toBeHidden();
   await expect(row(page, TITLE)).toBeFocused();
   await page.keyboard.press("Shift+D");
   await page.getByRole("dialog", { name: "Choose start date" }).getByRole("button", { name: "Tomorrow", exact: true }).click();

@@ -368,10 +368,17 @@ pub(super) fn after_completion(c: Ctx, id: TaskId, slot: usize) {
 }
 
 pub(super) fn refocus(c: Ctx, id: TaskId) {
-    c.timeline_ui.cursor.set(Some(id));
+    let ui = c.timeline_ui;
+    let before = pickers::focused();
+    ui.cursor.set(Some(id));
     request_animation_frame(move || {
+        // Undo and a date shortcut can land in one frame. Do not take focus from the calendar:
+        // Escape must reach its key handler so the popover can return focus to its opener.
         if c.room_view.try_get_untracked() != Some(todo_core::model::ListView::Timeline)
             || c.detail_modal.get_untracked()
+            || ui.calendar.popup.open.get_untracked()
+            || ui.cursor.get_untracked() != Some(id)
+            || !pickers::focus_unmoved(before.as_ref())
         {
             return;
         }
@@ -457,9 +464,9 @@ fn dates(c: Ctx, id: TaskId) -> Option<Dates> {
     })
 }
 
-fn apply(c: Ctx, id: TaskId, before: Dates, edit: Schedule) -> bool {
+fn apply(c: Ctx, id: TaskId, before: Dates, edit: Schedule) {
     if !untrack(|| c.on_timeline()) || c.read_only() {
-        return false;
+        return;
     }
     let room = c.room.get_untracked();
     let Some((command, title)) = c.state.with_untracked(|s| {
@@ -468,18 +475,16 @@ fn apply(c: Ctx, id: TaskId, before: Dates, edit: Schedule) -> bool {
             s.tasks.get(&id)?.title.clone(),
         ))
     }) else {
-        return false;
+        return;
     };
     let action = if before == Dates::default() {
         "Scheduled"
     } else {
         "Rescheduled"
     };
-    if !c.submit_undoable(command, format!("{action} “{title}”"), None) {
-        return false;
+    if c.submit_undoable(command, format!("{action} “{title}”"), None) {
+        refocus(c, id);
     }
-    refocus(c, id);
-    true
 }
 
 fn open_calendar(c: Ctx, task: TaskId, starts: bool, anchor: String) {
@@ -833,11 +838,10 @@ pub(super) fn Pane() -> impl IntoView {
         } else {
             Schedule::PickDue(day)
         };
-        if apply(c, t.task, t.dates, edit) {
-            ui.calendar.popup.close(false);
-        } else {
-            ui.calendar.popup.close(true);
-        }
+        // Close before the edit queues refocus, so the focus snapshot is the opener, not a day.
+        // If the edit moves a task out of the tray, refocus finds its new rail button by ID.
+        ui.calendar.popup.close(true);
+        apply(c, t.task, t.dates, edit);
     });
     view! {
         <section class="timeline" aria-label="Timeline"
