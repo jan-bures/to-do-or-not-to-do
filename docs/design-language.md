@@ -147,6 +147,10 @@ animation, and without relying on hue alone.
   takes the place of the stronger label. A chip that just identifies a list or tag isn't selected by being
   coloured. A suggestion offered as a one-shot action isn't a toggle. Checkboxes keep their filled disc and
   tick when checked, a bare ring when unchecked; a switch needs a filled track **and** a moved thumb.
+- **Leading rails** are inset by `space::S1` (4 px/dp) from the leading side, top and bottom, inside the
+  border if present. Give the 3 px rail semicircular ends, not a square end or an edge-to-edge border.
+  Use this treatment on Board cards, list and sidebar rows, Timeline lanes and bars, and assistant
+  provider and proposal cards. Leave the surrounding border and focus outline uninterrupted.
 - **Contrast and focus:** Both the off outline and the on glyph must reach 3:1 on the surfaces they sit on,
   in light and dark, including a selected row. Keep labels at 4.5:1. A tinted background alone may be subtle;
   pair it with a contrast-checked tick, bar or equivalent state mark. Keyboard focus adds a distinct ring
@@ -340,7 +344,7 @@ The mark repeats the actor already named in text. This is a read-only summary, n
 
 **Multi-selection.** Every selected row gets the stronger `selection-wash` and a leading
 `accent-strong` mark, with `ink-2` for quiet text and `selection-check` for a checked box. On desktop
-and web only the keyboard cursor gets a thin outline, inset from the leading mark. The desktop and
+and web only the keyboard cursor gets a thin outline, kept separate from the inset leading mark. The desktop and
 web place the selection count,
 actions and clear button in a flat strip above the reserved Undo footer; narrow web lets the controls
 wrap. Android replaces the bottom dock with a two-row bottom bulk dock: a `44 dp` selection status strip

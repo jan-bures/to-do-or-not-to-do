@@ -672,15 +672,10 @@ impl ShellView {
                     .children(refusal),
             )
             .child(action)
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(-elevation::HAIRLINE))
-                    .bottom(px(-elevation::HAIRLINE))
-                    .w(px(elevation::SELECTION_BAR))
-                    .bg(theme::with_alpha(p.accent, look.selected)),
-            );
+            .child(kit::leading_rail(
+                theme::with_alpha(p.accent_strong, look.selected),
+                elevation::SELECTION_BAR,
+            ));
         if !live {
             return el;
         }

@@ -272,16 +272,10 @@ impl ShellView {
             .bg(theme::with_alpha(p.wash, alpha))
             .border(px(elevation::HAIRLINE))
             .border_color(theme::with_alpha(p.line, alpha))
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(space::S1))
-                    .bottom(px(space::S1))
-                    .w(px(elevation::SELECTION_BAR))
-                    .rounded_full()
-                    .bg(theme::with_alpha(p.accent_strong, alpha)),
-            )
+            .child(kit::leading_rail(
+                theme::with_alpha(p.accent_strong, alpha),
+                elevation::SELECTION_BAR,
+            ))
             .when(on, |el| {
                 el.text_color(p.ink).font_weight(FontWeight::SEMIBOLD)
             })

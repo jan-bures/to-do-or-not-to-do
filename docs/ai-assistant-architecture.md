@@ -305,9 +305,10 @@ BYOK can be added for providers that support it, with scoped keys, where the own
 
 ## 4. Privacy, security and cost
 
-- **Scope before egress.** Opt in per **list ID** and provider profile, per device in v1 (no newly added
-  lists automatically included; make the device-local scope explicit). Build a projection restricted
-  to allowed live lists; resolve tags, collection names and other metadata only from allowed data.
+- **Scope before egress.** Opt in per list or collection ID, per provider profile and device. Resolve
+  access on the confirmed replica: a list override wins; otherwise the live collection's explicit
+  choice applies, including to lists added later. Without a choice the list is hidden. Build a
+  projection restricted to allowed live lists; resolve tags, collection names and other metadata only from allowed data.
   Hidden IDs look missing. Omit attachment bytes/URLs, email-link metadata, notes by default and any
   global counts or dependency data from excluded lists; email notes can contain original sender,
   subject and body [by design](ingest-email.md#task-mapping-what-the-server-stores). Prefer small,

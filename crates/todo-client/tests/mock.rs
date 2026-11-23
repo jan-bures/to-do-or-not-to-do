@@ -166,7 +166,7 @@ fn hostile_email_and_titles_have_no_path_to_sync_writes() {
         provider: provider.clone(),
         model: MODEL.into(),
         allow_billed: false,
-        lists: BTreeMap::from([(list, ListAccess::AllModels)]),
+        access: BTreeMap::from([(list, ListAccess::AllModels)]).into(),
     }));
     let snapshot = client.assistant_snapshot().unwrap();
     assert_eq!(snapshot.revision.cursor, before);

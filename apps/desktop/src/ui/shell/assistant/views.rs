@@ -3,10 +3,29 @@
 use super::*;
 use crate::theme::Agent;
 use gpui::Role;
+use std::sync::Arc;
 use todo_client::assistant::{
-    Edit, Effect, ProposalItem, ProposalKind, StepKind, StepStatus, TaskRef, ToolKind,
+    Edit, Effect, ListAccess, ProposalItem, ProposalKind, StepKind, StepStatus, TaskRef, ToolKind,
 };
-use todo_core::{command::Placement, model::WorkflowStatus, time::Date};
+use todo_core::{
+    State,
+    command::Placement,
+    ids::{CollectionId, ListId},
+    model::WorkflowStatus,
+    time::Date,
+};
+
+#[derive(Clone, Copy)]
+enum AccessTarget {
+    List(ListId),
+    Collection(CollectionId),
+}
+
+const ACCESS_CHOICES: [(ListAccess, &str); 3] = [
+    (ListAccess::Hidden, "Hidden"),
+    (ListAccess::PrivateOnly, "Private only"),
+    (ListAccess::AllModels, "All models"),
+];
 
 #[derive(Clone, Copy)]
 enum Tone {
@@ -637,11 +656,14 @@ impl ShellView {
         let hidden = if self.ai.fixture.is_some() {
             view.turns.last().map_or(1, |t| t.summary.private_lists)
         } else {
-            let state = self.store.view();
+            let state = self.ai_access_state();
             state
                 .lists
                 .keys()
-                .filter(|&&id| state.is_live(id.into()) && !self.ai.profile.lists.contains_key(&id))
+                .filter(|&&id| {
+                    state.is_live(id.into())
+                        && self.ai.profile.access.list(&state, id) == ListAccess::Hidden
+                })
                 .count()
         };
         let model = view.model.as_ref().map_or_else(
@@ -661,13 +683,21 @@ impl ShellView {
                     .items_center()
                     .gap(px(space::S2))
                     .min_w_0()
-                    .child(dot(if failed || blocked {
-                        p.danger
-                    } else if ready {
-                        p.success
-                    } else {
-                        p.ink_3
-                    }))
+                    .child(kit::icon(
+                        if failed || blocked {
+                            Icon::CircleAlert
+                        } else if ready {
+                            Icon::CircleCheck
+                        } else {
+                            Icon::CloudOff
+                        },
+                        component::ICON_SMALL,
+                        if failed || blocked {
+                            p.danger_ink
+                        } else {
+                            p.ink_3
+                        },
+                    ))
                     .child(text(ty::META, p.ink_2, route).flex_none())
                     .child(one_line(text(ty::COUNT, p.ink_3, format!("· {model}"))))
                     .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
@@ -715,10 +745,11 @@ impl ShellView {
                     .border_color(if focused { p.accent_strong } else { p.control })
                     .rounded(px(radius::LG))
                     .bg(p.raised)
-                    .px(px(space::S3))
-                    .py(px(space::S2))
+                    .pl(px(space::S3))
+                    .pr(px(space::S2))
+                    .py(px(space::S1))
                     .flex()
-                    .items_end()
+                    .items_center()
                     .gap(px(space::S2))
                     .child(
                         div()
@@ -806,10 +837,11 @@ impl ShellView {
             };
             output = output.child(
                 box_panel(&p)
-                    .border_l(px(component::PROPOSAL_BAR))
+                    .relative()
                     .border_color(p.danger)
                     .p(px(space::S3))
                     .gap(px(space::S2))
+                    .child(kit::leading_rail(p.danger, component::PROPOSAL_BAR))
                     .child(
                         div()
                             .flex()
@@ -1112,7 +1144,9 @@ impl ShellView {
                 div()
                     .flex()
                     .w_full()
-                    .child(div().flex_none().w(px(component::PROPOSAL_BAR)).bg(ink))
+                    .relative()
+                    .pl(px(space::S2))
+                    .child(kit::leading_rail(ink, component::PROPOSAL_BAR))
                     .child(
                         div()
                             .flex_1()
@@ -1682,23 +1716,26 @@ impl ShellView {
         let blocked = destination == Some(Destination::NotPrivate);
         let route = destination.map_or("No address", Destination::label);
         let allowed = !blocked && !running && self.retry_seconds() == 0;
-        let (indicator, connection) = match &setup.check {
+        let (status_icon, indicator, connection) = match &setup.check {
             Check::NotTested if blocked => (
-                p.danger,
+                Icon::CircleAlert,
+                p.danger_ink,
                 "Blocked · confirm ownership before testing or sending.".into(),
             ),
-            Check::NotTested => (p.ink_3, "Connection not tested".into()),
-            Check::Running(label) => (p.accent, (*label).into()),
+            Check::NotTested => (Icon::Circle, p.ink_3, "Connection not tested".into()),
+            Check::Running(label) => (Icon::Clock, p.ink_3, (*label).into()),
             Check::Catalog { count, elapsed } => (
+                Icon::CircleCheck,
                 p.success,
                 format!("Connected · {count} models · {} ms", elapsed.as_millis()),
             ),
             Check::NoCatalog => (
+                Icon::CircleAlert,
                 p.ink_3,
                 "Model listing not supported. Enter a model ID manually.".into(),
             ),
-            Check::Capable(support) => (p.success, support.label().into()),
-            Check::Failed(message) => (p.danger, message.clone()),
+            Check::Capable(support) => (Icon::CircleCheck, p.success, support.label().into()),
+            Check::Failed(message) => (Icon::CircleAlert, p.danger_ink, message.clone()),
         };
         let picker = if setup.pick_model {
             Some(
@@ -1743,12 +1780,9 @@ impl ShellView {
             div()
                 .flex()
                 .w_full()
-                .child(
-                    div()
-                        .w(px(component::PROPOSAL_BAR))
-                        .flex_none()
-                        .bg(p.accent),
-                )
+                .relative()
+                .pl(px(space::S1))
+                .child(kit::leading_rail(p.accent_strong, component::PROPOSAL_BAR))
                 .child(
                     div()
                         .flex_1()
@@ -1769,13 +1803,17 @@ impl ShellView {
                                         .flex()
                                         .items_center()
                                         .gap(px(space::S1))
-                                        .child(dot(if blocked {
-                                            p.danger
-                                        } else if destination.is_some() {
-                                            p.success
-                                        } else {
-                                            p.ink_3
-                                        }))
+                                        .child(kit::icon(
+                                            if blocked {
+                                                Icon::CircleAlert
+                                            } else if destination.is_some() {
+                                                Icon::CircleCheck
+                                            } else {
+                                                Icon::CloudOff
+                                            },
+                                            component::ICON_SMALL,
+                                            if blocked { p.danger_ink } else { p.ink_3 },
+                                        ))
                                         .child(text(ty::CAPS_LABEL, p.ink_2, route.to_uppercase())),
                                 ),
                         )
@@ -1899,7 +1937,7 @@ impl ShellView {
                                 .flex()
                                 .items_center()
                                 .gap(px(space::S2))
-                                .child(dot(indicator))
+                                .child(kit::icon(status_icon, component::ICON_SMALL, indicator))
                                 .child(text(ty::META, p.ink_2, connection)),
                         )
                         .child(
@@ -1971,96 +2009,7 @@ impl ShellView {
                         ),
                 ),
         );
-        let state = self.store.view();
-        let mut lists: Vec<_> = state
-            .lists
-            .values()
-            .filter(|l| state.is_live(l.id.into()))
-            .collect();
-        lists.sort_by_key(|l| {
-            (
-                l.collection
-                    .and_then(|id| state.collections.get(&id))
-                    .map(|c| c.name.as_str()),
-                l.name.as_str(),
-                l.id,
-            )
-        });
-        let list_controls = box_panel(&p)
-            .flex_none()
-            .children(lists.into_iter().map(|list| {
-                let list_id = list.id;
-                let color = theme::list_colors(
-                    self.theme,
-                    model::lists::hue(list.color.as_deref(), list_id.as_uuid().as_bytes()),
-                );
-                let name = model::labels::one_line(&list.name);
-                let group = list
-                    .collection
-                    .and_then(|id| state.collections.get(&id))
-                    .map(|c| model::labels::one_line(&c.name));
-                let title = group.map_or_else(|| name.clone(), |group| format!("{group} · {name}"));
-                let access = setup.draft.lists.get(&list_id).copied();
-                self.ai_action(
-                    format!("assistant-access-{list_id}"),
-                    div()
-                        .w_full()
-                        .h(px(component::BUTTON))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S2))
-                        .px(px(space::S3))
-                        .border_b_1()
-                        .border_color(p.line)
-                        .child(
-                            kit::glyph(model::lists::list_glyph(&list.name), color.glyph)
-                                .size(px(component::ICON_SMALL)),
-                        )
-                        .child(one_line(text(ty::BODY, p.ink, title.clone())).flex_1())
-                        .child(kit::icon(
-                            if access.is_none() {
-                                Icon::EyeOff
-                            } else {
-                                Icon::Eye
-                            },
-                            component::ICON_SMALL,
-                            if access == Some(Access::Private) {
-                                p.sun_ink
-                            } else {
-                                p.ink_3
-                            },
-                        ))
-                        .child(text(ty::META, p.ink_2, Access::name(access)))
-                        .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
-                    true,
-                    move |this, _, cx| {
-                        if let Some(setup) = this.ai.settings.as_mut() {
-                            if let Some(access) =
-                                Access::next(setup.draft.lists.get(&list_id).copied())
-                            {
-                                if setup.draft.lists.contains_key(&list_id)
-                                    || setup.draft.lists.len() < 64
-                                {
-                                    setup.draft.lists.insert(list_id, access);
-                                } else {
-                                    setup.check = Check::Failed(
-                                        "You can share up to 64 lists on this device.".into(),
-                                    );
-                                }
-                            } else {
-                                setup.draft.lists.remove(&list_id);
-                            }
-                            cx.notify();
-                        }
-                    },
-                    cx,
-                )
-                .aria_label(format!(
-                    "{title}: {}. Activate to change access.",
-                    Access::name(access)
-                ))
-            }));
+        let list_controls = self.ai_access_controls(setup, cx);
         let settings = div().id("assistant-settings-dialog").track_focus(&self.ai.dialog).tab_group().role(Role::Dialog).aria_label("AI Assistant settings")
             .w(px(desktop::AI_SETTINGS_WIDTH)).max_w_full().max_h_full().rounded(px(radius::XL)).bg(p.pane).shadow(kit::overlay_shadow(&p)).border_1().border_color(p.line_strong)
             .flex().flex_col().occlude().overflow_hidden()
@@ -2080,9 +2029,9 @@ impl ShellView {
                     .child(kit::icon(Icon::CloudOff, component::ICON_SMALL, p.ink_3))
                     .child(text(ty::META, p.ink_2, "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights.")))
                 .child(kit::label(&p, "Lists the assistant can see").flex_none())
-                .child(text(ty::META, p.ink_3, "New lists are hidden. Changes apply to this device only. Select a row to change its access.").flex_none())
+                .child(text(ty::META, p.ink_3, "Lists inherit their collection’s choice unless you set them individually. Without a choice, lists are hidden. Changes apply only to this device.").flex_none())
                 .child(list_controls))
-            .child(div().flex_none().flex().justify_between().items_center().gap(px(space::S2)).bg(p.canvas).border_t_1().border_color(p.line).px(px(space::S5)).py(px(space::S3))
+            .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))
                 .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
                 .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
         Some(
@@ -2098,6 +2047,181 @@ impl ShellView {
                 .occlude()
                 .child(settings),
         )
+    }
+
+    fn ai_access_state(&self) -> Arc<State> {
+        match self.store.session() {
+            None => self.store.view(),
+            Some(session) => session
+                .client()
+                .assistant_snapshot()
+                .map_or_else(|| Arc::new(State::new()), |snapshot| snapshot.state),
+        }
+    }
+
+    fn ai_access_controls(&self, setup: &Setup, cx: &mut Context<Self>) -> Div {
+        let state = self.ai_access_state();
+        let p = self.palette;
+        let mut collections: Vec<_> = state
+            .collections
+            .values()
+            .filter(|c| state.is_live(c.id.into()))
+            .collect();
+        collections.sort_by_key(|c| (&c.name, c.id));
+        let mut members = BTreeMap::<_, Vec<_>>::new();
+        for list in state.lists.values().filter(|l| state.is_live(l.id.into())) {
+            let collection = list.collection.filter(|id| state.is_live((*id).into()));
+            members.entry(collection).or_default().push(list);
+        }
+        let mut rows = Vec::new();
+        for group in collections
+            .into_iter()
+            .map(Some)
+            .chain(std::iter::once(None))
+        {
+            if let Some(group) = group {
+                let effective = setup.draft.access.collection(&state, group.id);
+                let default = setup
+                    .draft
+                    .access
+                    .collections
+                    .get(&group.id)
+                    .copied()
+                    .unwrap_or_default();
+                let inheritance = (effective != Some(default)).then(|| {
+                    let label = ACCESS_CHOICES
+                        .into_iter()
+                        .find_map(|(access, label)| (access == default).then_some(label));
+                    format!("New lists: {}", label.unwrap_or("Hidden"))
+                });
+                rows.push(self.ai_access_row(
+                    AccessTarget::Collection(group.id),
+                    &group.name,
+                    None,
+                    effective,
+                    inheritance,
+                    cx,
+                ));
+            }
+            let mut lists = members.remove(&group.map(|c| c.id)).unwrap_or_default();
+            lists.sort_by_key(|l| (&l.name, l.id));
+            for list in lists {
+                let color = theme::list_colors(
+                    self.theme,
+                    model::lists::hue(list.color.as_deref(), list.id.as_uuid().as_bytes()),
+                );
+                rows.push(
+                    self.ai_access_row(
+                        AccessTarget::List(list.id),
+                        &list.name,
+                        Some(
+                            kit::glyph(model::lists::list_glyph(&list.name), color.glyph)
+                                .size(px(component::ICON_SMALL))
+                                .into_any_element(),
+                        ),
+                        Some(setup.draft.access.list(&state, list.id)),
+                        None,
+                        cx,
+                    ),
+                );
+            }
+        }
+        box_panel(&p).flex_none().children(rows)
+    }
+
+    fn ai_access_row(
+        &self,
+        target: AccessTarget,
+        name: &str,
+        glyph: Option<gpui::AnyElement>,
+        access: Option<ListAccess>,
+        inheritance: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let p = self.palette;
+        let group = matches!(target, AccessTarget::Collection(_));
+        let id = match target {
+            AccessTarget::Collection(id) => id.as_uuid(),
+            AccessTarget::List(id) => id.as_uuid(),
+        };
+        let name = model::labels::one_line(name);
+        div()
+            .w_full()
+            .min_h(px(component::BUTTON))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(space::S2))
+            .px(px(space::S3))
+            .border_b_1()
+            .border_color(p.line)
+            .when(group, |row| row.bg(p.canvas))
+            .children(glyph)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .py(px(space::S1))
+                    .child(one_line(text(
+                        if group { ty::NAV_COLLECTION } else { ty::BODY },
+                        p.ink,
+                        name.clone(),
+                    )))
+                    .children(inheritance.map(|label| one_line(text(ty::META, p.ink_3, label)))),
+            )
+            .when(access.is_none(), |row| {
+                row.child(text(ty::META, p.ink_2, "Mixed").flex_none())
+            })
+            .children(
+                ACCESS_CHOICES
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (choice, label))| {
+                        let selected = access == Some(choice);
+                        self.ai_action(
+                            format!("assistant-access-{id}-{i}"),
+                            text(
+                                if selected {
+                                    ty::BUTTON_SMALL.with_weight(600)
+                                } else {
+                                    ty::BUTTON_SMALL
+                                },
+                                if selected { p.accent_strong } else { p.ink_2 },
+                                label,
+                            )
+                            .flex_none()
+                            .px(px(space::S2))
+                            .py(px(space::S1))
+                            .rounded(px(radius::SM))
+                            .when(selected, |button| button.bg(p.wash)),
+                            true,
+                            move |this, _, cx| {
+                                let state = this.ai_access_state();
+                                if let Some(setup) = this.ai.settings.as_mut() {
+                                    let policy = &mut setup.draft.access;
+                                    match target {
+                                        AccessTarget::Collection(id) => {
+                                            policy.set_collection(&state, id, choice)
+                                        }
+                                        AccessTarget::List(id) if state.is_live(id.into()) => {
+                                            policy.lists.insert(id, choice);
+                                        }
+                                        AccessTarget::List(_) => {}
+                                    }
+                                    cx.notify();
+                                }
+                            },
+                            cx,
+                        )
+                        .aria_label(format!(
+                            "{name}: {label}{}",
+                            if group { " for the collection" } else { "" }
+                        ))
+                        .aria_toggled(toggled(selected))
+                    }),
+            )
     }
 
     fn ai_setting_field(

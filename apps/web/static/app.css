@@ -506,14 +506,21 @@ a {
   position: relative;
 }
 
-.nav-item:is(.active, .contains-active)::before {
+/* Leading marks sit inside the surface, clear of its corners and any focus outline. */
+.nav-item:is(.active, .contains-active)::before,
+:is(.row, .handover-task).selected::before,
+.board-card:is(.selected, .bulk-selected)::before,
+.timeline-lane.selected .timeline-task::before,
+.timeline-lane[data-stage="in-progress"]:not(.overdue) .timeline-bar::before,
+.timeline-lane.cross-list .timeline-bar::before {
   content: "";
   position: absolute;
   inset-block: var(--space-1);
-  inset-inline-start: 0;
-  width: var(--selection-bar);
+  inset-inline-start: var(--space-1);
+  inline-size: var(--selection-bar);
   border-radius: var(--radius-sm);
-  background: var(--color-accent-strong);
+  background: var(--leading-rail-color, var(--color-accent-strong));
+  pointer-events: none;
 }
 
 .nav-name {
@@ -1825,17 +1832,6 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   background: var(--color-selection-wash);
 }
 
-:is(.row, .handover-task).selected::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--selection-bar);
-  background: var(--color-accent-strong);
-  pointer-events: none;
-}
-
 .row-important {
   margin-block-start: calc((var(--component-chip) - var(--component-icon-button)) / 2);
 }
@@ -2205,14 +2201,8 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   content: "";
   position: absolute;
   inset: 0;
-  inset-inline-start: var(--bulk-cursor-start, 0px);
   border: var(--hairline) solid var(--color-selection-check);
   pointer-events: none;
-}
-
-/* Keep the membership bar intact even when this is also the keyboard cursor. */
-.bulk-cursor.selected {
-  --bulk-cursor-start: calc(var(--selection-bar) + var(--hairline));
 }
 
 @media (max-width: 759px) {
@@ -3897,14 +3887,6 @@ a.source:hover {
 .board-card:hover { border-color: var(--color-line-strong); }
 .board-card.selected { background: var(--color-wash); border-color: var(--color-accent); }
 .board-card.bulk-selected { background: var(--color-selection-wash); }
-.board-card:is(.selected, .bulk-selected)::before {
-  content: "";
-  position: absolute;
-  inset: var(--space-2) auto var(--space-2) 0;
-  inline-size: var(--selection-bar);
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-strong);
-}
 .board-card-head { display: flex; align-items: flex-start; gap: var(--space-2); }
 .board-card-head .check { flex: none; }
 .board-card.overdue:not(.done) .check { box-shadow: inset 0 0 0 var(--component-checkbox-ring) var(--color-danger); }
@@ -4121,6 +4103,7 @@ a.source:hover {
 .timeline-completion .tick { stroke-dashoffset: 0; }
 .timeline-lane.completing .timeline-completion { animation: check-fill var(--duration-check-fill) var(--ease-pop) both; }
 .timeline-task {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -4132,7 +4115,7 @@ a.source:hover {
 }
 .timeline-task:focus-visible { outline-offset: calc(-1 * var(--focus-ring)); }
 .timeline-task:hover { background: var(--color-hover); }
-.timeline-lane.selected .timeline-task { background: var(--color-wash); box-shadow: inset var(--selection-bar) 0 var(--color-accent-strong); }
+.timeline-lane.selected .timeline-task { background: var(--color-wash); }
 .rail-collapsed .timeline-task { justify-content: center; padding: 0; }
 .timeline-task-title, .timeline-inline, .timeline-label, .timeline-tray-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--text-button); font-weight: 500; }
 .timeline-lane.done :is(.timeline-task-title, .timeline-inline, .timeline-label) { text-decoration: line-through; }
@@ -4166,9 +4149,9 @@ a.source:hover {
 }
 .timeline-lane[data-stage="backlog"] .timeline-bar { --bar-bg: var(--color-canvas); border-style: dashed; }
 .timeline-lane.selected .timeline-bar { --bar-bg: var(--color-wash); --bar-line: var(--color-accent-strong); }
-.timeline-lane[data-stage="in-progress"] .timeline-bar { --bar-bg: var(--color-wash); --bar-line: var(--color-accent); box-shadow: inset var(--selection-bar) 0 var(--color-accent-strong); }
-.timeline-lane.overdue .timeline-bar { --bar-bg: var(--color-danger-bg); --bar-line: var(--color-danger); --bar-ink: var(--color-danger-ink); border-style: solid; box-shadow: none; }
-.timeline-lane.cross-list .timeline-bar { --bar-bg: var(--list-tint); --bar-line: var(--list-dot); --bar-ink: var(--list-ink); border-style: solid; box-shadow: inset var(--selection-bar) 0 var(--list-dot); }
+.timeline-lane[data-stage="in-progress"] .timeline-bar { --bar-bg: var(--color-wash); --bar-line: var(--color-accent); }
+.timeline-lane.overdue .timeline-bar { --bar-bg: var(--color-danger-bg); --bar-line: var(--color-danger); --bar-ink: var(--color-danger-ink); border-style: solid; }
+.timeline-lane.cross-list .timeline-bar { --bar-bg: var(--list-tint); --bar-line: var(--list-dot); --bar-ink: var(--list-ink); --leading-rail-color: var(--list-dot); border-style: solid; }
 .timeline-lane .timeline-bar.open-ended { border-inline-end-style: dashed; }
 .timeline-bar:hover { border-color: var(--bar-ink); }
 .timeline-bar.lifted { cursor: grabbing; }

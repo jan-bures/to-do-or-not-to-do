@@ -360,24 +360,13 @@ impl ShellView {
         row.when(selected, |row| {
             row.relative()
                 .bg(if bulk { p.selection_wash } else { p.wash })
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(elevation::SELECTION_BAR))
-                        .bg(p.accent_strong),
-                )
+                .child(kit::leading_rail(p.accent_strong, elevation::SELECTION_BAR))
         })
         .when(cursor, |row| {
             row.relative().child(
                 div()
                     .absolute()
                     .inset_0()
-                    .when(selected, |outline| {
-                        outline.left(px(elevation::SELECTION_BAR + elevation::HAIRLINE))
-                    })
                     .border(px(elevation::HAIRLINE))
                     .border_color(p.selection_check),
             )

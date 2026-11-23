@@ -2,8 +2,8 @@
 
 use super::*;
 use todo_client::assistant::{
-    Edit, Effect, ListRef, ModelSelection, ProposalItem, ProposalPreview, Step, StepKind,
-    StepStatus, StepSummary, TaskRef, ToolKind,
+    Edit, Effect, ListAccess, ListRef, ModelSelection, ProposalItem, ProposalPreview, Step,
+    StepKind, StepStatus, StepSummary, TaskRef, ToolKind,
 };
 use todo_core::{command::Placement, event::Change, model::WorkflowStatus, time::Date};
 
@@ -19,6 +19,10 @@ impl ShellView {
         }
         self.ai.open = true;
         self.settle_detail();
+        if name == "ai-unconfigured" {
+            cx.notify();
+            return;
+        }
         let state = self.store.view();
         let target = state
             .tasks
@@ -231,10 +235,30 @@ impl ShellView {
             model,
             turns,
         });
+        if name == "ai-typing" {
+            self.ai.composer.update(cx, |input, cx| {
+                input.set_text("What can I finish today?", cx)
+            });
+        }
         if name == "ai-settings" {
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
-            self.ai.profile.lists.insert(errands.id, Access::Private);
-            self.ai.profile.lists.insert(reading.id, Access::All);
+            if let Some(collection) = state.lists[&errands.id].collection {
+                self.ai
+                    .profile
+                    .access
+                    .set_collection(&state, collection, ListAccess::PrivateOnly);
+            }
+            self.ai
+                .profile
+                .access
+                .lists
+                .insert(errands.id, ListAccess::Hidden);
+            if let Some(collection) = state.lists[&reading.id].collection {
+                self.ai
+                    .profile
+                    .access
+                    .set_collection(&state, collection, ListAccess::AllModels);
+            }
             self.open_ai_settings(window, cx);
             if let Some(setup) = self.ai.settings.as_mut() {
                 setup.check = Check::Catalog {

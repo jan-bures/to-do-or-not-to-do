@@ -423,10 +423,14 @@ and any unapproved proposal.
 2. Choose **Test connection** to fetch the models. Pick a listed model or enter its ID. **Test model**
    sends an invented prompt to check streaming and tool calls; without this test, or if only text
    works, the model has no task tools.
-3. Choose which lists the assistant can read. Lists are hidden by default, including new lists.
-   **Private only** and **All models** both allow the configured private provider; no cloud provider
-   is available. Select **Enable assistant on this device**, then **Done** to save. No tests or
-   inference run in the background. **Forget server** clears the key and removes the protected
+3. Choose which lists the assistant can read. A collection header sets every list in it and the
+   default for lists added or moved into it later. **Mixed** means its lists have different access.
+   Individual choices override the collection and follow the list if it moves. Setting the collection
+   again replaces the individual choices for its current lists. Without either choice a list is
+   **Hidden**, including when it moves out of a shared collection. Inheritance can reach **All models**
+   only if you explicitly set it on the collection. **Private only** and **All models** both allow
+   the configured private provider; no cloud provider is available. Select **Enable assistant on
+   this device**, then **Done** to save. No tests or inference run in the background. **Forget server** clears the key and removes the protected
    profile and any orphaned files from an interrupted settings save.
 
 The panel shows the configured destination: **This device**, **Tailscale**, **Your server** (confirmed

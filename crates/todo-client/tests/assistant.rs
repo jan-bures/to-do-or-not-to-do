@@ -18,8 +18,8 @@ use std::{
 use todo_client::{
     Clock, Entropy,
     assistant::{
-        AssistantError, Composer, ConfirmedSnapshot, Controller, Edit, Effect, ListAccess,
-        ProposalStatus, ReviewError, Revision, Selection, SendIntent, StepStatus,
+        AccessRules, AssistantError, Composer, ConfirmedSnapshot, Controller, Edit, Effect,
+        ListAccess, ProposalStatus, ReviewError, Revision, Selection, SendIntent, StepStatus,
         fake::{CAPABILITIES, FakeProvider, FakeRound, MODEL},
         provider::{
             BillingClass, Capabilities, DataClass, Message, Provider, ProviderError, RoundMode,
@@ -29,7 +29,7 @@ use todo_client::{
 };
 use todo_core::{
     Actor, State, apply, decide,
-    ids::{ListId, TaskId},
+    ids::{CollectionId, ListId, TaskId},
     query::EvalContext,
     time::{Date, Timestamp},
 };
@@ -123,7 +123,7 @@ fn fixture(
         provider: provider.clone(),
         model: MODEL.into(),
         allow_billed: false,
-        lists: local(),
+        access: local().into(),
     }));
     chat.update_snapshot(Some(snapshot(7, state())));
     (chat, provider)
@@ -146,6 +146,97 @@ fn round(events: impl IntoIterator<Item = StreamEvent>) -> Result<FakeRound, Pro
     Ok(FakeRound::new(
         events.into_iter().chain([StreamEvent::Finished]).map(Ok),
     ))
+}
+
+#[test]
+fn collection_settings_cover_future_members_and_replace_current_overrides() {
+    let mut state = state();
+    let group = CollectionId::from_uuid(Uuid::from_u128(100));
+    let new = ListId::from_uuid(Uuid::from_u128(101));
+    apply_command(
+        &mut state,
+        json!({"cmd":"create_collection","id":group,"name":"Work"}),
+    );
+    let mut access = AccessRules::default();
+    access.set_collection(&state, group, ListAccess::PrivateOnly);
+    assert_eq!(
+        access.collection(&state, group),
+        Some(ListAccess::PrivateOnly)
+    );
+    apply_command(
+        &mut state,
+        json!({"cmd":"create_list","id":new,"collection":group,"name":"New list"}),
+    );
+    apply_command(
+        &mut state,
+        json!({"cmd":"move_list","id":INBOX,"collection":group}),
+    );
+    assert_eq!(access.list(&state, HIDDEN), ListAccess::Hidden);
+    assert_eq!(access.list(&state, new), ListAccess::PrivateOnly);
+    assert!(!access.list(&state, new).allows(DataClass::Cloud));
+    access.lists.insert(INBOX, ListAccess::Hidden);
+    assert_eq!(access.collection(&state, group), None);
+    access.set_collection(&state, group, ListAccess::AllModels);
+    assert!(access.lists.is_empty());
+    assert_eq!(
+        access.collection(&state, group),
+        Some(ListAccess::AllModels)
+    );
+    assert!(access.list(&state, INBOX).allows(DataClass::Cloud));
+    apply_command(
+        &mut state,
+        json!({"cmd":"move_list","id":INBOX,"collection":null}),
+    );
+    assert_eq!(access.list(&state, INBOX), ListAccess::Hidden);
+}
+
+#[test]
+fn moving_out_of_a_shared_collection_invalidates_chat_and_cloud_never_sees_private_inheritance() {
+    let mut state = state();
+    let group = CollectionId::from_uuid(Uuid::from_u128(100));
+    apply_command(
+        &mut state,
+        json!({"cmd":"create_collection","id":group,"name":"Work"}),
+    );
+    apply_command(
+        &mut state,
+        json!({"cmd":"move_list","id":INBOX,"collection":group}),
+    );
+    apply_command(
+        &mut state,
+        json!({"cmd":"move_list","id":HIDDEN,"collection":group}),
+    );
+    let mut access = AccessRules::default();
+    access.set_collection(&state, group, ListAccess::PrivateOnly);
+    access.lists.insert(INBOX, ListAccess::AllModels);
+    let (cloud, provider) = fixture(
+        Capabilities {
+            data_class: DataClass::Cloud,
+            ..CAPABILITIES
+        },
+        [round([call("lists", "list_lists", json!({}))]), round([])],
+    );
+    cloud.set_scope(access.clone());
+    cloud.update_snapshot(Some(snapshot(8, state.clone())));
+    block_on(cloud.start(intent(&cloud, 1)).unwrap()).unwrap();
+    let requests = provider.requests();
+    let Some(Message::Tool { untrusted_data, .. }) = requests[1].history.last() else {
+        panic!("expected scoped tool result");
+    };
+    let visible = untrusted_data["items"].as_array().unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0]["id"], json!(INBOX));
+
+    let (local, _) = fixture(CAPABILITIES, [round([])]);
+    local.set_scope(access);
+    local.update_snapshot(Some(snapshot(8, state.clone())));
+    block_on(local.start(intent(&local, 1)).unwrap()).unwrap();
+    apply_command(
+        &mut state,
+        json!({"cmd":"move_list","id":HIDDEN,"collection":null}),
+    );
+    local.update_snapshot(Some(snapshot(9, state)));
+    assert!(local.view().turns.is_empty());
 }
 
 #[test]
@@ -454,7 +545,7 @@ fn a_new_head_makes_review_stale_and_a_scope_or_epoch_change_forgets_history() {
     );
     chat.discard(preview.id, preview.digest).unwrap();
     let delayed = intent(&chat, 2);
-    chat.set_scope(BTreeMap::new());
+    chat.set_scope(Default::default());
     assert!(chat.view().turns.is_empty());
     assert_eq!(chat.start(delayed).err(), Some(AssistantError::Obsolete));
     block_on(chat.start(intent(&chat, 3)).unwrap()).unwrap();
@@ -556,7 +647,7 @@ fn checks_cancel_timeout_duplicate_send_and_late_round_messages() {
         )),
         model: MODEL.into(),
         allow_billed: false,
-        lists: local(),
+        access: local().into(),
     }));
     assert_eq!(
         block_on(chat.start(intent(&chat, 1)).unwrap()),
@@ -846,10 +937,13 @@ fn capability_flags_control_buffering_cloud_visibility_and_billing() {
         caps,
         [round([call("one", "list_lists", json!({}))]), round([])],
     );
-    chat.set_scope(BTreeMap::from([
-        (INBOX, ListAccess::AllModels),
-        (HIDDEN, ListAccess::PrivateOnly),
-    ]));
+    chat.set_scope(
+        BTreeMap::from([
+            (INBOX, ListAccess::AllModels),
+            (HIDDEN, ListAccess::PrivateOnly),
+        ])
+        .into(),
+    );
     assert_eq!(block_on(provider.list_models()).unwrap()[0].id, MODEL);
     assert_eq!(block_on(provider.check_connection()), Ok(()));
     block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();

@@ -97,7 +97,7 @@ Keep conversation management lightweight — no nested sidebar inside the Assist
 
 ### 2.7 Proposal cards (single & batched)
 
-Every write the assistant wants to perform is emitted as a **Proposal Card** (`raised` fill, `radius::LG` `10 px`, `1 px` `line-strong` border, `3 px` leading semantic bar `component::PROPOSAL_BAR`). Mutations are visually distinguished by **icon, mono caps label, leading bar colour, and structural layout** (never colour alone):
+Every write the assistant wants to perform is emitted as a **Proposal Card** (`raised` fill, `radius::LG` `10 px`, `1 px` `line-strong` border, inset `3 px` leading semantic bar `component::PROPOSAL_BAR`). Mutations are visually distinguished by **icon, mono caps label, leading bar colour, and structural layout** (never colour alone):
 
 | Proposal kind | Leading bar (`3 px`) | Header treatment | Body layout | Action buttons (left → right) |
 |---|---|---|---|---|
@@ -233,7 +233,9 @@ Because a personal Mac on Tailscale may sleep when the owner is away from their 
    - **First cloud message disclosure:** The very first time the owner sends a prompt to a Cloud provider, a quiet dismissible inline notice states: `"Only the tasks and lists the assistant reads to answer your question are sent — never excluded lists or file attachments."`
 2. **Per-list visibility ("Lists the assistant can see"):**
    - Mirrors the server's existing per-list agent access model (`docs/agents/guide.md`): hidden lists do not exist to the assistant — they are omitted from list enumerations, search queries, and task lookups.
-   - Each list (grouped by collection) offers a simple 3-way choice (default **`All models`**):
+   - Each list and collection header offers a 3-way choice (default **`Hidden`**). The collection
+     choice applies to all current and future members, replacing current list overrides. Individual
+     choices can then override the default; **`Mixed`** means members differ.
      - **`All models`** — visible to both Private network and Cloud providers.
      - **`Private only`** (`eye-off` in `sun-ink`) — visible to **Your own server**, completely hidden whenever using **ChatGPT** or a **Cloud API key**. Ideal for lists like `Finance`!
      - **`Hidden`** (`eye-off` in `ink-3`) — never visible to any AI model (e.g. `Health`).

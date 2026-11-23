@@ -6,43 +6,18 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     io::{ErrorKind, Write},
     sync::Arc,
 };
 use todo_client::assistant::{
-    ListAccess, Selection,
+    AccessRules, Selection,
     local::{EndpointInfo, LocalProvider, SetupError, Support, endpoint_info, valid_model},
 };
-use todo_core::ids::ListId;
 use zeroize::Zeroizing;
 
 const FILE: &str = "assistant-profile.bin";
 const PURPOSE: &[u8] = b"to-do-or-not-to-do/assistant-profile/v1";
 const MAX_PROFILE: u64 = 64 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Access {
-    Private,
-    All,
-}
-
-impl Access {
-    pub fn name(value: Option<Self>) -> &'static str {
-        match value {
-            None => "Hidden",
-            Some(Self::Private) => "Private only",
-            Some(Self::All) => "All models",
-        }
-    }
-    pub fn next(value: Option<Self>) -> Option<Self> {
-        match value {
-            None => Some(Self::Private),
-            Some(Self::Private) => Some(Self::All),
-            Some(Self::All) => None,
-        }
-    }
-}
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Profile {
@@ -51,7 +26,8 @@ pub struct Profile {
     pub enabled: bool,
     #[serde(default)]
     pub attested: bool,
-    pub lists: BTreeMap<ListId, Access>,
+    #[serde(flatten)]
+    pub access: AccessRules,
     pub support: Option<Support>,
     #[serde(with = "secret")]
     pub key: Zeroizing<String>,
@@ -70,21 +46,6 @@ mod secret {
 }
 
 impl Profile {
-    pub fn scope(&self) -> BTreeMap<ListId, ListAccess> {
-        self.lists
-            .iter()
-            .map(|(&id, &access)| {
-                (
-                    id,
-                    match access {
-                        Access::All => ListAccess::AllModels,
-                        Access::Private => ListAccess::PrivateOnly,
-                    },
-                )
-            })
-            .collect()
-    }
-
     pub fn selection(&self) -> Option<Selection<LocalProvider>> {
         if !self.enabled || !valid_model(&self.model) {
             return None;
@@ -96,7 +57,7 @@ impl Profile {
         Some(Selection {
             provider: Arc::new(provider),
             model: self.model.clone(),
-            lists: self.scope(),
+            access: self.access.clone(),
             allow_billed: false,
         })
     }
@@ -117,7 +78,7 @@ impl Profile {
             self.attested = false;
             self.key = Zeroizing::default();
             self.support = None;
-            self.lists.clear();
+            self.access = AccessRules::default();
             self.url = url;
         }
     }
@@ -212,6 +173,15 @@ mod tests {
             key: Zeroizing::new("synthetic-secret".into()),
             ..Profile::default()
         };
+        use todo_client::assistant::ListAccess;
+        use todo_core::ids::{CollectionId, ListId};
+        let collection = CollectionId::from_uuid(uuid::Uuid::from_u128(7));
+        let list = ListId::from_uuid(uuid::Uuid::from_u128(8));
+        profile
+            .access
+            .collections
+            .insert(collection, ListAccess::PrivateOnly);
+        profile.access.lists.insert(list, ListAccess::Hidden);
         profile.normalize().expect("normalize fixture URL");
         profile.save(&data).expect("seal fixture profile");
         let sealed = std::fs::read(data.path().join(FILE)).expect("read ciphertext");
@@ -222,6 +192,7 @@ mod tests {
         let loaded = Profile::load(&data).expect("open fixture profile");
         assert_eq!(*loaded.key, *profile.key);
         assert_eq!(loaded.url, profile.url);
+        assert_eq!(loaded.access, profile.access);
         assert!(loaded.attested);
         assert!(loaded.selection().is_none());
         Profile::forget(&data).expect("forget assistant profile");
@@ -267,8 +238,16 @@ mod tests {
     #[test]
     fn legacy_profiles_do_not_inherit_attestation() {
         use todo_client::assistant::local::Destination;
-        let old = r#"{"url":"https://mac.tailnet.example/v1","model":"fixture-model","enabled":true,"lists":{},"support":null,"key":""}"#;
+        let old = r#"{"url":"https://mac.tailnet.example/v1","model":"fixture-model","enabled":true,"lists":{"00000000-0000-0000-0000-000000000001":"Private","00000000-0000-0000-0000-000000000002":"All"},"support":null,"key":""}"#;
         let profile: Profile = serde_json::from_str(old).expect("legacy profile");
+        assert!(profile.access.collections.is_empty());
+        assert_eq!(
+            profile.access.lists.values().copied().collect::<Vec<_>>(),
+            [
+                todo_client::assistant::ListAccess::PrivateOnly,
+                todo_client::assistant::ListAccess::AllModels
+            ]
+        );
         assert!(!profile.attested);
         assert_eq!(
             profile.endpoint().expect("legacy URL").destination,

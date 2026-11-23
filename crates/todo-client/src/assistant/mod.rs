@@ -12,6 +12,7 @@ macro_rules! opaque_debug {
     )+};
 }
 
+mod access;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;
@@ -19,6 +20,7 @@ pub mod provider;
 mod tools;
 pub mod wire;
 
+pub use access::{AccessRules, ListAccess};
 pub use todo_tools::assistant::approval::{
     Edit, Effect, ListRef, PendingProposal, ProposalItem, ProposalKind, ProposalPreview, Revision,
     TaskRef,
@@ -36,11 +38,11 @@ use futures_util::{
     future::{AbortHandle, AbortRegistration, Abortable},
 };
 use provider::{
-    BillingClass, Cancel, Capabilities, DataClass, Message, Provider, ProviderError, RoundMode,
-    RoundRequest, StreamEvent, ToolCall, Usage,
+    BillingClass, Cancel, Capabilities, Message, Provider, ProviderError, RoundMode, RoundRequest,
+    StreamEvent, ToolCall, Usage,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     future::Future,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
@@ -80,18 +82,11 @@ pub struct ConfirmedSnapshot {
     pub stale: bool,
 }
 
-/// A list absent from the selected profile remains hidden. List IDs, not names, are authoritative.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ListAccess {
-    AllModels,
-    PrivateOnly,
-}
-
 pub struct Selection<P> {
     pub provider: Arc<P>,
     pub model: String,
     pub allow_billed: bool,
-    pub lists: BTreeMap<ListId, ListAccess>,
+    pub access: AccessRules,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -354,14 +349,12 @@ impl<P> Chat<P> {
         }
     }
 
-    fn allowed_lists(&mut self) {
-        self.allowed.clear();
-        if let Some((selection, caps)) = self.selection.as_ref().zip(self.capabilities) {
-            self.allowed
-                .extend(selection.lists.iter().filter_map(|(id, access)| {
-                    (caps.data_class == DataClass::Local || *access == ListAccess::AllModels)
-                        .then_some(*id)
-                }));
+    fn allowed_lists(&self) -> BTreeSet<ListId> {
+        match (&self.selection, self.capabilities, &self.latest) {
+            (Some(selection), Some(caps), Some(snapshot)) => {
+                selection.access.allowed(&snapshot.state, caps.data_class)
+            }
+            _ => BTreeSet::new(),
         }
     }
 }
@@ -470,23 +463,23 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
             let active = chat.reset();
             chat.selection = selection;
             chat.capabilities = capabilities;
-            chat.allowed_lists();
+            chat.allowed = chat.allowed_lists();
             active
         };
         self.inner.abort(active);
     }
 
-    pub fn set_scope(&self, lists: BTreeMap<ListId, ListAccess>) {
+    pub fn set_scope(&self, access: AccessRules) {
         let active = {
             let mut chat = self.inner.lock();
             let Some(selection) = &mut chat.selection else {
                 return;
             };
-            if selection.lists == lists {
+            if selection.access == access {
                 return;
             }
-            selection.lists = lists;
-            chat.allowed_lists();
+            selection.access = access;
+            chat.allowed = chat.allowed_lists();
             chat.reset()
         };
         self.inner.abort(active);
@@ -514,7 +507,10 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
                     .any(|turn| !turn.observed.visible(&new.state, &chat.allowed))
             });
             chat.latest = latest;
-            if reset {
+            let allowed = chat.allowed_lists();
+            let lost_access = !chat.allowed.is_subset(&allowed);
+            chat.allowed = allowed;
+            if reset || lost_access {
                 chat.reset()
             } else {
                 if chat.pending.as_ref().is_some_and(|p| {

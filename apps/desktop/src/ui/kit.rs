@@ -397,6 +397,31 @@ pub fn overlay(p: &Palette) -> Div {
         .shadow(overlay_shadow(p))
 }
 
+/// A full-width footer painted inside the dialog border. GPUI's overflow clip is rectangular,
+/// so the footer fill itself needs the dialog's inner bottom radii.
+pub fn dialog_footer(p: &Palette, corner_radius: f32) -> Div {
+    let inner = px(corner_radius - elevation::HAIRLINE);
+    div()
+        .flex_none()
+        .bg(p.canvas)
+        .border_t(px(elevation::HAIRLINE))
+        .border_color(p.line)
+        .rounded_bl(inner)
+        .rounded_br(inner)
+}
+
+/// Leading mark over a positioned surface. The inset and rounded ends keep it clear of the outline.
+pub fn leading_rail(color: Hsla, width: f32) -> Div {
+    div()
+        .absolute()
+        .left(px(space::S1))
+        .top(px(space::S1))
+        .bottom(px(space::S1))
+        .w(px(width))
+        .rounded_full()
+        .bg(color)
+}
+
 /// The design's one shadow, for transient overlays: menus, popovers and the narrow window's detail.
 pub fn overlay_shadow(p: &Palette) -> Vec<gpui::BoxShadow> {
     let layers = if p.night() {

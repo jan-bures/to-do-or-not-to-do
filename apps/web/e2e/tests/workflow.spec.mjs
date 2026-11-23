@@ -263,8 +263,14 @@ for (const scheme of ["light", "dark"]) {
       await shot("board-move");
       await undo(page).click();
       await page.locator(".toast-close").click();
-      await card(column(page, "in-progress"), TITLE).click();
+      const selectedCard = card(column(page, "in-progress"), TITLE);
+      await selectedCard.click();
       await expect(page.locator("#edit-task-start")).toBeVisible();
+      const rail = await selectedCard.evaluate((el) => {
+        const style = getComputedStyle(el.closest(".board-card"), "::before");
+        return [style.insetInlineStart, style.insetBlockStart, style.insetBlockEnd, style.borderTopLeftRadius];
+      });
+      expect(rail).toEqual(["4px", "4px", "4px", "4px"]);
       await shot("board-detail");
       await tab(page, "List").click();
       await page.getByRole("textbox", { name: "Add a task" }).fill("Install hallway sconces");

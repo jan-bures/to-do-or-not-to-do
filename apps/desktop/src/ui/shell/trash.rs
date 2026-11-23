@@ -78,15 +78,8 @@ impl ShellView {
             .items_center()
             .gap(px(space::S3))
             .when(selected, |d| {
-                d.bg(p.wash).child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .h_full()
-                        .w(px(elevation::SELECTION_BAR))
-                        .bg(p.accent_strong),
-                )
+                d.bg(p.wash)
+                    .child(kit::leading_rail(p.accent_strong, elevation::SELECTION_BAR))
             })
             .child(
                 div()

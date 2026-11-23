@@ -20,13 +20,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.AgentMark
 import app.todoornot.core.Chip
@@ -81,9 +84,15 @@ fun Modifier.hairline(color: Color, top: Boolean = false): Modifier = drawBehind
     drawLine(color, Offset(0f, y), Offset(size.width, y), w)
 }
 
-/** The selection bar on the leading edge of a selected row. */
+/** An inset leading mark with round ends; it never paints into a surface's corners. */
 fun Modifier.selectionBar(color: Color): Modifier = drawBehind {
-    drawRect(color, size = androidx.compose.ui.geometry.Size(Tokens.Elevation.SELECTION_BAR.dp.toPx(), size.height))
+    val inset = Tokens.Space.S1.dp.toPx()
+    val width = Tokens.Elevation.SELECTION_BAR.dp.toPx()
+    val height = size.height - inset * 2
+    if (height > 0 && size.width >= inset * 2 + width) {
+        val x = if (layoutDirection == LayoutDirection.Ltr) inset else size.width - inset - width
+        drawRoundRect(color, Offset(x, inset), Size(width, height), CornerRadius(width / 2))
+    }
 }
 
 /** A list chip: dot and name on the list's tint. The only pill shape besides room pills. */

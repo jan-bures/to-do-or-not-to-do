@@ -6,11 +6,7 @@ mod tests;
 mod views;
 
 use super::*;
-use crate::{
-    assistant_profile::{Access, Profile},
-    session,
-    ui::text_area::TextArea,
-};
+use crate::{assistant_profile::Profile, session, ui::text_area::TextArea};
 use futures::future::{AbortHandle, Abortable};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_client::{
@@ -882,7 +878,7 @@ impl ShellView {
                 model: p.model.clone(),
                 enabled: p.enabled,
                 attested: p.attested,
-                lists: p.lists.clone(),
+                access: p.access.clone(),
                 support: p.support,
                 key: p.key.clone(),
             },
@@ -1083,8 +1079,8 @@ impl ShellView {
         let generation = self.ai.controller.view().generation;
         if changing {
             self.ai.controller.configure(next.selection());
-        } else if old.lists != next.lists {
-            self.ai.controller.set_scope(next.scope());
+        } else if old.access != next.access {
+            self.ai.controller.set_scope(next.access.clone());
         }
         if endpoint_changed {
             self.ai.rate_until = None;

@@ -53,6 +53,8 @@ Options:
 pub const FIXTURES: &[&str] = &[
     "my-day",
     "ai-empty",
+    "ai-unconfigured",
+    "ai-typing",
     "ai-proposal",
     "ai-batch",
     "ai-settings",

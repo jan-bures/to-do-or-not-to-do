@@ -101,14 +101,15 @@ fn changing_destination_invalidates_probe_scope_and_saved_key_without_contacting
         let setup = shell.ai.settings.as_mut().expect("fixture settings");
         setup.draft.attested = true;
         let revision = setup.revision;
-        assert!(!setup.draft.key.is_empty() && !setup.draft.lists.is_empty());
+        assert!(!setup.draft.key.is_empty() && !setup.draft.access.lists.is_empty());
+        assert!(!setup.draft.access.collections.is_empty());
         shell.ai.url.update(cx, |input, cx| {
             input.set_text("https://other.example.com/v1", cx)
         });
         shell.ai_setting_changed(Field::Url, cx);
         let setup = shell.ai.settings.as_ref().expect("edited settings");
         assert_ne!(setup.revision, revision);
-        assert!(setup.draft.key.is_empty() && setup.draft.lists.is_empty());
+        assert!(setup.draft.key.is_empty() && setup.draft.access == Default::default());
         assert!(!setup.draft.attested);
         assert_eq!(
             setup.draft.endpoint().expect("HTTPS endpoint").destination,

@@ -1190,16 +1190,7 @@ impl ShellView {
             .child(layout.opacity(if placeholder { 0. } else { 1. }))
             .children(meta.map(|m| m.opacity(if placeholder { 0. } else { 1. })))
             .when((selected || bulk) && !placeholder, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(space::S2))
-                        .bottom(px(space::S2))
-                        .w(px(elevation::SELECTION_BAR))
-                        .rounded(px(radius::SM))
-                        .bg(p.accent_strong),
-                )
+                d.child(kit::leading_rail(p.accent_strong, elevation::SELECTION_BAR))
             });
         if let (Some((stage, _)), Some(list)) = (stage, self.board_list()) {
             let geometry = self.board.geometry.clone();

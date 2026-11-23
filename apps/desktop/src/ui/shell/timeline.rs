@@ -1174,15 +1174,7 @@ impl ShellView {
                     .border_color(p.line)
                     .hover(|d| d.bg(p.hover))
                     .when(selected, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(elevation::SELECTION_BAR))
-                                .bg(p.accent_strong),
-                        )
+                        d.child(kit::leading_rail(p.accent_strong, elevation::SELECTION_BAR))
                     })
                     .child(if transition.is_some() {
                         kit::checkbox_at(
@@ -1352,15 +1344,7 @@ impl ShellView {
                 this.select_task(Some(id), cx);
                 window.focus(&this.list_focus, cx);
             }))
-            .children(cap.map(|color| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left_0()
-                    .w(px(elevation::SELECTION_BAR))
-                    .bg(color)
-            }))
+            .children(cap.map(|color| kit::leading_rail(color, elevation::SELECTION_BAR)))
             .when(inline, |d| {
                 d.pl(px(geometry::RESIZE_HIT + space::S1))
                     .pr(px(geometry::RESIZE_HIT + space::S1))
