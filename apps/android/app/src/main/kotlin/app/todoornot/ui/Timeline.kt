@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.todoornot.core.Chip
 import app.todoornot.core.DateStyle
 import app.todoornot.core.LocalNow
@@ -295,7 +296,11 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
                         GridLines(columns, offset, dayWidth, if (lift?.edit is TimelineEdit.Place) lift.span.first else null)
                     }
                     Column(Modifier.fillMaxSize()) {
-                        Row(Modifier.fillMaxWidth().height(P.TOUCH.dp).background(r.canvas).hairline(r.line),
+                        val rulerHeight = if (cover && (zoom == TimelineZoom.WEEK || zoom == TimelineZoom.TWO_WEEKS)) {
+                            with(density) { (Tokens.Type.COUNT.lineHeight * 2 + Tokens.Type.CAPS_LABEL.lineHeight).sp.toDp() } +
+                                S.S2.dp + T.TODAY_DOT.dp
+                        } else P.TOUCH.dp
+                        Row(Modifier.fillMaxWidth().height(rulerHeight).background(r.canvas).hairline(r.line),
                             verticalAlignment = Alignment.CenterVertically) {
                             if (!cover) Row(Modifier.width(rail), verticalAlignment = Alignment.CenterVertically) {
                                 TimelineSquareIcon("list", if (railOpen) "Hide task names" else "Show task names", false) { railOpen = !railOpen }
@@ -504,7 +509,7 @@ private fun CoverRuler(columns: List<TimelineColumn>, offset: Float, dayWidth: D
         return
     }
     val r = LocalDesign.current.room
-    val roomy = dayWidth >= P.TOUCH.dp
+    val weekHeight = with(LocalDensity.current) { Tokens.Type.COUNT.lineHeight.sp.toDp() }
     Box(modifier) {
         GridLines(columns, offset, dayWidth, null, todayLine = false)
         columns.forEachIndexed { index, col ->
@@ -514,11 +519,12 @@ private fun CoverRuler(columns: List<TimelineColumn>, offset: Float, dayWidth: D
             if (!full && (!current || x + dayWidth / 2 !in 0.dp..grid)) return@forEachIndexed
             Box(Modifier.offset(x = x).width(dayWidth).fillMaxHeight().then(if (current) Modifier.background(r.tint) else Modifier)
                 .clearAndSetSemantics { contentDescription = if (current) "Today, ${col.label}" else "${col.weekday}, ${col.label}" }) {
-                if (index == 0 || col.weekRemaining == 7) {
-                    Label(col.week, Tokens.Type.COUNT, r.ink2, Modifier.align(Alignment.TopStart).padding(start = S.S1.dp))
-                }
-                Column(Modifier.align(Alignment.Center).padding(top = if (roomy) 0.dp else S.S2.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.fillMaxWidth().padding(top = S.S1.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Every cell reserves a week-label line so weekdays stay aligned below it.
+                    Box(Modifier.fillMaxWidth().height(weekHeight).padding(start = S.S1.dp)) {
+                        if (index == 0 || col.weekRemaining == 7) Label(col.week, Tokens.Type.COUNT, r.ink2)
+                    }
+                    Spacer(Modifier.height(S.S1.dp))
                     val ink = if (current) r.accentStrong else r.ink2
                     Label(col.weekday, Tokens.Type.CAPS_LABEL, ink)
                     // A day number is an axis coordinate. Prefer the selected date format where there is room for it.
@@ -592,6 +598,8 @@ private fun Lane(
     val barMetaStyle = Tokens.Type.META_PHONE.style(r.ink2)
     val titleWidth = if (cover) with(density) { measurer.measure(task.title, barTitleStyle).size.width.toDp() } else 0.dp
     val meta = overdueLabel ?: progress ?: painted.label
+    val overdueSuffix = overdueLabel?.let { "· $it" }
+    val suffixWidth = if (overdueSuffix != null) with(density) { measurer.measure(overdueSuffix, barMetaStyle).size.width.toDp() } else 0.dp
     val metaWidth = if (cover) with(density) { measurer.measure(meta, barMetaStyle).size.width.toDp() } else 0.dp
     val cellLeft = dayWidth * (dates.first - offset)
     val cellRight = dayWidth * (dates.last + 1 - offset)
@@ -674,13 +682,16 @@ private fun Lane(
                 val padStart = if (railMark || showStartGrip) S.S3.dp else pad
                 val padEnd = if (showEndGrip) S.S3.dp else pad
                 val inner = (width - padStart - padEnd).coerceAtLeast(0.dp)
-                val after = grid - right - S.S2.dp
-                val before = left - S.S2.dp
+                val edgeInset = if (cover && overdue) S.S1.dp else 0.dp
+                val after = grid - right - S.S2.dp - edgeInset
+                val before = left - S.S2.dp - edgeInset
                 val useAfter = after >= before
                 val space = maxOf(after, before)
                 val markerWidth = if (marker) C.ICON_SMALL.dp + S.S1.dp else 0.dp
+                val suffixFitsBeside = overdueSuffix != null && space >= suffixWidth + S.S3.dp
                 val titleInside = cover && (!marker || width >= T.INLINE_LABEL_MIN.dp) &&
-                    (inner - markerWidth >= titleWidth || inner - markerWidth >= maxOf(space, P.TOUCH.dp))
+                    (inner - markerWidth >= titleWidth || inner - markerWidth >= maxOf(space, P.TOUCH.dp)) &&
+                    (!suffixFitsBeside || inner - markerWidth >= metaWidth + minOf(titleWidth, T.INLINE_LABEL_MIN.dp) + S.S2.dp)
                 val metaInside = titleInside && inner - markerWidth >= metaWidth + S.S2.dp + minOf(titleWidth, T.INLINE_LABEL_MIN.dp)
                 Row(Modifier.align(Alignment.CenterStart).offset(x = left).wrapContentWidth(Alignment.Start, unbounded = true)
                     .width(width).height(T.BAR_HEIGHT_PHONE.dp).clip(shape).background(fill)
@@ -705,17 +716,19 @@ private fun Lane(
                 }
                 val outside = if (cover) !titleInside else !railOpen && width < S.S8.dp
                 if (outside && space >= P.TOUCH.dp) {
-                    Box(Modifier.align(Alignment.CenterStart).offset(x = if (useAfter) right + S.S2.dp else 0.dp)
+                    Box(Modifier.align(Alignment.CenterStart).offset(x = if (useAfter) right + S.S2.dp else edgeInset)
                         .width(space).fillMaxHeight().then(if (cover) Modifier.combinedClickable(enabled = enabled,
                             role = Role.Button, onLongClickLabel = "Schedule", onLongClick = menu, onClick = select) else Modifier),
                         contentAlignment = if (useAfter) Alignment.CenterStart else Alignment.CenterEnd) {
-                        Column(Modifier.background(r.pane, RoundedCornerShape(Tokens.Radius.SM.dp)).padding(horizontal = S.S1.dp),
-                            horizontalAlignment = if (useAfter) Alignment.Start else Alignment.End) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(S.S1.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(horizontalAlignment = if (useAfter) Alignment.Start else Alignment.End) {
+                            // A single opaque plate covers both parts. The unweighted suffix gets measured
+                            // first, leaving the weighted title to ellipsize into the remaining space.
+                            Row(Modifier.background(if (overdue) r.dangerBg else r.pane, RoundedCornerShape(Tokens.Radius.SM.dp))
+                                .padding(horizontal = S.S1.dp), horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
                                 Label(task.title, if (cover) Tokens.Type.BUTTON else Tokens.Type.META_PHONE, if (overdue) ink else r.ink,
                                     Modifier.weight(1f, fill = false), decoration = TextDecoration.LineThrough.takeIf { done })
-                                if (overdueLabel != null && space >= metaWidth + P.TOUCH.dp)
-                                    Label("· $overdueLabel", Tokens.Type.META_PHONE, ink)
+                                if (suffixFitsBeside) Label(overdueSuffix, Tokens.Type.META_PHONE, ink)
                             }
                             if (cover && chip != null) TimelineListPill(chip)
                         }

@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.ListView
 import app.todoornot.core.TimelineEdit
@@ -56,7 +57,13 @@ class TimelineInteractionTest {
             }
             compose.onNodeWithText("Tasks").assertDoesNotExist()
             compose.onNodeWithText("IN PROGRESS · 3").assertExists()
-            compose.onNodeWithText("1d overdue", substring = true).assertExists()
+            val week = compose.onNodeWithText("W48", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val monday = compose.onNodeWithText("MON", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue(week.bottom < monday.top)
+            val suffix = compose.onNodeWithText("· 1d overdue", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val title = compose.onNodeWithText("Pick grout color for bathroom tiles", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue(title.right < suffix.left)
+            assertTrue(suffix.right < compose.onRoot().fetchSemanticsNode().boundsInRoot.right)
             for (label in listOf("Timeline zoom: Week", "Timeline zoom: 2 weeks", "Timeline zoom: Month", "Unscheduled: 1", "Add task")) {
                 val bounds = compose.onNodeWithContentDescription(label).fetchSemanticsNode().boundsInRoot
                 with(compose.density) {
