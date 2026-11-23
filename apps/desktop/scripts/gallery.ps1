@@ -15,6 +15,7 @@ pwsh apps/desktop/scripts/gallery.ps1 -NoBuild -OutDir C:\temp\gallery
 param(
     [string]$OutDir,
     [switch]$NoBuild,
+    [string]$BinaryPath,
     [string[]]$Fixtures = @('my-day', 'multi-select', 'drag-reorder', 'drag-destination', 'sidebar-drag-list', 'sidebar-drag-target', 'sidebar-drag-collection', 'toggle-states-on', 'toggle-states-off', 'work', 'list-status', 'list-settings', 'board', 'board-detail', 'timeline', 'timeline-month', 'timeline-tray', 'timeline-planned', 'room-menu', 'account-menu', 'device-settings', 'device-invite', 'device-approve', 'updates-disabled', 'updates-up-to-date', 'updates-checking', 'updates-downloading', 'updates-ready', 'updates-indicator', 'updates-failed', 'updates-unverified', 'priority-menu', 'detail-due-calendar', 'reminder-menu', 'reminder-custom', 'reminder-focus', 'reminder-none', 'repeat-menu', 'repeat-custom', 'repeat-focus', 'repeat-none', 'repeat-weekly', 'repeat-monthly', 'delete-tag-confirm', 'task-context-menu', 'move-to-picker', 'merge-task-picker', 'merge-task-confirm', 'sync-failures', 'activity', 'activity-agent', 'activity-empty', 'trash', 'trash-empty', 'activity-pending', 'activity-refused', 'activity-menu', 'delete-list-confirm', 'new-collection', 'tab-new', 'tab-new-collection', 'sidebar-footer', 'sidebar-footer-min', 'sidebar-new-menu', 'collection-menu', 'list-context-menu', 'delete-collection-confirm', 'move-list-picker', 'list-colour', 'tag-picker', 'tag-create', 'tag-edit', 'tag-colour', 'tag-rename', 'task-links', 'add-link', 'email-drop', 'attachments-empty', 'attachments-uploading', 'attachments-error', 'attachments-list', 'task-activity', 'collapsed-collection', 'long-sidebar', 'short-sidebar', 'short-sidebar-new-list', 'short-sidebar-new-collection', 'long-names', 'long-names-narrow', 'narrow-detail', 'long-task-list', 'sidebar-wide', 'detail-narrow', 'detail-wide', 'detail-wide-1920', 'resize-handle-hover', 'caption-hover', 'caption-close-hover', 'popout-pinned', 'popout-unpinned', 'empty', 'finished', 'finished-short', 'finished-nothing-tomorrow', 'handover-complete-50', 'quick-add', 'quick-add-chips', 'quick-add-calendar', 'quick-add-priority', 'pairing', 'pairing-code', 'open-failed', 'open-failed-confirm', 'completing-fill', 'completing-hold', 'completing-collapse-50', 'sun-travel-50', 'undo-toast', 'narrow-undo-toast', 'toast-in-50', 'reopening-collapse-50', 'long-list-collapse-80', 'long-list-end-collapse-50', 'dusk-50', 'dusk-75', 'dusk-one-task-50', 'room-switch-50', 'room-hue-50', 'detail-open-50', 'detail-dusk-50', 'collection-collapse-50', 'scrollbar-fade-50'),
     [string[]]$Themes = @('light', 'dark'),
     [string[]]$Scales = @('1', '1.5')
@@ -28,6 +29,7 @@ $app = Resolve-Path (Join-Path $PSScriptRoot '..')
 if (-not $OutDir) { $OutDir = Join-Path $app 'target/gallery' }
 $OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName
 
+if ($BinaryPath -and -not $NoBuild) { throw '-BinaryPath requires -NoBuild.' }
 if (-not $NoBuild) {
     Push-Location $app
     try {
@@ -35,8 +37,9 @@ if (-not $NoBuild) {
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
     } finally { Pop-Location }
 }
-$exe = Join-Path $app 'target/release/todo-desktop.exe'
-if (-not (Test-Path $exe)) { throw "missing $exe; build first" }
+if (-not $BinaryPath) { $BinaryPath = Join-Path $app 'target/release/todo-desktop.exe' }
+if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) { throw "missing $BinaryPath; build first" }
+$exe = (Resolve-Path -LiteralPath $BinaryPath).Path
 
 # The expected logical size of each fixture's window; the captured PNG must be exactly this times the scale.
 function Get-ExpectedSize([string]$fixture, [double]$scale) {

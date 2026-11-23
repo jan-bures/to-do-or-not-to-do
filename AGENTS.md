@@ -102,16 +102,19 @@ with GPUI.
 the account's primary email address as its author. Passing `--author-email` with the no-reply address doesn't
 work either: GitHub rejects it with "Invalid email address".
 
-**Merge by fast-forwarding `main` to the PR's head instead.** Every commit on the branch is then exactly as it
-was authored locally, with the no-reply identity, and GitHub marks the PR as merged.
+**Merge by fast-forwarding `main` to a tested PR head.** Land ready PRs together in a merge train, or use
+these same steps for a single PR. Keep git hooks enabled; never use `--no-verify`.
 
-1. **Rebase.** Rebase the PR branch onto the latest `origin/main`. Squash it locally first if you want one
-   commit. Push the branch, and wait for CI to pass on that head.
-2. **Check the identities.** Run `git log --format='%ae %ce' origin/main..origin/<branch>`. Every line must be
-   the no-reply address.
-3. **Fast-forward.** Run `git push origin origin/<branch>:main`. It's rejected unless it's a fast-forward, and
-   that's intended.
-4. **Clean up.** Run `git fetch`, confirm that `gh pr view <n>` shows `MERGED`, and delete the branch.
-
-For stacked PRs, merge the base first. Then rebase the next branch onto `main`, retarget it with
-`gh pr edit <n> --base main`, and repeat.
+1. **Rebase the train.** Fetch the latest `origin/main`. Rebase the first ready PR onto it, then rebase
+   each subsequent PR onto the preceding rebased branch, replaying only that PR's own commits.
+2. **Check identities.** Run `git log --format='%ae %ce' origin/main..<tip-sha>`. Every line must show the
+   no-reply address for both author and committer.
+3. **Test the tip.** Make sure the tip PR targets `main` so CI selects checks for the entire train.
+   Push the rebased tip branch (use `--force-with-lease` if needed). Wait for **`ci-ok`**, the single
+   check that must pass, on that exact tip SHA. It accepts intentionally skipped jobs, but not failures
+   or cancellations. Pushes to `main` run the full suite.
+4. **Publish the other heads.** Push the other rebased PR branches (use `--force-with-lease` if needed)
+   so their published heads are ancestors of the tested tip. Fetch again; if `origin/main` moved,
+   rebuild and retest the train rather than landing a stale tip.
+5. **Fast-forward.** Run `git push origin <tip-sha>:main`, without forcing. GitHub marks each PR whose
+   head is now in `main` as merged. Fetch, verify each PR shows `MERGED`, and then delete its branch.

@@ -49,7 +49,8 @@ before deployment; see the [Linux deploy recovery procedure](hosting-linux.md#an
 
 `apps/web` is a separate Cargo workspace with its own `Cargo.lock`, like `apps/desktop`. Leptos and its
 dependencies stay out of the root lock, and the root `cargo … --workspace` jobs don't build it. The CI job
-`web app (wasm, browser tests)` lints, tests and builds it, and runs the browser tests.
+`web app (wasm build and Rust tests)` lints, tests, and builds it. The `web browser tests` jobs reuse those
+builds to run two fixture shards and the serial live-server suite in parallel.
 
 ### No Trunk, no bundler
 
@@ -649,7 +650,7 @@ The status bar shows shortcuts only when their actions are available.
   `list-settings-{light,dark}.png` against the same renovation data as desktop.
   The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
-  CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)
+  CI uploads them as `web-gallery-fixtures-1` and `web-gallery-fixtures-2`. Compare them with the approved mockups (kept outside this repository)
   after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
