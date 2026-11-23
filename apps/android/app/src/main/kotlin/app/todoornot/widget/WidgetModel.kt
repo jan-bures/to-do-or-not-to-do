@@ -14,6 +14,8 @@ import app.todoornot.session.Host
 internal val defaultWidgetRoom = RoomKey.Smart(SmartList.MY_DAY)
 
 private val widgetSmartLists = setOf(SmartList.MY_DAY, SmartList.IMPORTANT, SmartList.PLANNED, SmartList.ALL)
+// The launcher receives the whole collection, even though it lays out only the visible rows.
+internal const val WIDGET_ROW_LIMIT = 100
 
 /** Stable keys for preferences and deep links. Never serialize a title, session, or server address. */
 internal fun RoomKey.widgetKey(): String = when (this) {
@@ -78,9 +80,10 @@ internal fun widgetData(engine: TodoEngine, choice: RoomKey?, now: LocalNow): Wi
     val room = engine.room(choice, now)
     // A deletion between reads can make the engine fall back to My Day. Don't show the wrong room.
     if (room.key != choice) return missing
-    return WidgetData.Room(item, room.tasks.asSequence().filterNot { it.done }.map {
+    val rows = room.tasks.asSequence().filterNot { it.done }.take(WIDGET_ROW_LIMIT).map {
         WidgetRow(it.id, it.title, it.chip, it.due, it.priority == 3.toUByte())
-    }.toList(), room.emptyLine)
+    }.toList()
+    return WidgetData.Room(item, rows, room.emptyLine)
 }
 
 /** Explicit desired states make repeated delivery of the same click harmless. */

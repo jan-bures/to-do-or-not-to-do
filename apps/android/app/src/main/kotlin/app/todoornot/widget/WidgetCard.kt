@@ -19,6 +19,8 @@ import androidx.glance.ColorFilter
 import androidx.glance.action.Action
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.appWidgetBackground
+import androidx.glance.appwidget.lazy.LazyColumn
+import androidx.glance.appwidget.lazy.items
 import androidx.glance.background
 import androidx.glance.color.ColorProvider
 import androidx.glance.layout.Alignment
@@ -52,44 +54,39 @@ private val S = Tokens.Space
 private val T = Tokens.Type
 private val C = Tokens.Metrics.Component
 private val touch = Tokens.Metrics.Phone.TOUCH
+private val leadingIconInset = S.S2
 
-internal data class WidgetFit(val rowHeight: Float, val footerHeight: Float, val visible: Int, val more: Int)
-
-internal fun widgetFit(height: Float, fontScale: Float, total: Int): WidgetFit {
-    fun grid(value: Float) = ceil(value / S.S1) * S.S1
-    val row = maxOf(touch, grid((T.TASK_TITLE.lineHeight + T.COUNT.lineHeight) * fontScale + S.S2))
-    val footer = maxOf(S.S6, grid(T.COUNT.lineHeight * fontScale + S.S1))
-    val body = (height - touch).coerceAtLeast(0f)
-    val slots = (body / row).toInt()
-    val visible = if (total <= slots) total else ((body - footer) / row).toInt().coerceAtLeast(0)
-    return WidgetFit(row, footer, visible, total - visible)
+internal fun widgetRowHeight(fontScale: Float): Float {
+    val content = (T.TASK_TITLE.lineHeight + T.COUNT.lineHeight) * fontScale + S.S2
+    return maxOf(touch, ceil(content / S.S1) * S.S1)
 }
+
+// Keep the hash out of Glance's reserved range for automatically generated IDs.
+private fun WidgetRow.itemId() = id.fold(0L) { hash, char -> 31 * hash + char.code } and Long.MAX_VALUE
 
 @Composable
 @GlanceComposable
 internal fun WidgetCard(data: WidgetData, clicks: WidgetClicks? = null, darkOverride: Boolean? = null) {
-    val size = LocalSize.current
+    val width = LocalSize.current.width.value
+    val compact = width < 5 * touch
     val design = WidgetPalette((data as? WidgetData.Room)?.item?.hue ?: "my-day", darkOverride)
-    Column(
-        GlanceModifier.fillMaxSize().appWidgetBackground().background(
-            ImageProvider(R.drawable.todo_widget_card), colorFilter = ColorFilter.tint(design.room { it.pane }),
-        ),
-    ) {
+    val card = GlanceModifier.fillMaxSize().appWidgetBackground().background(
+        ImageProvider(R.drawable.todo_widget_card), colorFilter = ColorFilter.tint(design.room { it.pane }),
+    )
+    val inset = if (compact) S.S2 else S.S3
+    Column(if (data is WidgetData.Room) card.padding(inset.dp) else card) {
         if (data is WidgetData.Room) {
-            Header(data, clicks, design, showSettings = size.width.value >= 6 * touch)
+            // The narrowest launcher sizes need a compact toolbar to leave room for the name.
+            val showSettings = width >= 6 * touch + S.S3
+            val actionWidth = if (compact) S.S10 else touch
+            Header(data, clicks, design, showSettings, actionWidth)
             if (data.rows.isEmpty()) {
-                Message(data.empty, design, italic = true)
+                Message(data.empty, design, italic = true, inset = leadingIconInset)
             } else {
-                val fit = widgetFit(size.height.value, LocalContext.current.resources.configuration.fontScale, data.rows.size)
-                // A Glance column accepts ten children. Chunk only the layout, not the room's ordering.
-                TaskRows(data.rows.take(fit.visible), fit.rowHeight, design, clicks)
-                if (fit.more > 0) {
-                    Row(
-                        GlanceModifier.fillMaxWidth().height(fit.footerHeight.dp).padding(horizontal = S.S3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        WidgetText("+${fit.more} more", T.COUNT, design.room { it.ink3 })
-                    }
+                Spacer(GlanceModifier.height(S.S3.dp))
+                val rowHeight = widgetRowHeight(LocalContext.current.resources.configuration.fontScale)
+                LazyColumn(GlanceModifier.fillMaxWidth().defaultWeight()) {
+                    items(data.rows, itemId = { it.itemId() }) { TaskLine(it, rowHeight, design, clicks) }
                 }
             }
         } else {
@@ -111,20 +108,6 @@ internal fun WidgetCard(data: WidgetData, clicks: WidgetClicks? = null, darkOver
     }
 }
 
-@Composable
-@GlanceComposable
-private fun TaskRows(rows: List<WidgetRow>, height: Float, palette: WidgetPalette, clicks: WidgetClicks?) {
-    Column {
-        if (rows.size <= 10) {
-            rows.forEach { TaskLine(it, height, palette, clicks) }
-        } else {
-            // Real launcher sizes need at most a few chunks, but don't drop rows if a larger host fits them.
-            val chunk = maxOf(10, (rows.size + 9) / 10)
-            rows.chunked(chunk).forEach { TaskRows(it, height, palette, clicks) }
-        }
-    }
-}
-
 private class WidgetPalette(hue: String, private val darkOverride: Boolean?) {
     private val light = Design(false, hue)
     private val dark = Design(true, hue)
@@ -141,12 +124,15 @@ private class WidgetPalette(hue: String, private val darkOverride: Boolean?) {
 
 @Composable
 @GlanceComposable
-private fun Header(data: WidgetData.Room, clicks: WidgetClicks?, palette: WidgetPalette, showSettings: Boolean) {
+private fun Header(
+    data: WidgetData.Room, clicks: WidgetClicks?, palette: WidgetPalette, showSettings: Boolean, actionWidth: Float,
+) {
     val item = data.item
     val ink = palette.room { it.ink3 }
+    val pick = clicks?.pick()
     Row(GlanceModifier.fillMaxWidth().height(touch.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(
-            GlanceModifier.defaultWeight().height(touch.dp).onClick(clicks?.pick()).padding(start = S.S2.dp),
+            GlanceModifier.defaultWeight().height(touch.dp).onClick(pick).padding(start = leadingIconInset.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val glyph = item.glyph ?: item.icon
@@ -155,11 +141,11 @@ private fun Header(data: WidgetData.Room, clicks: WidgetClicks?, palette: Widget
                 Spacer(GlanceModifier.width(S.S1.dp))
             }
             WidgetText(item.name, T.NAV, palette.room { it.accentStrong }, GlanceModifier.defaultWeight())
-            WidgetIcon("chevron-down", ink, size = C.ICON_SMALL, label = "Choose list or collection")
         }
-        WidgetButton("refresh-cw", "Refresh", ink, clicks?.refresh())
-        WidgetButton("plus", "Add task", ink, clicks?.add(item.key))
-        if (showSettings) WidgetButton("settings", "Widget settings", ink, clicks?.pick())
+        WidgetButton("chevron-down", "Choose list or collection", ink, pick, width = actionWidth)
+        WidgetButton("refresh-cw", "Refresh", ink, clicks?.refresh(), width = actionWidth)
+        WidgetButton("plus", "Add task", ink, clicks?.add(item.key), width = actionWidth)
+        if (showSettings) WidgetButton("settings", "Widget settings", ink, pick, width = actionWidth)
     }
 }
 
@@ -174,7 +160,10 @@ private fun TaskLine(row: WidgetRow, height: Float, palette: WidgetPalette, clic
         else -> palette.room { it.ink3 }
     }
     Row(GlanceModifier.fillMaxWidth().height(height.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(GlanceModifier.size(touch.dp).onClick(clicks?.complete(row.id)), contentAlignment = Alignment.Center) {
+        Box(
+            GlanceModifier.size(touch.dp).onClick(clicks?.complete(row.id)).padding(start = leadingIconInset.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
             WidgetIcon("checkbox", ring, label = "Complete ${row.title}", size = C.CHECKBOX)
         }
         Column(
@@ -195,9 +184,12 @@ private fun TaskLine(row: WidgetRow, height: Float, palette: WidgetPalette, clic
 
 @Composable
 @GlanceComposable
-private fun Message(text: String, palette: WidgetPalette, action: Action? = null, italic: Boolean = false, linked: Boolean = false) {
+private fun Message(
+    text: String, palette: WidgetPalette, action: Action? = null, italic: Boolean = false, linked: Boolean = false,
+    inset: Float = S.S3,
+) {
     Row(
-        GlanceModifier.fillMaxWidth().height(touch.dp).onClick(action).padding(horizontal = S.S3.dp),
+        GlanceModifier.fillMaxWidth().height(touch.dp).onClick(action).padding(horizontal = inset.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         WidgetText(text, T.BODY, palette.room { if (linked) it.accentStrong else it.ink3 }, lines = 2, italic = italic)
@@ -208,8 +200,10 @@ private fun GlanceModifier.onClick(action: Action?) = if (action == null) this e
 
 @Composable
 @GlanceComposable
-private fun WidgetButton(key: String, label: String, tint: ColorProvider, action: Action?, filled: Boolean = false) {
-    Box(GlanceModifier.size(touch.dp).onClick(action), contentAlignment = Alignment.Center) {
+private fun WidgetButton(
+    key: String, label: String, tint: ColorProvider, action: Action?, filled: Boolean = false, width: Float = touch,
+) {
+    Box(GlanceModifier.width(width.dp).height(touch.dp).onClick(action), contentAlignment = Alignment.Center) {
         WidgetIcon(key, tint, label = label, filled = filled)
     }
 }

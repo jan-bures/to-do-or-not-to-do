@@ -58,7 +58,7 @@ internal data class WidgetTaskAction(val pairingId: String, val edit: WidgetEdit
     }
 }
 
-/** Explicit and non-exported. Glance's immutable PendingIntent includes the action URI in its identity. */
+/** Explicit and non-exported. Each collection click carries the task and pairing in the action URI. */
 class WidgetTaskReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = WidgetTaskAction.from(intent) ?: return

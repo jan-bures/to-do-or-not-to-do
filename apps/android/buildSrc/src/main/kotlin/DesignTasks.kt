@@ -352,10 +352,11 @@ abstract class GenerateDesignResources : DefaultTask() {
             out.appendLine("    <color name=\"window_background\">${r["pane"]}</color>")
             if (theme == "light") {
                 val touch = (root["metrics"].obj()["phone"].obj()["touch"] as Number).toDouble()
-                val footer = (root["space"].obj()["6"] as Number).toDouble()
+                val widgetInset = (root["space"].obj()["3"] as Number).toDouble()
                 out.appendLine("    <dimen name=\"todo_widget_radius\">${root["radius"].obj()["lg"]}dp</dimen>")
                 out.appendLine("    <dimen name=\"todo_widget_min_width\">${4 * touch}dp</dimen>")
-                out.appendLine("    <dimen name=\"todo_widget_min_height\">${2 * touch + footer}dp</dimen>")
+                // WidgetCard: a header and one full row, plus the outer padding and header gap.
+                out.appendLine("    <dimen name=\"todo_widget_min_height\">${2 * touch + 3 * widgetInset}dp</dimen>")
             }
             out.appendLine("</resources>")
             val d = File(outputDir.get().asFile, dir)

@@ -149,11 +149,12 @@ engine writes an empty `todo.sqlite.revoked` marker beside that pairing's cache;
 its existing preference marker, and keeps the pairing blocked while retrying a failed write to
 preferences. The outbox stays intact until the owner confirms **Pair again**.
 
-The widget shows open tasks in the app's order. Collection rows name their source list. Resize to show
-more rows; **+N more** counts those that don't fit. Tap the title to open its task, the round checkbox to
-complete it, or the star to change importance (filled with the room's strong accent when on). **+** opens the app's composer
-in the selected room, with that room's usual defaults. Widget edits use the same offline outbox as the
-app. Glance hands the completed row straight back to the launcher without the in-app exit animation.
+The widget shows up to 100 open tasks in the app's order. Collection rows name their source list.
+Scroll the rows without moving the header, or resize the widget to see more rows at once.
+Tap the title to open its task, the round checkbox to complete it, or the star to change importance
+(filled with the room's strong accent when on). **+** opens the app's composer in the selected room,
+with that room's usual defaults. Widget edits use the same offline outbox as the app. Glance hands the
+completed row straight back to the launcher without the in-app exit animation.
 
 **Refresh** redraws from the local cache and requests a short sync. The widget also follows engine changes,
 including syncs triggered by reminders. While widgets are installed, the launcher requests a refresh about
@@ -163,8 +164,8 @@ server's backlog and the outbox is empty. No push or continuously running backgr
 
 The rounded card follows the system's light/dark theme and the room's `todo-design` palette, not wallpaper
 colours. Glance renders text in the system's corresponding font families at the token sizes. The launcher
-can see the titles and visible metadata; the app stores only the selected room key per widget, not a copy
-of the tasks or pairing credentials. `WidgetGalleryTest` renders the real Glance RemoteViews to Paparazzi
+receives task titles and row metadata for the scrollable list. The app stores only the selected room key
+per widget, not a copy of the tasks or pairing credentials. `WidgetGalleryTest` renders the real Glance RemoteViews to Paparazzi
 snapshots (`app/src/test/snapshots/images/app.todoornot_WidgetGalleryTest_*.png`).
 
 ## Reminder notifications

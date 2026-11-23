@@ -4,15 +4,17 @@ import app.todoornot.core.ProblemKind
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
+import app.todoornot.design.Tokens
 import app.todoornot.model.TodoModel
+import app.todoornot.widget.WIDGET_ROW_LIMIT
 import app.todoornot.widget.WidgetData
 import app.todoornot.widget.WidgetEdit
 import app.todoornot.widget.syncForWidget
 import app.todoornot.widget.widgetChoices
 import app.todoornot.widget.widgetData
-import app.todoornot.widget.widgetFit
 import app.todoornot.widget.widgetKey
 import app.todoornot.widget.widgetRoom
+import app.todoornot.widget.widgetRowHeight
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -149,11 +151,19 @@ class WidgetModelTest {
     }
 
     @Test
-    fun resize_reserves_overflow_only_when_needed_and_honours_font_scale() {
-        assertEquals(1, widgetFit(132f, 1f, 9).visible)
-        assertEquals(8, widgetFit(132f, 1f, 9).more)
-        assertEquals(2, widgetFit(144f, 1f, 2).visible)
-        assertEquals(0, widgetFit(144f, 1f, 2).more)
-        assertTrue(widgetFit(300f, 1.5f, 100).visible < widgetFit(300f, 1f, 100).visible)
+    fun rows_honour_font_scale_and_stay_on_the_grid() {
+        assertEquals(Tokens.Metrics.Phone.TOUCH, widgetRowHeight(1f))
+        assertTrue(widgetRowHeight(1.5f) > widgetRowHeight(1f))
+        assertEquals(0f, widgetRowHeight(1.5f) % Tokens.Space.S1)
+    }
+
+    @Test
+    fun large_rooms_keep_the_first_open_rows_in_order_up_to_the_widget_limit() = fixtureEngine().use { engine ->
+        val choice = engine.list("Reading list")
+        repeat(WIDGET_ROW_LIMIT + 2) { index -> engine.addTask(choice, "Task ${index + 1}", FIXTURE_NOW) }
+        val ids = engine.room(choice, FIXTURE_NOW).tasks.map { it.id }
+        engine.setDone(ids[1], true)
+        val widget = widgetData(engine, choice, FIXTURE_NOW) as WidgetData.Room
+        assertEquals(ids.filterNot { it == ids[1] }.take(WIDGET_ROW_LIMIT), widget.rows.map { it.id })
     }
 }

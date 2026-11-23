@@ -68,7 +68,7 @@ private suspend fun readWidget(context: Context, instance: Int): WidgetSnapshot 
 internal const val WIDGET_ADD = "app.todoornot.widget.ADD"
 internal const val WIDGET_ROOM = "app.todoornot.widget.ROOM"
 
-/** With no lazy collection, Glance uses immutable PendingIntents to these explicit components. */
+/** Header actions use individual PendingIntents; Glance routes row actions through its collection template. */
 internal class WidgetClicks(private val context: Context, private val id: Int, private val pairingId: String?) {
     fun pick() = actionStartActivity(
         Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE, uri("configure", id.toString()), context, WidgetConfigActivity::class.java)
