@@ -230,6 +230,14 @@
   --desktop-menu: 240px;
   --desktop-confirm: 288px;
   --desktop-sunrise-mark: 52px;
+  --desktop-ai-panel: 400px;
+  --desktop-ai-panel-min: 340px;
+  --desktop-ai-panel-max: 520px;
+  --desktop-four-pane-min: 1600px;
+  --desktop-ai-composer-min: 44px;
+  --desktop-ai-composer-max: 140px;
+  --desktop-ai-history-menu: 280px;
+  --desktop-ai-settings-width: 520px;
   --phone-row: 64px;
   --phone-col-check: 22px;
   --phone-col-agent: 20px;
@@ -265,6 +273,8 @@
   --phone-dialog-inset: 12px;
   --phone-sheet-default-fraction: 0.72px;
   --phone-sheet-max-fraction: 0.92px;
+  --phone-ai-sheet-default-fraction: 0.84px;
+  --phone-ai-composer-max: 128px;
   --phone-row-pad-top: 11px;
   --phone-row-pad-right: 12px;
   --phone-row-pad-left: 20px;
@@ -284,6 +294,8 @@
   --component-glyph: 16px;
   --component-pairing-qr: 224px;
   --component-new-menu: 152px;
+  --component-proposal-bar: 3px;
+  --component-privacy-dot: 6px;
   --desktop-quick-add-popup-top-fraction: 0.2;
   --landscape-height-desktop: 48px;
   --landscape-height-cover: 36px;
@@ -1259,6 +1271,13 @@
   --agent-ring: #a6c99f;
 }
 
+[data-theme="light"] [data-agent="assistant"],
+[data-theme="light"][data-agent="assistant"] {
+  --agent-bg: #c8f4f1;
+  --agent-ink: #005957;
+  --agent-ring: #87cdc9;
+}
+
 [data-theme="dark"] {
   --shadow-overlay: 0 1px 2px 0px rgb(0 0 0 / 0.3), 0 8px 24px -4px rgb(0 0 0 / 0.45);
 }
@@ -2200,6 +2219,13 @@
   --agent-bg: #233a1e;
   --agent-ink: #b8e7ae;
   --agent-ring: #43623c;
+}
+
+[data-theme="dark"] [data-agent="assistant"],
+[data-theme="dark"][data-agent="assistant"] {
+  --agent-bg: #003b3a;
+  --agent-ink: #8debe7;
+  --agent-ring: #1a6462;
 }
 
 [data-room-hue="my-day"] {

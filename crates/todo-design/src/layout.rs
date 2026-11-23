@@ -284,9 +284,25 @@ pub mod desktop {
     pub const CONFIRM: f32 = 288.0;
     /// The sunrise mark in the finished day's hand-over, and the height of tomorrow's first task beside it.
     pub const SUNRISE_MARK: f32 = 52.0;
+    /// Default width of the docked AI assistant panel (and its overlay width below [`THREE_PANE_MIN`]).
+    pub const AI_PANEL: f32 = 400.0;
+    /// Narrowest resizable docked AI assistant panel.
+    pub const AI_PANEL_MIN: f32 = 340.0;
+    /// Widest resizable docked AI assistant panel (clamped so the list keeps [`LIST_MIN_BESIDE_DETAIL`]).
+    pub const AI_PANEL_MAX: f32 = 520.0;
+    /// Narrowest window that docks sidebar, list, task detail and AI assistant side by side.
+    pub const FOUR_PANE_MIN: f32 = 1600.0;
+    /// Minimum single-line height of the desktop and web AI chat composer.
+    pub const AI_COMPOSER_MIN: f32 = QUICK_ADD;
+    /// Maximum auto-grow height of the desktop and web AI chat composer before scrolling.
+    pub const AI_COMPOSER_MAX: f32 = 140.0;
+    /// Width of the anchored conversation history popover inside the AI assistant panel.
+    pub const AI_HISTORY_MENU: f32 = 280.0;
+    /// Width of the AI provider and privacy settings dialog on desktop and web.
+    pub const AI_SETTINGS_WIDTH: f32 = 520.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 57] = [
+    pub const ALL: [(&str, f32); 65] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -344,6 +360,14 @@ pub mod desktop {
         ("menu", MENU),
         ("confirm", CONFIRM),
         ("sunrise-mark", SUNRISE_MARK),
+        ("ai-panel", AI_PANEL),
+        ("ai-panel-min", AI_PANEL_MIN),
+        ("ai-panel-max", AI_PANEL_MAX),
+        ("four-pane-min", FOUR_PANE_MIN),
+        ("ai-composer-min", AI_COMPOSER_MIN),
+        ("ai-composer-max", AI_COMPOSER_MAX),
+        ("ai-history-menu", AI_HISTORY_MENU),
+        ("ai-settings-width", AI_SETTINGS_WIDTH),
     ];
 
     /// Unitless metrics, for the exports.
@@ -428,9 +452,13 @@ pub mod phone {
     pub const SHEET_DEFAULT_FRACTION: f32 = 0.72;
     /// Maximum height of a sheet relative to the viewport.
     pub const SHEET_MAX_FRACTION: f32 = 0.92;
+    /// Default open height of the AI assistant bottom sheet on cover screens relative to the viewport.
+    pub const AI_SHEET_DEFAULT_FRACTION: f32 = 0.84;
+    /// Maximum auto-grow height of the phone AI chat composer before internal scrolling.
+    pub const AI_COMPOSER_MAX: f32 = 128.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 38] = [
+    pub const ALL: [(&str, f32); 40] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -466,6 +494,8 @@ pub mod phone {
         ("dialog-inset", DIALOG_INSET),
         ("sheet-default-fraction", SHEET_DEFAULT_FRACTION),
         ("sheet-max-fraction", SHEET_MAX_FRACTION),
+        ("ai-sheet-default-fraction", AI_SHEET_DEFAULT_FRACTION),
+        ("ai-composer-max", AI_COMPOSER_MAX),
         ("row-pad-top", ROW_PAD.0),
         ("row-pad-right", ROW_PAD.1),
         ("row-pad-left", ROW_PAD.2),
@@ -507,9 +537,13 @@ pub mod component {
     pub const PAIRING_QR: f32 = 224.0;
     /// Width of the compact New menu in the sidebar footer.
     pub const NEW_MENU: f32 = 152.0;
+    /// Leading semantic stripe width on AI proposal cards (`accent` create, `sun-ink` edit, `danger` delete).
+    pub const PROPOSAL_BAR: f32 = 3.0;
+    /// Status dot diameter in the AI model and privacy indicator.
+    pub const PRIVACY_DOT: f32 = CHIP_DOT;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 16] = [
+    pub const ALL: [(&str, f32); 18] = [
         ("checkbox", CHECKBOX),
         ("checkbox-ring", CHECKBOX_RING),
         ("checkbox-tick", CHECKBOX_TICK),
@@ -526,5 +560,7 @@ pub mod component {
         ("glyph", GLYPH),
         ("pairing-qr", PAIRING_QR),
         ("new-menu", NEW_MENU),
+        ("proposal-bar", PROPOSAL_BAR),
+        ("privacy-dot", PRIVACY_DOT),
     ];
 }

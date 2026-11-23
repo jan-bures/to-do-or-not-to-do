@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Assistant UX Mockups — Gallery</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      padding: 32px 24px 64px;
+      background: #141210;
+      color: #f3eee9;
+      font: 400 14px/20px system-ui, -apple-system, sans-serif;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    p.lead { color: #a89f96; margin: 0 0 28px; max-width: 720px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: #1d1a17;
+      border: 1px solid #332e29;
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card img {
+      width: 100%;
+      height: 220px;
+      object-fit: cover;
+      object-position: top right;
+      background: #0e0c0b;
+      border-bottom: 1px solid #332e29;
+    }
+    .card-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .card-title { font-weight: 600; font-size: 15px; }
+    .card-desc { color: #a89f96; font-size: 13px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .links a {
+      font-size: 12px;
+      font-weight: 500;
+      color: #f3ad66;
+      text-decoration: none;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #2a241f;
+      border: 1px solid #40372f;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>AI Assistant UX Mockups</h1>
+    <p class="lead">Built directly on <code>crates/todo-design/generated/tokens.css</code>, bundled Geist / Geist Mono fonts, and authentic Lucide icons &amp; hand-drawn list glyphs. Spec: <code>docs/ai-assistant-ux.md</code>.</p>
+    <div class="grid">
+      <div class="card">
+        <img src="desktop-empty-light.png" alt="Desktop empty state" />
+        <div class="card-body">
+          <div class="card-title">Desktop — Empty State</div>
+          <div class="card-desc">Docked 400 px panel, Ask AI Ctrl J trigger, suggestion chips, Private network indicator.</div>
+          <div class="links">
+            <a href="desktop-empty.html?theme=light">Light HTML</a>
+            <a href="desktop-empty.html?theme=dark">Dark HTML</a>
+            <a href="desktop-empty-light.png">Light PNG</a>
+            <a href="desktop-empty-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="desktop-proposal-light.png" alt="Desktop pending edit and delete proposals" />
+        <div class="card-body">
+          <div class="card-title">Desktop — Pending Proposals</div>
+          <div class="card-desc">Settled approved receipt + live row highlight, Edit diff card, Destructive delete card, pending composer banner.</div>
+          <div class="links">
+            <a href="desktop-proposal.html?theme=light">Light HTML</a>
+            <a href="desktop-proposal.html?theme=dark">Dark HTML</a>
+            <a href="desktop-proposal-light.png">Light PNG</a>
+            <a href="desktop-proposal-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="desktop-batch-light.png" alt="Desktop batched proposal" />
+        <div class="card-body">
+          <div class="card-title">Desktop — Batched Proposal (5 Tasks)</div>
+          <div class="card-desc">Selective approve, Review-each switcher, expanded step log, Cloud privacy indicator with hidden-list count.</div>
+          <div class="links">
+            <a href="desktop-batch.html?theme=light">Light HTML</a>
+            <a href="desktop-batch.html?theme=dark">Dark HTML</a>
+            <a href="desktop-batch-light.png">Light PNG</a>
+            <a href="desktop-batch-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="web-narrow-light.png" alt="Web narrow bottom sheet" />
+        <div class="card-body">
+          <div class="card-title">Web Narrow (390 × 844)</div>
+          <div class="card-desc">88 dvh bottom sheet with single NEW TASK creation proposal card, full field listing, pending bar.</div>
+          <div class="links">
+            <a href="web-narrow.html?theme=light">Light HTML</a>
+            <a href="web-narrow.html?theme=dark">Dark HTML</a>
+            <a href="web-narrow-light.png">Light PNG</a>
+            <a href="web-narrow-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="android-cover-light.png" alt="Android cover bottom sheet" />
+        <div class="card-body">
+          <div class="card-title">Android Cover (412 × 960 dp)</div>
+          <div class="card-desc">84% bottom sheet over Living Daybreak Horizon sky, thumb-zone 48 dp Approve/Decline buttons &amp; privacy bar.</div>
+          <div class="links">
+            <a href="android-cover.html?theme=light">Light HTML</a>
+            <a href="android-cover.html?theme=dark">Dark HTML</a>
+            <a href="android-cover-light.png">Light PNG</a>
+            <a href="android-cover-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="android-inner-light.png" alt="Android inner docked pane" />
+        <div class="card-body">
+          <div class="card-title">Android Inner (876 × 970 dp)</div>
+          <div class="card-desc">Fold7 two-pane with Assistant docked right, aligned 52 dp bottom docks, Server asleep fallback with Cloud consent.</div>
+          <div class="links">
+            <a href="android-inner.html?theme=light">Light HTML</a>
+            <a href="android-inner.html?theme=dark">Dark HTML</a>
+            <a href="android-inner-light.png">Light PNG</a>
+            <a href="android-inner-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <img src="provider-settings-light.png" alt="Provider and privacy settings" />
+        <div class="card-body">
+          <div class="card-title">Provider &amp; Privacy Settings</div>
+          <div class="card-desc">Your own server (private network URL, model picker, connection test), ChatGPT account, API key, fallback &amp; per-list access.</div>
+          <div class="links">
+            <a href="provider-settings.html?theme=light">Light HTML</a>
+            <a href="provider-settings.html?theme=dark">Dark HTML</a>
+            <a href="provider-settings-light.png">Light PNG</a>
+            <a href="provider-settings-dark.png">Dark PNG</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

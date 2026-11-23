@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web Narrow — AI Assistant Sheet</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-web-narrow" data-theme="light" data-room-hue="my-day">
+    <!-- Underlying Narrow Web App (< 760 px) -->
+    <div class="web-phone-bar">
+      <span class="touch-btn"><i class="ic" data-icon="menu"></i></span>
+      <div style="display:flex;align-items:center;gap:2px;">
+        <span class="touch-btn active"><i class="ic" data-icon="sparkles"></i></span>
+        <span class="touch-btn"><i class="ic" data-icon="search"></i></span>
+      </div>
+    </div>
+    <div class="web-phone-head">
+      <div class="eyebrow-left">
+        <span class="eyebrow-day">Saturday</span>
+        <span class="eyebrow-meta">21 NOV 2026</span>
+      </div>
+      <h1 class="horizon-title" style="margin-top:2px;">My Day</h1>
+    </div>
+    <div class="landscape-strip" style="height:36px;" data-landscape data-width="390" data-height="36" data-done="3" data-total="12"></div>
+
+    <!-- 88% Bottom Sheet Overlay -->
+    <div class="sheet-scrim">
+      <section class="ai-sheet" style="height:742px;" role="dialog" aria-label="AI Assistant">
+        <div class="sheet-handle-row"><span class="sheet-handle"></span></div>
+        <header class="sheet-header">
+          <div class="sheet-title-wrap">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span>Weekly check-in</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="ai-top-actions">
+            <span class="icon-btn" title="New chat"><i class="ic sm" data-icon="plus"></i></span>
+            <span class="icon-btn" title="AI settings"><i class="ic sm" data-icon="settings"></i></span>
+            <span class="icon-btn" title="Close"><i class="ic sm" data-icon="x"></i></span>
+          </div>
+        </header>
+
+        <div class="sheet-stream">
+          <div class="msg-user">Add a high-priority task to submit the quarterly tax summary in Finance due Friday.</div>
+
+          <div class="msg-ai">
+            <div class="step-log">
+              <div class="step-summary">
+                <i class="ic xs" data-icon="chevron-right"></i>
+                <span>Checked Work · Finance</span>
+                <span class="sep">·</span>
+                <span>No duplicate found</span>
+              </div>
+            </div>
+
+            <div class="ai-prose">
+              <p>I prepared this task in <strong>Finance</strong> for Friday. Review the details below before saving:</p>
+            </div>
+
+            <!-- Single NEW TASK creation proposal card -->
+            <div class="proposal-card kind-create">
+              <div class="proposal-head">
+                <span class="proposal-kind">
+                  <i class="ic sm" data-icon="plus"></i>
+                  <span class="caps-label">New task</span>
+                </span>
+                <span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span>
+              </div>
+              <div class="proposal-body">
+                <div class="proposal-title">Submit quarterly tax summary</div>
+                <div class="proposal-fields">
+                  <span class="pf-key">List</span>
+                  <span class="pf-val"><span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span></span>
+                  <span class="pf-key">Due</span>
+                  <span class="pf-val"><span class="due-text">Fri 27 Nov</span></span>
+                  <span class="pf-key">Priority</span>
+                  <span class="pf-val"><span class="priority-mark p3" style="width:auto;">!!!</span> <span>High</span></span>
+                  <span class="pf-key">My Day</span>
+                  <span class="pf-val">No</span>
+                  <span class="pf-key">Tags</span>
+                  <span class="pf-val"><span class="tag-text">#q4</span> <span class="tag-text">#tax</span></span>
+                </div>
+              </div>
+              <div class="proposal-actions split">
+                <span class="btn secondary"><i class="ic sm" data-icon="x"></i>Decline</span>
+                <span class="btn primary"><i class="ic sm" data-icon="check"></i>Approve</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="ai-composer-dock">
+          <div class="pending-banner">
+            <i class="ic sm" data-icon="circle-alert"></i>
+            <span class="pb-text">1 proposal waiting for review</span>
+          </div>
+          <div class="ai-composer-inner">
+            <div class="privacy-bar">
+              <span class="privacy-dest">
+                <span class="status-dot ok"></span>
+                <span class="dest-kind">Private network</span>
+                <span class="dest-model">· qwen3-14b</span>
+                <i class="ic xs" data-icon="chevron-down"></i>
+              </span>
+              <span class="privacy-scope">
+                <i class="ic xs" data-icon="eye-off"></i>
+                <span>1 hidden</span>
+              </span>
+            </div>
+            <div class="ai-input-box phone">
+              <span class="ai-input-placeholder">Approve above, or reply to adjust…</span>
+              <span class="send-btn phone muted"><i class="ic" data-icon="arrow-up"></i></span>
+            </div>
+          </div>
+        </footer>
+      </section>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

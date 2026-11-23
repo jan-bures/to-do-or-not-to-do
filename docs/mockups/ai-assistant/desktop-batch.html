@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Desktop — Batched Proposal (5 Tasks) &amp; Cloud Indicator</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="desktop-window" data-theme="light" data-room-hue="rose">
+    <header class="titlebar">
+      <div class="titlebar-brand">
+        <i class="ic" data-icon="circle-check"></i>
+        <span>To-do</span>
+      </div>
+      <div class="titlebar-search">
+        <i class="ic sm" data-icon="search"></i>
+        <span class="ph">Filter tasks, lists, or #tags…</span>
+        <span class="keycap">Ctrl K</span>
+      </div>
+      <div class="titlebar-right">
+        <div class="ask-ai-trigger open" aria-pressed="true">
+          <i class="ic sm" data-icon="sparkles"></i>
+          <span>Ask AI</span>
+          <span class="keycap">Ctrl J</span>
+        </div>
+        <div class="win-controls">
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0.5" y1="0.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1"/><line x1="9.5" y1="0.5" x2="0.5" y2="9.5" stroke="currentColor" stroke-width="1"/></svg></span>
+        </div>
+      </div>
+    </header>
+
+    <div class="desktop-body">
+      <aside class="sidebar">
+        <div class="sidebar-scroll">
+          <div class="nav-row" data-list-hue="my-day">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="sun"></i>
+            <span class="nav-label">My Day</span>
+            <span class="nav-count">9</span>
+          </div>
+          <div class="nav-row" data-list-hue="important">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="star"></i>
+            <span class="nav-label">Important</span>
+            <span class="nav-count">3</span>
+          </div>
+          <div class="nav-row" data-list-hue="planned">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="calendar"></i>
+            <span class="nav-label">Planned</span>
+            <span class="nav-count">14</span>
+          </div>
+          <div class="nav-row" data-list-hue="all">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="list"></i>
+            <span class="nav-label">All</span>
+            <span class="nav-count">24</span>
+          </div>
+          <div class="nav-row" data-list-hue="completed">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="circle-check"></i>
+            <span class="nav-label">Completed</span>
+          </div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="sparkles"></i>
+            <span class="nav-label">Agent activity</span>
+            <span class="nav-count">5</span>
+          </div>
+
+          <div class="nav-sep"></div>
+
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="clock"></i>
+            <span class="nav-label">Activity</span>
+            <span class="keycap">Ctrl H</span>
+          </div>
+          <div class="nav-sub-row">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="nav-label">Assistant</span>
+            <span class="nav-status">2 added today</span>
+          </div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="trash-2"></i>
+            <span class="nav-label">Trash</span>
+          </div>
+
+          <div class="nav-sep"></div>
+
+          <div class="nav-coll-row" data-list-hue="azure">
+            <i class="ic xs" data-icon="chevron-down"></i>
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="briefcase"></i>
+            <span class="nav-label">Work</span>
+            <span class="nav-count">8</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="clay">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="coin"></i>
+            <span class="nav-label">Finance</span>
+            <span class="nav-count">3</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="azure">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="flag"></i>
+            <span class="nav-label">Planning</span>
+            <span class="nav-count">5</span>
+          </div>
+
+          <div class="nav-coll-row active" data-list-hue="rose" style="background:var(--color-wash);border:var(--hairline) solid var(--color-line);color:var(--color-ink);position:relative;">
+            <span style="position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:2px;background:var(--color-accent-strong);"></span>
+            <i class="ic xs" data-icon="chevron-down"></i>
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="house"></i>
+            <span class="nav-label">Home</span>
+            <span class="nav-count">11</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="teal">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="basket"></i>
+            <span class="nav-label">Groceries</span>
+            <span class="nav-count">4</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="coral">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="document"></i>
+            <span class="nav-label">Errands</span>
+            <span class="nav-count">4</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="fern">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="wrench"></i>
+            <span class="nav-label">Garden</span>
+            <span class="nav-count">3</span>
+          </div>
+        </div>
+
+        <footer class="sidebar-footer">
+          <span class="sidebar-new"><i class="ic sm" data-icon="plus"></i>New</span>
+          <span class="sync-pill"><span class="status-dot ok"></span>10:42</span>
+          <span class="icon-btn"><i class="ic sm" data-icon="settings"></i></span>
+        </footer>
+      </aside>
+
+      <!-- Task List: Home Collection -->
+      <main class="list-pane">
+        <header class="room-header-desktop">
+          <div class="room-header-pad">
+            <div class="eyebrow-row">
+              <div class="eyebrow-left">
+                <span class="eyebrow-day">Collection</span>
+                <span class="eyebrow-meta">3 LISTS</span>
+              </div>
+              <span class="icon-btn"><i class="ic sm" data-icon="ellipsis"></i></span>
+            </div>
+            <div class="room-title-row">
+              <h1 class="room-title-desktop">Home</h1>
+              <div class="room-summary">
+                <span class="fig accent">4</span><span>of</span><span class="fig">11</span><span>done</span>
+                <span class="dot"></span><span class="fig">7</span><span>open</span>
+              </div>
+            </div>
+          </div>
+          <div class="landscape-strip" data-landscape data-width="792" data-height="48" data-done="4" data-total="11"></div>
+        </header>
+
+        <div class="quick-add-wrap">
+          <div class="quick-add-field">
+            <i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>
+            <span class="qa-text">Add a task to Home…</span>
+            <i class="ic sm" data-icon="calendar"></i>
+            <i class="ic sm" data-icon="flag"></i>
+            <span class="keycap">Ctrl N</span>
+          </div>
+        </div>
+
+        <div class="desktop-rows">
+          <div class="d-row">
+            <span class="check-ring overdue"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Return library books</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span></div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark p2">!!</span>
+            <span class="d-col-due"><span class="overdue-badge"><span class="diamond"></span>yesterday</span></span>
+            <span class="d-col-star on"><i class="ic" data-icon="star-filled"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Buy milk and sourdough bread</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+                <span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span></span>1/3</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark p1">!</span>
+            <span class="d-col-due"><span class="due-text soon">Today 18:00</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Water balcony herbs</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="fern"><span class="dot"></span>Garden</span></div>
+            </div>
+            <span class="d-col-agent"><span class="agent-mark" data-agent="assistant">A</span></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Today 19:30</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Replace kitchen water filter</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span></div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Mon 23 Nov</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Order whole-bean coffee</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+                <span class="tag-text">#pantry</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Tue 24 Nov</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Prune rosemary pots</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="fern"><span class="dot"></span>Garden</span></div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Fri 27 Nov</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+        </div>
+
+        <footer class="list-footer-inset">
+          <span class="completed-toggle-d">
+            <i class="ic sm" data-icon="chevron-right"></i>
+            <span class="caps-label">Completed</span>
+            <span style="font:var(--text-count)">4</span>
+          </span>
+        </footer>
+      </main>
+
+      <!-- Docked AI Assistant Panel (Batched Proposal: 5 tasks, expanded step log & Cloud cue) -->
+      <aside class="ai-panel">
+        <header class="ai-panel-top">
+          <div class="ai-thread-picker">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="title">Weekend errands plan</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="ai-top-actions">
+            <span class="icon-btn" title="New conversation"><i class="ic sm" data-icon="plus"></i></span>
+            <span class="icon-btn" title="AI settings"><i class="ic sm" data-icon="settings"></i></span>
+            <span class="icon-btn" title="Close panel"><i class="ic sm" data-icon="x"></i></span>
+          </div>
+        </header>
+
+        <div class="ai-stream" style="gap:10px;padding:12px 16px;">
+          <div class="msg-user">Add my weekend prep list to Home: olive oil &amp; pasta, dry cleaning, winter tyres, potting soil, and hall closet. First two in My Day.</div>
+
+          <div class="msg-ai" style="gap:8px;">
+            <!-- Expanded compact step log -->
+            <div class="step-log">
+              <div class="step-summary">
+                <i class="ic xs" data-icon="chevron-down"></i>
+                <span>Checked 3 lists</span>
+                <span class="sep">·</span>
+                <span>No duplicates found</span>
+              </div>
+              <div class="step-items">
+                <div class="step-item">
+                  <i class="ic xs" data-icon="check"></i>
+                  <span>Listed Home (Groceries, Errands, Garden)</span>
+                  <span class="step-ms">18 ms</span>
+                </div>
+                <div class="step-item">
+                  <i class="ic xs" data-icon="check"></i>
+                  <span>Checked existing tasks for duplicates</span>
+                  <span class="step-ms">31 ms</span>
+                </div>
+                <div class="step-item">
+                  <i class="ic xs" style="color:var(--color-ink-3)" data-icon="eye-off"></i>
+                  <span>2 lists hidden from cloud (Finance, Health)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Batched Creation Proposal Card (5 items, 4 selected, #1 expanded) -->
+            <div class="proposal-card kind-create">
+              <div class="proposal-head">
+                <span class="proposal-kind">
+                  <i class="ic sm" data-icon="plus"></i>
+                  <span class="caps-label">5 new tasks</span>
+                </span>
+                <div class="batch-toggle">
+                  <span class="active">Summary</span>
+                  <span>Review each</span>
+                </div>
+              </div>
+
+              <div class="batch-list">
+                <!-- Item 1 (checked & expanded) -->
+                <div class="batch-row">
+                  <div class="batch-row-main">
+                    <span class="check-ring sm checked"><i class="ic xs" data-icon="check"></i></span>
+                    <div class="batch-row-info">
+                      <span class="batch-row-title">Buy olive oil and pasta</span>
+                      <span class="batch-row-meta">
+                        <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+                        <span>Today</span>
+                        <i class="ic xs" style="color:var(--color-sun-ink)" data-icon="sun-filled"></i>
+                      </span>
+                    </div>
+                    <i class="ic xs" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+                  </div>
+                  <div class="batch-expanded">
+                    <div class="proposal-fields" style="gap:4px 8px;">
+                      <span class="pf-key">Due</span>
+                      <span class="pf-val"><span class="due-text">Sat 21 Nov</span> · <i class="ic xs" style="color:var(--color-sun-ink)" data-icon="sun-filled"></i>My Day</span>
+                      <span class="pf-key">Priority</span>
+                      <span class="pf-val">None · <span class="tag-text">#pantry</span></span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Item 2 (checked) -->
+                <div class="batch-row">
+                  <div class="batch-row-main">
+                    <span class="check-ring sm checked"><i class="ic xs" data-icon="check"></i></span>
+                    <div class="batch-row-info">
+                      <span class="batch-row-title">Pick up dry cleaning</span>
+                      <span class="batch-row-meta">
+                        <span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span>
+                        <span>Today</span>
+                        <span style="font:var(--text-priority);color:var(--color-ink-2)">!!</span>
+                        <i class="ic xs" style="color:var(--color-sun-ink)" data-icon="sun-filled"></i>
+                      </span>
+                    </div>
+                    <i class="ic xs" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+                  </div>
+                </div>
+
+                <!-- Item 3 (checked) -->
+                <div class="batch-row">
+                  <div class="batch-row-main">
+                    <span class="check-ring sm checked"><i class="ic xs" data-icon="check"></i></span>
+                    <div class="batch-row-info">
+                      <span class="batch-row-title">Check winter tyre pressure</span>
+                      <span class="batch-row-meta">
+                        <span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span>
+                        <span>Sun 22 Nov</span>
+                        <span style="font:var(--text-priority);color:var(--color-ink-3)">!</span>
+                      </span>
+                    </div>
+                    <i class="ic xs" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+                  </div>
+                </div>
+
+                <!-- Item 4 (checked) -->
+                <div class="batch-row">
+                  <div class="batch-row-main">
+                    <span class="check-ring sm checked"><i class="ic xs" data-icon="check"></i></span>
+                    <div class="batch-row-info">
+                      <span class="batch-row-title">Buy potting soil for balcony herbs</span>
+                      <span class="batch-row-meta">
+                        <span class="list-chip" data-list-hue="fern"><span class="dot"></span>Garden</span>
+                        <span>Sun 22 Nov</span>
+                      </span>
+                    </div>
+                    <i class="ic xs" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+                  </div>
+                </div>
+
+                <!-- Item 5 (unchecked by user to demonstrate selective approval) -->
+                <div class="batch-row unchecked">
+                  <div class="batch-row-main">
+                    <span class="check-ring sm"></span>
+                    <div class="batch-row-info">
+                      <span class="batch-row-title">Organize hall closet</span>
+                      <span class="batch-row-meta">
+                        <span class="list-chip" data-list-hue="rose"><span class="dot"></span>Home</span>
+                        <span>No date</span>
+                      </span>
+                    </div>
+                    <i class="ic xs" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+                  </div>
+                </div>
+              </div>
+
+              <div class="proposal-actions">
+                <span class="btn sm primary"><i class="ic sm" data-icon="check"></i>Approve 4</span>
+                <span class="btn sm secondary">Review each</span>
+                <span class="btn sm quiet" style="margin-left:auto;">Decline all</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="ai-composer-dock">
+          <div class="pending-banner">
+            <i class="ic sm" data-icon="circle-alert"></i>
+            <span class="pb-text">4 of 5 proposed tasks selected</span>
+            <span class="pb-link">Review</span>
+          </div>
+          <div class="ai-composer-inner">
+            <div class="ai-input-box">
+              <span class="ai-input-placeholder">Approve above, or reply to adjust…</span>
+              <span class="send-btn muted"><i class="ic sm" data-icon="arrow-up"></i></span>
+            </div>
+            <!-- Cloud privacy indicator contrasting with Private network -->
+            <div class="privacy-bar">
+              <span class="privacy-dest">
+                <span class="status-dot cloud"></span>
+                <span class="dest-kind">Cloud · ChatGPT</span>
+                <span class="dest-model">· GPT-5</span>
+                <i class="ic xs" data-icon="chevron-down"></i>
+              </span>
+              <span class="privacy-scope">
+                <i class="ic xs" data-icon="eye-off"></i>
+                <span>2 hidden from cloud</span>
+              </span>
+            </div>
+          </div>
+        </footer>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <div class="status-counts">
+        <span><strong>7</strong> open</span>
+        <span><strong>4</strong> done today</span>
+      </div>
+      <div class="status-hints">
+        <span class="status-hint"><span class="keycap">Ctrl J</span>Ask AI</span>
+        <span class="status-hint"><span class="keycap">Ctrl N</span>add</span>
+        <span class="status-hint"><span class="keycap">Ctrl K</span>filter</span>
+      </div>
+      <span>Cloud · ChatGPT (OpenAI)</span>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

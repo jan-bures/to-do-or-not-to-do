@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Cover (412 × 960 dp) — AI Assistant Bottom Sheet</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="my-day">
+    <!-- Authentic Living Daybreak Horizon Sky visible above the 84% sheet scrim -->
+    <header class="horizon-header" style="height:208px;">
+      <div class="horizon-canvas" data-horizon-header data-width="412" data-total-height="208" data-scene-height="72" data-done="3" data-total="12"></div>
+      <div class="horizon-status">
+        <span>10:35</span>
+        <div class="status-bar-right">
+          <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+          <span>5G</span>
+          <span class="battery-icon"><span class="battery-fill"></span></span>
+        </div>
+      </div>
+      <div class="horizon-text">
+        <div class="eyebrow-left">
+          <span class="eyebrow-day">Saturday</span>
+          <span class="eyebrow-meta">21 NOV 2026</span>
+          <span class="eyebrow-bar"></span>
+          <span class="eyebrow-meta">W47</span>
+        </div>
+        <h1 class="horizon-title">My Day</h1>
+        <div class="horizon-sub-row">
+          <div class="room-summary">
+            <span class="fig accent">3</span><span>of</span><span class="fig">12</span><span>done</span>
+            <span class="dot"></span><span class="fig">9</span><span>open</span>
+          </div>
+          <span class="overdue-badge"><span class="diamond"></span>2 overdue</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Bottom Sheet Scrim + 84% Thumb-Zone AI Assistant Sheet -->
+    <div class="sheet-scrim">
+      <section class="ai-sheet" style="height:806px;" role="dialog" aria-label="AI Assistant">
+        <div class="sheet-handle-row"><span class="sheet-handle"></span></div>
+        <header class="sheet-header">
+          <div class="sheet-title-wrap">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span>Today’s plan</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="ai-top-actions">
+            <span class="touch-btn" style="width:40px;height:40px;" title="New chat"><i class="ic sm" data-icon="plus"></i></span>
+            <span class="touch-btn" style="width:40px;height:40px;" title="AI settings"><i class="ic sm" data-icon="settings"></i></span>
+            <span class="touch-btn" style="width:40px;height:40px;" title="Close"><i class="ic sm" data-icon="x"></i></span>
+          </div>
+        </header>
+
+        <!-- Bottom-gravity stream so active proposal + 48 dp buttons rest in the green thumb zone -->
+        <div class="sheet-stream">
+          <div class="msg-user">What’s overdue right now? Move the budget review to Monday.</div>
+
+          <div class="msg-ai">
+            <div class="step-log">
+              <div class="step-summary">
+                <i class="ic xs" data-icon="chevron-right"></i>
+                <span>Checked My Day &amp; Finance</span>
+                <span class="sep">·</span>
+                <span>Found 2 overdue</span>
+              </div>
+            </div>
+
+            <div class="ai-prose">
+              <p>You have two overdue tasks:</p>
+            </div>
+
+            <div class="task-link-list">
+              <div class="task-link" data-list-hue="clay">
+                <span class="dot"></span>
+                <span class="tl-title">Review quarterly budget</span>
+                <span class="tl-meta">2d overdue</span>
+                <i class="ic xs" data-icon="arrow-up-right"></i>
+              </div>
+              <div class="task-link" data-list-hue="coral">
+                <span class="dot"></span>
+                <span class="tl-title">Return library books</span>
+                <span class="tl-meta">yesterday</span>
+                <i class="ic xs" data-icon="arrow-up-right"></i>
+              </div>
+            </div>
+
+            <!-- Active Edit Proposal Card — 48 dp Decline / Approve buttons inside Comfortable thumb zone -->
+            <div class="proposal-card kind-edit">
+              <div class="proposal-head">
+                <span class="proposal-kind">
+                  <i class="ic sm" data-icon="pencil"></i>
+                  <span class="caps-label">Edit task</span>
+                </span>
+                <span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span>
+              </div>
+              <div class="proposal-body">
+                <div class="proposal-title">Review quarterly budget</div>
+                <div class="proposal-fields">
+                  <span class="pf-key">Due</span>
+                  <span class="pf-val">
+                    <span class="diff-old">Thu 19 Nov</span>
+                    <span class="diff-arrow">→</span>
+                    <span class="diff-new">Mon 23 Nov</span>
+                  </span>
+                  <span class="pf-key">Priority</span>
+                  <span class="pf-val"><span class="priority-mark p3" style="width:auto;">!!!</span> <span>High (unchanged)</span></span>
+                </div>
+              </div>
+              <div class="proposal-actions split" style="padding:10px 12px 12px 14px;">
+                <span class="btn touch secondary"><i class="ic" data-icon="x"></i>Decline</span>
+                <span class="btn touch primary"><i class="ic" data-icon="check"></i>Approve edit</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pinned Bottom Composer + Thumb-Zone Model/Privacy Strip -->
+        <footer class="ai-composer-dock">
+          <div class="pending-banner">
+            <i class="ic sm" data-icon="circle-alert"></i>
+            <span class="pb-text">1 proposal waiting · Tap Approve above</span>
+          </div>
+          <div class="ai-composer-inner" style="padding:8px 12px 10px;">
+            <div class="privacy-bar" style="min-height:28px;">
+              <span class="privacy-dest">
+                <span class="status-dot ok"></span>
+                <span class="dest-kind">Private network</span>
+                <span class="dest-model">· qwen3-14b</span>
+                <i class="ic xs" data-icon="chevron-down"></i>
+              </span>
+              <span class="privacy-scope">
+                <i class="ic xs" data-icon="eye-off"></i>
+                <span>1 list hidden</span>
+              </span>
+            </div>
+            <div class="ai-input-box phone">
+              <span class="ai-input-placeholder">Approve above, or reply…</span>
+              <span class="touch-btn" style="width:40px;height:40px;color:var(--color-ink-3)"><i class="ic" data-icon="mic"></i></span>
+              <span class="send-btn phone muted"><i class="ic" data-icon="arrow-up"></i></span>
+            </div>
+          </div>
+          <div class="gesture-bar"><span class="gesture-pill"></span></div>
+        </footer>
+      </section>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

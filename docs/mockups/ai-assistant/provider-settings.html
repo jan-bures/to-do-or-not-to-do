@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Provider &amp; Privacy Settings</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="desktop-window" data-theme="light" data-room-hue="my-day">
+    <!-- Background app shell (calm, opaque, no blur) -->
+    <header class="titlebar">
+      <div class="titlebar-brand">
+        <i class="ic" data-icon="circle-check"></i>
+        <span>To-do</span>
+      </div>
+      <div class="titlebar-search">
+        <i class="ic sm" data-icon="search"></i>
+        <span class="ph">Filter tasks, lists, or #tags…</span>
+        <span class="keycap">Ctrl K</span>
+      </div>
+      <div class="titlebar-right">
+        <div class="ask-ai-trigger open">
+          <i class="ic sm" data-icon="sparkles"></i>
+          <span>Ask AI</span>
+          <span class="keycap">Ctrl J</span>
+        </div>
+        <div class="win-controls">
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0.5" y1="0.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1"/><line x1="9.5" y1="0.5" x2="0.5" y2="9.5" stroke="currentColor" stroke-width="1"/></svg></span>
+        </div>
+      </div>
+    </header>
+
+    <div class="desktop-body">
+      <aside class="sidebar">
+        <div class="sidebar-scroll">
+          <div class="nav-row active" data-list-hue="my-day">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="sun"></i>
+            <span class="nav-label">My Day</span>
+            <span class="nav-count">9</span>
+          </div>
+          <div class="nav-row" data-list-hue="important">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="star"></i>
+            <span class="nav-label">Important</span>
+            <span class="nav-count">3</span>
+          </div>
+          <div class="nav-row" data-list-hue="planned">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="calendar"></i>
+            <span class="nav-label">Planned</span>
+            <span class="nav-count">14</span>
+          </div>
+          <div class="nav-row" data-list-hue="all">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="list"></i>
+            <span class="nav-label">All</span>
+            <span class="nav-count">24</span>
+          </div>
+        </div>
+        <footer class="sidebar-footer">
+          <span class="sidebar-new"><i class="ic sm" data-icon="plus"></i>New</span>
+          <span class="sync-pill"><span class="status-dot ok"></span>10:35</span>
+          <span class="icon-btn active"><i class="ic sm" data-icon="settings"></i></span>
+        </footer>
+      </aside>
+
+      <main class="list-pane">
+        <header class="room-header-desktop">
+          <div class="room-header-pad">
+            <div class="eyebrow-row">
+              <div class="eyebrow-left">
+                <span class="eyebrow-day">Saturday</span>
+                <span class="eyebrow-meta">21 NOV 2026</span>
+                <span class="eyebrow-bar"></span>
+                <span class="eyebrow-meta">W47</span>
+              </div>
+            </div>
+            <div class="room-title-row">
+              <h1 class="room-title-desktop">My Day</h1>
+              <div class="room-summary">
+                <span class="fig accent">3</span><span>of</span><span class="fig">12</span><span>done</span>
+                <span class="dot"></span><span class="fig">9</span><span>open</span>
+              </div>
+            </div>
+          </div>
+          <div class="landscape-strip" data-landscape data-width="792" data-height="48" data-done="3" data-total="12"></div>
+        </header>
+        <div class="desktop-rows" style="padding-top:16px;">
+          <div class="d-row">
+            <span class="check-ring overdue"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Review quarterly budget</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span></div>
+            </div>
+            <span class="priority-mark p3">!!!</span>
+            <span class="d-col-due"><span class="overdue-badge"><span class="diamond"></span>2d overdue</span></span>
+          </div>
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Draft project release notes</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="azure"><span class="dot"></span>Planning</span></div>
+            </div>
+            <span class="priority-mark p2">!!</span>
+            <span class="d-col-due"><span class="due-text soon">in 1h 25m</span></span>
+          </div>
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Buy milk and sourdough bread</div>
+              <div class="d-row-meta"><span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span></div>
+            </div>
+            <span class="d-col-due"><span class="due-text">Today 18:00</span></span>
+          </div>
+        </div>
+      </main>
+
+      <aside class="ai-panel">
+        <header class="ai-panel-top">
+          <div class="ai-thread-picker">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="title">New chat</span>
+          </div>
+        </header>
+      </aside>
+    </div>
+
+    <!-- Modal Scrim + 520 px AI Assistant Settings Dialog -->
+    <div class="modal-scrim">
+      <section class="settings-dialog" role="dialog" aria-label="AI Assistant settings">
+        <header class="settings-head">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="agent-mark lg" data-agent="assistant">A</span>
+            <div>
+              <h2 class="settings-title">AI Assistant</h2>
+            </div>
+          </div>
+          <span class="icon-btn" title="Close (Esc)"><i class="ic" data-icon="x"></i></span>
+        </header>
+
+        <div class="settings-body">
+          <!-- Provider Selection -->
+          <div class="settings-section">
+            <span class="caps-label">Primary model provider</span>
+
+            <!-- 1. Your own server (Private network, selected) -->
+            <div class="provider-card selected">
+              <div class="provider-row-head">
+                <span class="provider-name-wrap">
+                  <span class="radio-dot on"></span>
+                  <span class="provider-name">Your own server</span>
+                </span>
+                <span class="privacy-tag">
+                  <span class="status-dot ok"></span>
+                  <span>Private network</span>
+                </span>
+              </div>
+
+              <div class="field-grid">
+                <div class="form-row">
+                  <span class="form-label">Base URL</span>
+                  <div class="text-input">
+                    <span>http://mac.tailnet.example:11434</span>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <span class="form-label">Model</span>
+                  <div class="text-input">
+                    <span>qwen3-14b</span>
+                    <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+                  </div>
+                  <span class="btn sm secondary"><i class="ic sm" data-icon="refresh-cw"></i>Test</span>
+                </div>
+                <div class="conn-status">
+                  <span class="conn-left">
+                    <span class="status-dot ok"></span>
+                    <span>Connected · 4 models available</span>
+                  </span>
+                  <span class="conn-ms">38 ms</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. ChatGPT account (Cloud, signed in, configured as fallback) -->
+            <div class="provider-card">
+              <div class="provider-row-head">
+                <span class="provider-name-wrap">
+                  <span class="radio-dot"></span>
+                  <span class="provider-name">ChatGPT account</span>
+                </span>
+                <span class="privacy-tag">
+                  <span class="status-dot cloud"></span>
+                  <span>Cloud · OpenAI</span>
+                </span>
+              </div>
+              <div class="field-grid">
+                <div class="conn-status">
+                  <span class="conn-left">
+                    <span class="status-dot ok"></span>
+                    <span>Signed in · Model: <strong style="font:var(--text-due);color:var(--color-ink);">GPT-5</strong></span>
+                  </span>
+                  <span class="btn sm secondary"><i class="ic sm" data-icon="log-out"></i>Sign out</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. API key (Cloud, unconfigured) -->
+            <div class="provider-card">
+              <div class="provider-row-head">
+                <span class="provider-name-wrap">
+                  <span class="radio-dot"></span>
+                  <span class="provider-name">API key</span>
+                </span>
+                <span class="privacy-tag">
+                  <span class="status-dot muted"></span>
+                  <span>Cloud · Custom</span>
+                </span>
+              </div>
+              <div class="field-grid">
+                <div class="conn-status">
+                  <span style="color:var(--color-ink-3);">OpenAI, Anthropic, or OpenAI-compatible endpoint</span>
+                  <span class="btn sm secondary">Set up…</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fallback behaviour -->
+          <div class="settings-section">
+            <span class="caps-label">When your server is asleep or unreachable</span>
+            <div class="form-row">
+              <span class="form-label" style="width:110px;">Fallback provider</span>
+              <div class="text-input">
+                <span>ChatGPT account (GPT-5)</span>
+                <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+              </div>
+            </div>
+            <div class="check-option">
+              <span class="sq-check"><i class="ic xs" data-icon="check"></i></span>
+              <span>Ask before switching to a cloud provider</span>
+            </div>
+          </div>
+
+          <!-- Per-list privacy access -->
+          <div class="settings-section">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;">
+              <span class="caps-label">Lists the assistant can see</span>
+              <span style="font:var(--text-meta);color:var(--color-ink-3);">Hidden lists are never sent to the model</span>
+            </div>
+            <div class="access-table">
+              <div class="access-row">
+                <span class="access-left" data-list-hue="azure">
+                  <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="flag"></i>
+                  <span>Work · Planning</span>
+                </span>
+                <span class="access-val">All models <i class="ic xs" data-icon="chevron-down"></i></span>
+              </div>
+              <div class="access-row">
+                <span class="access-left" data-list-hue="teal">
+                  <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="basket"></i>
+                  <span>Home · Groceries</span>
+                </span>
+                <span class="access-val">All models <i class="ic xs" data-icon="chevron-down"></i></span>
+              </div>
+              <div class="access-row">
+                <span class="access-left" data-list-hue="clay">
+                  <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="coin"></i>
+                  <span>Work · Finance</span>
+                </span>
+                <span class="access-val private-only"><i class="ic xs" data-icon="eye-off"></i>Private only <i class="ic xs" data-icon="chevron-down"></i></span>
+              </div>
+              <div class="access-row">
+                <span class="access-left" data-list-hue="pink">
+                  <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="heart"></i>
+                  <span>Home · Health</span>
+                </span>
+                <span class="access-val hidden"><i class="ic xs" data-icon="eye-off"></i>Hidden <i class="ic xs" data-icon="chevron-down"></i></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="settings-foot">
+          <span>Your own server keeps task data on your private network.</span>
+          <span class="btn sm primary">Done</span>
+        </footer>
+      </section>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

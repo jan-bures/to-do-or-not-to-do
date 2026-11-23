@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Desktop — Pending Edit &amp; Destructive Proposals</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="desktop-window" data-theme="light" data-room-hue="my-day">
+    <header class="titlebar">
+      <div class="titlebar-brand">
+        <i class="ic" data-icon="circle-check"></i>
+        <span>To-do</span>
+      </div>
+      <div class="titlebar-search">
+        <i class="ic sm" data-icon="search"></i>
+        <span class="ph">Filter tasks, lists, or #tags…</span>
+        <span class="keycap">Ctrl K</span>
+      </div>
+      <div class="titlebar-right">
+        <div class="ask-ai-trigger open" aria-pressed="true">
+          <i class="ic sm" data-icon="sparkles"></i>
+          <span>Ask AI</span>
+          <span class="keycap">Ctrl J</span>
+        </div>
+        <div class="win-controls">
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg></span>
+          <span class="win-btn"><svg viewBox="0 0 10 10"><line x1="0.5" y1="0.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1"/><line x1="9.5" y1="0.5" x2="0.5" y2="9.5" stroke="currentColor" stroke-width="1"/></svg></span>
+        </div>
+      </div>
+    </header>
+
+    <div class="desktop-body">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-scroll">
+          <div class="nav-row active" data-list-hue="my-day">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="sun"></i>
+            <span class="nav-label">My Day</span>
+            <span class="nav-count">10</span>
+          </div>
+          <div class="nav-row" data-list-hue="important">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="star"></i>
+            <span class="nav-label">Important</span>
+            <span class="nav-count">3</span>
+          </div>
+          <div class="nav-row" data-list-hue="planned">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="calendar"></i>
+            <span class="nav-label">Planned</span>
+            <span class="nav-count">15</span>
+          </div>
+          <div class="nav-row" data-list-hue="all">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="list"></i>
+            <span class="nav-label">All</span>
+            <span class="nav-count">25</span>
+          </div>
+          <div class="nav-row" data-list-hue="completed">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="circle-check"></i>
+            <span class="nav-label">Completed</span>
+          </div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="sparkles"></i>
+            <span class="nav-label">Agent activity</span>
+            <span class="nav-count">6</span>
+          </div>
+
+          <div class="nav-sep"></div>
+
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="clock"></i>
+            <span class="nav-label">Activity</span>
+            <span class="keycap">Ctrl H</span>
+          </div>
+          <div class="nav-sub-row">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="nav-label">Assistant</span>
+            <span class="nav-status">3 added today</span>
+          </div>
+          <div class="nav-sub-row">
+            <span class="agent-mark" data-agent="codex">X</span>
+            <span class="nav-label">Codex</span>
+            <span class="nav-status">1 edited today</span>
+          </div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic sm" style="color:var(--list-glyph)" data-icon="trash-2"></i>
+            <span class="nav-label">Trash</span>
+          </div>
+
+          <div class="nav-sep"></div>
+
+          <div class="nav-coll-row" data-list-hue="azure">
+            <i class="ic xs" data-icon="chevron-down"></i>
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="briefcase"></i>
+            <span class="nav-label">Work</span>
+            <span class="nav-count">8</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="clay">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="coin"></i>
+            <span class="nav-label">Finance</span>
+            <span class="nav-count">3</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="azure">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="flag"></i>
+            <span class="nav-label">Planning</span>
+            <span class="nav-count">5</span>
+          </div>
+
+          <div class="nav-coll-row" data-list-hue="rose">
+            <i class="ic xs" data-icon="chevron-down"></i>
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="house"></i>
+            <span class="nav-label">Home</span>
+            <span class="nav-count">12</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="teal">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="basket"></i>
+            <span class="nav-label">Groceries</span>
+            <span class="nav-count">5</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="coral">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="document"></i>
+            <span class="nav-label">Errands</span>
+            <span class="nav-count">4</span>
+          </div>
+          <div class="nav-sub-row" data-list-hue="pink">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="heart"></i>
+            <span class="nav-label">Health</span>
+            <span class="nav-count">3</span>
+          </div>
+        </div>
+
+        <footer class="sidebar-footer">
+          <span class="sidebar-new"><i class="ic sm" data-icon="plus"></i>New</span>
+          <span class="sync-pill"><span class="status-dot ok"></span>10:37</span>
+          <span class="icon-btn"><i class="ic sm" data-icon="settings"></i></span>
+        </footer>
+      </aside>
+
+      <!-- Task List showing newly approved Assistant task highlighted live -->
+      <main class="list-pane">
+        <header class="room-header-desktop">
+          <div class="room-header-pad">
+            <div class="eyebrow-row">
+              <div class="eyebrow-left">
+                <span class="eyebrow-day">Saturday</span>
+                <span class="eyebrow-meta">21 NOV 2026</span>
+                <span class="eyebrow-bar"></span>
+                <span class="eyebrow-meta">W47</span>
+              </div>
+              <span class="icon-btn"><i class="ic sm" data-icon="ellipsis"></i></span>
+            </div>
+            <div class="room-title-row">
+              <h1 class="room-title-desktop">My Day</h1>
+              <div class="room-summary">
+                <span class="fig accent">3</span><span>of</span><span class="fig">13</span><span>done</span>
+                <span class="dot"></span><span class="fig">10</span><span>open</span>
+              </div>
+            </div>
+          </div>
+          <div class="landscape-strip" data-landscape data-width="792" data-height="48" data-done="3" data-total="13"></div>
+        </header>
+
+        <div class="quick-add-wrap">
+          <div class="quick-add-field">
+            <i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i>
+            <span class="qa-text">Add a task to My Day…</span>
+            <i class="ic sm" data-icon="calendar"></i>
+            <i class="ic sm" data-icon="flag"></i>
+            <span class="keycap">Ctrl N</span>
+          </div>
+        </div>
+
+        <div class="desktop-rows">
+          <!-- Freshly approved task with SYNC_HIGHLIGHT wash & Assistant A mark -->
+          <div class="d-row sync-highlight">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Pick up oat milk and lemons</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+                <span style="color:var(--color-accent-strong);font-weight:500;">Added by Assistant</span>
+              </div>
+            </div>
+            <span class="d-col-agent"><span class="agent-mark" data-agent="assistant">A</span></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Today</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring overdue"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Review quarterly budget</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span>
+                <span class="tag-text">#q4</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark p3">!!!</span>
+            <span class="d-col-due"><span class="overdue-badge"><span class="diamond"></span>2d overdue</span></span>
+            <span class="d-col-star on"><i class="ic" data-icon="star-filled"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring overdue"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Return library books</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="overdue-badge"><span class="diamond"></span>yesterday</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Return library books (duplicate)</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">—</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Draft project release notes</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="azure"><span class="dot"></span>Planning</span>
+                <span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span></span>2/4</span>
+                <i class="ic sm" data-icon="mail"></i>
+              </div>
+            </div>
+            <span class="d-col-agent"><span class="agent-mark" data-agent="codex">X</span></span>
+            <span class="priority-mark p2">!!</span>
+            <span class="d-col-due"><span class="due-text soon">in 1h 25m</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Buy milk and sourdough bread</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+                <span class="tag-text">#kitchen</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Today 18:00</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Water balcony herbs</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="rose"><span class="dot"></span>Home</span>
+              </div>
+            </div>
+            <span class="d-col-agent"><span class="agent-mark" data-agent="assistant">A</span></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Today 19:30</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+
+          <div class="d-row">
+            <span class="check-ring"></span>
+            <div class="d-row-main">
+              <div class="d-row-title">Replace kitchen water filter</div>
+              <div class="d-row-meta">
+                <span class="list-chip" data-list-hue="rose"><span class="dot"></span>Home</span>
+              </div>
+            </div>
+            <span class="d-col-agent"></span>
+            <span class="priority-mark"></span>
+            <span class="d-col-due"><span class="due-text">Tue 24 Nov</span></span>
+            <span class="d-col-star"><i class="ic" data-icon="star"></i></span>
+          </div>
+        </div>
+
+        <footer class="list-footer-inset">
+          <span class="completed-toggle-d">
+            <i class="ic sm" data-icon="chevron-right"></i>
+            <span class="caps-label">Completed</span>
+            <span style="font:var(--text-count)">3</span>
+          </span>
+          <div class="toast-card">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span>Assistant added “Pick up oat milk…”</span>
+            <span class="toast-act">Undo</span>
+            <span class="toast-bar"></span>
+          </div>
+        </footer>
+      </main>
+
+      <!-- Docked AI Assistant Panel (Conversation + Pending Edit & Delete Proposals) -->
+      <aside class="ai-panel">
+        <header class="ai-panel-top">
+          <div class="ai-thread-picker">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="title">Weekend triage</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="ai-top-actions">
+            <span class="icon-btn" title="New conversation"><i class="ic sm" data-icon="plus"></i></span>
+            <span class="icon-btn" title="AI settings"><i class="ic sm" data-icon="settings"></i></span>
+            <span class="icon-btn" title="Close panel"><i class="ic sm" data-icon="x"></i></span>
+          </div>
+        </header>
+
+        <div class="ai-stream">
+          <!-- Settled approved creation receipt -->
+          <div class="receipt-card">
+            <span class="agent-mark" data-agent="assistant">A</span>
+            <span class="receipt-text">Added <strong>Pick up oat milk and lemons</strong> to Groceries · Just now</span>
+            <span class="receipt-undo">Undo</span>
+          </div>
+
+          <!-- User turn -->
+          <div class="msg-user">Push the quarterly budget review to Monday and remove the duplicate library reminder.</div>
+
+          <!-- Assistant turn -->
+          <div class="msg-ai">
+            <div class="step-log">
+              <div class="step-summary">
+                <i class="ic xs" data-icon="chevron-right"></i>
+                <span>Checked 4 lists</span>
+                <span class="sep">·</span>
+                <span>Read 2 tasks</span>
+                <span class="sep">·</span>
+                <span class="scope-note"><i class="ic xs" data-icon="eye-off"></i>1 private skipped</span>
+              </div>
+            </div>
+
+            <div class="ai-prose">
+              <p>I found both tasks. Here are the proposed updates—neither takes effect until you approve:</p>
+            </div>
+
+            <!-- EDIT proposal card (warm sun-ink leading stripe + explicit before -> after diff) -->
+            <div class="proposal-card kind-edit">
+              <div class="proposal-head">
+                <span class="proposal-kind">
+                  <i class="ic sm" data-icon="pencil"></i>
+                  <span class="caps-label">Edit task</span>
+                </span>
+                <span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span>
+              </div>
+              <div class="proposal-body">
+                <div class="task-link" data-list-hue="clay">
+                  <span class="dot"></span>
+                  <span class="tl-title">Review quarterly budget</span>
+                  <i class="ic xs" data-icon="arrow-up-right"></i>
+                </div>
+                <div class="proposal-fields">
+                  <span class="pf-key">Due</span>
+                  <span class="pf-val">
+                    <span class="diff-old">Thu 19 Nov</span>
+                    <span class="diff-arrow">→</span>
+                    <span class="diff-new">Mon 23 Nov</span>
+                  </span>
+                  <span class="pf-key">My Day</span>
+                  <span class="pf-val">Keep in My Day</span>
+                </div>
+              </div>
+              <div class="proposal-actions">
+                <span class="btn sm primary"><i class="ic sm" data-icon="check"></i>Approve edit</span>
+                <span class="btn sm secondary"><i class="ic sm" data-icon="x"></i>Decline</span>
+              </div>
+            </div>
+
+            <!-- DESTRUCTIVE proposal card (danger-bg header, danger bar, safety-first Decline then Delete) -->
+            <div class="proposal-card kind-delete">
+              <div class="proposal-head">
+                <span class="proposal-kind">
+                  <i class="ic sm" data-icon="trash-2"></i>
+                  <span class="caps-label">Delete task</span>
+                </span>
+                <span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span>
+              </div>
+              <div class="proposal-body">
+                <div class="task-link" data-list-hue="coral">
+                  <span class="dot"></span>
+                  <span class="tl-title">Return library books (duplicate)</span>
+                  <i class="ic xs" data-icon="arrow-up-right"></i>
+                </div>
+                <p class="proposal-note">Moves to Trash. Reversible from Activity or Trash at any time.</p>
+              </div>
+              <div class="proposal-actions">
+                <span class="btn sm secondary"><i class="ic sm" data-icon="x"></i>Decline</span>
+                <span class="btn sm danger"><i class="ic sm" data-icon="trash-2"></i>Delete</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="ai-composer-dock">
+          <div class="pending-banner">
+            <i class="ic sm" data-icon="circle-alert"></i>
+            <span class="pb-text">2 proposals waiting for review</span>
+            <span class="pb-link">Jump up</span>
+          </div>
+          <div class="ai-composer-inner">
+            <div class="ai-input-box">
+              <span class="ai-input-placeholder">Approve above, or reply to adjust…</span>
+              <span class="send-btn muted"><i class="ic sm" data-icon="arrow-up"></i></span>
+            </div>
+            <div class="privacy-bar">
+              <span class="privacy-dest">
+                <span class="status-dot ok"></span>
+                <span class="dest-kind">Private network</span>
+                <span class="dest-model">· qwen3-14b</span>
+                <i class="ic xs" data-icon="chevron-down"></i>
+              </span>
+              <span class="privacy-scope">
+                <i class="ic xs" data-icon="eye-off"></i>
+                <span>1 list hidden</span>
+              </span>
+            </div>
+          </div>
+        </footer>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <div class="status-counts">
+        <span><strong>10</strong> open</span>
+        <span><strong>3</strong> done today</span>
+      </div>
+      <div class="status-hints">
+        <span class="status-hint"><span class="keycap">Ctrl J</span>Ask AI</span>
+        <span class="status-hint"><span class="keycap">Ctrl Z</span>undo</span>
+        <span class="status-hint"><span class="keycap">Ctrl H</span>activity</span>
+      </div>
+      <span>Private network · mac.tailnet.example</span>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

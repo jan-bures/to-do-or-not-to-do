@@ -67,10 +67,11 @@ pub fn swatch_for_seed(seed: &[u8]) -> NamedHue {
 }
 
 /// Default hues for the agents' letter marks.
-pub const AGENTS: [NamedHue; 3] = [
+pub const AGENTS: [NamedHue; 4] = [
     named("claude", 38.0),
     named("codex", 245.0),
     named("pi", 140.0),
+    named("assistant", 192.0),
 ];
 
 /// Every room hue the exports precompute: the smart lists, then the swatches.
