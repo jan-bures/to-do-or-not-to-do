@@ -401,7 +401,7 @@ reverses both the stage and the placement. Completing a repeat still creates the
 To do.
 
 Use **H/L** or **←/→** to move between columns, and **J/K** or **↓/↑** to move between cards.
-**Ctrl+Alt+←/→** moves a card to the neighbouring stage; **Alt+↑/↓** reorders it within the current stage.
+**Ctrl+Alt+←/→** moves a card to the neighboring stage; **Alt+↑/↓** reorders it within the current stage.
 **Enter** opens the focused card (or expands the focused Done rail), **E** edits its title, **Space**
 completes or reopens, and **N** opens the active column's composer. **Ctrl+click** and **Shift+click**
 select several cards, with a **Status** action in the selection strip. Choosing an open status there
