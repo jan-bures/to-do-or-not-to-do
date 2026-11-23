@@ -389,6 +389,14 @@ pub mod phone {
     pub const LANDSCAPE_COVER: f32 = 36.0;
     /// Landscape strip on the inner screen.
     pub const LANDSCAPE_INNER: f32 = 40.0;
+    /// Taller at-rest Daybreak landscape scene on Android cover screens.
+    pub const HEADER_SCENE_COVER: f32 = 72.0;
+    /// Taller at-rest Daybreak landscape scene on Android unfolded inner screens.
+    pub const HEADER_SCENE_INNER: f32 = 80.0;
+    /// Horizon progress hairline height along the bottom edge of the compact 36 dp header.
+    pub const COMPACT_PROGRESS_HEIGHT: f32 = 2.0;
+    /// Share of pull-down reach expansion absorbed above the text block; the rest grows the landscape.
+    pub const HEADER_REACH_TEXT_SHARE: f32 = 0.25;
     /// Width of the list pane on the inner screen.
     pub const INNER_LIST: f32 = 450.0;
 
@@ -422,7 +430,7 @@ pub mod phone {
     pub const SHEET_MAX_FRACTION: f32 = 0.92;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 34] = [
+    pub const ALL: [(&str, f32); 38] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -439,6 +447,10 @@ pub mod phone {
         ("toast", TOAST),
         ("landscape-cover", LANDSCAPE_COVER),
         ("landscape-inner", LANDSCAPE_INNER),
+        ("header-scene-cover", HEADER_SCENE_COVER),
+        ("header-scene-inner", HEADER_SCENE_INNER),
+        ("compact-progress-height", COMPACT_PROGRESS_HEIGHT),
+        ("header-reach-text-share", HEADER_REACH_TEXT_SHARE),
         ("inner-list", INNER_LIST),
         ("compact-header", COMPACT_HEADER),
         ("detail-breadcrumb", DETAIL_BREADCRUMB),

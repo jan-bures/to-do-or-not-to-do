@@ -106,6 +106,258 @@
     return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${parts.join("")}</svg>`;
   }
 
+  // Living Daybreak Horizon Header (docs/android-header.md)
+  // Renders the unified full-bleed sky gradient, zenith stars, clouds, ambient moon,
+  // sweeping sun arc, and 3 layered hills (distant ridge, far hill, near hill).
+  function buildHorizonHeaderSvg(opts) {
+    const { width, totalHeight, sceneHeight, done, total, mode, isDark } = opts;
+    const isDusk = mode === "dusk";
+    const isReach = mode === "reach";
+    const gradId = `sky-grad-${Math.round(width)}-${Math.round(totalHeight)}-${mode}`;
+    const sceneTop = totalHeight - sceneHeight;
+    const parts = [];
+
+    // 1. Unified 3-stop vertical sky gradient (zero harsh horizon rectangle)
+    if (isDusk) {
+      parts.push(`
+        <defs>
+          <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--dusk-top)"/>
+            <stop offset="38%" stop-color="var(--dusk-top)"/>
+            <stop offset="100%" stop-color="var(--dusk-low)"/>
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="${width}" height="${totalHeight}" fill="url(#${gradId})"/>
+      `);
+    } else if (isDark) {
+      const midStop = isReach ? "44%" : "48%";
+      const glowStop = isReach ? "78%" : "86%";
+      parts.push(`
+        <defs>
+          <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--color-canvas)"/>
+            <stop offset="${midStop}" stop-color="var(--color-sky)"/>
+            <stop offset="${glowStop}" stop-color="var(--color-horizon)"/>
+            <stop offset="100%" stop-color="var(--color-horizon)"/>
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="${width}" height="${totalHeight}" fill="url(#${gradId})"/>
+      `);
+    } else {
+      const midStop = isReach ? "42%" : "52%";
+      parts.push(`
+        <defs>
+          <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--color-sky)"/>
+            <stop offset="${midStop}" stop-color="var(--color-sky)"/>
+            <stop offset="100%" stop-color="var(--color-horizon)"/>
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="${width}" height="${totalHeight}" fill="url(#${gradId})"/>
+      `);
+    }
+
+    // 2. Zenith stars (upper sky in dark & dusk; kept clear of left title text)
+    if (isDark || isDusk) {
+      const starFill = isDusk ? "var(--dusk-star)" : "var(--color-star)";
+      const zenithStars = [
+        [0.64, 0.14, 0.9], [0.76, 0.09, 1.1], [0.85, 0.21, 0.8],
+        [0.92, 0.12, 1.0], [0.56, 0.23, 0.8], [0.71, 0.27, 0.9],
+      ];
+      const upperBandH = Math.max(sceneTop + 12, 110);
+      for (const [sx, sy, sr] of zenithStars) {
+        parts.push(`<circle cx="${(width * sx).toFixed(1)}" cy="${(upperBandH * sy + 26).toFixed(1)}" r="${sr}" fill="${starFill}" opacity="var(--landscape-zenith-star-opacity)"/>`);
+      }
+
+      // Extra high-altitude reach stars in the opened zenith when latched
+      if (isReach) {
+        const reachStars = [
+          [0.10, 0.16, 1.0], [0.22, 0.11, 0.8], [0.35, 0.18, 1.1],
+          [0.48, 0.12, 0.9], [0.60, 0.17, 1.0], [0.74, 0.13, 0.8],
+          [0.86, 0.19, 1.1], [0.94, 0.14, 0.9],
+        ];
+        for (const [sx, sy, sr] of reachStars) {
+          parts.push(`<circle cx="${(width * sx).toFixed(1)}" cy="${(sceneTop + sceneHeight * sy).toFixed(1)}" r="${sr}" fill="${starFill}" opacity="0.58"/>`);
+        }
+        // Whisper-quiet ambient crescent moon in upper-right of dark reach sky
+        const mx = width * 0.84;
+        const my = sceneTop + 34;
+        const mStartX = mx + 4.5;
+        const mStartY = my - 9.5;
+        const moonD = `M${mStartX.toFixed(1)} ${mStartY.toFixed(1)}A9.5 9.5 0 1 0 ${(mStartX + 4.5).toFixed(1)} ${(mStartY + 17.0).toFixed(1)}A7.8 7.8 0 0 1 ${mStartX.toFixed(1)} ${mStartY.toFixed(1)}Z`;
+        parts.push(`<path d="${moonD}" fill="${starFill}" opacity="var(--landscape-ambient-moon-opacity)"/>`);
+      }
+
+      // Lower scene stars (shared 10-star constellation above the distant ridge)
+      const stars = [
+        [0.06, 0.18, 1.1], [0.15, 0.40, 0.8], [0.24, 0.12, 1.0],
+        [0.37, 0.28, 0.8], [0.47, 0.10, 1.2], [0.58, 0.34, 0.8],
+        [0.66, 0.16, 1.0], [0.79, 0.26, 0.9], [0.88, 0.11, 1.1],
+        [0.95, 0.36, 0.8],
+      ];
+      const yScale = isDusk ? 0.56 : (isReach ? 0.54 : 0.46);
+      const rScale = isDusk ? 1.35 : (isReach ? 1.15 : 1.0);
+      for (const [sx, sy, sr] of stars) {
+        parts.push(`<circle cx="${(width * sx).toFixed(1)}" cy="${(sceneTop + sceneHeight * sy * yScale).toFixed(1)}" r="${(sr * rScale).toFixed(1)}" fill="${starFill}" opacity="var(--landscape-star-opacity)"/>`);
+      }
+    }
+
+    // 3. Calm flat-bottom daytime clouds (light theme only, zero strokes)
+    if (!isDark && !isDusk) {
+      function cloudPath(cx, baselineY, w, h) {
+        const x0 = cx - w * 0.5;
+        const x1 = cx + w * 0.5;
+        return `M${x0.toFixed(1)} ${baselineY.toFixed(1)}` +
+          `C${(x0 + w * 0.04).toFixed(1)} ${(baselineY - h * 0.58).toFixed(1)} ${(x0 + w * 0.20).toFixed(1)} ${(baselineY - h * 0.62).toFixed(1)} ${(x0 + w * 0.28).toFixed(1)} ${(baselineY - h * 0.52).toFixed(1)}` +
+          `C${(x0 + w * 0.36).toFixed(1)} ${(baselineY - h * 1.05).toFixed(1)} ${(x0 + w * 0.64).toFixed(1)} ${(baselineY - h * 1.05).toFixed(1)} ${(x0 + w * 0.72).toFixed(1)} ${(baselineY - h * 0.48).toFixed(1)}` +
+          `C${(x0 + w * 0.84).toFixed(1)} ${(baselineY - h * 0.56).toFixed(1)} ${(x1 - w * 0.04).toFixed(1)} ${(baselineY - h * 0.36).toFixed(1)} ${x1.toFixed(1)} ${baselineY.toFixed(1)}Z`;
+      }
+      if (isReach) {
+        parts.push(`<path d="${cloudPath(width * 0.76, sceneTop + 46, 98, 22)}" fill="var(--color-star)" opacity="var(--landscape-cloud-opacity)"/>`);
+        parts.push(`<path d="${cloudPath(width * 0.23, sceneTop + 68, 76, 17)}" fill="var(--color-star)" opacity="0.38"/>`);
+        parts.push(`<path d="${cloudPath(width * 0.54, sceneTop + 26, 62, 13)}" fill="var(--color-star)" opacity="0.30"/>`);
+      } else {
+        parts.push(`<path d="${cloudPath(width * 0.78, sceneTop + 24, 78, 16)}" fill="var(--color-star)" opacity="var(--landscape-cloud-opacity)"/>`);
+        parts.push(`<path d="${cloudPath(width * 0.20, sceneTop + 20, 56, 12)}" fill="var(--color-star)" opacity="0.34"/>`);
+      }
+    }
+
+    // 4. Finished-day hero crescent moon (left side, MOON_OPACITY 0.9)
+    if (isDusk) {
+      const mx = width * 0.16;
+      const my = sceneTop + 56;
+      const sx = mx + 6.0;
+      const sy = my - 13.0;
+      const moonD = `M${sx.toFixed(1)} ${sy.toFixed(1)}A13 13 0 1 0 ${(sx + 6.0).toFixed(1)} ${(sy + 23.0).toFixed(1)}A10.5 10.5 0 0 1 ${sx.toFixed(1)} ${sy.toFixed(1)}Z`;
+      parts.push(`<path d="${moonD}" fill="var(--dusk-star)" opacity="var(--landscape-moon-opacity)"/>`);
+    }
+
+    // 5. Sweeping sun arc & sun (when total > 0 or dusk)
+    const pad = isDusk ? 56.0 : (width > 420 ? 40.0 : 36.0);
+    const x0 = pad;
+    const x1 = width - pad;
+    const arcBase = isDusk
+      ? totalHeight - 64.0
+      : (isReach ? totalHeight - 60.0 : (sceneHeight >= 80 ? totalHeight - 34.0 : totalHeight - 30.0));
+    const arcPeak = isDusk
+      ? sceneTop + 46.0
+      : (isReach ? sceneTop + 44.0 : sceneTop + 12.0);
+
+    function arcPt(t) {
+      const tc = Math.max(0, Math.min(1, t));
+      return [
+        x0 + (x1 - x0) * tc,
+        arcBase - (arcBase - arcPeak) * Math.sin(Math.PI * tc),
+      ];
+    }
+    function arcPoly(from, to, segs) {
+      const pts = [];
+      for (let i = 0; i <= segs; i++) {
+        const [px, py] = arcPt(from + ((to - from) * i) / segs);
+        pts.push(`${px.toFixed(1)},${py.toFixed(1)}`);
+      }
+      return pts.join(" ");
+    }
+
+    if (total > 0 || isDusk) {
+      const progress = isDusk ? 1.0 : Math.min(done, total) / total;
+      let [cx, cy] = arcPt(progress);
+      if (isDusk) {
+        cx = x1 - 6.0;
+        cy = arcBase + 10.0;
+      }
+      const scale = isDusk ? 2.2 : (isReach ? 1.25 : 1.0);
+      const sunFill = isDusk ? "var(--dusk-sun)" : "var(--color-sun)";
+
+      if (isDusk) {
+        parts.push(`<polyline points="${arcPoly(0.0, 1.0, 56)}" fill="none" stroke="var(--dusk-sun)" opacity="0.5" stroke-width="1.2" stroke-linecap="round"/>`);
+        for (const [rr, ro] of [[44, 0.32], [64, 0.18], [86, 0.09]]) {
+          parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr}" fill="none" stroke="var(--dusk-sun)" stroke-width="1.2" opacity="${ro}"/>`);
+        }
+      } else {
+        parts.push(`<polyline points="${arcPoly(progress, 1.0, 56)}" fill="none" stroke="var(--color-arc)" stroke-width="1.0" stroke-linecap="round"/>`);
+        if (progress > 0) {
+          parts.push(`<polyline points="${arcPoly(0.0, progress, 44)}" fill="none" stroke="var(--color-sun-ink)" stroke-width="1.75" stroke-linecap="round"/>`);
+        }
+        // Pure-circle atmospheric outer glow (zero blur shader)
+        parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(24 * scale).toFixed(1)}" fill="${sunFill}" opacity="var(--landscape-outer-glow-opacity)"/>`);
+        if (isReach) {
+          parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(36 * scale).toFixed(1)}" fill="none" stroke="${sunFill}" stroke-width="1.0" opacity="0.14"/>`);
+        }
+      }
+
+      const haloR = (isDusk ? 11.0 : 13.5) * scale;
+      const discR = (isDusk ? 6.2 : 7.0) * scale;
+      const rayIn = (isDusk ? 8.5 : 9.5) * scale;
+      const rayOut = (isDusk ? 11.5 : 13.0) * scale;
+
+      parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${haloR.toFixed(1)}" fill="${sunFill}" opacity="var(--landscape-halo-opacity)"/>`);
+      for (let i = 0; i < 8; i++) {
+        const a = (i * 45 * Math.PI) / 180;
+        const xA = cx + rayIn * Math.sin(a);
+        const yA = cy - rayIn * Math.cos(a);
+        const xB = cx + rayOut * Math.sin(a);
+        const yB = cy - rayOut * Math.cos(a);
+        parts.push(`<line x1="${xA.toFixed(1)}" y1="${yA.toFixed(1)}" x2="${xB.toFixed(1)}" y2="${yB.toFixed(1)}" stroke="${sunFill}" stroke-width="1.6" stroke-linecap="round"/>`);
+      }
+      parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${discR.toFixed(1)}" fill="${sunFill}"/>`);
+    }
+
+    // 6. Three layered paper-cut hills (distant ridge, far hill, near hill)
+    function hillD(topY, amp, pts) {
+      const p = ([fx, dy]) => `${(width * fx).toFixed(1)} ${(topY + dy * amp).toFixed(1)}`;
+      let d = `M0.0 ${totalHeight.toFixed(1)}L0.0 ${topY.toFixed(1)}`;
+      for (let i = 0; i < pts.length; i += 3) {
+        d += `C${p(pts[i])} ${p(pts[i + 1])} ${p(pts[i + 2])}`;
+      }
+      d += `L${width.toFixed(1)} ${totalHeight.toFixed(1)}Z`;
+      return d;
+    }
+
+    const ridgePts = [
+      [0.14, -5], [0.28, -9], [0.42, -3],
+      [0.56, 3], [0.70, -7], [0.84, -4],
+      [0.92, -2], [0.97, -5], [1.00, -3],
+    ];
+    const farPts = [
+      [0.12, -6], [0.22, 3], [0.36, -2],
+      [0.50, -7], [0.62, -8], [0.74, -1],
+      [0.86, 6], [0.93, 2], [1.00, -4],
+    ];
+    const nearPts = [
+      [0.15, -5], [0.30, 3], [0.48, -1],
+      [0.66, -5], [0.76, -5], [0.90, 0],
+      [1.04, 5], [0.98, 1], [1.00, -2],
+    ];
+
+    const ridgeTop = isDusk
+      ? totalHeight - 74.0
+      : (isReach ? totalHeight - 84.0 : (sceneHeight >= 80 ? totalHeight - 38.0 : totalHeight - 34.0));
+    const farTop = isDusk
+      ? totalHeight - 58.0
+      : (isReach ? totalHeight - 58.0 : (sceneHeight >= 80 ? totalHeight - 27.0 : totalHeight - 24.0));
+    const nearTop = isDusk
+      ? totalHeight - 26.0
+      : (isReach ? totalHeight - 28.0 : (sceneHeight >= 80 ? totalHeight - 14.0 : totalHeight - 12.0));
+
+    const ridgeAmp = isDusk ? 2.6 : (isReach ? 2.8 : 1.5);
+    const farAmp = isDusk ? 3.0 : (isReach ? 2.6 : 1.6);
+    const nearAmp = isDusk ? 3.0 : (isReach ? 2.2 : 1.4);
+
+    const ridgeColor = isDusk ? "var(--dusk-silhouette-far)" : "var(--color-hill-far)";
+    const ridgeOpacity = isDusk
+      ? "var(--landscape-ridge-opacity-dusk)"
+      : (isDark ? "var(--landscape-ridge-opacity-dark)" : "var(--landscape-ridge-opacity-light)");
+    const farColor = isDusk ? "var(--dusk-silhouette-far)" : "var(--color-hill-far)";
+    const nearColor = isDusk ? "var(--dusk-silhouette-near)" : "var(--color-hill-near)";
+
+    parts.push(`<path d="${hillD(ridgeTop, ridgeAmp, ridgePts)}" fill="${ridgeColor}" opacity="${ridgeOpacity}"/>`);
+    parts.push(`<path d="${hillD(farTop, farAmp, farPts)}" fill="${farColor}"/>`);
+    parts.push(`<path d="${hillD(nearTop, nearAmp, nearPts)}" fill="${nearColor}"/>`);
+
+    return `<svg viewBox="0 0 ${width} ${totalHeight}" width="${width}" height="${totalHeight}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">${parts.join("")}</svg>`;
+  }
+
   function renderLandscapes() {
     const isDark = theme === "dark";
     document.querySelectorAll("[data-landscape]").forEach((el) => {
@@ -114,6 +366,16 @@
       const done = parseInt(el.dataset.done || "3", 10);
       const total = parseInt(el.dataset.total || "12", 10);
       el.innerHTML = buildLandscapeSvg(w, h, done, total, isDark);
+    });
+    document.querySelectorAll("[data-horizon-header]").forEach((el) => {
+      const header = el.closest(".horizon-header");
+      const w = parseFloat(el.dataset.width || (header ? header.offsetWidth : 412) || "412");
+      const totalHeight = parseFloat(el.dataset.totalHeight || (header ? header.offsetHeight : 208) || "208");
+      const sceneHeight = parseFloat(el.dataset.sceneHeight || "72");
+      const done = parseInt(el.dataset.done || "3", 10);
+      const total = parseInt(el.dataset.total || "12", 10);
+      const mode = el.dataset.mode || "day";
+      el.innerHTML = buildHorizonHeaderSvg({ width: w, totalHeight, sceneHeight, done, total, mode, isDark });
     });
   }
 

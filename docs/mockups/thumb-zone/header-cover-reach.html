@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Header — Cover Latched Pull-Down Reach — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="dark" data-room-hue="teal">
+    <!-- Latched Pull-Down Reach (388 dp total: 32 status + 45 upper sky drift + 104 text + 207 expanded panorama) -->
+    <header class="horizon-header" style="height:388px;">
+      <div class="horizon-canvas" data-horizon-header data-width="412" data-total-height="388" data-scene-height="207" data-done="5" data-total="15" data-mode="reach"></div>
+
+      <div class="horizon-status">
+        <span>10:35</span>
+        <div class="status-bar-right">
+          <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+          <span>5G</span>
+          <span class="battery-icon"><span class="battery-fill"></span></span>
+        </div>
+      </div>
+
+      <!-- 25% of 180 dp reach = 45 dp upper sky breathing room -->
+      <div class="horizon-reach-drift" style="height:45px;"></div>
+
+      <div class="horizon-text">
+        <div class="horizon-eyebrow-row">
+          <div class="eyebrow">
+            <span class="eyebrow-day">Home</span>
+            <span class="eyebrow-meta">10 OPEN</span>
+          </div>
+        </div>
+        <h1 class="horizon-title">Groceries</h1>
+        <div class="horizon-sub-row">
+          <div class="room-summary">
+            <span class="fig accent">5</span>
+            <span>of</span>
+            <span class="fig">15</span>
+            <span>done</span>
+            <span class="dot"></span>
+            <span class="fig">10</span>
+            <span>open</span>
+          </div>
+          <span class="horizon-cue-next">Next · 18:00</span>
+        </div>
+      </div>
+
+      <!-- 72 dp base + 75% of 180 dp reach (135 dp) = 207 dp expanded panorama scene -->
+      <div class="horizon-scene-spacer" style="height:207px;"></div>
+    </header>
+
+    <!-- Task rows now sit comfortably in the lower-mid / thumb reach zone! -->
+    <main class="task-list">
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Buy milk and sourdough bread</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text soon">Today 18:00</span></span><span class="tag-text">#bakery</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Pick up fresh basil and parsley</span></div>
+          <div class="row-meta"><span class="tag-text">#produce</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Order whole-bean coffee</span><span class="priority-col p1">!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Tue 24 Nov</span></span><span class="tag-text">#pantry</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Oat milk (two cartons)</span></div>
+          <div class="row-meta"><span class="tag-text">#dairy</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Dishwasher tablets</span><span class="priority-col p2">!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Tomorrow</span></span><span class="tag-text">#household</span></div>
+        </div>
+        <div class="star-btn on"><i class="ic" data-icon="star-filled"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Olive oil and sea salt</span></div>
+          <div class="row-meta"><span class="tag-text">#pantry</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="completed-toggle">
+        <i class="ic sm" data-icon="chevron-right"></i>
+        <span class="caps-label">Completed</span>
+        <span class="count-label">5</span>
+      </div>
+    </main>
+
+    <footer class="bottom-dock">
+      <div class="composer-slot">
+        <div class="composer-box">
+          <div class="composer-row">
+            <i class="ic" style="color:var(--color-accent-strong)" data-icon="plus"></i>
+            <span class="composer-placeholder">Add to Groceries…</span>
+            <span class="touch-btn" style="color:var(--color-ink-3)"><i class="ic" data-icon="calendar"></i></span>
+            <span class="touch-btn" style="color:var(--color-ink-3)"><i class="ic" data-icon="flag"></i></span>
+          </div>
+        </div>
+      </div>
+      <nav class="bottom-bar" aria-label="Room controls">
+        <span class="touch-btn" title="Rooms"><i class="ic" data-icon="menu"></i></span>
+        <div class="pills-scroll">
+          <span class="room-pill active" data-list-hue="teal"><i class="ic glyph" data-glyph="basket"></i>Groceries</span>
+          <span class="room-pill" data-list-hue="rose"><i class="ic glyph" data-glyph="house"></i>Chores</span>
+          <span class="room-pill" data-list-hue="fern"><i class="ic glyph" data-glyph="wrench"></i>Repairs</span>
+        </div>
+        <span class="touch-btn" title="Filter"><i class="ic" data-icon="search"></i></span>
+        <span class="touch-btn" title="Room menu"><i class="ic" data-icon="ellipsis"></i></span>
+      </nav>
+      <div class="gesture-bar"><span class="gesture-pill"></span></div>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

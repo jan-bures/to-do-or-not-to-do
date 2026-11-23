@@ -89,6 +89,13 @@ const shots = [
     height: 970,
     variants: ["light", "dark", "zones-light", "zones-dark"],
   },
+  // Living Daybreak Horizon Header mockups (docs/android-header.md)
+  { file: "header-cover-rest.html", name: "header-cover-rest", width: 412, height: 960, variants: ["light", "dark"] },
+  { file: "header-cover-list.html", name: "header-cover-list", width: 412, height: 960, variants: ["light", "dark"] },
+  { file: "header-cover-reach.html", name: "header-cover-reach", width: 412, height: 960, variants: ["light", "dark"] },
+  { file: "header-cover-dusk.html", name: "header-cover-dusk", width: 412, height: 960, variants: ["light", "dark"] },
+  { file: "header-inner-rest.html", name: "header-inner-rest", width: 876, height: 970, variants: ["light", "dark"] },
+  { file: "header-cover-compact.html", name: "header-cover-compact", width: 412, height: 960, variants: ["light", "dark"] },
 ];
 
 const browser = await chromium.launch();

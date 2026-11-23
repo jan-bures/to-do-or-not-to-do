@@ -1366,3 +1366,273 @@ body.show-zones .zones-overlay {
   height: 100%;
   display: block;
 }
+
+/* ==================== LIVING DAYBREAK HORIZON HEADER (v2) ==================== */
+.horizon-header {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.horizon-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+.horizon-canvas svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.horizon-status {
+  position: relative;
+  z-index: 2;
+  height: var(--status-bar-h);
+  flex: 0 0 var(--status-bar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  font: 500 12px/16px var(--font-mono);
+  color: var(--color-ink-2);
+  background: transparent;
+}
+.horizon-reach-drift {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+}
+.horizon-text {
+  position: relative;
+  z-index: 2;
+  padding: 12px 20px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.horizon-eyebrow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+.horizon-title {
+  font: var(--text-room-title-phone);
+  letter-spacing: var(--text-room-title-phone-tracking);
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.horizon-sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+.horizon-cue-next {
+  font: var(--text-summary-figures);
+  font-weight: 600;
+  color: var(--color-accent-strong);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.horizon-scene-spacer {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+/* Finished My Day dusk header forces night-theme ink regardless of outer theme */
+.horizon-header.is-dusk .horizon-status {
+  color: #b7aea5;
+}
+.horizon-header.is-dusk .eyebrow-day {
+  color: #f3ad66;
+}
+.horizon-header.is-dusk .eyebrow-meta {
+  color: #9b9187;
+}
+.horizon-header.is-dusk .eyebrow-sep {
+  background: #4b423b;
+}
+.horizon-header.is-dusk .horizon-title {
+  color: #f5f0ea;
+}
+.horizon-header.is-dusk .room-summary {
+  color: #c8bfb6;
+}
+.horizon-header.is-dusk .room-summary .fig {
+  color: #f5f0ea;
+}
+.horizon-header.is-dusk .room-summary .fig.accent,
+.horizon-header.is-dusk .room-summary .all-clear {
+  color: #f3ad66;
+  font-weight: 600;
+}
+.horizon-header.is-dusk .room-summary .dot {
+  background: #7c7269;
+}
+
+/* Tomorrow hand-over card (Finished My Day) */
+.handover-body {
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--color-pane);
+  border-top: 1px solid var(--color-line);
+  padding: 20px 20px 0;
+  display: flex;
+  flex-direction: column;
+}
+.handover-first {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+.sunrise-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--color-tint);
+  color: var(--color-accent-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 52px;
+}
+.sunrise-mark svg {
+  width: 24px;
+  height: 24px;
+}
+.handover-first-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.handover-first-title {
+  font: var(--text-next-title);
+  letter-spacing: var(--text-next-title-tracking);
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.handover-first-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plan-tomorrow-btn {
+  margin-top: 16px;
+  height: 44px;
+  border-radius: var(--radius-button);
+  background: var(--color-accent-fill);
+  color: var(--color-on-accent);
+  font: var(--text-button);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.handover-week-head {
+  margin-top: 24px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-line);
+}
+.handover-week-row {
+  height: 52px;
+  border-bottom: 1px solid var(--color-line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.handover-week-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--text-task-title-phone);
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Compact 36 dp header with 2 dp horizon progress hairline */
+.compact-header-v2 {
+  position: relative;
+  height: var(--phone-compact-header);
+  flex: 0 0 var(--phone-compact-header);
+  background: var(--color-sky);
+  border-bottom: 1px solid var(--color-line);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.compact-sun-ring {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-sun-ink);
+  flex: 0 0 8px;
+}
+.compact-sun-filled {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-sun-ink);
+  flex: 0 0 8px;
+}
+[data-theme="dark"] .compact-sun-filled {
+  background: var(--color-sun);
+}
+.compact-overdue {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: var(--text-summary-figures);
+  font-weight: 600;
+  color: var(--color-danger-ink);
+}
+.compact-overdue .diamond {
+  width: 5px;
+  height: 5px;
+  background: var(--color-danger-ink);
+  transform: rotate(45deg);
+}
+.compact-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--phone-compact-progress-height);
+  background: color-mix(in srgb, var(--color-arc) 30%, transparent);
+}
+.compact-progress-fill {
+  height: 100%;
+  background: var(--color-sun-ink);
+}
+.inner-horizon-wrap {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.inner-right-status {
+  height: var(--status-bar-h);
+  flex: 0 0 var(--status-bar-h);
+  background: var(--color-pane);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font: 500 12px/16px var(--font-mono);
+  color: var(--color-ink-2);
+}

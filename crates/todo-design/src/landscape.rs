@@ -110,6 +110,8 @@ pub const HEIGHT_FINISHED: f32 = 164.0;
 pub const ARC_STROKE: f32 = 1.0;
 /// Stroke of the travelled arc (round caps).
 pub const TRAVELLED_STROKE: f32 = 1.5;
+/// Stroke of the travelled arc on Android's taller horizon scene (round caps).
+pub const TRAVELLED_STROKE_PHONE: f32 = 1.75;
 /// Stroke of the travelled arc in the finished scene, drawn at 0.5 opacity.
 pub const TRAVELLED_STROKE_FINISHED: f32 = 1.2;
 /// Stroke of the sun's rays (round caps).
@@ -118,10 +120,24 @@ pub const RAY_STROKE: f32 = 1.6;
 pub const RING_STROKE: f32 = 1.2;
 /// Opacity of the halo behind the sun disc.
 pub const HALO_OPACITY: f32 = 0.22;
+/// Opacity of the wider atmospheric glow behind the sun halo (pure circle, no blur).
+pub const OUTER_GLOW_OPACITY: f32 = 0.08;
+/// Opacity of the distant ridge hill layer in light theme (drawn in `hill-far`).
+pub const RIDGE_OPACITY_LIGHT: f32 = 0.48;
+/// Opacity of the distant ridge hill layer in dark theme (drawn in `hill-far`).
+pub const RIDGE_OPACITY_DARK: f32 = 0.50;
+/// Opacity of the distant ridge hill layer in the finished dusk scene (drawn in `dusk.silhouette-far`).
+pub const RIDGE_OPACITY_DUSK: f32 = 0.45;
+/// Opacity of calm flat-bottom daytime clouds in light theme (drawn in `star`).
+pub const CLOUD_OPACITY: f32 = 0.48;
 /// Opacity of stars.
 pub const STAR_OPACITY: f32 = 0.7;
+/// Opacity of subtle upper-sky zenith stars behind the top of a dark header.
+pub const ZENITH_STAR_OPACITY: f32 = 0.30;
 /// Opacity of the moon.
 pub const MOON_OPACITY: f32 = 0.9;
+/// Opacity of the subtle ambient crescent moon in dark-theme night and reach skies.
+pub const AMBIENT_MOON_OPACITY: f32 = 0.30;
 
 /// Which scene to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

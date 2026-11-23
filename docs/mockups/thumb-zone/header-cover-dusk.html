@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Header — Cover Finished My Day (Dusk) — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="dark" data-room-hue="my-day">
+    <!-- Finished My Day Dusk Header (300 dp total: 32 status + 104 text + 164 dusk scene) -->
+    <header class="horizon-header is-dusk" style="height:300px;">
+      <div class="horizon-canvas" data-horizon-header data-width="412" data-total-height="300" data-scene-height="164" data-done="12" data-total="12" data-mode="dusk"></div>
+
+      <div class="horizon-status">
+        <span>20:15</span>
+        <div class="status-bar-right">
+          <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+          <span>5G</span>
+          <span class="battery-icon"><span class="battery-fill"></span></span>
+        </div>
+      </div>
+
+      <div class="horizon-text">
+        <div class="horizon-eyebrow-row">
+          <div class="eyebrow">
+            <span class="eyebrow-day">Saturday</span>
+            <span class="eyebrow-meta">21 NOV 2026</span>
+            <span class="eyebrow-sep"></span>
+            <span class="eyebrow-meta">W47</span>
+          </div>
+        </div>
+        <h1 class="horizon-title">My Day</h1>
+        <div class="horizon-sub-row">
+          <div class="room-summary">
+            <span class="fig accent">12</span>
+            <span>of</span>
+            <span class="fig">12</span>
+            <span>done</span>
+            <span class="dot"></span>
+            <span class="all-clear">all clear</span>
+          </div>
+        </div>
+      </div>
+      <div class="horizon-scene-spacer" style="height:164px;"></div>
+    </header>
+
+    <!-- Tomorrow hand-over body -->
+    <main class="handover-body">
+      <div class="caps-label">When the sun comes up</div>
+      <div class="handover-first">
+        <span class="sunrise-mark"><i class="ic" data-icon="sunrise"></i></span>
+        <div class="handover-first-meta">
+          <div class="handover-first-title">Pick up morning pastries</div>
+          <div class="handover-first-sub">
+            <span class="due-text soon">Sun 22 Nov, 09:00</span>
+            <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+          </div>
+        </div>
+      </div>
+      <div class="plan-tomorrow-btn">Plan Sunday</div>
+
+      <div class="handover-week-head">
+        <span class="caps-label">Rest of the week</span>
+      </div>
+      <div class="handover-week-row">
+        <span class="check-ring sm"></span>
+        <span class="handover-week-title">Replace kitchen water filter</span>
+        <span class="list-chip" data-list-hue="rose"><span class="dot"></span>Home</span>
+        <span class="due-text">Mon 23 Nov</span>
+      </div>
+      <div class="handover-week-row">
+        <span class="check-ring sm"></span>
+        <span class="handover-week-title">Order whole-bean coffee</span>
+        <span class="list-chip" data-list-hue="teal"><span class="dot"></span>Groceries</span>
+        <span class="due-text">Tue 24 Nov</span>
+      </div>
+      <div class="handover-week-row">
+        <span class="check-ring sm"></span>
+        <span class="handover-week-title">Send monthly invoice summary</span>
+        <span class="list-chip" data-list-hue="azure"><span class="dot"></span>Work</span>
+        <span class="due-text">Wed 25 Nov</span>
+      </div>
+      <div class="completed-toggle" style="padding:0;">
+        <i class="ic sm" data-icon="chevron-right"></i>
+        <span class="caps-label">Completed</span>
+        <span class="count-label">12</span>
+      </div>
+    </main>
+
+    <footer class="bottom-dock">
+      <div class="composer-slot">
+        <div class="composer-box">
+          <div class="composer-row">
+            <i class="ic" style="color:var(--color-accent-strong)" data-icon="plus"></i>
+            <span class="composer-placeholder">Add a task…</span>
+            <span class="touch-btn" style="color:var(--color-ink-3)"><i class="ic" data-icon="calendar"></i></span>
+            <span class="touch-btn" style="color:var(--color-ink-3)"><i class="ic" data-icon="flag"></i></span>
+          </div>
+        </div>
+      </div>
+      <nav class="bottom-bar" aria-label="Room controls">
+        <span class="touch-btn" title="Rooms"><i class="ic" data-icon="menu"></i></span>
+        <div class="pills-scroll">
+          <span class="room-pill active" data-list-hue="my-day"><i class="ic glyph" data-glyph="sun"></i>My Day</span>
+          <span class="room-pill" data-list-hue="important"><span class="pill-dot"></span>Important</span>
+          <span class="room-pill" data-list-hue="planned"><span class="pill-dot"></span>Planned</span>
+        </div>
+        <span class="touch-btn" title="Filter"><i class="ic" data-icon="search"></i></span>
+        <span class="touch-btn" title="Room menu"><i class="ic" data-icon="ellipsis"></i></span>
+      </nav>
+      <div class="gesture-bar"><span class="gesture-pill"></span></div>
+    </footer>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

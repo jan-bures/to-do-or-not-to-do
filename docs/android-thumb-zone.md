@@ -45,6 +45,8 @@ For one-handed cover use, the Settings sheet offers a local-only preference:
 
 ## 3. Scroll, collapse & reachability behaviour
 
+> **Header visual redesign:** See [`docs/android-header.md`](android-header.md) for the updated **Living Daybreak Horizon** room header specification (unified full-bleed sky gradient, `72 dp` / `80 dp` 3-hill landscape, stacked summary + glanceable urgency cue, scene-expanding parallax pull-down reach, and the `2 dp` compact progress hairline).
+
 ### 3.1 Scroll-linked header collapse (`HeaderCollapse`)
 
 - **At rest (top of list):** Full non-interactive Daybreak sky header below `statusBarsPadding()` — eyebrow (`EYEBROW_DAY_PHONE` + `EYEBROW_META_PHONE`), room title (`ROOM_TITLE_PHONE`, 33/36), progress summary (`3 of 12 done · 9 open`), and the landscape strip (`LANDSCAPE_COVER` 36 dp / `LANDSCAPE_INNER` 40 dp, or `HEIGHT_FINISHED` 164 dp on finished My Day).
@@ -60,7 +62,7 @@ For one-handed cover use, the Settings sheet offers a local-only preference:
 When a list has few tasks (e.g. 1–4 open tasks), the top row sits near `y ≈ 160 dp`—still high for a one-handed thumb on a `960 dp` cover screen.
 
 - **Gesture:** When the task list is already at index 0, offset 0, pulling downward expands the Daybreak sky smoothly **1:1** up to `phone::HEADER_REACH_EXPAND` (`180 dp`, clamped to `28%` of viewport height).
-- **Visuals:** Only the flat `sky` fill stretches vertically; the eyebrow, room title, summary, and landscape hills ride smoothly down with the bottom edge of the sky so the entire task list drops into the Comfortable/OK thumb zone. No gradient, blur, or stretching of the landscape SVG.
+- **Visuals:** Instead of stretching a flat empty sky above the text, pull-down expands the Daybreak sky and landscape panorama smoothly (`0.25 × reach` upper sky drift above the text, `0.75 × reach` growing the 3-hill landscape, lifting the sun arc, and revealing high-altitude stars/clouds with parallax). See [`docs/android-header.md`](android-header.md) §4.1 for exact measurements and reduced-motion fallbacks.
 - **Latch & release:** Releasing past `96 dp` (`53%` of expansion) gently latches the expanded sky (`PANEL`, `STANDARD`) until the user taps a task, starts scrolling upward, opens a sheet, or taps the sky area—whereupon it settles back to normal height over `PANEL` (`200 ms`, `STANDARD`). Under reduced motion, pull-down still tracks the finger 1:1 and snaps on release.
 - **Unfolded posture:** Pull-down reachability is disabled (not needed with two-hand side grip and `40 dp` landscape).
 
