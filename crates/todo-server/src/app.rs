@@ -77,6 +77,8 @@ pub struct AppState {
     pub web: Option<Arc<crate::web::spa::WebApp>>,
     /// The private desktop release feed, when `[releases] dir` is set.
     pub releases: Option<std::path::PathBuf>,
+    /// Firebase client options, when Android push wake-ups are configured.
+    pub push: Option<Arc<crate::config::PushConfig>>,
 }
 
 impl AppState {
@@ -313,6 +315,7 @@ pub struct Server {
     attachments: Arc<crate::blobs::Attachments>,
     /// The attachment garbage collector; awaited before the engine is closed.
     collector: JoinHandle<()>,
+    push_worker: Option<JoinHandle<()>>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -436,7 +439,22 @@ impl Server {
         } else {
             None
         };
+        let push = config.push.clone().map(Arc::new);
+        let sender = if let Some(cfg) = push.clone() {
+            Some(
+                tokio::task::spawn_blocking(move || crate::push::Sender::new(&cfg))
+                    .await
+                    .map_err(|_| ConfigError::Invalid("could not initialize push".into()))?
+                    .map_err(|err| ConfigError::Invalid(err.to_string()))?,
+            )
+        } else {
+            None
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let push_worker = sender.map(|sender| {
+            tracing::info!("Android reminder wake-ups are enabled");
+            tokio::spawn(sender.run(authsvc.clone(), engine.enable_push(), shutdown_rx.clone()))
+        });
         let collector = attachments.spawn_collector(shutdown_rx.clone());
         let state = AppState {
             engine: engine.clone(),
@@ -457,6 +475,7 @@ impl Server {
             attachments: attachments.clone(),
             web,
             releases,
+            push,
         };
         let admin = admin.map(|(l, hash)| {
             let st = crate::admin::AdminState::new(state.clone(), hash, &config.admin);
@@ -471,6 +490,7 @@ impl Server {
             ingest,
             attachments,
             collector,
+            push_worker,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -551,6 +571,11 @@ impl Server {
         // (it may need the writer) and ends, dropping its handle on the engine.
         if let Err(e) = self.collector.await {
             tracing::error!(error = %e, "attachment garbage collector failed");
+        }
+        if let Some(worker) = self.push_worker
+            && let Err(e) = worker.await
+        {
+            tracing::error!(error = %e, "FCM worker failed");
         }
         drop(self.attachments);
         // Refuse late writes (from timed-out requests still on the blocking pool) and release the

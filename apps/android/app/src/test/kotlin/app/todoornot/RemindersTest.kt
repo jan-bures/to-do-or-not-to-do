@@ -193,6 +193,18 @@ class RemindersTest {
     }
 
     @Test
+    fun a_wake_from_an_old_pairing_cannot_reset_alarms_after_unpair() {
+        val old = fixtureEngine()
+        val r = scheduler()
+        r.reconcile(old)
+        assertTrue(sink.alarms.isNotEmpty())
+        r.clear()
+        r.reconcile(old) { false }
+        assertTrue(sink.alarms.isEmpty())
+        assertTrue(sink.shown.isEmpty())
+    }
+
+    @Test
     fun alarms_go_with_removed_reminders_and_completed_or_deleted_tasks() {
         val e = fixtureEngine()
         val r = scheduler()

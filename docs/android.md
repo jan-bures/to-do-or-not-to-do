@@ -224,7 +224,8 @@ completed row straight back to the launcher without the in-app exit animation.
 including syncs triggered by reminders. While widgets are installed, the launcher requests a refresh about
 once an hour (Android may defer it); a single network-constrained WorkManager job catches up for at most
 four seconds once the engine is ready. It can finish earlier once that connection has received the
-server's backlog and the outbox is empty. No push or continuously running background service is added.
+server's backlog and the outbox is empty. The widget does not need push or a continuously running service.
+The separate reminder sync runs even if you have no widgets.
 
 The rounded card follows the system's light/dark theme and the room's `todo-design` palette, not wallpaper
 colours. Glance renders text in the system's corresponding font families at the token sizes. The launcher
@@ -234,16 +235,24 @@ snapshots (`app/src/test/snapshots/images/app.todoornot_WidgetGalleryTest_*.png`
 
 ## Reminder notifications
 
-The phone alerts for the synced reminders with local alarms. Nothing comes from the server: whatever
-device sets a reminder, the phone sees it after a sync and sets its alarm.
+**Local alarms are the source of truth.** When you set a reminder on another device, the server can
+send a silent Firebase Cloud Messaging (FCM) wake-up. The phone syncs for up to four seconds once the
+engine is ready, then plans alarms from the synced reminders. The wake-up contains a sync hint and an
+event sequence number, never task or reminder content. It does not post a notification itself.
 
-**The alarms come from the last synced state.** There is no push. The app syncs in the foreground;
-a widget can also request a brief background sync. A reminder added, moved or removed elsewhere (or its task completed there) while the app is in
-the background is seen only at the next sync: until then an alarm can be missing, at an old time, or
-for a reminder that has gone. To narrow that, when an alarm goes off with the app in the background, the
-app first syncs for up to four seconds (until it's caught up, or the network is found to be down), shows
-nothing meanwhile, and then shows only what is still due: a reminder removed or moved elsewhere, or a
-task completed there, isn't shown. A reminder added elsewhere still waits for the app to sync.
+- **Push setup.** The app gets the Firebase client options and registers its installation after pairing,
+  and refreshes its registration on startup and when Firebase rotates the token. No Firebase project is
+  built into the APK. The server operator can [enable push](hosting-linux.md#android-reminder-wake-ups).
+  **Rooms → Settings** shows **Push: On** when registered, **Push: Not configured** when the server
+  has push off, or **Push: Off** if registration is not active. It also shows when a push last woke sync.
+- **Fallback.** A network-constrained WorkManager job catches up about every 30 minutes even without
+  widgets, Google Play services or push configuration. Android may defer it. Push normally lets the
+  phone learn of a reminder before it is due, without opening the app, but delivery is best effort.
+  Google may deprioritize silent messages, and offline, force-stopped or battery-restricted phones may
+  miss the due time. The next sync catches missed reminders as described below.
+- **When an alarm goes off in the background**, the app first syncs for up to four seconds (until it
+  catches up or discovers there is no network). It waits to show what is still due, so a reminder
+  deleted or moved elsewhere, or a task completed there, isn't shown if the change comes through.
 
 - **What gets an alarm.** `TodoEngine.reminderAlarms` lists the live reminders of open tasks
   (`intent::reminder::alarms`). `reminders/ReminderPlan.kt` decides, purely, which alarms to set or cancel
@@ -284,7 +293,10 @@ task completed there, isn't shown. A reminder added elsewhere still waits for th
   says why it needs notifications (Android 13 and later), then Android asks. A later reminder asks for
   exact alarms the same way (Android 12 and later), opening the system's page. Each is asked once; **Not
   now** (or Back) is kept.
-- **Unpairing** cancels every alarm, and every notification on the *Reminders* channel.
+- **Unpairing** cancels the reminder sync jobs, every alarm and every notification on the *Reminders*
+  channel. It removes the push registration when the server is reachable; a locally unpaired phone
+  ignores old wake-ups even if it was offline. Revoking the device on the server always removes its
+  registration.
 - Log lines about reminders are counts, at debug level; never task content.
 
 `RemindersTest` checks the policy against the fixture engine with a fake `AlarmSink` and a clock the test
@@ -579,6 +591,12 @@ the temporary folder.
 - Adding a task in the app; it reaches the server.
 - Completing a task: the check, the toast with undo, the row leaving.
 - A change through REST shows up in the app within a moment (the event stream).
+- For a device with Google Play services and a test server configured for FCM: allow notifications and
+  exact alarms, check **Push: On**, then background the app without force-stopping it. Create a
+  reminder a few minutes ahead in the web or desktop client. Without reopening Android, check the
+  local reminder fires and that Settings later shows the last wake. Repeat with a moved or removed
+  reminder and check the old alarm does not notify. Disable push and confirm that the periodic sync
+  still plans newly synced reminders without a widget.
 - Offline: `adb reverse --remove-all`, complete and add tasks, see the waiting count in the bar; restore
   the reverse and see them reach the server.
 - Renaming in the detail (Enter or the keyboard's Done commits).

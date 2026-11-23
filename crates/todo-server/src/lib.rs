@@ -32,6 +32,7 @@ pub mod db;
 pub mod engine;
 pub mod ingest;
 pub mod mcp;
+mod push;
 pub mod ratelimit;
 mod releases;
 pub mod scope;

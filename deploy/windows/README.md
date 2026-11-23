@@ -39,6 +39,10 @@ that URL answers, and the logon task keeps it.
 `cloudflared` is found on `PATH`. A per-user install, for example with scoop, needs no admin rights either.
 Without a token file, or with `-NoTunnel`, only the server runs.
 
+For optional [Android reminder wake-ups](../../docs/hosting-linux.md#android-reminder-wake-ups), use
+`[push] service_account_file` in `server.toml`. Keep the JSON key outside the repo with the same
+private ACL as the data directory. The metadata alternative is only for Compute Engine.
+
 ## Install
 
 ```powershell

@@ -1169,8 +1169,8 @@ class TodoModel(
      * With the app in the background, syncs for up to [budget] ms, or until [done] says the status is
      * enough, then stops again (also when cancelled). In the foreground it syncs anyway: nothing to do.
      */
-    suspend fun syncInBackground(budget: Long, done: (SyncStatus) -> Boolean) {
-        if (foreground || budget <= 0) return
+    suspend fun syncInBackground(budget: Long, done: (SyncStatus) -> Boolean): Boolean {
+        if (foreground || budget <= 0) return foreground
         var started = false
         try {
             withContext(io) {
@@ -1182,10 +1182,11 @@ class TodoModel(
                     }
                 }
             }
-            if (!started) return
-            withTimeoutOrNull(budget) {
+            if (!started) return foreground
+            return withTimeoutOrNull(budget) {
                 do delay(SYNC_POLL_MS) while (!done(withContext(io) { syncStatus() }))
-            }
+                true
+            } ?: false
         } finally {
             if (started) withContext(NonCancellable + io) {
                 lifecycle.withLock {

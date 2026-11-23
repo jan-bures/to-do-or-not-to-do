@@ -357,7 +357,7 @@ Replaces the split top-header + bottom-tools pattern (`BulkSelectionHeader` at t
 
 - **Settings (`SettingsSheet`, triggered from `⚙` in Room Switcher footer):**
   - Full bottom sheet (`radius::XL` 14 dp top corners, `raised`):
-    - Header: `PAIRED WITH` (`CAPS_LABEL`) + `todo.example.com` (`DUE` mono)
+    - Header: `PAIRED WITH` (`CAPS_LABEL`) + `todo.example.com` (`DUE` mono), then the read-only push status and last wake (`NAV_SUB`).
     - `Open admin pages` (`external-link`)
     - `Sync now` / `Syncing…` (`refresh-cw`)
     - **Thumb-zone hand** (`Right` | `Left` two-segment toggle, `48 dp` height)

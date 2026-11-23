@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use todo_core::command::Command;
 use todo_core::error::{DomainError, UndoError};
 use todo_core::event::Event;
@@ -209,6 +209,7 @@ pub struct Engine {
     writer: Mutex<Writer>,
     readers: Mutex<Vec<Connection>>,
     live: broadcast::Sender<Arc<LiveEvent>>,
+    push_wakes: OnceLock<Arc<crate::push::Inbox>>,
     head: AtomicU64,
     /// The log epoch (see [`db::log_epoch`]).
     epoch: Uuid,
@@ -430,6 +431,7 @@ impl Engine {
             }),
             readers: Mutex::new(Vec::new()),
             live,
+            push_wakes: OnceLock::new(),
             head: AtomicU64::new(head),
             epoch,
             clock,
@@ -487,6 +489,11 @@ impl Engine {
     #[must_use]
     pub fn now(&self) -> Timestamp {
         (self.clock)()
+    }
+
+    /// Enables coalescing of committed reminder changes for the push worker.
+    pub(crate) fn enable_push(&self) -> Arc<crate::push::Inbox> {
+        self.push_wakes.get_or_init(Arc::default).clone()
     }
 
     /// Subscribes to events committed from now on.
@@ -1164,9 +1171,21 @@ impl Engine {
                 *gone = Arc::new(next_gone);
             }
         }
+        let wake = self
+            .push_wakes
+            .get()
+            .zip(result.events.last())
+            .filter(|_| crate::push::affects_alarms(base, &next, &events));
         *self.state.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);
+        }
+        if let Some((sender, last)) = wake {
+            let origin = match p.actor {
+                Actor::Owner { device } => Some(device.clone()),
+                _ => None,
+            };
+            sender.push(origin, last.seq);
         }
         let command_len = Some(u32::try_from(events.len()).unwrap_or(u32::MAX));
         for (i, (event, scope)) in events.into_iter().zip(scopes).enumerate() {

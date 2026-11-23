@@ -480,6 +480,60 @@ impl AuthStore {
         Ok(n == 1)
     }
 
+    // ---- push -------------------------------------------------------------------------------------
+
+    pub(crate) fn register_push(&self, device: &str, project: &str, token: &str) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND revoked_at IS NULL)",
+            [device],
+            |row| row.get(0),
+        )?;
+        if active {
+            // After re-pairing, the same installation may still have the same Firebase token.
+            tx.execute(
+                "DELETE FROM device_push WHERE project = ?1 AND token = ?2 AND device <> ?3",
+                params![project, token, device],
+            )?;
+            tx.execute(
+                "INSERT INTO device_push (device, project, token) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (device) DO UPDATE SET project = excluded.project, token = excluded.token",
+                params![device, project, token],
+            )?;
+        }
+        tx.commit()?;
+        Ok(active)
+    }
+
+    pub(crate) fn unregister_push(&self, device: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM device_push WHERE device = ?1", [device])?;
+        Ok(())
+    }
+
+    pub(crate) fn push_targets(&self, project: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT device, token FROM device_push WHERE project = ?1")?;
+        Ok(stmt
+            .query_map([project], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub(crate) fn remove_invalid_push(
+        &self,
+        device: &str,
+        project: &str,
+        token: &str,
+    ) -> Result<()> {
+        // A late FCM response must not erase a replacement registered during the send.
+        self.conn().execute(
+            "DELETE FROM device_push WHERE device = ?1 AND project = ?2 AND token = ?3",
+            params![device, project, token],
+        )?;
+        Ok(())
+    }
+
     // ---- meta -------------------------------------------------------------------------------------
 
     /// A meta value.

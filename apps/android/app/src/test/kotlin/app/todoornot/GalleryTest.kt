@@ -85,6 +85,8 @@ import app.todoornot.ui.Label
 import app.todoornot.session.ThumbHand
 import app.todoornot.ui.ActionSheetContent
 import app.todoornot.ui.BottomSheet
+import app.todoornot.push.PushStatus
+import app.todoornot.ui.LocalPushStatus
 import app.todoornot.ui.LocalSheetAtEnd
 import app.todoornot.ui.LocalSheetAtRest
 import app.todoornot.ui.LocalSheetWidth
@@ -191,8 +193,9 @@ class GalleryTest {
         settings: Boolean = false,
         roomMenu: Boolean = false,
         reach: Boolean = false,
+        push: PushStatus = PushStatus(),
     ) = shot(name, device) {
-        CompositionLocalProvider(LocalSheetAtRest provides true) {
+        CompositionLocalProvider(LocalSheetAtRest provides true, LocalPushStatus provides push) {
             MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
                 collapsed = collapsed, motion = motion, hand = hand, switcherFilter = switcherFilter,
                 settingsOpen = settings, roomMenuOpen = roomMenu, reachExpanded = reach)
@@ -697,8 +700,12 @@ class GalleryTest {
             val theme = if (dark) "dark" else "light"
             val status = if (dark) SyncState.SYNCING else SyncState.ONLINE
             val ui = state.copy(status = state.status.copy(state = status))
+            val lastWake = java.time.LocalDateTime.of(2026, 11, 21, 15, 10)
+                .atZone(java.time.ZoneId.systemDefault()).toInstant()
+            val push = if (dark) PushStatus(PushStatus.State.ON, lastWake)
+                else PushStatus(PushStatus.State.NOT_CONFIGURED)
             main("settings_menu_$theme", FOLD7_COVER, ui, dark, drawer = true, settings = true,
-                hand = if (dark) ThumbHand.LEFT else ThumbHand.RIGHT)
+                hand = if (dark) ThumbHand.LEFT else ThumbHand.RIGHT, push = push)
         }
     }
 

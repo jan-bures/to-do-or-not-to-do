@@ -93,6 +93,8 @@ import app.todoornot.model.MenuAction
 import app.todoornot.model.drawerMenu
 import app.todoornot.model.UiState
 import app.todoornot.model.syncLine
+import app.todoornot.push.PushStatus
+import androidx.compose.runtime.compositionLocalOf
 
 private val S = Tokens.Space
 private val P = Tokens.Metrics.Phone
@@ -455,6 +457,8 @@ internal fun SettingsButton(trigger: FocusRequester, open: (Boolean?) -> Unit) {
     }) { open(null) }
 }
 
+internal val LocalPushStatus = compositionLocalOf { PushStatus() }
+
 @Composable
 internal fun SettingsPage(server: String?, syncing: Boolean, actions: Actions, hand: ThumbHand, onHand: (ThumbHand) -> Unit,
     fromLast: Boolean?, onBack: () -> Unit,
@@ -492,6 +496,7 @@ internal fun SettingsPage(server: String?, syncing: Boolean, actions: Actions, h
             onDevices = owner?.let { { pairing = DevicePairingPage.SETTINGS } },
             onUnpair = { actions.unpair() },
             hand = hand, onHand = onHand,
+            push = LocalPushStatus.current.takeIf { server != null },
         )
     }
 }
@@ -505,7 +510,7 @@ private data class SettingsItem(
 internal fun SettingsMenuContent(
     server: String?, syncing: Boolean, fromLast: Boolean?, onDismiss: () -> Unit,
     onAdmin: (() -> Unit)?, onSync: () -> Unit, onDevices: (() -> Unit)?, onUnpair: () -> Unit,
-    hand: ThumbHand? = null, onHand: (ThumbHand) -> Unit = {},
+    hand: ThumbHand? = null, onHand: (ThumbHand) -> Unit = {}, push: PushStatus? = null,
 ) {
     val r = LocalDesign.current.room
     DropdownMenuItem(
@@ -513,6 +518,7 @@ internal fun SettingsMenuContent(
             Column {
                 Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
                 Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
+                push?.let { Label(it.label(), Tokens.Type.NAV_SUB, r.ink3) }
             }
         },
         onClick = {},

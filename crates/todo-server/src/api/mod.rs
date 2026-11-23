@@ -9,6 +9,7 @@ pub mod hidden;
 pub(crate) mod invite;
 pub mod openapi;
 pub mod pair;
+mod push;
 pub mod read;
 pub mod visibility;
 
@@ -146,6 +147,13 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/pair/review", post(invite::review))
         .route("/pair/device", delete(pair::revoke_self))
+        .route(
+            "/pair/push",
+            get(push::config)
+                .put(push::register)
+                .delete(push::unregister)
+                .layer(axum::extract::DefaultBodyLimit::max(8192)),
+        )
         .route("/commands", post(commands::post_command))
         .route("/events", get(events::get_events))
         .route("/events/{seq}/undo", post(commands::post_undo))

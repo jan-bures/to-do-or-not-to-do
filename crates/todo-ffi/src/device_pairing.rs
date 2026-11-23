@@ -7,7 +7,7 @@ use todo_client::device_pairing::{self as pair, InviteStatus, Qr};
 use todo_client::native::{Cleartext, HttpTransport};
 use todo_client::pairing::PairError;
 
-fn transport(
+pub(crate) fn transport(
     server: &str,
     token: Option<&str>,
     allow_http: bool,

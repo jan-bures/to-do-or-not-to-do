@@ -45,11 +45,14 @@ import app.todoornot.core.RoomKey
 import app.todoornot.model.DevicePairingModel
 import app.todoornot.model.PairingModel
 import app.todoornot.model.TodoModel
+import app.todoornot.push.PushStatus
 import app.todoornot.reminders.AndroidAlarms
 import app.todoornot.reminders.ReminderAccess
 import app.todoornot.reminders.ReminderNeed
 import app.todoornot.session.Host
+import app.todoornot.session.signedOut
 import app.todoornot.ui.CantOpenScreen
+import app.todoornot.ui.LocalPushStatus
 import app.todoornot.ui.LocalReminderAccess
 import app.todoornot.ui.LocalPairingOwner
 import app.todoornot.ui.LocalScanPairing
@@ -186,11 +189,13 @@ class MainActivity : ComponentActivity() {
             when {
                 m != null && ui != null -> {
                     val screen = requireNotNull(ui)
+                    val push by graph.push.status.collectAsStateWithLifecycle()
                     HeaderClock(m)
                     val focus = composerRoom?.takeIf { it.first === m && it.second == screen.room.key && screen.activity == null }
                     CompositionLocalProvider(
                         LocalPairingOwner provides graph.devicePairing?.takeIf { m.engine === ready?.engine },
                         LocalScanPairing provides ::scanApproval,
+                        LocalPushStatus provides (if (screen.status.signedOut) PushStatus() else push),
                     ) {
                         MainScreen(
                             screen, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,

@@ -296,6 +296,19 @@ UPDATE passkeys SET issued_via_passkey = s.passkey_id FROM sessions s
 UPDATE devices SET issued_via_passkey = s.passkey_id FROM sessions s
     WHERE devices.issued_via_passkey IS NULL AND devices.issued_by = 'Browser session ' || s.id_hash;
 ",
+    r"
+CREATE TABLE device_push (
+    device TEXT PRIMARY KEY NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    project TEXT NOT NULL,
+    token TEXT NOT NULL CHECK (length(token) BETWEEN 16 AND 4096),
+    UNIQUE(project, token)
+);
+CREATE TRIGGER device_push_revoked AFTER UPDATE OF revoked_at ON devices
+WHEN NEW.revoked_at IS NOT NULL
+BEGIN
+    DELETE FROM device_push WHERE device = NEW.id;
+END;
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

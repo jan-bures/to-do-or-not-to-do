@@ -113,7 +113,8 @@ Then create the VM in it:
     --metadata enable-oslogin=TRUE --no-service-account --no-scopes
 ```
 
-- **`--no-service-account`.** The VM never calls Google APIs, so it gets no credentials to leak.
+- **`--no-service-account`.** The base deployment needs no Google API credentials. Attach a dedicated
+  account only if you choose metadata authentication for [Android push](#android-reminder-wake-ups).
 - **External IP.** The VM keeps its ephemeral external IP for outbound traffic: apt, R2 and the tunnel.
   Without one it would need Cloud NAT, which costs money. Outbound traffic is allowed by default; the
   network lets nothing in but SSH from IAP.
@@ -188,6 +189,46 @@ shred -u r2-attachments.json ingest-email-hmac.secret
 
 `provision.sh` also corrects the modes in `/etc/todo` when you run it: `*.secret` files become todo:todo 0600,
 everything else root:todo 0640.
+
+### Android reminder wake-ups
+
+Optional. Omit `[push]` to keep FCM off; Android still runs its periodic sync. FCM itself is available on
+Firebase's free Spark plan. No Firebase configuration or credentials go in the APK, source, tunnel or CI.
+
+1. In Firebase, register the Android app with package name `app.todoornot.android`. From its project and
+   Android app settings (or the downloaded Android configuration), copy the project ID (`project_id`),
+   Firebase app ID (`mobilesdk_app_id`), Web API key (`current_key`), and project number (`project_number`).
+   Use the key for that Android app and ensure its API restrictions permit Firebase Installations and
+   Cloud Messaging. If you restrict it by Android package and certificate, include the certificate of the
+   APK you actually install. Do not add `google-services.json` to the app.
+2. Enable the **Firebase Cloud Messaging API (HTTP v1)** in Google Cloud for the sending project. Create
+   a dedicated service account and grant it **Firebase Cloud Messaging API Admin**
+   (`roles/firebasecloudmessaging.admin`) in the target Firebase project, or an equivalent role that
+   grants `cloudmessaging.messages.create`.
+3. For a Compute Engine VM, prefer attaching that account to the VM and granting the
+   `https://www.googleapis.com/auth/cloud-platform` access scope. This consumes short-lived metadata
+   credentials and needs no key on disk. Set `gce_metadata = true`. If not using Compute Engine, use a
+   service-account JSON key, install it outside the repo with mode `0640` and owner `root:todo` (or the
+   equivalent owner/service-only ACL on Windows), and set `service_account_file` instead. Grant no other
+   roles to the sender; rotate a file-based key if exposed.
+4. Add this section to the private server config, using **one** credential option:
+
+   ```toml
+   [push]
+   project_id = "<firebase-project-id>"
+   application_id = "<firebase-android-app-id>"
+   api_key = "<firebase-android-api-key>"
+   gcm_sender_id = "<firebase-project-number>"
+   gce_metadata = true
+   # Or omit gce_metadata and use:
+   # service_account_file = "/etc/todo/fcm-service-account.json"
+   ```
+
+   Restart `todo-server`. Give Android a sync cycle or reopen the app once to register, and check
+   **Rooms → Settings → Push: On**. From another client, set a test reminder a few minutes ahead while
+   Android is in the background. No inbound port is needed; the server makes outgoing requests to
+   Google's OAuth and FCM endpoints. Google receives installation tokens and sequence hints, not task
+   content. Treat the database and backups as private: they contain the registration tokens.
 
 ## Deploy
 

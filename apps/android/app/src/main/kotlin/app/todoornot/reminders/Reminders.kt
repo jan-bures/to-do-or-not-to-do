@@ -58,7 +58,13 @@ class Reminders(
      * [catchingUp] (a sync is still bringing in what changed elsewhere), nothing due is shown yet.
      */
     @Synchronized
-    fun reconcile(engine: TodoEngine, force: Boolean = false, catchingUp: Boolean = false) {
+    fun reconcile(
+        engine: TodoEngine, force: Boolean = false, catchingUp: Boolean = false,
+        authorized: () -> Boolean = { true },
+    ) {
+        // Check within the same monitor as clear(), so a wake from the old pairing cannot set alarms
+        // again after unpair. A revoked pairing must not show cached task titles.
+        if (!authorized()) return
         val now = clock()
         val before = load()
         val alarms = engine.reminderAlarms(ReminderPlan.since(before, now), localNow(now, zone().toZoneId()))

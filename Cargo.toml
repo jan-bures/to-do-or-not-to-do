@@ -47,6 +47,8 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 base64 = "0.23"
+ring = "0.17"
+httpdate = "1"
 tower-http = { version = "0.7", features = ["fs", "limit", "sensitive-headers"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 utoipa = { version = "6", features = ["uuid"] }

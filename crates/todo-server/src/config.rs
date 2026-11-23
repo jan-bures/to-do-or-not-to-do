@@ -105,6 +105,16 @@
 //! [releases]
 //! # Private desktop update feed; absent means disabled. Also `TODO_SERVER_RELEASES_DIR`.
 //! dir = "/opt/todo/desktop-releases"
+//!
+//! # Optional Android push wake-ups. Omit this section to disable. See docs/hosting-linux.md.
+//! [push]
+//! project_id = "<firebase-project-id>"
+//! application_id = "<firebase-android-app-id>"
+//! api_key = "<firebase-android-api-key>"
+//! gcm_sender_id = "<firebase-project-number>"
+//! # Exactly one of gce_metadata = true or service_account_file.
+//! gce_metadata = true
+//! # service_account_file = "/etc/todo/fcm-service-account.json"
 //! ```
 
 use jiff::tz::TimeZone;
@@ -380,6 +390,67 @@ pub struct ReleasesConfig {
     pub dir: Option<PathBuf>,
 }
 
+/// Firebase Cloud Messaging settings. Omit the entire section to disable push.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {
+    /// Firebase project ID (also used by the HTTP v1 sender).
+    pub project_id: String,
+    /// Firebase's Android app ID, not the Android package name.
+    pub application_id: String,
+    /// Firebase client API key, returned only to paired devices.
+    pub api_key: String,
+    /// Numeric Firebase project number.
+    pub gcm_sender_id: String,
+    /// Use the attached GCE service account through the metadata server.
+    #[serde(default)]
+    pub gce_metadata: bool,
+    /// Alternately, the private service-account JSON key file.
+    pub service_account_file: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for PushConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushConfig").finish_non_exhaustive()
+    }
+}
+
+impl PushConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let valid = |value: &str, max, allowed: fn(u8) -> bool| {
+            !value.is_empty() && value.len() <= max && value.bytes().all(allowed)
+        };
+        let invalid = |key| ConfigError::Invalid(format!("push.{key} is invalid"));
+        if !valid(&self.project_id, 63, |b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+        }) {
+            return Err(invalid("project_id"));
+        }
+        if !valid(&self.gcm_sender_id, 32, |b| b.is_ascii_digit()) {
+            return Err(invalid("gcm_sender_id"));
+        }
+        let prefix = format!("1:{}:android:", self.gcm_sender_id);
+        if !self
+            .application_id
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| valid(suffix, 64, |b| b.is_ascii_hexdigit()))
+        {
+            return Err(invalid("application_id"));
+        }
+        if !valid(&self.api_key, 256, |b| {
+            b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+        }) {
+            return Err(invalid("api_key"));
+        }
+        if self.gce_metadata == self.service_account_file.is_some() {
+            return Err(ConfigError::Invalid(
+                "push requires exactly one of gce_metadata = true or service_account_file".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -409,6 +480,8 @@ pub struct Config {
     pub web: WebConfig,
     /// The desktop release feed.
     pub releases: ReleasesConfig,
+    /// Optional Android reminder wake-ups.
+    pub push: Option<PushConfig>,
 }
 
 /// Email ingest settings (see the module docs and `docs/ingest-email.md`).
@@ -452,6 +525,7 @@ impl Default for Config {
             admin: AdminConfig::default(),
             web: WebConfig::default(),
             releases: ReleasesConfig::default(),
+            push: None,
         }
     }
 }
@@ -611,6 +685,9 @@ impl Config {
             }
         }
         self.attachments.validate().map_err(ConfigError::Invalid)?;
+        if let Some(push) = &self.push {
+            push.validate()?;
+        }
         self.validate_admin()?;
         let a = &self.auth;
         for (name, value) in [

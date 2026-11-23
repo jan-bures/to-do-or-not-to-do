@@ -19,6 +19,8 @@ import app.todoornot.model.CorePairing
 import app.todoornot.model.Pace
 import app.todoornot.model.PairingModel
 import app.todoornot.model.TodoModel
+import app.todoornot.push.AndroidPush
+import app.todoornot.push.PushWork
 import app.todoornot.reminders.AndroidAlarms
 import app.todoornot.reminders.Reminders
 import app.todoornot.session.EngineHost
@@ -28,10 +30,12 @@ import app.todoornot.session.PairingFiles
 import app.todoornot.session.PrefsKeyValues
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
+import app.todoornot.session.signedOut
 import app.todoornot.widget.WidgetRefresh
 import android.os.SystemClock
 import app.todoornot.core.ProblemKind
 import app.todoornot.core.SyncState
+import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
@@ -88,6 +92,7 @@ class AppGraph(private val app: Context) {
     internal val loaded = _loaded.asStateFlow()
 
     internal val widgets = WidgetRefresh(app)
+    internal val push = AndroidPush(app)
 
     /** The reminders' alarms and notifications, kept in line with the synced reminders. */
     val reminders = Reminders(PrefsKeyValues(app, "reminders"), AndroidAlarms(app), debug = { Log.d("Reminders", it) })
@@ -134,6 +139,7 @@ class AppGraph(private val app: Context) {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
                 _model.value?.resume()
+                (host.state.value as? Host.Ready)?.let { PushWork.register(app, it.session.pairingId) }
                 // Notifications may have been allowed in the settings meanwhile: show what is due.
                 reminderChanges.tryEmit(Unit)
             }
@@ -186,6 +192,8 @@ class AppGraph(private val app: Context) {
                     syncStatus = { host.status(paired) },
                 )
             }.also { m ->
+                withContext(Dispatchers.IO) { push.activate(paired.session) { host.isAuthorized(paired) } }
+                if (host.state.value === paired) PushWork.start(app, paired.session.pairingId)
                 EngineHost.recoveredNotice(paired.recovered)?.let(m::notice)
                 if (foreground) m.resume()
                 reminderChanges.tryEmit(Unit)
@@ -201,9 +209,16 @@ class AppGraph(private val app: Context) {
      * clock change). Without an open engine (not paired, or the cache won't open) they stay as they are.
      */
     fun reconcileReminders(force: Boolean = false) {
-        val engine = engine() ?: return
+        val ready = host.state.value as? Host.Ready ?: return
         try {
-            reminders.reconcile(engine, force, catchingUp = catchingUp.get() > 0)
+            reminders.reconcile(ready.engine, force, catchingUp = catchingUp.get() > 0) {
+                if (host.state.value !== ready) false
+                else if (host.isAuthorized(ready)) true
+                else {
+                    reminders.clear()
+                    false
+                }
+            }
         } catch (e: IllegalStateException) {
             // The engine was closed meanwhile (unpaired): nothing to follow any more.
             Log.d("Reminders", "the engine closed during a pass: ${e::class.simpleName}")
@@ -245,13 +260,39 @@ class AppGraph(private val app: Context) {
             catchingUp.incrementAndGet()
             try {
                 m.syncInBackground(minOf(FIRE_SYNC_MS, deadline.left() - MARGIN_MS)) {
-                    it.state == SyncState.ONLINE || (it.state == SyncState.OFFLINE && it.problem == ProblemKind.NETWORK)
+                    it.signedOut || (it.state == SyncState.ONLINE && it.caughtUp) ||
+                        (it.state == SyncState.OFFLINE && it.problem == ProblemKind.NETWORK)
                 }
             } finally {
                 catchingUp.decrementAndGet()
             }
         }
         reconcileReminders()
+    }
+
+    /** A silent wake-up or periodic fallback: wait for a fresh backlog, then plan local alarms. */
+    internal suspend fun syncReminders(pairing: String, wake: Instant?): Boolean {
+        catchingUp.incrementAndGet()
+        try {
+            if (withTimeoutOrNull(MainActivity.MODEL_WAIT_MS) { loaded.first { it } } == null) return false
+            val ready = host.state.value as? Host.Ready ?: return true
+            if (ready.session.pairingId != pairing || !host.isAuthorized(ready)) return true
+            if (wake != null) scope.launch(Dispatchers.IO) { push.woke(pairing, wake) }
+            val m = readyModel(MainActivity.MODEL_WAIT_MS)?.takeIf { it.engine === ready.engine } ?: return false
+            m.engine.nudge()
+            return m.syncInBackground(FIRE_SYNC_MS) {
+                it.signedOut || (it.state == SyncState.ONLINE && it.caughtUp && it.pending == 0u)
+            }
+        } catch (e: FfiException) {
+            Log.d("Reminders", "background sync failed: ${e::class.simpleName}")
+            return false
+        } catch (_: IllegalStateException) {
+            // The pairing closed during the wake-up.
+            return true
+        } finally {
+            catchingUp.decrementAndGet()
+            reconcileReminders()
+        }
     }
 
     /**
@@ -300,6 +341,11 @@ class AppGraph(private val app: Context) {
     fun unpair() {
         val m = _model.value
         val oldModel = modelScope?.coroutineContext?.job
+        val session = when (val current = host.state.value) {
+            is Host.Ready -> current.session
+            is Host.CantOpen -> current.session
+            Host.SignedOut -> null
+        }
         val result = host.unpair { engine ->
             _model.value = null
             modelScope?.cancel()
@@ -315,6 +361,10 @@ class AppGraph(private val app: Context) {
                 m?.notice(text)
             }
             Unpaired.Clean, Unpaired.DataLeft -> {
+                session?.let {
+                    PushWork.cancel(app, it.pairingId)
+                    scope.launch(Dispatchers.IO) { push.unpair(it) }
+                }
                 val previousCleanup = transferCleanup
                 transferCleanup = scope.launch(Dispatchers.IO) {
                     previousCleanup.join()

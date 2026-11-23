@@ -29,6 +29,7 @@ pub mod labels;
 pub mod landscape;
 pub mod lists;
 pub mod pairing;
+pub mod push;
 pub mod quick_add;
 pub mod recovery;
 mod runtime;

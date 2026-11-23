@@ -43,6 +43,16 @@ token_sha256 = "<hex SHA-256 of the admin token>"
 [web]
 dir = "/opt/todo/current/web"
 
+# Optional Android reminder wake-ups; see docs/hosting-linux.md. Never add real values here.
+# [push]
+# project_id = "<firebase-project-id>"
+# application_id = "<firebase-android-app-id>"
+# api_key = "<firebase-android-api-key>"
+# gcm_sender_id = "<firebase-project-number>"
+# Set exactly one credential option:
+# gce_metadata = true
+# service_account_file = "/etc/todo/fcm-service-account.json"
+
 # Optional private Windows desktop update feed. See docs/desktop.md before enabling it.
 # [releases]
 # dir = "/opt/todo/desktop-releases"

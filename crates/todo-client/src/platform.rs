@@ -55,6 +55,8 @@ pub enum Method {
     Get,
     /// `POST`
     Post,
+    /// `PUT`
+    Put,
     /// `DELETE`
     Delete,
 }
