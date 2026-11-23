@@ -55,6 +55,8 @@ def path_needles(root, android):
     if sysroot := command_value(root, ["rustc", "--print", "sysroot"]):
         paths["Rust sysroot"] = [Path(sysroot)]
     variables = ("CARGO_HOME", "RUSTUP_HOME", "TMP", "TEMP", "TMPDIR")
+    if not android:
+        variables += ("VCToolsInstallDir", "WindowsSdkDir")
     if android:
         paths["GRADLE_USER_HOME"] = [home / ".gradle"]
         variables += ("GRADLE_USER_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT")
@@ -149,7 +151,7 @@ def pattern(text, encoding, reason, path_prefix=False):
     return (raw if text.isascii() else None), reason, (re.compile(expression) if path_prefix or bounded or not text.isascii() else None), width
 
 
-def scan(path, patterns, cert_info=b"", *, label="APK", archive_required=True, forbid_pdb=False):
+def scan(path, patterns, cert_info=b"", *, label="APK", metadata_label=None, archive_required=True, forbid_pdb=False):
     """Cover raw bytes, expanded entries, and nested ZIPs without extracting paths to disk."""
     def match(data, has_prefix=False, has_suffix=False):
         data = data.lower()
@@ -205,7 +207,7 @@ def scan(path, patterns, cert_info=b"", *, label="APK", archive_required=True, f
                         raise ScanFailure(f"{entry_label} is not a readable archive")
 
     if found := match(cert_info):
-        raise ScanFailure(f"{label} metadata matched {found}")
+        raise ScanFailure(f"{metadata_label or label + ' metadata'} matched {found}")
     if archive_required:
         # Velopack Setup.exe is a PE with an appended ZIP (its bundled full nupkg).
         # zipfile adjusts for the PE prefix. Fail closed if the installer layout changes.

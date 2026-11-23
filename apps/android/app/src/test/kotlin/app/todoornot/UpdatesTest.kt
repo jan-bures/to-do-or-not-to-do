@@ -8,6 +8,11 @@ import app.todoornot.updates.VerificationFailure
 import app.todoornot.updates.assetUrl
 import app.todoornot.updates.httpsUrl
 import app.todoornot.updates.indexUrl
+import app.todoornot.updates.historyUrl
+import app.todoornot.updates.fetchIndex
+import app.todoornot.updates.MAX_RELEASE_HISTORY
+import app.todoornot.updates.FeedProblem
+import app.todoornot.updates.TaggedIndex
 import app.todoornot.updates.checkDue
 import app.todoornot.updates.mayDownload
 import app.todoornot.updates.newer
@@ -19,6 +24,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotEquals
 import app.todoornot.updates.verifyIdentity
 import java.io.File
+import kotlinx.coroutines.runBlocking
 import java.net.URI
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -83,11 +89,45 @@ class UpdatesTest {
 
     @Test fun asset_urls_are_public_https_and_version_pinned() {
         val base = "https://todo.example.com/owner/repo"
-        assertEquals("$base/releases/latest/download/android-update.json", indexUrl("$base/").toString())
+        assertEquals("$base/releases.atom", historyUrl("$base/").toString())
+        assertEquals("$base/releases/download/v0.1.0-build.12/android-update.json", indexUrl("$base/", "v0.1.0-build.12").toString())
         assertEquals("$base/releases/download/v0.1.0-build.12/todo-android-0.1.0-build.12.apk", assetUrl(base, index).toString())
         assertTrue(httpsUrl(URI("https://todo.example.com/download?temporary=1")))
         assertFalse(httpsUrl(URI("http://todo.example.com/download")))
         assertFalse(httpsUrl(URI("https://credential@todo.example.com/download")))
+    }
+
+    private fun history(vararg heights: Int) = """<feed xmlns="http://www.w3.org/2005/Atom">${heights.joinToString("") {
+        "<entry><id>tag:github.com,2008:Repository/123/v0.1.0-build.$it</id></entry>"
+    }}</feed>"""
+
+    @Test fun android_discovery_skips_desktop_only_tags_and_caps_missing_manifest_probes() = runBlocking {
+        val base = "https://todo.example.com/owner/repo"
+        val xml = history(12, 9, 11, 15, 13, 14, 14)
+        for (available in listOf(true, false)) {
+            val calls = mutableListOf<URI>()
+            val found = fetchIndex(base) { url, limit ->
+                calls += url
+                if (url == historyUrl(base)) {
+                    assertEquals(MAX_RELEASE_HISTORY, limit)
+                    xml
+                } else if (available && url == indexUrl(base, "v0.1.0-build.12")) raw else null
+            }
+            val expected = if (available) listOf(15, 14, 13, 12) else listOf(15, 14, 13, 12, 11)
+            assertEquals(listOf(historyUrl(base)) + expected.map { indexUrl(base, "v0.1.0-build.$it") }, calls)
+            assertEquals(if (available) TaggedIndex("v0.1.0-build.12", raw) else null, found)
+        }
+    }
+
+    @Test fun android_discovery_rejects_malformed_or_oversized_atom() = runBlocking {
+        val base = "https://todo.example.com/owner/repo"
+        for (bad in listOf("<feed>", "<feed/>", "<!DOCTYPE feed>" + history(12), " ".repeat(MAX_RELEASE_HISTORY + 1))) {
+            val result = runCatching { fetchIndex(base) { url, _ ->
+                assertEquals(historyUrl(base), url)
+                bad
+            } }
+            assertTrue(result.exceptionOrNull() is FeedProblem)
+        }
     }
 
     @Test fun verification_covers_size_hash_identity_version_sdk_and_signature() {

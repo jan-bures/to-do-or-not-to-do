@@ -14,7 +14,7 @@ pub(super) const CHANNEL: &str = "win";
 pub(super) const MAX_FEED: u64 = 1024 * 1024;
 pub(super) const MAX_PROOF: u64 = 1024;
 const MAX_PACKAGE: u64 = 256 * 1024 * 1024;
-const DOMAIN: &str = "todo-desktop-update-v1\n";
+const DOMAIN: &str = "todo-desktop-update-v2\n";
 const KEYS: &str = env!("TODO_DESKTOP_VERIFY_KEYS");
 
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +32,8 @@ pub(super) struct Receipt {
 #[serde(deny_unknown_fields)]
 struct Proof {
     tag: String,
+    setup_sha256: String,
+    setup_size: u64,
     signature: String,
 }
 
@@ -39,6 +41,15 @@ struct Proof {
 pub(super) struct Release {
     pub version: Version,
     pub full: VelopackAsset,
+    pub rejection: Rejection,
+}
+
+/// Created only after successful signature verification. Canonical signed bytes and the decoded
+/// signature keep formatting changes to the unsigned JSON envelope from evading a rejection.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct Rejection {
+    pub version: Version,
+    pub fingerprint: [u8; 32],
 }
 
 pub(super) fn read_bounded(source: impl Read, limit: u64) -> io::Result<Vec<u8>> {
@@ -47,10 +58,15 @@ pub(super) fn read_bounded(source: impl Read, limit: u64) -> io::Result<Vec<u8>>
     Ok(bytes)
 }
 
-fn package_version(raw: &str) -> Option<Version> {
+pub(super) fn package_version(raw: &str) -> Option<(Version, u32)> {
     let version = Version::parse(raw).ok()?;
-    let height = version.pre.as_str().strip_prefix("build.")?;
-    (version.build.is_empty() && height.parse::<u32>().is_ok_and(|n| n > 0)).then_some(version)
+    let height = version
+        .pre
+        .as_str()
+        .strip_prefix("build.")?
+        .parse::<u32>()
+        .ok()?;
+    (version.build.is_empty() && height > 0).then_some((version, height))
 }
 
 fn valid_asset(asset: &VelopackAsset) -> bool {
@@ -67,19 +83,12 @@ fn valid_asset(asset: &VelopackAsset) -> bool {
         && asset.SHA256.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Only used to route the signature request and deduplicate verification failures. This version
-/// alone is not trusted and never authorizes a package download or an apply.
-pub(super) fn advertised_version(manifest: &str) -> Option<Version> {
-    let feed: VelopackAssetFeed = serde_json::from_str(manifest).ok()?;
-    feed.Assets
-        .iter()
-        .filter(|a| a.Type == "Full")
-        .filter_map(|asset| package_version(&asset.Version))
-        .max()
-}
-
-fn signed_bytes(tag: &str, manifest: &str) -> Vec<u8> {
-    format!("{DOMAIN}{tag}\n{manifest}").into_bytes()
+fn signed_bytes(proof: &Proof, manifest: &str) -> Vec<u8> {
+    format!(
+        "{DOMAIN}{}\n{}\n{}\n{manifest}",
+        proof.tag, proof.setup_sha256, proof.setup_size
+    )
+    .into_bytes()
 }
 
 fn keys() -> impl Iterator<Item = VerifyingKey> {
@@ -100,14 +109,23 @@ impl Receipt {
             return Err(Invalid);
         }
         let proof: Proof = serde_json::from_str(&self.proof).map_err(|_| Invalid)?;
-        let version = proof
+        let (version, _) = proof
             .tag
             .strip_prefix('v')
             .and_then(package_version)
             .ok_or(Invalid)?;
+        if proof.setup_size == 0
+            || proof.setup_sha256.len() != 64
+            || !proof
+                .setup_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Invalid);
+        }
         let sig = hex::decode(&proof.signature).map_err(|_| Invalid)?;
         let sig = Signature::from_slice(&sig).map_err(|_| Invalid)?;
-        let bytes = signed_bytes(&proof.tag, &self.manifest);
+        let bytes = signed_bytes(&proof, &self.manifest);
         if !keys
             .into_iter()
             .any(|key| key.verify_strict(&bytes, &sig).is_ok())
@@ -120,7 +138,7 @@ impl Receipt {
             if !valid_asset(&asset) {
                 return Err(Invalid);
             }
-            let asset_version = package_version(&asset.Version).ok_or(Invalid)?;
+            let (asset_version, _) = package_version(&asset.Version).ok_or(Invalid)?;
             match asset.Type.as_str() {
                 "Full" if asset_version == version && full.is_none() => full = Some(asset),
                 "Full" if asset_version < version && previous.is_none() => previous = Some(asset),
@@ -131,9 +149,17 @@ impl Receipt {
         if previous.is_some() != delta.is_some() {
             return Err(Invalid);
         }
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(bytes);
+        fingerprint.update(sig.to_bytes());
+        let rejection = Rejection {
+            version: version.clone(),
+            fingerprint: fingerprint.finalize().into(),
+        };
         Ok(Release {
             version,
             full: full.ok_or(Invalid)?,
+            rejection,
         })
     }
 }
@@ -163,9 +189,27 @@ pub(super) fn matches_file(asset: &VelopackAsset, path: &Path) -> io::Result<boo
 }
 
 #[cfg(test)]
+pub(super) fn test_receipt(
+    key: &ed25519_dalek::SigningKey,
+    tag: &str,
+    manifest: String,
+) -> Receipt {
+    use ed25519_dalek::Signer;
+    use serde_json::json;
+    let proof = Proof {
+        tag: tag.into(),
+        setup_sha256: "1".repeat(64),
+        setup_size: 100,
+        signature: String::new(),
+    };
+    let signature = key.sign(&signed_bytes(&proof, &manifest));
+    Receipt { manifest, proof: json!({"tag":tag,"setup_sha256":proof.setup_sha256,"setup_size":proof.setup_size,"signature":hex::encode(signature.to_bytes())}).to_string() }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
     use serde_json::{Value, json};
 
     fn key(seed: u8) -> SigningKey {
@@ -184,12 +228,7 @@ mod tests {
     }
 
     fn signed(key: &SigningKey, tag: &str, manifest: &Value) -> Receipt {
-        let manifest = manifest.to_string();
-        let signature = key.sign(&signed_bytes(tag, &manifest));
-        Receipt {
-            manifest,
-            proof: json!({"tag": tag, "signature": hex::encode(signature.to_bytes())}).to_string(),
-        }
+        test_receipt(key, tag, manifest.to_string())
     }
 
     #[test]
@@ -202,6 +241,20 @@ mod tests {
             .expect("one trusted key");
         assert_eq!(release.version.to_string(), "0.1.0-build.10");
         assert_eq!(release.full.Type, "Full");
+        let reformatted = Receipt {
+            manifest: receipt.manifest.clone(),
+            proof: serde_json::to_string_pretty(
+                &serde_json::from_str::<Value>(&receipt.proof).expect("valid proof"),
+            )
+            .expect("serializable proof"),
+        };
+        assert_eq!(
+            reformatted
+                .verify_with([signing.verifying_key()])
+                .expect("proof formatting is not signed")
+                .rejection,
+            release.rejection
+        );
         assert!(receipt.verify_with([key(2).verifying_key()]).is_err());
         assert!(
             signed(&signing, "v0.1.0-build.11", &test_manifest())
@@ -218,6 +271,17 @@ mod tests {
             tampered["Assets"][index][field] = value;
             let mut receipt = signed(&signing, tag, &test_manifest());
             receipt.manifest = tampered.to_string();
+            assert!(receipt.verify_with([signing.verifying_key()]).is_err());
+        }
+        for field in ["setup_sha256", "setup_size"] {
+            let mut receipt = signed(&signing, tag, &test_manifest());
+            let mut proof: Value = serde_json::from_str(&receipt.proof).expect("proof object");
+            proof[field] = if field == "setup_size" {
+                json!(1)
+            } else {
+                json!("0".repeat(64))
+            };
+            receipt.proof = proof.to_string();
             assert!(receipt.verify_with([signing.verifying_key()]).is_err());
         }
         let mut no_proof = signed(&signing, tag, &test_manifest());

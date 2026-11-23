@@ -1,10 +1,11 @@
 //! Signed Velopack updates are staged by a low-priority worker and reapplied only after a
 //! second verification on restart or before GPUI on the next primary launch.
 
+mod history;
 mod release;
 mod state;
 
-use release::{APP_ID, CHANNEL, MAX_FEED, MAX_PROOF, Receipt, Release};
+use release::{APP_ID, CHANNEL, MAX_FEED, MAX_PROOF, Receipt, Rejection, Release};
 use state::{Check, Schedule};
 pub use state::{Failure, Snapshot, State};
 
@@ -48,8 +49,12 @@ impl ReleaseUrls {
         )))
     }
 
-    fn manifest(&self) -> String {
-        format!("{}/latest/download/releases.win.json", self.0)
+    fn history(&self) -> String {
+        format!("{}.atom", self.0)
+    }
+
+    fn manifest(&self, version: &Version) -> String {
+        format!("{}/download/v{version}/releases.win.json", self.0)
     }
 
     fn proof(&self, version: &Version) -> String {
@@ -131,13 +136,23 @@ fn is_missing(error: &Error) -> bool {
 }
 
 impl Feed {
-    fn latest(&self) -> Result<Option<String>, Failure> {
-        match self.get(&self.urls.manifest(), Duration::from_secs(30)) {
-            // Latest may be Android-only. A missing proof for an existing feed is different.
-            Err(error) if is_missing(&error) => Ok(None),
-            Err(_) => Err(Failure::Check),
-            Ok(body) => read_text(body, MAX_FEED).map(Some),
+    fn latest(&self) -> Result<Option<(Version, String)>, Failure> {
+        let xml = match self.get(&self.urls.history(), Duration::from_secs(30)) {
+            Err(error) if is_missing(&error) => return Ok(None),
+            Err(_) => return Err(Failure::Check),
+            Ok(body) => read_text(body, history::MAX_HISTORY).map_err(|_| Failure::Check)?,
+        };
+        let versions = history::candidates(&xml).ok_or(Failure::Check)?;
+        for version in versions {
+            match self.get(&self.urls.manifest(&version), Duration::from_secs(30)) {
+                Err(error) if is_missing(&error) => continue,
+                Err(_) => return Err(Failure::Check),
+                Ok(body) => {
+                    return read_text(body, MAX_FEED).map(|manifest| Some((version, manifest)));
+                }
+            }
         }
+        Ok(None)
     }
 
     fn proof(&self, version: &Version) -> Result<String, Failure> {
@@ -216,24 +231,7 @@ impl Controller {
             let state = if ReleaseUrls::new(REPOSITORY).is_none() {
                 State::Disabled
             } else {
-                match install.pending() {
-                    Ok(Some(asset)) => State::Ready {
-                        version: asset.Version,
-                    },
-                    Ok(None)
-                        if install
-                            .rejections()
-                            .iter()
-                            .any(|rejected| rejected > &version) =>
-                    {
-                        failed(Failure::Verify)
-                    }
-                    Ok(None) => State::Idle,
-                    Err(rejected) => {
-                        install.discard_pending(rejected.as_ref());
-                        failed(Failure::Verify)
-                    }
-                }
+                startup_state(&install.dir, &version, Receipt::verify)
             };
             return Self::with_state(
                 Some(version.to_string()),
@@ -314,7 +312,7 @@ impl Controller {
                     return false;
                 }
                 Err(rejected) => {
-                    install.discard_pending(rejected.as_ref());
+                    discard_pending(&install.dir, rejected.as_ref());
                     failure = Failure::Verify;
                 }
                 Ok(_) => {}
@@ -502,34 +500,51 @@ impl Installation {
         Some(Self { manager, dir })
     }
 
-    fn receipt_path(&self) -> PathBuf {
-        self.dir.join(RECEIPT)
-    }
-
     fn failed_path(&self) -> PathBuf {
         self.dir.join(FAILED)
     }
 
-    fn rejections(&self) -> Vec<Version> {
-        read_rejections(&self.dir)
-    }
-
     // Never let Velopack locate/open a more recent package just because of its filename. Only an
     // authenticated receipt can name a package, and its bytes must still match at apply time.
-    fn pending(&self) -> Result<Option<VelopackAsset>, Option<Version>> {
+    fn pending(&self) -> Result<Option<VelopackAsset>, Option<Rejection>> {
         verified_pending(
             &self.dir,
             &self.manager.get_current_version(),
             Receipt::verify,
         )
     }
+}
 
-    fn discard_pending(&self, version: Option<&Version>) {
-        let _ = std::fs::remove_file(self.receipt_path());
-        if let Some(version) = version.filter(|v| **v > self.manager.get_current_version()) {
-            let _ = std::fs::remove_file(self.dir.join(format!("{APP_ID}-{version}-full.nupkg")));
-            reject(&self.dir, version);
+fn startup_state(
+    dir: &Path,
+    installed: &Version,
+    verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
+) -> State {
+    match verified_pending(dir, installed, verify) {
+        Ok(Some(asset)) => {
+            return State::Ready {
+                version: asset.Version,
+            };
         }
+        Ok(None) => {}
+        Err(rejected) => discard_pending(dir, rejected.as_ref()),
+    }
+    if read_rejections(dir)
+        .iter()
+        .any(|bad| bad.version > *installed)
+    {
+        failed(Failure::Verify)
+    } else {
+        State::Idle
+    }
+}
+
+fn discard_pending(dir: &Path, rejected: Option<&Rejection>) {
+    let _ = std::fs::remove_file(dir.join(RECEIPT));
+    if let Some(rejected) = rejected {
+        let version = &rejected.version;
+        let _ = std::fs::remove_file(dir.join(format!("{APP_ID}-{version}-full.nupkg")));
+        reject(dir, rejected);
     }
 }
 
@@ -537,11 +552,11 @@ fn verified_pending(
     dir: &Path,
     installed: &Version,
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
-) -> Result<Option<VelopackAsset>, Option<Version>> {
+) -> Result<Option<VelopackAsset>, Option<Rejection>> {
     let Some(receipt) = read_receipt(&dir.join(RECEIPT)).map_err(|_| None)? else {
         return Ok(None);
     };
-    let signed = verify(&receipt).map_err(|_| release::advertised_version(&receipt.manifest))?;
+    let signed = verify(&receipt).map_err(|_| None)?;
     if !signed.newer_than(installed)
         || !is_candidate(
             &signed.full,
@@ -555,9 +570,9 @@ fn verified_pending(
     let path = dir.join(&signed.full.FileName);
     match release::matches_file(&signed.full, &path) {
         Ok(true) => Ok(Some(signed.full)),
-        Ok(false) => Err(Some(signed.version)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(Some(signed.version)),
+        Ok(false) => Err(Some(signed.rejection)),
+        // A missing or temporarily unreadable file isn't proof its contents were wrong.
+        Err(_) => Ok(None),
     }
 }
 
@@ -583,23 +598,26 @@ const FAILED: &str = ".todo-failed-update";
 const REJECTIONS: &str = ".todo-rejected-updates";
 const MAX_REJECTIONS: usize = 32;
 
-fn read_rejections(dir: &Path) -> Vec<Version> {
+fn read_rejections(dir: &Path) -> Vec<Rejection> {
     File::open(dir.join(REJECTIONS))
         .ok()
-        .and_then(|file| release::read_bounded(file, 4096).ok())
-        .and_then(|bytes| serde_json::from_slice::<Vec<Version>>(&bytes).ok())
+        .and_then(|file| release::read_bounded(file, 8192).ok())
+        .and_then(|bytes| serde_json::from_slice::<Vec<Rejection>>(&bytes).ok())
         .filter(|versions| versions.len() <= MAX_REJECTIONS)
         .unwrap_or_default()
 }
 
-fn reject(dir: &Path, version: &Version) {
-    let mut versions = read_rejections(dir);
-    if versions.contains(version) {
+fn reject(dir: &Path, rejected: &Rejection) {
+    let mut entries = read_rejections(dir);
+    if entries
+        .iter()
+        .any(|entry| entry.fingerprint == rejected.fingerprint)
+    {
         return;
     }
-    versions.insert(0, version.clone());
-    versions.truncate(MAX_REJECTIONS);
-    if atomic_json(&dir.join(REJECTIONS), &versions).is_err() {
+    entries.insert(0, rejected.clone());
+    entries.truncate(MAX_REJECTIONS);
+    if atomic_json(&dir.join(REJECTIONS), &entries).is_err() {
         tracing::warn!("could not record the rejected desktop update");
     }
 }
@@ -647,44 +665,43 @@ fn stage_update(
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
     downloading: impl Fn(Option<u8>),
 ) -> Result<Option<String>, Failure> {
-    let Some(manifest) = feed.latest()? else {
+    let Some((tag, manifest)) = feed.latest()? else {
         return Ok(None);
     };
-    let advertised = release::advertised_version(&manifest).ok_or(Failure::Verify)?;
-    if check == Check::Automatic && read_rejections(dir).contains(&advertised) {
+    let receipt = Receipt {
+        manifest,
+        proof: feed.proof(&tag)?,
+    };
+    let signed = verify(&receipt).map_err(|_| Failure::Verify)?;
+    if signed.version != tag {
         return Err(Failure::Verify);
     }
-    let result = (|| {
-        let proof = feed.proof(&advertised)?;
-        let receipt = Receipt { manifest, proof };
-        let signed = verify(&receipt).map_err(|_| Failure::Verify)?;
-        if signed.version != advertised {
-            return Err(Failure::Verify);
-        }
-        if !signed.newer_than(installed) {
-            return Ok(None);
-        }
-        let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
-        if !is_candidate(&signed.full, failed.as_ref()) {
-            return Err(Failure::Apply);
-        }
-        downloading(None);
-        stage_verified(feed, dir, &signed, &receipt, &downloading)?;
-        let mut rejections = read_rejections(dir);
-        if let Some(index) = rejections
-            .iter()
-            .position(|version| *version == signed.version)
-        {
-            rejections.remove(index);
-            let _ = atomic_json(&dir.join(REJECTIONS), &rejections);
-        }
-        tracing::info!("desktop update staged for next launch");
-        Ok(Some(signed.full.Version))
-    })();
-    if result == Err(Failure::Verify) {
-        reject(dir, &advertised);
+    if !signed.newer_than(installed) {
+        return Ok(None);
     }
-    result
+    let mut rejections = read_rejections(dir);
+    let rejected = rejections
+        .iter()
+        .position(|entry| entry.fingerprint == signed.rejection.fingerprint);
+    if check == Check::Automatic && rejected.is_some() {
+        return Err(Failure::Verify);
+    }
+    let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
+    if !is_candidate(&signed.full, failed.as_ref()) {
+        return Err(Failure::Apply);
+    }
+    downloading(None);
+    let result = stage_verified(feed, dir, &signed, &receipt, &downloading);
+    if result == Err(Failure::Verify) {
+        reject(dir, &signed.rejection);
+    }
+    result?;
+    if let Some(index) = rejected {
+        rejections.remove(index);
+        let _ = atomic_json(&dir.join(REJECTIONS), &rejections);
+    }
+    tracing::info!("desktop update staged for next launch");
+    Ok(Some(signed.full.Version))
 }
 
 fn stage_verified(
@@ -883,12 +900,12 @@ mod tests {
     }
 
     #[test]
-    fn feed_derives_latest_manifest_and_pins_packages_to_tags() {
+    fn feed_derives_release_history_and_pins_packages_to_tags() {
         let urls =
             ReleaseUrls::new(" https://todo.example.com/owner/project/// ").expect("feed URL");
         assert_eq!(
-            urls.manifest(),
-            "https://todo.example.com/owner/project/releases/latest/download/releases.win.json"
+            urls.history(),
+            "https://todo.example.com/owner/project/releases.atom"
         );
         let asset = VelopackAsset {
             Version: "0.1.0-build.9".into(),
@@ -919,16 +936,6 @@ mod tests {
         assert!(controller.start_from("").is_none());
         assert_eq!(controller.snapshot().state, State::Disabled);
         assert!(!controller.snapshot().can_check);
-    }
-
-    #[test]
-    fn verification_rejections_survive_reopening() {
-        let dir = tempfile::tempdir().expect("packages directory");
-        let version = Version::parse("0.1.0-build.146").expect("version");
-        assert!(read_rejections(dir.path()).is_empty());
-        reject(dir.path(), &version);
-        reject(dir.path(), &version);
-        assert_eq!(read_rejections(dir.path()), [version]);
     }
 
     fn serve_update(
@@ -982,10 +989,10 @@ mod tests {
 
     #[test]
     fn only_verified_full_bytes_are_staged_and_pending_files_are_rehashed() {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
         use serde_json::json;
 
-        const FEED_ROUTE: &str = "/releases/latest/download/releases.win.json";
+        const FEED_ROUTE: &str = "/releases/download/v0.1.0-build.10/releases.win.json";
         const PROOF_ROUTE: &str = "/releases/download/v0.1.0-build.10/desktop-update.sig.json";
         const FULL_ROUTE: &str =
             "/releases/download/v0.1.0-build.10/todo-desktop-0.1.0-build.10-full.nupkg";
@@ -1001,11 +1008,15 @@ mod tests {
             "SHA256":hex::encode(Sha256::digest(PACKAGE)), "Size":PACKAGE.len()
         }]}).to_string();
         let tag = format!("v{offered}");
-        let proof = json!({"tag":tag,"signature":hex::encode(key.sign(format!("todo-desktop-update-v1\n{tag}\n{manifest}").as_bytes()).to_bytes())}).to_string();
+        let receipt = release::test_receipt(&key, &tag, manifest.clone());
+        let proof = &receipt.proof;
+        let signed = verify(&receipt).expect("valid fixture");
         let offer = || (FEED_ROUTE, 200, manifest.as_bytes().to_vec());
         let valid_proof = || (PROOF_ROUTE, 200, proof.as_bytes().to_vec());
-        let check = |requests, current: &Version, mode| {
-            let (feed, server) = serve_update(requests);
+        let check = |requests: Vec<_>, current: &Version, mode| {
+            let mut history = vec![("/releases.atom", 200, history::atom(&[&tag]).into_bytes())];
+            history.extend(requests);
+            let (feed, server) = serve_update(history);
             let result = stage_update(&feed, dir.path(), current, mode, verify, |_| {});
             server.join().expect("test server");
             result
@@ -1020,9 +1031,32 @@ mod tests {
             Err(Failure::Verify)
         );
         assert_eq!(
-            check(vec![offer()], &installed, Check::Automatic),
+            check(
+                vec![offer(), (PROOF_ROUTE, 200, b"{}".to_vec())],
+                &installed,
+                Check::Automatic
+            ),
             Err(Failure::Verify)
         );
+        assert!(read_rejections(dir.path()).is_empty());
+        let untrusted = Receipt {
+            manifest: manifest.clone(),
+            proof: "{}".into(),
+        };
+        atomic_json(&dir.path().join(RECEIPT), &untrusted).expect("unsigned receipt fixture");
+        assert_eq!(startup_state(dir.path(), &installed, verify), State::Idle);
+        assert!(read_rejections(dir.path()).is_empty());
+        let package = dir.path().join(name);
+        assert_eq!(
+            check(
+                vec![offer(), valid_proof(), (FULL_ROUTE, 200, PACKAGE.to_vec())],
+                &installed,
+                Check::Automatic
+            ),
+            Ok(Some(offered.to_string()))
+        );
+        std::fs::remove_file(&package).expect("reset staged package fixture");
+        std::fs::remove_file(dir.path().join(RECEIPT)).expect("reset receipt fixture");
         assert_eq!(
             check(vec![offer(), valid_proof()], &offered, Check::Manual),
             Ok(None)
@@ -1043,7 +1077,35 @@ mod tests {
             );
         }
 
-        let package = dir.path().join(name);
+        assert_eq!(
+            read_rejections(dir.path()),
+            std::slice::from_ref(&signed.rejection)
+        );
+        assert!(matches!(
+            startup_state(dir.path(), &installed, verify),
+            State::Failed {
+                kind: Failure::Verify,
+                ..
+            }
+        ));
+        assert_eq!(
+            check(vec![offer(), valid_proof()], &installed, Check::Automatic),
+            Err(Failure::Verify)
+        );
+        let changed = release::test_receipt(&key, &tag, format!("{manifest}\n"));
+        assert_eq!(
+            check(
+                vec![
+                    (FEED_ROUTE, 200, changed.manifest.into_bytes()),
+                    (PROOF_ROUTE, 200, changed.proof.into_bytes()),
+                    (FULL_ROUTE, 200, PACKAGE.to_vec())
+                ],
+                &installed,
+                Check::Automatic
+            ),
+            Ok(Some(offered.to_string()))
+        );
+        std::fs::remove_file(dir.path().join(RECEIPT)).expect("forget receipt for legacy test");
         std::fs::write(&package, PACKAGE).expect("unsigned legacy pending package");
         assert!(
             verified_pending(dir.path(), &installed, verify)
@@ -1067,8 +1129,16 @@ mod tests {
         assert_eq!(
             verified_pending(dir.path(), &installed, verify)
                 .expect_err("pending verification must fail"),
-            Some(offered)
+            Some(signed.rejection)
         );
+        assert!(matches!(
+            startup_state(dir.path(), &installed, verify),
+            State::Failed {
+                kind: Failure::Verify,
+                ..
+            }
+        ));
+        assert!(!package.exists());
     }
 
     #[test]
@@ -1096,7 +1166,7 @@ mod tests {
         });
         let feed = loopback_feed(addr);
         let mut body = feed
-            .get(&feed.urls.manifest(), Duration::from_millis(100))
+            .get(&feed.urls.history(), Duration::from_millis(100))
             .expect("response head");
         let result = body.read_exact(&mut [0]);
         let _ = release.send(());
@@ -1122,7 +1192,48 @@ mod tests {
     }
 
     #[test]
-    fn missing_latest_manifest_means_no_update_but_other_errors_propagate() {
+    fn release_history_falls_back_only_for_missing_platform_manifests() {
+        const HISTORY: &str = "/releases.atom";
+        const TOP: &str = "/releases/download/v0.1.0-build.11/releases.win.json";
+        const NEXT: &str = "/releases/download/v0.1.0-build.10/releases.win.json";
+        let entries = || {
+            (
+                HISTORY,
+                200,
+                history::atom(&["v0.1.0-build.10", "v0.1.0-build.11"]).into_bytes(),
+            )
+        };
+        for (replies, expected) in [
+            (
+                vec![
+                    entries(),
+                    (TOP, 404, vec![]),
+                    (NEXT, 200, b"desktop".to_vec()),
+                ],
+                Ok(Some((
+                    Version::parse("0.1.0-build.10").expect("version"),
+                    "desktop".into(),
+                ))),
+            ),
+            (
+                vec![entries(), (TOP, 404, vec![]), (NEXT, 404, vec![])],
+                Ok(None),
+            ),
+            (vec![entries(), (TOP, 500, vec![])], Err(Failure::Check)),
+            (vec![(HISTORY, 200, b"<feed".to_vec())], Err(Failure::Check)),
+            (
+                vec![(HISTORY, 200, vec![b' '; history::MAX_HISTORY as usize + 1])],
+                Err(Failure::Check),
+            ),
+        ] {
+            let (feed, server) = serve_update(replies);
+            assert_eq!(feed.latest(), expected);
+            server.join().expect("test server");
+        }
+    }
+
+    #[test]
+    fn missing_history_means_no_update_but_other_errors_propagate() {
         use std::io::{BufRead, BufReader};
         use std::net::TcpListener;
 
@@ -1134,10 +1245,7 @@ mod tests {
                 let mut request = BufReader::new(&mut stream);
                 let mut line = String::new();
                 request.read_line(&mut line).expect("request line");
-                assert_eq!(
-                    line,
-                    "GET /releases/latest/download/releases.win.json HTTP/1.1\r\n"
-                );
+                assert_eq!(line, "GET /releases.atom HTTP/1.1\r\n");
                 loop {
                     line.clear();
                     if request.read_line(&mut line).expect("header") == 0 || line == "\r\n" {

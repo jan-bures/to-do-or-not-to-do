@@ -53,13 +53,14 @@ class DesktopScanTest(unittest.TestCase):
         self.setup.write_bytes(b"MZ\0" + self.package.read_bytes())
         (self.root / "releases.win.json").write_text('{"Assets":[]}', encoding="utf-8")
 
-    def scan(self, expected=None, *, denylist=True):
+    def scan(self, expected=None, *, denylist=True, notes="Public notes", extra_env=None):
         env = dict(os.environ)
         env.pop("TODO_DESKTOP_DENYLIST", None)
         if denylist:
             env["TODO_DESKTOP_DENYLIST"] = str(self.denylist)
-        result = subprocess.run([sys.executable, "-B", str(SCANNER), str(self.root), "--require-denylist"],
-                                env=env, capture_output=True, text=True, check=False)
+        env.update(extra_env or {})
+        result = subprocess.run([sys.executable, "-B", str(SCANNER), str(self.root), "--require-denylist", "--notes-stdin"],
+                                input=notes, env=env, capture_output=True, text=True, check=False)
         if expected is None:
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
@@ -67,6 +68,12 @@ class DesktopScanTest(unittest.TestCase):
             self.assertIn(expected, result.stderr)
         self.assertNotIn(PRIVATE, result.stderr)
         self.assertNotIn(str(self.root), result.stderr)
+
+    def test_notes_and_native_toolchain_paths_are_scanned(self):
+        self.scan("Release notes matched private denylist", notes=PRIVATE)
+        for name in ("VCToolsInstallDir", "WindowsSdkDir"):
+            directory = self.root / name
+            self.scan(f"Release notes matched {name}", notes=str(directory), extra_env={name: str(directory)})
 
     def test_remapped_build_passes(self):
         self.scan()

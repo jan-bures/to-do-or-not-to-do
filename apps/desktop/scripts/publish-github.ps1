@@ -27,12 +27,11 @@ if ($denylist -and (-not (Test-Path -LiteralPath $denylist -PathType Leaf) -or
 }
 if (-not $denylist) { Write-Warning 'No private denylist configured; this dry run only checks built-in privacy patterns.' }
 $privateKey = $env:TODO_DESKTOP_FEED_KEY
+$signer = Join-Path $PSScriptRoot 'sign-update-feed.py'
 if ($Publish) {
     if (-not $privateKey) { throw 'Publishing requires an offline Ed25519 key (TODO_DESKTOP_FEED_KEY).' }
-    $keyPath = [IO.Path]::GetFullPath($privateKey)
-    if ($keyPath.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Keep TODO_DESKTOP_FEED_KEY outside the worktree.'
-    }
+    & python -B $signer check-key
+    if ($LASTEXITCODE -ne 0) { throw 'The resolved signing key must be outside the worktree.' }
 }
 
 $repository = Get-PublicReleaseRepository $repo
@@ -47,7 +46,6 @@ $ffi = ($rootMetadata | ConvertFrom-Json).packages | Where-Object { $_.name -ceq
 $version = Get-DesktopPackageVersion $ffi.version $height # Android uses the root workspace version.
 $manifestName = 'releases.win.json'
 $proofName = 'desktop-update.sig.json'
-$signer = Join-Path $PSScriptRoot 'sign-update-feed.py'
 $keyOptions = @()
 if (-not $Publish -and $env:TODO_DESKTOP_UPDATE_KEYS) { $keyOptions = @('--keys', $env:TODO_DESKTOP_UPDATE_KEYS) }
 $setupName = 'todo-desktop-win-Setup.exe'
@@ -114,13 +112,21 @@ foreach ($package in $packages) {
 }
 if ($null -ne $previous) { Remove-Item -LiteralPath $baseFile }
 if ($privateKey) {
-    & python -B $signer sign "v$version" $manifest $proof @keyOptions
+    $testKey = @()
+    if (-not $Publish -and $keyOptions.Count) { $testKey = @('--allow-test-key-in-checkout') }
+    & python -B $signer sign "v$version" $manifest $proof --setup $packages[0] @keyOptions @testKey
     if ($LASTEXITCODE -ne 0) { throw 'Cannot sign the desktop update feed.' }
     $packages += $proof # Upload the proof before the well-known manifest becomes visible.
 }
-$scannerArgs = @($OutputDir)
+# Never publish vpk convenience/legacy outputs; only the explicit asset list is uploaded.
+$unused = @('todo-desktop-win-Portable.zip', 'RELEASES', 'assets.win.json')
+foreach ($name in $unused) {
+    $path = Join-Path $OutputDir $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path }
+}
+$scannerArgs = @($OutputDir, '--notes-stdin')
 if ($Publish) { $scannerArgs += '--require-denylist' }
-& python -B (Join-Path $PSScriptRoot 'scan-release-desktop.py') @scannerArgs
+$Notes | & python -B (Join-Path $PSScriptRoot 'scan-release-desktop.py') @scannerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Desktop release privacy scan failed.' }
 
 if ($Publish) {

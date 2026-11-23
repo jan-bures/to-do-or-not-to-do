@@ -84,19 +84,20 @@ package, the delta if available, `desktop-update.sig.json` and `releases.win.jso
 packages (and the desktop signature) before the manifest. Neither overwrites assets. If a publish fails
 partway, inspect GitHub before retrying.
 
-Prefer publishing both platforms from the same commit. Either order works, and a one-platform release
-can be Latest: if the other platform's manifest returns HTTP 404, that client keeps its installed version
-and shows no update rather than an error. It does not search backward through releases. Keep old tagged
-assets available for clients that have already fetched a manifest. Serialize publishing, and don't enable
+Prefer publishing both platforms from the same commit. Either order works. Clients check up to five
+recent build tags and skip releases that don't have their platform's manifest. Keep old tagged assets
+available for clients that have already fetched a manifest. Serialize publishing, and don't enable
 immutable releases if the second platform still needs to add its assets.
 
 **These binaries are public.** Never build in a deployment hostname, private identity, credentials or
 local paths. For packaging only, the Rust build remaps the workspace, home, Cargo, Rustup/sysroot, temp
 and known native toolchain paths. Only the executable is staged from Cargo; no PDB is shipped. The
 packager also remaps upstream CI build paths in Velopack's pinned, unsigned x64 templates before vpk builds
-and hashes the packages. The exact template hashes must be reviewed when updating Velopack. The release scan reads the raw manifest, nupkg and Setup.exe (including its embedded package), decompressed entries
-and nested ZIPs. It checks for local build paths, user-directory prefixes, local username, Git identity,
-hostname and extra private values; failures report categories, not values. Set `TODO_DESKTOP_DENYLIST`
+and hashes the packages. Review the exact template hashes when updating Velopack. The release scan reads
+the notes, manifest, proof, raw package and installer bytes, decompressed entries, and nested ZIPs. It
+checks for local build and native toolchain paths, user-directory prefixes, local username, Git identity,
+hostname, and extra private values. Failures report categories, not values. The publisher discards the
+portable ZIP and legacy vpk indexes; it uploads only the named release assets. Set `TODO_DESKTOP_DENYLIST`
 to a private UTF-8 file with additional values to reject, one per line. Blank lines and `#` comments are
 ignored. Publishing requires at least one active pattern. Add any one- or two-character local identity
 that needs scanning to this file. Review assets and release notes even if the scan passes.
@@ -123,6 +124,22 @@ any repository script with access to the key. Set `TODO_DESKTOP_FEED_KEY` in the
 the **path** of the offline private PEM. The publisher signs only with a key that matches a bundled pin. With the variable set, a dry run also signs
 and verifies the proof; without it the dry run just builds and scans. A dry run never uploads assets.
 
+To keep the key on a separate offline machine, run the publisher without `-Publish` and without
+`TODO_DESKTOP_FEED_KEY` on the build machine, with the private denylist configured. Transfer only the
+scanned installer, feed, and packages over a trusted channel. Verify the reviewed commit and check the
+installer and packages against the build's trusted hashes before signing. Use a trusted copy of this
+repository's signer and key list on the offline machine:
+
+```powershell
+python -B apps/desktop/scripts/sign-update-feed.py sign '<release-tag>' releases.win.json `
+    desktop-update.sig.json --setup todo-desktop-win-Setup.exe
+```
+
+Return only the proof to the publishing machine. Recheck the proof, installer, package hashes, and
+privacy scan (including the release notes) before uploading. For a manual upload, follow the same
+live `origin/main`, tag, and no-overwrite rules as the combined publisher; upload the manifest last
+when adding to an existing release. Never copy the private key back to the build machine.
+
 For rotation, first publish a bridge build that includes **both** public keys, signing the bridge with
 the old private key. Wait for installed clients to take the bridge before signing later releases with the
 new key. After that, remove the old key in a release signed by the new key. A client that misses the bridge
@@ -146,9 +163,18 @@ Once all clients have migrated, the server feed and configuration can be removed
 
 ### First install and day-to-day updates
 
-Get `todo-desktop-win-Setup.exe` from the project's public GitHub Releases or your trusted build output.
-Before running it, verify the SHA-256 against the trusted build output. The installer is unsigned, so Windows may warn or a managed policy may block it. Do not
-bypass policy or run an unverified installer. Quit any older unpackaged copy first. Setup installs per user
+From the same GitHub release, download `todo-desktop-win-Setup.exe`, `desktop-update.sig.json`, and
+`releases.win.json`. Before running Setup, use the verifier and public key list from an independently
+trusted checkout (not a script or key downloaded from that release):
+
+```powershell
+python -B apps/desktop/scripts/sign-update-feed.py verify-setup '<download-dir>/todo-desktop-win-Setup.exe' `
+    '<download-dir>/desktop-update.sig.json' '<download-dir>/releases.win.json'
+```
+
+Check that the signed tag matches the release you intended to install. The installer has no Windows
+Authenticode signature, so Windows may still warn or a managed policy may block it. Do not bypass
+policy or run an unverified installer. Quit any older unpackaged copy first. Setup installs per user
 under `%LOCALAPPDATA%` without elevation and adds Start menu and desktop shortcuts. Pair once in the app
 using your server's HTTPS address (for example `https://todo.example.com`). An existing local pairing from
 the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
@@ -160,24 +186,29 @@ five minutes, thirty minutes, then six hours. Downloads do not interrupt normal 
 
 The build reads the root `Cargo.toml` repository URL by default. Forks can set the build-time
 `TODO_DESKTOP_UPDATE_FEED` to their public HTTPS repository base, or to an empty value to disable updates.
-The public publisher always uses the repository default. The updater reads
-`/releases/latest/download/releases.win.json`, then fetches `desktop-update.sig.json` and the package from
-`/releases/download/v<version>/<filename>`. Tag-specific downloads still work if Latest changes after the
-manifest GET. Unlike Velopack's GitHub API source, ordinary asset URLs need no API calls or access token.
-Windows verifies HTTPS certificates and the source follows only HTTPS redirects. No request uses the server
-address, credentials or pairing.
+The public publisher always uses the repository default. The updater reads `/releases.atom` (at most
+1 MiB), then tries up to five valid release tags in descending build order. It skips a tag only if
+`/releases/download/<tag>/releases.win.json` returns HTTP 404. It fetches the proof and package under the
+same tag. If no Windows manifest is found, the app reports no update. These public URLs need no GitHub API
+calls or access token. Windows verifies HTTPS certificates, and the source follows only HTTPS redirects.
+No request uses the server address, credentials, or pairing.
 
-The proof signs `todo-desktop-update-v1`, a newline, the tag, a newline, and the exact bytes of
-`releases.win.json`, including the versions and the SHA-256 and size of every full and delta package.
+The v2 proof signs `todo-desktop-update-v2`, the tag, the lowercase installer SHA-256, and the decimal
+installer size, each followed by a newline, then the exact bytes of `releases.win.json`. This binds the
+installer as well as the versions, hashes, and sizes of every listed full and delta package.
 The app verifies the proof against its pinned keys and only accepts a newer version. It checks the size
 and SHA-256 before staging, then checks the saved proof and package again before asking Velopack to apply
 it. Current clients download the signed full package: Velopack's native delta reconstruction does not
 produce a byte-identical full nupkg. The publisher still produces and signs the delta metadata.
-A signature or checksum failure stages nothing and shows **Update couldn’t be verified**. The app skips
-automatic retries for recently rejected versions (including after restart); **Check now** can retry an
-explicitly selected check after a problem is corrected. A compromised GitHub account can withhold releases
-but cannot authorize new code for an existing installation. Setup.exe is still unsigned and is not covered
-by the OTA signature; verify its hash against an independently trusted build before the first install.
+A signature or checksum failure stages nothing and shows **Update couldn’t be verified**. An invalid
+or missing signature never blocks a later download. If verification succeeds but the package fails its
+size or hash check, the app remembers the exact signed offer across restarts. Automatic checks skip that
+package; **Check now** can retry it after the download is fixed.
+
+Anyone controlling the release assets can withhold updates or serve an older signed release that is
+still newer than the installed version. They cannot authorize changed bytes or downgrade an installed
+version. We accept this freshness limit so signatures don't expire during legitimate periods without
+releases.
 
 After pairing, **Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
 the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately

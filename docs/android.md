@@ -652,15 +652,20 @@ platform creates the release at the exact `main` commit; the second adds its ass
 overwriting existing files. The script checks GitHub's Latest release afterward and warns if it can't confirm
 it. Android assets are the signed APK and an `android-update.json` with `versionCode`, `versionName`, `size`,
 `sha256`, `fileName`, `minSdk` and `signingCertSha256`. Publish only one Android build per version; keep its
-assets available for clients that already read its manifest. If Latest has no `android-update.json`, the app
-reports no update and keeps its installed version. For release order, see [the Windows publishing guide](desktop.md#publish-on-github-releases).
+assets available for clients that already read its manifest. An Android build stays discoverable when a
+newer Windows-only release has no `android-update.json`. For release order, see
+[the Windows publishing guide](desktop.md#publish-on-github-releases).
 
 The default feed base is the public `repository` URL from the root `Cargo.toml`. Forks can set
 `-Ptodo.updateFeed=<public-https-repo-url>` or `-Ptodo.updateFeed=` to disable the updater. The app
-uses plain HTTPS GETs, with HTTPS redirects allowed, to `/releases/latest/download/android-update.json`
-and `/releases/download/v<versionName>/todo-android-<versionName>.apk`. It never uses the GitHub API
-or the to-do server for updates. GitHub and the manifest provide distribution, not trust: the APK must
-still match the installed signer or prove a forward rotation to a new signer.
+fetches `/releases.atom` over HTTPS (at most 1 MiB) and tries up to five valid build tags, newest build
+first. For each tag it checks `/releases/download/<tag>/android-update.json`. Only HTTP 404 moves to the
+next tag; if none has a manifest, the app keeps its installed version. The manifest version must match
+the tag. The app fetches the APK under that same tag and follows only HTTPS redirects. It never uses
+the GitHub API or the to-do server for updates. GitHub and the manifest provide distribution, not trust:
+the APK must still match the installed signer or prove a forward rotation. A release host can withhold
+updates or serve an older signed APK that is still newer than the installed version, but cannot make the
+app accept a downgrade or an unknown signer.
 
 ## Pairing
 

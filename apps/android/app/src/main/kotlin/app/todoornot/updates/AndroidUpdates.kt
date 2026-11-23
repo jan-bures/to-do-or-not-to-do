@@ -113,8 +113,10 @@ internal class AndroidUpdates(private val app: Context, private val feed: String
             prefs.edit().putLong("attempt", now).apply()
             view = view.copy(checking = true, problem = null)
             try {
-                val raw = fetchIndex(feed)
-                val manifest = raw?.let { parse(it) ?: throw FeedProblem("The update information isn't valid.") }
+                val index = fetchIndex(feed)
+                val raw = index?.raw
+                val manifest = index?.let { parse(it.raw)?.takeIf { release -> "v${release.versionName}" == it.tag }
+                    ?: throw FeedProblem("The update information isn't valid.") }
                 val offer = manifest?.takeIf { newer(it.versionCode, installed) && it.minSdk <= Build.VERSION.SDK_INT }
                 if (offer != view.offer) {
                     apk.delete()

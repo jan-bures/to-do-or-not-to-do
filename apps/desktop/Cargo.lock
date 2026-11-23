@@ -7486,6 +7486,7 @@ dependencies = [
  "jiff 1.0.2",
  "proptest",
  "raw-window-handle",
+ "roxmltree 0.21.2",
  "rusqlite",
  "semver",
  "serde",
