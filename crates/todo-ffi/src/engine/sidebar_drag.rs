@@ -116,6 +116,7 @@ mod tests {
                 utc_offset_secs: 0,
                 zone_id: "UTC".into(),
                 local_day: None,
+                date_format: None,
             },
         )
         .unwrap();

@@ -137,6 +137,7 @@ for (const colorScheme of ["light", "dark"]) {
       await pickup(page, room(page, "Planning"));
       await dragOver(page, room(page, "Finance"), 0.8);
       await expect(nav(page).locator(".sidebar-after .nav-name")).toHaveText("Finance");
+      await expect(page.locator("main .eyebrow").first()).toContainText("21.11.");
       await page.screenshot({ path: `gallery/sidebar-drag-list-${colorScheme}.png`, animations: "disabled" });
       await dragOver(page, room(page, "Osobní"));
       await expect(nav(page).locator(".sidebar-into .nav-name")).toHaveText("Osobní");

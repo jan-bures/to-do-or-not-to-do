@@ -565,7 +565,12 @@ class GalleryTest {
     @Test
     fun sidebar_drag() {
         fixtureEngine().use { e ->
-            val s = state(e, e.list("Planning"))
+            val room = e.list("Planning")
+            // Keep a formatted date on the first row, above the open drawer.
+            val roadmap = e.taskId(room, "Prepare Q4 roadmap review")
+            e.setDue(roadmap, "2026-11-23")
+            val s = state(e, room)
+            assertEquals("Mon 23.11.", s.room.tasks.first { it.id == roadmap }.due?.text)
             val work = s.home.groups.first { it.collection?.name == "Work" }
             val personal = s.home.groups.first { it.collection?.name == "Personal" }
             val planning = work.lists.first { it.name == "Planning" }
