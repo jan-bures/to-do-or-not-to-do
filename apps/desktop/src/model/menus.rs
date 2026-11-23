@@ -78,6 +78,7 @@ pub enum MenuAction {
     AskSignOut,
     SignOut,
     SetPriority(TaskId, Priority),
+    QuickPriority(Priority),
     /// A task's context menu: complete or reopen it.
     ToggleDone(TaskId),
     ToggleMyDay(TaskId),
@@ -1071,39 +1072,37 @@ pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
 
 /// A priority's name, and its marks on a row.
 pub fn priority_label(p: Priority) -> (&'static str, &'static str) {
-    match p {
-        Priority::High => ("High", "!!!"),
-        Priority::Normal => ("Normal", "!!"),
-        Priority::Low => ("Low", "!"),
-        Priority::None => ("None", ""),
-    }
+    let option = todo_client::intent::quick_add::priority_option(p);
+    (option.label, option.mark)
 }
 
 /// The detail pane's priority picker: all four levels, highest first, the current one ticked.
 pub fn priority_menu(task: TaskId, current: Priority) -> Vec<MenuEntry> {
-    [
-        ("priority-high", Priority::High),
-        ("priority-normal", Priority::Normal),
-        ("priority-low", Priority::Low),
-        ("priority-none", Priority::None),
-    ]
-    .into_iter()
-    .map(|(key, level)| {
-        let (label, marks) = priority_label(level);
-        MenuEntry::Item(MenuItem {
-            key: key.into(),
-            icon: Icon::Flag,
-            glyph: None,
-            dot: None,
-            label: label.into(),
-            danger: false,
-            checked: level == current,
-            hint: (!marks.is_empty()).then(|| marks.into()),
-            action: MenuAction::SetPriority(task, level),
-            more: None,
+    priority_entries(current, |level| MenuAction::SetPriority(task, level))
+}
+
+pub fn priority_entries(
+    current: Priority,
+    action: impl Fn(Priority) -> MenuAction,
+) -> Vec<MenuEntry> {
+    todo_client::intent::quick_add::PRIORITIES
+        .into_iter()
+        .map(|option| {
+            let level = option.level;
+            MenuEntry::Item(MenuItem {
+                key: format!("priority-{}", level.name()).into(),
+                icon: Icon::Flag,
+                glyph: None,
+                dot: None,
+                label: option.label.into(),
+                danger: false,
+                checked: level == current,
+                hint: (!option.mark.is_empty()).then(|| option.mark.into()),
+                action: action(level),
+                more: None,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 /// A task's context menu (right-click a row): what its row and the list's keys already do (complete or

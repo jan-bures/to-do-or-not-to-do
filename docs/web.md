@@ -361,15 +361,20 @@ restore the parent first. Restoring a list or collection reveals the items hidde
 deleted separately. Undo a merge from Activity to recover a merge source. Trash has no automatic expiry
 or permanent-delete control. Files are subject to the server's separate attachment blob-retention policy.
 
-Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show a live chip for a recognized date
-and to set that date when you submit. The chip uses the same short date as desktop and Android, such as
+Quick-add uses the [shared syntax](desktop.md#quick-add-syntax) to show removable date and priority chips
+and to set those fields when you submit. The date chip uses the same short date as desktop and Android, such as
 `Sun 22 Nov`. A trailing date can be `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`,
 `by fri`). Whole phrases work too: `in 2 days`, `za 3 týdny`, `příští týden`, `next Friday`, `o víkendu`,
 `end of month`, or a day and month such as `1. prosince` or `1. 12.`. Past ISO dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow` keeps
 `See you tomorrow` as the title. The room supplies defaults: My Day adds today's My Day stamp,
 Important defaults to high priority and Planned defaults to due today. New tasks go first in their
 list's manual order. If there is no destination list, quick-add creates **Tasks** first, inside the
-current collection when applicable. **Alt+Up/Down** moves the selected task one place among its live
+current collection when applicable. The **Calendar** opens a Monday-first month grid with **Today**,
+**Tomorrow**, **Next week** (next Monday) and **No date**. From the grid, arrows move by days or weeks,
+Page Up/Down by months, Enter chooses, and Esc closes the picker and returns to its button. The **Flag**
+offers the four priority levels. Picking a value removes the matching typed suffix, leaving the other one
+alone. Clearing a chip (or choosing **No date** or **None**) overrides the corresponding room default.
+**Alt+Up/Down** moves the selected task one place among its live
 siblings in its own list, even when the list is filtered. Aggregate rooms don't support manual reordering.
 
 Drop `.eml` files onto the task list to [create tasks from email](desktop.md#drop-an-email-onto-the-task-list).
@@ -532,7 +537,7 @@ The status bar shows shortcuts only when their actions are available.
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered,
   empty and refused undo), task detail activity on desktop and phone, the desktop and phone quick-add
-  date chip, the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
+  chips, calendar and priority pickers, the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
   list, detail and drawer. Settings menus are captured on desktop (`sidebar-settings-{light,dark}.png`)
   and phone (`phone-settings-{light,dark}.png`). The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;

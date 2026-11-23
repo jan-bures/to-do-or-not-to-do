@@ -550,7 +550,7 @@ pub fn short_date(d: Date, today: Date) -> String {
 }
 
 /// The parsed date displayed in the quick-add chip, using the shared client format.
-#[must_use]
+#[cfg(test)]
 pub fn date_preview(text: &str, now: &Now) -> Option<String> {
     let eval = now.eval();
     quick_add::parse(text, &eval)

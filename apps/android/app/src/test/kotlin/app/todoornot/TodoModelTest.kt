@@ -7,6 +7,12 @@ import app.todoornot.core.RepeatUnit
 
 import app.todoornot.core.Completion
 import app.todoornot.core.quickAddDate
+import app.todoornot.core.QuickAddDraft
+import app.todoornot.core.quickAddEdit
+import app.todoornot.core.quickAddMonth
+import app.todoornot.core.quickAddPickDue
+import app.todoornot.core.quickAddPickPriority
+import app.todoornot.core.quickAddPreview
 import app.todoornot.core.FailedChange
 import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
@@ -195,6 +201,37 @@ class TodoModelTest {
         assertEquals("Sun 22 Nov", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds \\tomorrow", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds tomorrow at noon", FIXTURE_NOW))
+    }
+
+    @Test
+    fun quick_add_picker_replaces_typed_suffixes_and_submits_the_preview() {
+        val engine = fixtureEngine()
+        val room = RoomKey.Smart(SmartList.MY_DAY)
+        val draft = QuickAddDraft("Buy seeds zítra !!", null, false, null)
+        val typed = quickAddPreview(draft, FIXTURE_NOW)
+        assertEquals("2026-11-22", typed.due)
+        assertEquals(2u.toUByte(), typed.priority)
+        val month = quickAddMonth(FIXTURE_NOW, typed.due, null)
+        assertEquals("November 2026", month.label)
+        assertEquals("Mon", month.weekdays.first())
+        assertEquals("2026-11-22", month.rows.flatten().filterNotNull().single { it.selected }.date)
+        val nextWeek = month.presets.single { it.label == "Next week" }.date
+        val pickedDate = quickAddPickDue(draft, nextWeek, FIXTURE_NOW)
+        assertEquals("Buy seeds !!", pickedDate.text)
+        val pickedBoth = quickAddPickPriority(pickedDate, 1u, FIXTURE_NOW)
+        assertEquals("Buy seeds", pickedBoth.text)
+        val preview = quickAddPreview(pickedBoth, FIXTURE_NOW)
+        assertEquals("Mon 23 Nov", preview.dueLabel)
+        val id = engine.addTaskDraft(room, pickedBoth, FIXTURE_NOW)
+        val detail = requireNotNull(engine.task(id, FIXTURE_NOW))
+        assertEquals(pickedBoth.text, detail.title)
+        assertEquals(preview.due, detail.due)
+        assertEquals(1u.toUByte(), detail.priority)
+
+        val typedAgain = quickAddEdit(pickedBoth, "Buy seeds today", FIXTURE_NOW)
+        val clear = quickAddPickDue(typedAgain, null, FIXTURE_NOW)
+        val undated = engine.addTaskDraft(RoomKey.Smart(SmartList.PLANNED), clear, FIXTURE_NOW)
+        assertNull(requireNotNull(engine.task(undated, FIXTURE_NOW)).due)
     }
 
     @Test

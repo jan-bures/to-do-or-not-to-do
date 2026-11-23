@@ -315,7 +315,8 @@ The mark repeats the actor already named in text. This is a read-only summary, n
 
 - On the desktop, the bottom of the list reserves a 56 px inset. "Completed 3" sits on the left and the toast on
   the right.
-- On phones, a 56 dp strip above the single 48 dp composer holds the toast.
+- On phones, a 56 dp strip above the composer holds the toast. The composer has one 48 dp input row and,
+  only when it has metadata, a second touch-height row for its chips.
 
 **Multi-selection.** Every selected row gets the stronger `selection-wash` and a leading
 `accent-strong` mark, with `ink-2` for quiet text and `selection-check` for a checked box. On desktop
@@ -329,6 +330,27 @@ or move changes the rows together, without staggering; one count-based toast off
 **Pills are rationed.** Only three things are pill-shaped: list chips (a 6 px dot, a 6 px gap and 8 px padding),
 the overdue badge and phone room pills. Tags are plain mono `#tag` text. Suggestions get a compact chip with a
 6 px radius, not a banner.
+
+### Quick-add date and priority
+
+The Calendar and Flag buttons sit at the trailing edge of the room composer, in that order. They open
+pickers, not toggles. An open button exposes its expanded state. A button with a pending value uses the
+stronger ink; the value itself is readable in a compact, removable chip. Date uses a calendar mark and
+short mono date (`Sun 22 Nov`); priority stays neutral and uses `!`, `!!` or `!!!`. Desktop and wide web
+keep them in the field. Phone puts them in a second row inside the same field so they never crowd the title.
+
+The date picker uses the same opaque raised surface, radius and overlay shadow as a menu. It opens next to
+its button, on the roomier side when it wouldn't fit below. **Today**, **Tomorrow**, **Next week** (the next
+Monday) and **No date** sit above the month grid. Month arrows flank the heading. The grid uses the same
+Monday-first ISO convention as the room's week number and the same English weekday names as the date chips.
+Days outside the month are blank. The selected date has a wash and a stronger label; today's outline and
+the keyboard focus edge are separate. The picker opens on the pending date or today. The arrow keys move by
+one day or one week, Page Up/Down move by a month, Enter chooses, and Esc dismisses without changing the
+draft. The Flag opens the same four choices as task detail with the current choice ticked.
+
+A choice sets the pending field and takes out that field's typed suffix, not the title or the other suffix.
+Typing another valid suffix replaces the corresponding choice. Removing a chip clears that field; **No date**
+and **None** explicitly clear the field even in a room with a default for it. Only submitting creates a task.
 
 ## Radii
 

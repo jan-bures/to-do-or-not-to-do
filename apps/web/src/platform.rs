@@ -222,7 +222,8 @@ pub fn place_room_menu(menu: &web_sys::HtmlElement, anchor: &str) -> bool {
     );
     let rect = trigger.get_bounding_client_rect();
     let clip = trigger
-        .closest(".detail-scroll, .nav, .room")
+        // On phones the fixed composer sits outside the room's scrollable content.
+        .closest(".quick-add, .detail-scroll, .nav, .room")
         .ok()
         .flatten()
         .map(|pane| pane.get_bounding_client_rect());

@@ -188,21 +188,24 @@ impl ShellView {
             }
             cx.stop_propagation();
         } else if super::navigation_tab(e) && !self.menu_focus.is_focused(window) {
-            let mut stops = vec![
-                self.list_focus.clone(),
-                self.quick_add.read(cx).focus_handle.clone(),
-                compact.focus.clone(),
-            ];
-            if compact.unavailable {
-                stops = vec![compact.focus.clone()];
-            } else {
+            let mut stops = vec![compact.focus.clone()];
+            if !compact.unavailable {
                 let bulk = self
                     .bulk_focus
                     .iter()
                     .enumerate()
                     .filter(|(index, _)| self.bulk_stop(*index))
                     .map(|(_, handle)| handle.clone());
-                stops.splice(1..1, bulk);
+                let quick_add = super::hints::QUICK_ADD_STOPS
+                    .into_iter()
+                    .filter(|&stop| self.has_stop(stop))
+                    .map(|stop| self.stop_handle(stop).clone());
+                stops.splice(
+                    0..0,
+                    std::iter::once(self.list_focus.clone())
+                        .chain(bulk)
+                        .chain(quick_add),
+                );
                 if self.has_stop(super::hints::Stop::Undo) {
                     stops.push(self.undo_focus.clone());
                 }

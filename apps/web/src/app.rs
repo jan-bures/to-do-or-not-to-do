@@ -9,6 +9,7 @@ mod device_pairing;
 mod email_drop;
 mod links;
 mod pickers;
+mod quick_add;
 mod reminder;
 mod repeat;
 mod room_actions;
@@ -25,6 +26,7 @@ use crate::model::{
 use crate::platform;
 use leptos::html;
 use leptos::prelude::*;
+use quick_add::QuickAdd;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1916,66 +1918,6 @@ fn animate_sun(sun: RwSignal<f32>, from: f32, to: f32, start: f64) {
     });
 }
 
-#[component]
-fn QuickAdd() -> impl IntoView {
-    let c = ctx();
-    let value = RwSignal::new(String::new());
-    let add = move || {
-        let now = if c.live {
-            let now = platform::now();
-            c.now.set(now);
-            now
-        } else {
-            c.now.get_untracked()
-        };
-        let Some(room) = c
-            .view_room
-            .with_untracked(|r| r.add_placeholder.as_ref().map(|_| r.id.clone()))
-        else {
-            return;
-        };
-        let text = value.get_untracked();
-        let (id, commands) = c.state.with_untracked(|state| {
-            intent::quick_add_task(state, &room, &text, &now.eval(), backend::new_uuid)
-        });
-        if id.is_some() && commands.into_iter().all(|command| c.submit(command)) {
-            value.set(String::new());
-        }
-    };
-    let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
-    let date = Memo::new(move |_| value.with(|text| model::date_preview(text, &c.now.get())));
-    // Keep the last label available while the visual chip fades out.
-    let chip_label = Memo::new(move |prev: Option<&String>| {
-        date.get().or_else(|| prev.cloned()).unwrap_or_default()
-    });
-    view! {
-        <Show when=move || add_placeholder.with(Option::is_some)>
-            <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
-                <span class="qa-plus">{icon(Icon::Plus)}</span>
-                <input
-                    node_ref=c.quick_add
-                    class="qa-input"
-                    type="text"
-                    disabled=move || c.read_only()
-                    autocomplete="off"
-                    enterkeyhint="done"
-                    aria-label="Add a task"
-                    placeholder=move || add_placeholder.get().unwrap_or_default()
-                    prop:value=move || value.get()
-                    on:input=move |ev| value.set(event_target_value(&ev))
-                />
-                <span class="qa-date-announcement" role="status">{move || date.get().map(|date| format!("Due {date}"))}</span>
-                <span class="qa-date-chip" class:no-date=move || date.with(Option::is_none) aria-hidden="true">
-                    {icon(Icon::Calendar)}{move || chip_label.get()}
-                </span>
-                <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
-                    <span class="keycap">"N"</span>
-                </span>
-            </form>
-        </Show>
-    }
-}
-
 fn rows_with_exits(room: &Room, section: RowSection, lingering: &[Linger]) -> Vec<Shown> {
     let rows = if section == RowSection::Completed {
         &room.completed
@@ -2917,12 +2859,7 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
             platform::focus("task-detail");
         }
     };
-    let options = [
-        (Priority::None, "None", "None"),
-        (Priority::Low, "Low", "! Low"),
-        (Priority::Normal, "Normal", "!! Normal"),
-        (Priority::High, "High", "!!! High"),
-    ];
+    let options = intent::quick_add::PRIORITIES;
     view! {
         <div class="prop">
             <dt>{icon(Icon::Flag)}<label for="task-priority">"Priority"</label></dt>
@@ -2931,8 +2868,8 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                     disabled=move || c.read_only()
                     on:change=move |ev| {
                         let value = event_target_value(&ev);
-                        if let Some((level, _, _)) = options.iter().find(|(_, name, _)| value == *name) {
-                            c.submit_intent(|s| intent::pick_priority(s, id, *level));
+                        if let Some(option) = options.iter().find(|option| value == option.label) {
+                            c.submit_intent(|s| intent::pick_priority(s, id, option.level));
                         }
                     }
                     on:keydown=move |ev| {
@@ -2944,8 +2881,11 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                             return_focus();
                         }
                     }>
-                    {options.into_iter().map(|(level, name, label)| view! {
-                        <option value=name prop:selected=move || priority.get() == level>{label}</option>
+                    {options.into_iter().rev().map(|option| {
+                        let label = format!("{} {}", option.mark, option.label).trim().to_owned();
+                        view! {
+                            <option value=option.label prop:selected=move || priority.get() == option.level>{label}</option>
+                        }
                     }).collect_view()}
                 </select>
             </dd>

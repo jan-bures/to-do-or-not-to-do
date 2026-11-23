@@ -866,10 +866,28 @@ impl TodoEngine {
         title: String,
         now: LocalNow,
     ) -> Result<String, FfiError> {
-        let (id, commands) = intent::quick_add_task(
+        self.add_task_draft(
+            room,
+            intent::quick_add::Draft {
+                text: title,
+                ..Default::default()
+            }
+            .into(),
+            now,
+        )
+    }
+
+    /// Adds a task using the same draft that the composer previews.
+    pub fn add_task_draft(
+        &self,
+        room: RoomKey,
+        draft: crate::quick_add::QuickAddDraft,
+        now: LocalNow,
+    ) -> Result<String, FfiError> {
+        let (id, commands) = intent::submit_draft(
             &self.client.view(),
             intent_room(room),
-            &title,
+            &draft.into(),
             &Now::new(now).eval(),
             || self.client.new_uuid(),
         );

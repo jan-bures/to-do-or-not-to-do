@@ -121,17 +121,22 @@ pub(super) struct DetailPicker {
 
 impl DetailPicker {
     pub(super) fn new(c: Ctx, task: TaskId, anchor: &'static str, id: &'static str) -> Self {
+        let this = Self::anchored(anchor, id);
+        Effect::new(move |_| {
+            if this.open.get() && (c.selected.get() != Some(task) || c.read_only()) {
+                this.close(false);
+            }
+        });
+        this
+    }
+
+    pub(super) fn anchored(anchor: &'static str, id: &'static str) -> Self {
         let this = Self {
             node: NodeRef::new(),
             open: RwSignal::new(false),
             anchor,
             id,
         };
-        Effect::new(move |_| {
-            if this.open.get() && (c.selected.get() != Some(task) || c.read_only()) {
-                this.close(false);
-            }
-        });
         let resize = window_event_listener(leptos::ev::resize, move |_| this.position());
         on_cleanup(move || resize.remove());
         this

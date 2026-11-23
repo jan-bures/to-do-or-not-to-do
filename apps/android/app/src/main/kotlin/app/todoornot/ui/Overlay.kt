@@ -214,7 +214,13 @@ fun MenuPopup(
     onDismiss: () -> Unit,
     start: Boolean = false,
     title: String? = null,
-) {
+) = AnchoredPopup(onDismiss, start) { overlay ->
+    MenuCard(entries, { action -> overlay.choose { onChoose(action) } }, Modifier.padding(S.S2.dp), title)
+}
+
+/** Shared anchor, placement and motion for menus and the calendar popover. */
+@Composable
+fun AnchoredPopup(onDismiss: () -> Unit, start: Boolean = false, content: @Composable (OverlayState) -> Unit) {
     val overlay = rememberOverlay(onDismiss)
     val density = LocalDensity.current
     val shift = with(density) { M.OVERLAY_SHIFT.dp.roundToPx() }
@@ -235,8 +241,7 @@ fun MenuPopup(
             exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) +
                 scaleOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic()), targetScale = M.OVERLAY_TO_SCALE, transformOrigin = TransformOrigin(origin, 0f)),
         ) {
-            // Room for the shadow around the card.
-            MenuCard(entries, { action -> overlay.choose { onChoose(action) } }, Modifier.padding(S.S2.dp), title)
+            content(overlay)
         }
     }
 }

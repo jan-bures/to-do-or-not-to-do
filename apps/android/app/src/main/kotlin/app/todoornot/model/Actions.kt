@@ -14,8 +14,9 @@ interface Actions {
     fun clearBulk() = Unit
     fun editBulk(edit: BulkEdit) = Unit
     suspend fun bulkDestinations(tasks: List<String>, filter: String): List<DestinationGroup> = emptyList()
-    fun add(title: String)
-    fun previewDate(text: String): String?
+    fun add(title: String) = add(app.todoornot.core.QuickAddDraft(title, null, false, null))
+    fun add(draft: app.todoornot.core.QuickAddDraft)
+    fun composerNow(): app.todoornot.core.LocalNow = app.todoornot.core.localNow()
     /**
      * Completes or reopens a task. A row tap and the detail pane pass the room [generation] they were read
      * in ([UiState.generation]); null (Undo) is the room on screen now. [row] says the tap was on the task's
@@ -121,8 +122,7 @@ interface Actions {
     object None : Actions {
         override fun open(room: RoomKey) = Unit
         override fun select(id: String?) = Unit
-        override fun add(title: String) = Unit
-        override fun previewDate(text: String): String? = null
+        override fun add(draft: app.todoornot.core.QuickAddDraft) = Unit
         override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) = Unit
         override fun deleteTask(id: String) = Unit
         override suspend fun moveDestinations(id: String, filter: String) = emptyList<DestinationGroup>()

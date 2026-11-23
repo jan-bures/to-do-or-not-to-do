@@ -11,6 +11,7 @@ mod email_drop;
 mod menu;
 mod panes;
 mod popout;
+mod quick_pickers;
 mod reminders;
 mod sidebar;
 mod trash;
@@ -30,6 +31,7 @@ use gpui::{
 use todo_client::Connection;
 use todo_client::room_header::{StatusCounts, Summary};
 use todo_core::ids::{CollectionId, ListId, TaskId};
+use todo_core::model::Priority;
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
@@ -248,6 +250,8 @@ pub struct ShellView {
     painted_hue: Hue,
     landscape: HeaderCache,
     quick_add: Entity<TextInput>,
+    quick_draft: quick_add::Draft,
+    quick_focus: quick_pickers::Controls,
     list_focus: FocusHandle,
     multi: todo_client::selection::Selection,
     bulk_focus: [FocusHandle; 7],
@@ -379,9 +383,11 @@ impl ShellView {
             window,
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Submit => {
-                    let text = input.read(cx).content.to_string();
-                    if this.add_task(&text, this.ui.room, cx) {
+                    let draft = this.quick_draft.clone();
+                    if this.add_draft(&draft, this.ui.room, cx) {
+                        this.quick_draft = quick_add::Draft::default();
                         input.update(cx, |i, cx| i.reset(window, cx));
+                        cx.notify();
                     }
                 }
                 InputEvent::Cancel => {
@@ -391,7 +397,11 @@ impl ShellView {
                         window.focus(&this.list_focus, cx);
                     }
                 }
-                InputEvent::Changed => cx.notify(),
+                InputEvent::Changed => {
+                    this.quick_draft
+                        .edit(input.read(cx).content.to_string(), &this.store.now().eval());
+                    cx.notify();
+                }
             },
         )
         .detach();
@@ -433,6 +443,11 @@ impl ShellView {
             palette,
             painted_hue,
             landscape: HeaderCache::default(),
+            quick_draft: quick_add::Draft {
+                text: quick_add.read(cx).content.to_string(),
+                ..Default::default()
+            },
+            quick_focus: quick_pickers::Controls::new(quick_add.read(cx).focus_handle.clone(), cx),
             quick_add,
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
@@ -590,7 +605,11 @@ impl ShellView {
             self.row_bounds.borrow_mut().clear();
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
-            MenuKind::Room { .. } | MenuKind::Task { .. } | MenuKind::BulkMove => room_changed,
+            MenuKind::Room { .. }
+            | MenuKind::Task { .. }
+            | MenuKind::BulkMove
+            | MenuKind::QuickDue(_)
+            | MenuKind::QuickPriority => room_changed,
             MenuKind::Priority { task }
             | MenuKind::Tags { task, .. }
             | MenuKind::Repeat { task, .. }
@@ -997,11 +1016,9 @@ impl ShellView {
     fn keep_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A menu whose subject went away (a list or task deleted on another device) has nothing left to
         // offer: it closes at once, and the keyboard goes back to the list, so Escape and Tab still work.
-        if self
-            .menu
-            .as_ref()
-            .is_some_and(|m| self.menu_entries(m.kind).is_empty())
-        {
+        if self.menu.as_ref().is_some_and(|m| {
+            !matches!(m.kind, MenuKind::QuickDue(_)) && self.menu_entries(m.kind).is_empty()
+        }) {
             self.menu = None;
             self.menu_dropped = true;
         }
@@ -1026,6 +1043,7 @@ impl ShellView {
                 hints::Stop::ActivityMore,
             ]
             .into_iter()
+            .chain(hints::QUICK_ADD_STOPS)
             .any(|stop| self.stop_handle(stop).is_focused(window) && !self.has_stop(stop))
             || self
                 .bulk_focus
@@ -1263,6 +1281,8 @@ impl ShellView {
             "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
+            "quick-add-calendar" => Some(MenuKind::QuickDue(self.quick_calendar())),
+            "quick-add-priority" => Some(MenuKind::QuickPriority),
             "repeat-menu" => task.map(|task| MenuKind::Repeat { task, draft: None }),
             "repeat-custom" => task.and_then(|task| {
                 self.store
@@ -1634,10 +1654,26 @@ impl ShellView {
 
     /// Adds a task typed into a quick-add, to `room`. Returns whether it was added.
     pub fn add_task(&mut self, text: &str, room: RoomKey, cx: &mut Context<Self>) -> bool {
+        self.add_draft(
+            &quick_add::Draft {
+                text: text.into(),
+                ..Default::default()
+            },
+            room,
+            cx,
+        )
+    }
+
+    fn add_draft(
+        &mut self,
+        draft: &quick_add::Draft,
+        room: RoomKey,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let now = self.store.now();
         let store = self.store.clone();
         let (id, cmds) =
-            commands::quick_add_task(&store.view(), room, text, &now.eval(), || store.new_uuid());
+            commands::submit_draft(&store.view(), room, draft, &now.eval(), || store.new_uuid());
         let ok = id.is_some() && self.submit(cmds);
         self.refresh(cx);
         ok
@@ -2371,12 +2407,15 @@ impl ShellView {
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
     }
 
-    fn quick_add_field(&self, window: &Window, cx: &App) -> Div {
+    fn quick_add_field(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
-        let input = self.quick_add.read(cx);
-        let focused = input.focus_handle.is_focused(window);
-        let text = input.content.clone();
-        let typed = !text.is_empty();
+        let focused = self.quick_focus.input.is_focused(window);
+        let typed = !self.quick_draft.text.is_empty();
+        let now = self.store.now();
+        let parsed = self.quick_draft.parsed(&now.eval());
+        let date = parsed.due.map(|d| quick_add::short_date(d, now.today()));
+        let priority = parsed.priority.unwrap_or_default();
+        let has_chips = date.is_some() || priority != Priority::None;
         // On the finished day the field stays, but quietly: on the pane with a hairline, so the hand-over
         // to tomorrow leads. Ctrl+N or a click wakes it up.
         let quiet = self.shell.room.finished_day() && !focused && !typed;
@@ -2384,7 +2423,7 @@ impl ShellView {
             .h(px(desktop::QUICK_ADD))
             .flex()
             .items_center()
-            .gap(px(space::S3))
+            .gap(px(space::S2))
             .pl(px(space::S3 + 2.))
             .pr(px(space::S2 + 2.))
             .rounded(px(radius::QUICK_ADD))
@@ -2403,38 +2442,16 @@ impl ShellView {
                 component::ICON,
                 if quiet { p.ink_3 } else { p.accent_strong },
             ))
-            .child(div().flex_1().min_w_0().child(self.quick_add.clone()));
-        let field = if typed {
-            // What the typed words will set: the parsed due date as a chip.
-            let now = self.store.now();
-            let parsed = quick_add::parse(&text, &now.eval());
-            field
-                .children(parsed.due.map(|d| {
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(component::CHIP_GAP))
-                        .px(px(space::S2))
-                        .h(px(component::CHIP + 2.))
-                        .rounded(px(radius::SM))
-                        .bg(p.wash)
-                        .text_color(p.accent_strong)
-                        .style(ty::COUNT.with_weight(500))
-                        .child(kit::icon(
-                            Icon::Calendar,
-                            component::ICON_SMALL,
-                            p.accent_strong,
-                        ))
-                        .child(model::labels::short_date(d, now.today()))
-                }))
-                .child(kit::kbd(p, "Enter"))
-        } else if quiet {
-            field.child(kit::kbd(p, "Ctrl N"))
-        } else {
-            // A date and a priority are typed (`tomorrow !!`) until the field has pickers for them.
-            field.child(kit::kbd(p, "Ctrl N"))
-        };
+            .child(div().flex_1().min_w_0().child(self.quick_add.clone()))
+            .children(date.map(|label| self.quick_date_chip(label, window, cx)))
+            .when(priority != Priority::None, |field| {
+                field.child(self.quick_priority_chip(priority, window, cx))
+            })
+            .child(self.quick_picker_button(true, parsed.due.is_some(), window, cx))
+            .child(self.quick_picker_button(false, priority != Priority::None, window, cx))
+            .when(!has_chips, |field| {
+                field.child(kit::kbd(p, if typed { "Enter" } else { "Ctrl N" }))
+            });
         // The focus ring is a band of the room tint around the field (a border, not a shadow).
         let ring = if focused || typed {
             p.tint
@@ -3799,6 +3816,7 @@ impl ShellView {
             || on(&self.account_focus)
             || on(&self.sync_focus)
             || on(&self.new_focus)
+            || self.quick_focus.button_focused(window)
         {
             Focus::Control
         } else {
@@ -3989,6 +4007,11 @@ impl ShellView {
             Stop::Undo => &self.undo_focus,
             Stop::Bulk(index) => &self.bulk_focus[index],
             Stop::RoomMenu => &self.room_menu_focus,
+            Stop::QuickInput => &self.quick_focus.input,
+            Stop::QuickDue => &self.quick_focus.date,
+            Stop::QuickPriority => &self.quick_focus.priority,
+            Stop::QuickRemoveDate => &self.quick_focus.remove_date,
+            Stop::QuickRemovePriority => &self.quick_focus.remove_priority,
             Stop::ActivityFilter => &self.activity_filter_focus,
             Stop::ActivityRefresh => &self.activity_refresh_focus,
             Stop::ActivityMore => &self.activity_more_focus,
@@ -4027,6 +4050,16 @@ impl ShellView {
             }
             Stop::Bulk(index) => self.bulk_stop(index),
             Stop::RoomMenu => self.has_room_menu(),
+            Stop::QuickInput | Stop::QuickDue | Stop::QuickPriority => {
+                !self.in_activity() && self.ui.room != RoomKey::Trash
+            }
+            Stop::QuickRemoveDate => {
+                self.has_stop(Stop::QuickInput) && self.quick_preview().due.is_some()
+            }
+            Stop::QuickRemovePriority => {
+                self.has_stop(Stop::QuickInput)
+                    && self.quick_preview().priority.unwrap_or_default() != Priority::None
+            }
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }

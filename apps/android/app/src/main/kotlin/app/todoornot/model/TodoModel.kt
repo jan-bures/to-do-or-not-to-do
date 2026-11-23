@@ -35,7 +35,7 @@ import app.todoornot.core.TaskMove
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
-import app.todoornot.core.quickAddDate
+import app.todoornot.core.QuickAddDraft
 import app.todoornot.core.reminderSetText
 import app.todoornot.core.syncStatusText
 import kotlinx.coroutines.CoroutineDispatcher
@@ -785,12 +785,12 @@ class TodoModel(
     override suspend fun bulkDestinations(tasks: List<String>, filter: String) =
         withContext(io) { engine.bulkDestinations(tasks, filter) }
 
-    override fun previewDate(text: String): String? = quickAddDate(text, now())
+    override fun composerNow(): LocalNow = now()
 
     // Capture the room on the caller's thread, even if they switch before the IO action runs.
-    override fun add(title: String) {
+    override fun add(draft: QuickAddDraft) {
         val room = key
-        act { engine.addTask(room, title, now()) }
+        act { engine.addTaskDraft(room, draft, now()) }
     }
 
     /**

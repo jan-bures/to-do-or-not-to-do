@@ -1,8 +1,6 @@
 package app.todoornot.ui
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
@@ -32,8 +30,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -53,7 +49,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,7 +62,6 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.RoomKey
@@ -581,87 +575,6 @@ internal fun ToastStrip(toast: Toast?, actions: Actions) {
                         .height(Tokens.Elevation.HAIRLINE.dp * 2)
                         .background(r.toastInk2.copy(alpha = 0.55f), RoundedCornerShape(Tokens.Elevation.HAIRLINE.dp)),
                 )
-            }
-        }
-    }
-}
-
-/** The single 48 dp composer at the bottom, docked above the keyboard. Enter adds the task to this room. */
-@Composable
-private fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?) {
-    val r = LocalDesign.current.room
-    val requester = remember { FocusRequester() }
-    LaunchedEffect(focus != null) {
-        if (focus != null) {
-            requester.requestFocus()
-            focus()
-        }
-    }
-    var text by rememberSaveable(draft) { mutableStateOf(draft) }
-    // Recompute only when the text changes; submit parses again against now(), not this preview.
-    val date = remember(text) { if (text.isBlank()) null else actions.previewDate(text) }
-    val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
-    fun submit() {
-        val t = text.trim()
-        if (t.isNotEmpty()) actions.add(t)
-        text = ""
-    }
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(r.pane)
-            .hairline(r.line, top = true)
-            .navigationBarsPadding()
-            .imePadding()
-            .padding(start = S.S4.dp, end = S.S4.dp, top = S.S3.dp, bottom = if (keyboard) S.S3.dp else S.S4.dp),
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(P.COMPOSER.dp)
-                .clip(shape)
-                .background(r.raised)
-                .border(Tokens.Elevation.HAIRLINE.dp, r.control, shape)
-                .padding(start = S.S3.dp, end = S.S4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
-        ) {
-            Icon("plus", r.accentStrong)
-            BasicTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.weight(1f).focusRequester(requester).semantics { contentDescription = placeholder },
-                textStyle = Tokens.Type.COMPOSER.style(r.ink),
-                singleLine = true,
-                cursorBrush = SolidColor(r.accent),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { submit() }),
-                decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (text.isEmpty()) Label(placeholder, Tokens.Type.COMPOSER, r.ink3)
-                        inner()
-                    }
-                },
-            )
-            AnimatedContent(
-                targetState = date,
-                transitionSpec = {
-                    (fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) togetherWith
-                        fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic()))).using(null)
-                },
-                label = "Quick-add date",
-            ) { label ->
-                if (label != null) {
-                    Row(
-                        Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.SM.dp))
-                            .padding(horizontal = S.S2.dp, vertical = S.S1.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
-                    ) {
-                        Icon("calendar", r.accentStrong, size = Tokens.Metrics.Component.ICON_SMALL.dp)
-                        Label(label, Tokens.Type.COUNT, r.accentStrong, weight = Tokens.Type.DUE.weight)
-                    }
-                }
             }
         }
     }

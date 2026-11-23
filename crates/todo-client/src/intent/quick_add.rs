@@ -26,6 +26,8 @@
 //! A leading backslash on the final title token stops parsing there and is removed: `Plan \today !!`
 //! keeps `Plan today` as the title but still sets priority.
 
+use std::ops::Range;
+
 use todo_core::model::Priority;
 use todo_core::query::{EvalContext, fold, parse_date};
 use todo_core::time::{Date, Weekday, add_days};
@@ -159,7 +161,7 @@ fn date_suffix(words: &[&str], ctx: &EvalContext) -> Option<(Date, usize)> {
         ("konec", "mesice") => with_intro(today.last_of_month(), 2),
         ("konce", "mesice") if first == "do" => Some((today.last_of_month(), 3)),
         ("this", "weekend") | ("o", "vikendu") => Some((add_days(today, (5 - offset).max(0))?, 2)),
-        ("next", "week") | ("pristi", "tyden") => Some((add_days(today, 7 - offset)?, 2)),
+        ("next", "week") | ("pristi", "tyden") => Some((super::calendar::next_monday(today)?, 2)),
         _ => {
             if let Some(date) = day_month(&prefix, &last, today) {
                 return with_intro(date, 2);
@@ -240,7 +242,23 @@ fn day_month(day: &str, month: &str, today: Date) -> Option<Date> {
 
 /// Parses quick-add text. The title is trimmed; it is empty only if the text was.
 pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
+    parse_parts(text, ctx).0
+}
+
+#[derive(Default)]
+struct Suffixes {
+    title_end: usize,
+    due: Option<Range<usize>>,
+    priority: Option<Range<usize>>,
+}
+
+fn parse_parts(text: &str, ctx: &EvalContext) -> (Parsed, Suffixes) {
     let mut words: Vec<&str> = text.split_whitespace().collect();
+    let mut suffixes = Suffixes::default();
+    let span = |start: usize, end: usize| {
+        let offset = |word: &str| word.as_ptr().addr() - text.as_ptr().addr();
+        offset(words[start])..offset(words[end - 1]) + words[end - 1].len()
+    };
     let mut end = words.len();
     let mut due = None;
     let mut priority = None;
@@ -256,6 +274,7 @@ pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
             && let Some(p) = priority_word(last)
         {
             priority = Some(p);
+            suffixes.priority = Some(span(end - 1, end));
             end -= 1;
         } else if due.is_none()
             && let Some((d, count)) = date_suffix(&words[..end], ctx)
@@ -265,22 +284,147 @@ pub fn parse(text: &str, ctx: &EvalContext) -> Parsed {
                 break;
             }
             due = Some(d);
+            suffixes.due = Some(span(end - count, end));
             end -= count;
         } else {
             break;
         }
     }
+    suffixes.title_end = if end == 0 { 0 } else { span(0, end).end };
     words.truncate(end);
     if let Some(last) = words.last_mut()
         && let Some(literal) = last.strip_prefix('\\').filter(|word| !word.is_empty())
     {
         *last = literal;
     }
-    Parsed {
-        title: words.join(" "),
-        due,
-        priority,
+    (
+        Parsed {
+            title: words.join(" "),
+            due,
+            priority,
+        },
+        suffixes,
+    )
+}
+
+/// A date choice can explicitly clear the room default, or leave it alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DueChoice {
+    #[default]
+    Default,
+    Clear,
+    Date(Date),
+}
+
+/// One composer's unsent input. Typed and picked values share the same preview and submit path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Draft {
+    pub text: String,
+    pub due: DueChoice,
+    /// `None` keeps the room default; `Some(Priority::None)` explicitly clears it.
+    pub priority: Option<Priority>,
+}
+
+impl Draft {
+    /// Newly typed suffixes supersede a picked value of the same kind, not the other kind.
+    pub fn edit(&mut self, text: String, ctx: &EvalContext) {
+        let typed = parse(&text, ctx);
+        if typed.due.is_some() {
+            self.due = DueChoice::Default;
+        }
+        if typed.priority.is_some() {
+            self.priority = None;
+        }
+        self.text = text;
     }
+
+    pub fn pick_due(&mut self, date: Option<Date>, ctx: &EvalContext) {
+        self.remove_suffix(ctx, true);
+        self.due = date.map_or(DueChoice::Clear, DueChoice::Date);
+    }
+
+    pub fn pick_priority(&mut self, level: Priority, ctx: &EvalContext) {
+        self.remove_suffix(ctx, false);
+        self.priority = Some(level);
+    }
+
+    /// Removing one suffix must not change the remaining title or re-interpret it as a second
+    /// suffix. Keep the other token verbatim and use the existing literal escape if needed.
+    fn remove_suffix(&mut self, ctx: &EvalContext, due: bool) {
+        let (mut expected, parts) = parse_parts(&self.text, ctx);
+        let (removed, kept) = if due {
+            expected.due = None;
+            (parts.due, parts.priority)
+        } else {
+            expected.priority = None;
+            (parts.priority, parts.due)
+        };
+        let Some(removed) = removed else { return };
+        let mut rewritten = self.text.clone();
+        let start = self.text[..removed.start].trim_end().len();
+        rewritten.replace_range(start..removed.end, "");
+        if parse(&rewritten, ctx) != expected {
+            let title = &self.text[..parts.title_end];
+            rewritten = title.to_owned();
+            if let Some(last) = title.split_whitespace().last()
+                && !last.starts_with('\\')
+            {
+                rewritten.insert(title.len() - last.len(), '\\');
+            }
+            if let Some(kept) = kept {
+                rewritten.push(' ');
+                rewritten.push_str(&self.text[kept]);
+            }
+        }
+        self.text = rewritten;
+    }
+
+    /// Preview exactly the fields the draft supplies, before room defaults.
+    pub fn parsed(&self, ctx: &EvalContext) -> Parsed {
+        let mut parsed = parse(&self.text, ctx);
+        if parsed.due.is_none()
+            && let DueChoice::Date(date) = self.due
+        {
+            parsed.due = Some(date);
+        }
+        parsed.priority = parsed.priority.or(self.priority);
+        parsed
+    }
+}
+
+/// One option in the priority menu, shared between detail and quick-add.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PriorityOption {
+    pub level: Priority,
+    pub label: &'static str,
+    pub mark: &'static str,
+}
+
+pub const PRIORITIES: [PriorityOption; 4] = [
+    PriorityOption {
+        level: Priority::High,
+        label: "High",
+        mark: "!!!",
+    },
+    PriorityOption {
+        level: Priority::Normal,
+        label: "Normal",
+        mark: "!!",
+    },
+    PriorityOption {
+        level: Priority::Low,
+        label: "Low",
+        mark: "!",
+    },
+    PriorityOption {
+        level: Priority::None,
+        label: "None",
+        mark: "",
+    },
+];
+
+pub fn priority_option(level: Priority) -> PriorityOption {
+    PRIORITIES[3 - level as usize]
 }
 
 #[cfg(test)]
@@ -304,6 +448,85 @@ mod tests {
             short_date("2027-01-04".parse().expect("date"), today),
             "Mon 4 Jan 2027"
         );
+    }
+
+    #[test]
+    fn choosing_consumes_only_the_matching_suffix_in_either_order() {
+        let ctx = ctx();
+        for (text, after_date, after_priority) in [
+            (
+                "Kup  mléko by 1 Dec !!",
+                "Kup  mléko !!",
+                "Kup  mléko by 1 Dec",
+            ),
+            (
+                "Kup  mléko !! příští týden",
+                "Kup  mléko !!",
+                "Kup  mléko příští týden",
+            ),
+        ] {
+            let draft = Draft {
+                text: text.into(),
+                ..Draft::default()
+            };
+            let mut due = draft.clone();
+            due.pick_due(Some(ctx.today), &ctx);
+            assert_eq!(due.text, after_date);
+            assert_eq!(due.parsed(&ctx).due, Some(ctx.today));
+            assert_eq!(due.parsed(&ctx).priority, Some(Priority::Normal));
+            let mut priority = draft;
+            priority.pick_priority(Priority::Low, &ctx);
+            assert_eq!(priority.text, after_priority);
+            assert_eq!(priority.parsed(&ctx).priority, Some(Priority::Low));
+            assert_eq!(priority.parsed(&ctx).due, parse(text, &ctx).due);
+        }
+    }
+
+    #[test]
+    fn removing_a_chip_keeps_escapes_and_does_not_expose_an_old_suffix() {
+        let ctx = ctx();
+        for (text, title) in [
+            ("Plan today tomorrow !!", "Plan today"),
+            (r"Plan \today tomorrow !!", "Plan today"),
+        ] {
+            let mut draft = Draft {
+                text: text.into(),
+                ..Draft::default()
+            };
+            draft.pick_due(None, &ctx);
+            assert_eq!(draft.text, r"Plan \today !!");
+            assert_eq!(
+                draft.parsed(&ctx),
+                Parsed {
+                    title: title.into(),
+                    due: None,
+                    priority: Some(Priority::Normal)
+                }
+            );
+        }
+        let mut draft = Draft {
+            text: "Plan by !! 1 Dec".into(),
+            ..Draft::default()
+        };
+        draft.pick_priority(Priority::None, &ctx);
+        assert_eq!(draft.parsed(&ctx).title, "Plan by");
+        assert_eq!(draft.parsed(&ctx).due, Some(Date::constant(2026, 12, 1)));
+    }
+
+    #[test]
+    fn typing_over_a_pick_does_not_resurrect_it_after_deleting_the_token() {
+        let ctx = ctx();
+        let mut draft = Draft {
+            text: "Plans".into(),
+            ..Draft::default()
+        };
+        draft.pick_priority(Priority::Low, &ctx);
+        draft.pick_due(Some(ctx.today), &ctx);
+        draft.edit("Plans tomorrow".into(), &ctx);
+        assert_eq!(draft.parsed(&ctx).due, add_days(ctx.today, 1));
+        draft.edit("Plans".into(), &ctx);
+        assert_eq!(draft.parsed(&ctx).due, None);
+        assert_eq!(draft.parsed(&ctx).priority, Some(Priority::Low));
     }
 
     fn literal_title(words: &[&str]) -> String {

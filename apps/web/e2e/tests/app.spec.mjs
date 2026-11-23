@@ -133,6 +133,71 @@ test("quick-add previews only parsed dates and clears the chip after submit", as
   await w.check();
 });
 
+test("quick-add keeps typed and picked values in agreement and navigates the calendar by key", async ({ page }) => {
+  const w = watch(page);
+  await open(page, "/app?fixture=blank");
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  const calendarButton = page.getByRole("button", { name: "Choose due date" });
+  const flagButton = page.getByRole("button", { name: "Choose priority" });
+  const calendar = page.getByRole("dialog", { name: "Choose due date" });
+  const priority = page.getByRole("listbox", { name: "Choose priority" });
+  await add.fill("Water the plants tomorrow !!");
+  await expect(page.getByRole("button", { name: "Remove due date: Sun 22 Nov" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove priority: Normal" })).toBeVisible();
+
+  await calendarButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(calendar.getByRole("button", { name: "Sunday, 22 November 2026" })).toBeFocused();
+  await expect(calendar.getByRole("columnheader").first()).toHaveText("Mon");
+  await page.keyboard.press("PageDown");
+  await expect(calendar.getByRole("grid", { name: "December 2026" })).toBeVisible();
+  await expect(calendar.getByRole("button", { name: "Tuesday, 22 December 2026" })).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(calendar.getByRole("button", { name: "Wednesday, 23 December 2026" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(calendarButton).toBeFocused();
+  await expect(add).toHaveValue("Water the plants tomorrow !!");
+
+  await calendarButton.click();
+  await expect(calendar.getByRole("button", { name: "Sunday, 22 November 2026" })).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(calendar.getByRole("button", { name: "Monday, 23 November 2026" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(add).toHaveValue("Water the plants !!");
+  await expect(page.getByRole("button", { name: "Remove due date: Mon 23 Nov" })).toBeVisible();
+
+  await flagButton.click();
+  await expect(priority.getByRole("option", { name: "Normal", selected: true })).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await expect(add).toHaveValue("Water the plants");
+  await expect(page.getByRole("button", { name: "Remove priority: High" })).toBeVisible();
+  await expect(add).toBeFocused();
+  await add.press("Enter");
+  await expect(row(page, "Water the plants").locator(".col-priority")).toHaveText("!!!");
+  await expect(row(page, "Water the plants").locator(".col-due")).not.toHaveText("–");
+  await expect(page.getByRole("button", { name: /^Remove (due date|priority):/ })).toHaveCount(0);
+  await w.check();
+});
+
+test("phone quick-add anchors the calendar above the composer and clears chips", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page, "/app?fixture=blank");
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  const calendar = page.getByRole("dialog", { name: "Choose due date" });
+  await add.fill("Water the plants !! tomorrow");
+  await page.getByRole("button", { name: "Choose due date" }).click();
+  await expect(calendar).toHaveClass(/above-anchor/);
+  await calendar.getByRole("button", { name: "Next week" }).click();
+  await expect(add).toHaveValue("Water the plants !!");
+  await page.getByRole("button", { name: "Remove due date: Mon 23 Nov" }).click();
+  await page.getByRole("button", { name: "Remove priority: Normal" }).click();
+  await expect(add).toHaveValue("Water the plants");
+  await expect(page.getByRole("button", { name: /^Remove (due date|priority):/ })).toHaveCount(0);
+  await w.check();
+});
+
 test("completing a task holds, collapses, moves the sun, and can be undone", async ({ page }) => {
   const w = watch(page);
   await open(page);

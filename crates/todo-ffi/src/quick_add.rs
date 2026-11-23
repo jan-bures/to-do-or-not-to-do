@@ -1,0 +1,200 @@
+//! Value types for the Android composer's shared draft and calendar.
+
+use todo_client::intent::{calendar, quick_add};
+use todo_core::{model::Priority, time::Date};
+
+use crate::labels::{LocalNow, Now};
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct QuickAddDraft {
+    pub text: String,
+    pub picked_due: Option<String>,
+    pub cleared_due: bool,
+    pub picked_priority: Option<u8>,
+}
+
+impl From<QuickAddDraft> for quick_add::Draft {
+    fn from(d: QuickAddDraft) -> Self {
+        Self {
+            text: d.text,
+            due: if d.cleared_due {
+                quick_add::DueChoice::Clear
+            } else {
+                d.picked_due
+                    .and_then(|date| date.parse().ok())
+                    .map_or(quick_add::DueChoice::Default, quick_add::DueChoice::Date)
+            },
+            priority: d.picked_priority.and_then(priority),
+        }
+    }
+}
+
+impl From<quick_add::Draft> for QuickAddDraft {
+    fn from(d: quick_add::Draft) -> Self {
+        Self {
+            text: d.text,
+            picked_due: match d.due {
+                quick_add::DueChoice::Date(date) => Some(date.to_string()),
+                _ => None,
+            },
+            cleared_due: d.due == quick_add::DueChoice::Clear,
+            picked_priority: d.priority.map(|p| p as u8),
+        }
+    }
+}
+
+fn priority(level: u8) -> Option<Priority> {
+    Some(match level {
+        0 => Priority::None,
+        1 => Priority::Low,
+        2 => Priority::Normal,
+        3 => Priority::High,
+        _ => return None,
+    })
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddPreview {
+    pub due: Option<String>,
+    pub due_label: Option<String>,
+    pub priority: Option<u8>,
+}
+
+#[uniffi::export]
+pub fn quick_add_preview(draft: QuickAddDraft, now: LocalNow) -> QuickAddPreview {
+    let now = Now::new(now);
+    let parsed = quick_add::Draft::from(draft).parsed(&now.eval());
+    QuickAddPreview {
+        due: parsed.due.map(|date| date.to_string()),
+        due_label: parsed
+            .due
+            .map(|date| quick_add::short_date(date, now.today())),
+        priority: parsed.priority.map(|level| level as u8),
+    }
+}
+
+#[uniffi::export]
+pub fn quick_add_edit(draft: QuickAddDraft, text: String, now: LocalNow) -> QuickAddDraft {
+    let mut draft = quick_add::Draft::from(draft);
+    draft.edit(text, &Now::new(now).eval());
+    draft.into()
+}
+
+#[uniffi::export]
+pub fn quick_add_pick_due(
+    draft: QuickAddDraft,
+    date: Option<String>,
+    now: LocalNow,
+) -> QuickAddDraft {
+    let date = match date {
+        Some(iso) => match iso.parse() {
+            Ok(date) => Some(date),
+            Err(_) => return draft,
+        },
+        None => None,
+    };
+    let mut draft = quick_add::Draft::from(draft);
+    draft.pick_due(date, &Now::new(now).eval());
+    draft.into()
+}
+
+#[uniffi::export]
+pub fn quick_add_pick_priority(draft: QuickAddDraft, level: u8, now: LocalNow) -> QuickAddDraft {
+    let Some(level) = priority(level) else {
+        return draft;
+    };
+    let mut draft = quick_add::Draft::from(draft);
+    draft.pick_priority(level, &Now::new(now).eval());
+    draft.into()
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddPreset {
+    pub label: String,
+    pub date: Option<String>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddDay {
+    pub date: String,
+    pub day: String,
+    pub label: String,
+    pub today: bool,
+    pub selected: bool,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddMonth {
+    pub label: String,
+    pub weekdays: Vec<String>,
+    pub rows: Vec<Vec<Option<QuickAddDay>>>,
+    pub previous: Option<String>,
+    pub next: Option<String>,
+    pub presets: Vec<QuickAddPreset>,
+}
+
+/// `cursor` is a day of the requested month, not necessarily the selected date.
+#[uniffi::export]
+pub fn quick_add_month(
+    now: LocalNow,
+    selected: Option<String>,
+    cursor: Option<String>,
+) -> QuickAddMonth {
+    let today = Now::new(now).today();
+    let selected = selected.and_then(|iso| iso.parse::<Date>().ok());
+    let month = calendar::Month::new(
+        cursor
+            .and_then(|iso| iso.parse().ok())
+            .or(selected)
+            .unwrap_or(today),
+    );
+    QuickAddMonth {
+        label: month.label(),
+        weekdays: month.weekdays().into_iter().map(str::to_owned).collect(),
+        rows: month
+            .rows()
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|date| {
+                        date.map(|date| QuickAddDay {
+                            date: date.to_string(),
+                            day: date.day().to_string(),
+                            label: calendar::day_label(date),
+                            today: date == today,
+                            selected: Some(date) == selected,
+                        })
+                    })
+                    .collect()
+            })
+            .collect(),
+        previous: month.shifted(-1).map(|m| m.cursor.to_string()),
+        next: month.shifted(1).map(|m| m.cursor.to_string()),
+        presets: calendar::presets(today)
+            .into_iter()
+            .map(|preset| QuickAddPreset {
+                label: preset.label.into(),
+                date: preset.date.map(|d| d.to_string()),
+            })
+            .collect(),
+    }
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddPriority {
+    pub level: u8,
+    pub label: String,
+    pub mark: String,
+}
+
+#[uniffi::export]
+pub fn quick_add_priorities() -> Vec<QuickAddPriority> {
+    quick_add::PRIORITIES
+        .into_iter()
+        .map(|p| QuickAddPriority {
+            level: p.level as u8,
+            label: p.label.into(),
+            mark: p.mark.into(),
+        })
+        .collect()
+}

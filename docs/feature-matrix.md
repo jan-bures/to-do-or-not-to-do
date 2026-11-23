@@ -107,8 +107,8 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 |---|---|---|---|---|
 | Quick add in a room | `CreateTask` `C/command.rs:197` | wired `D/ui/shell.rs:248`, `:940` | wired `W/app.rs:1146` | wired `A/ui/RoomPane.kt:152`, `F/engine.rs:440` |
 | The room shapes a new task (My Day date, high priority in Important, due today in Planned) | `NewTask` fields | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` | wired `T/intent/mod.rs` |
-| Quick-add syntax: a trailing date (`tomorrow`, `by fri`, `za 2 týdny`, `1 Dec`) and `!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date chip (`D/ui/shell.rs`) | wired, with live date chip (`W/app.rs`, `QuickAdd`) | wired, with live date chip (`A/ui/RoomPane.kt`, `F/engine.rs::quick_add_date`) |
-| Quick-add field's calendar and flag icons | n/a | hidden until the date picker (D2); the date and priority are typed (`D/ui/shell.rs:1564`) | missing | missing |
+| Quick-add syntax: a trailing date (`tomorrow`, `by fri`, `za 2 týdny`, `1 Dec`) and `!!`/`!!!` | `T/intent/quick_add.rs` | wired, with live date and priority chips (`D/ui/shell.rs`) | wired, with live date and priority chips (`W/app/quick_add.rs`) | wired, with live date and priority chips (`A/ui/QuickAdd.kt`, `F/quick_add.rs`) |
+| Quick-add field's calendar and flag icons | shared draft, calendar model and priority choices (`T/intent/quick_add.rs`, `T/intent/calendar.rs`) | wired: date presets, keyboard month grid and four priorities with removable chips, including in pop-outs (`D/ui/shell/quick_pickers.rs`) | wired: same calendar and priority pickers, keyboard grid and removable chips (`W/app/quick_add.rs`) | wired: same presets, grid, priorities and removable chips (`A/ui/QuickAdd.kt`, `F/quick_add.rs`) |
 | Complete or reopen, with the choreography | `CompleteTask` / `UncompleteTask` `C/command.rs:216` | wired `D/ui/shell.rs:1767`, `:992`; Space | wired `W/app.rs:1340`, `:193`; Space | wired `A/ui/Rows.kt:75`, `F/engine.rs:477` |
 | Completed section toggle | n/a | wired: the footer and the room menu (`D/ui/shell/undo.rs:320`, `D/ui/shell/menu.rs:397`) | wired `W/app.rs:1235` | wired `A/ui/RoomPane.kt:295` |
 | Priority marks on rows | `Priority` | shown | shown | shown `A/ui/Rows.kt:97` |
@@ -198,7 +198,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | # | Gap | Where | Size |
 |---|---|---|---|
 | 1.1 | **Done in D1** (ellipsis wired, sliders hidden). The room header's sliders and ellipsis icons do nothing. Wire them, or remove them until they work. Sliders: sort and view options, such as showing completed tasks. Ellipsis: a room menu with rename, delete, pop out and copy a share link. | `D/ui/shell.rs:1349`, `:1379`, `:1380` | S to hide, M to wire |
-| 1.2 | **Hidden in D1** until the date picker (D2). The quick-add field's calendar and flag icons do nothing. Make them pick a due date and a priority for the task being typed (a small popover, or insert the syntax). | `D/ui/shell.rs:1474`, `:1475` | M |
+| 1.2 | **Done in D2 on all three clients.** Quick-add Calendar and Flag set the pending date and priority, with typed/picked reconciliation and removable chips. Reusing the calendar in task detail remains a follow-up. | `T/intent/calendar.rs`, `T/intent/quick_add.rs` | — |
 | 1.3 | **Done.** Repeat, Tags and Reminder rows are always present and editable. | `D/model/derive.rs:681`–`737`, `D/ui/shell/detail.rs:669` | M each |
 | 1.4 | **Done in D1.** The hand-over rows' checkboxes are drawn but only select the task. Make them complete it, as on Android. | `D/ui/shell.rs:2315` | S |
 | 1.5 | **Done.** "N couldn't sync" in the sidebar has no way to see or dismiss what failed. Android has a banner. | `D/model/derive.rs:636` | S–M |
@@ -278,7 +278,8 @@ maps its own room key to the shared task intent. This resolves the creation drif
   today, else the latest), builds the commands that set, move or remove it, and lists what a client
   should alert for (`alarms`). Android, the web and the desktop use it for editing; Android and the desktop
   also use it to alert (local alarms, Windows toasts).
-- Web and Android parse the same trailing date and priority as desktop. All three preview the parsed date while typing.
+- All three parse the same trailing date and priority, preview both as chips, and use the same draft to
+  reconcile typed syntax with choices from the calendar or priority picker.
 
 ## Work package: list suggestion
 

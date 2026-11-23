@@ -38,11 +38,13 @@ import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.core.TodoEngine
+import app.todoornot.core.quickAddMonth
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
 import app.todoornot.model.MotionFrame
+import app.todoornot.model.MenuAction
 import app.todoornot.model.PairingState
 import app.todoornot.model.TodoModel
 import app.todoornot.model.UiState
@@ -90,6 +92,7 @@ import app.todoornot.ui.MainScreen
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
+import app.todoornot.ui.QuickAddCalendar
 import app.todoornot.ui.RoomPill
 import app.todoornot.ui.UnpairCard
 import com.android.resources.Density
@@ -317,10 +320,31 @@ class GalleryTest {
     }
 
     @Test
-    fun parsed_quick_add_date() {
+    fun quick_add_pickers() {
         val m = TodoModel(fixtureEngine(), scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, listen = {})
-        shot("quick_add_date", COVER) {
-            MainScreen(m.ui.value, m, false, false, draft = "Water the plants zítra !!", collapsed = true)
+        val selected = "2026-11-22"
+        val month = quickAddMonth(FIXTURE_NOW, selected, null)
+        val s = Tokens.Space
+        val p = Tokens.Metrics.Phone
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            for (surface in listOf("chips", "calendar", "priority")) {
+                shot("quick_add_${surface}_$theme", COVER) {
+                    Box(Modifier.fillMaxSize()) {
+                        MainScreen(m.ui.value, m, dark, false, draft = "Water the plants zítra !!", collapsed = true)
+                        if (surface != "chips") TodoTheme(dark, m.ui.value.room.hue) {
+                            Box(Modifier.fillMaxSize().navigationBarsPadding()) {
+                                val anchor = Modifier.align(Alignment.BottomEnd).padding(
+                                    end = if (surface == "calendar") s.S4.dp else s.S5.dp,
+                                    bottom = (2 * p.TOUCH + s.S5).dp,
+                                )
+                                if (surface == "calendar") QuickAddCalendar(month, selected, {}, {}, anchor)
+                                else MenuCard(priorityMenu(2) { MenuAction.QuickPriority(it) }, {}, anchor, title = "Choose priority")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

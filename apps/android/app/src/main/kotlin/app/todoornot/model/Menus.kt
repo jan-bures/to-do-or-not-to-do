@@ -61,6 +61,7 @@ sealed interface MenuAction {
 
     /** Set the priority by its `!` marks: 3 (high) to 0 (none). */
     data class SetPriority(val task: String, val marks: Int) : MenuAction
+    data class QuickPriority(val marks: Int) : MenuAction
 }
 
 /** The row and the detail header offer the same actions. Only open rows of a manual list
@@ -184,22 +185,22 @@ fun stepMenu(steps: List<StepRow>, step: String): List<MenuEntry> {
     )
 }
 
-/** The priority's name for its `!` marks, as the desktop's picker words it. */
-fun priorityName(marks: Int): String = when (marks) {
-    3 -> "High"
-    2 -> "Normal"
-    1 -> "Low"
-    else -> "None"
-}
+private val priorityOptions by lazy { app.todoornot.core.quickAddPriorities() }
 
-/** The detail pane's priority picker: all four levels, highest first, the current one ticked. */
-fun priorityMenu(task: String, current: Int): List<MenuEntry> = listOf(3, 2, 1, 0).map { level ->
+/** The priority's name for its `!` marks, as the desktop's picker words it. */
+fun priorityName(marks: Int): String = priorityOptions.firstOrNull { it.level.toInt() == marks }?.label ?: "None"
+
+/** All four levels, highest first, the current one ticked. */
+fun priorityMenu(task: String, current: Int): List<MenuEntry> = priorityMenu(current) { MenuAction.SetPriority(task, it) }
+
+fun priorityMenu(current: Int, action: (Int) -> MenuAction): List<MenuEntry> = priorityOptions.map { option ->
+    val level = option.level.toInt()
     MenuEntry.Item(
         "flag",
-        priorityName(level),
-        MenuAction.SetPriority(task, level),
+        option.label,
+        action(level),
         checked = level == current,
-        hint = if (level > 0) "!".repeat(level) else null,
+        hint = option.mark.ifEmpty { null },
     )
 }
 

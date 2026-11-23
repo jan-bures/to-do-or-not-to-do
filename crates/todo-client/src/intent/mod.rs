@@ -5,6 +5,7 @@
 //! quick-add needs to create a destination list, clients (including desktop) submit the list first
 //! and the task second. This is not atomic: the list can remain if the task is refused.
 
+pub mod calendar;
 pub mod email;
 pub mod merge;
 pub mod organize;
@@ -111,6 +112,25 @@ pub fn quick_add_task(
     add_task(state, room, &quick_add::parse(text, ctx), ctx.today, new_id)
 }
 
+/// Builds a quick-add submission from the same draft that supplies the live chips.
+pub fn submit_draft(
+    state: &State,
+    room: impl Into<TaskRoom>,
+    draft: &quick_add::Draft,
+    ctx: &EvalContext,
+    new_id: impl FnMut() -> Uuid,
+) -> (Option<TaskId>, Vec<Command>) {
+    let parsed = draft.parsed(ctx);
+    build_task(
+        state,
+        room.into(),
+        &parsed,
+        ctx.today,
+        draft.due == quick_add::DueChoice::Clear,
+        new_id,
+    )
+}
+
 /// Commands that add a task to a room. Creates a list first if there is none to put it in.
 /// Empty titles add nothing.
 pub fn add_task(
@@ -118,12 +138,22 @@ pub fn add_task(
     room: impl Into<TaskRoom>,
     parsed: &Parsed,
     today: Date,
+    new_id: impl FnMut() -> Uuid,
+) -> (Option<TaskId>, Vec<Command>) {
+    build_task(state, room.into(), parsed, today, false, new_id)
+}
+
+fn build_task(
+    state: &State,
+    room: TaskRoom,
+    parsed: &Parsed,
+    today: Date,
+    clear_due: bool,
     mut new_id: impl FnMut() -> Uuid,
 ) -> (Option<TaskId>, Vec<Command>) {
     if parsed.title.trim().is_empty() {
         return (None, Vec::new());
     }
-    let room = room.into();
     let mut commands = Vec::new();
     let list = task_destination(state, room).unwrap_or_else(|| {
         let id = ListId::from_uuid(new_id());
@@ -138,7 +168,7 @@ pub fn add_task(
     match room {
         TaskRoom::MyDay => task.my_day = Some(today),
         TaskRoom::Important if parsed.priority.is_none() => task.priority = Priority::High,
-        TaskRoom::Planned if parsed.due.is_none() => task.due = Some(today),
+        TaskRoom::Planned if parsed.due.is_none() && !clear_due => task.due = Some(today),
         _ => {}
     }
     commands.push(Command::CreateTask(Box::new(task)));
@@ -634,6 +664,30 @@ mod tests {
                 .1
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn explicitly_cleared_fields_override_the_rooms_defaults() {
+        let mut w = World::new();
+        w.list("Tasks");
+        let ctx = EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"));
+        let mut draft = quick_add::Draft {
+            text: "Call the venue tomorrow !!".into(),
+            ..Default::default()
+        };
+        draft.pick_due(None, &ctx);
+        draft.pick_priority(Priority::None, &ctx);
+        for room in [TaskRoom::Planned, TaskRoom::Important] {
+            let state = w.state.clone();
+            let (id, commands) = submit_draft(&state, room, &draft, &ctx, || w.id());
+            for command in commands {
+                w.run(command);
+            }
+            let task = &w.state.tasks[&id.expect("id")];
+            assert_eq!(task.title, "Call the venue");
+            assert_eq!(task.due, None);
+            assert_eq!(task.priority, Priority::None);
+        }
     }
 
     #[test]

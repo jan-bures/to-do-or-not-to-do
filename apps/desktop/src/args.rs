@@ -35,8 +35,8 @@ Options:
                     sidebar-wide, detail-narrow, detail-wide, detail-wide-1920 (1920 × 1080),
                     resize-handle-hover, caption-hover,
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
-                    tall), finished-nothing-tomorrow, handover-complete-50, quick-add, pairing,
-                    pairing-code, open-failed or open-failed-confirm.
+                    tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
+                    quick-add-calendar, quick-add-priority, pairing, pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -132,6 +132,9 @@ pub const FIXTURES: &[&str] = &[
     "finished-nothing-tomorrow",
     "handover-complete-50",
     "quick-add",
+    "quick-add-chips",
+    "quick-add-calendar",
+    "quick-add-priority",
     "pairing",
     "pairing-code",
     "open-failed",

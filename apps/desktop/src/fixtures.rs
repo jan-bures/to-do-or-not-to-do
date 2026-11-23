@@ -107,6 +107,10 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(f)
         }
         "work" => Some(work()),
+        "quick-add-chips" | "quick-add-calendar" | "quick-add-priority" => Some(Fixture {
+            quick_add_text: Some("Water the plants zítra !!"),
+            ..my_day()
+        }),
         "popout-pinned" | "popout-unpinned" => Some(popout()),
         // Keep the same detail and task row in both captures, outside the My Day filter.
         "toggle-states-on" | "toggle-states-off" => {

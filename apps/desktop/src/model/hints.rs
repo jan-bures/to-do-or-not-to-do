@@ -73,6 +73,11 @@ pub enum Stop {
     Undo,
     /// The room header's "more" button, in rooms that have a menu.
     RoomMenu,
+    QuickInput,
+    QuickRemoveDate,
+    QuickRemovePriority,
+    QuickDue,
+    QuickPriority,
     /// The Activity room's Clear filter, while the feed shows one agent's changes.
     ActivityFilter,
     /// The Activity room's Refresh activity.
@@ -100,11 +105,19 @@ pub enum Stop {
     Account,
 }
 
+pub const QUICK_ADD_STOPS: [Stop; 5] = [
+    Stop::QuickInput,
+    Stop::QuickRemoveDate,
+    Stop::QuickRemovePriority,
+    Stop::QuickDue,
+    Stop::QuickPriority,
+];
+
 /// Every Tab stop, in the order Tab goes round them (Shift+Tab goes the other way). A stop that isn't
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 23] = [
+pub const TAB_ORDER: [Stop; 28] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -116,6 +129,11 @@ pub const TAB_ORDER: [Stop; 23] = [
     Stop::Bulk(6),
     Stop::Undo,
     Stop::RoomMenu,
+    Stop::QuickInput,
+    Stop::QuickRemoveDate,
+    Stop::QuickRemovePriority,
+    Stop::QuickDue,
+    Stop::QuickPriority,
     Stop::ActivityFilter,
     Stop::ActivityRefresh,
     Stop::ActivityMore,
@@ -153,6 +171,11 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::Undo
         | Stop::Bulk(_)
         | Stop::RoomMenu
+        | Stop::QuickInput
+        | Stop::QuickRemoveDate
+        | Stop::QuickRemovePriority
+        | Stop::QuickDue
+        | Stop::QuickPriority
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
         | Stop::DetailSplitter
@@ -591,6 +614,11 @@ mod tests {
                 Bulk(6),
                 Undo,
                 RoomMenu,
+                QuickInput,
+                QuickRemoveDate,
+                QuickRemovePriority,
+                QuickDue,
+                QuickPriority,
                 ActivityFilter,
                 ActivityRefresh,
                 ActivityMore,
@@ -623,6 +651,11 @@ mod tests {
                 ActivityMore,
                 ActivityRefresh,
                 ActivityFilter,
+                QuickPriority,
+                QuickDue,
+                QuickRemovePriority,
+                QuickRemoveDate,
+                QuickInput,
                 RoomMenu,
                 Undo,
                 Bulk(6),
@@ -644,8 +677,10 @@ mod tests {
     #[test]
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
-        let extra_detail_control =
-            |s| matches!(s, DetailMyDay | DetailImportant | Attachment(_) | Bulk(_));
+        let extra_detail_control = |s| {
+            matches!(s, DetailMyDay | DetailImportant | Attachment(_) | Bulk(_))
+                || QUICK_ADD_STOPS.contains(&s)
+        };
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New is always there). (Below, nothing couldn't
         // sync unless said.)
@@ -784,6 +819,16 @@ mod tests {
     }
 
     #[test]
+    fn quick_add_tabs_past_absent_chips_and_both_picker_buttons_are_reachable() {
+        use Stop::*;
+        let present = |s| !matches!(s, QuickRemoveDate | QuickRemovePriority);
+        assert_eq!(tab_stop(QuickInput, true, present), QuickDue);
+        assert_eq!(tab_stop(QuickDue, true, present), QuickPriority);
+        assert_eq!(tab_stop(QuickPriority, false, present), QuickDue);
+        assert_eq!(tab_stop(QuickDue, false, |_| true), QuickRemovePriority);
+    }
+
+    #[test]
     fn stops_below_a_fold_are_scrolled_into_view_in_their_own_pane() {
         assert_eq!(
             reveal(Stop::ActivityMore),
@@ -820,17 +865,18 @@ mod tests {
         use Stop::*;
         // Activity filtered to an agent, with older changes to read; no toast, detail or refusals.
         let activity = |s: Stop| {
-            !matches!(
-                s,
-                Undo | DetailSplitter
-                    | DetailMyDay
-                    | DetailImportant
-                    | Reminder
-                    | Repeat
-                    | Attachment(_)
-                    | Bulk(_)
-                    | SyncFailures
-            )
+            !QUICK_ADD_STOPS.contains(&s)
+                && !matches!(
+                    s,
+                    Undo | DetailSplitter
+                        | DetailMyDay
+                        | DetailImportant
+                        | Reminder
+                        | Repeat
+                        | Attachment(_)
+                        | Bulk(_)
+                        | SyncFailures
+                )
         };
         assert_eq!(
             round(List, true, activity),

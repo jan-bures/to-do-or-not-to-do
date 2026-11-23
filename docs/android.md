@@ -148,13 +148,18 @@ What the first version does:
   A source with a web address opens in the browser. Sources without an HTTP or HTTPS destination are
   text only, with no arrow.
 - **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) while typing and on
-  submit. A calendar chip previews a recognized date (for example, **Sun 22 Nov**) without changing the text. A trailing date can be
+  submit. Removable chips preview date (for example, **Sun 22 Nov**) and priority without changing the text. A trailing date can be
   `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`).
   Whole phrases work too: `in 2 weeks`, `za 3 dny`, `next week`, `příští pátek`, `this weekend`,
   `konec měsíce`, or a day and month such as `1 Dec` or `1.12.`. Past ISO dates stay literal. A separate `!!` or `!!!` sets priority. `See you \tomorrow`
   keeps `See you tomorrow` as the title. My Day adds today's My Day stamp, Important defaults to high
   priority and Planned defaults to due today. New tasks go first in their list's manual order. If no
   destination list exists, quick-add creates **Tasks**, inside the current collection when applicable.
+  The Calendar button offers **Today**, **Tomorrow**, **Next week** (next Monday), **No date** and a
+  Monday-first month grid. The Flag button opens the same four priorities as the detail Priority row.
+  A choice takes out the matching typed suffix and leaves everything else alone; removing a chip, or
+  choosing **No date** or **None**, clears even a room default. The `quick_add_pickers` gallery shows
+  both chips and both popovers in light and dark. The task detail Due row is unchanged.
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** Task and organization edits use a local SQLite cache and outbox, and sync

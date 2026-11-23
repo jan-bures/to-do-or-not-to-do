@@ -1496,7 +1496,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 .quick-add {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   height: var(--desktop-quick-add);
   margin: var(--desktop-quick-add-margin) var(--desktop-list-pad-x);
   padding: 0 var(--space-3) 0 var(--space-4);
@@ -1534,7 +1534,17 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   color: var(--color-ink-3);
 }
 
-.qa-date-chip {
+.qa-chips,
+.qa-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.qa-chips:not(.has-chips) { display: none; }
+
+.qa-date-chip,
+.qa-priority-chip {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -1549,7 +1559,10 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   white-space: nowrap;
 }
 
-.qa-date-chip .icon {
+.qa-priority-chip { color: var(--color-ink); }
+
+.qa-date-chip .icon,
+.qa-priority-chip .icon {
   width: var(--component-icon-small);
   height: var(--component-icon-small);
 }
@@ -1557,9 +1570,82 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 .qa-date-chip.no-date {
   display: none;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--duration-overlay-out) var(--ease-exit),
     display var(--duration-overlay-out) allow-discrete;
 }
+
+.qa-tool {
+  display: inline-grid;
+  place-items: center;
+  width: var(--component-icon-button);
+  height: var(--component-icon-button);
+  padding: 0;
+  border-radius: var(--radius-button);
+  color: var(--color-ink-3);
+}
+
+.qa-tool:hover:not(:disabled),
+.qa-tool[aria-expanded="true"] { background: var(--color-hover); }
+.qa-tool.has-value { color: var(--color-ink); background: var(--color-wash); }
+
+.qa-calendar {
+  width: min(var(--desktop-confirm), calc(100vw - 2 * var(--space-2)));
+  max-height: calc(100dvh - 2 * var(--space-2));
+  overflow: auto;
+}
+
+.qa-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: var(--hairline) solid var(--color-line);
+  padding-bottom: var(--space-1);
+}
+
+.qa-calendar button:is(.qa-day, .qa-preset, .qa-tool) {
+  justify-content: center;
+  padding: 0;
+}
+
+.qa-calendar button.qa-tool { width: var(--component-icon-button); }
+.qa-calendar button.qa-preset { position: relative; }
+.qa-preset .picker-tick { position: absolute; inset-inline-end: var(--space-2); }
+.qa-preset .picker-tick .icon { width: var(--component-icon-small); height: var(--component-icon-small); }
+.qa-preset:not(.current) .picker-tick { visibility: hidden; }
+
+.qa-calendar button.current,
+.qa-priority-menu button[aria-selected="true"] {
+  color: var(--color-accent-strong);
+  background: var(--color-wash);
+  font-weight: 600;
+}
+
+.qa-priority-menu button .mono { margin-inline-start: auto; }
+
+.qa-month-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: var(--space-1);
+  font: var(--text-button);
+}
+
+.qa-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  text-align: center;
+}
+
+.qa-week [role="columnheader"] {
+  padding-block: var(--space-1);
+  color: var(--color-ink-3);
+  font: var(--text-count);
+}
+
+.qa-calendar button.qa-day { font: var(--text-count); }
+.qa-calendar button.qa-day.current { font-weight: 600; }
+.qa-day[aria-current="date"] { border: var(--hairline) solid var(--color-control); }
+.qa-day:focus-visible { position: relative; z-index: 1; }
 
 /* ---- rows ------------------------------------------------------------------------------------------- */
 
@@ -3147,9 +3233,38 @@ a.source:hover {
     box-shadow: var(--shadow-overlay);
   }
 
-  .qa-input {
-    font: var(--text-composer);
+  .quick-add {
+    display: grid;
+    grid-template: "plus input tools" var(--phone-composer) / auto minmax(0, 1fr) auto;
+    padding-inline: var(--space-3) var(--space-1);
+    height: auto;
+    row-gap: 0;
   }
+
+  .quick-add:has(.qa-chips.has-chips) {
+    grid-template-areas: "plus input tools" "chips chips chips";
+    grid-template-rows: var(--phone-composer) var(--phone-touch);
+  }
+
+  .main:has(.qa-chips.has-chips) { padding-bottom: calc(2 * var(--phone-composer) + var(--space-4) + env(safe-area-inset-bottom)); }
+  .qa-plus { grid-area: plus; }
+  .qa-input { grid-area: input; font: var(--text-composer); }
+  .qa-tools { grid-area: tools; gap: 0; }
+  .qa-chips { grid-area: chips; align-self: stretch; }
+  .qa-chips button, .qa-tool { min-height: var(--phone-touch); min-width: var(--phone-touch); }
+  .qa-chips button { position: relative; isolation: isolate; background: transparent; }
+  .qa-chips button::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    height: var(--space-6);
+    z-index: -1;
+    border-radius: var(--radius-sm);
+    background: var(--color-wash);
+  }
+  .qa-calendar { width: min(calc(7 * var(--phone-touch) + 2 * var(--space-2)), calc(100vw - 2 * var(--space-2))); }
+  .qa-calendar button, .qa-priority-menu button { min-height: var(--phone-touch); }
 
   .qa-hints {
     display: none;
