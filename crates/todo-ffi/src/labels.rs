@@ -106,6 +106,20 @@ const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+/// A two-date range, e.g. "19–23 Nov" or "28 Nov–3 Dec".
+pub fn date_span(start: Option<Date>, due: Option<Date>, today: Date) -> Option<String> {
+    let (start, due) = start.zip(due)?;
+    if start == due {
+        return None;
+    }
+    let first = if start.year() == due.year() && start.month() == due.month() {
+        start.day().to_string()
+    } else {
+        day_month(start, today)
+    };
+    Some(format!("{first}–{}", day_month(due, today)))
+}
+
 /// "Saturday".
 pub fn weekday(d: Date) -> &'static str {
     WEEKDAYS[Weekday::of(d).offset()]

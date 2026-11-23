@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,11 +64,7 @@ import app.todoornot.core.QuickAddDraft
 import app.todoornot.core.QuickAddMonth
 import app.todoornot.core.calendarMoveDays
 import app.todoornot.core.calendarRepeatClearNote
-import app.todoornot.core.quickAddEdit
 import app.todoornot.core.quickAddMonth
-import app.todoornot.core.quickAddPickDue
-import app.todoornot.core.quickAddPickPriority
-import app.todoornot.core.quickAddPreview
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
@@ -78,19 +75,37 @@ import app.todoornot.model.MenuAction
 import app.todoornot.model.priorityMenu
 import app.todoornot.model.priorityName
 
+import app.todoornot.core.ListFeatures
+import app.todoornot.core.OpenStage
+import app.todoornot.core.WorkflowQuickAddDraft
+import app.todoornot.core.WorkflowQuickAddPick
+import app.todoornot.core.workflowQuickAddEdit
+import app.todoornot.core.workflowQuickAddPick
+import app.todoornot.core.workflowQuickAddPreview
+import app.todoornot.model.ChecklistFeatures
+import app.todoornot.model.label
+import app.todoornot.model.openStage
+import app.todoornot.model.workflowStage
+
 private val S = Tokens.Space
 private val P = Tokens.Metrics.Phone
 private val C = Tokens.Metrics.Component
 private val M = Tokens.Motion
 
-private val draftSaver = listSaver<QuickAddDraft, Any>(
-    save = { listOf(it.text, it.pickedDue.orEmpty(), it.clearedDue, it.pickedPriority?.toInt() ?: -1) },
-    restore = { QuickAddDraft(it[0] as String, (it[1] as String).ifEmpty { null }, it[2] as Boolean, (it[3] as Int).takeIf { n -> n >= 0 }?.toUByte()) },
+private val draftSaver = listSaver<WorkflowQuickAddDraft, Any>(
+    save = { listOf(it.base.text, it.base.pickedDue.orEmpty(), it.base.clearedDue, it.base.pickedPriority?.toInt() ?: -1,
+        it.startDate.orEmpty(), it.status?.name.orEmpty()) },
+    restore = { WorkflowQuickAddDraft(
+        QuickAddDraft(it[0] as String, (it[1] as String).ifEmpty { null }, it[2] as Boolean, (it[3] as Int).takeIf { n -> n >= 0 }?.toUByte()),
+        (it[4] as String).ifEmpty { null }, OpenStage.entries.firstOrNull { stage -> stage.name == it[5] },
+    ) },
 )
 
 /** The room's composer, docked above the keyboard. Only submitting sends a command. */
 @Composable
-internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?, docked: Boolean = false) {
+internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?, docked: Boolean = false,
+    features: ListFeatures = ChecklistFeatures, initialStage: OpenStage? = null, onSubmit: () -> Unit = {},
+) {
     val r = LocalDesign.current.room
     val requester = remember { FocusRequester() }
     val ime = LocalSoftwareKeyboardController.current
@@ -101,18 +116,27 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
             focus()
         }
     }
-    var pending by rememberSaveable(draft, stateSaver = draftSaver) { mutableStateOf(QuickAddDraft(draft, null, false, null)) }
-    val preview = remember(pending) { quickAddPreview(pending, actions.composerNow()) }
+    val featureAware = features.workflow || features.timeline
+    var pending by rememberSaveable(draft, initialStage, stateSaver = draftSaver) {
+        mutableStateOf(WorkflowQuickAddDraft(QuickAddDraft(draft, null, false, null), null, initialStage))
+    }
+    val preview = remember(pending, features) { workflowQuickAddPreview(pending, actions.composerNow(), features) }
     val priority = preview.priority?.toInt() ?: 0
+    val stage = preview.status ?: OpenStage.TODO
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
     var calendarNow by remember { mutableStateOf<LocalNow?>(null) }
     var priorityOpen by remember { mutableStateOf(false) }
-    fun chooseDate(date: String?) { pending = quickAddPickDue(pending, date, actions.composerNow()) }
-    fun choosePriority(level: Int) { pending = quickAddPickPriority(pending, level.toUByte(), actions.composerNow()) }
+    var statusOpen by remember { mutableStateOf(false) }
+    fun pick(choice: WorkflowQuickAddPick) {
+        pending = workflowQuickAddPick(pending, choice, actions.composerNow(), features)
+    }
+    fun chooseDate(date: String?) { pick(WorkflowQuickAddPick.Due(date)) }
+    fun choosePriority(level: Int) { pick(WorkflowQuickAddPick.Priority(level.toUByte())) }
     fun submit() {
-        if (pending.text.isBlank()) return
-        actions.add(pending)
-        pending = QuickAddDraft("", null, false, null)
+        if (preview.title.isBlank()) return
+        if (featureAware) actions.addWorkflow(pending) else actions.add(pending.base)
+        pending = WorkflowQuickAddDraft(QuickAddDraft("", null, false, null), null, initialStage)
+        onSubmit()
     }
     Box(
         Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true)
@@ -134,8 +158,8 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
             ) {
                 Icon("plus", r.accentStrong)
                 BasicTextField(
-                    value = pending.text,
-                    onValueChange = { pending = quickAddEdit(pending, it, actions.composerNow()) },
+                    value = pending.base.text,
+                    onValueChange = { pending = workflowQuickAddEdit(pending, it, actions.composerNow(), features) },
                     modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { fieldFocused = it.isFocused }
                         .semantics { contentDescription = placeholder },
                     textStyle = Tokens.Type.COMPOSER.style(r.ink),
@@ -145,18 +169,32 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                     decorationBox = { inner ->
                         Box(Modifier.heightIn(min = P.COMPOSER.dp), contentAlignment = Alignment.CenterStart) {
-                            if (pending.text.isEmpty()) Label(placeholder, Tokens.Type.COMPOSER, r.ink3)
+                            if (pending.base.text.isEmpty()) Label(placeholder, Tokens.Type.COMPOSER, r.ink3)
                             inner()
                         }
                     },
                 )
                 Row {
+                    if (features.workflow) Box {
+                        val mark = stage.workflowStage()
+                        IconButton(mark.icon, "Choose status: ${mark.label}", mark.ink(), expanded = statusOpen) { statusOpen = true }
+                        if (statusOpen) AnchoredPopup(onDismiss = { statusOpen = false }, above = true) { overlay ->
+                            Column(Modifier.widthIn(min = P.INNER_LIST.dp / 2).padding(S.S2.dp)) {
+                                Caps("Choose status")
+                                StatusOptions(mark, includeDone = false) { picked ->
+                                    overlay.choose { pick(WorkflowQuickAddPick.Status(picked.openStage())) }
+                                }
+                            }
+                        }
+                    }
                     Box {
-                        IconButton("calendar", "Choose due date", if (preview.due != null) r.ink else r.ink3, expanded = calendarNow != null) {
+                        IconButton("calendar", "Choose due date", if (preview.dateLabel != null) r.ink else r.ink3, expanded = calendarNow != null) {
                             calendarNow = actions.composerNow()
                         }
                         calendarNow?.let { opened ->
-                            CalendarPopup(opened, preview.due, onChoose = ::chooseDate, onDismiss = { calendarNow = null })
+                            CalendarPopup(opened, preview.due, onChoose = ::chooseDate, onDismiss = { calendarNow = null },
+                                start = preview.startDate,
+                                onStart = if (features.timeline) { date -> pick(WorkflowQuickAddPick.Start(date)) } else null)
                         }
                     }
                     Box {
@@ -170,13 +208,22 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                 }
             }
             AnimatedVisibility(
-                visible = preview.dueLabel != null || priority > 0,
+                visible = preview.dateLabel != null || priority > 0 || stage != OpenStage.TODO,
                 enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())),
                 exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())),
             ) {
-                Row(Modifier.padding(horizontal = S.S3.dp), horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
-                    preview.dueLabel?.let { label -> QuickChip(label, "Remove due date: $label", date = true) { chooseDate(null) } }
+                androidx.compose.foundation.layout.FlowRow(Modifier.padding(horizontal = S.S3.dp), horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+                    preview.dateLabel?.let { label -> QuickChip(label, "Remove dates: $label", date = true) {
+                        if (features.timeline && preview.startDate != null) pick(WorkflowQuickAddPick.Start(null))
+                        if (preview.due != null) chooseDate(null)
+                    } }
                     if (priority > 0) QuickChip("!".repeat(priority), "Remove priority: ${priorityName(priority)}", date = false) { choosePriority(0) }
+                    if (stage != OpenStage.TODO) {
+                        val mark = stage.workflowStage()
+                        QuickChip(mark.label, "Remove status: ${mark.label}", date = false, icon = mark.icon) {
+                            pick(WorkflowQuickAddPick.Status(null))
+                        }
+                    }
                 }
             }
         }
@@ -184,7 +231,7 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
 }
 
 @Composable
-private fun QuickChip(label: String, description: String, date: Boolean, onClick: () -> Unit) {
+private fun QuickChip(label: String, description: String, date: Boolean, icon: String? = null, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     val ink = if (date) r.accentStrong else r.ink
     val shape = RoundedCornerShape(Tokens.Radius.SM.dp)
@@ -197,7 +244,7 @@ private fun QuickChip(label: String, description: String, date: Boolean, onClick
             Modifier.background(r.wash, shape).padding(horizontal = S.S2.dp, vertical = S.S1.dp),
             horizontalArrangement = Arrangement.spacedBy(S.S1.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (date) Icon("calendar", ink, size = C.ICON_SMALL.dp)
+            (icon ?: if (date) "calendar" else null)?.let { Icon(it, ink, size = C.ICON_SMALL.dp) }
             Label(label, Tokens.Type.COUNT, ink, weight = Tokens.Type.DUE.weight)
             Icon("x", ink, size = C.ICON_SMALL.dp)
         }
@@ -206,13 +253,22 @@ private fun QuickChip(label: String, description: String, date: Boolean, onClick
 
 /** Quick-add calendar opens above its button, with the shared presets nearest the dock. */
 @Composable
-internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit, repeats: Boolean = false) {
-    val selected = remember { date }
-    var cursor by remember { mutableStateOf<String?>(null) }
-    val month = remember(now, cursor) { quickAddMonth(now, selected, cursor) }
+internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit, repeats: Boolean = false,
+    start: String? = null, onStart: ((String?) -> Unit)? = null,
+) {
+    var pickingStart by remember { mutableStateOf(false) }
+    val selected = if (pickingStart) start else date
+    var cursor by remember(pickingStart) { mutableStateOf<String?>(null) }
+    val month = remember(now, selected, cursor) { quickAddMonth(now, selected, cursor) }
     AnchoredPopup(onDismiss = onDismiss, above = true) { overlay ->
-        DateCalendar(month, selected, { day -> overlay.choose { onChoose(day) } }, { cursor = it },
-            Modifier.padding(S.S2.dp), dismiss = overlay::close, repeats = repeats)
+        DateCalendar(month, selected, { day -> overlay.choose { if (pickingStart) onStart?.invoke(day) else onChoose(day) } }, { cursor = it },
+            Modifier.padding(S.S2.dp), dismiss = overlay::close, repeats = repeats, starts = pickingStart,
+            dateMode = if (onStart != null) {{
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Button("Starts", pickingStart, Modifier.weight(1f)) { pickingStart = true }
+                    Button("Due", !pickingStart, Modifier.weight(1f)) { pickingStart = false }
+                }
+            }} else null)
     }
 }
 
@@ -228,6 +284,8 @@ internal fun DateCalendar(
     repeats: Boolean = false,
     inSheet: Boolean = false,
     focusCalendar: Boolean = dismiss != null,
+    starts: Boolean = false,
+    dateMode: (@Composable () -> Unit)? = null,
 ) {
     val design = LocalDesign.current
     val r = design.room
@@ -243,7 +301,7 @@ internal fun DateCalendar(
     Column(
         modifier.then(if (inSheet) Modifier.fillMaxWidth() else Modifier.width((7 * P.TOUCH + 2 * S.S2).dp)
             .overlay(RoundedCornerShape(Tokens.Radius.LG.dp), design))
-            .padding(S.S2.dp).semantics { paneTitle = "Choose due date" }
+            .padding(S.S2.dp).semantics { paneTitle = if (starts) "Choose start date" else "Choose due date" }
             .onPreviewKeyEvent { event ->
                 if (event.key != Key.Escape || dismiss == null) false else {
                     if (event.type == KeyEventType.KeyUp) dismiss()
@@ -251,7 +309,7 @@ internal fun DateCalendar(
                 }
             },
     ) {
-        if (inSheet) Label("Due date", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(horizontal = S.S2.dp))
+        if (inSheet) Label(if (starts) "Start date" else "Due date", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(horizontal = S.S2.dp))
         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton("chevron-left", "Previous month", enabled = month.previous != null) { month.previous?.let(shift) }
@@ -303,10 +361,12 @@ internal fun DateCalendar(
         Column(Modifier.fillMaxWidth().hairline(r.line, top = true).padding(top = S.S1.dp)) {
             if (repeats) Label(remember { calendarRepeatClearNote() }, Tokens.Type.META_PHONE, r.ink3,
                 Modifier.padding(horizontal = S.S2.dp, vertical = S.S1.dp), maxLines = Int.MAX_VALUE)
+            dateMode?.invoke()
             month.presets.chunked(2).forEach { row ->
                 Row(Modifier.fillMaxWidth()) {
                     row.forEach { preset ->
-                        CalendarCell(preset.label, preset.label, preset.date == selectedDate, false, false, Modifier.weight(1f)) { choose(preset.date) }
+                        val label = if (starts && preset.date == null) "Clear" else preset.label
+                        CalendarCell(label, label, preset.date == selectedDate, false, false, Modifier.weight(1f)) { choose(preset.date) }
                     }
                 }
             }
@@ -324,6 +384,18 @@ internal fun DueDateSheet(detail: app.todoornot.core.TaskDetail, actions: Action
     BottomSheet("Due date", close) { overlay ->
         DateCalendar(month, selected, { day -> overlay.choose { actions.setDue(detail.id, day) } }, { cursor = it },
             dismiss = overlay::close, repeats = detail.repeats, inSheet = true, focusCalendar = !LocalSheetAtRest.current)
+    }
+}
+
+@Composable
+internal fun StartDateSheet(detail: app.todoornot.core.TaskDetail, actions: Actions, close: () -> Unit) {
+    val now = remember { actions.composerNow() }
+    val selected = rememberSaveable { detail.workflow.startDate.orEmpty() }.ifEmpty { null }
+    var cursor by rememberSaveable { mutableStateOf<String?>(null) }
+    val month = remember(now, selected, cursor) { quickAddMonth(now, selected, cursor) }
+    BottomSheet("Start date", close) { overlay ->
+        DateCalendar(month, selected, { day -> overlay.choose { actions.setStartDate(detail.id, day) } }, { cursor = it },
+            dismiss = overlay::close, inSheet = true, focusCalendar = !LocalSheetAtRest.current, starts = true)
     }
 }
 

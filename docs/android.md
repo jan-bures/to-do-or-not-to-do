@@ -23,7 +23,7 @@ What the first version does:
   next automatic attempt; it shows **Syncing…** and is disabled while the engine is busy. The menu also
   offers **Devices…** and **Unpair this phone**.
 - **Managing lists.** A long press on a list in the room switcher opens its bottom action sheet: **Rename**, **Move up**, **Move
-  down**, **Move to…**, **Colour…** and **Delete list…**. The move picker lists the collections and **No collection**.
+  down**, **Move to…**, **Colour…**, **List settings…** and **Delete list…**. The move picker lists the collections and **No collection**.
   A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The switcher's
   **+ New → Collection** opens the collection after creating it. Both colour pickers use the twelve design swatches. A move
   that would go past either end is greyed out. The room's **⋯** button offers what applies to the room:
@@ -64,6 +64,29 @@ What the first version does:
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
   room, even the same one, clears the filter and closes its field.
+- **Workflow & Board.** In a list, open **⋯ → List settings…** (also in its Rooms action sheet) to turn on
+  **Workflow & Board**, **Timeline & Start dates**, or both. Both switches start off. Turning them off
+  hides the controls without clearing saved values. **Default view** syncs with other clients; choosing a
+  view in the dock changes only this visit. Android opens a synced Timeline default as List for now and
+  leaves the setting intact. Timeline view itself is not available on Android yet.
+  Workflow lists show the four status shapes under task titles; other rooms only show Backlog and In progress
+  marks from workflow lists. Detail offers **Status** and, when enabled, **Starts** just before **Due**.
+  Choosing Done completes the task. Choosing an open status for a done task reopens it in that stage.
+  **Starts** uses the bottom calendar; a start date later than Due brings Due forward in the same undoable edit.
+  On workflow lists, the quick-add Status button sits before Calendar and Flag. It stages an open status,
+  as does `status:wip` (`stav:rozpracovano` works too). When start dates are enabled, the calendar offers
+  **Starts** and **Due**, and a suffix such as `mon..fri` stages both dates.
+- **Board.** The sky stays read-only. On the cover screen, tap **View** in the lower dock, then swipe the column
+  or tap a column tab above the dock. The outer 24 dp of the pager are left to the system’s Back gesture.
+  The **+** beside the tabs (mirrored with the thumb-zone hand) opens quick-add for that column.
+  Unfolded, the Board shows all three open columns and a narrow **Done** rail. Tap the rail to expand it;
+  tap a card to open Detail on the right, with the column pager on the left. The inner dock keeps view
+  controls on the left and **Add task**, Filter, and Room menu on the right. Each open column can also start
+  its own quick-add in the dock. Done shows at most 20 tasks from the last seven local dates; **View all … in
+  Completed** returns to the list with its Completed section open.
+  Long-press a card and drop it into another column, onto Done, or onto a cover column tab. A short dwell at the
+  pager edge turns the page during a drag. Without dragging, use **Task actions → Move to column…** or
+  change **Status** in Detail. Column moves offer one Undo, including completion and reopening.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
 - **Select several tasks.** Long-press a task row, then tap other rows to add or remove them. The app
@@ -464,9 +487,10 @@ The unit tests load a host build of `todo_ffi` from `target/debug`, which Gradle
 gallery draws the real screens from invented fixture data (`TodoEngine.fixture`) through the real Rust view
 model. The thumb-zone gallery uses Fold7 cover (412 × 960 dp) and inner (876 × 970 dp) configurations;
 older fixtures also use the F2 sizes (412 × 920 and 900 × 1000 dp). It includes reachability, the
-collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. Look at it
-after every UI change; the
-images are in `app/src/test/snapshots/images/`.
+collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. The
+`workflow_board` gallery covers List and its settings, Board, Detail, and the quick-add status and date
+chips in both Fold7 postures and themes. Look at the gallery after every UI change; images are in
+`app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a Fold7 or equivalent emulator, check that the room and
 detail action bars hide while typing, and that **Rooms → New → List** and **Tags** keep their focused

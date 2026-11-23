@@ -520,9 +520,11 @@ pub mod board {
     pub const CARD_GAP: f32 = super::space::S2;
     /// Column header strip height.
     pub const HEADER_HEIGHT: f32 = 36.0;
+    /// Visible sliver of the neighbouring column on Android cover screens.
+    pub const COVER_PEEK: f32 = 14.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 8] = [
+    pub const ALL: [(&str, f32); 9] = [
         ("col-width", COL_WIDTH),
         ("col-min", COL_MIN),
         ("col-max", COL_MAX),
@@ -531,6 +533,7 @@ pub mod board {
         ("card-pad", CARD_PAD),
         ("card-gap", CARD_GAP),
         ("header-height", HEADER_HEIGHT),
+        ("cover-peek", COVER_PEEK),
     ];
 }
 

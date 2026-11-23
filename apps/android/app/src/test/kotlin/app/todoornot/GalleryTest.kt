@@ -119,6 +119,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import app.todoornot.core.ListView
+import app.todoornot.core.WorkflowStage
+import app.todoornot.ui.StartDateSheet
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -215,6 +218,48 @@ class GalleryTest {
             m.motion.freeze(t)
         }
         return m
+    }
+
+    @Test
+    fun workflow_board() {
+        val engine = fixtureEngine("workflow")
+        val room = engine.list("Home renovation")
+        val hallway = engine.taskId(room, "Strip wallpaper and prime hallway walls")
+        val model = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = room)
+        val board = model.read()
+        model.setRoomView(ListView.LIST, board.generation)
+        val list = model.read()
+        model.select(hallway)
+        val detail = model.read()
+        val actions = object : Actions by Actions.None { override fun composerNow() = FIXTURE_NOW }
+        for ((posture, device) in listOf("cover" to FOLD7_COVER, "inner" to FOLD7_INNER)) {
+            for (dark in listOf(false, true)) {
+                val theme = if (dark) "dark" else "light"
+                fun workflowShot(screen: String, state: UiState, settings: Boolean = false, draft: String = "", starts: Boolean = false) =
+                    shot("${posture}_${screen}_$theme", device) {
+                        val wide = device === FOLD7_INNER
+                        CompositionLocalProvider(LocalSheetAtRest provides true) {
+                            BoxWithConstraints(Modifier.fillMaxSize()) {
+                                MainScreen(state, actions, dark, wide = wide, draft = draft,
+                                    listSettingsOpen = settings, boardInitialStage = WorkflowStage.IN_PROGRESS)
+                                if (starts) TodoTheme(dark, state.room.hue) {
+                                    val width = listPaneWidth(maxWidth, wide, null)?.let { maxWidth - it - Tokens.Elevation.HAIRLINE.dp }
+                                    CompositionLocalProvider(LocalSheetWidth provides width, LocalSheetAtEnd provides true) {
+                                        StartDateSheet(requireNotNull(state.detail), actions) {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                workflowShot("board", board)
+                workflowShot("list_status", list)
+                workflowShot("list_settings", list, settings = true)
+                workflowShot("detail_status_starts", detail)
+                workflowShot("start_date_sheet", detail, starts = true)
+                workflowShot("quick_add_status", list, draft = "Check seals mon..fri status:wip !!")
+                if (device === FOLD7_INNER) workflowShot("board_detail", detail.copy(view = ListView.BOARD, board = board.board))
+            }
+        }
     }
 
     private fun motionShot(name: String, m: TodoModel, dark: Boolean = false) =

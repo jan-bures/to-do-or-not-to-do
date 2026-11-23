@@ -51,12 +51,13 @@ import app.todoornot.model.priorityMenu
 import app.todoornot.model.taskMenu
 import kotlinx.coroutines.launch
 
-private enum class Picker { ACTIONS, PRIORITY, LIST, MERGE }
+private enum class Picker { ACTIONS, PRIORITY, LIST, COLUMN, MERGE }
 
 @Composable
 internal fun TaskActionsSheet(state: UiState, actions: Actions, detail: app.todoornot.core.TaskDetail, close: () -> Unit) {
     val id = detail.id
     val priority = detail.priority.toInt()
+    val board = state.board != null && state.room.key == app.todoornot.core.RoomKey.List(detail.list)
     var picker by rememberSaveable(id, detail.list, state.generation) { mutableStateOf(Picker.ACTIONS) }
     val focus = LocalFocusManager.current
     fun back() { focus.clearFocus(); picker = Picker.ACTIONS }
@@ -64,10 +65,11 @@ internal fun TaskActionsSheet(state: UiState, actions: Actions, detail: app.todo
         androidx.activity.compose.BackHandler(picker != Picker.ACTIONS) { back() }
         SheetPages(picker) { page ->
             when (page) {
-                Picker.ACTIONS -> ActionSheetContent(taskMenu(state.room, id, detail.done, detail.myDay, priority), "Task actions") { a ->
+                Picker.ACTIONS -> ActionSheetContent(taskMenu(state.room, id, detail.done, detail.myDay, priority, board), "Task actions") { a ->
                     if (overlay.open) when (a) {
                         MenuAction.PickPriority -> picker = Picker.PRIORITY
                         MenuAction.PickList -> picker = Picker.LIST
+                        MenuAction.PickColumn -> picker = Picker.COLUMN
                         MenuAction.PickMerge -> picker = Picker.MERGE
                         else -> overlay.choose {
                             when (a) {
@@ -91,6 +93,15 @@ internal fun TaskActionsSheet(state: UiState, actions: Actions, detail: app.todo
                     MoveTaskCard(filter, { filter = it }, groups, { to ->
                         overlay.choose { actions.moveTaskTo(id, detail.list, to) }
                     }, ::back, inSheet = true)
+                }
+                Picker.COLUMN -> PickerCard("Move to column…", inSheet = true) {
+                    StatusOptions(detail.workflow.stage, includeDone = true) { stage ->
+                        if (stage == detail.workflow.stage) overlay.close()
+                        else overlay.choose {
+                            actions.moveBoardCard(detail.list, id, stage, app.todoornot.core.BoardSlot.First, state.generation)
+                        }
+                    }
+                    Button("Back", false, onClick = ::back)
                 }
                 Picker.MERGE -> MergeTaskPages(state, actions, id, overlay, ::back)
             }

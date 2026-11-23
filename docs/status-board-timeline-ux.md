@@ -420,9 +420,9 @@ node docs/mockups/status-board-timeline/render.mjs
 - [ ] **Phase 4 — Web client (`apps/web`):**
   - [ ] Mirror List settings, eyebrow view switcher, List/Detail/Quick-Add status & start date, Board view (Pointer Events drag + keyboard), and Timeline view with responsive narrow-viewport layout and Playwright e2e tests.
 - [ ] **Phase 5 — Android client (`apps/android`):**
-  - [ ] Add `List settings` sub-sheet inside Room Actions Bottom Sheet and thumb-zone `[View]` switcher in Lower Dock (Cover) / Left-Thumb segment (Inner).
-  - [ ] Render status marks in rows, Status & Starts rows + `StartDateSheet` in Detail, and Status button in Quick-Add (workflow lists only).
-  - [ ] Build Cover 1-column `HorizontalPager` Board (with `14 dp` peeks, `24 dp` edge guard, bottom Column Switcher Strip + `+` FAB) and Inner 3-column Board + `44 dp` `Done` rail + hinge-free dock.
+  - [x] Add `List settings` sub-sheet inside Room Actions Bottom Sheet and thumb-zone `[View]` switcher in Lower Dock (Cover) / Left-Thumb segment (Inner). Timeline is disabled on Android until its view lands.
+  - [x] Render status marks in rows, Status & Starts rows + `StartDateSheet` in Detail, and Status button in Quick-Add (workflow lists only).
+  - [x] Build Cover 1-column `HorizontalPager` Board (with `14 dp` peeks, `24 dp` edge guard, bottom Column Switcher Strip + `+` FAB) and Inner 3-column Board + `44 dp` `Done` rail + hinge-free dock.
   - [ ] Build Cover & Inner Timeline views (sticky non-interactive Date Ruler, `48 dp` lanes, touch reschedule/resize, bottom Zoom/Today/Unscheduled strip + Unscheduled Bottom Sheet).
 - [ ] **Phase 6 — Screenshot gate & feature matrix:**
   - [ ] Add light/dark desktop gallery fixtures (`apps/desktop/scripts/gallery.ps1`), web Playwright gallery shots, and Android Paparazzi Fold7 Cover & Inner snapshots.

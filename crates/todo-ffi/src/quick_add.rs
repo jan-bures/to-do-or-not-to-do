@@ -110,7 +110,7 @@ pub fn quick_add_pick_priority(draft: QuickAddDraft, level: u8, now: LocalNow) -
     draft.into()
 }
 
-/// Feature-aware draft for future workflow/timeline composers. The legacy composer is unchanged.
+/// Feature-aware draft for workflow and start-date composers.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct WorkflowQuickAddDraft {
     pub base: QuickAddDraft,
@@ -142,6 +142,7 @@ impl From<quick_add::Draft> for WorkflowQuickAddDraft {
 pub struct WorkflowQuickAddPreview {
     pub title: String,
     pub due: Option<String>,
+    pub date_label: Option<String>,
     pub start_date: Option<String>,
     pub priority: Option<u8>,
     pub status: Option<OpenStage>,
@@ -153,11 +154,23 @@ pub fn workflow_quick_add_preview(
     now: LocalNow,
     features: ListFeatures,
 ) -> WorkflowQuickAddPreview {
-    let parsed =
-        quick_add::Draft::from(draft).parsed_with_features(&Now::new(now).eval(), features.into());
+    let now = Now::new(now);
+    let parsed = quick_add::Draft::from(draft).parsed_with_features(&now.eval(), features.into());
     WorkflowQuickAddPreview {
         title: parsed.title,
         due: parsed.due.map(|d| d.to_string()),
+        date_label: crate::labels::date_span(parsed.start_date, parsed.due, now.today()).or_else(
+            || {
+                parsed
+                    .due
+                    .map(|d| quick_add::short_date(d, now.today()))
+                    .or_else(|| {
+                        parsed
+                            .start_date
+                            .map(|d| format!("Starts {}", quick_add::short_date(d, now.today())))
+                    })
+            },
+        ),
         start_date: parsed.start_date.map(|d| d.to_string()),
         priority: parsed.priority.map(|p| p as u8),
         status: parsed.status.map(Into::into),

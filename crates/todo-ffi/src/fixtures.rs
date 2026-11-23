@@ -7,7 +7,8 @@ use todo_core::State;
 use todo_core::actor::Actor;
 use todo_core::ids::{CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId};
 use todo_core::model::{
-    Collection, EmailLink, Entity, Link, LinkKind, List, Priority, Reminder, Stamp, Step, Tag, Task,
+    Collection, EmailLink, Entity, Link, LinkKind, List, ListFeatures, ListView, Priority,
+    Reminder, Stamp, Step, Tag, Task, WorkflowStatus,
 };
 use todo_core::ordering::PosKey;
 use todo_core::time::{Date, Timestamp, add_days};
@@ -25,6 +26,8 @@ pub enum Fixture {
     TaskActivity,
     /// The phone header's zero-progress list, or the same list with work done for reach.
     Groceries { started: bool },
+    /// Workflow project with all four board columns and date spans.
+    Workflow,
     /// Nothing at all: the first start after pairing.
     Blank,
 }
@@ -39,6 +42,7 @@ impl Fixture {
             "task-activity" => Some(Self::TaskActivity),
             "groceries" => Some(Self::Groceries { started: false }),
             "groceries-reach" => Some(Self::Groceries { started: true }),
+            "workflow" => Some(Self::Workflow),
             "blank" => Some(Self::Blank),
             _ => None,
         }
@@ -58,6 +62,8 @@ struct Builder<'a> {
 #[derive(Default)]
 struct Spec<'a> {
     due: Option<i64>,
+    starts: Option<i64>,
+    status: WorkflowStatus,
     /// Minutes from now of a reminder (on the due day).
     remind_in_min: Option<i64>,
     priority: Option<Priority>,
@@ -176,8 +182,8 @@ impl<'a> Builder<'a> {
             title: title.into(),
             notes: spec.notes.into(),
             due,
-            start_date: None,
-            status: Default::default(),
+            start_date: spec.starts.and_then(|d| add_days(self.today, d)),
+            status: spec.status,
             priority: spec.priority.unwrap_or_default(),
             my_day: spec.my_day.then_some(self.today),
             completed_at: spec.done.then(|| self.stamp(30, &by).at),
@@ -341,6 +347,127 @@ fn groceries(mut b: Builder<'_>, started: bool) -> State {
 }
 
 /// Builds a fixture world as of `now`.
+fn workflow(mut b: Builder<'_>) -> State {
+    let home = b.collection("Home", "coral");
+    let renovation = b.list(Some(home), "Home renovation", "coral");
+    b.list(Some(home), "Groceries", "teal");
+    if let Some(list) = b.state.lists.get_mut(&renovation) {
+        list.features = ListFeatures {
+            workflow: true,
+            timeline: true,
+            default_view: ListView::Board,
+        };
+    }
+    let lighting = b.tag("lighting");
+    let carpentry = b.tag("carpentry");
+    let hallway = b.tag("hallway");
+    let bathroom = b.tag("bathroom");
+    let permits = b.tag("permits");
+    b.task(
+        renovation,
+        "Compare kitchen pendant lights",
+        Spec {
+            status: WorkflowStatus::Backlog,
+            agent: Some("pi"),
+            tags: &[lighting],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        renovation,
+        "Get a quote for the hallway wardrobe",
+        Spec {
+            status: WorkflowStatus::Backlog,
+            starts: Some(12),
+            due: Some(16),
+            tags: &[carpentry],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        renovation,
+        "Order matte oak flooring samples",
+        Spec {
+            starts: Some(2),
+            due: Some(4),
+            priority: Some(Priority::Normal),
+            agent: Some("claude"),
+            steps: &[
+                ("Compare finishes", true),
+                ("Check stock", false),
+                ("Order samples", false),
+            ],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        renovation,
+        "Confirm electrician visit for kitchen outlets",
+        Spec {
+            due: Some(3),
+            priority: Some(Priority::High),
+            ..Spec::default()
+        },
+    );
+    b.task(
+        renovation,
+        "Measure bathroom vanity niche and mirror",
+        Spec {
+            starts: Some(5),
+            due: Some(6),
+            steps: &[
+                ("Measure the opening", false),
+                ("Measure the mirror", false),
+            ],
+            ..Spec::default()
+        },
+    );
+    b.task(renovation, "Strip wallpaper and prime hallway walls", Spec {
+        status: WorkflowStatus::InProgress, starts: Some(-2), due: Some(2), priority: Some(Priority::High), tags: &[hallway],
+        notes: "Use a water-based primer. Keep the samples by the window to see them in daylight.",
+        steps: &[("Cover the floor", true), ("Move the furniture", true), ("Strip the wallpaper", false), ("Prime the walls", false)],
+        ..Spec::default()
+    });
+    b.task(
+        renovation,
+        "Pick grout colour for bathroom tiles",
+        Spec {
+            status: WorkflowStatus::InProgress,
+            due: Some(-1),
+            agent: Some("codex"),
+            tags: &[bathroom],
+            ..Spec::default()
+        },
+    );
+    b.task(
+        renovation,
+        "Vyřídit ohlášení drobných stavebních úprav na úřadě",
+        Spec {
+            status: WorkflowStatus::InProgress,
+            starts: Some(-1),
+            due: Some(5),
+            agent: Some("claude"),
+            tags: &[permits],
+            ..Spec::default()
+        },
+    );
+    for title in [
+        "Measure door frames",
+        "Order paint samples",
+        "Clear the hallway",
+    ] {
+        b.task(
+            renovation,
+            title,
+            Spec {
+                done: true,
+                ..Spec::default()
+            },
+        );
+    }
+    b.state
+}
+
 pub fn build(fixture: Fixture, now: &Now) -> State {
     let mut b = Builder::new(now);
     if fixture == Fixture::Blank {
@@ -348,6 +475,9 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
     }
     if fixture == Fixture::TaskActivity {
         return task_activity(b);
+    }
+    if fixture == Fixture::Workflow {
+        return workflow(b);
     }
     if let Fixture::Groceries { started } = fixture {
         return groceries(b, started);

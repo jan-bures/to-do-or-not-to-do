@@ -4,6 +4,7 @@
 //! derivation (rooms, progress, due labels, list chips, agent marks), so both clients count and word
 //! things the same way. The screenshot fixtures go through exactly the same code.
 
+use crate::engine::workflow::{ListFeatures, TaskWorkflow, WorkflowStage};
 use crate::labels::{self, DueLabel, Now};
 use crate::lists::{self, AgentMark};
 use std::collections::{BTreeMap, BTreeSet};
@@ -148,6 +149,8 @@ pub struct NavItem {
     pub icon: Option<String>,
     /// Open tasks in it.
     pub open: u32,
+    /// Synced feature settings, for manual lists only.
+    pub features: Option<ListFeatures>,
 }
 
 /// A collection with its lists, or the top-level lists (`collection` is `None`).
@@ -352,6 +355,10 @@ pub struct TaskRow {
     /// The update stamp if the last change was by an agent. Pass it back in [`Holding`] to keep the
     /// row's place in Agent activity during completion. No owner device ID crosses the row boundary.
     pub agent_update: Option<AgentUpdate>,
+    /// Visible stage when the parent list enables workflow.
+    pub workflow_stage: Option<WorkflowStage>,
+    /// Compact date range, when the list enables start dates and both dates are set.
+    pub date_span: Option<String>,
 }
 
 /// The agent and exact time of a task's latest update.
@@ -648,6 +655,8 @@ pub struct TaskDetail {
     pub sources: Vec<SourceLink>,
     /// Live file references, available even without a connection.
     pub attachments: Vec<crate::engine::attachments::AttachmentRow>,
+    pub workflow: TaskWorkflow,
+    pub start_label: Option<String>,
 }
 
 pub(crate) use todo_client::room_header::{list_live, task_live};
@@ -747,7 +756,20 @@ fn list_chip(state: &State, list: ListId) -> Option<Chip> {
 }
 
 fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow {
+    let features = state
+        .lists
+        .get(&task.list)
+        .map(|list| list.features)
+        .unwrap_or_default();
     TaskRow {
+        workflow_stage: features
+            .workflow
+            .then(|| todo_core::query::QueryStatus::of(task).into()),
+        date_span: if features.timeline && !task.is_done() {
+            labels::date_span(task.start_date, task.due, now.today())
+        } else {
+            None
+        },
         id: task.id.to_string(),
         list: task.list.to_string(),
         title: task.title.clone(),
@@ -1056,6 +1078,7 @@ pub fn home(state: &State, now: &Now) -> Home {
     let smart = SmartList::ALL
         .iter()
         .map(|s| NavItem {
+            features: None,
             can_move_list: false,
             key: RoomKey::Smart { list: *s },
             name: s.label().into(),
@@ -1070,6 +1093,7 @@ pub fn home(state: &State, now: &Now) -> Home {
         .collect();
     let counts = open_counts(state);
     let list_item = |l: &List| NavItem {
+        features: Some(l.features.into()),
         can_move_list: todo_client::intent::can_move_list(state, l.id),
         key: RoomKey::List {
             id: l.id.to_string(),
@@ -1097,6 +1121,7 @@ pub fn home(state: &State, now: &Now) -> Home {
         let open = lists_in.iter().map(|l| l.open).sum();
         groups.push(NavGroup {
             collection: Some(NavItem {
+                features: None,
                 can_move_list: false,
                 key: RoomKey::Collection {
                     id: c.id.to_string(),
@@ -1295,6 +1320,8 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
     }
     breadcrumb.extend(list_chip(state, task.list));
     Some(TaskDetail {
+        workflow: TaskWorkflow::new(task, list.map(|l| l.features).unwrap_or_default()),
+        start_label: task.start_date.map(|d| labels::day_month(d, today)),
         id: id.to_string(),
         list: task.list.to_string(),
         title: task.title.clone(),

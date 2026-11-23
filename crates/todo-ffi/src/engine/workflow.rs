@@ -9,7 +9,10 @@ use todo_client::{
 };
 use todo_core::{command, command::Placement, model, query::QueryStatus, time::Date};
 
-use super::{TodoEngine, Undone, intent_room, invalid, list_id, organize::OrganizeChange, task_id};
+use super::{
+    Completion, TodoEngine, Undone, intent_room, invalid, list_id, organize::OrganizeChange,
+    task_id,
+};
 use crate::{
     FfiError,
     labels::{LocalNow, Now},
@@ -147,6 +150,17 @@ pub struct TaskWorkflow {
     pub start_date: Option<String>,
 }
 
+impl TaskWorkflow {
+    pub(crate) fn new(task: &model::Task, features: model::ListFeatures) -> Self {
+        Self {
+            features: features.into(),
+            stage: QueryStatus::of(task).into(),
+            open_stage: task.status.into(),
+            start_date: task.start_date.map(|d| d.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct BoardColumn {
     pub stage: WorkflowStage,
@@ -226,12 +240,10 @@ impl TodoEngine {
     pub fn task_workflow(&self, id: String) -> Option<TaskWorkflow> {
         let (id, state) = self.live_task(&id).ok()?;
         let task = &state.tasks[&id];
-        Some(TaskWorkflow {
-            features: state.lists.get(&task.list)?.features.into(),
-            stage: QueryStatus::of(task).into(),
-            open_stage: task.status.into(),
-            start_date: task.start_date.map(|d| d.to_string()),
-        })
+        Some(TaskWorkflow::new(
+            task,
+            state.lists.get(&task.list)?.features,
+        ))
     }
 
     /// Edits the stored open stage. Use completion APIs for Done, or the board drop to reopen and move.
@@ -284,6 +296,22 @@ impl TodoEngine {
                 .collect(),
             total_done: u32::try_from(board.total_done).unwrap_or(u32::MAX),
         })
+    }
+
+    /// A workflow completion guarded by the card's original list, with the ordinary completion Undo
+    /// handle so the Android model can use the same choreography and reversal as a checkbox tap.
+    pub fn complete_board_card(
+        &self,
+        list: String,
+        card: String,
+    ) -> Result<Option<Arc<Completion>>, FfiError> {
+        let (list, card) = (list_id(&list)?, task_id(&card)?);
+        let command = command::Command::CompleteTask { id: card };
+        let tracked = self.client.submit_tracked_if(command.clone(), |state| {
+            board::drop_command(state, list, card, QueryStatus::Done, Placement::Last).as_ref()
+                == Some(&command)
+        })?;
+        Ok(tracked.map(|t| Arc::new(Completion(t, true))))
     }
 
     /// Complete, reorder or move a card across columns as a single tracked change.

@@ -34,6 +34,7 @@ sealed interface MenuAction {
     data class Important(val on: Boolean) : MenuAction
     data object PickPriority : MenuAction
     data object PickList : MenuAction
+    data object PickColumn : MenuAction
     data object PickMerge : MenuAction
     data object DeleteTask : MenuAction
     data class ReorderTask(val list: String, val neighbour: String?, val by: Int) : MenuAction
@@ -48,6 +49,7 @@ sealed interface MenuAction {
     data class AskDelete(val list: String) : MenuAction
     data class Colour(val room: RoomKey) : MenuAction
     data class MoveList(val room: RoomKey.List) : MenuAction
+    data class ListSettings(val room: RoomKey.List) : MenuAction
     data class DeleteCollection(val room: RoomKey.Collection) : MenuAction
 
     data class ShowCompleted(val on: Boolean) : MenuAction
@@ -67,16 +69,17 @@ sealed interface MenuAction {
 /** The row and the detail header offer the same actions. Only open rows of a manual list
  * have visible neighbours to swap with (Completed is ordered by completion time).
  */
-fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority: Int): List<MenuEntry> = buildList {
+fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority: Int, board: Boolean = false): List<MenuEntry> = buildList {
     add(MenuEntry.Item("circle-check", if (done) "Reopen" else "Complete", MenuAction.Done(!done)))
     val important = priority == 3
     add(MenuEntry.Item(if (myDay) "sun-filled" else "sun", if (myDay) "Remove from My Day" else "Add to My Day", MenuAction.MyDay(!myDay)))
     add(MenuEntry.Item(if (important) "star-filled" else "star", if (important) "Remove importance" else "Mark as important", MenuAction.Important(!important)))
     add(MenuEntry.Item("flag", "Priority…", MenuAction.PickPriority, hint = "!".repeat(priority).ifEmpty { null }))
+    if (board) add(MenuEntry.Item("columns-3", "Move to column…", MenuAction.PickColumn))
     add(MenuEntry.Item("list", "Move to…", MenuAction.PickList))
     add(MenuEntry.Item("list-plus", "Merge into…", MenuAction.PickMerge))
     val list = room.key as? RoomKey.List
-    if (list != null && !done) {
+    if (list != null && !done && !board) {
         val i = room.tasks.indexOfFirst { it.id == id }
         if (i >= 0) for (by in listOf(-1, 1)) {
             val other = room.tasks.getOrNull(i + by)?.id
@@ -116,6 +119,7 @@ private fun moves(home: Home, room: RoomKey): List<MenuEntry> {
     return listOfNotNull(
         MenuEntry.Item("pencil", "Colour…", MenuAction.Colour(room)),
         (room as? RoomKey.List)?.let { MenuEntry.Item("list", "Move to…", MenuAction.MoveList(it), enabled = home.groups.any { g -> g.lists.any { list -> list.key == room && list.canMoveList } }) },
+        (room as? RoomKey.List)?.let { MenuEntry.Item("settings", "List settings…", MenuAction.ListSettings(it)) },
         MenuEntry.Item("chevron-up", "Move up", MenuAction.Move(room, -1), enabled = up),
         MenuEntry.Item("chevron-down", "Move down", MenuAction.Move(room, 1), enabled = down),
     )

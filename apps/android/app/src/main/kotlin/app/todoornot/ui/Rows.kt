@@ -30,6 +30,8 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.model.RowLook
 
+import app.todoornot.model.visibleStage
+
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
 
@@ -153,12 +155,22 @@ private fun MetaLine(task: TaskRow, quietInk: Color) {
     ) {
         // A dated row puts the date first, in a column as wide as the due slot so the chips after it line
         // up down the list. An undated row has no column: its chips start under the title.
+        if (task.chip == null) task.visibleStage()?.let { StatusMark(it) }
         task.due?.let { due ->
-            Box(Modifier.widthIn(min = P.DUE_SLOT.dp - S.S2.dp)) { Due(due) }
+            Box(Modifier.widthIn(min = P.DUE_SLOT.dp - S.S2.dp)) { TaskDate(task, due) }
         }
-        task.chip?.let { ListChip(it) }
+        task.chip?.let { chip ->
+            ListChip(chip)
+            task.visibleStage()?.let { StatusMark(it) }
+        }
         if (task.fromMail) Icon("mail", quietInk, size = Tokens.Metrics.Component.ICON_SMALL.dp, label = "From an email")
         task.steps?.let { StepMeter(it, quietInk = quietInk) }
         for (tag in task.tags) Label(tag, Tokens.Type.TAG, quietInk)
     }
+}
+
+@Composable
+internal fun TaskDate(task: TaskRow, due: app.todoornot.core.DueLabel) {
+    val date = if (due.tone == DueTone.OVERDUE) null else task.dateSpan
+    Due(if (date == null) due else due.copy(text = date))
 }

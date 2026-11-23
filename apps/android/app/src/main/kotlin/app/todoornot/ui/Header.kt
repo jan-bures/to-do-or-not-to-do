@@ -76,6 +76,7 @@ fun RoomHeader(
     compact: Dp = P.COMPACT_HEADER.dp,
     selected: Boolean = false,
     activitySummary: String? = null,
+    viewLabel: String? = null,
     onResetReach: () -> Unit,
 ) {
     val outer = LocalDesign.current
@@ -117,7 +118,7 @@ fun RoomHeader(
                 },
             content = {
                 HeaderPanorama(outer, room.localHour.toInt(), inner, collapse, room.total > 0u, progress, dusk)
-                HeaderText(room, activitySummary, quiet, collapse)
+                HeaderText(room, activitySummary, quiet, collapse, viewLabel)
                 CompactHeader(room, quiet, compact, selected, collapse, progress, dusk, textDesign)
             },
         ) { (scene, text, bar), constraints ->
@@ -146,7 +147,7 @@ fun RoomHeader(
 }
 
 @Composable
-private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?, collapse: HeaderCollapse) {
+private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?, collapse: HeaderCollapse, viewLabel: String?) {
     val r = LocalDesign.current.room
     fun Modifier.detailMotion() = graphicsLayer {
         val fade = HeaderChoreography.detail(collapse.fraction)
@@ -167,7 +168,11 @@ private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?,
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
         ) {
-            Box(Modifier.weight(1f).semantics(mergeDescendants = true) { traversalIndex = 0f }) { EyebrowLine(room.eyebrow) }
+            Row(Modifier.weight(1f).semantics(mergeDescendants = true) { traversalIndex = 0f },
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+                EyebrowLine(room.eyebrow)
+                viewLabel?.let { Label("· $it", T.EYEBROW_META_PHONE, r.ink3) }
+            }
             quiet?.let { Label(it, T.SUMMARY_FIGURES, r.ink2, Modifier.semantics { traversalIndex = 4f }) }
         }
         Box(Modifier.fillMaxWidth().heightIn(min = T.ROOM_TITLE_PHONE.lineHeight.dp).graphicsLayer {

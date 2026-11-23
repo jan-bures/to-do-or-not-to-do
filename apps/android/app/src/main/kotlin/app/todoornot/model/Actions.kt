@@ -1,5 +1,10 @@
 package app.todoornot.model
 
+import app.todoornot.core.BoardSlot
+import app.todoornot.core.ListFeaturesPatch
+import app.todoornot.core.ListView
+import app.todoornot.core.WorkflowQuickAddDraft
+import app.todoornot.core.WorkflowStage
 import app.todoornot.core.BulkEdit
 import app.todoornot.core.DestinationGroup
 import app.todoornot.core.MergeCandidate
@@ -21,6 +26,12 @@ interface Actions {
     suspend fun bulkDestinations(tasks: List<String>, filter: String): List<DestinationGroup> = emptyList()
     fun add(title: String) = add(app.todoornot.core.QuickAddDraft(title, null, false, null))
     fun add(draft: app.todoornot.core.QuickAddDraft)
+    fun addWorkflow(draft: WorkflowQuickAddDraft) = add(draft.base)
+    fun setListFeatures(list: String, patch: ListFeaturesPatch) = Unit
+    fun setRoomView(view: ListView, generation: Long, showCompleted: Boolean = false) = Unit
+    fun setTaskStage(list: String, id: String, stage: WorkflowStage, generation: Long) = Unit
+    fun moveBoardCard(list: String, id: String, stage: WorkflowStage, slot: BoardSlot, generation: Long) = Unit
+    fun setStartDate(id: String, date: String?) = Unit
     fun composerNow(): app.todoornot.core.LocalNow = app.todoornot.core.localNow()
     /**
      * Completes or reopens a task. A row tap and the detail pane pass the room [generation] they were read

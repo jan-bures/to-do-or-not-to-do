@@ -54,6 +54,8 @@ import app.todoornot.model.MotionFrame
 import app.todoornot.model.UiState
 import app.todoornot.model.renameTitle
 import app.todoornot.model.swappedWith
+import app.todoornot.core.WorkflowStage
+import app.todoornot.model.featuresFor
 import kotlinx.coroutines.delay
 
 data class PaneFold(val start: Dp, val end: Dp)
@@ -70,6 +72,7 @@ internal fun listPaneWidth(width: Dp, wide: Boolean, fold: PaneFold?): Dp? {
 private val OrganizeSaver = Saver<MenuAction?, String>(
     save = { action -> when (action) {
         is MenuAction.MoveList -> "move:${action.room.id}"
+        is MenuAction.ListSettings -> "settings:${action.room.id}"
         is MenuAction.Colour -> when (val room = action.room) {
             is RoomKey.List -> "list:${room.id}"
             is RoomKey.Collection -> "collection:${room.id}"
@@ -79,6 +82,7 @@ private val OrganizeSaver = Saver<MenuAction?, String>(
     } },
     restore = { saved -> val id = saved.substringAfter(':'); when (saved.substringBefore(':')) {
         "move" -> MenuAction.MoveList(RoomKey.List(id))
+        "settings" -> MenuAction.ListSettings(RoomKey.List(id))
         "list" -> MenuAction.Colour(RoomKey.List(id))
         "collection" -> MenuAction.Colour(RoomKey.Collection(id))
         else -> null
@@ -127,13 +131,16 @@ fun MainScreen(
     roomMenuOpen: Boolean = false,
     navMenuOpen: NavItem? = null,
     reachExpanded: Boolean = false,
+    listSettingsOpen: Boolean = false,
+    boardInitialStage: WorkflowStage = WorkflowStage.TODO,
 ) {
     LaunchedEffect(motion) { motion.drive() }
     CompositionLocalProvider(LocalMotion provides motion) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val paneWidth = listPaneWidth(maxWidth, wide, fold)
             Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus,
-                hand, onHand, fold, paneWidth, maxWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded)
+                hand, onHand, fold, paneWidth, maxWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded,
+                listSettingsOpen, boardInitialStage)
         }
     }
 }
@@ -159,6 +166,8 @@ private fun Screen(
     roomMenuOpen: Boolean,
     navMenuOpen: NavItem?,
     reachExpanded: Boolean,
+    listSettingsOpen: Boolean,
+    boardInitialStage: WorkflowStage,
 ) {
     TodoTheme(dark, if (state.activity != null) "agent-activity" else state.room.hue) {
         val r = LocalDesign.current.room
@@ -178,10 +187,12 @@ private fun Screen(
         }
         val switcherVisible = switcher || reveal != null
         val menu = { switcher = true }
-        var roomActionsOpen by remember(state.generation) { mutableStateOf(roomMenuOpen) }
+        var roomActionsOpen by rememberSaveable(state.generation) { mutableStateOf(roomMenuOpen || listSettingsOpen) }
+        var roomActionsSettings by rememberSaveable(state.generation) { mutableStateOf(listSettingsOpen) }
         var navMenu by remember { mutableStateOf(navMenuOpen) }
         var bulkPicker by remember(state.generation, state.bulkIds) { mutableStateOf<BulkPicker?>(null) }
         val detail = state.detail
+        val boardInput = if (state.board == null) null else androidx.compose.runtime.key(state.generation) { rememberBoardInput(boardInitialStage) }
         val detailSheets = rememberDetailSheets(detail?.id, state.generation)
         state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed, paneWidth) }
         // Room and switcher actions: rename and delete ask in a
@@ -274,13 +285,17 @@ private fun Screen(
                 val separated = fold?.takeIf { wide && it.start == paneWidth && it.end > it.start }
                 val gap = separated?.let { it.end - it.start } ?: divider
                 val feed = state.activity
+                val fullBoard = paneWidth != null && state.board != null && detail == null
                 BackHandler(enabled = !sheetOpen && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
                 @Composable
                 fun Tasks(modifier: Modifier) {
                     RoomPane(
                         if (wide || detail == null) paneSurface else paneSurface.copy(toast = null),
-                        actions, menu, modifier, draft, collapsed, onRoomMenu = { roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
+                        actions, menu, modifier, draft, collapsed,
+                        onRoomMenu = { roomActionsSettings = false; roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
                         composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
+                        onListSettings = { roomActionsSettings = true; roomActionsOpen = true }, fullBoard = fullBoard,
+                        boardFold = separated, boardInput = boardInput, listWidth = paneWidth,
                         reachExpanded = reachExpanded, onSwipeRooms = { progress ->
                             if (progress == null && !switcher && reveal != null) returningGesture = true
                             else { returningGesture = false; reveal = progress }
@@ -297,20 +312,22 @@ private fun Screen(
                         TrashRoom(paneSurface, actions, menu, wide, hand)
                     } else if (paneWidth != null) {
                         Row(Modifier.fillMaxSize()) {
-                            Tasks(Modifier.width(paneWidth))
-                            Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
-                            // Android sets status-icon contrast for the whole window, so the right
-                            // status inset shares dusk's zenith while the detail keeps its own theme.
-                            val insets = WindowInsets.statusBars
-                            val duskTop = LocalDesign.current.dusk().top
-                            val detailInset = Modifier.weight(1f).drawBehind {
-                                if (!dark && (motion.dusk(state.room.key)?.nightInk ?: state.room.finished)) {
-                                    drawRect(duskTop, size = Size(size.width, insets.getTop(this).toFloat()))
+                            Tasks(if (fullBoard) Modifier.fillMaxSize() else Modifier.width(paneWidth))
+                            if (!fullBoard) {
+                                Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
+                                // Android sets status-icon contrast for the whole window, so the right
+                                // status inset shares dusk's zenith while the detail keeps its own theme.
+                                val insets = WindowInsets.statusBars
+                                val duskTop = LocalDesign.current.dusk().top
+                                val detailInset = Modifier.weight(1f).drawBehind {
+                                    if (!dark && (motion.dusk(state.room.key)?.nightInk ?: state.room.finished)) {
+                                        drawRect(duskTop, size = Size(size.width, insets.getTop(this).toFloat()))
+                                    }
                                 }
+                                if (detail != null) DetailPane(paneSurface, actions, standalone = false,
+                                    detailInset.statusBarsPadding(), hand = hand, sheets = detailSheets)
+                                else NoDetail(detailInset.navigationBarsPadding(), selection = state.bulk?.label)
                             }
-                            if (detail != null) DetailPane(paneSurface, actions, standalone = false,
-                                detailInset.statusBarsPadding(), hand = hand, sheets = detailSheets)
-                            else NoDetail(detailInset.navigationBarsPadding(), selection = state.bulk?.label)
                         }
                     } else {
                         Tasks(Modifier.fillMaxSize().then(if (detail != null) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier))
@@ -331,7 +348,8 @@ private fun Screen(
                     navMenu?.let { item -> RoomActionsSheet(item.name, drawerMenu(state.home, item.key), state, actions,
                         onRoomMenu, close = { navMenu = null }) }
                     if (roomActionsOpen) RoomActionsSheet(state.room.title, roomMenu(state.home, state.room.key, state.showCompleted), state, actions,
-                        onRoomMenu, close = { roomActionsOpen = false })
+                        onRoomMenu, close = { roomActionsOpen = false },
+                        initialPage = if (roomActionsSettings) (state.room.key as? RoomKey.List)?.let { MenuAction.ListSettings(it) } else null)
                     bulkPicker?.let { BulkSelectionPicker(it, state, actions) { bulkPicker = null } }
                 }
                 if (detail != null && feed == null) CompositionLocalProvider(
@@ -346,15 +364,20 @@ private fun Screen(
 
 @Composable
 private fun RoomActionsSheet(title: String, entries: List<MenuEntry>, state: UiState, actions: Actions,
-    onChoose: (MenuAction) -> Unit, close: () -> Unit,
+    onChoose: (MenuAction) -> Unit, close: () -> Unit, initialPage: MenuAction? = null,
 ) {
-    var page by rememberSaveable(stateSaver = OrganizeSaver) { mutableStateOf<MenuAction?>(null) }
+    var page by rememberSaveable(stateSaver = OrganizeSaver) { mutableStateOf(initialPage) }
     BottomSheet(title, close) { overlay ->
         BackHandler(enabled = page != null) { page = null }
         AnimatedContent(page, modifier = Modifier.weight(1f, fill = false), transitionSpec = {
             fadeIn(tween(Tokens.Motion.CONTENT_SWAP)) togetherWith fadeOut(tween(Tokens.Motion.CONTENT_SWAP))
         }, label = "room action") { showing ->
             when (showing) {
+                is MenuAction.ListSettings -> {
+                    val features = state.home.featuresFor(showing.room)
+                    if (features == null) SideEffect { overlay.close() }
+                    else ListSettings(features, { actions.setListFeatures(showing.room.id, it) }, { page = null })
+                }
                 is MenuAction.MoveList -> MoveListCard(state.home, showing.room,
                     { id -> overlay.choose { actions.organize(OrganizeEdit.MoveList(showing.room.id, id)) } }, { page = null }, inSheet = true)
                 is MenuAction.Colour -> {
@@ -371,7 +394,7 @@ private fun RoomActionsSheet(title: String, entries: List<MenuEntry>, state: UiS
                 }
                 else -> ActionSheetContent(entries, title) { action ->
                     if (overlay.open) when (action) {
-                        is MenuAction.MoveList, is MenuAction.Colour -> page = action
+                        is MenuAction.MoveList, is MenuAction.Colour, is MenuAction.ListSettings -> page = action
                         else -> overlay.choose { onChoose(action) }
                     }
                 }

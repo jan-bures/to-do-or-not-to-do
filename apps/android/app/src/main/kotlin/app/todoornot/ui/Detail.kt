@@ -57,6 +57,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -389,6 +390,19 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
  */
 @Composable
 private fun Fields(detail: TaskDetail, page: DetailPage?, open: (DetailPage, FocusRequester?) -> Unit) {
+    if (detail.workflow.features.workflow) {
+        val focus = remember { FocusRequester() }
+        val stage = detail.workflow.stage
+        FieldRow(DetailField(null, stage.icon, "Status", "", false, false), "Change status",
+            modifier = Modifier.focusRequester(focus), valueContent = { StatusMark(stage) }) { open(DetailPage.Status, focus) }
+    }
+    if (detail.workflow.features.timeline) {
+        val focus = remember { FocusRequester() }
+        FieldRow(DetailField(null, "calendar-range", "Starts", detail.startLabel ?: "–", mono = true, empty = detail.startLabel == null),
+            "Change the start date", expanded = page == DetailPage.Starts, modifier = Modifier.focusRequester(focus)) {
+            open(DetailPage.Starts, focus)
+        }
+    }
     detail.fields.forEach { f -> key(f.label) {
         val focus = remember { FocusRequester() }
         val target = Modifier.focusRequester(focus)
@@ -406,6 +420,8 @@ private fun Fields(detail: TaskDetail, page: DetailPage?, open: (DetailPage, Foc
 internal sealed interface DetailPage {
     data object Actions : DetailPage
     data object Due : DetailPage
+    data object Status : DetailPage
+    data object Starts : DetailPage
     data object Priority : DetailPage
     data object Reminder : DetailPage
     data object Repeat : DetailPage
@@ -428,6 +444,8 @@ private val DetailEditorsSaver = listSaver<DetailSheets, String>(
     save = { listOf(it.editingStep.orEmpty(), when (val page = it.page) {
         DetailPage.Actions -> "actions"
         DetailPage.Due -> "due"
+        DetailPage.Status -> "status"
+        DetailPage.Starts -> "starts"
         DetailPage.Priority -> "priority"
         DetailPage.Reminder -> "reminder"
         DetailPage.Repeat -> "repeat"
@@ -443,6 +461,8 @@ private val DetailEditorsSaver = listSaver<DetailSheets, String>(
         this.page = when (page) {
             "actions" -> DetailPage.Actions
             "due" -> DetailPage.Due
+            "status" -> DetailPage.Status
+            "starts" -> DetailPage.Starts
             "priority" -> DetailPage.Priority
             "reminder" -> DetailPage.Reminder
             "repeat" -> DetailPage.Repeat
@@ -467,6 +487,15 @@ internal fun DetailOverlays(state: UiState, actions: Actions, sheets: DetailShee
     when (val page = sheets.page) {
         DetailPage.Actions -> TaskActionsSheet(state, actions, detail, close)
         DetailPage.Due -> DueDateSheet(detail, actions, close)
+        DetailPage.Starts -> if (detail.workflow.features.timeline) StartDateSheet(detail, actions, close) else SideEffect(close)
+        DetailPage.Status -> if (detail.workflow.features.workflow) BottomSheet("Status", close) { overlay ->
+            PickerCard("Status", inSheet = true) {
+                StatusOptions(detail.workflow.stage, includeDone = true) { stage ->
+                    overlay.choose { if (stage != detail.workflow.stage) actions.setTaskStage(detail.list, detail.id, stage, state.generation) }
+                }
+                Button("Cancel", false, onClick = overlay::close)
+            }
+        } else SideEffect(close)
         DetailPage.Priority -> BottomSheet("Priority", close) { overlay ->
             ActionSheetContent(priorityMenu(detail.id, detail.priority.toInt()), "Priority") { action ->
                 if (action is MenuAction.SetPriority) overlay.choose { actions.setPriority(action.task, action.marks) }
@@ -661,7 +690,7 @@ private fun AddStep(task: String, actions: Actions) {
 /** A property row; one that edits ([onEdit]) is a full touch target with a chevron. */
 @Composable
 private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.todoornot.core.TagChoice> = emptyList(), expanded: Boolean? = null,
-    modifier: Modifier = Modifier, onEdit: (() -> Unit)? = null,
+    modifier: Modifier = Modifier, valueContent: (@Composable () -> Unit)? = null, onEdit: (() -> Unit)? = null,
 ) {
     val r = LocalDesign.current.room
     Row(
@@ -676,7 +705,8 @@ private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.t
         Label(f.label, Tokens.Type.META_PHONE, r.ink3, Modifier.width(S.S10.dp * 2 + S.S3.dp))
         val color = if (f.empty) r.ink4 else r.ink
         Box(Modifier.weight(1f)) {
-            if (tags.isNotEmpty()) {
+            if (valueContent != null) valueContent()
+            else if (tags.isNotEmpty()) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
                     tags.forEach { tag ->
                         Box(Modifier.size(C.CHIP_DOT.dp).background(LocalDesign.current.list(tag.hue).dot, CircleShape))

@@ -112,6 +112,16 @@ import app.todoornot.model.rowIn
 import app.todoornot.model.Toast
 import app.todoornot.model.UiState
 
+import app.todoornot.core.BoardSlot
+import app.todoornot.core.WorkflowStage
+import app.todoornot.model.ChecklistFeatures
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.layout.width
+import app.todoornot.model.label
+import app.todoornot.model.openStage
+import app.todoornot.model.workflowStage
+
 private val P = Tokens.Metrics.Phone
 private val S = Tokens.Space
 private val M = Tokens.Motion
@@ -119,11 +129,13 @@ private val M = Tokens.Motion
 /** Rows that stay visible above the composer while typing (`docs/design-language.md`). */
 private const val MIN_ROWS_TYPING = 4
 
+private data class RoomBody(val state: UiState, val board: BoardInput?)
+
 /**
  * The sky and task list sit above all room controls. The dock swaps its input or takes over for bulk work.
  */
 @Composable
-fun RoomPane(
+internal fun RoomPane(
     state: UiState,
     actions: Actions,
     onMenu: () -> Unit,
@@ -138,6 +150,11 @@ fun RoomPane(
     sheetOpen: Boolean = false,
     reachExpanded: Boolean = false,
     onSwipeRooms: (Float?) -> Unit = {},
+    onListSettings: () -> Unit = onRoomMenu,
+    fullBoard: Boolean = false,
+    boardFold: PaneFold? = null,
+    boardInput: BoardInput? = null,
+    listWidth: Dp? = null,
 ) {
     val r = LocalDesign.current.room
     val room = state.room
@@ -173,17 +190,47 @@ fun RoomPane(
         }
         val drag = LocalTaskDrag.current
         val lifted = drag?.picked != null || LocalTaskDragFrame.current != null
+        val board = boardInput
+        val focusManager = LocalFocusManager.current
+        val ime = LocalSoftwareKeyboardController.current
+        val stopAdd: () -> Unit = { focusManager.clearFocus(); ime?.hide(); board?.adding = null }
+        BackHandler(enabled = board?.adding != null && !sheetOpen, onBack = stopAdd)
+        val boardMove = board?.pendingMove
+        if (boardMove != null) androidx.compose.runtime.CompositionLocalProvider(LocalSheetWidth provides listWidth) {
+            BottomSheet("Move to column…", { board.pendingMove = null }) { overlay ->
+            PickerCard("Move to column…", inSheet = true) {
+                StatusOptions(boardMove.workflowStage ?: WorkflowStage.TODO, includeDone = true) { stage ->
+                    overlay.choose {
+                        if (stage != boardMove.workflowStage) actions.moveBoardCard(boardMove.list, boardMove.id, stage, BoardSlot.First, state.generation)
+                    }
+                }
+                Button("Cancel", false, onClick = overlay::close)
+            }
+            }
+        }
         val left = hand.mirrors(wide)
         val holders = rememberSaveableStateHolder()
         var addingWithFilter by remember(state.generation, state.searching) { mutableStateOf(false) }
         var focusAdd by remember { mutableStateOf(false) }
         val filterShown = state.searching && !addingWithFilter
+        val boardGesture = if (board == null) Modifier else boardDrag(board, state, actions,
+            enabled = !sheetOpen && boardMove == null && !state.signedOut && !keyboard, pager = !fullBoard)
+        Box(Modifier.fillMaxSize().then(boardGesture)) {
         Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             val resetReach = { if (collapse.reach > 0f) scope.launch { collapse.resetReach() }; Unit }
             RoomHeader(room, wide, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp,
-                selected = state.bulk != null, onResetReach = resetReach)
+                selected = state.bulk != null, onResetReach = resetReach, viewLabel = if (board != null) "Board" else null)
             Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(collapse.connection)) {
-                androidx.compose.runtime.key(state.generation) { TaskList(state, actions, resetReach) }
+                androidx.compose.runtime.key(state.generation) {
+                    AnimatedContent(RoomBody(state, board), transitionSpec = {
+                        val duration = if (reduced) M.REDUCED_FADE else M.CONTENT_SWAP
+                        fadeIn(tween(duration, easing = M.EASE_STANDARD.cubic())) togetherWith
+                            fadeOut(tween(duration, easing = M.EASE_STANDARD.cubic()))
+                    }, contentKey = { it.board != null }, modifier = Modifier.fillMaxSize(), label = "room view") { body ->
+                        if (body.board != null) BoardBody(body.state, actions, body.board, wide, fullBoard, boardFold, Modifier.fillMaxSize())
+                        else TaskList(body.state, actions, resetReach)
+                    }
+                }
             }
             state.failed.firstOrNull()?.let { f ->
                 Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
@@ -194,6 +241,31 @@ fun RoomPane(
                 BulkStatusStrip(state.bulk.label, left, actions::clearBulk)
                 if (lifted) BottomRoomBar(state, actions, left, onMenu, onRoomMenu, draggingTask = true)
                 else BulkSelectionTools(state, onBulkPicker, actions::editBulk)
+            } else if (board != null) {
+                val stage = board.adding
+                if (stage != null) {
+                    Row(Modifier.fillMaxWidth().background(r.pane), verticalAlignment = Alignment.CenterVertically) {
+                        if (fullBoard && boardFold != null) Spacer(Modifier.width(boardFold.end))
+                        Box(Modifier.weight(1f)) {
+                            Composer("Add to ${stage.workflowStage().label}…", draft, keyboard, actions, {}, docked = true,
+                                features = state.listFeatures ?: ChecklistFeatures, initialStage = stage, onSubmit = stopAdd)
+                        }
+                        IconButton("x", "Close quick add", onClick = stopAdd)
+                    }
+                } else if (state.searching) {
+                    Row(Modifier.fillMaxWidth()) {
+                        if (fullBoard && boardFold != null) Spacer(Modifier.width(boardFold.end))
+                        Box(Modifier.weight(1f)) {
+                            FilterField(state.filter, actions::setFilter, onClose = { actions.setSearching(false) }, onAdd = null)
+                        }
+                    }
+                } else if (!fullBoard) BoardColumnStrip(state, board, left)
+                AnimatedVisibility(!keyboard, enter = expandVertically(tween(M.PANEL)), exit = shrinkVertically(tween(M.PANEL, easing = M.EASE_EXIT.cubic()))) {
+                    BottomRoomBar(state, actions, left, onMenu, onRoomMenu, wide = wide, boardFull = fullBoard, fold = boardFold,
+                        onListSettings = onListSettings, onSwipeRooms = onSwipeRooms,
+                        onFilter = { stopAdd(); actions.setSearching(!state.searching) },
+                        onBoardAdd = { board.adding = board.active.openStage() ?: app.todoornot.core.OpenStage.TODO })
+                }
             } else {
                 AnimatedContent(filterShown, transitionSpec = {
                     fadeIn(tween(M.CONTENT_SWAP)) togetherWith fadeOut(tween(M.CONTENT_SWAP))
@@ -203,14 +275,18 @@ fun RoomPane(
                         onAdd = if (state.filter.isNotBlank() && !keyboard) {{ addingWithFilter = true; focusAdd = true }} else null,
                     ) else holders.SaveableStateProvider("composer") {
                         Composer(room.addPlaceholder, draft, keyboard, actions,
-                            composerFocus ?: if (focusAdd) {{ focusAdd = false }} else null, docked = true)
+                            composerFocus ?: if (focusAdd) {{ focusAdd = false }} else null, docked = true,
+                            features = state.listFeatures ?: ChecklistFeatures)
                     }
                 }
                 AnimatedVisibility(!keyboard, enter = expandVertically(tween(M.PANEL)), exit = shrinkVertically(tween(M.PANEL, easing = M.EASE_EXIT.cubic()))) {
-                    BottomRoomBar(state, actions, left, onMenu, onRoomMenu, onSwipeRooms = onSwipeRooms,
+                    BottomRoomBar(state, actions, left, onMenu, onRoomMenu, wide = wide, onListSettings = onListSettings,
+                        onSwipeRooms = onSwipeRooms,
                         onFilter = { if (addingWithFilter) addingWithFilter = false else actions.setSearching(!state.searching) })
                 }
             }
+        }
+        board?.let { BoardLift(it) }
         }
     }
 }
@@ -225,6 +301,11 @@ private fun BottomRoomBar(
     draggingTask: Boolean = false,
     onFilter: () -> Unit = {},
     onSwipeRooms: (Float?) -> Unit = {},
+    wide: Boolean = false,
+    boardFull: Boolean = false,
+    fold: PaneFold? = null,
+    onListSettings: () -> Unit = onMenu,
+    onBoardAdd: () -> Unit = {},
 ) {
     val r = LocalDesign.current.room
     val drag = LocalTaskDrag.current
@@ -261,9 +342,28 @@ private fun BottomRoomBar(
         }
         val search: @Composable () -> Unit = { if (!draggingTask) IconButton("search", "Filter", expanded = state.searching, onClick = onFilter) }
         val overflow: @Composable () -> Unit = { if (!draggingTask && hasMenu) IconButton("ellipsis", "Room menu", onClick = onMenu) }
-        if (left) { overflow(); search() } else rooms()
-        RoomPillsStrip(state.home, state.room.key, Modifier.weight(1f).padding(horizontal = S.S1.dp), actions::open)
-        if (left) rooms() else { search(); overflow() }
+        val views: @Composable () -> Unit = { if (!draggingTask) ViewControl(state, actions, wide, labels = boardFull, settings = onListSettings) }
+        if (boardFull) {
+            val width = fold?.let { (it.start - S.S1.dp).coerceAtLeast(P.TOUCH.dp) }
+            Row(if (width == null) Modifier.weight(1f) else Modifier.width(width), verticalAlignment = Alignment.CenterVertically) {
+                rooms()
+                Box(Modifier.weight(1f, fill = false).padding(horizontal = S.S1.dp)) {
+                    siblings(state.home, state.room.key).firstOrNull { it.key == state.room.key }?.let { current ->
+                        RoomPill(current, on = true, roomy = true) { actions.open(current.key) }
+                    }
+                }
+                views()
+            }
+            Spacer(Modifier.width(fold?.let { it.end - it.start } ?: S.S6.dp))
+            if (fold != null) Spacer(Modifier.weight(1f))
+            if (!state.signedOut) BoardAddLabel(onBoardAdd)
+            search(); overflow()
+        } else {
+            if (left) { overflow(); search(); views() } else rooms()
+            RoomPillsStrip(state.home, state.room.key, Modifier.weight(1f).padding(horizontal = S.S1.dp), actions::open,
+                roomyActive = state.listFeatures?.workflow == true)
+            if (left) rooms() else { views(); search(); overflow() }
+        }
     }
 }
 

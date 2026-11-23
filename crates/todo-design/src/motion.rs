@@ -197,11 +197,14 @@ pub const OVERLAY_SHIFT: f32 = 4.0;
 pub const DIALOG_RISE: f32 = 6.0;
 /// How far a dialog card drops while leaving, in logical pixels.
 pub const DIALOG_DROP: f32 = 4.0;
+/// Time to hold a dragged card at the board pager's edge before advancing a column.
+pub const BOARD_EDGE_DWELL: u32 = 350;
 /// A lifted task on touch scales to this value over [`HOVER`]; pointer drags stay at 1.0.
 pub const DRAG_TOUCH_SCALE: f32 = 1.01;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 25] = [
+pub const DURATIONS: [(&str, u32); 26] = [
+    ("board-edge-dwell", BOARD_EDGE_DWELL),
     ("hover", HOVER),
     ("content-swap", CONTENT_SWAP),
     ("swipe-settle", SWIPE_SETTLE),

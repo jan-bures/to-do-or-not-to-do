@@ -178,23 +178,51 @@ fn workflow_bindings_share_preview_projection_and_tracked_changes() {
     let workflow = engine.task_workflow(task.clone()).unwrap();
     assert_eq!(workflow.start_date, preview.start_date);
     assert_eq!(workflow.features, features);
+    let row = &engine.room(room.clone(), now.clone()).tasks[0];
+    assert_eq!(row.workflow_stage, Some(WorkflowStage::InProgress));
+    assert_eq!(row.date_span, preview.date_label);
+    let detail = engine.task(task.clone(), now.clone()).unwrap();
+    assert_eq!(detail.workflow, workflow);
+    assert!(detail.start_label.is_some());
+    let collected = engine.home(now.clone());
+    let nav = collected
+        .groups
+        .iter()
+        .flat_map(|g| &g.lists)
+        .find(|i| i.key == room)
+        .unwrap();
+    assert_eq!(nav.features, Some(features));
     let timeline = engine.timeline(room.clone(), now.clone()).unwrap();
     assert_eq!(timeline.lanes[0].bar, TimelineBar::Range);
     assert_eq!(timeline.lanes[0].task_id, task);
+    let RoomKey::List { id: other } = engine.create_list("Other".into(), my_day()).unwrap() else {
+        panic!("expected a list")
+    };
+    assert!(
+        engine
+            .complete_board_card(other, task.clone())
+            .unwrap()
+            .is_none()
+    );
     let done = engine
-        .drop_board_card(
-            list.clone(),
-            task.clone(),
-            WorkflowStage::Done,
-            BoardSlot::Last,
-        )
+        .complete_board_card(list.clone(), task.clone())
         .unwrap()
         .unwrap();
     assert_eq!(
         engine.board(list.clone(), now.clone()).unwrap().total_done,
         1
     );
-    engine.undo_organize(done).unwrap();
+    engine.undo_completion(done).unwrap();
+    let cross_column = engine
+        .drop_board_card(
+            list.clone(),
+            task.clone(),
+            WorkflowStage::Todo,
+            BoardSlot::First,
+        )
+        .unwrap()
+        .unwrap();
+    engine.undo_organize(cross_column).unwrap();
     assert_eq!(
         engine.board(list.clone(), now.clone()).unwrap().columns[2].task_ids,
         std::slice::from_ref(&task)

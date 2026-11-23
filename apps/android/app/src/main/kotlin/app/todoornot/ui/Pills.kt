@@ -48,7 +48,7 @@ fun siblings(home: Home, key: RoomKey): List<NavItem> = when (key) {
 }
 
 @Composable
-internal fun RoomPillsStrip(home: Home, current: RoomKey, modifier: Modifier, onOpen: (RoomKey) -> Unit) {
+internal fun RoomPillsStrip(home: Home, current: RoomKey, modifier: Modifier, onOpen: (RoomKey) -> Unit, roomyActive: Boolean = false) {
     val rooms = siblings(home, current)
     val index = rooms.indexOfFirst { it.key == current }
     val state = rememberLazyListState()
@@ -69,12 +69,14 @@ internal fun RoomPillsStrip(home: Home, current: RoomKey, modifier: Modifier, on
         }
     }, state = state,
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-        items(rooms, key = { it.key.toString() }) { item -> RoomPill(item, item.key == current) { onOpen(item.key) } }
+        items(rooms, key = { it.key.toString() }) { item ->
+            RoomPill(item, item.key == current, roomy = roomyActive && item.key == current) { onOpen(item.key) }
+        }
     }
 }
 
 @Composable
-fun RoomPill(item: NavItem, on: Boolean, onClick: () -> Unit) {
+fun RoomPill(item: NavItem, on: Boolean, roomy: Boolean = false, onClick: () -> Unit) {
     val d = LocalDesign.current
     val r = d.room
     val l = d.list(item.hue)
@@ -84,7 +86,7 @@ fun RoomPill(item: NavItem, on: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(Tokens.Radius.ROOM_PILL.dp)
     TouchTarget(onClick, probe.semantics { selected = on; role = Role.Tab }) { press ->
         Row(
-            Modifier.height(P.ROOM_PILL.dp).widthIn(max = Tokens.Metrics.Component.NEW_MENU.dp)
+            Modifier.height(P.ROOM_PILL.dp).widthIn(max = if (roomy) P.INNER_LIST.dp / 2 else Tokens.Metrics.Component.NEW_MENU.dp)
                 .clip(shape).background(if (drop) r.selectionWash else if (on) l.strong else l.tint)
                 .then(if (drop) Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.accentStrong, shape) else Modifier)
                 .then(press).padding(start = Micro.pillStart, end = S.S3.dp),

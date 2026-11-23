@@ -1,5 +1,11 @@
 package app.todoornot.model
 
+import app.todoornot.core.BoardSlot
+import app.todoornot.core.BoardView
+import app.todoornot.core.ListFeaturesPatch
+import app.todoornot.core.ListView
+import app.todoornot.core.WorkflowQuickAddDraft
+import app.todoornot.core.WorkflowStage
 import app.todoornot.core.BulkBar
 import app.todoornot.core.BulkEdit
 import app.todoornot.core.RoomSelection
@@ -123,7 +129,11 @@ data class UiState(
     val attachmentTaskConfirmed: Boolean = false,
     val bulkIds: List<String> = emptyList(),
     val bulk: BulkBar? = null,
+    val view: ListView = ListView.LIST,
+    val board: BoardView? = null,
+    val boardReopening: Set<String> = emptySet(),
 ) {
+    val listFeatures get() = home.featuresFor(room.key)
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.signedOut
 }
@@ -354,6 +364,8 @@ class TodoModel(
     private val bulkSelection = RoomSelection()
     private var bulkRevision = 0L
     private var bulkPending = false
+    // A view override is local to this visit. It never changes the synced default.
+    private var viewOverride: ListView? = null
 
     private val transfers = AttachmentTransfers(AttachmentTransferCore(engine), documents, scope, io, { selected }, ::publishTransfer)
     private val _ui = MutableStateFlow(read())
@@ -395,6 +407,7 @@ class TodoModel(
         val searching: Boolean,
         val showCompleted: Boolean,
         val generation: Long,
+        val viewOverride: ListView?,
     )
 
     /** Reads the whole screen state synchronously (the screenshot tests use this directly). */
@@ -403,8 +416,8 @@ class TodoModel(
     /** Reads the screen, with the [inputs] it was read for. */
     private fun snapshot(): Snapshot {
         // The inputs first, together: the state read belongs to them, whatever changes while reading.
-        val (epoch, f, open, showDone, gen) = synchronized(publishing) {
-            Inputs(inputs, filter, searching, showCompleted, generation)
+        val (epoch, f, open, showDone, gen, requestedView) = synchronized(publishing) {
+            Inputs(inputs, filter, searching, showCompleted, generation, viewOverride)
         }
         // Toggles applied before the read are in it; the placement and the tasks in motion go with it.
         val seen = written
@@ -419,9 +432,18 @@ class TodoModel(
         val status = syncStatus()
         if (!status.signedOut && status.state == SyncState.ONLINE && status.pending == 0u) syncedAt = n
         val readingActivity = activity
+        val home = engine.homePlaced(place.rows, n)
+        val room = roomRead(k, f, place, ids, seen, n)
+        val view = androidView(home.featuresFor(room.key), requestedView)
+        val board = if (view == ListView.BOARD && readingActivity == null) {
+            (room.key as? RoomKey.List)?.let { engine.board(it.id, n) }
+        } else null
         val state = UiState(
-            home = engine.homePlaced(place.rows, n),
-            room = roomRead(k, f, place, ids, seen, n),
+            home = home,
+            room = room,
+            view = view,
+            board = board,
+            boardReopening = if (board == null) emptySet() else place.rows.reopening.map { it.id }.toSet(),
             detail = detail,
             attachment = transfers.status(detail?.id),
             attachmentTaskConfirmed = detail != null && engine.attachmentTaskConfirmed(detail.id),
@@ -525,11 +547,12 @@ class TodoModel(
         // Only a read with the current placement says what the list shows; an older one is followed by a
         // newer read.
         val rows = room.tasks
-        val done = if (state.showCompleted) room.completed else emptyList()
+        val done = state.board?.visibleCards(room, state.boardReopening)?.get(WorkflowStage.DONE)
+            ?: if (state.showCompleted) room.completed else emptyList()
         val listed = HashSet<String>()
         rows.mapTo(listed) { it.id }
         done.mapTo(listed) { it.id }
-        fun visible(section: Section) = section == Section.ROWS || state.showCompleted
+        fun visible(section: Section) = section == Section.ROWS || state.showCompleted || state.board != null
         val current = truth.placed == placement.version
         if (current) {
             // Where each row in motion is painted, among the rows and the ghosts on screen.
@@ -671,6 +694,7 @@ class TodoModel(
                 bulkRevision++
                 _ui.value = withBulk(_ui.value, emptyList())
                 reorder = null
+                viewOverride = null
                 key = room
                 if (fresh) {
                     activity = feed?.let { ActivityRoom(it, generation) }
@@ -683,6 +707,24 @@ class TodoModel(
                 inputs++
             }
         }
+    }
+
+    override fun setRoomView(view: ListView, generation: Long, showCompleted: Boolean) {
+        synchronized(motion) {
+            synchronized(publishing) {
+                val present = _ui.value
+                if (generation != this.generation || present.generation != generation ||
+                    view == ListView.TIMELINE || androidView(present.listFeatures, view) != view) return
+                viewOverride = view
+                if (showCompleted) this.showCompleted = true
+                bulkSelection.clear()
+                bulkRevision++
+                _ui.value = withBulk(present, emptyList())
+                inputs++
+            }
+            followNow()
+        }
+        scope.launch { refresh() }
     }
 
     override fun setShowCompleted(on: Boolean) {
@@ -810,6 +852,66 @@ class TodoModel(
         act { engine.addTaskDraft(room, draft, now()) }
     }
 
+    override fun addWorkflow(draft: WorkflowQuickAddDraft) {
+        val room = key
+        act { engine.addWorkflowTask(room, draft, now()) }
+    }
+
+    override fun setListFeatures(list: String, patch: ListFeaturesPatch) {
+        val seen = _ui.value
+        act {
+            val change = engine.setListFeatures(list, patch) ?: return@act
+            synchronized(publishing) {
+                if (seen.generation == generation && key == RoomKey.List(list)) {
+                    // Explicit defaults are for the next visit, as on desktop. Disabling the
+                    // current mode, however, must take effect even with a temporary override.
+                    if (patch.defaultView != null) viewOverride = seen.view
+                    else if (patch.workflow == false && viewOverride == ListView.BOARD) viewOverride = null
+                    inputs++
+                }
+            }
+            show(Toast(++serial, change.toastText(), organize = change))
+        }
+    }
+
+    override fun setStartDate(id: String, date: String?) = act {
+        engine.setStartDate(id, date)?.let { show(Toast(++serial, it.toastText(), organize = it)) }
+    }
+
+    override fun setTaskStage(list: String, id: String, stage: WorkflowStage, generation: Long) {
+        if (generation != this.generation) return
+        val open = stage.openStage()
+        if (open == null) toggle(id, true, generation, row = false, undo = null, boardList = list)
+        else act {
+            val task = engine.taskWorkflow(id) ?: return@act
+            if (!task.features.workflow || task.stage == stage) return@act
+            val change = if (task.stage == WorkflowStage.DONE) {
+                engine.dropBoardCard(list, id, stage, BoardSlot.First)
+            } else engine.setTaskStatus(id, open)
+            change?.let { show(Toast(++serial, it.toastText(), organize = it)) }
+        }
+    }
+
+    override fun moveBoardCard(list: String, id: String, stage: WorkflowStage, slot: BoardSlot, generation: Long) {
+        val present = _ui.value
+        val board = present.board ?: return
+        val room = RoomKey.List(list)
+        if (generation != this.generation || present.generation != generation || key != room) return
+        if (stage == WorkflowStage.DONE) {
+            if (present.room.tasks.any { it.id == id }) toggle(id, true, generation, row = true, undo = null, boardList = list)
+        } else act {
+            val task = engine.task(id, now()) ?: return@act
+            engine.dropBoardCard(list, id, stage, slot)?.let {
+                val n = ++serial
+                val affected = board.columns.filter { column -> column.stage == task.workflow.stage || column.stage == stage }
+                    .flatMap { column -> column.taskIds }.toSet()
+                val swap = TaskSwap(n, room, affected)
+                if (this.generation == generation) reorder = swap
+                show(Toast(n, "Moved “${task.title}” to ${stage.label}", organize = it, swap = swap))
+            }
+        }
+    }
+
     /**
      * Completes or reopens a task: written at once, while its row plays the choreography where it is (a
      * second toggle part way reverses it in place). A task the list doesn't show just changes, and so does
@@ -822,7 +924,7 @@ class TodoModel(
     override fun setDone(id: String, done: Boolean, generation: Long?, row: Boolean) =
         toggle(id, done, generation, row, undo = null)
 
-    private fun toggle(id: String, done: Boolean, generation: Long?, row: Boolean, undo: Completion?) {
+    private fun toggle(id: String, done: Boolean, generation: Long?, row: Boolean, undo: Completion?, boardList: String? = null) {
         val (toggle, again) = synchronized(motion) {
             if ((generation ?: _ui.value.generation) != this.generation) return@synchronized null to false
             val m = motion.motion
@@ -850,7 +952,7 @@ class TodoModel(
             if (!m.isGhost(id)) {
                 if (openRow != null) {
                     lastSeen[id] = ghostAt(openRow, Section.ROWS, room.tasks, m.ghosts())
-                } else if (doneRow != null && _ui.value.showCompleted) {
+                } else if (doneRow != null && (_ui.value.showCompleted || _ui.value.board != null)) {
                     lastSeen[id] = ghostAt(doneRow, Section.COMPLETED, room.completed, m.ghosts())
                 }
             }
@@ -870,7 +972,7 @@ class TodoModel(
                     engine.undoCompletion(undo)
                 } else {
                     val title = engine.task(id, now())?.title
-                    val target = engine.setDone(id, done)
+                    val target = if (boardList == null) engine.setDone(id, done) else engine.completeBoardCard(boardList, id)
                     if (target != null && title != null) {
                         val verb = if (done) "Completed" else "Reopened"
                         show(Toast(++serial, "$verb “$title”", CompletionAction(id, target, done)))

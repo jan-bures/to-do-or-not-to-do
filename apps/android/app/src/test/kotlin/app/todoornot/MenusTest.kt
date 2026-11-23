@@ -31,7 +31,7 @@ class MenusTest {
     fun a_lists_drawer_menu_renames_moves_and_asks_before_deleting() {
         val errands = engine.list("Errands") as RoomKey.List
         val menu = drawerMenu(home, errands)
-        assertEquals(listOf("Rename", "Colour…", "Move to…", "Move up", "Move down", "—", "Delete list…"), menu.labels())
+        assertEquals(listOf("Rename", "Colour…", "Move to…", "List settings…", "Move up", "Move down", "—", "Delete list…"), menu.labels())
         assertEquals(MenuAction.Rename(errands), menu.item("Rename").action)
         assertEquals(MenuAction.AskDelete(errands.id), menu.item("Delete list…").action)
         assertTrue(menu.item("Delete list…").danger)
@@ -66,7 +66,7 @@ class MenusTest {
     fun the_room_menu_offers_only_what_applies() {
         val errands = engine.list("Errands") as RoomKey.List
         assertEquals(
-            listOf("Rename list", "Colour…", "Move to…", "Move up", "Move down", "Show completed", "—", "Delete list…"),
+            listOf("Rename list", "Colour…", "Move to…", "List settings…", "Move up", "Move down", "Show completed", "—", "Delete list…"),
             roomMenu(home, errands, showCompleted = false).labels(),
         )
         assertEquals(MenuAction.ShowCompleted(false), roomMenu(home, errands, showCompleted = true).item("Hide completed").action)
